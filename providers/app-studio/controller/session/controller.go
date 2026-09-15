@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,9 +40,9 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/bindings"
-	"github.com/faroshq/provider-app-studio/store"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 // mirrorInterval is how often the projection refreshes when nothing else
@@ -194,7 +194,7 @@ func scopeOf(s *aiv1alpha1.Session) (store.Scope, bool) {
 
 // projectUIDAnnotation records the owning Project's UID — part of the store
 // scope key (a recreated Project must not inherit the deleted one's rows).
-const projectUIDAnnotation = "ai.faros.sh/project-uid"
+const projectUIDAnnotation = "ai.railgrid.ai/project-uid"
 
 // statusEqual compares mirrored status.
 func statusEqual(a, b aiv1alpha1.SessionStatus) bool {

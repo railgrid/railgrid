@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -59,9 +59,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/tenant"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/tenant"
 )
 
 const (
@@ -71,14 +71,14 @@ const (
 	accessPublic  = "public"
 	accessPrivate = "private"
 	// appAccessRolePrefix names the per-app ClusterRole and its bindings.
-	appAccessRolePrefix = "faros-app-access"
+	appAccessRolePrefix = "railgrid-app-access"
 	// appAccessLabel marks every RBAC object this API manages with the
 	// instance it grants access to, so grants are enumerable by selector.
-	appAccessLabel = "faros.sh/app-access"
+	appAccessLabel = "railgrid.ai/app-access"
 	// appAccessProjectLabel traces the grant back to its App Studio project.
-	appAccessProjectLabel = "app-studio.faros.sh/project"
+	appAccessProjectLabel = "app-studio.railgrid.ai/project"
 	// appAccessUserLabel records the granted platform User name.
-	appAccessUserLabel = "app-studio.faros.sh/user"
+	appAccessUserLabel = "app-studio.railgrid.ai/user"
 )
 
 var (
@@ -98,7 +98,7 @@ var (
 
 type publishingMember struct {
 	User string `json:"user"`
-	// RBACIdentity is the member's kcp username ("faros:<email>") — the ONLY
+	// RBACIdentity is the member's kcp username ("railgrid:<email>") — the ONLY
 	// subject string tenant-workspace RBAC evaluates. Grants must bind it;
 	// the User CR name appears in no kcp binding.
 	RBACIdentity string `json:"rbacIdentity,omitempty"`
@@ -171,7 +171,7 @@ func newPublishingHTTPClient() *http.Client {
 	if base, ok := http.DefaultTransport.(*http.Transport); ok {
 		transport = base.Clone()
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true") {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("RAILGRID_HUB_INSECURE")), "true") {
 		if base, ok := transport.(*http.Transport); ok {
 			base.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit local/dev opt-in
 		}
@@ -407,7 +407,7 @@ func (s *Server) createAppAccessGrant(w http.ResponseWriter, r *http.Request, re
 		// Never fall back to the User CR name: kcp evaluates no binding
 		// against it, so a grant bound to it would silently deny.
 		writeStatus(w, http.StatusBadGateway, "BadGateway",
-			"the platform did not report the member's RBAC identity; update the faros hub")
+			"the platform did not report the member's RBAC identity; update the railgrid hub")
 		return
 	}
 	if err := s.ensureAppAccessRole(r.Context(), c, p, runtime.target); err != nil {
@@ -851,9 +851,9 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+id.token)
-	req.Header.Set("X-Faros-Org", id.orgUUID)
-	req.Header.Set("X-Faros-Workspace", id.workspaceUUID)
-	req.Header.Set("X-Faros-User", id.user)
+	req.Header.Set("X-Railgrid-Org", id.orgUUID)
+	req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
+	req.Header.Set("X-Railgrid-User", id.user)
 	client := s.publishingHTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -975,9 +975,9 @@ func (s *Server) currentPublishingMembers(ctx context.Context, id identity) ([]p
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+id.token)
-		req.Header.Set("X-Faros-Org", id.orgUUID)
-		req.Header.Set("X-Faros-Workspace", id.workspaceUUID)
-		req.Header.Set("X-Faros-User", id.user)
+		req.Header.Set("X-Railgrid-Org", id.orgUUID)
+		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
+		req.Header.Set("X-Railgrid-User", id.user)
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("membership lookup: %w", err)

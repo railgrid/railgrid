@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 )
 
 // Client is a factory for per-(cluster, caller) access to tenant workspaces
@@ -43,7 +43,7 @@ type Client struct {
 }
 
 // NewClient targets the hub under hubBase (the hub's base URL, e.g.
-// https://faros-hub.faros.svc:9443). insecureSkipVerify relaxes TLS for
+// https://railgrid-hub.railgrid.svc:9443). insecureSkipVerify relaxes TLS for
 // in-cluster hub certs that aren't in the provider's trust store.
 func NewClient(hubBase string, insecureSkipVerify bool) *Client {
 	return &Client{hubBase: strings.TrimRight(hubBase, "/"), insecure: insecureSkipVerify}
@@ -64,11 +64,11 @@ type Scope struct {
 	dyn dynamic.Interface
 }
 
-// For returns a client scoped to clusterID (the X-Faros-Cluster the hub
+// For returns a client scoped to clusterID (the X-Railgrid-Cluster the hub
 // injected) authenticating as the caller via token.
 func (c *Client) For(clusterID, token string) (*Scope, error) {
 	if clusterID == "" {
-		return nil, fmt.Errorf("no cluster id (X-Faros-Cluster missing) — cannot target the tenant workspace")
+		return nil, fmt.Errorf("no cluster id (X-Railgrid-Cluster missing) — cannot target the tenant workspace")
 	}
 	if token == "" {
 		return nil, fmt.Errorf("no bearer token on request — cannot act on the tenant's behalf")
@@ -127,7 +127,7 @@ func (s *Scope) ListWithOptions(ctx context.Context, res Resource, namespace str
 // InfrastructureInstancesResource describes the Infrastructure provider's
 // cluster-scoped Instance CRD.
 var InfrastructureInstancesResource = Resource{
-	GVR:    schema.GroupVersionResource{Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "instances"},
+	GVR:    schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances"},
 	Kind:   "Instance",
 	Plural: "Instances",
 }

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@ package main
 // dance, the operator is given exactly two kubeconfigs and does the rest:
 //
 //	INFRASTRUCTURE_PROVIDER_KUBECONFIG  kcp, scoped to the provider workspace
-//	                                    (root:faros:providers:infrastructure).
-//	                                    What the faros admin portal issues.
+//	                                    (root:railgrid:providers:infrastructure).
+//	                                    What the railgrid admin portal issues.
 //	INFRASTRUCTURE_RUNTIME_KUBECONFIG   the cluster where kro (and this
 //	                                    operator) run. Used to seed kro.
 //
@@ -43,9 +43,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/faroshq/provider-sdk/leaderelection"
+	"github.com/railgrid/provider-sdk/leaderelection"
 
-	"github.com/faroshq/provider-infrastructure/operator"
+	"github.com/railgrid/provider-infrastructure/operator"
 )
 
 // catalogEntryManifest is the provider's CatalogEntry, embedded so the operator
@@ -152,7 +152,7 @@ func bootstrapOnce(ctx context.Context, providerCfg, runtimeCfg *rest.Config, pr
 	if err := operator.Bootstrap(ctx, providerCfg, operator.BootstrapOptions{
 		WorkspacePath:        workspacePath,
 		APIExportName:        apiExportName,
-		CatalogEntryFile:     os.Getenv("FAROS_CATALOGENTRY_FILE"),
+		CatalogEntryFile:     os.Getenv("RAILGRID_CATALOGENTRY_FILE"),
 		SkipSeedTemplates:    os.Getenv("INFRASTRUCTURE_SKIP_SEED_TEMPLATES") != "",
 		CodingSandboxEnabled: codingSandboxEnabled(),
 	}); err != nil {

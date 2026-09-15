@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	cliauth "github.com/railgrid/railgrid/pkg/cli/auth"
 )
 
 // fakeIssuer is a minimal OIDC provider: discovery plus a token endpoint that
@@ -46,7 +46,7 @@ type fakeIssuer struct {
 
 func newFakeIssuer(t *testing.T) *fakeIssuer {
 	t.Helper()
-	f := &fakeIssuer{clientID: "faros-cli"}
+	f := &fakeIssuer{clientID: "railgrid-cli"}
 	mux := http.NewServeMux()
 	f.Server = httptest.NewServer(mux)
 	t.Cleanup(f.Close)
@@ -202,7 +202,7 @@ func TestGetTokenRefreshRejected(t *testing.T) {
 	}
 	var out bytes.Buffer
 	err := runGetToken(context.Background(), &out, iss.URL, iss.clientID, false)
-	if err == nil || !strings.Contains(err.Error(), "faros login") {
+	if err == nil || !strings.Contains(err.Error(), "railgrid login") {
 		t.Fatalf("err = %v, want a re-login hint", err)
 	}
 	if out.Len() != 0 {
@@ -224,7 +224,7 @@ func TestGetTokenNoCache(t *testing.T) {
 	iss := newFakeIssuer(t)
 	var out bytes.Buffer
 	err := runGetToken(context.Background(), &out, iss.URL, iss.clientID, false)
-	if err == nil || !strings.Contains(err.Error(), "faros login") {
+	if err == nil || !strings.Contains(err.Error(), "railgrid login") {
 		t.Fatalf("err = %v, want a login hint", err)
 	}
 	if got := iss.refreshes.Load(); got != 0 {

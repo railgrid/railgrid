@@ -2,7 +2,7 @@
 // providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`.
 //
 // Shared, framework-agnostic scaffolding for a provider's dashboard tile — the
-// <faros-dashboard-tile-{name}> element the console mounts on its dashboard
+// <railgrid-dashboard-tile-{name}> element the console mounts on its dashboard
 // page. Rendering stays with each provider (its own resources, its own words);
 // what lives here is the plumbing every tile was otherwise going to re-derive:
 //
@@ -10,7 +10,7 @@
 //   - "no workspace selected yet" and "provider not bound yet" as EMPTY, not
 //     as an error banner — a tile is glanceable chrome, and a red box for a
 //     workspace that simply has not been bootstrapped is noise
-//   - the faros-navigate dispatch that turns a row into a console route
+//   - the railgrid-navigate dispatch that turns a row into a console route
 //   - the recency sort + cap that keeps every tile the same height
 //
 // Deliberately plain TypeScript, like the rest of portalkit: it is synced into
@@ -70,7 +70,7 @@ export const tileClass = {
 
 // Plain-DOM portals cannot rely on Tailwind's generated utilities. This map
 // exposes the same semantic slots as tileClass while keeping the visual recipe
-// in faros-ui.css. Existing Tailwind consumers remain on tileClass; string-
+// in railgrid-ui.css. Existing Tailwind consumers remain on tileClass; string-
 // building portals use these names instead of maintaining a local facsimile.
 export const dashboardTileSemanticClass: Record<keyof typeof tileClass, string> = {
   root: 'k-dashboard-tile',
@@ -96,7 +96,7 @@ export const dashboardTileSemanticClass: Record<keyof typeof tileClass, string> 
   error: 'k-dashboard-tile__error',
 }
 
-// TileContext is the subset of farosContext a tile needs. The console pushes
+// TileContext is the subset of railgridContext a tile needs. The console pushes
 // the full object; tiles only ever read these.
 export interface TileContext {
   // fetch is the host-owned transport (injects Authorization and the tenant
@@ -184,7 +184,7 @@ export function countBy<T>(items: T[], key: (item: T) => string): Record<string,
 // console's DashboardTile listener turns it into
 // router.push('/providers/{name}/' + path), so tiles never import a router.
 export function navigateFromTile(el: Element | null | undefined, path: string): void {
-  el?.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
+  el?.dispatchEvent(new CustomEvent('railgrid-navigate', { detail: { path }, bubbles: true }))
 }
 
 export interface TilePoller {
@@ -202,7 +202,7 @@ export interface TilePoller {
 // A refresh that arrives mid-load is COALESCED, not dropped. Dropping it looks
 // harmless until you notice the sequence every tile actually starts with: the
 // element is appended (poller starts, loads with no context yet, renders
-// empty), and the console pushes farosContext in the very next statement. That
+// empty), and the console pushes railgridContext in the very next statement. That
 // refresh lands while the first load is still settling, so discarding it left
 // the tile showing its empty state until the next interval — or forever, if
 // the context never changes again.

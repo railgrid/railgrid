@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/faroshq/provider-agents/engine"
-	"github.com/faroshq/provider-agents/llm"
-	"github.com/faroshq/provider-agents/store"
+	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-agents/store"
 )
 
 // Session compaction. A long-lived session — a channel conversation, or a

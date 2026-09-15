@@ -20,7 +20,7 @@ import {
   createLatestRefreshController,
   type ResourceRefreshMode,
 } from './refresh'
-import type { Edge, EdgeType, FarosContext, ErrorResponse } from './types'
+import type { Edge, EdgeType, RailgridContext, ErrorResponse } from './types'
 import {
   edgeConnectPath,
   edgeConnectionCancelPath,
@@ -35,7 +35,7 @@ import {
   type EdgeRoute,
 } from './routes'
 
-const props = defineProps<{ ctx: FarosContext | null }>()
+const props = defineProps<{ ctx: RailgridContext | null }>()
 
 // The shell owns the provider prefix and passes only the trailing path. Every
 // consequential action is represented here so browser refresh/back/forward
@@ -53,7 +53,7 @@ const edgeRouteTabs = [
 // ProviderFrame host listens for. path is relative to /providers/edges/.
 const rootRef = ref<HTMLElement | null>(null)
 function navigate(path: string, replace = false) {
-  rootRef.value?.dispatchEvent(new CustomEvent('faros-navigate', {
+  rootRef.value?.dispatchEvent(new CustomEvent('railgrid-navigate', {
     detail: navigationDetail(path, replace),
     bubbles: true,
   }))

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@ import (
 	"log"
 	"os"
 
-	sdkinstall "github.com/faroshq/provider-sdk/install"
+	sdkinstall "github.com/railgrid/provider-sdk/install"
 
-	"github.com/faroshq/provider-code/install"
+	"github.com/railgrid/provider-code/install"
 )
 
 // runInitCmd is the one-shot provider-workspace bootstrap. The admin onboarding
@@ -25,12 +25,12 @@ import (
 // APIResourceSchemas, the APIExport, the APIExportEndpointSlice, and the bind
 // RBAC grant. Idempotent; serve also ensures the slice at startup.
 //
-// Schemas are read from FAROS_SCHEMAS_DIR (default /etc/faros/schemas), which the
+// Schemas are read from RAILGRID_SCHEMAS_DIR (default /etc/railgrid/schemas), which the
 // Helm chart populates (and the dev Makefile points at deploy/chart/files/schemas).
 func runInitCmd(ctx context.Context) error {
 	config, err := loadControllerConfig()
 	if err != nil {
-		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
+		return fmt.Errorf("init needs a kubeconfig (set RAILGRID_PROVIDER_KUBECONFIG): %w", err)
 	}
 	// Empty means "the workspace this kubeconfig already points at": kcp
 	// resolves an unset APIExportEndpointSlice export path to the slice's own
@@ -38,14 +38,14 @@ func runInitCmd(ctx context.Context) error {
 	// both the platform workspace and an org's self-hosted copy. Set the env
 	// var only to reference an export in a different workspace.
 	workspacePath := os.Getenv("CODE_WORKSPACE_PATH")
-	schemasDir := os.Getenv("FAROS_SCHEMAS_DIR")
+	schemasDir := os.Getenv("RAILGRID_SCHEMAS_DIR")
 	if schemasDir == "" {
-		schemasDir = "/etc/faros/schemas"
+		schemasDir = "/etc/railgrid/schemas"
 	}
 	// CatalogEntry self-registration: the provider applies its own CatalogEntry
-	// into its workspace (the Provider controller bound providers.faros.sh
+	// into its workspace (the Provider controller bound providers.railgrid.ai
 	// here). Empty → skip.
-	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
+	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:           config,

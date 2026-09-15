@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	cliauth "github.com/railgrid/railgrid/pkg/cli/auth"
 )
 
 func newTokenCommand() *cobra.Command {
@@ -34,7 +34,7 @@ func newTokenCommand() *cobra.Command {
 		Long: `Print the bearer token the kubeconfig credentials produce, for curl and
 other tools that cannot run the kubectl exec plugin:
 
-  curl -H "Authorization: Bearer $(faros token)" $HUB/api/orgs
+  curl -H "Authorization: Bearer $(railgrid token)" $HUB/api/orgs
 
 With OIDC logins the cached ID token is returned and refreshed when expired.
 --refresh forces a refresh now, which is also the quickest way to check that
@@ -46,14 +46,14 @@ the refresh-token flow works against your identity provider.`,
 			if err != nil {
 				return err
 			}
-			_, _, _, auth, err := farosClusterAndAuth(raw)
+			_, _, _, auth, err := railgridClusterAndAuth(raw)
 			if err != nil {
 				return err
 			}
 			if auth.Exec != nil && forceRefresh {
 				issuer, clientID := execOIDCArgs(auth.Exec)
 				if issuer == "" || clientID == "" {
-					return fmt.Errorf("the kubeconfig's exec plugin is not the faros OIDC plugin; cannot refresh")
+					return fmt.Errorf("the kubeconfig's exec plugin is not the railgrid OIDC plugin; cannot refresh")
 				}
 				expiry, err := forceTokenRefresh(ctx, issuer, clientID, globalInsecureTLS || hasInsecureArg(auth.Exec.Args))
 				if err != nil {
@@ -99,20 +99,20 @@ func forceTokenRefresh(ctx context.Context, issuerURL, clientID string, insecure
 
 	cache, err := cliauth.LoadTokenCache(issuerURL, clientID)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("no cached token for this hub; run 'faros login' first (%w)", err)
+		return time.Time{}, fmt.Errorf("no cached token for this hub; run 'railgrid login' first (%w)", err)
 	}
 	if cache.RefreshToken == "" {
-		return time.Time{}, fmt.Errorf("the cached login has no refresh token; the identity provider did not issue one (run 'faros login' again)")
+		return time.Time{}, fmt.Errorf("the cached login has no refresh token; the identity provider did not issue one (run 'railgrid login' again)")
 	}
 	newIDToken, newRefreshToken, expiry, err := refreshToken(ctx, issuerURL, clientID, "", cache.RefreshToken, insecure)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("token refresh failed (run 'faros login' to re-authenticate): %w", err)
+		return time.Time{}, fmt.Errorf("token refresh failed (run 'railgrid login' to re-authenticate): %w", err)
 	}
 	cache.IDToken = newIDToken
 	cache.RefreshToken = newRefreshToken
 	cache.ExpiresAt = expiry.Unix()
 	if err := cliauth.SaveTokenCache(cache); err != nil {
-		return time.Time{}, fmt.Errorf("saving rotated token cache (run 'faros login' to re-authenticate): %w", err)
+		return time.Time{}, fmt.Errorf("saving rotated token cache (run 'railgrid login' to re-authenticate): %w", err)
 	}
 	return expiry, nil
 }

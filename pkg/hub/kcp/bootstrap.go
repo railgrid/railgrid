@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,12 +40,12 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros/config/kcp"
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/kcppaths"
-	"github.com/faroshq/faros/pkg/util/confighelpers"
-	"github.com/faroshq/faros/pkg/util/identity"
+	"github.com/railgrid/railgrid/config/kcp"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
+	"github.com/railgrid/railgrid/pkg/util/confighelpers"
+	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // kcp resource GVRs.
@@ -60,7 +60,7 @@ var (
 		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings",
 	}
 	membershipGVR = schema.GroupVersionResource{
-		Group: "tenants.faros.sh", Version: "v1alpha1", Resource: "memberships",
+		Group: "tenants.railgrid.ai", Version: "v1alpha1", Resource: "memberships",
 	}
 )
 
@@ -95,7 +95,7 @@ func NewBootstrapper(config *rest.Config) *Bootstrapper {
 }
 
 // WithEnabledProviders sets the subset of builtin providers the
-// bootstrapper will write into root:faros:providers. Pass the value of
+// bootstrapper will write into root:railgrid:providers. Pass the value of
 // the --providers flag; nil/empty selects every known builtin.
 func (b *Bootstrapper) WithEnabledProviders(names []string) *Bootstrapper {
 	b.enabledProviders = names
@@ -104,13 +104,13 @@ func (b *Bootstrapper) WithEnabledProviders(names []string) *Bootstrapper {
 
 // Bootstrap creates the workspace hierarchy:
 //
-//	root:faros                          - Root faros workspace
-//	root:faros:providers                - Parent of per-provider sub-workspaces
-//	  root:faros:providers:{name}       - One provider (restricted `provider` type)
-//	root:faros:tenants:{uuid}:{ws}:{edge}  - Tenant org/team/edge fleet
-//	root:faros:system:controllers       - ALL platform APIExports + schemas
-//	root:faros:system:providers         - Provider + CatalogEntry objects
-//	root:faros:system:tenants           - User/Organization/Membership objects
+//	root:railgrid                          - Root railgrid workspace
+//	root:railgrid:providers                - Parent of per-provider sub-workspaces
+//	  root:railgrid:providers:{name}       - One provider (restricted `provider` type)
+//	root:railgrid:tenants:{uuid}:{ws}:{edge}  - Tenant org/team/edge fleet
+//	root:railgrid:system:controllers       - ALL platform APIExports + schemas
+//	root:railgrid:system:providers         - Provider + CatalogEntry objects
+//	root:railgrid:system:tenants           - User/Organization/Membership objects
 func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Bootstrapping kcp workspace hierarchy")
@@ -121,28 +121,28 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("creating root clients: %w", err)
 	}
 
-	// 2. Bootstrap root:faros workspace.
-	logger.Info("Bootstrapping root:faros workspace")
+	// 2. Bootstrap root:railgrid workspace.
+	logger.Info("Bootstrapping root:railgrid workspace")
 	if err := confighelpers.Bootstrap(ctx, rootDiscovery, rootDynamic, kcp.RootWorkspaceFS); err != nil {
-		return fmt.Errorf("bootstrapping root:faros workspace: %w", err)
+		return fmt.Errorf("bootstrapping root:railgrid workspace: %w", err)
 	}
-	if err := waitForWorkspaceReady(ctx, rootDynamic, "faros"); err != nil {
-		return fmt.Errorf("waiting for faros workspace: %w", err)
+	if err := waitForWorkspaceReady(ctx, rootDynamic, "railgrid"); err != nil {
+		return fmt.Errorf("waiting for railgrid workspace: %w", err)
 	}
 
 	// 3. Bootstrap child workspaces: providers, tenants, users.
-	farosConfig := configForPath(b.config, "root:faros")
-	farosDynamic, farosDiscovery, err := newClients(farosConfig)
+	railgridConfig := configForPath(b.config, "root:railgrid")
+	railgridDynamic, railgridDiscovery, err := newClients(railgridConfig)
 	if err != nil {
-		return fmt.Errorf("creating faros clients: %w", err)
+		return fmt.Errorf("creating railgrid clients: %w", err)
 	}
 
 	logger.Info("Bootstrapping child workspaces: providers, tenants, system")
-	if err := confighelpers.Bootstrap(ctx, farosDiscovery, farosDynamic, kcp.FarosWorkspaceFS); err != nil {
+	if err := confighelpers.Bootstrap(ctx, railgridDiscovery, railgridDynamic, kcp.RailgridWorkspaceFS); err != nil {
 		return fmt.Errorf("bootstrapping child workspaces: %w", err)
 	}
 	for _, name := range []string{"providers", "tenants", "system"} {
-		if err := waitForWorkspaceReady(ctx, farosDynamic, name); err != nil {
+		if err := waitForWorkspaceReady(ctx, railgridDynamic, name); err != nil {
 			return fmt.Errorf("waiting for %s workspace: %w", name, err)
 		}
 	}
@@ -190,7 +190,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger.Info("Got tenancy.kcp.io identity hash", "hash", identityHash)
 
 	// 5. Bootstrap ALL platform APIResourceSchemas + APIExports in
-	//    root:faros:system:controllers — the single home for platform exports.
+	//    root:railgrid:system:controllers — the single home for platform exports.
 	//    The __TENANCY_IDENTITY_HASH__ placeholder in the APIExport YAML is
 	//    replaced with the actual identity hash from step 4.
 	controllersConfig := configForPath(b.config, kcppaths.SystemControllers)
@@ -202,26 +202,26 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger.Info("Bootstrapping APIResourceSchemas and APIExports in system:controllers")
 	if err := confighelpers.Bootstrap(ctx, controllersDiscovery, controllersDynamic, kcp.ProvidersFS,
 		confighelpers.ReplaceOption("__TENANCY_IDENTITY_HASH__", identityHash),
-		// apiexport-faros.sh.yaml is embedded only as input for the
-		// core.faros.sh generator (hack/gen-core-apiexport). Nothing binds the
-		// standalone faros.sh export — tenants bind core.faros.sh — so we
+		// apiexport-railgrid.ai.yaml is embedded only as input for the
+		// core.railgrid.ai generator (hack/gen-core-apiexport). Nothing binds the
+		// standalone railgrid.ai export — tenants bind core.railgrid.ai — so we
 		// never apply it to the cluster; its presence there is just confusing.
-		confighelpers.SkipFilesOption("apiexport-faros.sh.yaml"),
+		confighelpers.SkipFilesOption("apiexport-railgrid.ai.yaml"),
 	); err != nil {
 		return fmt.Errorf("bootstrapping platform exports: %w", err)
 	}
 
 	// 5b. Bind the platform exports into the workspaces that hold their
-	//     objects: system:providers binds providers.faros.sh (CatalogEntry)
-	//     + admin.faros.sh (Provider); system:tenants binds
-	//     tenants.faros.sh (User/Organization/Membership). All FROM
+	//     objects: system:providers binds providers.railgrid.ai (CatalogEntry)
+	//     + admin.railgrid.ai (Provider); system:tenants binds
+	//     tenants.railgrid.ai (User/Organization/Membership). All FROM
 	//     system:controllers. These exports are excluded from tenant-bound
-	//     core.faros.sh — see hack/gen-core-apiexport/main.go excludedAPIExports.
+	//     core.railgrid.ai — see hack/gen-core-apiexport/main.go excludedAPIExports.
 	systemProvidersDynamic, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.SystemProviders))
 	if err != nil {
 		return fmt.Errorf("creating system:providers client: %w", err)
 	}
-	for _, exportName := range []string{"providers.faros.sh", "admin.faros.sh"} {
+	for _, exportName := range []string{"providers.railgrid.ai", "admin.railgrid.ai"} {
 		if err := ensureExportBinding(ctx, systemProvidersDynamic, kcppaths.SystemControllers, exportName); err != nil {
 			return fmt.Errorf("binding %s in system:providers: %w", exportName, err)
 		}
@@ -237,26 +237,26 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("creating builtin CatalogEntries: %w", err)
 	}
 
-	// 5d. Apply post-providers workspace artefacts under root:faros — namely
+	// 5d. Apply post-providers workspace artefacts under root:railgrid — namely
 	//     the `organization` WorkspaceType, which declares a defaultAPIBinding
-	//     to tenants.faros.sh in root:faros:providers. kcp's WT
+	//     to tenants.railgrid.ai in root:railgrid:providers. kcp's WT
 	//     admission resolves the binding's LogicalCluster and checks bind
 	//     RBAC at apply time, so the APIExport (created in step 5) must
 	//     exist beforehand or the apply fails with a 403 forbidden.
 	logger.Info("Bootstrapping post-providers workspace artefacts (organization WorkspaceType)")
-	if err := confighelpers.Bootstrap(ctx, farosDiscovery, farosDynamic, kcp.PostProvidersFS); err != nil {
+	if err := confighelpers.Bootstrap(ctx, railgridDiscovery, railgridDynamic, kcp.PostProvidersFS); err != nil {
 		return fmt.Errorf("bootstrapping post-providers artefacts: %w", err)
 	}
 
-	// 6. Bind tenants.faros.sh APIExport in root:faros:system:tenants so
+	// 6. Bind tenants.railgrid.ai APIExport in root:railgrid:system:tenants so
 	//    User, Organization, Membership, and UserMembershipIndex CRs are all
 	//    reachable there (this is the CR-object storage workspace; the org
-	//    *fleet* lives separately under root:faros:tenants). Same admission rules
+	//    *fleet* lives separately under root:railgrid:tenants). Same admission rules
 	//    as step 5d apply — the APIExport must exist (step 5) before this
 	//    APIBinding is created.
-	logger.Info("Binding tenants.faros.sh in system:tenants")
+	logger.Info("Binding tenants.railgrid.ai in system:tenants")
 	if err := b.ensureTenancyObjectsBinding(ctx); err != nil {
-		return fmt.Errorf("binding tenants.faros.sh in system:tenants: %w", err)
+		return fmt.Errorf("binding tenants.railgrid.ai in system:tenants: %w", err)
 	}
 
 	// 7. Namespace in system:controllers for the hub's own replica-coordination
@@ -272,14 +272,14 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-// HubSystemNamespace is the namespace inside root:faros:system:controllers that
+// HubSystemNamespace is the namespace inside root:railgrid:system:controllers that
 // holds the hub's cross-replica coordination state: the controller
 // leader-election Lease and the shared browser-session / app-access-code
 // Secrets. It is hub-internal — no tenant, provider, or user identity is ever
 // granted access to system:controllers.
-const HubSystemNamespace = "faros-hub"
+const HubSystemNamespace = "railgrid-hub"
 
-// ControllersConfig returns a rest.Config targeting root:faros:system:controllers,
+// ControllersConfig returns a rest.Config targeting root:railgrid:system:controllers,
 // where the platform APIExports and the hub's own coordination objects live.
 func (b *Bootstrapper) ControllersConfig() *rest.Config {
 	return configForPath(b.config, kcppaths.SystemControllers)
@@ -308,8 +308,8 @@ func (b *Bootstrapper) EnsureHubSystemNamespace(ctx context.Context) error {
 }
 
 // ensureTenancyObjectsBinding creates an APIBinding to the
-// tenants.faros.sh APIExport (in root:faros:system:controllers) inside
-// root:faros:system:tenants. Idempotent. Without this binding the organization
+// tenants.railgrid.ai APIExport (in root:railgrid:system:controllers) inside
+// root:railgrid:system:tenants. Idempotent. Without this binding the organization
 // bootstrap controller's writes to User / Organization / Membership CRs in
 // system:tenants would fail with "no matches for kind".
 func (b *Bootstrapper) ensureTenancyObjectsBinding(ctx context.Context) error {
@@ -317,27 +317,27 @@ func (b *Bootstrapper) ensureTenancyObjectsBinding(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating system:tenants client: %w", err)
 	}
-	return ensureExportBinding(ctx, tenancyDynamic, kcppaths.SystemControllers, "tenants.faros.sh")
+	return ensureExportBinding(ctx, tenancyDynamic, kcppaths.SystemControllers, "tenants.railgrid.ai")
 }
 
-// UsersConfig returns a rest.Config targeting root:faros:system:tenants, where
+// UsersConfig returns a rest.Config targeting root:railgrid:system:tenants, where
 // the User / Organization / Membership CR OBJECTS are stored (this replaces the
-// former root:faros:users). The org *fleet* lives separately under
-// root:faros:tenants (see OrgsConfig).
+// former root:railgrid:users). The org *fleet* lives separately under
+// root:railgrid:tenants (see OrgsConfig).
 func (b *Bootstrapper) UsersConfig() *rest.Config {
 	return configForPath(b.config, kcppaths.SystemTenants)
 }
 
-// OrgsConfig returns a rest.Config targeting the root:faros:tenants parent
+// OrgsConfig returns a rest.Config targeting the root:railgrid:tenants parent
 // workspace. The Organization bootstrap controller uses this to create child
 // Workspaces of type `organization` — one per Organization CR — at
-// root:faros:tenants:{org-uuid}. The fleet location is unchanged by the
+// root:railgrid:tenants:{org-uuid}. The fleet location is unchanged by the
 // system-workspace restructure.
 func (b *Bootstrapper) OrgsConfig() *rest.Config {
 	return configForPath(b.config, kcppaths.TenantsParent)
 }
 
-// EnsureOrgWorkspace creates a kcp Workspace at root:faros:tenants:{orgUUID}
+// EnsureOrgWorkspace creates a kcp Workspace at root:railgrid:tenants:{orgUUID}
 // of type `organization` (see config/kcp/workspacetype-organization.yaml).
 // Idempotent: returns nil on AlreadyExists. Blocks until the workspace is
 // Ready so callers can immediately patch the corresponding Organization
@@ -349,7 +349,7 @@ func (b *Bootstrapper) OrgsConfig() *rest.Config {
 // admin config; no per-User RBAC is granted inside the workspace.
 //
 // The "organization" WorkspaceType's defaultAPIBindings bring
-// tenants.faros.sh (Organization, CatalogEntry, future Membership)
+// tenants.railgrid.ai (Organization, CatalogEntry, future Membership)
 // and tenancy.kcp.io (Workspace for child team-workspace creation in
 // PR #3) into the Org workspace.
 func (b *Bootstrapper) EnsureOrgWorkspace(ctx context.Context, orgUUID string) error {
@@ -369,7 +369,7 @@ func (b *Bootstrapper) EnsureOrgWorkspace(ctx context.Context, orgUUID string) e
 			"spec": map[string]interface{}{
 				"type": map[string]interface{}{
 					"name": "organization",
-					"path": "root:faros",
+					"path": "root:railgrid",
 				},
 			},
 		},
@@ -391,7 +391,7 @@ func (b *Bootstrapper) EnsureOrgWorkspace(ctx context.Context, orgUUID string) e
 }
 
 // GetOrgClusterName returns the kcp logical cluster name of an Organization
-// workspace at root:faros:tenants:{orgUUID} once it is Ready. The cluster
+// workspace at root:railgrid:tenants:{orgUUID} once it is Ready. The cluster
 // name is what status.workspaceCluster on the Organization CR can record
 // for observers that need the canonical kcp identifier rather than the
 // human-readable path.
@@ -412,7 +412,7 @@ func (b *Bootstrapper) GetOrgClusterName(ctx context.Context, orgUUID string) (s
 }
 
 // EnsureOrgMembership creates a Membership CR inside the Organization
-// workspace at root:faros:tenants:{orgUUID} granting the given User the
+// workspace at root:railgrid:tenants:{orgUUID} granting the given User the
 // given role at scope=org. Idempotent — returns nil if a Membership with
 // the same metadata.name already exists, regardless of role drift (an
 // admin demoting a member is owned by a separate Role-patch endpoint
@@ -438,7 +438,7 @@ func (b *Bootstrapper) EnsureOrgMembership(ctx context.Context, orgUUID, userNam
 
 	membership := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "tenants.faros.sh/v1alpha1",
+			"apiVersion": "tenants.railgrid.ai/v1alpha1",
 			"kind":       "Membership",
 			"metadata": map[string]interface{}{
 				"name": userName,
@@ -461,18 +461,18 @@ func (b *Bootstrapper) EnsureOrgMembership(ctx context.Context, orgUUID, userNam
 }
 
 // EnsureChildWorkspace materializes a kcp Workspace at
-// root:faros:tenants:{orgUUID}:{wsUUID} of type `workspace` (see
+// root:railgrid:tenants:{orgUUID}:{wsUUID} of type `workspace` (see
 // config/kcp/workspacetype-workspace.yaml). Used by the organization
 // bootstrap controller to create the User's default team Workspace
 // inside their personal Org so the portal can pin a default
-// X-Faros-Workspace header. Idempotent: returns nil on AlreadyExists
+// X-Railgrid-Workspace header. Idempotent: returns nil on AlreadyExists
 // and blocks until the workspace reports Ready.
 //
 // The hub-mediated rule from O-10 only applies to the Organization
 // workspace itself; the child team Workspace IS tenant-accessible.
 // This method is invoked from the org bootstrap controller with the
 // hub's admin credentials so the WorkspaceType admission's bind check
-// against tenants.faros.sh passes (same chain that already
+// against tenants.railgrid.ai passes (same chain that already
 // powers EnsureOrgWorkspace).
 func (b *Bootstrapper) EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error {
 	if orgUUID == "" || wsUUID == "" {
@@ -496,7 +496,7 @@ func (b *Bootstrapper) EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID
 			"spec": map[string]interface{}{
 				"type": map[string]interface{}{
 					"name": "workspace",
-					"path": "root:faros",
+					"path": "root:railgrid",
 				},
 			},
 		},
@@ -525,7 +525,7 @@ func childWorkspacePath(orgUUID, wsUUID string) string {
 }
 
 // ChildWorkspaceConfig returns a rest.Config targeting the child
-// Workspace at root:faros:tenants:{orgUUID}:{wsUUID}. Used by REST
+// Workspace at root:railgrid:tenants:{orgUUID}:{wsUUID}. Used by REST
 // endpoints that operate inside a Workspace (e.g. the ServiceAccount
 // surface) so they can mint a typed kube clientset without rebuilding
 // path strings themselves.
@@ -535,7 +535,7 @@ func (b *Bootstrapper) ChildWorkspaceConfig(orgUUID, wsUUID string) *rest.Config
 
 // GetChildWorkspaceClusterName returns the kcp logical-cluster short
 // hash (e.g. "2mmugqjf6k4nwuve") for the child team Workspace at
-// root:faros:tenants:{orgUUID}:{wsUUID}. kcp sets it in
+// root:railgrid:tenants:{orgUUID}:{wsUUID}. kcp sets it in
 // Workspace.spec.cluster when the workspace reaches phase Ready;
 // EnsureChildWorkspace blocks on Ready, so by the time this method is
 // called the field is populated. The short hash is the form kubectl /
@@ -561,25 +561,25 @@ func (b *Bootstrapper) GetChildWorkspaceClusterName(ctx context.Context, orgUUID
 	return cluster, nil
 }
 
-// EnsureChildWorkspaceFarosBinding creates an APIBinding to
-// root:faros:providers.core.faros.sh inside the child team Workspace,
-// accepting the permission claims faros controllers need. This is what
+// EnsureChildWorkspaceRailgridBinding creates an APIBinding to
+// root:railgrid:providers.core.railgrid.ai inside the child team Workspace,
+// accepting the permission claims railgrid controllers need. This is what
 // makes Edge, MCPServer, Placement, VirtualWorkload usable inside the
 // user's default Workspace.
 //
 // The legacy tenant-workspace path (CreateTenantWorkspace) used to
-// create the same binding inside root:faros:tenants:{userID}. PR #211
+// create the same binding inside root:railgrid:tenants:{userID}. PR #211
 // retires that flow; the bootstrap controller now drives this method
 // for every personal-Org default Workspace.
 //
 // The tenancy.kcp.io `workspaces` claim IS accepted here. It does not
 // widen the tenant user's own RBAC — a permission claim grants the
-// APIExport's controllers (faros, running over the core.faros.sh virtual
+// APIExport's controllers (railgrid, running over the core.railgrid.ai virtual
 // workspace) access to Workspace objects inside this child Workspace.
 // The edge mount reconciler needs it: it creates an `edge`-typed mount
 // Workspace per kubernetes Edge and watches it via Owns(&Workspace{})
-// (pkg/hub/controllers/edge/mount_reconciler.go). The core.faros.sh
-// APIExport already declares this claim (config/kcp/apiexport-core.faros.sh.yaml);
+// (pkg/hub/controllers/edge/mount_reconciler.go). The core.railgrid.ai
+// APIExport already declares this claim (config/kcp/apiexport-core.railgrid.ai.yaml);
 // leaving it unaccepted is what produced the "exported but not specified"
 // reconcile warnings on the binding.
 //
@@ -587,9 +587,9 @@ func (b *Bootstrapper) GetChildWorkspaceClusterName(ctx context.Context, orgUUID
 // SEPARATE control, enforced by the `workspace` WorkspaceType
 // (limitAllowedChildren caps children to the leaf `edge` type — see
 // config/kcp/workspacetype-workspace.yaml), not by withholding this claim.
-func (b *Bootstrapper) EnsureChildWorkspaceFarosBinding(ctx context.Context, orgUUID, wsUUID string) error {
+func (b *Bootstrapper) EnsureChildWorkspaceRailgridBinding(ctx context.Context, orgUUID, wsUUID string) error {
 	if orgUUID == "" || wsUUID == "" {
-		return fmt.Errorf("EnsureChildWorkspaceFarosBinding: orgUUID and wsUUID are required")
+		return fmt.Errorf("EnsureChildWorkspaceRailgridBinding: orgUUID and wsUUID are required")
 	}
 	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
 	wsClient, err := dynamic.NewForConfig(wsConfig)
@@ -603,12 +603,12 @@ func (b *Bootstrapper) EnsureChildWorkspaceFarosBinding(ctx context.Context, org
 			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
 			Kind:       "APIBinding",
 		},
-		ObjectMeta: metav1.ObjectMeta{Name: "faros"},
+		ObjectMeta: metav1.ObjectMeta{Name: "railgrid"},
 		Spec: apisv1alpha2.APIBindingSpec{
 			Reference: apisv1alpha2.BindingReference{
 				Export: &apisv1alpha2.ExportBindingReference{
 					Path: kcppaths.SystemControllers,
-					Name: "core.faros.sh",
+					Name: "core.railgrid.ai",
 				},
 			},
 			PermissionClaims: []apisv1alpha2.AcceptablePermissionClaim{
@@ -619,7 +619,7 @@ func (b *Bootstrapper) EnsureChildWorkspaceFarosBinding(ctx context.Context, org
 				acceptedClaim("rbac.authorization.k8s.io", "clusterroles", "", allVerbs),
 				acceptedClaim("rbac.authorization.k8s.io", "clusterrolebindings", "", allVerbs),
 				// tenancy.kcp.io/workspaces, scoped by the tenancy APIExport's
-				// identity hash, must match the claim the core.faros.sh export
+				// identity hash, must match the claim the core.railgrid.ai export
 				// declares. The edge mount reconciler creates/deletes and
 				// Owns(&Workspace{}) the per-edge mount workspaces, so it needs
 				// the full verb set the export offers.
@@ -629,18 +629,18 @@ func (b *Bootstrapper) EnsureChildWorkspaceFarosBinding(ctx context.Context, org
 	}
 	u, err := toUnstructured(binding)
 	if err != nil {
-		return fmt.Errorf("converting faros APIBinding to unstructured: %w", err)
+		return fmt.Errorf("converting railgrid APIBinding to unstructured: %w", err)
 	}
 	if _, err := wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating faros APIBinding in %s/%s: %w", orgUUID, wsUUID, err)
+		return fmt.Errorf("creating railgrid APIBinding in %s/%s: %w", orgUUID, wsUUID, err)
 	}
-	if err := waitForAPIBindingBound(ctx, wsClient, "faros"); err != nil {
+	if err := waitForAPIBindingBound(ctx, wsClient, "railgrid"); err != nil {
 		return err
 	}
 	// The `workspace` WorkspaceType deliberately does NOT extend
 	// root:universal (see config/kcp/workspacetype-workspace.yaml for
 	// the rationale), so kcp does not auto-create the `default`
-	// namespace. Create it ourselves once the faros APIBinding's
+	// namespace. Create it ourselves once the railgrid APIBinding's
 	// namespaces permission claim has been accepted — without this,
 	// `kubectl apply` for any namespaced resource fails with
 	// `namespaces "default" not found`.
@@ -692,12 +692,12 @@ func (b *Bootstrapper) EnsureChildWorkspaceDefaultMCPServer(ctx context.Context,
 // Workspace as soft-deleted. The soft-delete reconciler (roadmap step 8)
 // reads this on every reconcile and triggers the cascade once the
 // 30-day grace window from the annotation's RFC3339 value has elapsed.
-// kept on the kcp Workspace (rather than a faros wrapper CRD) because
+// kept on the kcp Workspace (rather than a railgrid wrapper CRD) because
 // the kcp Workspace IS the source of truth for workspace lifecycle.
-const WorkspaceDeletionAnnotation = "tenants.faros.sh/deletion-requested-at"
+const WorkspaceDeletionAnnotation = "tenants.railgrid.ai/deletion-requested-at"
 
 // DeleteOrgWorkspace removes the kcp Workspace at
-// root:faros:tenants:{orgUUID}. Idempotent on NotFound. Cascade callers
+// root:railgrid:tenants:{orgUUID}. Idempotent on NotFound. Cascade callers
 // should ensure all child Workspaces and the in-workspace Memberships
 // have already been removed; kcp will delete the LogicalCluster.
 func (b *Bootstrapper) DeleteOrgWorkspace(ctx context.Context, orgUUID string) error {
@@ -715,7 +715,7 @@ func (b *Bootstrapper) DeleteOrgWorkspace(ctx context.Context, orgUUID string) e
 }
 
 // DeleteChildWorkspace removes the kcp Workspace at
-// root:faros:tenants:{orgUUID}:{wsUUID}. Idempotent on NotFound.
+// root:railgrid:tenants:{orgUUID}:{wsUUID}. Idempotent on NotFound.
 func (b *Bootstrapper) DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error {
 	if orgUUID == "" || wsUUID == "" {
 		return fmt.Errorf("DeleteChildWorkspace: orgUUID and wsUUID are required")
@@ -732,7 +732,7 @@ func (b *Bootstrapper) DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID
 }
 
 // ListChildWorkspaces returns the names of every child Workspace under
-// root:faros:tenants:{orgUUID}. Empty list if the Org workspace is gone.
+// root:railgrid:tenants:{orgUUID}. Empty list if the Org workspace is gone.
 func (b *Bootstrapper) ListChildWorkspaces(ctx context.Context, orgUUID string) ([]string, error) {
 	if orgUUID == "" {
 		return nil, fmt.Errorf("ListChildWorkspaces: orgUUID is required")
@@ -764,7 +764,7 @@ func (b *Bootstrapper) ListChildWorkspaces(ctx context.Context, orgUUID string) 
 // admin workspace list, and the kcp proxy's authorizer all treat a child of an
 // Org as "a team workspace a member can belong to". The providers container is
 // neither — it holds no Memberships and no UMI rows, so surfacing it yields a
-// workspace row that cannot be entered (selecting it sets an X-Faros-Workspace
+// workspace row that cannot be entered (selecting it sets an X-Railgrid-Workspace
 // no membership matches, and every subsequent call 403s), and authorizing it
 // would hand every org member access to the workspace that parents provider
 // credentials.
@@ -787,7 +787,7 @@ func (b *Bootstrapper) ListChildTeamWorkspaces(ctx context.Context, orgUUID stri
 }
 
 // ListOrgWorkspaces returns the names (UUIDs) of every Organization
-// workspace at root:faros:tenants. Used by the soft-delete reconciler's
+// workspace at root:railgrid:tenants. Used by the soft-delete reconciler's
 // Workspace branch to fan out across Orgs at resync time without
 // standing up per-Org dynamic informers.
 func (b *Bootstrapper) ListOrgWorkspaces(ctx context.Context) ([]string, error) {
@@ -840,7 +840,7 @@ func (b *Bootstrapper) GetWorkspaceDeletionRequestedAt(ctx context.Context, orgU
 }
 
 // DeleteOrgMemberships removes every Membership CR inside the
-// Organization workspace at root:faros:tenants:{orgUUID}. Used by the
+// Organization workspace at root:railgrid:tenants:{orgUUID}. Used by the
 // soft-delete cascade right before tearing down the workspace itself,
 // so the index sync sees a clean delta. Idempotent on NotFound /
 // empty list.
@@ -874,10 +874,10 @@ func (b *Bootstrapper) DeleteOrgMemberships(ctx context.Context, orgUUID string)
 // an annotation rather than a separate CRD field because kcp's
 // Workspace type doesn't carry a displayName slot. Editable via the
 // REST PATCH endpoint.
-const WorkspaceDisplayNameAnnotation = "tenants.faros.sh/display-name"
+const WorkspaceDisplayNameAnnotation = "tenants.railgrid.ai/display-name"
 
 // SetWorkspaceDeletionAnnotation stamps the kcp Workspace at
-// root:faros:tenants:{orgUUID}:{wsUUID} with the soft-delete annotation
+// root:railgrid:tenants:{orgUUID}:{wsUUID} with the soft-delete annotation
 // (WorkspaceDeletionAnnotation) carrying the given timestamp. The
 // soft-delete reconciler picks it up on its next poll. Once a deletion
 // timestamp exists it is never replaced: the first request owns the
@@ -1184,9 +1184,9 @@ func (b *Bootstrapper) ListOrgMembershipRoles(ctx context.Context, orgUUID strin
 }
 
 // mcpServerGVR is the tenant-workspace MCPServer resource (distributed via the
-// core.faros.sh APIExport). The in-core reconciler
+// core.railgrid.ai APIExport). The in-core reconciler
 // (pkg/hub/controllers/mcpserver) provisions each server's identity.
-var mcpServerGVR = schema.GroupVersionResource{Group: "faros.sh", Version: "v1alpha1", Resource: "mcpservers"}
+var mcpServerGVR = schema.GroupVersionResource{Group: "railgrid.ai", Version: "v1alpha1", Resource: "mcpservers"}
 
 // MCPServerInfo is a portal-facing view of an MCPServer CR.
 type MCPServerInfo struct {
@@ -1204,7 +1204,7 @@ type MCPServerInfo struct {
 	ToolsRefreshedTime string `json:"toolsRefreshedTime,omitempty"`
 }
 
-// MCPFederatedProviderInfo mirrors farosv1alpha1.FederatedMCPProvider for the portal.
+// MCPFederatedProviderInfo mirrors railgridv1alpha1.FederatedMCPProvider for the portal.
 type MCPFederatedProviderInfo struct {
 	Name        string                 `json:"name"`
 	DisplayName string                 `json:"displayName,omitempty"`
@@ -1213,7 +1213,7 @@ type MCPFederatedProviderInfo struct {
 	Tools       []MCPFederatedToolInfo `json:"tools,omitempty"`
 }
 
-// MCPFederatedToolInfo mirrors farosv1alpha1.FederatedMCPTool for the portal.
+// MCPFederatedToolInfo mirrors railgridv1alpha1.FederatedMCPTool for the portal.
 type MCPFederatedToolInfo struct {
 	Name        string `json:"name"`
 	Title       string `json:"title,omitempty"`
@@ -1319,7 +1319,7 @@ func (b *Bootstrapper) CreateMCPServer(ctx context.Context, clusterName, name, d
 		return err
 	}
 	obj := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "faros.sh/v1alpha1",
+		"apiVersion": "railgrid.ai/v1alpha1",
 		"kind":       "MCPServer",
 		"metadata":   map[string]interface{}{"name": name},
 		"spec": map[string]interface{}{
@@ -1403,14 +1403,14 @@ func (b *Bootstrapper) GetMCPServerToken(ctx context.Context, clusterName, name 
 // the first-party CatalogEntries declared by the providers/<name>/
 // packages (registered via providers.RegisterBuiltin in their init()).
 var catalogEntryGVR = schema.GroupVersionResource{
-	Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
+	Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries",
 }
 
 // builtinAnnotation marks CatalogEntries the hub bootstrap owns. The
 // reconcile-delete step ignores any entry without this annotation, so a
 // third-party CatalogEntry that happens to share a name with a deleted
 // builtin is never touched.
-const builtinAnnotation = "providers.faros.sh/builtin"
+const builtinAnnotation = "providers.railgrid.ai/builtin"
 
 // ValidateProviders is a thin re-export of providers.ResolveEnabledBuiltins
 // that discards the resolved spec list. Used at process start (server.Run)
@@ -1427,14 +1427,14 @@ func ValidateProviders(enabled []string) error {
 // writes (or updates) every entry in `enabled`, and deletes any
 // builtin-annotated entries that the user has disabled since the last
 // start. Third-party CatalogEntries with the same name are left alone —
-// only entries carrying providers.faros.sh/builtin=true are touched.
+// only entries carrying providers.railgrid.ai/builtin=true are touched.
 //
-// Waits for the providers.faros.sh APIBinding to be Bound first;
+// Waits for the providers.railgrid.ai APIBinding to be Bound first;
 // without that wait the CatalogEntry resource isn't discoverable yet on
 // a fresh hub and we'd race-fail with "no matches for kind".
 func ensureBuiltinCatalogEntries(ctx context.Context, providersDynamic dynamic.Interface, enabled []string) error {
-	if err := waitForAPIBindingBound(ctx, providersDynamic, "providers.faros.sh"); err != nil {
-		return fmt.Errorf("waiting for providers.faros.sh APIBinding: %w", err)
+	if err := waitForAPIBindingBound(ctx, providersDynamic, "providers.railgrid.ai"); err != nil {
+		return fmt.Errorf("waiting for providers.railgrid.ai APIBinding: %w", err)
 	}
 	picked, err := providers.ResolveEnabledBuiltins(enabled)
 	if err != nil {
@@ -1461,7 +1461,7 @@ func ensureBuiltinCatalogEntries(ctx context.Context, providersDynamic dynamic.I
 		}
 
 		desired := &unstructured.Unstructured{Object: map[string]interface{}{
-			"apiVersion": "providers.faros.sh/v1alpha1",
+			"apiVersion": "providers.railgrid.ai/v1alpha1",
 			"kind":       "CatalogEntry",
 			"metadata": map[string]interface{}{
 				"name":        e.Name,
@@ -1470,7 +1470,7 @@ func ensureBuiltinCatalogEntries(ctx context.Context, providersDynamic dynamic.I
 			"spec": map[string]interface{}{
 				"displayName": e.DisplayName,
 				"description": e.Description,
-				"vendor":      "faros",
+				"vendor":      "railgrid",
 				"iconURL":     e.IconURL,
 				"category":    e.Category,
 				"ui":          ui,
@@ -1612,13 +1612,13 @@ var clusterRoleBindingGVR = schema.GroupVersionResource{
 // grant overwrote it, so the last person granted was the only one with
 // kcp RBAC. ensureWorkspaceAdmin migrates it to per-user bindings on the
 // next grant or revoke in that workspace and then deletes it.
-const legacyWorkspaceAdminCRB = "faros-cluster-admin"
+const legacyWorkspaceAdminCRB = "railgrid-cluster-admin"
 
 // userAdminCRBPrefix prefixes the per-user cluster-admin bindings. The
 // suffix is a hash of the rbacIdentity: identities are emails, which are
 // not valid object names, and the hash keeps the name stable across the
 // identity's spelling while never colliding between users.
-const userAdminCRBPrefix = "faros-user-admin-"
+const userAdminCRBPrefix = "railgrid-user-admin-"
 
 // userAdminCRBName returns the per-user cluster-admin binding name for an
 // rbacIdentity.
@@ -1635,10 +1635,10 @@ func userAdminCRB(rbacIdentity string) *unstructured.Unstructured {
 			"metadata": map[string]interface{}{
 				"name": userAdminCRBName(rbacIdentity),
 				"labels": map[string]interface{}{
-					"tenancy.faros.sh/managed-by": "hub",
+					"tenancy.railgrid.ai/managed-by": "hub",
 				},
 				"annotations": map[string]interface{}{
-					"tenancy.faros.sh/rbac-identity": rbacIdentity,
+					"tenancy.railgrid.ai/rbac-identity": rbacIdentity,
 				},
 			},
 			"roleRef": map[string]interface{}{
@@ -1704,7 +1704,7 @@ func revokeWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, r
 	return nil
 }
 
-// migrateLegacyWorkspaceAdmin converts the shared faros-cluster-admin
+// migrateLegacyWorkspaceAdmin converts the shared railgrid-cluster-admin
 // binding, when present, into one per-user binding per subject and deletes
 // it. Whoever held access through the shared binding keeps it. No-op once
 // the workspace is on per-user bindings.
@@ -1808,7 +1808,7 @@ type ProviderClaim struct {
 
 // EnsureProviderAPIBinding creates (or no-ops on AlreadyExists) an
 // APIBinding named `bindingName` in the child workspace
-// root:faros:tenants:{orgUUID}:{wsUUID}, pointing at exportPath/exportName.
+// root:railgrid:tenants:{orgUUID}:{wsUUID}, pointing at exportPath/exportName.
 //
 // Used by the server-side POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 // handler so the portal doesn't have to talk to /clusters/{cluster}/apis/...
@@ -1844,7 +1844,7 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	// surface the claimed resource through the export's virtual workspace)
 	// unless a claim on a non-built-in type carries the SAME identityHash the
 	// export it binds to declares for that claim. Rather than re-derive the
-	// hash by scanning sibling APIExports — which races core.faros.sh
+	// hash by scanning sibling APIExports — which races core.railgrid.ai
 	// regeneration and previously left edges claims with an empty hash, so the
 	// bound provider saw zero claimed objects (e.g. kuery engaged no edges) —
 	// read it straight from the export we're binding to. That value is the one
@@ -1926,12 +1926,12 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 // APIExport (exportPath/exportName) declares for it — keyed "group/resource".
 // This is the value kcp validates the binding's claim against, so sourcing it
 // from the export (rather than re-deriving it by scanning sibling APIExports'
-// spec.resources, which races core.faros.sh regeneration and silently yielded
+// spec.resources, which races core.railgrid.ai regeneration and silently yielded
 // an empty hash → PermissionClaimsValid=False → the provider sees zero claimed
 // objects) keeps the two in lockstep by construction.
 //
 // The provisioner (ApplyAPIExport) resolves and stamps these identities on the
-// export. A first-party faros claim (*.faros.sh) MUST end up with a non-empty
+// export. A first-party railgrid claim (*.railgrid.ai) MUST end up with a non-empty
 // hash; if the export does not carry one yet, provisioning is still in flight
 // (it races the Enable call), so we poll rather than write an empty hash.
 // Built-in / kcp-system claims (core k8s, apis.kcp.io, empty group) legitimately
@@ -1972,7 +1972,7 @@ func (b *Bootstrapper) exportClaimIdentities(ctx context.Context, exportPath, ex
 		}
 		// Wait for the provisioner to stamp every first-party claim's identity.
 		for _, c := range claims {
-			if strings.HasSuffix(c.Group, ".faros.sh") && got[key(c.Group, c.Resource)] == "" {
+			if strings.HasSuffix(c.Group, ".railgrid.ai") && got[key(c.Group, c.Resource)] == "" {
 				return false, nil
 			}
 		}
@@ -1989,7 +1989,7 @@ func (b *Bootstrapper) exportClaimIdentities(ctx context.Context, exportPath, ex
 }
 
 // ListProviderAPIBindings returns the set of Bound provider APIBindings
-// present in the child workspace root:faros:tenants:{orgUUID}:{wsUUID},
+// present in the child workspace root:railgrid:tenants:{orgUUID}:{wsUUID},
 // keyed by provider name. Used by the GET /api/orgs/{org}/workspaces/{ws}/
 // providers/enabled handler so the portal can render the
 // per-workspace "enabled providers" set on every workspace switch —
@@ -2001,8 +2001,8 @@ func (b *Bootstrapper) exportClaimIdentities(ctx context.Context, exportPath, ex
 // spec.reference.export.path names a provider workspace and its status.phase is
 // Bound. Two shapes qualify:
 //
-//	root:faros:providers:<name>                    a platform provider
-//	root:faros:tenants:<orgUUID>:providers:<name>   an org-owned provider
+//	root:railgrid:providers:<name>                    a platform provider
+//	root:railgrid:tenants:<orgUUID>:providers:<name>   an org-owned provider
 //
 // Org-owned exports count only for their OWN org, so a binding that somehow
 // referenced another Org's provider is not reported as enabled here. The
@@ -2125,7 +2125,7 @@ func providerNameFromExportPath(path, orgUUID string) (string, bool) {
 }
 
 // DeleteProviderAPIBinding removes the named provider APIBinding from the
-// child workspace root:faros:tenants:{orgUUID}:{wsUUID}. NotFound is a no-op so
+// child workspace root:railgrid:tenants:{orgUUID}:{wsUUID}. NotFound is a no-op so
 // the Disable action is idempotent. Counterpart to EnsureProviderAPIBinding.
 func (b *Bootstrapper) DeleteProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName string) error {
 	if orgUUID == "" || wsUUID == "" || bindingName == "" {
@@ -2153,13 +2153,13 @@ var clusterRoleGVR = schema.GroupVersionResource{
 // tenant workspace, parameterized by provider name so multiple providers'
 // grants coexist.
 func edgeProxyGrantName(providerName string) string {
-	return "faros:provider:" + providerName + ":edges-proxy"
+	return "railgrid:provider:" + providerName + ":edges-proxy"
 }
 
 // EnsureProviderEdgeProxyGrant grants `subject` (the provider SA's
 // cluster-qualified identity — see pkg/util/identity) the "proxy" verb on the
-// edges provider's group (edges.faros.sh, resources kubernetesclusters +
-// linuxservers + macosservers) in the child workspace root:faros:tenants:{orgUUID}:{wsUUID}.
+// edges provider's group (edges.railgrid.ai, resources kubernetesclusters +
+// linuxservers + macosservers) in the child workspace root:railgrid:tenants:{orgUUID}:{wsUUID}.
 // The edges provider's tunnel edgeproxy handler SAR-checks exactly this tuple
 // (provider-sdk/tunnel/auth.go), so the grant is what lets a provider with
 // CatalogEntry spec.edgeProxyAccess open background connections to the tenant's
@@ -2185,7 +2185,7 @@ func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID
 			// Workspace access: kcp's workspaceContentAuthorizer requires
 			// the "access" verb on "/" before any resource RBAC is even
 			// consulted, and a foreign SA is not covered by the tenant
-			// workspace's system:authenticated grants (faros's SAR also
+			// workspace's system:authenticated grants (railgrid's SAR also
 			// drops its groups). Same pairing kcp's own cross-workspace SA
 			// e2e uses (TestAPIResourceSchemaVirtualWorkspaceAuthorization).
 			map[string]any{
@@ -2193,7 +2193,7 @@ func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID
 				"verbs":           []any{"access"},
 			},
 			// The edge plane is the single `edges` provider owning both kinds
-			// under one group edges.faros.sh. Using its OWN SA it reads +
+			// under one group edges.railgrid.ai. Using its OWN SA it reads +
 			// writes the edge CR DIRECTLY in the tenant workspace
 			// (kcpurl.ClusterURL, not the APIExport VW):
 			//   - get/list/watch on the kinds: validate the agent's bootstrap
@@ -2207,12 +2207,12 @@ func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID
 			// Bound to the provider SA's cluster-qualified identity (see
 			// pkg/util/identity).
 			map[string]any{
-				"apiGroups": []any{"edges.faros.sh"},
+				"apiGroups": []any{"edges.railgrid.ai"},
 				"resources": []any{"kubernetesclusters", "linuxservers", "macosservers"},
 				"verbs":     []any{"get", "list", "watch", "proxy"},
 			},
 			map[string]any{
-				"apiGroups": []any{"edges.faros.sh"},
+				"apiGroups": []any{"edges.railgrid.ai"},
 				"resources": []any{"kubernetesclusters/status", "linuxservers/status", "macosservers/status"},
 				"verbs":     []any{"get", "update", "patch"},
 			},
@@ -2366,8 +2366,8 @@ func (b *Bootstrapper) RemoveProviderEdgeProxyGrant(ctx context.Context, orgUUID
 // coupling. Must stay in lockstep with providers/app-studio/api
 // (appAccessLabel) and docs/app-studio-publishing.md.
 const (
-	appAccessGrantLabel     = "faros.sh/app-access"
-	appAccessGrantUserLabel = "app-studio.faros.sh/user"
+	appAccessGrantLabel     = "railgrid.ai/app-access"
+	appAccessGrantUserLabel = "app-studio.railgrid.ai/user"
 )
 
 // AppAccessGrant is the portal-facing view of one published-app invitation:

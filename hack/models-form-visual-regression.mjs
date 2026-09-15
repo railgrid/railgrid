@@ -24,7 +24,7 @@ import { deflateSync, inflateSync } from 'node:zlib'
  */
 
 const origin = process.env.MODEL_FORM_FIXTURE_URL || 'http://127.0.0.1:5198'
-const outputDir = resolve(process.env.MODEL_FORM_OUTPUT || resolve(tmpdir(), 'faros-model-form-visual'))
+const outputDir = resolve(process.env.MODEL_FORM_OUTPUT || resolve(tmpdir(), 'railgrid-model-form-visual'))
 const playwrightCandidates = [
   process.env.PLAYWRIGHT_MODULE,
   'playwright',
@@ -91,7 +91,7 @@ async function collect(page, provider, theme, width, scenario) {
   await page.waitForTimeout(50)
 
   const result = await page.evaluate(({ provider, theme, width, scenario }) => {
-    const root = document.querySelector(provider === 'app' ? 'faros-provider-app-studio' : 'faros-provider-agents')
+    const root = document.querySelector(provider === 'app' ? 'railgrid-provider-app-studio' : 'railgrid-provider-agents')
     const form = root?.querySelector('.k-model-form')
     const rect = node => {
       if (!node) return null

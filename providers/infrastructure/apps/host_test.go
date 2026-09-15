@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,11 +14,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faroshq/provider-infrastructure/kro"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 func TestHost(t *testing.T) {
-	const tenant = "root:faros:orgs:acme:prod"
+	const tenant = "root:railgrid:orgs:acme:prod"
 	const base = "apps.example.com"
 	hash := kro.LabelTenantValue(tenant)
 
@@ -116,11 +116,11 @@ func TestHost(t *testing.T) {
 }
 
 func TestHostIsDeterministic(t *testing.T) {
-	a, err := Host("shop", "my-app", "root:faros:orgs:acme", "apps.example.com")
+	a, err := Host("shop", "my-app", "root:railgrid:orgs:acme", "apps.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := Host("shop", "my-app", "root:faros:orgs:acme", "apps.example.com")
+	b, err := Host("shop", "my-app", "root:railgrid:orgs:acme", "apps.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +130,8 @@ func TestHostIsDeterministic(t *testing.T) {
 }
 
 func TestDifferentTenantsDifferentHost(t *testing.T) {
-	a, _ := Host("shop", "my-app", "root:faros:orgs:acme", "apps.example.com")
-	b, _ := Host("shop", "my-app", "root:faros:orgs:globex", "apps.example.com")
+	a, _ := Host("shop", "my-app", "root:railgrid:orgs:acme", "apps.example.com")
+	b, _ := Host("shop", "my-app", "root:railgrid:orgs:globex", "apps.example.com")
 	if a == b {
 		t.Fatalf("expected different hosts for different tenants, both = %q", a)
 	}

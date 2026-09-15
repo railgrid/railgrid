@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -45,21 +45,21 @@ func newInstallCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Install the faros agent",
-		Long: `Install the faros agent on the current host (--type server) or on the
+		Short: "Install the railgrid agent",
+		Long: `Install the railgrid agent on the current host (--type server) or on the
 Kubernetes cluster addressed by the current kubeconfig context (--type kubernetes).
 
 Examples:
 
   # Install as a systemd service on this server:
-  faros install --type server \
-    --hub-url https://faros.example.com \
+  railgrid install --type server \
+    --hub-url https://railgrid.example.com \
     --edge-name my-edge \
     --token <join-token>
 
   # Generate and apply a Kubernetes Deployment for this cluster:
-  faros install --type kubernetes \
-    --hub-url https://faros.example.com \
+  railgrid install --type kubernetes \
+    --hub-url https://railgrid.example.com \
     --edge-name my-edge \
     --token <join-token>`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -92,7 +92,7 @@ Examples:
 	cmd.Flags().StringVar(&opts.kubeconfig, "kubeconfig", "", "Path to kubeconfig for --type=kubernetes (default: $KUBECONFIG or ~/.kube/config)")
 	cmd.Flags().StringVar(&opts.cluster, "cluster", "", "kcp logical cluster name for host agents")
 	cmd.Flags().StringVar(&opts.workerUser, "worker-user", "", "Existing non-root account for a macOS LaunchDaemon")
-	cmd.Flags().StringVar(&opts.plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.faros.agent.<edge>.plist)")
+	cmd.Flags().StringVar(&opts.plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.railgrid.agent.<edge>.plist)")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Print what would be done without applying it")
 
 	return cmd
@@ -120,7 +120,7 @@ func installMacOS(opts *installOptions) error {
 	})
 }
 
-// installServer installs the faros agent as a systemd service on the current host.
+// installServer installs the railgrid agent as a systemd service on the current host.
 func installServer(opts *installOptions) error {
 	if runtime.GOOS != "linux" {
 		fmt.Printf("⚠ systemd installation is only supported on Linux.\n")
@@ -129,18 +129,18 @@ func installServer(opts *installOptions) error {
 		return nil
 	}
 
-	configDir := "/etc/faros"
+	configDir := "/etc/railgrid"
 	configPath := filepath.Join(configDir, "agent.yaml")
-	servicePath := "/etc/systemd/system/faros-agent.service"
+	servicePath := "/etc/systemd/system/railgrid-agent.service"
 
 	agentConfig := fmt.Sprintf("hub-url: %s\nedge-name: %s\ntoken: %s\n", opts.hubURL, opts.edgeName, opts.token)
 
 	serviceUnit := fmt.Sprintf(`[Unit]
-Description=Faros Agent
+Description=Railgrid Agent
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/faros agent join --config %s
+ExecStart=/usr/local/bin/railgrid agent join --config %s
 Restart=on-failure
 RestartSec=5
 
@@ -151,7 +151,7 @@ WantedBy=multi-user.target
 	if opts.dryRun {
 		fmt.Printf("--- (dry-run) Would write %s ---\n%s\n", configPath, agentConfig)
 		fmt.Printf("--- (dry-run) Would write %s ---\n%s\n", servicePath, serviceUnit)
-		fmt.Println("--- (dry-run) Would run: systemctl daemon-reload && systemctl enable --now faros-agent ---")
+		fmt.Println("--- (dry-run) Would run: systemctl daemon-reload && systemctl enable --now railgrid-agent ---")
 		return nil
 	}
 
@@ -176,7 +176,7 @@ WantedBy=multi-user.target
 	if isSystemdAvailable() {
 		for _, args := range [][]string{
 			{"daemon-reload"},
-			{"enable", "--now", "faros-agent"},
+			{"enable", "--now", "railgrid-agent"},
 		} {
 			//nolint:gosec // systemctl is a known system command
 			if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
@@ -184,9 +184,9 @@ WantedBy=multi-user.target
 			}
 		}
 		fmt.Println()
-		fmt.Println("✓ faros-agent installed and started")
-		fmt.Println("  Status: systemctl status faros-agent")
-		fmt.Println("  Logs:   journalctl -u faros-agent -f")
+		fmt.Println("✓ railgrid-agent installed and started")
+		fmt.Println("  Status: systemctl status railgrid-agent")
+		fmt.Println("  Logs:   journalctl -u railgrid-agent -f")
 	} else {
 		fmt.Println("\n⚠ systemd not detected. Start the agent manually:")
 		printAgentRunCmd(opts)
@@ -196,7 +196,7 @@ WantedBy=multi-user.target
 
 // printAgentRunCmd prints the foreground agent run command.
 func printAgentRunCmd(opts *installOptions) {
-	fmt.Printf("  faros agent run \\\n")
+	fmt.Printf("  railgrid agent run \\\n")
 	fmt.Printf("    --hub-url %s \\\n", opts.hubURL)
 	fmt.Printf("    --edge-name %s \\\n", opts.edgeName)
 	fmt.Printf("    --type %s \\\n", opts.installType)
@@ -217,26 +217,26 @@ const agentManifestTemplate = `---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: faros-agent
+  name: railgrid-agent
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: faros-agent-{{ .EdgeName }}
-  namespace: faros-agent
+  name: railgrid-agent-{{ .EdgeName }}
+  namespace: railgrid-agent
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: faros-agent-{{ .EdgeName }}-kubeconfig
-  namespace: faros-agent
+  name: railgrid-agent-{{ .EdgeName }}-kubeconfig
+  namespace: railgrid-agent
 type: Opaque
 data: {}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: faros-edge-agent
+  name: railgrid-edge-agent
 rules:
 - apiGroups: [""]
   resources: ["*"]
@@ -266,64 +266,64 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: faros-edge-agent-{{ .EdgeName }}
+  name: railgrid-edge-agent-{{ .EdgeName }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: faros-edge-agent
+  name: railgrid-edge-agent
 subjects:
 - kind: ServiceAccount
-  name: faros-agent-{{ .EdgeName }}
-  namespace: faros-agent
+  name: railgrid-agent-{{ .EdgeName }}
+  namespace: railgrid-agent
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: faros-agent-{{ .EdgeName }}
-  namespace: faros-agent
+  name: railgrid-agent-{{ .EdgeName }}
+  namespace: railgrid-agent
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
-  resourceNames: ["faros-agent-{{ .EdgeName }}-kubeconfig"]
+  resourceNames: ["railgrid-agent-{{ .EdgeName }}-kubeconfig"]
   verbs: ["get", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: faros-agent-{{ .EdgeName }}
-  namespace: faros-agent
+  name: railgrid-agent-{{ .EdgeName }}
+  namespace: railgrid-agent
 subjects:
 - kind: ServiceAccount
-  name: faros-agent-{{ .EdgeName }}
-  namespace: faros-agent
+  name: railgrid-agent-{{ .EdgeName }}
+  namespace: railgrid-agent
 roleRef:
   kind: Role
-  name: faros-agent-{{ .EdgeName }}
+  name: railgrid-agent-{{ .EdgeName }}
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: faros-agent-{{ .EdgeName }}
-  namespace: faros-agent
+  name: railgrid-agent-{{ .EdgeName }}
+  namespace: railgrid-agent
   labels:
-    app: faros-agent
-    faros.sh/edge: {{ .EdgeName }}
+    app: railgrid-agent
+    railgrid.ai/edge: {{ .EdgeName }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: faros-agent
-      faros.sh/edge: {{ .EdgeName }}
+      app: railgrid-agent
+      railgrid.ai/edge: {{ .EdgeName }}
   template:
     metadata:
       labels:
-        app: faros-agent
-        faros.sh/edge: {{ .EdgeName }}
+        app: railgrid-agent
+        railgrid.ai/edge: {{ .EdgeName }}
     spec:
-      serviceAccountName: faros-agent-{{ .EdgeName }}
+      serviceAccountName: railgrid-agent-{{ .EdgeName }}
       containers:
-        - name: faros-agent
+        - name: railgrid-agent
           image: {{.Image}}:{{.ImageTag}}
           imagePullPolicy: {{.ImagePullPolicy}}
           env:
@@ -348,22 +348,22 @@ spec:
 `
 
 // installKubernetes generates and (optionally) applies a Kubernetes Deployment
-// for the faros agent on the cluster targeted by the current kubeconfig context.
+// for the railgrid agent on the cluster targeted by the current kubeconfig context.
 func installKubernetes(opts *installOptions) error {
 	tmpl, err := template.New("agent-manifest").Parse(agentManifestTemplate)
 	if err != nil {
 		return fmt.Errorf("parsing manifest template: %w", err)
 	}
 
-	agentImage := os.Getenv("FAROS_AGENT_IMAGE")
+	agentImage := os.Getenv("RAILGRID_AGENT_IMAGE")
 	if agentImage == "" {
-		agentImage = "ghcr.io/faroshq/faros-agent"
+		agentImage = "ghcr.io/railgrid/railgrid-agent"
 	}
-	agentImageTag := os.Getenv("FAROS_AGENT_IMAGE_TAG")
+	agentImageTag := os.Getenv("RAILGRID_AGENT_IMAGE_TAG")
 	if agentImageTag == "" {
 		agentImageTag = "latest"
 	}
-	agentImagePullPolicy := os.Getenv("FAROS_AGENT_IMAGE_PULL_POLICY")
+	agentImagePullPolicy := os.Getenv("RAILGRID_AGENT_IMAGE_PULL_POLICY")
 	if agentImagePullPolicy == "" {
 		agentImagePullPolicy = "IfNotPresent"
 	}
@@ -409,9 +409,9 @@ func installKubernetes(opts *installOptions) error {
 	}
 
 	fmt.Println()
-	fmt.Println("✓ faros-agent deployed to Kubernetes")
-	fmt.Printf("  Namespace: faros-agent\n")
-	fmt.Printf("  Check status: kubectl get pods -n faros-agent\n")
-	fmt.Printf("  Logs:         kubectl logs -n faros-agent deploy/faros-agent -f\n")
+	fmt.Println("✓ railgrid-agent deployed to Kubernetes")
+	fmt.Printf("  Namespace: railgrid-agent\n")
+	fmt.Printf("  Check status: kubectl get pods -n railgrid-agent\n")
+	fmt.Printf("  Logs:         kubectl logs -n railgrid-agent deploy/railgrid-agent -f\n")
 	return nil
 }

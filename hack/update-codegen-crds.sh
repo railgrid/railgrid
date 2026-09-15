@@ -31,7 +31,7 @@ echo "Generating deepcopy methods with controller-gen..."
 )
 
 # Step 1: Generate CRDs from Go types using controller-gen.
-# Run from faros API dir so paths resolve correctly.
+# Run from railgrid API dir so paths resolve correctly.
 echo "Generating CRDs with controller-gen..."
 (
     cd "${REPO_ROOT}/apis"
@@ -58,10 +58,10 @@ echo "Generating kcp APIResourceSchemas with apigen..."
         --output-dir "${REPO_ROOT}/config/kcp"
 )
 
-# Step 3: Generate core.faros.sh merged APIExport from all individual APIExports.
-echo "Generating merged core.faros.sh APIExport..."
+# Step 3: Generate core.railgrid.ai merged APIExport from all individual APIExports.
+echo "Generating merged core.railgrid.ai APIExport..."
 go run "${REPO_ROOT}/hack/gen-core-apiexport" \
     --config-dir "${REPO_ROOT}/config/kcp" \
-    --output "${REPO_ROOT}/config/kcp/apiexport-core.faros.sh.yaml"
+    --output "${REPO_ROOT}/config/kcp/apiexport-core.railgrid.ai.yaml"
 
 echo "Codegen complete."

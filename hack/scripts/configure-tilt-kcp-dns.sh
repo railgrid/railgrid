@@ -22,8 +22,8 @@ fi
 
 context="$1"
 gateway_ip="$2"
-marker_start="# faros-kcp-dns"
-marker_end="# faros-kcp-dns-end"
+marker_start="# railgrid-kcp-dns"
+marker_end="# railgrid-kcp-dns-end"
 
 if [[ ! "$gateway_ip" =~ ^[0-9.]+$ ]]; then
   echo "invalid gateway IP: $gateway_ip" >&2

@@ -35,7 +35,7 @@ scoping), and [`security.md`](./security.md) (auth setup).
   forwards the caller's `Authorization` header **as-is**.
 - "Token not known to the provider" means the **provider's backend server**.
   The provider's **in-browser micro-frontend** runs in the user's browser and
-  calls the hub's kcp proxy directly through the host-owned `farosContext.fetch`,
+  calls the hub's kcp proxy directly through the host-owned `railgridContext.fetch`,
   which attaches the caller's bearer for it.
 - **Standalone providers** (`code`, `infrastructure`, `kuery`, `app-studio`)
   satisfy contract 2 — they hold no admin client. **Built-in providers**
@@ -60,13 +60,13 @@ the user's bearer token for UI purposes.
 API **without any admin/root client**. It uses one of two scoped mechanisms:
 
 - **(2a) Controller / sync** — a non-privileged ServiceAccount minted in the
-  provider's own workspace (`root:faros:providers:{name}`), driving a
+  provider's own workspace (`root:railgrid:providers:{name}`), driving a
   multicluster manager off the provider's **APIExportEndpointSlice** virtual
   workspace, bounded by the APIExport's `tenantScoped` permission claims.
 - **(2b) Per-request** — the provider drops its own credential and acts **as
   the caller**, using the bearer token forwarded by the hub, scoped to the
-  workspace whose kcp logical-cluster ID arrives in `X-Faros-Tenant` /
-  `X-Faros-Cluster` (both carry the ID; the workspace path is never sent).
+  workspace whose kcp logical-cluster ID arrives in `X-Railgrid-Tenant` /
+  `X-Railgrid-Cluster` (both carry the ID; the workspace path is never sent).
 
 Both 2a and 2b are admin-free. New providers should pick one (or use 2a for
 controllers and 2b for request-driven endpoints, like `code` and
@@ -103,14 +103,14 @@ Two proxies back every provider, defined in
 
 | Proxy | Path | Token handling |
 |-------|------|----------------|
-| **UI proxy** (`NewUIProxy`, `proxy.go:52`) | `/ui/providers/{name}/*` | Static assets only. Injects `X-Faros-Base-Path`. **No token forwarded.** First-party providers are served from an embedded FS (`LocalUIAssets`). |
-| **Backend proxy** (`NewBackendProxy`, `proxy.go:90`) | `/services/providers/{name}/*` | **Forwards the caller's `Authorization` header as-is**, and additionally injects `X-Faros-User` plus the tenant workspace's kcp logical-cluster ID as both `X-Faros-Tenant` and `X-Faros-Cluster`, resolved from the token. Inbound `X-Faros-*` headers are **always stripped** first (anti-spoofing, `proxy.go:114`). |
+| **UI proxy** (`NewUIProxy`, `proxy.go:52`) | `/ui/providers/{name}/*` | Static assets only. Injects `X-Railgrid-Base-Path`. **No token forwarded.** First-party providers are served from an embedded FS (`LocalUIAssets`). |
+| **Backend proxy** (`NewBackendProxy`, `proxy.go:90`) | `/services/providers/{name}/*` | **Forwards the caller's `Authorization` header as-is**, and additionally injects `X-Railgrid-User` plus the tenant workspace's kcp logical-cluster ID as both `X-Railgrid-Tenant` and `X-Railgrid-Cluster`, resolved from the token. Inbound `X-Railgrid-*` headers are **always stripped** first (anti-spoofing, `proxy.go:114`). |
 
 The identity injected by the backend proxy is resolved by the
 **TenantResolver** ([`pkg/hub/provider_tenant_resolver.go`](../pkg/hub/provider_tenant_resolver.go),
 `resolve` at `:104`): caller token → `User` CR → `Organization` →
-`Status.WorkspacePath`. It honors the sidebar's `X-Faros-Org` /
-`X-Faros-Workspace` selection (validated against the user's
+`Status.WorkspacePath`. It honors the sidebar's `X-Railgrid-Org` /
+`X-Railgrid-Workspace` selection (validated against the user's
 `UserMembershipIndex`) and falls back to the user's personal org. Failures are
 best-effort: anonymous `/healthz` probes still pass through with no identity
 headers, they do not 401.
@@ -143,7 +143,7 @@ User opens portal
         → hub returns a LoginResponse (idToken, refreshToken, expiresAt, …)
   → Static: POST /auth/token-login with Authorization: Bearer <token>
         → hub constant-time-compares against configured tokens, seeds User CR
-  → portal stores it in localStorage["faros-auth"]
+  → portal stores it in localStorage["railgrid-auth"]
         { idToken, refreshToken, expiresAt, issuerUrl, clientId,
           email, userId, clusterName }
 ```
@@ -155,9 +155,9 @@ authorize/callback + `seedUser`), `pkg/server/proxy/proxy.go` (`token-login`,
 bearer dispatch at `:248`).
 
 **Attaching the token to data requests.** Provider bundles never attach the
-token themselves: they call through the host-owned `farosContext.fetch`
+token themselves: they call through the host-owned `railgridContext.fetch`
 (`portal/src/providers/providerFetch.ts`), which injects
-`Authorization: Bearer <token>` plus `X-Faros-Org` / `X-Faros-Workspace` from
+`Authorization: Bearer <token>` plus `X-Railgrid-Org` / `X-Railgrid-Workspace` from
 the host's own state and allows only the provider's own
 `/services/providers/{name}/` and `/ui/providers/{name}/`, `/clusters/`,
 `/api/orgs/{org}/`, and GET/HEAD `/api/providers`. The shared kube client
@@ -179,12 +179,12 @@ shape:
 | kcp ServiceAccount token | kcp-minted | signature verified by kcp (provider/agent/inter-service) |
 
 **Passing context to provider micro-frontends.** `ProviderFrame.vue`
-(`portal/src/pages/ProviderFrame.vue:151`) sets a **`farosContext` property on
+(`portal/src/pages/ProviderFrame.vue:151`) sets a **`railgridContext` property on
 the provider's custom element** (not a postMessage handshake — that part of
 older docs is stale):
 
 ```js
-el.farosContext = {
+el.railgridContext = {
   subPath, basePath,            // routing
   fetch,                        // host-owned fetch: attaches bearer + tenant headers
   user: auth.user,              // { email, userId }
@@ -195,7 +195,7 @@ el.farosContext = {
 ```
 
 It re-pushes on theme change, token refresh, and workspace switch. The provider
-bundle wraps `farosContext.fetch` (`portalkit/tenant.ts` `providerFetch(ctx)`)
+bundle wraps `railgridContext.fetch` (`portalkit/tenant.ts` `providerFetch(ctx)`)
 and builds its kube client from it (`portalkit/kube.ts`
 `createKubeClient({ fetch, cluster: ctx.tenant })`); the bearer is attached by
 the host, not by the bundle.
@@ -250,12 +250,12 @@ MCP servers receive the token by design.
 
 [`pkg/hub/providers/provision.go`](../pkg/hub/providers/provision.go):
 
-1. `EnsureProviderWorkspace` creates `root:faros:providers:{name}`.
+1. `EnsureProviderWorkspace` creates `root:railgrid:providers:{name}`.
 2. `EnsureProviderSA` creates `system:serviceaccount:default:provider`, granted
    cluster-admin **only inside its own workspace** — its single privilege.
 3. `MintProviderKubeconfig` mints a long-lived SA-token kubeconfig pointing at
-   `{hub}/clusters/root:faros:providers:{name}`, delivered to the provider as
-   the `faros-provider-kubeconfig` Secret.
+   `{hub}/clusters/root:railgrid:providers:{name}`, delivered to the provider as
+   the `railgrid-provider-kubeconfig` Secret.
 4. `ApplyAPIExport` registers the provider's permission claims; `ApplyBindGrant`
    lets `system:authenticated` tenants bind the export.
 
@@ -316,9 +316,9 @@ internal Service.
       for exactly the resources/verbs you need.
 - [ ] Request-driven endpoints act as the **caller** via the forwarded token
       (2b): build the tenant client from `Authorization` + the cluster ID in
-      `X-Faros-Cluster` (`X-Faros-Tenant` carries the same ID), drop the
+      `X-Railgrid-Cluster` (`X-Railgrid-Tenant` carries the same ID), drop the
       provider's own credential. Never parse a workspace path out of a header.
-- [ ] Never trust inbound `X-Faros-*` headers in the provider — the backend
+- [ ] Never trust inbound `X-Railgrid-*` headers in the provider — the backend
       proxy strips and re-injects them; treat them as hub-asserted only.
 - [ ] To reach **another provider**, bind its `APIExport` and call its CRs /
       VW subresources as the caller (contract 3). Never hold a credential
@@ -339,7 +339,7 @@ internal Service.
 | Portal login / token storage | `portal/src/pages/LoginPage.vue`, `portal/src/auth/token.ts` |
 | Host-owned provider fetch (allowlist + bearer) | `portal/src/providers/providerFetch.ts` |
 | Provider kube client (`/clusters/{cluster}` REST) | `provider-sdk/portalkit/kube.ts` |
-| `farosContext` push to micro-frontend | `portal/src/pages/ProviderFrame.vue:151` |
+| `railgridContext` push to micro-frontend | `portal/src/pages/ProviderFrame.vue:151` |
 | Hub bearer dispatch / verification | `pkg/server/proxy/proxy.go:248` |
 | (2a) endpointslice multicluster mgr | `providers/code/controller_manager.go` |
 | (2b) caller-token tenant factory | `providers/*/tenant/client.go` |

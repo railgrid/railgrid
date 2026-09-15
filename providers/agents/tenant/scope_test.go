@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,19 +19,19 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/faroshq/provider-agents/tenant"
-	"github.com/faroshq/provider-agents/tenant/tenanttest"
+	"github.com/railgrid/provider-agents/tenant"
+	"github.com/railgrid/provider-agents/tenant/tenanttest"
 )
 
 var agentRes = tenant.Resource{
-	GVR:    schema.GroupVersionResource{Group: "agents.faros.sh", Version: "v1alpha1", Resource: "agents"},
+	GVR:    schema.GroupVersionResource{Group: "agents.railgrid.ai", Version: "v1alpha1", Resource: "agents"},
 	Kind:   "Agent",
 	Plural: "Agents",
 }
 
 func agent(name string, spec map[string]any) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "agents.faros.sh/v1alpha1",
+		"apiVersion": "agents.railgrid.ai/v1alpha1",
 		"kind":       "Agent",
 		"metadata":   map[string]any{"name": name},
 		"spec":       spec,

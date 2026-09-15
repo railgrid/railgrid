@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,12 +23,12 @@ import (
 const (
 	// MembershipScopeOrg marks a Membership that grants access to the Org
 	// workspace itself (e.g. "Bob is an admin of acme Org"). Memberships
-	// of this scope live at root:faros:tenants:{org-uuid}.
+	// of this scope live at root:railgrid:tenants:{org-uuid}.
 	MembershipScopeOrg = "org"
 
 	// MembershipScopeWorkspace marks a Membership that grants access to a
 	// child Workspace ("Bob is admin of acme/platform"). Memberships of
-	// this scope live at root:faros:tenants:{org-uuid}:{ws-uuid}.
+	// this scope live at root:railgrid:tenants:{org-uuid}:{ws-uuid}.
 	MembershipScopeWorkspace = "workspace"
 
 	// MembershipRoleAdmin grants full administrative access in the target
@@ -81,7 +81,7 @@ type MembershipList struct {
 // MembershipSpec defines the desired state of a Membership.
 type MembershipSpec struct {
 	// User is the metadata.name of the User this Membership applies to.
-	// Users are cluster-scoped at root:faros:users, so a bare name (not
+	// Users are cluster-scoped at root:railgrid:users, so a bare name (not
 	// an ObjectReference) is sufficient.
 	//
 	// +kubebuilder:validation:Required

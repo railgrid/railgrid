@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 
 const appStudioPrefix = "/services/providers/app-studio/api/projects"
 
-// runRoot executes the faros root command against the given kubeconfig.
+// runRoot executes the railgrid root command against the given kubeconfig.
 // The path must be captured before NewRootCommand: binding --kubeconfig resets
 // the package-level variable to its "" default, which would fall back to the
 // developer's real kubeconfig.
@@ -285,7 +285,7 @@ func TestRepositoryStallHint(t *testing.T) {
 	}
 	stalled := appProjectView{Name: "p", CreatedAt: now.Add(-5 * time.Minute), Repository: &appRepositoryView{Ref: "p"}}
 	hint := repositoryStallHint(stalled, now)
-	for _, want := range []string{"not ready for 5m0s", "not reconciling", "repositories.code.faros.sh p", "don't recreate"} {
+	for _, want := range []string{"not ready for 5m0s", "not reconciling", "repositories.code.railgrid.ai p", "don't recreate"} {
 		if !strings.Contains(hint, want) {
 			t.Fatalf("hint %q lacks %q", hint, want)
 		}

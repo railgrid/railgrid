@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/commitbundle"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/commitbundle"
 )
 
 var (
@@ -258,7 +258,7 @@ func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 	})
 }
 
-// createCR creates a cluster-scoped CR in group code.faros.sh.
+// createCR creates a cluster-scoped CR in group code.railgrid.ai.
 func createCR(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, kind, name string, spec map[string]any) (*mcp.CallToolResult, createOutput, error) {
 	if name == "" {
 		return nil, createOutput{}, fmt.Errorf("name is required")
@@ -338,7 +338,7 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	if err != nil {
 		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
 		if apierrors.IsNotFound(err) {
-			return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: RepositoryCommit API is not available in this workspace; enable or re-register the Code provider so repositorycommits.code.faros.sh is published: %w", err)
+			return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: RepositoryCommit API is not available in this workspace; enable or re-register the Code provider so repositorycommits.code.railgrid.ai is published: %w", err)
 		}
 		return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: %w", err)
 	}
@@ -356,7 +356,7 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	// Remove the staging copy only when it lives under a different scope
 	// than the controller will read. The RepositoryCommit controller reads
 	// the bundle under storageScope (the commit's kcp.io/cluster ID). The hub
-	// sends the logical-cluster ID as X-Faros-Tenant, so tenantScope normally
+	// sends the logical-cluster ID as X-Railgrid-Tenant, so tenantScope normally
 	// equals storageScope and deleting here would remove the only bundle
 	// copy, leaving the controller to fail with "bundle not found".
 	if tenantScope != storageScope {

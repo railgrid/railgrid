@@ -202,7 +202,7 @@ test('graph keyboard routing is focus-scoped and fullscreen uses the shared laye
   const elementSource = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
   const graphSource = readFileSync(new URL('./src/graph.ts', import.meta.url), 'utf8')
   const styleSource = readFileSync(new URL('./src/style.css', import.meta.url), 'utf8')
-  const sharedStyleSource = readFileSync(new URL('./src/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const sharedStyleSource = readFileSync(new URL('./src/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
 
   assert.match(elementSource, /@keydown="graphKeydown"/u)
   assert.match(elementSource, /if \(handled\) event\.preventDefault\(\)/u)

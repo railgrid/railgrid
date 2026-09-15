@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=gcollab
+// +kubebuilder:resource:scope=Cluster,categories=railgrid,shortName=gcollab
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.repositoryRef`
 // +kubebuilder:printcolumn:name="User",type=string,JSONPath=`.spec.username`
 // +kubebuilder:printcolumn:name="Permission",type=string,JSONPath=`.spec.permission`
@@ -114,4 +114,4 @@ const (
 
 // FinalizerCollaborator is added by the CollaboratorController so the grant
 // is revoked on the host before the CR disappears.
-const FinalizerCollaborator = "collaborators.code.faros.sh/finalizer"
+const FinalizerCollaborator = "collaborators.code.railgrid.ai/finalizer"

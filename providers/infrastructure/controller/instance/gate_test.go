@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // The gate matrix decides whether a workload ends up behind an IdP, behind
@@ -26,7 +26,7 @@ func TestDecideGate(t *testing.T) {
 	// An always-published app that may legitimately run ungated (demo/dev):
 	// the application template's shape.
 	alwaysPublic := templateTraits{
-		publishable: true, hasFQDN: true, hasOIDC: true, hasCredentials: true, hasFarosCluster: true,
+		publishable: true, hasFQDN: true, hasOIDC: true, hasCredentials: true, hasRailgridCluster: true,
 	}
 	// A workload with no auth of its own: internal by default, and never
 	// publishable without a gate — the searxng/browser shape.
@@ -35,7 +35,7 @@ func TestDecideGate(t *testing.T) {
 		gateRequired: true, hasCredentials: true,
 	}
 	// An exposure-only workload with no oidc block — the simple-webapp shape.
-	exposureOnly := templateTraits{publishable: true, hasFQDN: true, hasFarosCluster: true}
+	exposureOnly := templateTraits{publishable: true, hasFQDN: true, hasRailgridCluster: true}
 	// An internal workload — the worker/database shape.
 	internal := templateTraits{}
 
@@ -179,14 +179,14 @@ func TestTraitsFor(t *testing.T) {
 				"mode": map[string]any{"type": "string", "enum": []any{"none", "byo"}},
 			}},
 			"credentialsSecretName": map[string]any{"type": "string"},
-			"farosCluster":          map[string]any{"type": "string"},
+			"railgridCluster":       map[string]any{"type": "string"},
 		},
 	})
 	tr, err = traitsFor(application)
 	if err != nil {
 		t.Fatalf("traitsFor(application): %v", err)
 	}
-	want = templateTraits{publishable: true, hasFQDN: true, hasOIDC: true, hasCredentials: true, hasFarosCluster: true}
+	want = templateTraits{publishable: true, hasFQDN: true, hasOIDC: true, hasCredentials: true, hasRailgridCluster: true}
 	if tr != want {
 		t.Errorf("application traits = %+v, want %+v", tr, want)
 	}

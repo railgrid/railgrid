@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,12 +25,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	v1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	v1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 func TestWithRuntimeAccessHint(t *testing.T) {
 	forbidden := apierrors.NewForbidden(schema.GroupResource{Group: "rbac.authorization.k8s.io", Resource: "clusterroles"}, "kro-cluster-role", errors.New("denied"))
-	helmForbidden := fmt.Errorf("helm upgrade --install kro: exit status 1\nError: clusterroles.rbac.authorization.k8s.io \"kro-cluster-role\" is forbidden: User \"system:serviceaccount:faros:infrastructure-operator\" cannot create resource \"clusterroles\"")
+	helmForbidden := fmt.Errorf("helm upgrade --install kro: exit status 1\nError: clusterroles.rbac.authorization.k8s.io \"kro-cluster-role\" is forbidden: User \"system:serviceaccount:railgrid:infrastructure-operator\" cannot create resource \"clusterroles\"")
 	other := errors.New("dial tcp: connection refused")
 
 	cases := []struct {

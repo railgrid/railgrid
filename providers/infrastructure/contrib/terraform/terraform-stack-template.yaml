@@ -1,11 +1,11 @@
 # This opt-in development fixture lives outside install/templates so ordinary
 # provider bootstrap never advertises Terraform or requires Infrakube.
-apiVersion: infrastructure.faros.sh/v1alpha1
+apiVersion: infrastructure.railgrid.ai/v1alpha1
 kind: Template
 metadata:
   name: terraform-stack
   labels:
-    faros.sh/terraform-runtime: infrakube
+    railgrid.ai/terraform-runtime: infrakube
 spec:
   displayName: "Terraform stack (Infrakube POC)"
   description: "Proof-of-concept Terraform execution through an externally installed Infrakube controller. The module is embedded and pinned to Terraform 1.5.7; it creates a terraform_data resource without requiring cloud credentials."
@@ -15,7 +15,7 @@ spec:
   backend: kro
   sampleValues:
     name: terraform-poc
-    message: "hello from Faros"
+    message: "hello from Railgrid"
   agent:
     usage: |
       Provisions a small, cloud-free Terraform stack through Infrakube. This is
@@ -25,7 +25,7 @@ spec:
       INPUTS: name identifies the Infrakube Terraform child and its isolated
       state; message is stored in a terraform_data resource.
 
-      DELETION: deleting the Faros instance deletes the Terraform child and
+      DELETION: deleting the Railgrid instance deletes the Terraform child and
       Infrakube runs Terraform destroy because ignoreDelete is explicitly
       false. The empty Kubernetes-backend state Secret and Lease are retained
       for recovery; an operator must remove them under its retention policy.
@@ -35,7 +35,7 @@ spec:
       - "The Infrakube task ServiceAccount can manage Secrets and Leases in the materialized tenant runtime namespace for the Terraform Kubernetes backend."
     outputs:
       - "status.phase is Infrakube's current Terraform workflow phase."
-      - "status.message and status.resourceID are the only Terraform outputs projected into the Faros instance status."
+      - "status.message and status.resourceID are the only Terraform outputs projected into the Railgrid instance status."
       - "status.runtimeNamespace identifies the KRO-materialized namespace that also owns this instance's retained Terraform state."
   view:
     columns:
@@ -57,7 +57,7 @@ spec:
             path: status.runtimeNamespace
             type: code
   instanceCRD:
-    group: infrastructure.faros.sh
+    group: infrastructure.railgrid.ai
     version: v1alpha1
     resource: terraformstacks
     kind: TerraformStack
@@ -71,7 +71,7 @@ spec:
         description: "Logical stack name; also scopes the Infrakube child and Terraform state within the tenant runtime namespace."
       message:
         type: string
-        default: "hello from Faros"
+        default: "hello from Railgrid"
         description: "Non-sensitive value stored by the POC terraform_data resource and returned in status."
     required:
       - name
@@ -127,12 +127,12 @@ spec:
 
                 # This deliberately exercises the output allowlist. Even a
                 # sensitive module output must never be copied wholesale into
-                # the tenant-visible Faros instance status.
+                # the tenant-visible Railgrid instance status.
                 output "internal_marker" {
                   value     = "not-projected"
                   sensitive = true
                 }
-            backend: ${"terraform {\n  backend \"kubernetes\" {\n    secret_suffix = \"" + schema.spec.name + "-faros\"\n    in_cluster_config = true\n    namespace = \"" + stateNamespace.metadata.namespace + "\"\n  }\n}"}
+            backend: ${"terraform {\n  backend \"kubernetes\" {\n    secret_suffix = \"" + schema.spec.name + "-railgrid\"\n    in_cluster_config = true\n    namespace = \"" + stateNamespace.metadata.namespace + "\"\n  }\n}"}
             writeOutputsToStatus: true
             outputsToInclude:
               - message

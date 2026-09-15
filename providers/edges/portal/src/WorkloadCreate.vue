@@ -192,13 +192,13 @@ const workloadPrerequisites = computed(() => app.value ? [
   'Matching labels on target edges. Spread uses every match; Singleton uses one.',
 ])
 const workloadNextSteps = computed(() => app.value ? [
-  'Faros creates a singleton Helm Workload pinned to the selected edge.',
+  'Railgrid creates a singleton Helm Workload pinned to the selected edge.',
   'The edge agent creates the target namespace if it is missing; it is never deleted with the workload.',
-  'Faros also declares an Edges Service for the chart endpoint.',
+  'Railgrid also declares an Edges Service for the chart endpoint.',
   'The edge agent applies the chart and reports workload readiness.',
   'Add the Service credential after deployment when the app requires one.',
 ] : [
-  'Faros creates the Workload; the edge agent creates the target namespace if it is missing and never deletes it.',
+  'Railgrid creates the Workload; the edge agent creates the target namespace if it is missing and never deletes it.',
   'The scheduler creates Placements for matching Kubernetes edges.',
   'Edge agents apply the derived Deployments and Workload status aggregates their readiness.',
 ])
@@ -313,7 +313,7 @@ onUnmounted(() => {
     <div v-else-if="edgeLoadError" class="k-create-surface">
       <div class="k-create-body">
         <div class="banner error" role="alert">{{ edgeLoadError }}</div>
-        <p class="muted">Faros could not verify that a KubernetesCluster edge is available, so workload creation is paused.</p>
+        <p class="muted">Railgrid could not verify that a KubernetesCluster edge is available, so workload creation is paused.</p>
       </div>
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Back to workloads</button>

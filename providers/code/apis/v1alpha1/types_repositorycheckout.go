@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=gcheckout
+// +kubebuilder:resource:scope=Cluster,categories=railgrid,shortName=gcheckout
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.repositoryRef`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Ref",type=string,JSONPath=`.status.ref`
@@ -76,7 +76,7 @@ type RepositoryCheckoutSpec struct {
 // bundle, 25 MiB each, 48 MiB in total); absent, binaries are skipped and the
 // text-only bounds apply. It is an annotation rather than a spec field so
 // older controllers ignore it and stay text-only.
-const AnnotationCheckoutBinaryEncoding = "code.faros.sh/binary-encoding"
+const AnnotationCheckoutBinaryEncoding = "code.railgrid.ai/binary-encoding"
 
 // RepositoryCheckoutPhase is the high-level lifecycle of a checkout request.
 //

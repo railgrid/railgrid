@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros/test/e2e/framework"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 // mcpAgentKey is the context key for the Agent started in MCP tests.
@@ -70,7 +70,7 @@ func newMCPClient(hubKubeconfig, edgeName string) (*mcpClient, error) {
 	}
 	token := restCfg.BearerToken
 
-	mcpURL := fmt.Sprintf("%s/services/agent-proxy/%s/apis/faros.sh/v1alpha1/edges/%s/mcp",
+	mcpURL := fmt.Sprintf("%s/services/agent-proxy/%s/apis/railgrid.ai/v1alpha1/edges/%s/mcp",
 		nodePortBase, clusterName, edgeName)
 
 	httpClient := &http.Client{
@@ -164,7 +164,7 @@ func MCPEndpoint() features.Feature {
 			if clusterEnv == nil {
 				t.Fatal("cluster environment not found in context")
 			}
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -186,7 +186,7 @@ func MCPEndpoint() features.Feature {
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -277,32 +277,32 @@ func MCPEndpoint() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
 		Feature()
 }
 
-// MCPURL verifies that `faros mcp url` prints valid MCP endpoint URLs.
+// MCPURL verifies that `railgrid mcp url` prints valid MCP endpoint URLs.
 func MCPURL() features.Feature {
 	const edgeName = "e2e-mcp-edge"
 
 	return features.New("MCP/URL").
-		Assess("faros mcp url --edge prints expected URL", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("railgrid mcp url --edge prints expected URL", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			if clusterEnv == nil {
 				t.Fatal("cluster environment not found in context")
 			}
 
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			out, err := client.Run(ctx, "mcp", "url", "--edge", edgeName)
 			if err != nil {
-				t.Fatalf("faros mcp url --edge failed: %v (output: %s)", err, out)
+				t.Fatalf("railgrid mcp url --edge failed: %v (output: %s)", err, out)
 			}
 			out = strings.TrimSpace(out)
-			t.Logf("faros mcp url --edge output: %s", out)
+			t.Logf("railgrid mcp url --edge output: %s", out)
 
 			// The output must be a valid per-edge MCP URL.
 			if !strings.HasPrefix(out, "https://") {
@@ -316,7 +316,7 @@ func MCPURL() features.Feature {
 			}
 			return ctx
 		}).
-		// `faros mcp url --name <KubernetesMCP>` and `--linux-name <LinuxMCP>`
+		// `railgrid mcp url --name <KubernetesMCP>` and `--linux-name <LinuxMCP>`
 		// subtests removed alongside their flags when both per-kind MCP
 		// endpoints collapsed into the MCPServer aggregate.
 		Feature()

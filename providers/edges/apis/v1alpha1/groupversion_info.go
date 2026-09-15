@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 
 const (
 	// GroupName is the single API group for the edges provider's kinds.
-	GroupName = "edges.faros.sh"
+	GroupName = "edges.railgrid.ai"
 	// Version pins the served + storage version.
 	Version = "v1alpha1"
 )

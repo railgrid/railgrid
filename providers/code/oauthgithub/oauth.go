@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ You may obtain a copy of the License at
 // access token never transits kcp or the hub; it goes straight to the portal in
 // the user's browser.
 //
-// Because the callback is a top-level browser redirect from GitHub (no faros
+// Because the callback is a top-level browser redirect from GitHub (no railgrid
 // auth), start/callback are served on the provider's OWN externally-reachable
 // URL (GITHUB_OAUTH_REDIRECT_URL), not through the hub's authenticated
 // /services proxy. In dev that's http://localhost:8083; the config endpoint,
@@ -46,7 +46,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/faroshq/provider-sdk/statuspage"
+	"github.com/railgrid/provider-sdk/statuspage"
 	"golang.org/x/oauth2"
 	ghoauth "golang.org/x/oauth2/github"
 )
@@ -258,7 +258,7 @@ func (h *Handler) renderResult(w http.ResponseWriter, res callbackResult) {
 	data := map[string]any{
 		"Origin": h.cfg.PortalOrigin,
 		"Payload": template.JS(mustJSON(map[string]string{
-			"type":   "faros-github-oauth",
+			"type":   "railgrid-github-oauth",
 			"state":  res.State,
 			"token":  res.Token,
 			"login":  res.Login,

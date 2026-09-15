@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"encoding/hex"
 )
 
-// StaticToken is everything faros derives from a static bearer token. Every
+// StaticToken is everything railgrid derives from a static bearer token. Every
 // field is a hash of the token, never the token text: the User CR and its
 // email/display name are readable by fellow org members, so anything built
 // from the token itself would hand them a working credential.
@@ -31,12 +31,12 @@ import (
 // so the User CR, the kcp-authenticated username and --admin-users agree.
 type StaticToken struct {
 	// Sub is the 63-char value stored in the User CR's
-	// tenants.faros.sh/sub label (a label value's maximum length).
+	// tenants.railgrid.ai/sub label (a label value's maximum length).
 	Sub string
 	// UID is the short hash kcp's token-auth file records as the uid.
 	UID string
 	// RBACIdentity is the kcp username the token authenticates as,
-	// "faros:static:<uid>". It is also the User's display name.
+	// "railgrid:static:<uid>". It is also the User's display name.
 	RBACIdentity string
 	// UserName is the User CR name, "static-user-<uid>".
 	UserName string
@@ -50,7 +50,7 @@ func NewStaticToken(token string) StaticToken {
 	return StaticToken{
 		Sub:          sub,
 		UID:          uid,
-		RBACIdentity: "faros:static:" + uid,
+		RBACIdentity: "railgrid:static:" + uid,
 		UserName:     "static-user-" + uid,
 	}
 }

@@ -26,10 +26,10 @@ test('refreshes lazy loaders before guarded element registration so active sessi
   const registryInstall = element.indexOf('installCurrentAppStudioLazyLoaders<MountModule>(globalThis, bootstrapGeneration, {')
   const guardedRegistration = element.indexOf('if (!customElements.get(TAG))')
   assert.ok(registryInstall >= 0 && guardedRegistration > registryInstall)
-  assert.match(main, /document\.currentScript[\s\S]*dataset\.farosProviderBootstrapGeneration/)
+  assert.match(main, /document\.currentScript[\s\S]*dataset\.railgridProviderBootstrapGeneration/)
   assert.match(main, /registerAppStudioElements\(bootstrapGeneration\)/)
   for (const contractSource of [registry, hostLoader]) {
-    assert.match(contractSource, /__farosProviderBootstrapGenerationsV1/)
+    assert.match(contractSource, /__railgridProviderBootstrapGenerationsV1/)
   }
   assert.match(element, /loadCurrentAppStudioSurface<MountModule>\(globalThis, surface\)/)
   assert.match(element, /return loadCurrentMount\('page'\)/)
@@ -55,7 +55,7 @@ test('refreshes lazy loaders before guarded element registration so active sessi
 test('late stale bootstrap body execution cannot overwrite the current lazy loaders', async (t) => {
   const vite = await createServer({
     appType: 'custom',
-    cacheDir: join(tmpdir(), 'faros-vite-app-studio-bootstrap-generation'),
+    cacheDir: join(tmpdir(), 'railgrid-vite-app-studio-bootstrap-generation'),
     configFile: false,
     optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, hmr: false },
@@ -89,7 +89,7 @@ test('late stale bootstrap body execution cannot overwrite the current lazy load
 test('a retained wrapper resolves through loaders installed by the newest bootstrap', async (t) => {
   const vite = await createServer({
     appType: 'custom',
-    cacheDir: join(tmpdir(), 'faros-vite-app-studio-loader-registry'),
+    cacheDir: join(tmpdir(), 'railgrid-vite-app-studio-loader-registry'),
     configFile: false,
     optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, hmr: false },
@@ -116,7 +116,7 @@ test('a retained wrapper resolves through loaders installed by the newest bootst
 test('a newly loaded styles module replaces stale fixed-id provider CSS', async (t) => {
   const vite = await createServer({
     appType: 'custom',
-    cacheDir: join(tmpdir(), 'faros-vite-app-studio-style-refresh'),
+    cacheDir: join(tmpdir(), 'railgrid-vite-app-studio-style-refresh'),
     configFile: false,
     optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, hmr: false },
@@ -133,7 +133,7 @@ test('a newly loaded styles module replaces stale fixed-id provider CSS', async 
     else globalThis.document = previousDocument
   }
   assert.notEqual(existing.textContent, 'old deployment CSS')
-  assert.match(existing.textContent, /@scope \(faros-provider-app-studio, faros-dashboard-tile-app-studio\)/)
+  assert.match(existing.textContent, /@scope \(railgrid-provider-app-studio, railgrid-dashboard-tile-app-studio\)/)
 })
 
 test('route budgets follow transitive manifest imports and emitted CSS without charging sibling routes', () => {

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -14,9 +14,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	api "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/backend"
-	"github.com/faroshq/provider-sdk/actionwire"
+	api "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-sdk/actionwire"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -72,13 +72,13 @@ func TestRepositoryActionAuthorityAndReplacementFences(t *testing.T) {
 func testRepositoryActionAuthority(t *testing.T, actionName string) {
 	for _, kind := range []string{"allowed", "denied", "repository replaced", "connection replaced", "spec changed", "tenant mismatch"} {
 		t.Run(kind, func(t *testing.T) {
-			repo := &api.Repository{TypeMeta: metav1.TypeMeta{APIVersion: "code.faros.sh/v1alpha1", Kind: "Repository"}, ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo-uid"}, Spec: api.RepositorySpec{ConnectionRef: "git", Name: "product"}, Status: api.RepositoryStatus{RepoID: "123"}}
-			conn := &api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: "code.faros.sh/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "git", UID: "conn-uid"}, Spec: api.ConnectionSpec{Provider: api.ProviderGitHub, Type: api.CredentialTypePAT, Owner: "example", SecretRef: api.LocalSecretReference{Name: "git-key"}}}
+			repo := &api.Repository{TypeMeta: metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository"}, ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo-uid"}, Spec: api.RepositorySpec{ConnectionRef: "git", Name: "product"}, Status: api.RepositoryStatus{RepoID: "123"}}
+			conn := &api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "git", UID: "conn-uid"}, Spec: api.ConnectionSpec{Provider: api.ProviderGitHub, Type: api.CredentialTypePAT, Owner: "example", SecretRef: api.LocalSecretReference{Name: "git-key"}}}
 			caller := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), actionObject(t, repo))
 			caller.PrependReactor("create", "selfsubjectaccessreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
 				object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured)
 				attrs, _, _ := unstructured.NestedMap(object.Object, "spec", "resourceAttributes")
-				if attrs["group"] != "code.faros.sh" || attrs["resource"] != "repositories" || attrs["name"] != "product" || attrs["verb"] != "invoke" || attrs["subresource"] != actionName {
+				if attrs["group"] != "code.railgrid.ai" || attrs["resource"] != "repositories" || attrs["name"] != "product" || attrs["verb"] != "invoke" || attrs["subresource"] != actionName {
 					t.Fatalf("incorrect permission: %#v", attrs)
 				}
 				return true, &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"allowed": kind != "denied"}}}, nil
@@ -107,11 +107,11 @@ func testRepositoryActionAuthority(t *testing.T, actionName string) {
 			}, registry)
 			body := []byte(`{"input":{"repository":"example/product","repositoryUID":"repo-uid","connectionUID":"conn-uid","branch":"main"}}`)
 			request := httptest.NewRequest(http.MethodPost, "/actions/clusters/tenant-id/repositories/product/"+actionName+"/v1", bytes.NewReader(body))
-			request.Header.Set("X-Faros-Cluster", "tenant-id")
+			request.Header.Set("X-Railgrid-Cluster", "tenant-id")
 			request.Header.Set("Authorization", "Bearer caller-token")
 			request.Header.Set("X-Request-ID", "sdk-request")
 			if kind == "tenant mismatch" {
-				request.Header.Set("X-Faros-Cluster", "other")
+				request.Header.Set("X-Railgrid-Cluster", "other")
 			}
 			response := httptest.NewRecorder()
 			server.ServeHTTP(response, request)
@@ -120,7 +120,7 @@ func testRepositoryActionAuthority(t *testing.T, actionName string) {
 				if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 					t.Fatal(err)
 				}
-				if envelope.RequestID != "sdk-request" || envelope.Provider != "code" || envelope.Action != actionName || envelope.ActionVersion != "v1" || envelope.ResourceRef.Name != "product" || envelope.ResourceRef.Kind != "Repository" || envelope.ResourceRef.Resource != "repositories" || envelope.ResourceRef.APIVersion != "code.faros.sh/v1alpha1" {
+				if envelope.RequestID != "sdk-request" || envelope.Provider != "code" || envelope.Action != actionName || envelope.ActionVersion != "v1" || envelope.ResourceRef.Name != "product" || envelope.ResourceRef.Kind != "Repository" || envelope.ResourceRef.Resource != "repositories" || envelope.ResourceRef.APIVersion != "code.railgrid.ai/v1alpha1" {
 					t.Fatalf("invalid wire identity: %+v", envelope)
 				}
 				if kind == "allowed" {
@@ -163,7 +163,7 @@ func TestActionRejectsMalformedInputBeforeAuthority(t *testing.T) {
 	server := admissionServer(t, true)
 	for _, body := range []string{`{"input":{"unknown":true}}`, `{} {}`, `{`} {
 		request := httptest.NewRequest("POST", "/actions/clusters/tenant-id/repositories/product/branch_head/v1", bytes.NewBufferString(body))
-		request.Header.Set("X-Faros-Cluster", "tenant-id")
+		request.Header.Set("X-Railgrid-Cluster", "tenant-id")
 		request.Header.Set("Authorization", "Bearer caller-token")
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2026 The Faros Authors.
+# Copyright 2026 The Railgrid Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@
 # look fine and `git diff` looks innocent — but applying them to any cluster that
 # already has the old content fails with
 #
-#   apiresourceschemas.apis.kcp.io "v260615-841bea0.providers.admin.faros.sh"
+#   apiresourceschemas.apis.kcp.io "v260615-841bea0.providers.admin.railgrid.ai"
 #     is forbidden: [spec: Invalid value: {...}: is immutable]
 #
 # and the hub's bootstrap (kcp's confighelpers.Bootstrap) retries that apply

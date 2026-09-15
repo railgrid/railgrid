@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,8 +35,8 @@ import (
 	gogithub "github.com/google/go-github/v66/github"
 	"golang.org/x/oauth2"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/backend"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/backend"
 )
 
 // Backend is the GitHub implementation of backend.GitBackend.
@@ -50,7 +50,7 @@ func New() *Backend { return &Backend{} }
 
 func (b *Backend) Name() string { return string(codev1alpha1.ProviderGitHub) }
 
-const repositoryCommitIdempotencyTrailer = "Faros-RepositoryCommit:"
+const repositoryCommitIdempotencyTrailer = "Railgrid-RepositoryCommit:"
 
 // client builds a token-authenticated go-github client for one call. baseURL
 // (Connection.spec.baseURL) targets GitHub Enterprise Server when set; empty
@@ -149,7 +149,7 @@ func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Conne
 	if repo.Status.RepoID != "" {
 		return backend.RepositoryResult{}, backend.ErrRepositoryIdentityConflict
 	}
-	if repo.Annotations["code.faros.sh/existing-only"] == "true" {
+	if repo.Annotations["code.railgrid.ai/existing-only"] == "true" {
 		return backend.RepositoryResult{}, errors.New("github: registered repository is unavailable; existing-only registration cannot create it")
 	}
 
@@ -185,7 +185,7 @@ func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Conne
 
 // DeleteRepository removes the repository. Idempotent: a missing repo is success.
 func (b *Backend) DeleteRepository(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository) error {
-	if repo.Annotations["code.faros.sh/existing-only"] == "true" {
+	if repo.Annotations["code.railgrid.ai/existing-only"] == "true" {
 		return nil
 	}
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
@@ -1131,7 +1131,7 @@ func classify(resp *gogithub.Response, err error) error {
 // createOnlyAnnotation distinguishes creation from explicit import. A successful
 // create must persist its remote ID before subsequent reconciliation can reuse it.
 // If that status write is lost, fail closed rather than adopting by name.
-const createOnlyAnnotation = "code.faros.sh/create-only"
+const createOnlyAnnotation = "code.railgrid.ai/create-only"
 
 func checkRepositoryIdentity(repo *codev1alpha1.Repository, remote *gogithub.Repository) error {
 	if repo.Status.RepoID == "" && repo.Annotations[createOnlyAnnotation] != "true" {

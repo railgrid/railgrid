@@ -1,4 +1,4 @@
-# Home Assistant control through faros edges + AI agents
+# Home Assistant control through railgrid edges + AI agents
 
 Status: **implemented** (phases 1–4); live end-to-end demo (phase 5) not yet run
 Owner: mjudeikis
@@ -6,7 +6,7 @@ Scope: edges provider, edge agent (server mode), portal. **No agents-provider ch
 
 ## 1. What this does
 
-Install the faros linux agent on the server that runs Home Assistant (HA). The
+Install the railgrid linux agent on the server that runs Home Assistant (HA). The
 agent auto-discovers HA (where and how it runs), the edges provider exposes it
 through the existing reverse tunnel, and AI agents get HA tools — so a user can
 type "open the gates" in chat (portal / Telegram / Discord) and it actuates.
@@ -38,10 +38,10 @@ discovery (control plane, separate loop):
    KubernetesCluster); services get their own lifecycle, reconcilers and RBAC,
    and one edge can carry many services without status bloat.
 3. **The kind is `Service` (resource `services`), not `EdgeService`** — it
-   already lives under group `edges.faros.sh`, so an "Edge" prefix is
+   already lives under group `edges.railgrid.ai`, so an "Edge" prefix is
    redundant. There is no core `services` to collide with: kcp workspaces are a
    control plane and don't serve core v1 workload resources. Short name
-   `edgesvc`; fully-qualified `services.edges.faros.sh`.
+   `edgesvc`; fully-qualified `services.edges.railgrid.ai`.
 4. **Discovery is provider-pulled** via a new agent `/api` management endpoint,
    not heartbeat-pushed — so `LinuxServerStatus` and the edge reporter are
    untouched, and no agent config sync is needed.
@@ -54,7 +54,7 @@ discovery (control plane, separate loop):
 ## 3. The `Service` API
 
 `providers/edges/apis/v1alpha1/types_service.go` — cluster-scoped, in group
-`edges.faros.sh/v1alpha1`.
+`edges.railgrid.ai/v1alpha1`.
 
 ```go
 type ServiceSpec struct {
@@ -78,8 +78,8 @@ type ServiceStatus struct {
 ```
 
 Discovery-created objects are named `<edge>-<type>` (e.g. `ha-box-home-assistant`)
-and labelled `edges.faros.sh/edge=<edge>` and
-`edges.faros.sh/discovered=true`. Users may also create Services by hand.
+and labelled `edges.railgrid.ai/edge=<edge>` and
+`edges.railgrid.ai/discovered=true`. Users may also create Services by hand.
 
 **Ownership contract** (load-bearing): the discovery reconciler owns
 discovery-derived status only and never clobbers user spec (port overrides,
@@ -102,10 +102,10 @@ is identical; only the address the agent dials differs.
 **`spec.host` and the agent allow list.** A Service may name another device on
 the edge's LAN via `spec.host` (a UniFi console at `192.168.1.1`, say). The agent
 only dials such a host when it falls inside a range the operator passed with
-`--svc-allow-cidr` (repeatable; also `FAROS_AGENT_SVC_ALLOW_CIDR`, comma-separated),
-e.g. `faros agent run ... --svc-allow-cidr 192.168.1.0/24`. What happens to a host
-outside that set is `--svc-policy` (`FAROS_AGENT_SVC_POLICY`): `warn` — this
-release's default — still dials it but logs and stamps `X-Faros-Svc-Policy: warn`
+`--svc-allow-cidr` (repeatable; also `RAILGRID_AGENT_SVC_ALLOW_CIDR`, comma-separated),
+e.g. `railgrid agent run ... --svc-allow-cidr 192.168.1.0/24`. What happens to a host
+outside that set is `--svc-policy` (`RAILGRID_AGENT_SVC_POLICY`): `warn` — this
+release's default — still dials it but logs and stamps `X-Railgrid-Svc-Policy: warn`
 on the response (the Service shows `HostAllowed=True/WarnOnly`); `enforce` answers
 403 without dialing (`HostAllowed=False/HostNotAllowed`, `phase: Unreachable`);
 `allow-any` disables the list and says so loudly at startup. The next release
@@ -144,7 +144,7 @@ reconciler by construction: it only ever lists and prunes objects labelled
   - `GET /api/v1/services` — runs the detectors, returns JSON. First endpoint of
     a general agent-management surface (host facts, future config can join).
   - `/svc/` — [svc.go](../pkg/agent/tunnel/svc.go): reverse-proxies to the
-    service named by the provider-set `X-Faros-Svc-Target` header. WebSocket
+    service named by the provider-set `X-Railgrid-Svc-Target` header. WebSocket
     upgrades are hijacked and piped (HA uses `/api/websocket`).
 
     This is the **SSRF boundary** (`vetSvcHost` / `isAllowedSvcHost`). Loopback
@@ -172,13 +172,13 @@ Both routes work in server mode and kubernetes mode.
   connectable):
 
   ```
-  /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/proxy[/...]
-  /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/mcp
+  /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/proxy[/...]
+  /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/mcp
   ```
 
   `proxy` authorizes via kcp SAR (same delegated call as `ssh`), loads the
   Service, resolves the LinuxServer tunnel from the `ConnManager`, reads the
-  token from the tenant Secret, and forwards with `X-Faros-Svc-Target` set and
+  token from the tenant Secret, and forwards with `X-Railgrid-Svc-Target` set and
   the caller's hub token **replaced** by the service token. Upgrades are
   hijacked and piped.
 - **[internal/haclient/](../providers/edges/internal/haclient/)** — issues HTTP
@@ -225,8 +225,8 @@ agents-provider change.
 
 `providers/edges/portal/` (Vue). Both edge detail views gained a **Services**
 section: cards per Service (type, version, target, install type, phase), plus a
-Connect/Update-token flow that writes the Secret `faros-edges-svc-<name>` in
-`faros-system` and patches `spec.authSecretRef`. The validation reconciler does
+Connect/Update-token flow that writes the Secret `railgrid-edges-svc-<name>` in
+`railgrid-system` and patches `spec.authSecretRef`. The validation reconciler does
 the rest.
 
 On kube edges the section also gets **Add service** (name, type, target
@@ -235,8 +235,8 @@ declared rather than discovered. The created object carries the edge label so it
 lists alongside discovered ones but **not** the discovered label, so the
 discovery reconciler leaves it alone.
 
-On the wire this is plain kube REST on `services.edges.faros.sh/v1alpha1`
-through the hub's kcp proxy (`/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/…`):
+On the wire this is plain kube REST on `services.edges.railgrid.ai/v1alpha1`
+through the hub's kcp proxy (`/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/…`):
 the portal lists with `GET`, creates with `POST`, and updates with `PUT` or
 server-side apply via the shared `portalkit` kube client.
 
@@ -245,19 +245,19 @@ server-side apply via the shared `portalkit` kube client.
 **HA on a bare host (LinuxServer):**
 
 1. Install the CLI, create the LinuxServer, then
-   `faros install --type server --name ha-box ...` (systemd unit joins the tunnel).
+   `railgrid install --type server --name ha-box ...` (systemd unit joins the tunnel).
 2. Within a reconcile, `kubectl get edgesvc` shows `ha-box-home-assistant`
    phase `Detected`.
 
 **HA in a cluster (KubernetesCluster):** declare it — portal → Add service, or:
 
 ```yaml
-apiVersion: edges.faros.sh/v1alpha1
+apiVersion: edges.railgrid.ai/v1alpha1
 kind: Service
 metadata:
   name: ha-cluster
   labels:
-    edges.faros.sh/edge: kube-1
+    edges.railgrid.ai/edge: kube-1
 spec:
   edgeRef: {kind: KubernetesCluster, name: kube-1}
   targetRef: {namespace: home, name: home-assistant}   # → home-assistant.home.svc
@@ -273,7 +273,7 @@ spec:
 4. Verify the data plane:
    ```
    curl -H "Authorization: Bearer $USER_TOKEN" \
-     https://<hub>/services/providers/edges/edgeproxy/clusters/<cluster>/apis/edges.faros.sh/v1alpha1/services/ha-box-home-assistant/proxy/api/config
+     https://<hub>/services/providers/edges/edgeproxy/clusters/<cluster>/apis/edges.railgrid.ai/v1alpha1/services/ha-box-home-assistant/proxy/api/config
    ```
 5. Create an Agent with `spec.tools.interactive.families: [core, edges]` and
    `requireApproval: ["*ha_call_service*"]`. Chat: "open the gates" → the model
@@ -308,7 +308,7 @@ gates at 22:00" needs the follow-up in §9.
 - **Single-replica invariant** — everything here rides the in-memory
   `ConnManager` (`providers/edges/main.go` documents it). Do not add replicas.
 - **Never run the aggregate `make crds`** — use `make codegen-edges-provider`.
-  The aggregate target currently guts the core.faros.sh export and hangs the hub
+  The aggregate target currently guts the core.railgrid.ai export and hangs the hub
   bootstrap. The edges target regenerates CRDs, kcp APIResourceSchemas, **and**
   copies them into `deploy/chart/files/schemas/` (that copy is mandatory — the
   chart is what installs them).

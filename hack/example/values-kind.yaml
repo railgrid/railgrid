@@ -1,6 +1,6 @@
 image:
   hub:
-    repository: ghcr.io/faroshq/faros-hub
+    repository: ghcr.io/railgrid/railgrid-hub
     tag: "7558a55-dirty"  # defaults to .Chart.AppVersion
     pullPolicy: IfNotPresent
   kcp:
@@ -9,7 +9,7 @@ image:
     pullPolicy: IfNotPresent
 
 hub:
-  hubExternalURL: "https://hub.faros.sh"
+  hubExternalURL: "https://hub.railgrid.ai"
   devMode: false
   # -- TLS configuration for hub serving
   staticAuthToken: "qxdo7t3qXY1hak233FJhTZtsMA2kFXfzXQhYw8ZU8e8="
@@ -20,14 +20,14 @@ hub:
         name: letsencrypt-prod
         kind: ClusterIssuer
       dnsNames:
-        - "hub.faros.sh"
+        - "hub.railgrid.ai"
     selfSigned:
       enabled: false
   
     
 #idp:
-#  issuerURL: "https://idp.faros.sh"
-#  clientID: "faros"
+#  issuerURL: "https://idp.railgrid.ai"
+#  clientID: "railgrid"
 #  clientSecret: "Z2Fyc2lha2FsYmlzdmFuZGVuekWplCg=="
 
 ingress:
@@ -37,7 +37,7 @@ ingress:
     cloudflare-tunnel-ingress-controller.strrl.dev/backend-protocol: "https"
     cloudflare-tunnel-ingress-controller.strrl.dev/proxy-ssl-verify: "off"
   hosts:
-    - host: hub.faros.sh
+    - host: hub.railgrid.ai
       paths:
         - path: /
           pathType: ImplementationSpecific

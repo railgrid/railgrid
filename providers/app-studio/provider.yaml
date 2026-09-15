@@ -1,10 +1,10 @@
-# Provider — declarative provisioning record (admin.faros.sh, admin-only).
-# The hub's Provider controller creates root:faros:providers:app-studio, its
+# Provider — declarative provisioning record (admin.railgrid.ai, admin-only).
+# The hub's Provider controller creates root:railgrid:providers:app-studio, its
 # "provider" ServiceAccount, and the app-studio-kubeconfig Secret in
-# root:faros:system:providers. The APIExport/schemas/bind-grant come from app-studio's
+# root:railgrid:system:providers. The APIExport/schemas/bind-grant come from app-studio's
 # own `init`; routing/UI from the companion CatalogEntry (Helm-rendered from
 # deploy/chart/templates/catalogentry.yaml).
-apiVersion: admin.faros.sh/v1alpha1
+apiVersion: admin.railgrid.ai/v1alpha1
 kind: Provider
 metadata:
   name: app-studio

@@ -28,31 +28,31 @@ spec:
         # kubeconfig the serve container runs with. The kubeconfig is minted by
         # the platform admin via /bonkers (admin onboarding) and supplied as the
         # providerKubeconfig Secret. Schemas are baked into the image at
-        # /etc/faros/schemas (see Dockerfile). Idempotent.
+        # /etc/railgrid/schemas (see Dockerfile). Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["init"]
           env:
-            - name: FAROS_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/faros/faros-provider-kubeconfig
-            - name: FAROS_SCHEMAS_DIR
-              value: /etc/faros/schemas
+            - name: RAILGRID_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
+            - name: RAILGRID_SCHEMAS_DIR
+              value: /etc/railgrid/schemas
             {{- if .Values.catalogEntry.enabled }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)
             # and init self-registers it into the provider workspace via the
             # provider kubeconfig.
-            - name: FAROS_CATALOGENTRY_FILE
-              value: /etc/faros/catalogentry/catalogentry.yaml
+            - name: RAILGRID_CATALOGENTRY_FILE
+              value: /etc/railgrid/catalogentry/catalogentry.yaml
             {{- end }}
           volumeMounts:
-            - name: faros-provider-kubeconfig
-              mountPath: /var/run/secrets/faros
+            - name: railgrid-provider-kubeconfig
+              mountPath: /var/run/secrets/railgrid
               readOnly: true
             {{- if .Values.catalogEntry.enabled }}
             - name: catalogentry
-              mountPath: /etc/faros/catalogentry
+              mountPath: /etc/railgrid/catalogentry
               readOnly: true
             {{- end }}
       containers:
@@ -82,16 +82,16 @@ spec:
           env:
             - name: PORT
               value: "8083"
-            - name: FAROS_HUB_URL
+            - name: RAILGRID_HUB_URL
               value: {{ .Values.hub.url | quote }}
-            - name: FAROS_PROVIDER_NAME
+            - name: RAILGRID_PROVIDER_NAME
               value: "code"
             {{- if .Values.hub.insecure }}
-            - name: FAROS_HUB_INSECURE
+            - name: RAILGRID_HUB_INSECURE
               value: "true"
             {{- end }}
             {{- if .Values.hub.tokenSecretRef.name }}
-            - name: FAROS_HUB_TOKEN
+            - name: RAILGRID_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
@@ -99,12 +99,12 @@ spec:
             {{- end }}
             # Points the multicluster controller manager at the onboarded
             # provider kubeconfig (mounted below).
-            - name: FAROS_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/faros/faros-provider-kubeconfig
+            - name: RAILGRID_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
             - name: CODE_COMMIT_BUNDLE_DIR
               value: {{ .Values.bundleStore.path | quote }}
             {{- if .Values.tenant.credentialsNamespace }}
-            - name: FAROS_TENANT_CREDENTIALS_NAMESPACE
+            - name: RAILGRID_TENANT_CREDENTIALS_NAMESPACE
               value: {{ .Values.tenant.credentialsNamespace | quote }}
             {{- end }}
             {{- if .Values.githubOAuth.enabled }}
@@ -131,15 +131,15 @@ spec:
             {{- end }}
             {{- end }}
           volumeMounts:
-            - name: faros-provider-kubeconfig
-              mountPath: /var/run/secrets/faros
+            - name: railgrid-provider-kubeconfig
+              mountPath: /var/run/secrets/railgrid
               readOnly: true
             - name: commit-bundles
               mountPath: {{ .Values.bundleStore.path | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
-        - name: faros-provider-kubeconfig
+        - name: railgrid-provider-kubeconfig
           secret:
             # Required input: the workspace-admin kubeconfig minted by the
             # platform admin via /bonkers (admin onboarding). Both the init
@@ -149,7 +149,7 @@ spec:
             secretName: {{ .Values.providerKubeconfig.secretName }}
             items:
               - key: kubeconfig
-                path: faros-provider-kubeconfig
+                path: railgrid-provider-kubeconfig
         {{- if .Values.catalogEntry.enabled }}
         - name: catalogentry
           configMap:

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/faroshq/provider-edges/internal/haclient"
+	"github.com/railgrid/provider-edges/internal/haclient"
 )
 
 // Apply configures authentication for one outgoing request to a service of the

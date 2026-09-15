@@ -3,7 +3,7 @@
 // resource tables rendered by vanilla/Lit portals.
 
 import { ic } from './icons'
-import { ensureFarosUIStyles } from './styles'
+import { ensureRailgridUIStyles } from './styles'
 
 export interface ResourceTableFilterOption {
   value: string
@@ -48,7 +48,7 @@ export class ResourceTableFilterElement extends HTMLElement {
   }
 
   connectedCallback(): void {
-    ensureFarosUIStyles()
+    ensureRailgridUIStyles()
     if (!this.root) this.renderControl()
     document.addEventListener('pointerdown', this.onDocumentPointerDown)
     document.addEventListener('focusin', this.onDocumentFocusIn)
@@ -284,12 +284,12 @@ export class ResourceTableFilterElement extends HTMLElement {
   private onViewportChange = (): void => { if (this.isOpen) this.updatePanelPosition() }
 }
 
-if (typeof customElements !== 'undefined' && !customElements.get('faros-resource-table-filter')) {
-  customElements.define('faros-resource-table-filter', ResourceTableFilterElement)
+if (typeof customElements !== 'undefined' && !customElements.get('railgrid-resource-table-filter')) {
+  customElements.define('railgrid-resource-table-filter', ResourceTableFilterElement)
 }
 
 declare global {
   interface HTMLElementTagNameMap {
-    'faros-resource-table-filter': ResourceTableFilterElement
+    'railgrid-resource-table-filter': ResourceTableFilterElement
   }
 }

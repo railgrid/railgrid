@@ -36,25 +36,25 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["init"]
           env:
-            - name: FAROS_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/faros/faros-provider-kubeconfig
-            - name: FAROS_SCHEMAS_DIR
-              value: /etc/faros/schemas
+            - name: RAILGRID_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
+            - name: RAILGRID_SCHEMAS_DIR
+              value: /etc/railgrid/schemas
             {{- if .Values.catalogEntry.enabled }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)
             # and init self-registers it into the provider workspace via the
             # provider kubeconfig.
-            - name: FAROS_CATALOGENTRY_FILE
-              value: /etc/faros/catalogentry/catalogentry.yaml
+            - name: RAILGRID_CATALOGENTRY_FILE
+              value: /etc/railgrid/catalogentry/catalogentry.yaml
             {{- end }}
           volumeMounts:
-            - name: faros-provider-kubeconfig
-              mountPath: /var/run/secrets/faros
+            - name: railgrid-provider-kubeconfig
+              mountPath: /var/run/secrets/railgrid
               readOnly: true
             {{- if .Values.catalogEntry.enabled }}
             - name: catalogentry
-              mountPath: /etc/faros/catalogentry
+              mountPath: /etc/railgrid/catalogentry
               readOnly: true
             {{- end }}
       containers:
@@ -75,12 +75,12 @@ spec:
           env:
             - name: PORT
               value: "8081"
-            - name: FAROS_HUB_URL
+            - name: RAILGRID_HUB_URL
               value: {{ .Values.hub.url | quote }}
-            - name: FAROS_PROVIDER_NAME
+            - name: RAILGRID_PROVIDER_NAME
               value: "kuery"
-            - name: FAROS_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/faros/faros-provider-kubeconfig
+            - name: RAILGRID_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
             - name: KUERY_STORE_DRIVER
               value: {{ .Values.store.driver | quote }}
             - name: KUERY_STORE_DSN
@@ -96,11 +96,11 @@ spec:
               value: {{ .Values.sync.blacklist | quote }}
             {{- end }}
             {{- if .Values.hub.insecure }}
-            - name: FAROS_HUB_INSECURE
+            - name: RAILGRID_HUB_INSECURE
               value: "true"
             {{- end }}
             {{- if .Values.hub.tokenSecretRef.name }}
-            - name: FAROS_HUB_TOKEN
+            - name: RAILGRID_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
@@ -110,8 +110,8 @@ spec:
             # The onboarded workspace-admin kubeconfig; the SA token inside is
             # what the Enable-time edges-proxy grant authorizes for background
             # edge sync.
-            - name: faros-provider-kubeconfig
-              mountPath: /var/run/secrets/faros
+            - name: railgrid-provider-kubeconfig
+              mountPath: /var/run/secrets/railgrid
               readOnly: true
             - name: store
               mountPath: /data
@@ -121,12 +121,12 @@ spec:
         # Required input: the workspace-admin kubeconfig minted via /bonkers
         # (admin onboarding), consumed by both init and serve. The onboard
         # response stores it under key "kubeconfig".
-        - name: faros-provider-kubeconfig
+        - name: railgrid-provider-kubeconfig
           secret:
             secretName: {{ .Values.providerKubeconfig.secretName }}
             items:
               - key: kubeconfig
-                path: faros-provider-kubeconfig
+                path: railgrid-provider-kubeconfig
         {{- if .Values.catalogEntry.enabled }}
         - name: catalogentry
           configMap:

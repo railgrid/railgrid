@@ -3,10 +3,10 @@ import { portalHref } from './portalkit/navigation'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ExternalLink, GitBranch, Loader2 } from 'lucide-vue-next'
 import { api } from './api'
-import type { FarosContext, Project } from './types'
+import type { RailgridContext, Project } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
 
-const props = defineProps<{ ctx: FarosContext | null; project: Project }>()
+const props = defineProps<{ ctx: RailgridContext | null; project: Project }>()
 const emit = defineEmits<{ connected: [project: Project] }>()
 const readiness = ref<ProjectCreateReadiness | null>(null)
 const checking = ref(false)

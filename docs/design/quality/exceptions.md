@@ -15,7 +15,7 @@ technical boundaries, not a debt baseline:
 | Third-party brand icon tiles (Google, GitHub, and similar on Dex) | Brand guidelines inside a 20px tile take precedence |
 | Kuery graph `RELATION_METADATA` colors | Semantic edge palette, not UI chrome |
 | Decorative blurred accent orbs (`blur-[140px]` circles on login/404) | Ambient ground texture below the glow rule's radar |
-| Dex auth pages under `hack/dex/web/static/` | Fixed-dark standalone pages pin a local `--faros-*` namespace; Dex's light theme hook is retained only for its URL contract and contains no light palette |
+| Dex auth pages under `hack/dex/web/static/` | Fixed-dark standalone pages pin a local `--railgrid-*` namespace; Dex's light theme hook is retained only for its URL contract and contains no light palette |
 
 The checked-in registry is `hack/ui-conformance-exceptions.json`. Every entry
 names one rule, exact repository-relative path, line, column, and source

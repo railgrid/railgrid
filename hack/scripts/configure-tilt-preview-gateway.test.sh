@@ -61,8 +61,8 @@ if [[ " $* " == *" label --local -f - "* ]]; then
     /^metadata:$/ {
       print
       print "  labels:"
-      print "    faros.sh/managed-by: tilt"
-      print "    faros.sh/component: preview-gateway"
+      print "    railgrid.ai/managed-by: tilt"
+      print "    railgrid.ai/component: preview-gateway"
       next
     }
     { print }
@@ -152,7 +152,7 @@ export KUBECTL_BIN=kubectl
 export HELM_BIN=helm
 export PREVIEW_GATEWAY_STATE_DIR="$state_dir"
 export PREVIEW_GATEWAY_TIMEOUT=1s
-export PREVIEW_GATEWAY_CONTEXT=kind-faros-kro
+export PREVIEW_GATEWAY_CONTEXT=kind-railgrid-kro
 export PREVIEW_GATEWAY_HOSTNAME='*.apps.127.0.0.1.sslip.io'
 export PREVIEW_GATEWAY_PORT=10443
 export PREVIEW_GATEWAY_SERVICE_PORT=443
@@ -167,8 +167,8 @@ grep -F 'helm template envoy-gateway-crds' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/nul
 grep -F 'crds.gatewayAPI.enabled=false' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
 grep -F 'crds.envoyGateway.enabled=true' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
 grep -F 'helm upgrade --install envoy-gateway' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
-grep -F -- '--kube-context kind-faros-kro' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
-grep -F 'kubectl --context kind-faros-kro' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
+grep -F -- '--kube-context kind-railgrid-kro' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
+grep -F 'kubectl --context kind-railgrid-kro' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
 grep -F 'crds.enabled=false' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
 grep -F 'apply --server-side --recursive -f' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
 grep -F 'hostname: "*.apps.127.0.0.1.sslip.io"' "$PREVIEW_GATEWAY_TEST_MANIFESTS" >/dev/null

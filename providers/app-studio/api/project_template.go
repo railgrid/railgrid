@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -11,7 +11,7 @@ You may obtain a copy of the License at
 // Template-backed development environments
 // (docs/app-studio-template-sandboxes.md §4). A Project that names an
 // infrastructure Template in spec.template gets its development binding
-// generated from that Template's instanceCRD with farosMode: development —
+// generated from that Template's instanceCRD with railgridMode: development —
 // the dev overlay the infrastructure provider synthesizes runs the declared
 // components on platform dev images. App Studio reads the Template CR live
 // from the tenant workspace catalog (the same CachedResource surface the
@@ -37,24 +37,24 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/bindings"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/tenant"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/tenant"
 )
 
 var templatesGVR = schema.GroupVersionResource{
-	Group:    "infrastructure.faros.sh",
+	Group:    "infrastructure.railgrid.ai",
 	Version:  "v1alpha1",
 	Resource: "templates",
 }
 
 var templateResource = tenant.Resource{GVR: templatesGVR, Kind: "Template", Plural: "Templates"}
 
-const projectTemplateImmutableInputsAnnotation = "faros.sh/immutable-inputs"
+const projectTemplateImmutableInputsAnnotation = "railgrid.ai/immutable-inputs"
 
 const (
-	projectTemplatePlatformOwnedLabel = "faros.sh/platform-owned"
+	projectTemplatePlatformOwnedLabel = "railgrid.ai/platform-owned"
 	projectTemplatePlatformOwnedValue = "true"
 )
 
@@ -81,7 +81,7 @@ type projectTemplateInfo struct {
 	ProductionSchema map[string]any
 
 	// PreviewAccessModes is non-empty when the Template exposes the standard
-	// access input consumed by faros-access-proxy. App Studio uses this
+	// access input consumed by railgrid-access-proxy. App Studio uses this
 	// capability instead of guessing from a URL or a particular Template name.
 	PreviewAccessModes []string
 
@@ -120,7 +120,7 @@ type projectTemplateComponent struct {
 	WorkspacePath string `json:"workspacePath"`
 
 	// Toolchain is the component's development runtime, derived from the
-	// template's ${faros.devImage.<toolchain>} token (e.g. "node"). Empty when
+	// template's ${railgrid.devImage.<toolchain>} token (e.g. "node"). Empty when
 	// the template declares no parseable devImage.
 	Toolchain string `json:"toolchain,omitempty"`
 
@@ -165,10 +165,10 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 	}
 
 	// Instance coordinates are the FLATTENED tenant-facing kind: every
-	// template's instances are authored as instances.infrastructure.faros.sh
+	// template's instances are authored as instances.infrastructure.railgrid.ai
 	// with the template name in spec.template. Template.spec.instanceCRD
 	// describes only the runtime-cluster kind and is no consumer's business.
-	info.APIVersion = "infrastructure.faros.sh/v1alpha1"
+	info.APIVersion = "infrastructure.railgrid.ai/v1alpha1"
 	info.Kind = "Instance"
 	info.Resource = "instances"
 
@@ -256,12 +256,12 @@ func (i projectTemplateInfo) WorkspacePaths() map[string]string {
 
 // projectTemplateDevImageTokenPrefix mirrors the infrastructure provider's
 // reserved token family for platform-managed development images. The
-// Template CRD validates devImage against ^\$\{faros\.devImage\.[a-z][a-z0-9-]*\}$,
+// Template CRD validates devImage against ^\$\{railgrid\.devImage\.[a-z][a-z0-9-]*\}$,
 // so the toolchain is exactly the token's suffix.
-const projectTemplateDevImageTokenPrefix = "${faros.devImage."
+const projectTemplateDevImageTokenPrefix = "${railgrid.devImage."
 
 // projectTemplateToolchain extracts the toolchain name from a component's
-// devImage token ("${faros.devImage.node}" → "node"). Anything that is not a
+// devImage token ("${railgrid.devImage.node}" → "node"). Anything that is not a
 // well-formed token yields "" — App Studio never resolves the token to a real
 // image (that is the infrastructure provider's job), it only needs the name to
 // tell an agent which runtime its code has to target.
@@ -376,8 +376,8 @@ func projectTemplateDevBindingWithContext(p *aiv1alpha1.Project, info projectTem
 		context.Instance = name
 	}
 	valuesMap := map[string]any{
-		"name":      name,
-		"farosMode": "development",
+		"name":         name,
+		"railgridMode": "development",
 	}
 	if len(info.PreviewAccessModes) > 0 {
 		valuesMap[bindings.PreviewAccessField] = effectiveProjectPreviewAccess(p.Spec.Sharing.Preview.Mode)
@@ -499,7 +499,7 @@ func (s *Server) projectTemplateBindingContext(p *aiv1alpha1.Project, id identit
 	}
 	externalRaw := strings.TrimSpace(s.actionsExternalURL)
 	if externalRaw == "" {
-		return projectTemplateBindingContext{}, fmt.Errorf("FAROS_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
+		return projectTemplateBindingContext{}, fmt.Errorf("RAILGRID_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
 	}
 	transport, err := bindings.ActionsTransportForOrigin(externalRaw)
 	if err != nil {

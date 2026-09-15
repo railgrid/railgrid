@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package edgectrl
 const (
 	rbacControllerName = "edge-rbac"
 	// edgeNamespace is the namespace where edge credentials are stored.
-	edgeNamespace = "faros-system"
+	edgeNamespace = "railgrid-system"
 	// edgeAgentClusterRole is the ClusterRole name for edge agents.
-	edgeAgentClusterRole = "faros-edge-agent"
+	edgeAgentClusterRole = "railgrid-edge-agent"
 )

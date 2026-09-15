@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package plugin provides the implementation for faros dev command plugins.
+// Package plugin provides the implementation for railgrid dev command plugins.
 package plugin
 
 import (
@@ -83,14 +83,14 @@ type DevOptions struct {
 	// Default is 1 (single agent cluster named AgentClusterName).
 	// When > 1, clusters are named AgentClusterName-1, AgentClusterName-2, …
 	// When 0, no agent clusters are created — useful for end users running a
-	// local hub without any edges (`faros dev init --worker-count 0`).
+	// local hub without any edges (`railgrid dev init --worker-count 0`).
 	AgentCount int
 
 	// Providers lists the providers installed INTO the hub kind cluster from
 	// their published charts (see providers.go). Empty disables.
 	Providers []string
 	// ProviderChartRepo is the oci:// base the provider charts are pulled
-	// from, or a local faros checkout (providers/<name>/deploy/chart).
+	// from, or a local railgrid checkout (providers/<name>/deploy/chart).
 	ProviderChartRepo string
 	// ProviderChartVersion pins every provider chart; empty resolves the
 	// latest published version per provider.
@@ -103,7 +103,7 @@ type DevOptions struct {
 	EnableProviders bool
 
 	// WithEdge joins the hub kind cluster itself as a KubernetesCluster edge
-	// named EdgeName: the faros-agent runs in the same cluster as the hub
+	// named EdgeName: the railgrid-agent runs in the same cluster as the hub
 	// and the edges provider (see edge.go).
 	WithEdge bool
 	EdgeName string
@@ -120,16 +120,16 @@ const fallbackAssetVersion = "0.0.51"
 const (
 	// HTTPS so embedded kcp's authentication validator (which mandates
 	// scheme=https) accepts the issuer URL. Dex serves TLS using a cert
-	// issued by the faros-selfsigned ClusterIssuer.
+	// issued by the railgrid-selfsigned ClusterIssuer.
 	//
 	// Port 5554 matches the dexidp chart's hard-coded --web-https-addr
 	// (https.enabled=true adds `--web-https-addr 0.0.0.0:5554`). The
 	// chart always listens HTTP on 5556 as well, but we leave that
 	// ClusterIP-only (no NodePort) and forget about it.
-	devDexIssuerURL    = "https://dex.faros-system.svc.cluster.local:5554/dex"
+	devDexIssuerURL    = "https://dex.railgrid-system.svc.cluster.local:5554/dex"
 	devDexTLSSecret    = "dex-tls"
-	devDexNamespace    = "faros-system"
-	devDexClientID     = "faros"
+	devDexNamespace    = "railgrid-system"
+	devDexClientID     = "railgrid"
 	devDexChartRef     = "dexidp/dex" // from https://charts.dexidp.io, added as a repo
 	devDexChartVersion = "0.24.0"
 	devDexReleaseName  = "dex"
@@ -147,11 +147,11 @@ type gitHubRelease struct {
 func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 	return &DevOptions{
 		Streams:           streams,
-		HubClusterName:    "faros-hub",
-		AgentClusterName:  "faros-agent",
+		HubClusterName:    "railgrid-hub",
+		AgentClusterName:  "railgrid-agent",
 		AgentCount:        0,
-		ChartPath:         "oci://ghcr.io/faroshq/charts/faros-hub",
-		AgentChartPath:    "oci://ghcr.io/faroshq/charts/faros-agent",
+		ChartPath:         "oci://ghcr.io/railgrid/charts/railgrid-hub",
+		AgentChartPath:    "oci://ghcr.io/railgrid/charts/railgrid-agent",
 		ChartVersion:      fallbackAssetVersion,
 		APIServerPort:     6443,
 		HubHTTPSPort:      9443,
@@ -169,18 +169,18 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 
 // AddCmdFlags adds command line flags
 func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&o.HubClusterName, "hub-cluster-name", "faros-hub", "Name of the hub cluster in dev mode")
-	cmd.Flags().StringVar(&o.AgentClusterName, "agent-cluster-name", "faros-agent", "Name of the agent cluster in dev mode")
+	cmd.Flags().StringVar(&o.HubClusterName, "hub-cluster-name", "railgrid-hub", "Name of the hub cluster in dev mode")
+	cmd.Flags().StringVar(&o.AgentClusterName, "agent-cluster-name", "railgrid-agent", "Name of the agent cluster in dev mode")
 	cmd.Flags().DurationVar(&o.WaitForReadyTimeout, "wait-for-ready-timeout", 2*time.Minute, "Timeout for waiting for the cluster to be ready")
 	cmd.Flags().StringVar(&o.ChartPath, "chart-path", o.ChartPath, "Helm chart path or OCI registry URL for hub")
 	cmd.Flags().StringVar(&o.AgentChartPath, "agent-chart-path", o.AgentChartPath, "Helm chart path or OCI registry URL for agent")
 	cmd.Flags().StringVar(&o.ChartVersion, "chart-version", o.ChartVersion, "Helm chart version")
-	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/faroshq/faros-hub", "faros hub image to use in dev mode")
-	cmd.Flags().StringVar(&o.Tag, "tag", "", "faros hub image tag to use in dev mode")
-	cmd.Flags().StringVar(&o.KindNetwork, "kind-network", "faros-dev", "kind network to use in dev mode")
+	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/railgrid/railgrid-hub", "railgrid hub image to use in dev mode")
+	cmd.Flags().StringVar(&o.Tag, "tag", "", "railgrid hub image tag to use in dev mode")
+	cmd.Flags().StringVar(&o.KindNetwork, "kind-network", "railgrid-dev", "kind network to use in dev mode")
 	cmd.Flags().IntVar(&o.APIServerPort, "api-server-port", 6443, "Kubernetes API server port for hub kind cluster (change if 6443 is already in use)")
-	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 9443, "HTTPS port for faros hub (change if 9443 is already in use)")
-	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for faros hub (change if 8080 is already in use)")
+	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 9443, "HTTPS port for railgrid hub (change if 9443 is already in use)")
+	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for railgrid hub (change if 8080 is already in use)")
 	cmd.Flags().StringVar(&o.ImagePullPolicy, "image-pull-policy", "IfNotPresent", "Image pull policy for the hub (use Never when the image is pre-loaded into kind)")
 	cmd.Flags().BoolVar(&o.WithDex, "with-dex", false, "Deploy Dex as OIDC identity provider into the hub kind cluster")
 	cmd.Flags().IntVar(&o.DexHTTPPort, "dex-http-port", 5554, "Host port for the Dex NodePort mapping (Dex serves HTTPS on this port; default 5554)")
@@ -190,11 +190,11 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&o.AgentCount, "agent-count", o.AgentCount, "Number of agent kind clusters to create (deprecated: use --worker-count)")
 	_ = cmd.Flags().MarkDeprecated("agent-count", "use --worker-count")
 	cmd.Flags().StringSliceVar(&o.Providers, "providers", o.Providers, fmt.Sprintf("Providers to install into the hub kind cluster (supported: %s). Pass an empty value to install none", strings.Join(devProviderNames(), ", ")))
-	cmd.Flags().StringVar(&o.ProviderChartRepo, "provider-chart-repo", o.ProviderChartRepo, "OCI repository the provider charts are pulled from, or the path of a faros checkout to use providers/<name>/deploy/chart")
+	cmd.Flags().StringVar(&o.ProviderChartRepo, "provider-chart-repo", o.ProviderChartRepo, "OCI repository the provider charts are pulled from, or the path of a railgrid checkout to use providers/<name>/deploy/chart")
 	cmd.Flags().StringVar(&o.ProviderChartVersion, "provider-chart-version", o.ProviderChartVersion, "Provider chart version for OCI charts (default: latest published version of each chart)")
 	cmd.Flags().StringVar(&o.ProviderImageTag, "provider-image-tag", o.ProviderImageTag, "Provider image tag (default: the chart's appVersion for OCI charts, the latest published release for charts from a checkout)")
 	cmd.Flags().BoolVar(&o.EnableProviders, "enable-providers", o.EnableProviders, "Enable every installed provider in the dev user's default workspace (all declared claims accepted)")
-	cmd.Flags().BoolVar(&o.WithEdge, "with-edge", o.WithEdge, "Join the hub kind cluster itself as a KubernetesCluster edge and run the faros-agent in it (needs the edges provider)")
+	cmd.Flags().BoolVar(&o.WithEdge, "with-edge", o.WithEdge, "Join the hub kind cluster itself as a KubernetesCluster edge and run the railgrid-agent in it (needs the edges provider)")
 	cmd.Flags().StringVar(&o.EdgeName, "edge-name", o.EdgeName, "Name of the edge created by --with-edge")
 	cmd.Flags().IntVar(&o.AppsHTTPSPort, "apps-https-port", o.AppsHTTPSPort, "Host port published apps are served on, as https://<app>.apps.127.0.0.1.sslip.io:<port> (takes effect when the hub cluster is created)")
 }
@@ -230,7 +230,7 @@ func fetchLatestRelease() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/faroshq/faros/releases/latest", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/railgrid/railgrid/releases/latest", nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -349,15 +349,15 @@ func (o *DevOptions) agentClusterNames() []string {
 
 func (o *DevOptions) runWithColors(ctx context.Context) error {
 	// Display experimental warning header with red "EXPERIMENTAL"
-	fmt.Fprintf(o.Streams.ErrOut, "faros Development Environment Setup\n\n")                        // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "%s faros dev command is in preview\n", redText("EXPERIMENTAL:")) // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "Requirements: Docker must be installed and running\n\n")         // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "railgrid Development Environment Setup\n\n")                        // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "%s railgrid dev command is in preview\n", redText("EXPERIMENTAL:")) // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "Requirements: Docker must be installed and running\n\n")            // nolint:errcheck
 
 	if err := o.checkFileLimits(); err != nil {
 		fmt.Fprintf(o.Streams.ErrOut, "Warning: File limit check: %v\n", err) // nolint:errcheck
 	}
 
-	// Create hub cluster with faros-hub installed
+	// Create hub cluster with railgrid-hub installed
 	if err := o.createCluster(ctx, o.HubClusterName, o.hubClusterConfig(), true); err != nil {
 		return err
 	}
@@ -384,7 +384,7 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 		edgeRegistered = true
 	}
 
-	// Create agent cluster(s) (no faros installed, just plain clusters).
+	// Create agent cluster(s) (no railgrid installed, just plain clusters).
 	for _, agentName := range o.agentClusterNames() {
 		if err := o.createCluster(ctx, agentName, agentClusterConfig, false); err != nil {
 			return err
@@ -398,7 +398,7 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	}
 
 	// Success message
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "faros dev environment is ready!\n\n")
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "railgrid dev environment is ready!\n\n")
 
 	// Configuration
 	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")                                             // nolint:errcheck
@@ -406,8 +406,8 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	for _, agentName := range o.agentClusterNames() {
 		fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", agentName) // nolint:errcheck
 	}
-	fmt.Fprintf(o.Streams.ErrOut, "  faros server URL: %s\n", o.hubExternalURL())    // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "  faros UI URL:     %s/ui\n", o.hubExternalURL()) // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  railgrid server URL: %s\n", o.hubExternalURL())    // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  railgrid UI URL:     %s/ui\n", o.hubExternalURL()) // nolint:errcheck
 	if o.appsGatewayEnabled() {
 		fmt.Fprintf(o.Streams.ErrOut, "  Published apps:   https://<app>.%s%s\n", devAppsBaseDomain, o.appsPublicURLSuffix()) // nolint:errcheck
 	}
@@ -438,38 +438,38 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	stepNum++
 
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Login to authenticate to the hub:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf("faros login --hub-url %s --insecure-skip-tls-verify --token=dev-token", o.hubExternalURL())))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf("railgrid login --hub-url %s --insecure-skip-tls-verify --token=dev-token", o.hubExternalURL())))
 	stepNum++
 
 	if edgeRegistered {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Use the edge (the hub kind cluster joined itself as %q):\n", stepNum, o.EdgeName)
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("faros edge list"))
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf("faros edge kubeconfig %s > %s.kubeconfig && kubectl --kubeconfig %s.kubeconfig get nodes", o.EdgeName, o.EdgeName, o.EdgeName)))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("railgrid edge list"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf("railgrid edge kubeconfig %s > %s.kubeconfig && kubectl --kubeconfig %s.kubeconfig get nodes", o.EdgeName, o.EdgeName, o.EdgeName)))
 		stepNum++
 	}
 
 	// The workspace's aggregate MCP server, for AI clients. The hub's
 	// certificate comes from the dev CA, so the clients are pointed at it.
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Connect an AI agent to the workspace MCP server:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand(fmt.Sprintf("faros mcp claude --ca-file %s", o.devCAFile())))
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand(fmt.Sprintf("faros mcp codex --ca-file %s", o.devCAFile())))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand(fmt.Sprintf("railgrid mcp claude --ca-file %s", o.devCAFile())))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand(fmt.Sprintf("railgrid mcp codex --ca-file %s", o.devCAFile())))
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "   Each prints how to start the client so it trusts the local hub.\n\n")
 	stepNum++
 
 	if o.AgentCount > 0 {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create an edge in the hub:\n", stepNum)
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("faros edge create my-edge --labels env=dev"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("railgrid edge create my-edge --labels env=dev"))
 		stepNum++
 
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Wait for the edge kubeconfig secret and extract it:\n", stepNum)
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n faros-system edge-my-edge-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n railgrid-system edge-my-edge-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig"))
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "   (The secret is created automatically after the edge is registered)\n\n")
 		stepNum++
 
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Deploy the agent into the agent cluster using Helm:\n", stepNum)
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "   First, create a secret with the edge kubeconfig in the agent cluster:\n")
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-			"kubectl --kubeconfig %s.kubeconfig create namespace faros-agent && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic edge-kubeconfig -n faros-agent --from-file=kubeconfig=edge-kubeconfig",
+			"kubectl --kubeconfig %s.kubeconfig create namespace railgrid-agent && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic edge-kubeconfig -n railgrid-agent --from-file=kubeconfig=edge-kubeconfig",
 			o.AgentClusterName, o.AgentClusterName)))
 
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then install the agent Helm chart:\n")
@@ -478,35 +478,35 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 			// The kubeconfig has the sslip.io hub host, which resolves to loopback; from within
 			// the Docker network we need to use the hub's IP and NodePort 31443
 			_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-				"helm install faros-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n faros-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set agent.hub.url=https://%s:31443 \\\n     --set image.tag=%s",
+				"helm install railgrid-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n railgrid-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set agent.hub.url=https://%s:31443 \\\n     --set image.tag=%s",
 				o.AgentChartPath, o.ChartVersion, o.AgentClusterName, hubIP, o.Tag)))
 		} else {
 			_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-				"helm install faros-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n faros-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set image.tag=%s",
+				"helm install railgrid-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n railgrid-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set image.tag=%s",
 				o.AgentChartPath, o.ChartVersion, o.AgentClusterName, o.Tag)))
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Note: You may need to set agent.hub.url to the hub's Docker network IP and NodePort.\n")
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Get hub IP: docker inspect faros-hub-control-plane | jq -r '.[0].NetworkSettings.Networks[\"faros-dev\"].IPAddress'\n")
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Get hub IP: docker inspect railgrid-hub-control-plane | jq -r '.[0].NetworkSettings.Networks[\"railgrid-dev\"].IPAddress'\n")
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then add: --set agent.hub.url=https://<HUB_IP>:31443\n\n")
 		}
 	} else {
 		uiURL := o.hubExternalURL() + "/ui"
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Open the faros UI in your browser:\n", stepNum)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Open the railgrid UI in your browser:\n", stepNum)
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(uiURL))
 	}
 
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "Useful commands:\n")
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  List edges:       %s\n", blueCommand("faros edge list"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  List edges:       %s\n", blueCommand("railgrid edge list"))
 	if edgeRegistered {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand(fmt.Sprintf("faros edge get %s", o.EdgeName)))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand(fmt.Sprintf("railgrid edge get %s", o.EdgeName)))
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig -n %s logs deploy/%s -f", o.HubClusterName, devEdgeAgentNamespace, devEdgeAgentRelease)))
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Provider logs:    %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig -n %s logs deploy/edges -f", o.HubClusterName, devProvidersNS)))
 	}
 	if o.AgentCount > 0 {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand("faros edge get my-edge"))
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig logs -n faros-agent -l app.kubernetes.io/name=faros-agent -f", o.AgentClusterName)))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand("railgrid edge get my-edge"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig logs -n railgrid-agent -l app.kubernetes.io/name=railgrid-agent -f", o.AgentClusterName)))
 	}
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  MCP endpoint:     %s\n", blueCommand("faros mcp url --mcpserver-name default"))
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Delete env:       %s\n", blueCommand("faros dev delete"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  MCP endpoint:     %s\n", blueCommand("railgrid mcp url --mcpserver-name default"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Delete env:       %s\n", blueCommand("railgrid dev delete"))
 
 	return nil
 }
@@ -516,13 +516,13 @@ func (o *DevOptions) Run(ctx context.Context) error {
 	return o.runWithColors(ctx)
 }
 
-// RunUpdate upgrades the faros-hub Helm release on the existing hub kind
+// RunUpdate upgrades the railgrid-hub Helm release on the existing hub kind
 // cluster using current image / chart settings. The cluster itself is not
 // touched; only the hub release is upgraded.
 func (o *DevOptions) RunUpdate(ctx context.Context) error {
 	kubeconfigPath := fmt.Sprintf("%s.kubeconfig", o.HubClusterName)
 	if _, err := os.Stat(kubeconfigPath); err != nil {
-		return fmt.Errorf("hub kubeconfig %s not found (did you run `faros dev init`?): %w", kubeconfigPath, err)
+		return fmt.Errorf("hub kubeconfig %s not found (did you run `railgrid dev init`?): %w", kubeconfigPath, err)
 	}
 
 	restConfig, err := loadRestConfigFromFile(kubeconfigPath)
@@ -533,7 +533,7 @@ func (o *DevOptions) RunUpdate(ctx context.Context) error {
 	if err := ensureDevCA(ctx, kubeconfigPath); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Upgrading faros-hub release on cluster %s...\n", o.HubClusterName)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Upgrading railgrid-hub release on cluster %s...\n", o.HubClusterName)
 	if o.WithExternalKCP {
 		if err := o.installHelmChartWithExternalKCP(ctx, restConfig); err != nil {
 			return err
@@ -543,7 +543,7 @@ func (o *DevOptions) RunUpdate(ctx context.Context) error {
 			return err
 		}
 	}
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "faros-hub upgraded successfully\n")
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "railgrid-hub upgraded successfully\n")
 	if err := o.finishHubTLS(ctx, restConfig); err != nil {
 		return err
 	}
@@ -556,7 +556,7 @@ func (o *DevOptions) RunUpdate(ctx context.Context) error {
 	return nil
 }
 
-func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConfig string, installFaros bool) error {
+func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConfig string, installRailgrid bool) error {
 	// Set experimental Docker network for kind clusters to communicate
 	_ = os.Setenv("KIND_EXPERIMENTAL_DOCKER_NETWORK", o.KindNetwork)
 
@@ -591,7 +591,7 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "Kind cluster "+clusterName+" created\n")
 	}
 
-	if installFaros {
+	if installRailgrid {
 		// When pull policy is Never, pre-load the hub image into the kind cluster
 		// so helm install can start without hitting the registry.
 		if o.ImagePullPolicy == "Never" {
@@ -636,9 +636,9 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 			if err := ensureDevCA(ctx, kubeconfigPath); err != nil {
 				return err
 			}
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Installing faros-hub with external kcp...\n")
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "Installing railgrid-hub with external kcp...\n")
 			if err := o.installHelmChartWithExternalKCP(ctx, restConfig); err != nil {
-				_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install faros-hub Helm chart\n")
+				_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install railgrid-hub Helm chart\n")
 				return err
 			}
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "Helm chart installed successfully\n")
@@ -704,7 +704,7 @@ func ensureDexHelmRepo() error {
 // and blocks until the Dex pod is Running/Ready.
 //
 // Dex is served over TLS so the issuer URL is https — required by embedded
-// kcp's authentication validator. The cert is issued by the faros-selfsigned
+// kcp's authentication validator. The cert is issued by the railgrid-selfsigned
 // ClusterIssuer and mounted into the Dex pod; the same cert is later mounted
 // into the hub pod so embedded kcp can verify it (see installHelmChart).
 func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kubeconfigPath string) error {
@@ -766,20 +766,20 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 			"staticClients": []map[string]any{{
 				"id":           devDexClientID,
 				"public":       true,
-				"name":         "Faros Hub",
+				"name":         "Railgrid Hub",
 				"redirectURIs": []string{redirectURI},
 			}},
 			"enablePasswordDB": true,
 			"staticPasswords": []map[string]any{
 				{
-					"email":    "admin@test.faros.local",
+					"email":    "admin@test.railgrid.local",
 					"hash":     devDexUserHash,
 					"username": "admin",
 					"userID":   "test-user-id-01",
 				},
 				{
 					// Second user for cross-user isolation e2e tests (issue #79).
-					"email":    "user2@test.faros.local",
+					"email":    "user2@test.railgrid.local",
 					"hash":     devDexUserHash, // same password "Password1!" — different identity
 					"username": "user2",
 					"userID":   "test-user-id-02",
@@ -807,7 +807,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 	hist.Max = 1
 	if _, err := hist.Run(devDexReleaseName); err == nil {
 		upg := action.NewUpgrade(actionConfig)
-		upg.Namespace = "faros-system"
+		upg.Namespace = "railgrid-system"
 		upg.Wait = true
 		upg.Timeout = 3 * time.Minute
 		if _, err := upg.Run(devDexReleaseName, chartObj, dexValues); err != nil {
@@ -816,7 +816,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 	} else {
 		inst := action.NewInstall(actionConfig)
 		inst.ReleaseName = devDexReleaseName
-		inst.Namespace = "faros-system"
+		inst.Namespace = "railgrid-system"
 		inst.CreateNamespace = true // Dex is deployed before the hub; create namespace here.
 		inst.Wait = true
 		inst.Timeout = 3 * time.Minute
@@ -865,14 +865,14 @@ func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, netwo
 	return "", fmt.Errorf("could not find IP address for cluster %s in network %s", clusterName, networkName)
 }
 
-// installHelmChart installs or upgrades the faros-hub Helm chart.
+// installHelmChart installs or upgrades the railgrid-hub Helm chart.
 // withIDP controls whether IDP/OIDC values are included; pass false for the
 // initial install (before Dex is deployed) and true for the upgrade after Dex
 // is up, so the hub never tries to contact a non-existent issuer at startup.
 func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config, withIDP bool) error {
 	actionConfig := new(action.Configuration)
 
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "faros-system"}, "faros-system", "secret", func(format string, v ...any) {}); err != nil {
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "railgrid-system"}, "railgrid-system", "secret", func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("failed to initialize helm action config: %w", err)
 	}
 
@@ -900,7 +900,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 	// provider automation signs in with (see providers.go).
 	o.hubAdminValues(hubValues)
 	// IDP settings are passed via the top-level `idp` helm values (not under `hub`).
-	// See deploy/charts/faros-hub/templates/workload.yaml.
+	// See deploy/charts/railgrid-hub/templates/workload.yaml.
 
 	values := map[string]any{
 		"image": map[string]any{
@@ -942,9 +942,9 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 			"clientID":  devDexClientID,
 			// Mount Dex's TLS secret into the hub so embedded kcp can verify
 			// the issuer's HTTPS cert. The secret is in the same namespace as
-			// the hub release (faros-system).
+			// the hub release (railgrid-system).
 			"caSecretName": devDexTLSSecret,
-			// Self-signed Certificates from the faros-selfsigned ClusterIssuer
+			// Self-signed Certificates from the railgrid-selfsigned ClusterIssuer
 			// don't reliably populate ca.crt, but tls.crt itself is the CA
 			// (it's its own root) — use it as the trust anchor.
 			"caSecretKey": "tls.crt",
@@ -975,19 +975,19 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 
 	histClient := action.NewHistory(actionConfig)
 	histClient.Max = 1
-	if _, err := histClient.Run("faros-hub"); err == nil {
+	if _, err := histClient.Run("railgrid-hub"); err == nil {
 		upgradeAction := action.NewUpgrade(actionConfig)
-		upgradeAction.Namespace = "faros-system"
+		upgradeAction.Namespace = "railgrid-system"
 		upgradeAction.Wait = true
 		upgradeAction.Timeout = o.WaitForReadyTimeout
-		_, err = upgradeAction.Run("faros-hub", chartObj, values)
+		_, err = upgradeAction.Run("railgrid-hub", chartObj, values)
 		if err != nil {
 			return fmt.Errorf("failed to upgrade chart: %w", err)
 		}
 	} else {
 		installAction := action.NewInstall(actionConfig)
-		installAction.ReleaseName = "faros-hub"
-		installAction.Namespace = "faros-system"
+		installAction.ReleaseName = "railgrid-hub"
+		installAction.Namespace = "railgrid-system"
 		installAction.CreateNamespace = true
 		installAction.Wait = true
 		installAction.Timeout = o.WaitForReadyTimeout

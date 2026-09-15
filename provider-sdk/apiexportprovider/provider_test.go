@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -88,7 +88,7 @@ func slice(urls ...string) client.Object {
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apis.kcp.io/v1alpha1",
 		"kind":       "APIExportEndpointSlice",
-		"metadata":   map[string]any{"name": "code.faros.sh"},
+		"metadata":   map[string]any{"name": "code.railgrid.ai"},
 		"status":     map[string]any{"endpoints": endpoints},
 	}}
 	return obj
@@ -107,7 +107,7 @@ func testProvider(t *testing.T, fw *fakeWatcher) *Provider {
 	p := &Provider{
 		opts:              opts,
 		config:            &rest.Config{Host: "https://kcp.example.com"},
-		sliceName:         "code.faros.sh",
+		sliceName:         "code.railgrid.ai",
 		Clusters:          clusters.New[cluster.Cluster](),
 		aggregateCache:    mcpcache.NewAggregateCache(),
 		watched:           map[string]*watchedEndpoint{},
@@ -310,7 +310,7 @@ func TestCheckReportsStartupStates(t *testing.T) {
 		t.Errorf("before Start: %v", err)
 	}
 	p.started = true
-	if err := p.Check(); err == nil || !strings.Contains(err.Error(), "code.faros.sh") {
+	if err := p.Check(); err == nil || !strings.Contains(err.Error(), "code.railgrid.ai") {
 		t.Errorf("before the slice is seen: %v", err)
 	}
 	p.endpointSliceUpdate(t.Context(), &mockAware{}, slice())

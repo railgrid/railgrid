@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,8 +37,8 @@ import (
 // routing table that backs /ui/providers/{name}/* and
 // /services/providers/{name}/*.
 //
-// The group is providers.faros.sh, so the fully-qualified name reads
-// "catalogentries.providers.faros.sh" — no redundant "Provider"
+// The group is providers.railgrid.ai, so the fully-qualified name reads
+// "catalogentries.providers.railgrid.ai" — no redundant "Provider"
 // prefix on the kind itself.
 //
 // Phase 1A note: workspace/ServiceAccount/Secret provisioning and inline
@@ -130,7 +130,7 @@ type CatalogEntrySpec struct {
 
 	// EdgeProxyAccess requests that, when a tenant enables this provider,
 	// the hub grants the provider's ServiceAccount the "proxy" verb on
-	// edges.faros.sh in the tenant's workspace. This lets the
+	// edges.railgrid.ai in the tenant's workspace. This lets the
 	// provider open background connections to the tenant's edge clusters
 	// through the hub's edges-proxy (e.g. the kuery provider's informer
 	// sync). The grant is materialized as a ClusterRole/ClusterRoleBinding
@@ -489,7 +489,7 @@ type ProviderUI struct {
 	//   - URL (third-party) providers — children land at
 	//     /providers/{name}/{child.builtinRoute}, and the child
 	//     micro-frontend reads the trailing segment off
-	//     farosContext.subPath to render the right internal page.
+	//     railgridContext.subPath to render the right internal page.
 	// +optional
 	Children []ProviderNavChild `json:"children,omitempty"`
 }
@@ -538,7 +538,7 @@ type ProviderAPIExport struct {
 	// Name is the APIExport name (also the API group binding consumers
 	// reference). The APIExport itself, along with its APIResourceSchemas and
 	// bind grant, is created by the provider's own Helm `init` (see the
-	// faros-provider-sdk) — the hub only references it here for the portal
+	// railgrid-provider-sdk) — the hub only references it here for the portal
 	// Enable flow. Schemas are no longer embedded on the CatalogEntry.
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
@@ -567,7 +567,7 @@ type ProviderPermissionClaim struct {
 
 	// TenantScoped declares the claim is bounded to the binding tenant's own
 	// workspace. Non-tenant-scoped claims are refused unless an admin sets
-	// the faros.sh/accept-untrusted-claims annotation on the
+	// the railgrid.ai/accept-untrusted-claims annotation on the
 	// CatalogEntry.
 	// +optional
 	TenantScoped bool `json:"tenantScoped,omitempty"`
@@ -591,7 +591,7 @@ type ProviderSelfHosting struct {
 	Chart *ProviderSelfHostingChart `json:"chart,omitempty"`
 
 	// Namespace is the namespace the instructions install into.
-	// Defaults to faros-provider-<catalog entry name> when empty.
+	// Defaults to railgrid-provider-<catalog entry name> when empty.
 	// +optional
 	// +kubebuilder:validation:MaxLength=63
 	Namespace string `json:"namespace,omitempty"`
@@ -636,13 +636,13 @@ type ProviderSelfHosting struct {
 
 // ProviderSelfHostingChart locates the provider's published Helm chart.
 type ProviderSelfHostingChart struct {
-	// Repository is the chart repository, e.g. "oci://ghcr.io/faroshq/charts".
+	// Repository is the chart repository, e.g. "oci://ghcr.io/railgrid/charts".
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
 	Repository string `json:"repository"`
 
 	// Name is the chart name within the repository, e.g.
-	// "faros-quickstart-provider".
+	// "railgrid-quickstart-provider".
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
@@ -668,7 +668,7 @@ type ProviderSelfHostingValue struct {
 	Description string `json:"description,omitempty"`
 
 	// IdentityFor names an APIExport whose kcp identity hash is the value for
-	// this setting, e.g. "edges.providers.faros.sh". When set, the hub resolves
+	// this setting, e.g. "edges.providers.railgrid.ai". When set, the hub resolves
 	// the hash and fills the value in for the installer.
 	//
 	// This exists because identity hashes are the one required value a person

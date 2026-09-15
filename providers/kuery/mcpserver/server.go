@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,11 +11,11 @@
 // its declared-coupling blast radius). One structured query against the
 // local index replaces N kubectl round-trips through N edge tunnels —
 // the primary practical justification for the provider (see
-// docs/kuery-provider-architecture.md in the faros repo).
+// docs/kuery-provider-architecture.md in the railgrid repo).
 //
 // Mirrors the infrastructure provider's pattern: a stateless streamable
 // HTTP handler building a per-request server, so each caller's identity
-// (the tenant's kcp logical-cluster ID from X-Faros-Cluster) is closed over
+// (the tenant's kcp logical-cluster ID from X-Railgrid-Cluster) is closed over
 // in the tool handlers. All queries go through queryapi.ScopeToTenant — the
 // same choke point as the REST API.
 package mcpserver
@@ -28,7 +28,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/kuery/pkg/engine"
+	"github.com/railgrid/kuery/pkg/engine"
 )
 
 // Deps is what the MCP tools need: the embedded kuery engine. Tenant
@@ -50,12 +50,12 @@ func NewHandler(deps Deps) http.Handler {
 
 func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "faros-kuery",
+		Name:    "railgrid-kuery",
 		Version: "0.1.0",
-		Title:   "faros kuery provider",
+		Title:   "railgrid kuery provider",
 	}, &mcp.ServerOptions{
 		Instructions: "Fleet-wide object search over the edge clusters " +
-			"connected to this faros workspace. kuery_query answers " +
+			"connected to this railgrid workspace. kuery_query answers " +
 			"questions like 'which edges run image X' or 'list all " +
 			"deployments with label Y across the fleet' in ONE call — " +
 			"prefer it over per-edge kubectl round-trips. kuery_impact " +

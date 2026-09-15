@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,11 +15,11 @@ limitations under the License.
 */
 
 // Package edges implements an end-to-end suite for the standalone edges
-// provider (group edges.faros.sh, kinds KubernetesCluster + LinuxServer)
+// provider (group edges.railgrid.ai, kinds KubernetesCluster + LinuxServer)
 // that was extracted out of the hub core. It mirrors the provider suite: the
-// faros-hub runs with embedded kcp and the edges-provider runs as a host
+// railgrid-hub runs with embedded kcp and the edges-provider runs as a host
 // subprocess, following the current bootstrap flow — Provider + CatalogEntry
-// applied into root:faros:system:providers (the hub's Provider controller
+// applied into root:railgrid:system:providers (the hub's Provider controller
 // materializes the sub-workspace + SA + provider-token), then `edges-provider
 // init` with the minted SA kubeconfig (APIExport + schemas + bind grant), then
 // `edges-provider serve`.
@@ -78,8 +78,8 @@ const (
 	kcpPort      = "16463"
 	providerPort = "18088"
 
-	edgesWorkspacePath = "root:faros:providers:edges"
-	edgesAPIExportName = "edges.providers.faros.sh"
+	edgesWorkspacePath = "root:railgrid:providers:edges"
+	edgesAPIExportName = "edges.providers.railgrid.ai"
 )
 
 var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
@@ -93,7 +93,7 @@ func TestMain(m *testing.M) {
 
 	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
 		if portInUse(p) {
-			fmt.Fprintf(os.Stderr, "port :%s already in use; run `pkill faros-hub; pkill edges-provider` and retry\n", p)
+			fmt.Fprintf(os.Stderr, "port :%s already in use; run `pkill railgrid-hub; pkill edges-provider` and retry\n", p)
 			os.Exit(2)
 		}
 	}
@@ -103,15 +103,15 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	dataDir, err := os.MkdirTemp("", "faros-e2e-edges-")
+	dataDir, err := os.MkdirTemp("", "railgrid-e2e-edges-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tempdir:", err)
 		os.Exit(1)
 	}
-	keepData := os.Getenv("FAROS_E2E_KEEP_DATA") == "true"
+	keepData := os.Getenv("RAILGRID_E2E_KEEP_DATA") == "true"
 
 	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
-	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "faros-hub"),
+	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "railgrid-hub"),
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
 		"--kcp-secure-port", kcpPort,
@@ -153,9 +153,9 @@ func TestMain(m *testing.M) {
 	}
 	adminToken = tok
 
-	// Provisioning: Provider + CatalogEntry into root:faros:system:providers
+	// Provisioning: Provider + CatalogEntry into root:railgrid:system:providers
 	// (mirrors `make install-provider-edges`); the hub's Provider controller
-	// materializes root:faros:providers:edges + the provider SA + provider-token.
+	// materializes root:railgrid:providers:edges + the provider SA + provider-token.
 	if err := applyEdgesManifests(); err != nil {
 		cleanup()
 		fmt.Fprintln(os.Stderr, "apply edges manifests:", err)
@@ -175,9 +175,9 @@ func TestMain(m *testing.M) {
 	initLog, _ := os.Create(filepath.Join(dataDir, "init.log"))
 	initCmd := exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "init")
 	initCmd.Env = append(os.Environ(),
-		"FAROS_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"EDGES_WORKSPACE_PATH="+edgesWorkspacePath,
-		"FAROS_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files", "schemas"),
+		"RAILGRID_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files", "schemas"),
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -194,13 +194,13 @@ func TestMain(m *testing.M) {
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "serve")
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
-		"FAROS_HUB_URL="+hubURL,
-		"FAROS_HUB_EXTERNAL_URL="+hubURL,
-		"FAROS_HUB_TOKEN="+staticToken,
-		"FAROS_HUB_INSECURE=true",
-		"FAROS_PROVIDER_NAME=edges",
-		"FAROS_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
-		"FAROS_DEV_MODE=true",
+		"RAILGRID_HUB_URL="+hubURL,
+		"RAILGRID_HUB_EXTERNAL_URL="+hubURL,
+		"RAILGRID_HUB_TOKEN="+staticToken,
+		"RAILGRID_HUB_INSECURE=true",
+		"RAILGRID_PROVIDER_NAME=edges",
+		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		"RAILGRID_DEV_MODE=true",
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog
@@ -224,18 +224,18 @@ func TestMain(m *testing.M) {
 }
 
 // applyEdgesManifests applies provider.yaml (kind Provider) + manifest.yaml
-// (kind CatalogEntry) into root:faros:system:providers, mirroring `make
+// (kind CatalogEntry) into root:railgrid:system:providers, mirroring `make
 // install-provider-edges`. The CatalogEntry's ui/backend url is overridden to
 // the test provider port. Retried until the API answers (the hub reports
 // /readyz before those APIs are fully servable).
 func applyEdgesManifests() error {
-	cl, err := kcpDynamicRaw("root:faros:system:providers", adminToken)
+	cl, err := kcpDynamicRaw("root:railgrid:system:providers", adminToken)
 	if err != nil {
 		return fmt.Errorf("dynamic client: %w", err)
 	}
 	gvrByKind := map[string]schema.GroupVersionResource{
-		"Provider":     {Group: "admin.faros.sh", Version: "v1alpha1", Resource: "providers"},
-		"CatalogEntry": {Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries"},
+		"Provider":     {Group: "admin.railgrid.ai", Version: "v1alpha1", Resource: "providers"},
+		"CatalogEntry": {Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries"},
 	}
 	overrideURL := "http://localhost:" + providerPort
 	for _, file := range []string{"provider.yaml", "manifest.yaml"} {
@@ -281,7 +281,7 @@ func applyEdgesManifests() error {
 }
 
 // mintRuntimeKubeconfig waits for the Provider controller to populate the
-// provider-token Secret in root:faros:providers:edges and writes a
+// provider-token Secret in root:railgrid:providers:edges and writes a
 // workspace-scoped kubeconfig around it.
 func mintRuntimeKubeconfig(path string, timeout time.Duration) error {
 	cl, err := kcpDynamicRaw(edgesWorkspacePath, adminToken)
@@ -314,18 +314,18 @@ func mintRuntimeKubeconfig(path string, timeout time.Duration) error {
 	kc := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
-- name: faros
+- name: railgrid
   cluster:
     server: %s/clusters/%s
     insecure-skip-tls-verify: true
 contexts:
-- name: faros
+- name: railgrid
   context:
-    cluster: faros
-    user: faros
-current-context: faros
+    cluster: railgrid
+    user: railgrid
+current-context: railgrid
 users:
-- name: faros
+- name: railgrid
   user:
     token: %s
 `, kcpServer, edgesWorkspacePath, token)

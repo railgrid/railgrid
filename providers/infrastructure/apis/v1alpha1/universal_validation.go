@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,10 +32,10 @@ const (
 	universalRuntimeNamespace     = "status.runtimeNamespace"
 	universalControlSecret        = "status.controlSecretRef"
 	universalControlService       = "status.components.workspace.controlServiceRef"
-	universalDevImageToken        = "${faros.devImage.universal}"
-	universalSetupCondition       = `${schema.spec.farosMode == "development" && schema.spec.farosNetworkPhase == "setup"}`
-	universalRuntimeCondition     = `${schema.spec.farosMode == "development" && schema.spec.farosNetworkPhase == "runtime"}`
-	universalDevelopmentCondition = `${schema.spec.farosMode == "development"}`
+	universalDevImageToken        = "${railgrid.devImage.universal}"
+	universalSetupCondition       = `${schema.spec.railgridMode == "development" && schema.spec.railgridNetworkPhase == "setup"}`
+	universalRuntimeCondition     = `${schema.spec.railgridMode == "development" && schema.spec.railgridNetworkPhase == "runtime"}`
+	universalDevelopmentCondition = `${schema.spec.railgridMode == "development"}`
 )
 
 // ValidateUniversalCodingSandboxTemplate enforces the complete contract of the
@@ -51,8 +51,8 @@ func ValidateUniversalCodingSandboxTemplate(tmpl *Template) error {
 	if tmpl.Name != UniversalCodingSandboxTemplateName {
 		return nil
 	}
-	if tmpl.Labels["faros.sh/platform-owned"] != "true" {
-		return fmt.Errorf("platform-owned universal coding sandbox requires label faros.sh/platform-owned=true")
+	if tmpl.Labels["railgrid.ai/platform-owned"] != "true" {
+		return fmt.Errorf("platform-owned universal coding sandbox requires label railgrid.ai/platform-owned=true")
 	}
 	if tmpl.Spec.ExposureClass() != ExposureInternal {
 		return fmt.Errorf("universal coding sandbox exposure must be %q", ExposureInternal)
@@ -88,7 +88,7 @@ func validateUniversalSchema(tmpl *Template) error {
 		return fmt.Errorf("universal coding sandbox schema: %w", err)
 	}
 	for name := range properties {
-		if name != "name" && name != "farosExposureHostname" {
+		if name != "name" && name != "railgridExposureHostname" {
 			return fmt.Errorf("universal coding sandbox schema exposes unsupported tenant input %q", name)
 		}
 	}
@@ -289,7 +289,7 @@ func validateUniversalWorkload(resource map[string]any) error {
 		return fmt.Errorf("universal coding sandbox workload must use the graph namespace placeholder")
 	}
 	annotations, err := objectField(metadata, "annotations")
-	if err != nil || annotations["faros.sh/network-access"] != "default-deny-egress" {
+	if err != nil || annotations["railgrid.ai/network-access"] != "default-deny-egress" {
 		return fmt.Errorf("universal coding sandbox workload must declare default-deny egress")
 	}
 	spec, err := objectField(template, "spec")
@@ -308,7 +308,7 @@ func validateUniversalWorkload(resource map[string]any) error {
 		return fmt.Errorf("universal coding sandbox workload: %w", err)
 	}
 	podMetadata, err := objectField(podTemplate, "metadata")
-	if err != nil || !stringMapEqual(podMetadata["labels"], map[string]string{"app": "${schema.spec.name}"}) || !stringMapEqual(podMetadata["annotations"], map[string]string{"faros.sh/network-access": "default-deny-egress"}) {
+	if err != nil || !stringMapEqual(podMetadata["labels"], map[string]string{"app": "${schema.spec.name}"}) || !stringMapEqual(podMetadata["annotations"], map[string]string{"railgrid.ai/network-access": "default-deny-egress"}) {
 		return fmt.Errorf("universal coding sandbox workload pod labels are unsafe")
 	}
 	podSpec, err := objectField(podTemplate, "spec")
@@ -393,7 +393,7 @@ func validateUniversalDefaultDeny(resource map[string]any) error {
 }
 
 func validateUniversalSetupEgress(resource map[string]any) error {
-	if err := validateUniversalPolicy(resource, universalSetupCondition, map[string]string{"app": "${schema.spec.name}", "faros.sh/network-phase": "setup"}); err != nil {
+	if err := validateUniversalPolicy(resource, universalSetupCondition, map[string]string{"app": "${schema.spec.name}", "railgrid.ai/network-phase": "setup"}); err != nil {
 		return err
 	}
 	template, _ := resource["template"].(map[string]any)
@@ -402,7 +402,7 @@ func validateUniversalSetupEgress(resource map[string]any) error {
 }
 
 func validateUniversalRuntimeEgress(resource map[string]any) error {
-	if err := validateUniversalPolicy(resource, universalRuntimeCondition, map[string]string{"app": "${schema.spec.name}", "faros.sh/network-phase": "runtime"}); err != nil {
+	if err := validateUniversalPolicy(resource, universalRuntimeCondition, map[string]string{"app": "${schema.spec.name}", "railgrid.ai/network-phase": "runtime"}); err != nil {
 		return err
 	}
 	template, _ := resource["template"].(map[string]any)

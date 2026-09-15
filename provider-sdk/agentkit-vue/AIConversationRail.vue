@@ -146,7 +146,7 @@ const storagePrefix = computed(() => {
   // Encode the complete caller-owned scope so distinct tenant/project/user
   // values cannot collapse onto one preference key after sanitization.
   const scope = String(props.storageScope || 'default').trim() || 'default'
-  return `faros:portalkit:ai-conversation-rail:${encodeURIComponent(scope)}`
+  return `railgrid:portalkit:ai-conversation-rail:${encodeURIComponent(scope)}`
 })
 const anchoredStorageKey = computed(() => `${storagePrefix.value}:anchored:v1`)
 const widthStorageKey = computed(() => `${storagePrefix.value}:width:v1`)

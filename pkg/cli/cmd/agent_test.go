@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@ import (
 	"testing"
 	"text/template"
 
-	"github.com/faroshq/faros/pkg/agent"
-	"github.com/faroshq/faros/pkg/agent/tunnel"
+	"github.com/railgrid/railgrid/pkg/agent"
+	"github.com/railgrid/railgrid/pkg/agent/tunnel"
 )
 
 func renderUnit(t *testing.T, data systemdUnitData) string {
@@ -38,7 +38,7 @@ func renderUnit(t *testing.T, data systemdUnitData) string {
 	return b.String()
 }
 
-// TestJoinServerUnitCarriesSvcPolicyFlags: `faros agent join --type server`
+// TestJoinServerUnitCarriesSvcPolicyFlags: `railgrid agent join --type server`
 // accepts --svc-allow-cidr / --svc-policy, so the unit it installs must run
 // the agent with them. Dropping them silently downgrades an operator's
 // "enforce" to the built-in default with no allow list.
@@ -51,7 +51,7 @@ func TestJoinServerUnitCarriesSvcPolicyFlags(t *testing.T) {
 		SvcAllowedCIDRs: []string{"192.168.1.0/24", "10.0.0.0/8"},
 		SvcPolicy:       string(tunnel.SvcPolicyEnforce),
 	}
-	data, err := joinServerUnitData(opts, "/usr/local/bin/faros", "")
+	data, err := joinServerUnitData(opts, "/usr/local/bin/railgrid", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestJoinServerUnitOmitsDefaultPolicy(t *testing.T) {
 		Token:     "join-token",
 		SvcPolicy: string(tunnel.DefaultSvcPolicy),
 	}
-	data, err := joinServerUnitData(opts, "/usr/local/bin/faros", "")
+	data, err := joinServerUnitData(opts, "/usr/local/bin/railgrid", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,13 +95,13 @@ func TestJoinServerUnitRejectsBadPolicyAndCIDR(t *testing.T) {
 
 	bad := base
 	bad.SvcPolicy = "sometimes"
-	if _, err := joinServerUnitData(&bad, "/bin/faros", ""); err == nil {
+	if _, err := joinServerUnitData(&bad, "/bin/railgrid", ""); err == nil {
 		t.Error("invalid --svc-policy was accepted")
 	}
 
 	bad = base
 	bad.SvcAllowedCIDRs = []string{"not-a-cidr"}
-	if _, err := joinServerUnitData(&bad, "/bin/faros", ""); err == nil {
+	if _, err := joinServerUnitData(&bad, "/bin/railgrid", ""); err == nil {
 		t.Error("invalid --svc-allow-cidr was accepted")
 	}
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,12 +27,12 @@ func TestParseTenantPath(t *testing.T) {
 		ok          bool
 		description string
 	}{
-		{"root:faros:tenants:org-1:ws-1", "org-1", "ws-1", true, "workspace path"},
-		{"  root:faros:tenants:org-1  ", "org-1", "", true, "organization path, trimmed"},
-		{"root:faros:tenants:org-1:ws-1:deeper", "", "", false, "nested deeper than one child"},
-		{"root:faros:tenants:", "", "", false, "prefix only"},
-		{"root:faros:tenants::ws", "", "", false, "empty org segment"},
-		{"root:faros:providers:code", "", "", false, "not a tenant path"},
+		{"root:railgrid:tenants:org-1:ws-1", "org-1", "ws-1", true, "workspace path"},
+		{"  root:railgrid:tenants:org-1  ", "org-1", "", true, "organization path, trimmed"},
+		{"root:railgrid:tenants:org-1:ws-1:deeper", "", "", false, "nested deeper than one child"},
+		{"root:railgrid:tenants:", "", "", false, "prefix only"},
+		{"root:railgrid:tenants::ws", "", "", false, "empty org segment"},
+		{"root:railgrid:providers:code", "", "", false, "not a tenant path"},
 		{"2f8a1c9e0b7d4e3f", "", "", false, "a cluster ID is not a path"},
 		{"", "", "", false, "empty"},
 	}
@@ -81,15 +81,15 @@ func fakeHub(t *testing.T, paths map[string]string, hits *atomic.Int32) *httptes
 func TestResolveWorkspace(t *testing.T) {
 	var hits atomic.Int32
 	hub := fakeHub(t, map[string]string{
-		"2f8a1c9e0b7d4e3f": "root:faros:tenants:org-1:ws-1",
-		"9d1e2f3a4b5c6d7e": "root:faros:tenants:org-1",
+		"2f8a1c9e0b7d4e3f": "root:railgrid:tenants:org-1:ws-1",
+		"9d1e2f3a4b5c6d7e": "root:railgrid:tenants:org-1",
 	}, &hits)
 
 	ws, err := ResolveWorkspace(context.Background(), hub.URL, "2f8a1c9e0b7d4e3f", "caller-token", false)
 	if err != nil {
 		t.Fatalf("ResolveWorkspace: %v", err)
 	}
-	want := Workspace{ClusterID: "2f8a1c9e0b7d4e3f", Path: "root:faros:tenants:org-1:ws-1", OrgUUID: "org-1", WorkspaceUUID: "ws-1"}
+	want := Workspace{ClusterID: "2f8a1c9e0b7d4e3f", Path: "root:railgrid:tenants:org-1:ws-1", OrgUUID: "org-1", WorkspaceUUID: "ws-1"}
 	if ws != want {
 		t.Errorf("workspace = %+v, want %+v", ws, want)
 	}
@@ -112,7 +112,7 @@ func TestResolveWorkspace(t *testing.T) {
 
 func TestWorkspaceResolverCachesPerCluster(t *testing.T) {
 	var hits atomic.Int32
-	hub := fakeHub(t, map[string]string{"2f8a1c9e0b7d4e3f": "root:faros:tenants:org-1:ws-1"}, &hits)
+	hub := fakeHub(t, map[string]string{"2f8a1c9e0b7d4e3f": "root:railgrid:tenants:org-1:ws-1"}, &hits)
 	r := NewWorkspaceResolver(hub.URL, false, time.Minute)
 
 	for i := 0; i < 3; i++ {

@@ -1,21 +1,21 @@
-import type { FarosContext } from './types'
+import type { RailgridContext } from './types'
 import {
   installCurrentAppStudioLazyLoaders,
   loadCurrentAppStudioSurface,
   type LazySurface,
 } from './lazyLoaderRegistry'
 
-const TAG = 'faros-provider-app-studio'
-const TILE_TAG = 'faros-dashboard-tile-app-studio'
-const PROVIDER_BOOTSTRAP_RETRY_EVENT = 'faros-provider-bootstrap-retry'
+const TAG = 'railgrid-provider-app-studio'
+const TILE_TAG = 'railgrid-dashboard-tile-app-studio'
+const PROVIDER_BOOTSTRAP_RETRY_EVENT = 'railgrid-provider-bootstrap-retry'
 
 interface LazyMount {
-  setContext(context: FarosContext | null): void
+  setContext(context: RailgridContext | null): void
   unmount(): void
 }
 
 type MountModule = {
-  mount(element: HTMLElement, context: FarosContext | null): LazyMount
+  mount(element: HTMLElement, context: RailgridContext | null): LazyMount
 }
 
 function loadCurrentMount(surface: LazySurface): Promise<MountModule> {
@@ -23,19 +23,19 @@ function loadCurrentMount(surface: LazySurface): Promise<MountModule> {
 }
 
 abstract class LazyAppStudioElement extends HTMLElement {
-  private context: FarosContext | null = null
+  private context: RailgridContext | null = null
   private generation = 0
   private mountHandle: LazyMount | null = null
 
   protected abstract loadMount(): Promise<MountModule>
   protected abstract loadingSurface: LazySurface
 
-  set farosContext(value: FarosContext | null) {
+  set railgridContext(value: RailgridContext | null) {
     this.context = value
     this.mountHandle?.setContext(value)
   }
 
-  get farosContext(): FarosContext | null {
+  get railgridContext(): RailgridContext | null {
     return this.context
   }
 

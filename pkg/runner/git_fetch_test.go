@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,9 +31,9 @@ func TestValidateFetchRemoteURL(t *testing.T) {
 	valid := []string{
 		local,
 		fileURL,
-		"https://github.com/faroshq/faros.git",
-		"ssh://git@example.com/faroshq/faros.git",
-		"git@example.com:faroshq/faros.git",
+		"https://github.com/railgrid/railgrid.git",
+		"ssh://git@example.com/railgrid/railgrid.git",
+		"git@example.com:railgrid/railgrid.git",
 	}
 	for _, value := range valid {
 		t.Run("valid/"+value, func(t *testing.T) {

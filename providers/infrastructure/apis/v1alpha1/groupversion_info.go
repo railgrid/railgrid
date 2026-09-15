@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ const (
 	// New per-template CRDs registered by the Template controller share
 	// this group; their resource names are derived from
 	// Template.spec.instanceCRD.
-	GroupName = "infrastructure.faros.sh"
+	GroupName = "infrastructure.railgrid.ai"
 	// Version pins the served + storage version. Bumping to v1 will
 	// require a conversion plan — keep all in-tree changes additive
 	// until then.

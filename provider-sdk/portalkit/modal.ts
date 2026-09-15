@@ -13,7 +13,7 @@
 //   await alertModal('Done', 'The thing happened.')
 
 import { ic } from './icons'
-import { ensureFarosUIStyles } from './styles'
+import { ensureRailgridUIStyles } from './styles'
 
 export interface ConfirmOptions {
   title: string
@@ -35,7 +35,7 @@ function esc(s: string): string {
 // dialog is the shared renderer: builds the overlay, wires confirm/cancel/escape/
 // backdrop, and resolves once. `showCancel=false` gives an alert (single button).
 function dialog(opts: ConfirmOptions, showCancel: boolean): Promise<boolean> {
-  ensureFarosUIStyles()
+  ensureRailgridUIStyles()
   return new Promise<boolean>((resolve) => {
     const overlay = document.createElement('div')
     overlay.className = 'k-modal-overlay'

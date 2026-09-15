@@ -2,15 +2,15 @@
 layout: default
 title: Install — Multi-Shard kcp
 nav_order: 6
-description: "Install faros hub against a two-shard kcp deployed with the kcp-operator, exposed via Gateway API, with optional Cloudflare DNS"
+description: "Install railgrid hub against a two-shard kcp deployed with the kcp-operator, exposed via Gateway API, with optional Cloudflare DNS"
 ---
 
-# Install: faros hub with a multi-shard kcp
+# Install: railgrid hub with a multi-shard kcp
 {: .no_toc }
 
 A production-shaped installation: a two-shard kcp deployed by the
 kcp-operator, one shared etcd, everything exposed through a Gateway API
-(Envoy) TLS-passthrough listener, and the faros hub running stateless against
+(Envoy) TLS-passthrough listener, and the railgrid hub running stateless against
 that kcp. Optionally published in Cloudflare DNS.
 {: .fs-6 .fw-300 }
 
@@ -24,7 +24,7 @@ that kcp. Optionally published in Cloudflare DNS.
 
 ## How this guide stays correct
 
-Every step below is a script in [`hack/install/`](https://github.com/faroshq/faros/tree/main/hack/install),
+Every step below is a script in [`hack/install/`](https://github.com/railgrid/railgrid/tree/main/hack/install),
 and the e2e suite `make e2e-install-external` runs those scripts **verbatim**
 against a fresh kind cluster on every change. If a step in this guide drifted
 from reality, CI would fail. The scripts and this page must be changed
@@ -34,12 +34,12 @@ All knobs are environment variables with defaults (see `hack/install/lib.sh`):
 
 | Variable | Default | Meaning |
 |:---------|:--------|:--------|
-| `FAROS_INSTALL_CLUSTER` | `faros` | kind cluster name |
+| `RAILGRID_INSTALL_CLUSTER` | `railgrid` | kind cluster name |
 | `KCP_DOMAIN` | `kcp.localhost` | kcp base domain (front-proxy hostname) |
 | `KCP_SHARD_2` | `theseus` | name of the second shard |
 | `KCP_GATEWAY_IP` | `10.96.2.2` | fixed ClusterIP the gateway claims |
-| `FAROS_STATIC_TOKEN` | random, saved to `.faros-install/hub-token` | shared static bearer token (generated and printed by the first script you run; set it to bring your own) |
-| `HUB_DOMAIN` | `faros.kcp.localhost` | hub hostname on the gateway |
+| `RAILGRID_STATIC_TOKEN` | random, saved to `.railgrid-install/hub-token` | shared static bearer token (generated and printed by the first script you run; set it to bring your own) |
+| `HUB_DOMAIN` | `railgrid.kcp.localhost` | hub hostname on the gateway |
 | `HUB_EXTERNAL_URL` | `https://localhost:9443` | URL baked into kubeconfigs |
 | `HUB_REPLICAS` | `2` | hub Deployment replicas |
 
@@ -50,7 +50,7 @@ port-forwards (`hack/install/port-forward.sh`).
 ### Architecture
 
 ```
-                    you / faros CLI / browser
+                    you / railgrid CLI / browser
                           │ :8443 (SNI)              │ :9443
                           ▼                          ▼
               ┌──────────────────────┐      (local port-forward,
@@ -58,10 +58,10 @@ port-forwards (`hack/install/port-forward.sh`).
               │  TLS passthrough     │
               └──┬───────┬───────┬───┴───────────┐
       SNI:       │       │       │               │
-  kcp.localhost  │  root.…  theseus.…     faros.kcp.localhost
+  kcp.localhost  │  root.…  theseus.…     railgrid.kcp.localhost
                  ▼       ▼       ▼               ▼
           ┌───────────┐ ┌─────┐ ┌────────┐ ┌───────────┐
-          │front-proxy│ │root │ │theseus │ │ faros-hub │
+          │front-proxy│ │root │ │theseus │ │ railgrid-hub │
           │           │ │shard│ │ shard  │ │ (2 repl.) │
           └─────┬─────┘ └──┬──┘ └───┬────┘ └─────┬─────┘
                 └── kcp ───┴────────┘            │
@@ -82,11 +82,11 @@ port-forwards (`hack/install/port-forward.sh`).
 |:-----|:--------|
 | [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) | local Kubernetes cluster (any conformant cluster works) |
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | applying manifests |
-| [Helm](https://helm.sh/docs/intro/install/) v3+ | Envoy Gateway, faros-hub chart |
+| [Helm](https://helm.sh/docs/intro/install/) v3+ | Envoy Gateway, railgrid-hub chart |
 | [Docker](https://docs.docker.com/get-docker/) | kind's runtime |
 | `openssl` | deriving the kcp static-token identity |
 
-Clone the repo — the hub chart is installed from `deploy/charts/faros-hub`.
+Clone the repo — the hub chart is installed from `deploy/charts/railgrid-hub`.
 
 ---
 
@@ -99,12 +99,12 @@ hack/install/01-kind-cluster.sh
 which is:
 
 ```bash
-kind create cluster --name faros
-kubectl cluster-info --context kind-faros
+kind create cluster --name railgrid
+kubectl cluster-info --context kind-railgrid
 ```
 
 Using a managed/other cluster instead: skip this step and point the scripts at
-your context (they use `kind-${FAROS_INSTALL_CLUSTER}`).
+your context (they use `kind-${RAILGRID_INSTALL_CLUSTER}`).
 
 ## Step 2 — cert-manager + self-signed issuer
 
@@ -237,9 +237,9 @@ This is the heart of the install. The script applies (all in namespace
 `default`; full YAML in the script):
 
 1. **`Secret kcp-static-tokens`** — a `--token-auth-file` CSV mapping
-   the static token (`$FAROS_STATIC_TOKEN`, from `.faros-install/hub-token`)
-   to the identity the faros hub derives from the same token
-   (`faros:static:<first 16 hex of sha256("static-token/<token>")>`). Both
+   the static token (`$RAILGRID_STATIC_TOKEN`, from `.railgrid-install/hub-token`)
+   to the identity the railgrid hub derives from the same token
+   (`railgrid:static:<first 16 hex of sha256("static-token/<token>")>`). Both
    the shards *and* the front-proxy get this file via `spec.auth.tokenAuthFile`
    — the front-proxy authenticates first, so wiring only the shards would 401.
 2. **`RootShard root`** — etcd prefix `/shard/root`, shard base URL
@@ -260,12 +260,12 @@ This is the heart of the install. The script applies (all in namespace
    `system:masters` on ingress.
 
 The script then waits for everything and extracts the kubeconfigs to
-`.faros-install/`:
+`.railgrid-install/`:
 
 ```
-.faros-install/kcp-frontproxy.kubeconfig   ← use this one
-.faros-install/kcp-root.kubeconfig
-.faros-install/kcp-theseus.kubeconfig
+.railgrid-install/kcp-frontproxy.kubeconfig   ← use this one
+.railgrid-install/kcp-root.kubeconfig
+.railgrid-install/kcp-theseus.kubeconfig
 ```
 
 ### Verify
@@ -273,42 +273,42 @@ The script then waits for everything and extracts the kubeconfigs to
 ```bash
 hack/install/port-forward.sh start
 
-kubectl --kubeconfig .faros-install/kcp-frontproxy.kubeconfig get workspaces
-kubectl --kubeconfig .faros-install/kcp-root.kubeconfig get shards
+kubectl --kubeconfig .railgrid-install/kcp-frontproxy.kubeconfig get workspaces
+kubectl --kubeconfig .railgrid-install/kcp-root.kubeconfig get shards
 ```
 
 `get shards` (against the root shard) must list **two** shards, `root` and
 `theseus`, both `Ready`.
 
-## Step 7 — faros hub (external kcp)
+## Step 7 — railgrid hub (external kcp)
 
 ```bash
-hack/install/07-faros-hub-external.sh
+hack/install/07-railgrid-hub-external.sh
 ```
 
 which is, in essence:
 
 ```bash
-kubectl create namespace faros-system
+kubectl create namespace railgrid-system
 
 # the hub mounts the front-proxy admin kubeconfig from a Secret
-kubectl create secret generic kcp-frontproxy-admin -n faros-system \
-  --from-file=admin.kubeconfig=.faros-install/kcp-frontproxy.kubeconfig
+kubectl create secret generic kcp-frontproxy-admin -n railgrid-system \
+  --from-file=admin.kubeconfig=.railgrid-install/kcp-frontproxy.kubeconfig
 
 # dev-grade RBAC: the hub installs CRDs into its own cluster
-kubectl create clusterrolebinding faros-hub-cluster-admin \
-  --clusterrole=cluster-admin --serviceaccount=faros-system:default
+kubectl create clusterrolebinding railgrid-hub-cluster-admin \
+  --clusterrole=cluster-admin --serviceaccount=railgrid-system:default
 
-helm upgrade --install faros-hub deploy/charts/faros-hub \
-  --namespace faros-system \
+helm upgrade --install railgrid-hub deploy/charts/railgrid-hub \
+  --namespace railgrid-system \
   --set replicaCount=2 \
   --set kcp.embedded.enabled=false \
   --set kcp.external.enabled=true \
   --set kcp.external.existingSecret=kcp-frontproxy-admin \
   --set hub.hubExternalURL=https://localhost:9443 \
   --set hub.devMode=true \
-  --set "hub.staticAuthTokens={$(cat .faros-install/hub-token)}" \
-  --set 'hub.tls.selfSigned.dnsNames={faros.kcp.localhost}' \
+  --set "hub.staticAuthTokens={$(cat .railgrid-install/hub-token)}" \
+  --set 'hub.tls.selfSigned.dnsNames={railgrid.kcp.localhost}' \
   --set hostAliases[0].ip=10.96.2.2 \
   --set hostAliases[0].hostnames[0]=kcp.localhost \
   --set hostAliases[0].hostnames[1]=root.kcp.localhost \
@@ -317,7 +317,7 @@ helm upgrade --install faros-hub deploy/charts/faros-hub \
 ```
 
 plus a `TLSRoute` attaching the hub to the same gateway at SNI
-`faros.kcp.localhost` → `faros-hub:9443`.
+`railgrid.kcp.localhost` → `railgrid-hub:9443`.
 
 With external kcp the chart renders a stateless **Deployment** (here: 2
 replicas). Every replica serves the full request surface — singleton
@@ -331,16 +331,16 @@ Secrets — so no ingress session affinity is needed (see
 hack/install/port-forward.sh start
 
 curl -k https://localhost:9443/healthz            # → ok
-curl -k --resolve faros.kcp.localhost:8443:127.0.0.1 \
-  https://faros.kcp.localhost:8443/healthz              # hub via the gateway
+curl -k --resolve railgrid.kcp.localhost:8443:127.0.0.1 \
+  https://railgrid.kcp.localhost:8443/healthz              # hub via the gateway
 
-faros login --hub-url https://localhost:9443 \
-  --token "$(cat .faros-install/hub-token)" --insecure-skip-tls-verify
+railgrid login --hub-url https://localhost:9443 \
+  --token "$(cat .railgrid-install/hub-token)" --insecure-skip-tls-verify
 kubectl get organizations
 ```
 
 The token is the random one the first install script generated and printed
-(`.faros-install/hub-token`); if you exported `FAROS_STATIC_TOKEN` yourself,
+(`.railgrid-install/hub-token`); if you exported `RAILGRID_STATIC_TOKEN` yourself,
 use that value instead.
 
 ---
@@ -421,7 +421,7 @@ then asserts:
 - kcp answers through the gateway (front-proxy kubeconfig),
 - the hub is healthy at `https://localhost:9443` **and** through the
   gateway SNI route,
-- `faros login` with the static token works and the tenancy API (organization
+- `railgrid login` with the static token works and the tenancy API (organization
   and workspace CRUD) functions end-to-end.
 
 For the embedded-kcp variant of this install, see

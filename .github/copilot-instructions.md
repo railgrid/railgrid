@@ -1,6 +1,6 @@
-# Copilot review instructions — faros
+# Copilot review instructions — railgrid
 
-faros is a kcp-based multi-tenant control plane (the **hub**) plus pluggable
+railgrid is a kcp-based multi-tenant control plane (the **hub**) plus pluggable
 **providers**. Tenant isolation is the core security property. When reviewing a
 PR, weight the checks below heavily and call out any violation explicitly,
 citing the file and line. Architecture reference: [AGENTS.md](../AGENTS.md),
@@ -13,7 +13,7 @@ A provider that talks to kcp MUST act **as the caller, in the caller's
 workspace** — never with elevated or shared credentials.
 
 - The hub forwards the caller's bearer token plus the tenant workspace's kcp
-  logical-cluster ID in `X-Faros-Tenant` and `X-Faros-Cluster` (never the
+  logical-cluster ID in `X-Railgrid-Tenant` and `X-Railgrid-Cluster` (never the
   workspace path). The provider's `tenant/` package (`client.go`,
   `credentials.go`) must build a **per-(tenant, caller) dynamic client**
   scoped to `<host>/clusters/<clusterID>`. Canonical patterns:
@@ -24,9 +24,9 @@ workspace** — never with elevated or shared credentials.
   a package-level/singleton client, or a client whose host/cluster path is not
   scoped to the request's tenant.
 - **Flag** any path where the tenant scope comes from request *body* or a
-  client-supplied value instead of the hub-resolved `X-Faros-Cluster` /
-  `X-Faros-Tenant` header, and any code that parses a workspace path
-  (`root:faros:tenants:...`) out of a header — org/workspace UUIDs come from
+  client-supplied value instead of the hub-resolved `X-Railgrid-Cluster` /
+  `X-Railgrid-Tenant` header, and any code that parses a workspace path
+  (`root:railgrid:tenants:...`) out of a header — org/workspace UUIDs come from
   kcp (`provider-sdk/tenantaccess.ResolveWorkspace`).
 
 ## 2. No credential substitution / privilege escalation
@@ -67,7 +67,7 @@ data.
 - Org workspaces are **hub-mediated only**. Tenants never receive a kubeconfig
   reaching an Org workspace; CatalogEntry/Membership/child-workspace operations
   go through hub REST endpoints (the proxy refuses exec-credentials for
-  `root:faros:orgs:{uuid}` paths). Flag any change that hands a tenant a
+  `root:railgrid:orgs:{uuid}` paths). Flag any change that hands a tenant a
   client/kubeconfig into an Org workspace, or that lets a provider write Org-scoped
   resources directly.
 - CatalogEntry breaking fields (`spec.apiExport.*`, `spec.backend.url`) are

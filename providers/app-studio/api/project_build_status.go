@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -38,8 +38,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 const (
@@ -49,7 +49,7 @@ const (
 
 	// projectBuildWorkflowFileName is the canonical compatibility workflow used
 	// by App Studio projects created before templates declared repository CI.
-	projectBuildWorkflowFileName = "faros-app-studio-build.yml"
+	projectBuildWorkflowFileName = "railgrid-app-studio-build.yml"
 	// projectLegacyBuildWorkflowFileName is the workflow used by older project
 	// repositories. It is only attempted when the canonical workflow lookup or
 	// dispatch returns an error; a successful canonical lookup with found=false

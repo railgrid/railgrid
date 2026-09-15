@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -6,9 +6,9 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// agents is a standalone faros provider hosting long-running personal AI
+// agents is a standalone railgrid provider hosting long-running personal AI
 // agents: chat, scheduled/heartbeat runs, tool use over MCP and built-in tool
-// families, and durable memory. Its only hard dependencies are the faros hub
+// families, and durable memory. Its only hard dependencies are the railgrid hub
 // and Postgres; compute- and storage-backed capabilities (the claude-code
 // runner, the file workspace) light up only when the infrastructure provider
 // is present. See docs/agents-provider-architecture.md.
@@ -34,8 +34,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/faroshq/provider-agents/api"
-	"github.com/faroshq/provider-sdk/hubclient"
+	"github.com/railgrid/provider-agents/api"
+	"github.com/railgrid/provider-sdk/hubclient"
 )
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
@@ -45,7 +45,7 @@ const heartbeatVersion = "0.1.0"
 //
 //	agents-provider init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    FAROS_PROVIDER_KUBECONFIG. See init_cmd.go.
+//	    RAILGRID_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	agents-provider serve  — runtime (default).
 func main() {
 	if len(os.Args) > 1 {
@@ -78,11 +78,11 @@ func runServe() {
 	defer stop()
 
 	srv, err := api.New(ctx, api.Config{
-		HubURL:             os.Getenv("FAROS_HUB_URL"),
-		HubInsecure:        os.Getenv("FAROS_HUB_INSECURE") == "true",
+		HubURL:             os.Getenv("RAILGRID_HUB_URL"),
+		HubInsecure:        os.Getenv("RAILGRID_HUB_INSECURE") == "true",
 		DatabaseURL:        os.Getenv("AGENTS_DATABASE_URL"),
 		InMemoryStore:      os.Getenv("AGENTS_IN_MEMORY_STORE") == "true",
-		ProviderKubeconfig: os.Getenv("FAROS_PROVIDER_KUBECONFIG"),
+		ProviderKubeconfig: os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),
 		WebhookKey:         os.Getenv("AGENTS_WEBHOOK_KEY"),
 		SchedulerInterval:  parseDuration(os.Getenv("AGENTS_SCHEDULER_INTERVAL")),
 		OAuthApps:          oauthAppsFromEnv(),

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,22 +39,22 @@ import (
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	"github.com/faroshq/provider-sdk/apiexportprovider"
-	"github.com/faroshq/provider-sdk/leaderelection"
-	"github.com/faroshq/provider-sdk/vwhealth"
+	"github.com/railgrid/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/leaderelection"
+	"github.com/railgrid/provider-sdk/vwhealth"
 
-	"github.com/faroshq/provider-code/backend"
-	"github.com/faroshq/provider-code/commitbundle"
-	"github.com/faroshq/provider-code/controller/collaborator"
-	"github.com/faroshq/provider-code/controller/connection"
-	"github.com/faroshq/provider-code/controller/deploykey"
-	"github.com/faroshq/provider-code/controller/packages"
-	"github.com/faroshq/provider-code/controller/repository"
-	"github.com/faroshq/provider-code/controller/repositorybuildstatus"
-	"github.com/faroshq/provider-code/controller/repositorycheckout"
-	"github.com/faroshq/provider-code/controller/repositorycommit"
-	"github.com/faroshq/provider-code/install"
-	codescheme "github.com/faroshq/provider-code/scheme"
+	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-code/commitbundle"
+	"github.com/railgrid/provider-code/controller/collaborator"
+	"github.com/railgrid/provider-code/controller/connection"
+	"github.com/railgrid/provider-code/controller/deploykey"
+	"github.com/railgrid/provider-code/controller/packages"
+	"github.com/railgrid/provider-code/controller/repository"
+	"github.com/railgrid/provider-code/controller/repositorybuildstatus"
+	"github.com/railgrid/provider-code/controller/repositorycheckout"
+	"github.com/railgrid/provider-code/controller/repositorycommit"
+	"github.com/railgrid/provider-code/install"
+	codescheme "github.com/railgrid/provider-code/scheme"
 )
 
 // endpointSliceName is the APIExportEndpointSlice the multicluster provider
@@ -180,12 +180,12 @@ func runControllerManager(ctx context.Context, config *rest.Config, registry *ba
 //
 // Returns errControllerDisabled when none resolve.
 func loadControllerConfig() (*rest.Config, error) {
-	// FAROS_PROVIDER_KUBECONFIG is the standardized name across all providers.
+	// RAILGRID_PROVIDER_KUBECONFIG is the standardized name across all providers.
 	// CODE_KUBECONFIG is kept as a fallback for one release.
-	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"); p != "" {
 		c, err := clientcmd.BuildConfigFromFlags("", p)
 		if err != nil {
-			return nil, fmt.Errorf("FAROS_PROVIDER_KUBECONFIG: %w", err)
+			return nil, fmt.Errorf("RAILGRID_PROVIDER_KUBECONFIG: %w", err)
 		}
 		return c, nil
 	}

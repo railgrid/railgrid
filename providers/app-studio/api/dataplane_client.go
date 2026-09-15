@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -107,15 +107,15 @@ func (s *Server) newDataPlaneRequest(ctx context.Context, method string, id iden
 	// exactly as it does for the portal. An org-owned (BYO) infrastructure
 	// provider is reached over the edge tunnel with a delegated token minted
 	// in the selected workspace, and the hub refuses that call with
-	// "a workspace selection (X-Faros-Workspace) is required" when the
+	// "a workspace selection (X-Railgrid-Workspace) is required" when the
 	// selection is missing. Without them every sandbox sync, exec, restart and
 	// log fetch against a tenant-hosted runtime fails with that 403 while the
 	// preview edge itself stays reachable.
 	if org := strings.TrimSpace(id.orgUUID); org != "" {
-		req.Header.Set("X-Faros-Org", org)
+		req.Header.Set("X-Railgrid-Org", org)
 	}
 	if ws := strings.TrimSpace(id.workspaceUUID); ws != "" {
-		req.Header.Set("X-Faros-Workspace", ws)
+		req.Header.Set("X-Railgrid-Workspace", ws)
 	}
 	return req, nil
 }

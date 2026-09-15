@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,15 +34,15 @@ func TestInvalidJoinTokenRejected(t *testing.T) {
 	const edgeName = "reject-srv"
 
 	workDir := suiteTempDir(t, "invalid-join-token")
-	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")
-	runCLI(t, kubeconfig, farosBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
+	kubeconfig := filepath.Join(workDir, "railgrid.kubeconfig")
+	runCLI(t, kubeconfig, railgridBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
 	tenantWS := clusterFromKubeconfig(t, kubeconfig)
 	tenantAdmin := kcpDynamic(t, tenantWS, adminToken)
 
 	enableEdges(t, tenantAdmin)
 	grantEdgeProxy(t, tenantAdmin)
 
-	runCLI(t, kubeconfig, farosBin, "edge", "create", edgeName, "--type", "server")
+	runCLI(t, kubeconfig, railgridBin, "edge", "create", edgeName, "--type", "server")
 	t.Cleanup(func() {
 		_ = tenantAdmin.Resource(linuxServerGVR).Delete(context.Background(), edgeName, metav1.DeleteOptions{})
 	})

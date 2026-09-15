@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -7,9 +7,9 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // Package tenant talks to the tenant's kcp workspace via the
-// faros-provider-kubeconfig the hub catalog controller mints for this
+// railgrid-provider-kubeconfig the hub catalog controller mints for this
 // provider. The base kubeconfig targets the provider's own workspace
-// (root:faros:providers:infrastructure); per-tenant operations derive
+// (root:railgrid:providers:infrastructure); per-tenant operations derive
 // a scoped client by swapping the cluster path in the host URL — the
 // recipe lives in pkg/hub/providers/provision.go around clientFor().
 //

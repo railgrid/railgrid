@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/provider-code/backend"
+	"github.com/railgrid/provider-code/backend"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
@@ -26,7 +26,7 @@ import (
 
 func admissionServer(t *testing.T, allowed bool) *Server {
 	t.Helper()
-	repo := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "code.faros.sh/v1alpha1", "kind": "Repository", "metadata": map[string]any{"name": "product", "uid": "repo-uid"}}}
+	repo := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "code.railgrid.ai/v1alpha1", "kind": "Repository", "metadata": map[string]any{"name": "product", "uid": "repo-uid"}}}
 	caller := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), repo)
 	caller.PrependReactor("create", "selfsubjectaccessreviews", func(ktesting.Action) (bool, runtime.Object, error) {
 		return true, &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"allowed": allowed}}}, nil
@@ -50,7 +50,7 @@ func (b *observedBody) Read(p []byte) (int, error) {
 
 func admissionRequest(ctx context.Context, action string, body io.Reader) *http.Request {
 	r := httptest.NewRequest("POST", "/actions/clusters/tenant-id/repositories/product/"+action+"/v1", body).WithContext(ctx)
-	r.Header.Set("X-Faros-Cluster", "tenant-id")
+	r.Header.Set("X-Railgrid-Cluster", "tenant-id")
 	r.Header.Set("Authorization", "Bearer caller-token")
 	return r
 }

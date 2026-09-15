@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,12 +15,12 @@ limitations under the License.
 */
 
 // gen-core-apiexport merges all individual APIExport YAMLs under config/kcp/
-// into a single "core.faros.sh" APIExport that covers every API group.
-// This lets tenants bind a single export to get access to all faros resources.
+// into a single "core.railgrid.ai" APIExport that covers every API group.
+// This lets tenants bind a single export to get access to all railgrid resources.
 //
 // Usage (via make codegen):
 //
-//	go run ./hack/gen-core-apiexport --config-dir config/kcp --output config/kcp/apiexport-core.faros.sh.yaml
+//	go run ./hack/gen-core-apiexport --config-dir config/kcp --output config/kcp/apiexport-core.railgrid.ai.yaml
 package main
 
 import (
@@ -50,7 +50,7 @@ type apiExport struct {
 
 func main() {
 	configDir := flag.String("config-dir", "config/kcp", "directory containing individual APIExport YAML files")
-	output := flag.String("output", "config/kcp/apiexport-core.faros.sh.yaml", "path for the generated merged APIExport")
+	output := flag.String("output", "config/kcp/apiexport-core.railgrid.ai.yaml", "path for the generated merged APIExport")
 	flag.Parse()
 
 	entries, err := os.ReadDir(*configDir)
@@ -69,14 +69,14 @@ func main() {
 	outputBase := filepath.Base(*output)
 
 	// excludedAPIExports are API groups whose APIExports must NOT be merged
-	// into core.faros.sh. These exports are platform-owner-only and are not
+	// into core.railgrid.ai. These exports are platform-owner-only and are not
 	// bound into tenant workspaces — the hub binds them directly in its
-	// own workspaces (providers in root:faros:providers, tenancy in
-	// root:faros:users) and writes their CRs with admin credentials.
+	// own workspaces (providers in root:railgrid:providers, tenancy in
+	// root:railgrid:users) and writes their CRs with admin credentials.
 	excludedAPIExports := map[string]bool{
-		"apiexport-providers.faros.sh.yaml": true,
-		"apiexport-admin.faros.sh.yaml":     true,
-		"apiexport-tenants.faros.sh.yaml":   true,
+		"apiexport-providers.railgrid.ai.yaml": true,
+		"apiexport-admin.railgrid.ai.yaml":     true,
+		"apiexport-tenants.railgrid.ai.yaml":   true,
 	}
 
 	var files []string
@@ -131,7 +131,7 @@ func main() {
 		"apiVersion": "apis.kcp.io/v1alpha2",
 		"kind":       "APIExport",
 		"metadata": map[string]interface{}{
-			"name": "core.faros.sh",
+			"name": "core.railgrid.ai",
 		},
 		"spec": map[string]interface{}{
 			"permissionClaims": mergedClaims,

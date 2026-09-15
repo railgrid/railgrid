@@ -1,16 +1,16 @@
 # Sample ResourceGraphDefinition that materializes as a SimpleWebApp.
 #
 # Bridged from the infrastructure upstream example
-# (examples/multicluster/simple-webapp-rgd.yaml) with faros labels +
-# annotations added so the faros infrastructure provider's catalog
+# (examples/multicluster/simple-webapp-rgd.yaml) with railgrid labels +
+# annotations added so the railgrid infrastructure provider's catalog
 # picks it up:
 #
-#   faros.sh/expose=true            → mandatory; gates visibility
-#   faros.sh/template-name          → catalog slug (the URL segment)
-#   faros.sh/template-version       → required when provisioning
-#   faros.sh/category, /cloud       → optional facet chips in UI
-#   faros.sh/display-name           → human-readable name
-#   faros.sh/description            → short blurb
+#   railgrid.ai/expose=true            → mandatory; gates visibility
+#   railgrid.ai/template-name          → catalog slug (the URL segment)
+#   railgrid.ai/template-version       → required when provisioning
+#   railgrid.ai/category, /cloud       → optional facet chips in UI
+#   railgrid.ai/display-name           → human-readable name
+#   railgrid.ai/description            → short blurb
 #
 # The provider's kro/templates.go reads exactly these keys (see
 # the LabelExpose / AnnotationDisplayName etc constants in
@@ -20,14 +20,14 @@ kind: ResourceGraphDefinition
 metadata:
   name: simple-webapp
   labels:
-    faros.sh/expose: "true"
-    faros.sh/template-name: simple-webapp
-    faros.sh/template-version: 0.1.0
-    faros.sh/category: Workloads
-    faros.sh/cloud: k8s
+    railgrid.ai/expose: "true"
+    railgrid.ai/template-name: simple-webapp
+    railgrid.ai/template-version: 0.1.0
+    railgrid.ai/category: Workloads
+    railgrid.ai/cloud: k8s
   annotations:
-    faros.sh/display-name: "Simple webapp"
-    faros.sh/description: "A web application — Deployment + Service, nginx by default. Scales via the replicas input."
+    railgrid.ai/display-name: "Simple webapp"
+    railgrid.ai/description: "A web application — Deployment + Service, nginx by default. Scales via the replicas input."
 spec:
   schema:
     apiVersion: v1alpha1

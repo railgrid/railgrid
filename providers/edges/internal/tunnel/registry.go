@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -81,8 +81,8 @@ const (
 	// GET per key per interval, not one per request.
 	registryCacheTTL = 3 * time.Second
 
-	tunnelLeaseLabel    = "edges.faros.sh/tunnel-registry"
-	tunnelLeaseKeyAnno  = "edges.faros.sh/conn-key"
+	tunnelLeaseLabel    = "edges.railgrid.ai/tunnel-registry"
+	tunnelLeaseKeyAnno  = "edges.railgrid.ai/conn-key"
 	tunnelLeasePrefix   = "edge-tunnel-"
 	presenceLeasePrefix = "edge-replica-"
 )

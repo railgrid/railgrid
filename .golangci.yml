@@ -26,4 +26,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/faroshq/faros
+        - github.com/railgrid/railgrid

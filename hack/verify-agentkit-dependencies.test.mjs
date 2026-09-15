@@ -18,7 +18,7 @@ test('PortalKit has no reverse dependency or optional AI stylesheet recipes', ()
       assert.doesNotMatch(imported, /agentkit/, `${path} imports optional AgentKit`)
     }
   }
-  const css = readFileSync(resolve(root, 'provider-sdk/portalkit/faros-ui.css'), 'utf8')
+  const css = readFileSync(resolve(root, 'provider-sdk/portalkit/railgrid-ui.css'), 'utf8')
   assert.doesNotMatch(css, /\.k-(?:ai-|model-|workbench-tab)/)
 })
 

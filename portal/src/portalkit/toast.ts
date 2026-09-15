@@ -8,7 +8,7 @@
 // its reactive priority queue, timers, pausing, and visual lifecycle.
 
 export const TOAST_TRANSPORT_VERSION = 1
-export const TOAST_TRANSPORT_EVENT = 'faros:portalkit:toast'
+export const TOAST_TRANSPORT_EVENT = 'railgrid:portalkit:toast'
 
 export type ToastKind = 'ok' | 'info' | 'warning' | 'error'
 export type ToastTone = ToastKind
@@ -156,7 +156,7 @@ interface ToastBridge {
 
 type ToastGlobal = typeof globalThis & { [key: symbol]: unknown }
 const toastGlobal = globalThis as ToastGlobal
-const BRIDGE_KEY = Symbol.for('faros.portalkit.vue.toast.bridge.v1')
+const BRIDGE_KEY = Symbol.for('railgrid.portalkit.vue.toast.bridge.v1')
 const SOURCE_ID = `vue-toast-${Math.random().toString(36).slice(2)}`
 const MIN_DURATION = 5000
 const MAX_SEEN_OPERATIONS = 256

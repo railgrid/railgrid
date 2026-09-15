@@ -8,12 +8,12 @@
 import agentUIStyles from './agent-ui.css?inline'
 import activityStyles from './activity.css?inline'
 import conversationStyles from './conversation.css?inline'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 export const AGENT_UI_STYLE_ID = 'k-agent-ui'
-export const AGENT_UI_CANONICAL_MARKER = '--faros-agent-ui-canonical'
+export const AGENT_UI_CANONICAL_MARKER = '--railgrid-agent-ui-canonical'
 export const AGENT_UI_CANONICAL_VALUE = '1'
-export const AGENT_UI_VERSION_MARKER = '--faros-agent-ui-version'
+export const AGENT_UI_VERSION_MARKER = '--railgrid-agent-ui-version'
 export const AGENT_UI_VERSION = 6
 
 function hasRequiredVersion(value: string): boolean {
@@ -42,7 +42,7 @@ function hostStylesAreLoaded(): boolean {
 export function ensureAgentUIStyles(): void {
   if (typeof document === 'undefined') return
 
-  ensureFarosUIStyles()
+  ensureRailgridUIStyles()
   if (hostStylesAreLoaded()) return
 
   const fallbackStyleID = document.getElementById(AGENT_UI_STYLE_ID)
@@ -52,8 +52,8 @@ export function ensureAgentUIStyles(): void {
 
   const style = document.createElement('style')
   style.id = fallbackStyleID
-  style.setAttribute('data-faros-agent-ui-source', 'agentkit-fallback')
-  style.setAttribute('data-faros-agent-ui-version', String(AGENT_UI_VERSION))
+  style.setAttribute('data-railgrid-agent-ui-source', 'agentkit-fallback')
+  style.setAttribute('data-railgrid-agent-ui-version', String(AGENT_UI_VERSION))
   style.textContent = `${agentUIStyles}\n${activityStyles}\n${conversationStyles}`
   document.head?.appendChild(style)
 }

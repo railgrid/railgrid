@@ -242,7 +242,7 @@ function contextIsCurrent(name: string, api: ApiClient): boolean {
 
 function sessionKey(name: string, api: ApiClient): string {
   const tenant = api.tenant()
-  return `faros:agents:session:${tenant.orgUUID || ''}:${tenant.workspaceUUID || ''}:${name}`
+  return `railgrid:agents:session:${tenant.orgUUID || ''}:${tenant.workspaceUUID || ''}:${name}`
 }
 
 function newSessionID(): string {

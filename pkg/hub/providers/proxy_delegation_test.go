@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,15 +31,15 @@ type platformUpstream struct {
 }
 
 // newPlatformProxy builds a backend proxy in front of one platform provider,
-// resolving the caller to root:faros:tenants:{org}[:{ws}].
+// resolving the caller to root:railgrid:tenants:{org}[:{ws}].
 func newPlatformProxy(t *testing.T, name, wsOfCaller string) (*ProviderProxy, *platformUpstream) {
 	t.Helper()
 	rec := &platformUpstream{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.hit = true
 		rec.authorization = r.Header.Get("Authorization")
-		rec.user = r.Header.Get("X-Faros-User")
-		rec.tenant = r.Header.Get("X-Faros-Tenant")
+		rec.user = r.Header.Get("X-Railgrid-User")
+		rec.tenant = r.Header.Get("X-Railgrid-Tenant")
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(srv.Close)
@@ -53,7 +53,7 @@ func newPlatformProxy(t *testing.T, name, wsOfCaller string) (*ProviderProxy, *p
 
 	proxy := NewBackendProxy(reg, logr.Discard())
 	proxy.SetTenantResolver(TenantResolverFunc(func(*http.Request) (string, string, error) {
-		path := "root:faros:tenants:" + testOrg
+		path := "root:railgrid:tenants:" + testOrg
 		if wsOfCaller != "" {
 			path += ":" + wsOfCaller
 		}
@@ -120,7 +120,7 @@ func TestPlatformDelegationSwapsTheBearer(t *testing.T) {
 			if strings.Contains(rec.authorization, callerBearer) {
 				t.Error("the caller's hub bearer reached a platform provider")
 			}
-			if rec.user != "alice" || rec.tenant != testClusterIDFor("root:faros:tenants:"+testOrg+":"+testWS) {
+			if rec.user != "alice" || rec.tenant != testClusterIDFor("root:railgrid:tenants:"+testOrg+":"+testWS) {
 				t.Errorf("identity headers = (%q, %q), want the caller's user and workspace cluster ID — providers attribute work with them", rec.user, rec.tenant)
 			}
 			if issuer.calls != 1 || issuer.org != testOrg || issuer.ws != testWS || issuer.user != "alice" || issuer.provider != "infrastructure" {

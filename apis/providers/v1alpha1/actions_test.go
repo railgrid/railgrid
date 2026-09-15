@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ func testProviderAction() ProviderActionSpec {
 		DisplayName: "Query table",
 		Description: "Run a bounded read-only query.",
 		BoundResource: ProviderActionBoundResource{
-			APIVersion: "databricks.faros.sh/v1alpha1",
+			APIVersion: "databricks.railgrid.ai/v1alpha1",
 			Kind:       "Table",
 			Resource:   "tables",
 		},

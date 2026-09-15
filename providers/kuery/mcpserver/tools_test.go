@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,10 +22,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"gorm.io/datatypes"
 
-	"github.com/faroshq/kuery/pkg/engine"
-	"github.com/faroshq/kuery/pkg/store"
+	"github.com/railgrid/kuery/pkg/engine"
+	"github.com/railgrid/kuery/pkg/store"
 
-	"github.com/faroshq/provider-kuery/engagement"
+	"github.com/railgrid/provider-kuery/engagement"
 )
 
 // TestQueryToolSpecSchemaIsObject guards the kuery_query input schema: the
@@ -259,10 +259,10 @@ func mcpSession(t *testing.T, deps Deps, tenantHeader, clusterHeader string) (co
 	h := NewHandler(deps)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tenantHeader != "" {
-			r.Header.Set("X-Faros-Tenant", tenantHeader)
+			r.Header.Set("X-Railgrid-Tenant", tenantHeader)
 		}
 		if clusterHeader != "" {
-			r.Header.Set("X-Faros-Cluster", clusterHeader)
+			r.Header.Set("X-Railgrid-Cluster", clusterHeader)
 		}
 		h.ServeHTTP(w, r)
 	}))
@@ -301,8 +301,8 @@ func callImpact(ctx context.Context, t *testing.T, session *mcp.ClientSession) (
 // TestImpactViaMCPClusterIdentity pins the identity contract for MCP calls,
 // which was the console-dev failure: the hub's MCP aggregate identifies the
 // caller by kcp logical-cluster ID, and kuery keys everything by that same
-// ID. A request carrying only X-Faros-Cluster is scoped correctly; a
-// workspace path in X-Faros-Tenant (with no cluster header) is an explicit
+// ID. A request carrying only X-Railgrid-Cluster is scoped correctly; a
+// workspace path in X-Railgrid-Tenant (with no cluster header) is an explicit
 // error naming the contract, never a silent empty result; a foreign cluster
 // ID sees nothing.
 func TestImpactViaMCPClusterIdentity(t *testing.T) {
@@ -310,7 +310,7 @@ func TestImpactViaMCPClusterIdentity(t *testing.T) {
 	seedEngagedCluster(t, s)
 	seedDeploymentTree(t, s, "fleet-pulse", "fleet-pulse-edge")
 
-	t.Run("X-Faros-Cluster only", func(t *testing.T) {
+	t.Run("X-Railgrid-Cluster only", func(t *testing.T) {
 		ctx, session := mcpSession(t, Deps{Engine: eng}, "", testTenant)
 		out, res := callImpact(ctx, t, session)
 		if res.IsError {
@@ -321,22 +321,22 @@ func TestImpactViaMCPClusterIdentity(t *testing.T) {
 		}
 	})
 
-	t.Run("X-Faros-Cluster wins over a transitional path in X-Faros-Tenant", func(t *testing.T) {
-		ctx, session := mcpSession(t, Deps{Engine: eng}, "root:faros:tenants:org:ws", testTenant)
+	t.Run("X-Railgrid-Cluster wins over a transitional path in X-Railgrid-Tenant", func(t *testing.T) {
+		ctx, session := mcpSession(t, Deps{Engine: eng}, "root:railgrid:tenants:org:ws", testTenant)
 		out, res := callImpact(ctx, t, session)
 		if res.IsError || !out.Found {
 			t.Fatalf("kuery_impact with both headers: error=%v found=%v: %+v", res.IsError, out.Found, res.Content)
 		}
 	})
 
-	t.Run("path in X-Faros-Tenant is rejected with a clear message", func(t *testing.T) {
-		ctx, session := mcpSession(t, Deps{Engine: eng}, "root:faros:tenants:org:ws", "")
+	t.Run("path in X-Railgrid-Tenant is rejected with a clear message", func(t *testing.T) {
+		ctx, session := mcpSession(t, Deps{Engine: eng}, "root:railgrid:tenants:org:ws", "")
 		_, res := callImpact(ctx, t, session)
 		if !res.IsError {
 			t.Fatalf("expected an error for a path identity, got %+v", res.StructuredContent)
 		}
 		raw, _ := json.Marshal(res.Content)
-		for _, want := range []string{"X-Faros-Tenant", "workspace path", "X-Faros-Cluster"} {
+		for _, want := range []string{"X-Railgrid-Tenant", "workspace path", "X-Railgrid-Cluster"} {
 			if !strings.Contains(string(raw), want) {
 				t.Errorf("error content %s does not mention %q", raw, want)
 			}
@@ -364,7 +364,7 @@ func TestImpactViaMCPClusterIdentity(t *testing.T) {
 }
 
 // TestImpactViaMCP drives kuery_impact through the real streamable-HTTP
-// handler with X-Faros-Tenant carrying the cluster ID (the hub's tenant
+// handler with X-Railgrid-Tenant carrying the cluster ID (the hub's tenant
 // header once it, too, carries the ID), so the tool wiring (identity closure,
 // input decoding, structured output) is covered too.
 func TestImpactViaMCP(t *testing.T) {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Dashboard tile for App Studio, mounted by
-// <faros-dashboard-tile-app-studio> (see element.ts).
+// <railgrid-dashboard-tile-app-studio> (see element.ts).
 //
 // App Studio's tile answers "where was I" more than "what exists", so it
 // orders by updatedAt and shows each project's two runtime states side by
@@ -11,7 +11,7 @@
 
 import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from './api'
-import type { FarosContext, Project, ProjectEnvironment } from './types'
+import type { RailgridContext, Project, ProjectEnvironment } from './types'
 import {
   createTilePoller,
   hasWorkspaceContext,
@@ -107,7 +107,7 @@ async function load() {
     // The App Studio client takes the context per call rather than through
     // module-level setters, so the tile passes its own — no shared mutable
     // state with the full provider app when both are mounted.
-    const next = await api.listProjects(ctx as FarosContext)
+    const next = await api.listProjects(ctx as RailgridContext)
     if (generation !== contextGeneration) return
     projects.value = next
     error.value = null

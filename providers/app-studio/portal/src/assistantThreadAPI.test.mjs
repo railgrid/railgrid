@@ -4,7 +4,7 @@ import { createServer } from 'vite'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: '/tmp/faros-vite-assistant-thread-api',
+  cacheDir: '/tmp/railgrid-vite-assistant-thread-api',
   server: { middlewareMode: true, hmr: false },
 })
 const { api } = await vite.ssrLoadModule('/src/api.ts')
@@ -18,7 +18,7 @@ const context = {
 function installRequestMocks(pages, calls) {
   const previousFetch = globalThis.fetch
   const previousStorage = globalThis.localStorage
-  const storage = new Map([['faros:portal:tenant', JSON.stringify({ orgUUID: 'org-1', workspaceUUID: 'workspace-1' })]])
+  const storage = new Map([['railgrid:portal:tenant', JSON.stringify({ orgUUID: 'org-1', workspaceUUID: 'workspace-1' })]])
   globalThis.localStorage = {
     getItem(key) { return storage.get(key) ?? null },
   }

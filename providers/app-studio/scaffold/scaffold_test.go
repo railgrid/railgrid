@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,18 +13,18 @@ package scaffold
 import (
 	"testing"
 
-	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestArchiveURLsGitHub(t *testing.T) {
-	urls, err := ArchiveURLs("github.com/faroshq/faros-scaffold-application", "v0.3.0")
+	urls, err := ArchiveURLs("github.com/railgrid/scaffold-application", "v0.3.0")
 	if err != nil {
 		t.Fatalf("ArchiveURLs: %v", err)
 	}
 	want := []string{
-		"https://codeload.github.com/faroshq/faros-scaffold-application/tar.gz/refs/tags/v0.3.0",
-		"https://codeload.github.com/faroshq/faros-scaffold-application/tar.gz/refs/heads/v0.3.0",
-		"https://codeload.github.com/faroshq/faros-scaffold-application/tar.gz/v0.3.0",
+		"https://codeload.github.com/railgrid/scaffold-application/tar.gz/refs/tags/v0.3.0",
+		"https://codeload.github.com/railgrid/scaffold-application/tar.gz/refs/heads/v0.3.0",
+		"https://codeload.github.com/railgrid/scaffold-application/tar.gz/v0.3.0",
 	}
 	if len(urls) != len(want) {
 		t.Fatalf("urls = %v, want %v", urls, want)

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -78,7 +78,7 @@ export const GRID_COLS = 3
 const DEFAULT_W = 1
 const DEFAULT_H = 2
 
-const STORAGE_PREFIX = 'faros-dashboard-layout:'
+const STORAGE_PREFIX = 'railgrid-dashboard-layout:'
 
 function storageKey(ws: string): string {
   return `${STORAGE_PREFIX}${ws}`

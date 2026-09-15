@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -236,7 +236,7 @@ func TestPersistentExecVerifiesAppliedRevisionDigestAndSanitizesEnvironment(t *t
 	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.ExitCode != 0 || got.Stdout != "/tmp/faros-cache/npm\n\n\n" || got.SourceRevision != 7 || got.SourceDigest != digest {
+	if got.ExitCode != 0 || got.Stdout != "/tmp/railgrid-cache/npm\n\n\n" || got.SourceRevision != 7 || got.SourceDigest != digest {
 		t.Fatalf("persistent exec response = %+v", got)
 	}
 
@@ -259,7 +259,7 @@ func TestPersistentExecExposesAppPortAndComponentButNotAppEnvironment(t *testing
 	workdir := t.TempDir()
 	srv := newTestAgent(t, &agentConfig{WorkDir: workdir, ControlToken: "test-token"})
 	executor := &statelessExecutor{workspace: workdir, env: execContext{Port: "5173", Component: "web"}}
-	files := []syncFile{{Path: "env.sh", Content: "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$PORT\" \"$FAROS_COMPONENT\" \"$DATABASE_URL\" \"$FAROS_DEV_PORT\"\n"}}
+	files := []syncFile{{Path: "env.sh", Content: "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$PORT\" \"$RAILGRID_COMPONENT\" \"$DATABASE_URL\" \"$RAILGRID_DEV_PORT\"\n"}}
 	digest, err := digestSyncFiles(files)
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +270,7 @@ func TestPersistentExecExposesAppPortAndComponentButNotAppEnvironment(t *testing
 	// The executor process itself may carry app-like variables; none of them
 	// may reach the command.
 	t.Setenv("DATABASE_URL", "postgres://must-not-inherit")
-	t.Setenv("FAROS_DEV_PORT", "9999")
+	t.Setenv("RAILGRID_DEV_PORT", "9999")
 	t.Setenv("PORT", "1111")
 	raw, err := json.Marshal(persistentExecRequest{Argv: []string{"/bin/sh", "env.sh"}, SourceRevision: 1, SourceDigest: digest})
 	if err != nil {
@@ -286,7 +286,7 @@ func TestPersistentExecExposesAppPortAndComponentButNotAppEnvironment(t *testing
 		t.Fatal(err)
 	}
 	if got.ExitCode != 0 || got.Stdout != "5173|web||\n" {
-		t.Fatalf("exec env output = %q (exit %d), want only PORT and FAROS_COMPONENT", got.Stdout, got.ExitCode)
+		t.Fatalf("exec env output = %q (exit %d), want only PORT and RAILGRID_COMPONENT", got.Stdout, got.ExitCode)
 	}
 }
 
@@ -297,8 +297,8 @@ func TestSanitizedExecEnvironmentDropsUnconfiguredOrMalformedContext(t *testing.
 		want []string
 		deny []string
 	}{
-		{name: "unconfigured", deny: []string{"PORT=", "FAROS_COMPONENT="}},
-		{name: "configured", ctx: execContext{Port: "8080", Component: "api"}, want: []string{"PORT=8080", "FAROS_COMPONENT=api"}},
+		{name: "unconfigured", deny: []string{"PORT=", "RAILGRID_COMPONENT="}},
+		{name: "configured", ctx: execContext{Port: "8080", Component: "api"}, want: []string{"PORT=8080", "RAILGRID_COMPONENT=api"}},
 		{name: "malformed port", ctx: execContext{Port: "${schema.spec.port}"}, deny: []string{"PORT="}},
 		{name: "out of range port", ctx: execContext{Port: "70000"}, deny: []string{"PORT="}},
 	} {

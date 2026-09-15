@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Dashboard tile for the edges provider, mounted by
-// <faros-dashboard-tile-edges> (see element.ts).
+// <railgrid-dashboard-tile-edges> (see element.ts).
 //
 // An edge fleet is interesting when something stops reporting, not when
 // everything is fine — so this tile inverts the usual "most recent first"

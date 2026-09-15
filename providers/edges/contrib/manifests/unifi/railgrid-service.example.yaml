@@ -1,0 +1,69 @@
+# UniFi (Ubiquiti) as edge Services — network state + Protect cameras.
+#
+# These objects go to your railgrid TENANT WORKSPACE (kcp), NOT to any Kubernetes
+# cluster:
+#
+#   kubectl --kubeconfig <your railgrid kubeconfig> apply -f railgrid-service.example.yaml
+#
+# Both Services run on a LinuxServer edge (the agent host) but point at the UniFi
+# OS console on the LAN via spec.host — the agent dials it directly (host:443).
+# Adjust edgeRef.name to your LinuxServer edge and spec.host to your console IP.
+#
+# Auth is a UniFi OS LOCAL API KEY (UniFi OS → Settings → Control Plane →
+# Integrations / API), stored under the Secret key "token". The edges provider
+# injects it as `X-API-KEY` when proxying, so the key never reaches the agent
+# host. One key works for both Network and Protect.
+#
+# MCP tools the agent gets:
+#   unifi-network: sites, clients ({"siteId":"<id>"}), devices ({"siteId":"<id>"})
+#   unifi-protect: cameras, snapshot ({"cameraId":"<id>"} → JPEG the model sees), events
+---
+apiVersion: edges.railgrid.ai/v1alpha1
+kind: Service
+metadata:
+  name: unifi-network
+  labels:
+    edges.railgrid.ai/edge: minis-server
+spec:
+  edgeRef:
+    kind: LinuxServer
+    name: minis-server
+  host: 192.168.1.1        # your UniFi OS console LAN IP; the agent must run with --svc-allow-cidr 192.168.1.0/24
+  type: unifi-network
+  scheme: https            # UniFi OS is https (self-signed)
+  tlsInsecureSkipVerify: true  # self-signed console cert: the agent verifies non-loopback https otherwise
+  port: 443
+  authSecretRef:
+    namespace: railgrid-system
+    name: railgrid-edges-svc-unifi
+---
+apiVersion: edges.railgrid.ai/v1alpha1
+kind: Service
+metadata:
+  name: unifi-protect
+  labels:
+    edges.railgrid.ai/edge: minis-server
+spec:
+  edgeRef:
+    kind: LinuxServer
+    name: minis-server
+  host: 192.168.1.1        # same console
+  type: unifi-protect
+  scheme: https
+  tlsInsecureSkipVerify: true
+  port: 443
+  authSecretRef:
+    namespace: railgrid-system
+    name: railgrid-edges-svc-unifi
+  # Optional: teach the model about this deployment.
+  instructions: "Cameras: front-door, garage, garden. Snapshots are current stills; use unifi-protect events for recent motion/person/vehicle detections."
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: railgrid-edges-svc-unifi
+  namespace: railgrid-system
+type: Opaque
+stringData:
+  # UniFi OS local API key (X-API-KEY). Same key for network + protect.
+  token: REPLACE_ME

@@ -1,5 +1,5 @@
 <!--
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ limitations under the License.
 
 <!--
 MCP Access page. MCP is a built-in, core-hosted provider: MCPServer is a named
-CRD (distributed to tenant workspaces via the core.faros.sh APIExport), and the
+CRD (distributed to tenant workspaces via the core.railgrid.ai APIExport), and the
 in-core reconciler provisions each server's identity. A workspace can have many
 servers — e.g. a read-only "audit" endpoint and a full-access "ops" one.
 
@@ -523,7 +523,7 @@ watch(selected, (name, previousName) => {
 
 // ---- connect snippets (token masked on screen, injected on copy) ----
 const TOKEN_PLACEHOLDER = '<token>'
-const codexTokenEnvVar = 'FAROS_MCP_TOKEN'
+const codexTokenEnvVar = 'RAILGRID_MCP_TOKEN'
 function shellQuote(v: string) {
   return `'${v.replace(/'/g, `'\\''`)}'`
 }

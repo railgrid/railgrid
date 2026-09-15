@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,17 +27,17 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/networkpolicy"
+	"github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/networkpolicy"
 )
 
 // ServeNamespace is the runtime-cluster namespace the operator deploys the
 // provider serve workload into.
-const ServeNamespace = "faros-infrastructure-provider"
+const ServeNamespace = "railgrid-infrastructure-provider"
 
 const (
-	providerKubeconfigMount = "/var/run/secrets/faros/provider/kubeconfig"
-	runtimeKubeconfigMount  = "/var/run/secrets/faros/runtime/kubeconfig"
+	providerKubeconfigMount = "/var/run/secrets/railgrid/provider/kubeconfig"
+	runtimeKubeconfigMount  = "/var/run/secrets/railgrid/runtime/kubeconfig"
 )
 
 // EnsureProviderServe replicates the provider + runtime kubeconfigs (and hub
@@ -81,15 +81,15 @@ func EnsureProviderServe(
 
 	env := []corev1.EnvVar{
 		{Name: "PORT", Value: fmt.Sprintf("%d", port)},
-		{Name: "FAROS_PROVIDER_NAME", Value: "infrastructure"},
+		{Name: "RAILGRID_PROVIDER_NAME", Value: "infrastructure"},
 		{Name: "INFRASTRUCTURE_KUBECONFIG", Value: providerKubeconfigMount},
 		// The hub-minted provider kubeconfig is also the heartbeat credential:
-		// the SDK resolves its bearer from FAROS_HUB_TOKEN, else from the
-		// kubeconfig at FAROS_PROVIDER_KUBECONFIG (provider-sdk/hubclient
+		// the SDK resolves its bearer from RAILGRID_HUB_TOKEN, else from the
+		// kubeconfig at RAILGRID_PROVIDER_KUBECONFIG (provider-sdk/hubclient
 		// token.go). Every Helm-installed provider sets the latter; without it
 		// serve beats unauthenticated, a hub enforcing heartbeat auth answers
 		// 401, and the provider is marked stale within a few minutes.
-		{Name: "FAROS_PROVIDER_KUBECONFIG", Value: providerKubeconfigMount},
+		{Name: "RAILGRID_PROVIDER_KUBECONFIG", Value: providerKubeconfigMount},
 	}
 	if cr.Spec.ProviderWorkspace != "" {
 		// The mounted kubeconfig may be root-scoped (the supplied-admin flow,
@@ -101,10 +101,10 @@ func EnsureProviderServe(
 		env = append(env, corev1.EnvVar{Name: "INFRASTRUCTURE_WORKSPACE_PATH", Value: cr.Spec.ProviderWorkspace})
 	}
 	if cr.Spec.Hub.URL != "" {
-		env = append(env, corev1.EnvVar{Name: "FAROS_HUB_URL", Value: cr.Spec.Hub.URL})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_HUB_URL", Value: cr.Spec.Hub.URL})
 	}
 	if cr.Spec.Hub.Insecure {
-		env = append(env, corev1.EnvVar{Name: "FAROS_HUB_INSECURE", Value: "true"})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_HUB_INSECURE", Value: "true"})
 	}
 	// Template-generic publishing access layer. Keep Application fields as a
 	// compatibility fallback while operators move to spec.publishing.
@@ -113,52 +113,52 @@ func EnsureProviderServe(
 		publishingBaseDomain = cr.Spec.Application.BaseDomain
 	}
 	if publishingBaseDomain != "" {
-		env = append(env, corev1.EnvVar{Name: "FAROS_APP_BASE_DOMAIN", Value: publishingBaseDomain})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_APP_BASE_DOMAIN", Value: publishingBaseDomain})
 	}
 	if cr.Spec.Publishing.AccessProxyImage != "" {
-		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_PROXY_IMAGE", Value: cr.Spec.Publishing.AccessProxyImage})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_ACCESS_PROXY_IMAGE", Value: cr.Spec.Publishing.AccessProxyImage})
 	}
 	publishingHubURL := cr.Spec.Publishing.HubURL
 	if publishingHubURL == "" {
 		publishingHubURL = cr.Spec.Hub.URL
 	}
 	if publishingHubURL != "" {
-		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_HUB_URL", Value: publishingHubURL})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_ACCESS_HUB_URL", Value: publishingHubURL})
 	}
 	if cr.Spec.Publishing.HubPublicURL != "" {
-		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_HUB_PUBLIC_URL", Value: cr.Spec.Publishing.HubPublicURL})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_ACCESS_HUB_PUBLIC_URL", Value: cr.Spec.Publishing.HubPublicURL})
 	}
 	if cr.Spec.Publishing.HubInsecure {
-		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_HUB_INSECURE", Value: "true"})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_ACCESS_HUB_INSECURE", Value: "true"})
 	}
 	if cr.Spec.Publishing.PublicScheme != "" {
-		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_PUBLIC_SCHEME", Value: cr.Spec.Publishing.PublicScheme})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_ACCESS_PUBLIC_SCHEME", Value: cr.Spec.Publishing.PublicScheme})
 	}
 	if cr.Spec.Publishing.PublicPort > 0 {
-		env = append(env, corev1.EnvVar{Name: "FAROS_APP_PUBLIC_PORT", Value: fmt.Sprintf("%d", cr.Spec.Publishing.PublicPort)})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_APP_PUBLIC_PORT", Value: fmt.Sprintf("%d", cr.Spec.Publishing.PublicPort)})
 	}
 	publishingGatewayName := cr.Spec.Publishing.Gateway.Name
 	if publishingGatewayName == "" {
 		publishingGatewayName = cr.Spec.Application.Gateway.Name
 	}
 	if publishingGatewayName != "" {
-		env = append(env, corev1.EnvVar{Name: "FAROS_GATEWAY_NAME", Value: publishingGatewayName})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_GATEWAY_NAME", Value: publishingGatewayName})
 	}
 	publishingGatewayNamespace := cr.Spec.Publishing.Gateway.Namespace
 	if publishingGatewayNamespace == "" {
 		publishingGatewayNamespace = cr.Spec.Application.Gateway.Namespace
 	}
 	if publishingGatewayNamespace != "" {
-		env = append(env, corev1.EnvVar{Name: "FAROS_GATEWAY_NAMESPACE", Value: publishingGatewayNamespace})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_GATEWAY_NAMESPACE", Value: publishingGatewayNamespace})
 	}
-	// Dev-mode image set (${faros.devAgentImage} / ${faros.devImage.*}); empty
+	// Dev-mode image set (${railgrid.devAgentImage} / ${railgrid.devImage.*}); empty
 	// values fall back to the in-binary defaults (node toolchain + agent).
 	if cr.Spec.Development.AgentImage != "" {
-		env = append(env, corev1.EnvVar{Name: "FAROS_DEV_AGENT_IMAGE", Value: cr.Spec.Development.AgentImage})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_DEV_AGENT_IMAGE", Value: cr.Spec.Development.AgentImage})
 	}
-	if verificationJWKS := strings.TrimSpace(os.Getenv("FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS")); verificationJWKS != "" {
+	if verificationJWKS := strings.TrimSpace(os.Getenv("RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS")); verificationJWKS != "" {
 		env = append(env, corev1.EnvVar{
-			Name:  "FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS",
+			Name:  "RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS",
 			Value: verificationJWKS,
 		})
 	}
@@ -175,22 +175,22 @@ func EnsureProviderServe(
 	}
 	for _, toolchain := range slices.Sorted(maps.Keys(cr.Spec.Development.Images)) {
 		if image := cr.Spec.Development.Images[toolchain]; image != "" {
-			envName := "FAROS_DEV_IMAGE_" + strings.ToUpper(strings.ReplaceAll(toolchain, "-", "_"))
+			envName := "RAILGRID_DEV_IMAGE_" + strings.ToUpper(strings.ReplaceAll(toolchain, "-", "_"))
 			env = append(env, corev1.EnvVar{Name: envName, Value: image})
 		}
 	}
 	if cr.Spec.CodingSandbox.Enabled {
-		env = append(env, corev1.EnvVar{Name: "FAROS_CODING_SANDBOX_ENABLED", Value: "true"})
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_CODING_SANDBOX_ENABLED", Value: "true"})
 	}
 	// Hardened RuntimeClass for every synthesized development pod; empty keeps
 	// the runtime cluster's default runtime.
 	if cr.Spec.Sandbox != nil {
 		if runtimeClassName := strings.TrimSpace(cr.Spec.Sandbox.RuntimeClassName); runtimeClassName != "" {
-			env = append(env, corev1.EnvVar{Name: "FAROS_SANDBOX_RUNTIME_CLASS_NAME", Value: runtimeClassName})
+			env = append(env, corev1.EnvVar{Name: "RAILGRID_SANDBOX_RUNTIME_CLASS_NAME", Value: runtimeClassName})
 		}
 	}
 	volMounts := []corev1.VolumeMount{
-		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/faros/provider", ReadOnly: true},
+		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/railgrid/provider", ReadOnly: true},
 	}
 	volumes := []corev1.Volume{
 		{Name: "provider-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: providerSecret}}},
@@ -206,7 +206,7 @@ func EnsureProviderServe(
 			return fmt.Errorf("replicate runtime kubeconfig: %w", err)
 		}
 		env = append(env, corev1.EnvVar{Name: "KRO_KUBECONFIG", Value: runtimeKubeconfigMount})
-		volMounts = append(volMounts, corev1.VolumeMount{Name: "runtime-kubeconfig", MountPath: "/var/run/secrets/faros/runtime", ReadOnly: true})
+		volMounts = append(volMounts, corev1.VolumeMount{Name: "runtime-kubeconfig", MountPath: "/var/run/secrets/railgrid/runtime", ReadOnly: true})
 		volumes = append(volumes, corev1.Volume{Name: "runtime-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: runtimeSecret}}})
 	} else {
 		// Give the serve pod an SA bound to the access its kro backend needs on
@@ -225,7 +225,7 @@ func EnsureProviderServe(
 		if err := upsertOpaqueSecret(ctx, cs, ServeNamespace, hubSecret, key, hubToken); err != nil {
 			return fmt.Errorf("replicate hub token: %w", err)
 		}
-		env = append(env, corev1.EnvVar{Name: "FAROS_HUB_TOKEN", ValueFrom: &corev1.EnvVarSource{
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_HUB_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: hubSecret},
 				Key:                  key,
@@ -234,7 +234,7 @@ func EnsureProviderServe(
 	}
 
 	image := cr.Spec.Provider.Image.Repository + ":" + cr.Spec.Provider.Image.Tag
-	labels := map[string]string{"app.kubernetes.io/name": "faros-infrastructure-provider", "app.kubernetes.io/instance": name}
+	labels := map[string]string{"app.kubernetes.io/name": "railgrid-infrastructure-provider", "app.kubernetes.io/instance": name}
 
 	want := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ServeNamespace, Labels: labels},
@@ -323,7 +323,7 @@ func ensureServeRBAC(ctx context.Context, cs kubernetes.Interface, saName string
 		return fmt.Errorf("get serve ServiceAccount: %w", err)
 	}
 
-	crbName := "faros-infrastructure-serve-" + saName
+	crbName := "railgrid-infrastructure-serve-" + saName
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: crbName},
 		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: serveClusterRole()},

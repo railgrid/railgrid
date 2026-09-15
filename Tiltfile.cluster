@@ -1,9 +1,9 @@
 # Tiltfile.cluster — full-fledged kcp running in a local kind cluster.
 #
-# Unlike the default ./Tiltfile (which runs the faros hub with an *embedded*
+# Unlike the default ./Tiltfile (which runs the railgrid hub with an *embedded*
 # kcp as a local process), this one stands up a complete multi-shard kcp the
 # way upstream does: deployed into a kind cluster via the kcp-operator, with
-# cert-manager, an Envoy gateway, etcd and the observability stack. The faros
+# cert-manager, an Envoy gateway, etcd and the observability stack. The railgrid
 # hub then runs IN-CLUSTER as a container pointed at that external kcp, with
 # Tilt live_update syncing the rebuilt binary into the pod — so editing hub
 # code reloads the process in seconds and leaves kcp running (small hot-reload
@@ -37,7 +37,7 @@ config.define_string('kcp-image-repo')
 # dev-token at /login. Dex itself always runs so toggling doesn't rebuild
 # the resource graph.
 config.define_bool('sso')
-# Global replica count for the hub + HA-capable faros provider Deployments
+# Global replica count for the hub + HA-capable railgrid provider Deployments
 # (App Studio, dex, Postgres, and the image-cache stub stay at 1). Default 1
 # keeps the dev loop light; set 2 to exercise the real multi-replica behavior
 # each component documents at its deploy site (leader election,
@@ -131,7 +131,7 @@ if 'docker desktop' not in docker_operating_system and 'orbstack' not in docker_
 # kro into, and by the infrastructure provider so it can list/create RGD
 # instances over the same host port. We write a dedicated file in the project
 # dir so we don't depend on whatever ~/.kube/config holds.
-KIND_HOST_KUBECONFIG = os.path.abspath('.faros-cluster.kubeconfig')
+KIND_HOST_KUBECONFIG = os.path.abspath('.railgrid-cluster.kubeconfig')
 local('kind get kubeconfig --name %s > %s' % (cluster_name, KIND_HOST_KUBECONFIG),
       quiet=True, echo_off=True)
 local('kind export kubeconfig --name %s' % cluster_name, quiet=False)
@@ -163,7 +163,7 @@ include(kcp_tilt)
 # The upstream KCP Tiltfile defines an `ingress` forward, but this stack imports
 # it from another checkout and the command relies on ambient kubectl context.
 # After a kind repave that can leave host-side provider jobs with a kubeconfig
-# pointing at kcp.localhost:8443 while no host listener exists. Keep a Faros-
+# pointing at kcp.localhost:8443 while no host listener exists. Keep a Railgrid-
 # owned forward for the endpoint used by provider registration and runtime
 # kubeconfigs. Resolve the Envoy service on every reconnect because both the
 # service name and backing pod can change during a repave.
@@ -201,7 +201,7 @@ done
 )
 
 # ---------------------------------------------------------------------------
-# hub — faros-hub running IN-CLUSTER as a container, against the external kcp.
+# hub — railgrid-hub running IN-CLUSTER as a container, against the external kcp.
 #
 # Everything runs inside the kind cluster (kcp + hub). To keep the hot-reload
 # footprint small we DON'T rebuild the multi-stage production image on every
@@ -221,19 +221,19 @@ done
 
 load('ext://restart_process', 'docker_build_with_restart')
 
-hub_namespace = 'faros-system'
-hub_image = 'ghcr.io/faroshq/faros-hub'
-hub_tls_secret_name = 'faros-hub-tls'
+hub_namespace = 'railgrid-system'
+hub_image = 'ghcr.io/railgrid/railgrid-hub'
+hub_tls_secret_name = 'railgrid-hub-tls'
 hub_tls_state_dir = '.kcp/tilt-hub-tls'
-access_proxy_image = 'ghcr.io/faroshq/faros-access-proxy:dev'
-dex_image = 'ghcr.io/faroshq/faros-dex:dev'
+access_proxy_image = 'ghcr.io/railgrid/railgrid-access-proxy:dev'
+dex_image = 'ghcr.io/railgrid/railgrid-dex:dev'
 dex_namespace = hub_namespace
 dex_secret_name = hub_tls_secret_name
 dex_config_name = 'dex-config'
-dex_issuer = 'https://dex.faros-system.svc.cluster.local:5554/dex'
+dex_issuer = 'https://dex.railgrid-system.svc.cluster.local:5554/dex'
 dex_browser_auth_url = 'https://localhost:5554/dex/auth'
-app_studio_provider_image = 'ghcr.io/faroshq/faros/app-studio-provider:dev'
-app_studio_preview_namespace = 'faros-preview'
+app_studio_provider_image = 'ghcr.io/railgrid/railgrid/app-studio-provider:dev'
+app_studio_preview_namespace = 'railgrid-preview'
 app_studio_preview_parent_gateway_name = 'app-studio-preview'
 app_studio_preview_tls_secret = 'app-studio-preview-localhost-tls'
 app_studio_preview_listener = 'app-studio-preview-https'
@@ -254,19 +254,19 @@ app_base_domain = 'apps.127.0.0.1.sslip.io'
 # third-party, which Chrome does not send (and, since 2025, does not even
 # store). A private preview then fails every sign-in with "invalid app access
 # state", while the identical flow works in production, where the console and
-# the app hosts share faros.sh. Putting the portal under the same sslip.io
+# the app hosts share railgrid.ai. Putting the portal under the same sslip.io
 # domain as the apps makes local cookie behaviour match production.
 #
 # Both names resolve to 127.0.0.1 through sslip.io, so nothing needs /etc/hosts.
 hub_browser_host = 'console.127.0.0.1.sslip.io'
 hub_external_url = 'https://%s:9443' % hub_browser_host
 
-# The faros-hub chart deploys namespaced objects (TLS Certificate + Secret,
+# The railgrid-hub chart deploys namespaced objects (TLS Certificate + Secret,
 # selfsigned Issuer, StatefulSet) into hub_namespace but ships NO Namespace
 # object. The namespace is otherwise only created by the hub-kcp-secrets
 # local_resource via kubectl — which is gated on `kcp-admin extract` and so
 # runs much later. Without the namespace up front, Tilt's apply of the chart's
-# cert/secret objects fails with `namespaces "faros-system" not found`. Create
+# cert/secret objects fails with `namespaces "railgrid-system" not found`. Create
 # it as a Tilt-managed object so Tilt applies it FIRST. We deliberately leave it
 # UNGROUPED so it lands in the same "uncategorized" apply batch as the chart's
 # cert/secret/issuer objects; within a single batch Tilt kind-sorts Namespaces
@@ -336,9 +336,9 @@ data:
     oauth2:
       skipApprovalScreen: true
     staticClients:
-      - id: faros
+      - id: railgrid
         public: true
-        name: Faros
+        name: Railgrid
         redirectURIs:
           # Both hosts are accepted: hub_browser_host is what the portal uses
           # (same-site with the app hosts), localhost keeps older bookmarks and
@@ -349,11 +349,11 @@ data:
           - https://localhost:9443/auth/apps/callback
     enablePasswordDB: true
     staticPasswords:
-      - email: admin@test.faros.local
+      - email: admin@test.railgrid.local
         hash: "$2a$10$ntVcHD0gEYObjVin2ti7XuMILVz0rTQl//HVPc3cR8z7AAVbQGrkO"
         username: admin
         userID: test-user-id-01
-      - email: user2@test.faros.local
+      - email: user2@test.railgrid.local
         hash: "$2a$10$ntVcHD0gEYObjVin2ti7XuMILVz0rTQl//HVPc3cR8z7AAVbQGrkO"
         username: user2
         userID: test-user-id-02
@@ -451,7 +451,7 @@ k8s_resource(
 # Envoy gateway ClusterIP that *.kcp.localhost resolves to (see kcp's
 # gateway.yaml addresses + the hostAliases in its shard/front-proxy manifests).
 gateway_ip = '10.96.2.2'
-hub_service_name = 'faros-hub'
+hub_service_name = 'railgrid-hub'
 
 # Keep host-side sslip.io loopback behavior while making the same app hosts
 # reachable from in-cluster development runtimes. This is a cluster-only
@@ -472,7 +472,7 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 if [ -z "$hub_ip" ] || [ "$hub_ip" = 'None' ]; then
-  echo 'faros hub Service did not expose a ClusterIP' >&2
+  echo 'railgrid hub Service did not expose a ClusterIP' >&2
   exit 1
 fi
 hack/scripts/configure-tilt-preview-dns.sh "%s" "%s" "%s" "%s" "$hub_ip"
@@ -519,9 +519,9 @@ local_resource(
 # portal build rebuilds the binary and live_update re-syncs it.
 local_resource(
     'hub-compile',
-    cmd='CGO_ENABLED=0 GOOS=linux go build -tags portal_embed -o bin/faros-hub-linux ./cmd/faros-hub',
+    cmd='CGO_ENABLED=0 GOOS=linux go build -tags portal_embed -o bin/railgrid-hub-linux ./cmd/railgrid-hub',
     deps=[
-        'cmd/faros-hub',
+        'cmd/railgrid-hub',
         'pkg',
         'apis',
         # config/kcp is go:embed'd into the hub binary (kcp.ProvidersFS — the
@@ -550,18 +550,18 @@ RUN apk add --no-cache ca-certificates && \
     touch /tmp/.restart-proc && \
     chown 65534:65534 /tmp/.restart-proc && \
     chmod 0666 /tmp/.restart-proc
-COPY --chown=65534:65534 bin/faros-hub-linux /tmp/faros-hub
-RUN chmod 0755 /tmp/faros-hub
+COPY --chown=65534:65534 bin/railgrid-hub-linux /tmp/railgrid-hub
+RUN chmod 0755 /tmp/railgrid-hub
 ''',
     # The restart wrapper runs the entrypoint as `sh -c <entrypoint>` and the
     # chart's container args get appended AFTER it. With a bare binary path
     # those args become sh's positional params ($0, $1, …) and never reach the
     # binary. The `exec ... "$0" "$@"` form forwards them all: the first
     # appended arg lands in $0, the rest in $@.
-    entrypoint='exec /tmp/faros-hub "$0" "$@"',
-    only=['bin/faros-hub-linux'],
+    entrypoint='exec /tmp/railgrid-hub "$0" "$@"',
+    only=['bin/railgrid-hub-linux'],
     live_update=[
-        sync('bin/faros-hub-linux', '/tmp/faros-hub'),
+        sync('bin/railgrid-hub-linux', '/tmp/railgrid-hub'),
     ],
 )
 
@@ -593,20 +593,20 @@ k8s_yaml(blob('''
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: faros-access-proxy-image
+  name: railgrid-access-proxy-image
   namespace: %s
   labels:
-    app.kubernetes.io/name: faros-access-proxy-image
+    app.kubernetes.io/name: railgrid-access-proxy-image
     app.kubernetes.io/managed-by: tilt
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: faros-access-proxy-image
+      app.kubernetes.io/name: railgrid-access-proxy-image
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: faros-access-proxy-image
+        app.kubernetes.io/name: railgrid-access-proxy-image
     spec:
       containers:
         - name: image-cache
@@ -616,15 +616,15 @@ spec:
           # proxy itself with a throwaway public config: it listens on :8080,
           # never receives traffic, and keeps the image pinned on the node.
           env:
-            - name: FAROS_ACCESS_PROXY_MODE
+            - name: RAILGRID_ACCESS_PROXY_MODE
               value: public
-            - name: FAROS_ACCESS_PROXY_HOST
+            - name: RAILGRID_ACCESS_PROXY_HOST
               value: image-cache.invalid
-            - name: FAROS_ACCESS_PROXY_ROUTES
-              value: /=http://image-cache.faros-system.svc.cluster.local:1
+            - name: RAILGRID_ACCESS_PROXY_ROUTES
+              value: /=http://image-cache.railgrid-system.svc.cluster.local:1
 '''.strip() % (hub_namespace, access_proxy_image)))
 k8s_resource(
-    'faros-access-proxy-image',
+    'railgrid-access-proxy-image',
     resource_deps=['hub-tls'],
     labels=['hub'],
 )
@@ -639,7 +639,7 @@ local_resource(
 set -eu
 docker exec %s-control-plane crictl rmi %s >/dev/null 2>&1 || true
 kind load docker-image %s --name %s
-kubectl --context %s delete pods -A -l app.kubernetes.io/name=faros-access-proxy --wait=false >/dev/null 2>&1 || true
+kubectl --context %s delete pods -A -l app.kubernetes.io/name=railgrid-access-proxy --wait=false >/dev/null 2>&1 || true
 '''.strip() % (cluster_name, access_proxy_image, access_proxy_image, cluster_name, k8s_context()),
     # resource_deps orders the load after Tilt's image build, while deps makes
     # this local resource itself dirty on every proxy source change. Without
@@ -652,7 +652,7 @@ kubectl --context %s delete pods -A -l app.kubernetes.io/name=faros-access-proxy
         'providers/infrastructure/go.mod',
         'providers/infrastructure/go.sum',
     ],
-    resource_deps=['faros-access-proxy-image'],
+    resource_deps=['railgrid-access-proxy-image'],
     labels=['hub'],
 )
 
@@ -804,7 +804,7 @@ done
 
 # --- kcp kubeconfig → in-cluster Secret the chart mounts ---
 # We use ONLY the front-proxy kubeconfig. The hub's controllers locate the
-# APIExportEndpointSlice by workspace PATH (root:faros:providers); only the
+# APIExportEndpointSlice by workspace PATH (root:railgrid:providers); only the
 # front-proxy resolves paths to cluster-IDs — shards serve cluster-IDs directly
 # and 404 on a path. So we do NOT set --kcp-shard-kubeconfig.
 local_resource(
@@ -821,16 +821,16 @@ kubectl create secret generic kcp-frontproxy-admin -n %s \
 )
 
 # --- RBAC: let the hub manage CRDs etc. in the kind (hub) cluster ---
-# The hub installs the faros CRDs into its own "hub cluster" (here, the kind
+# The hub installs the railgrid CRDs into its own "hub cluster" (here, the kind
 # cluster) using its in-cluster client. The chart ships no ServiceAccount/RBAC,
-# so the pod runs as faros-system:default with no permissions. Grant it
+# so the pod runs as railgrid-system:default with no permissions. Grant it
 # cluster-admin — dev-only; a real deploy should scope this down (and the chart
 # arguably should template a ServiceAccount + Role).
 k8s_yaml(blob('''
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: faros-hub-dev-cluster-admin
+  name: railgrid-hub-dev-cluster-admin
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -843,40 +843,40 @@ subjects:
 
 k8s_resource(
     new_name='hub-rbac',
-    objects=['faros-hub-dev-cluster-admin:clusterrolebinding'],
+    objects=['railgrid-hub-dev-cluster-admin:clusterrolebinding'],
     resource_deps=['hub-kcp-secrets'],
     labels=['hub'],
 )
 
-# --- deploy the faros-hub chart in external-kcp mode ---
+# --- deploy the railgrid-hub chart in external-kcp mode ---
 # SSO is opt-in (`tilt up -f Tiltfile.cluster -- --sso`). Default: NO idp.*
 # values → the hub is token-login only and the portal shows the historical
 # dev-token form. With --sso the hub also accepts the local Dex
-# (admin@test.faros.local / user2@test.faros.local, Password1!), and the Dex
+# (admin@test.railgrid.local / user2@test.railgrid.local, Password1!), and the Dex
 # admin gets /bonkers alongside the static-token identity.
 hub_sso_values = [
     'idp.issuerURL=%s' % dex_issuer,
     'idp.browserAuthURL=%s' % dex_browser_auth_url,
-    'idp.clientID=faros',
+    'idp.clientID=railgrid',
     'idp.caSecretName=%s' % dex_secret_name,
     'idp.caSecretKey=ca.crt',
-    'hub.adminUsers={admin@test.faros.local,faros:static:47b9dce0e91570a1}',
+    'hub.adminUsers={admin@test.railgrid.local,railgrid:static:47b9dce0e91570a1}',
 ] if sso_enabled else [
     # /bonkers admin access for the first dev static token: its RBAC
     # identity (see identity.NewStaticToken). dev-token2 is intentionally left
     # off the allowlist so it acts as a plain, non-admin second user for
     # membership/user-adding tests.
-    'hub.adminUsers={faros:static:47b9dce0e91570a1}',
+    'hub.adminUsers={railgrid:static:47b9dce0e91570a1}',
 ]
 k8s_yaml(helm(
-    'deploy/charts/faros-hub',
-    name='faros-hub',
+    'deploy/charts/railgrid-hub',
+    name='railgrid-hub',
     namespace=hub_namespace,
     set=[
         'image.hub.tag=dev',
         # REPLICA_COUNT=2 is the configuration the hub's HA work targets —
         # external kcp + two pods: singleton controllers gate on the
-        # faros-hub-controllers Lease, browser sessions and published-app auth
+        # railgrid-hub-controllers Lease, browser sessions and published-app auth
         # codes live in kcp-backed Secrets, so sign-in survives either pod and
         # the Service round-robins requests across both.
         'replicaCount=%s' % replica_count,
@@ -889,9 +889,9 @@ k8s_yaml(helm(
         # /bonkers providers table offers both "in-cluster" and "external"
         # kubeconfig downloads (with only one address configured it collapses to
         # a single button). Safe for the host-run provider resources below —
-        # those authenticate with FAROS_HUB_URL + a static token, not the minted
+        # those authenticate with RAILGRID_HUB_URL + a static token, not the minted
         # kubeconfig.
-        'hub.internalURL=https://faros-hub.%s.svc.cluster.local:9443' % hub_namespace,
+        'hub.internalURL=https://railgrid-hub.%s.svc.cluster.local:9443' % hub_namespace,
         'hub.tls.existingSecret=%s' % hub_tls_secret_name,
         'hub.tls.selfSigned.enabled=false',
         'hub.devMode=true',
@@ -911,7 +911,7 @@ k8s_yaml(helm(
 ))
 
 k8s_resource(
-    'faros-hub',
+    'railgrid-hub',
     # NB with REPLICA_COUNT=2: a Tilt port-forward attaches to ONE pod, so
     # browser traffic through :9443 pins to a single replica (and drops while
     # Tilt re-attaches if that pod dies). In-cluster traffic — providers and
@@ -933,7 +933,7 @@ local_resource(
     # host-side sslip.io loopback address.
     cmd=app_studio_preview_dns_apply,
     deps=['Tiltfile.cluster', 'hack/scripts/configure-tilt-preview-dns.sh'],
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-app-studio'],
 )
 
@@ -952,7 +952,7 @@ local_resource(
 # Our only job is to create that Secret. CRITICAL: the token must map to the
 # SAME kcp identity the hub provisions RBAC for, or you authenticate but get
 # "access denied". The hub derives a deterministic user from the token (see
-# pkg/hub/kcp/embedded.go): user = faros:static:<first16 hex of
+# pkg/hub/kcp/embedded.go): user = railgrid:static:<first16 hex of
 # sha256("static-token/"+token)>, group system:authenticated. The hub's proxy
 # then creates that user's tenant workspace and grants it admin there. We
 # compute the same identity below so the existing RBAC applies.
@@ -971,7 +971,7 @@ set -eu
 CSV=""
 for TOKEN in dev-token dev-token2; do
   HASH=$(printf 'static-token/%s' "$TOKEN" | openssl dgst -sha256 | awk '{print $NF}' | cut -c1-16)
-  CSV="${CSV}${TOKEN},faros:static:${HASH},${HASH},system:authenticated
+  CSV="${CSV}${TOKEN},railgrid:static:${HASH},${HASH},system:authenticated
 "
 done
 kubectl create secret generic kcp-static-tokens -n default \
@@ -984,7 +984,7 @@ kubectl create secret generic kcp-static-tokens -n default \
 
 # ---------------------------------------------------------------------------
 # providers — run as PODS in this kind cluster: Tilt-built images + each
-# provider's production chart, in the `faros-providers` namespace. Dev
+# provider's production chart, in the `railgrid-providers` namespace. Dev
 # exercises the real in-cluster behavior: REPLICA_COUNT replicas (2 for the
 # HA paths), leader election, claims, tunnel routing, Service round-robin,
 # chart probes.
@@ -1008,7 +1008,7 @@ kubectl create secret generic kcp-static-tokens -n default \
 # providers share the in-cluster providers-db Postgres.
 #
 # CatalogEntry install/uninstall talks DIRECTLY to kcp (not via the hub) — it
-# needs cluster-admin to write into root:faros:providers. The embedded-kcp
+# needs cluster-admin to write into root:railgrid:providers. The embedded-kcp
 # Tiltfile gets that for free via .kcp/admin.kubeconfig on :6443; here we
 # repoint at the operator-issued admin kubeconfig (tilt-frontproxy.kubeconfig,
 # written by `kcp-admin extract` into the project root) and the envoy gateway
@@ -1027,23 +1027,23 @@ KCP_ADMIN_SERVER = 'https://kcp.localhost:8443'
 # Manifest files commit to localhost so the embedded-kcp Tiltfile (everything
 # on the host) works out-of-the-box. We rewrite at install time here instead
 # of templating the manifest, so neither flow needs the other's URLs.
-providers_namespace = 'faros-providers'
+providers_namespace = 'railgrid-providers'
 
 def provider_svc_url(name, port):
     return 'http://%s.%s.svc.cluster.local:%d' % (name, providers_namespace, port)
 
 def rewrite_manifest_cmd(src, name, port):
-    out = '/tmp/faros-{}.yaml'.format(src.replace('/', '_'))
+    out = '/tmp/railgrid-{}.yaml'.format(src.replace('/', '_'))
     return ("sed 's|http://localhost:{port}|{svc}|g' " +
             "{src} > {out}").format(src=src, out=out, port=port,
                                     svc=provider_svc_url(name, port)), out
 
 QUICKSTART_REWRITE_CMD, QUICKSTART_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/quickstart/manifest.yaml', 'quickstart', 8081)
 # infrastructure's serve Service is stamped by its operator into the
-# faros-infrastructure-provider namespace (and the operator self-registers
+# railgrid-infrastructure-provider namespace (and the operator self-registers
 # the CatalogEntry with that URL anyway) — rewrite to match, not to
-# faros-providers.
-INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = ("sed 's|http://localhost:8082|http://infrastructure.faros-infrastructure-provider.svc.cluster.local:8082|g' providers/infrastructure/manifest.yaml > /tmp/faros-providers_infrastructure_manifest.yaml", '/tmp/faros-providers_infrastructure_manifest.yaml')
+# railgrid-providers.
+INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = ("sed 's|http://localhost:8082|http://infrastructure.railgrid-infrastructure-provider.svc.cluster.local:8082|g' providers/infrastructure/manifest.yaml > /tmp/railgrid-providers_infrastructure_manifest.yaml", '/tmp/railgrid-providers_infrastructure_manifest.yaml')
 APP_STUDIO_REWRITE_CMD, APP_STUDIO_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/app-studio/manifest.yaml', 'app-studio', 8085)
 CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml', 'code', 8083)
 KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml', 'kuery', 8084)
@@ -1080,7 +1080,7 @@ k8s_yaml(blob('''
 apiVersion: v1
 kind: Secret
 metadata:
-  name: faros-provider-hub-token
+  name: railgrid-provider-hub-token
   namespace: %s
 stringData:
   token: dev-token
@@ -1133,9 +1133,9 @@ spec:
           image: postgres:16-alpine
           env:
             - name: POSTGRES_USER
-              value: faros
+              value: railgrid
             - name: POSTGRES_PASSWORD
-              value: faros-dev
+              value: railgrid-dev
           ports:
             - containerPort: 5432
           volumeMounts:
@@ -1143,7 +1143,7 @@ spec:
               mountPath: /docker-entrypoint-initdb.d
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "faros"]
+              command: ["pg_isready", "-U", "railgrid"]
             # First boot runs initdb + a temporary "rejecting connections"
             # server before the real one starts; don't paint that window red.
             initialDelaySeconds: 10
@@ -1161,7 +1161,7 @@ k8s_resource(
 )
 
 def providers_db_url(db):
-    return 'postgres://faros:faros-dev@providers-db.%s.svc.cluster.local:5432/%s?sslmode=disable' % (providers_namespace, db)
+    return 'postgres://railgrid:railgrid-dev@providers-db.%s.svc.cluster.local:5432/%s?sslmode=disable' % (providers_namespace, db)
 
 # Syncs a host kubeconfig file (written by the manual <name>-init resource)
 # into the provider's kubeconfig Secret. Runs automatically once the file
@@ -1176,7 +1176,7 @@ if [ ! -f {file} ]; then
   echo "{file} not found - trigger {name}-register then {name}-init first"
   exit 0
 fi
-kubectl --context {ctx} -n {ns} create secret generic faros-{name}-kubeconfig \
+kubectl --context {ctx} -n {ns} create secret generic railgrid-{name}-kubeconfig \
   --from-file=kubeconfig={file} --dry-run=client -o yaml | \
   kubectl --context {ctx} -n {ns} apply -f -
 '''.format(file=kubeconfig_file, name=name, ns=providers_namespace, ctx=k8s_context()).strip(),
@@ -1190,7 +1190,7 @@ kubectl --context {ctx} -n {ns} create secret generic faros-{name}-kubeconfig \
 # the historical host port so portals/curl keep working.
 def provider_pod(name, port, chart_extra=[], resource_deps=[], labels=None, image_only_deps=None, port_forwards=None, container_port=None):
     labels = labels or ['providers-' + name]
-    image_ref = 'faros-%s-provider' % name
+    image_ref = 'railgrid-%s-provider' % name
     # Repo-root context: the Dockerfiles copy the in-tree provider-sdk (go.mod
     # replace) — same invocation as CI: docker build -f providers/<n>/Dockerfile .
     docker_build(image_ref, '.',
@@ -1205,11 +1205,11 @@ def provider_pod(name, port, chart_extra=[], resource_deps=[], labels=None, imag
             'image.repository=%s' % image_ref,
             'image.pullPolicy=IfNotPresent',
             'service.port=%d' % port,
-            'hub.url=https://faros-hub.%s.svc.cluster.local:9443' % hub_namespace,
+            'hub.url=https://railgrid-hub.%s.svc.cluster.local:9443' % hub_namespace,
             'hub.insecure=true',
-            'hub.tokenSecretRef.name=faros-provider-hub-token',
+            'hub.tokenSecretRef.name=railgrid-provider-hub-token',
             'hub.tokenSecretRef.key=token',
-            'providerKubeconfig.secretName=faros-%s-kubeconfig' % name,
+            'providerKubeconfig.secretName=railgrid-%s-kubeconfig' % name,
             # CatalogEntry registration stays with the host-side
             # <name>-register resource (admin kubeconfig into kcp).
             'catalogEntry.enabled=false',
@@ -1219,9 +1219,9 @@ def provider_pod(name, port, chart_extra=[], resource_deps=[], labels=None, imag
         name,
         # No host port-forwards: the portal and every API path go hub →
         # in-cluster Service (CatalogEntry URLs). Debug directly with
-        # kubectl -n faros-providers port-forward svc/<name> <port>.
+        # kubectl -n railgrid-providers port-forward svc/<name> <port>.
         port_forwards=port_forwards or [],
-        resource_deps=['faros-hub', 'kcp-dns'] + resource_deps,
+        resource_deps=['railgrid-hub', 'kcp-dns'] + resource_deps,
         labels=labels,
     )
 
@@ -1242,7 +1242,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=QUICKSTART_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-quickstart'],
 )
 
@@ -1253,7 +1253,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub', 'quickstart-register'],
+    resource_deps=['railgrid-hub', 'quickstart-register'],
     labels=['providers-quickstart'],
 )
 
@@ -1266,11 +1266,11 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=QUICKSTART_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-quickstart'],
 )
 
-# --- edges (KubernetesCluster + LinuxServer, one group edges.faros.sh) ---
+# --- edges (KubernetesCluster + LinuxServer, one group edges.railgrid.ai) ---
 # At REPLICA_COUNT=2: agents dial ONE replica through the hub; the tunnel-ownership
 # Lease registry + pod-to-pod relay route pickups and data-plane requests to
 # whichever replica holds each tunnel (POD_IP/POD_NAME come from the chart's
@@ -1283,7 +1283,7 @@ provider_pod(
         'staticTokens=dev-token',
         'devMode=true',
         'hub.externalURL=%s' % hub_external_url,
-        'hub.internalURL=https://faros-hub.%s.svc.cluster.local:9443' % hub_namespace,
+        'hub.internalURL=https://railgrid-hub.%s.svc.cluster.local:9443' % hub_namespace,
     ],
     resource_deps=['edges-secrets'],
     labels=['edges'],
@@ -1298,7 +1298,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=EDGES_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['edges'],
 )
 
@@ -1309,7 +1309,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub', 'edges-register'],
+    resource_deps=['railgrid-hub', 'edges-register'],
     labels=['edges'],
 )
 
@@ -1322,7 +1322,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=EDGES_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['edges'],
 )
 
@@ -1368,7 +1368,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=AGENTS_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-agents'],
 )
 
@@ -1379,7 +1379,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub', 'agents-register'],
+    resource_deps=['railgrid-hub', 'agents-register'],
     labels=['providers-agents'],
 )
 
@@ -1392,7 +1392,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=AGENTS_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-agents'],
 )
 
@@ -1423,7 +1423,7 @@ set -eu
 mkdir -p .kcp
 tmp_file="$(mktemp .kcp/app-studio-actions-ca.XXXXXX)"
 trap 'rm -f "$tmp_file"' EXIT
-kubectl -n %s get secret faros-hub-tls -o go-template='{{ index .data "ca.crt" | base64decode }}' > "$tmp_file"
+kubectl -n %s get secret railgrid-hub-tls -o go-template='{{ index .data "ca.crt" | base64decode }}' > "$tmp_file"
 chmod 0644 "$tmp_file"
 
 # Updating the mounted Secret does not restart the Go server that already
@@ -1433,15 +1433,15 @@ chmod 0644 "$tmp_file"
 verify_live_hub_tls() {
   openssl s_client \
     -connect 127.0.0.1:9443 \
-    -servername faros-hub.%s.svc \
+    -servername railgrid-hub.%s.svc \
     -CAfile "$tmp_file" \
     -verify_return_error </dev/null >/dev/null 2>&1
 }
 
 if ! verify_live_hub_tls; then
-  echo "hub serving certificate does not match faros-hub-tls; restarting hub"
-  kubectl -n %s rollout restart deployment/faros-hub
-  kubectl -n %s rollout status deployment/faros-hub --timeout=120s
+  echo "hub serving certificate does not match railgrid-hub-tls; restarting hub"
+  kubectl -n %s rollout restart deployment/railgrid-hub
+  kubectl -n %s rollout status deployment/railgrid-hub --timeout=120s
 
   verified=false
   for _ in $(seq 1 30); do
@@ -1452,7 +1452,7 @@ if ! verify_live_hub_tls; then
     sleep 1
   done
   if [ "$verified" != true ]; then
-    echo "hub serving certificate still does not match faros-hub-tls after restart" >&2
+    echo "hub serving certificate still does not match railgrid-hub-tls after restart" >&2
     exit 1
   fi
 fi
@@ -1475,7 +1475,7 @@ trap - EXIT
 local_resource(
     'app-studio-actions-ca',
     cmd=app_studio_actions_ca_cmd,
-    resource_deps=['hub-tls', 'faros-hub'],
+    resource_deps=['hub-tls', 'railgrid-hub'],
     labels=['providers-app-studio'],
 )
 
@@ -1510,12 +1510,12 @@ local_resource(
     cmd='''
 set -eu
 lookup() {
-  kubectl --kubeconfig=%s --server=%s/clusters/root:faros:providers:$1 \
+  kubectl --kubeconfig=%s --server=%s/clusters/root:railgrid:providers:$1 \
     --insecure-skip-tls-verify get apiexport $2 \
     -o jsonpath='{.status.identityHash}' 2>/dev/null || true
 }
-infra="$(lookup infrastructure infrastructure.providers.faros.sh)"
-code="$(lookup code code.providers.faros.sh)"
+infra="$(lookup infrastructure infrastructure.providers.railgrid.ai)"
+code="$(lookup code code.providers.railgrid.ai)"
 if [ -z "$infra" ] || [ -z "$code" ]; then
   echo "identityHashes not discoverable yet (infra='$infra' code='$code')"
   echo "re-trigger after the infrastructure operator has bootstrapped and code-init has run"
@@ -1556,7 +1556,7 @@ provider_pod(
         'replicaCount=1',
         'store.databaseURL=%s' % providers_db_url('appstudio'),
         'hub.publicURL=%s' % hub_external_url,
-        'hub.actionsExternalURL=https://faros-hub.%s.svc:9443' % hub_namespace,
+        'hub.actionsExternalURL=https://railgrid-hub.%s.svc:9443' % hub_namespace,
         'hub.actionsCABundleConfigMap.name=app-studio-actions-ca',
         'hub.actionsCABundleConfigMap.key=ca-bundle.pem',
         'previewBridge.enabled=false',
@@ -1580,7 +1580,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=APP_STUDIO_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-app-studio'],
 )
 
@@ -1591,7 +1591,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub', 'app-studio-register'],
+    resource_deps=['railgrid-hub', 'app-studio-register'],
     labels=['providers-app-studio'],
 )
 
@@ -1604,7 +1604,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=APP_STUDIO_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-app-studio'],
 )
 
@@ -1623,8 +1623,8 @@ local_resource(
     'kuery-edges-identity-hash',
     cmd='''
 set -eu
-hash="$(kubectl --kubeconfig=%s --server=%s/clusters/root:faros:providers:edges \
-  --insecure-skip-tls-verify get apiexport edges.providers.faros.sh \
+hash="$(kubectl --kubeconfig=%s --server=%s/clusters/root:railgrid:providers:edges \
+  --insecure-skip-tls-verify get apiexport edges.providers.railgrid.ai \
   -o jsonpath='{.status.identityHash}' 2>/dev/null || true)"
 if [ -z "$hash" ]; then
   echo "edges identityHash not discoverable yet - re-trigger after edges-init"
@@ -1664,7 +1664,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=KUERY_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-kuery'],
 )
 
@@ -1675,7 +1675,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub', 'kuery-register'],
+    resource_deps=['railgrid-hub', 'kuery-register'],
     labels=['providers-kuery'],
 )
 
@@ -1688,13 +1688,13 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=KUERY_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-kuery'],
 )
 
 # --- providers-kro ---
 # Management kro: upstream kro installed INTO the same kind cluster kcp
-# lives in (no separate faros-kro cluster like the embedded Tiltfile
+# lives in (no separate railgrid-kro cluster like the embedded Tiltfile
 # uses). kro is single-cluster — it never talks to kcp; the
 # infrastructure provider's instance controller bridges kcp → this
 # cluster, and the provider on the host reaches it via the kind
@@ -1737,12 +1737,12 @@ provider_kubeconfig_sync('infrastructure', 'tilt-frontproxy.kubeconfig', ['provi
 # cannot inject into. Build once, tag it :dev additionally, and kind-load
 # that tag so the CR-spawned pods resolve it locally.
 # NB a rebuild does not restart the operator-owned serve pods (same :dev
-# tag): kubectl -n faros-infrastructure-provider rollout restart deploy/infrastructure
+# tag): kubectl -n railgrid-infrastructure-provider rollout restart deploy/infrastructure
 custom_build(
-    'faros-infrastructure-provider',
+    'railgrid-infrastructure-provider',
     ('docker build -f providers/infrastructure/Dockerfile -t $EXPECTED_REF . && ' +
-     'docker tag $EXPECTED_REF faros-infrastructure-provider:dev && ' +
-     'kind load docker-image faros-infrastructure-provider:dev --name %s') % cluster_name,
+     'docker tag $EXPECTED_REF railgrid-infrastructure-provider:dev && ' +
+     'kind load docker-image railgrid-infrastructure-provider:dev --name %s') % cluster_name,
     deps=['providers/infrastructure', 'provider-sdk'],
 )
 k8s_yaml(helm(
@@ -1751,18 +1751,18 @@ k8s_yaml(helm(
     namespace=providers_namespace,
     set=[
         'fullnameOverride=infrastructure',
-        'image.repository=faros-infrastructure-provider',
+        'image.repository=railgrid-infrastructure-provider',
         'image.pullPolicy=IfNotPresent',
-        'hub.url=https://faros-hub.%s.svc.cluster.local:9443' % hub_namespace,
+        'hub.url=https://railgrid-hub.%s.svc.cluster.local:9443' % hub_namespace,
         'hub.insecure=true',
-        'hub.tokenSecretRef.name=faros-provider-hub-token',
+        'hub.tokenSecretRef.name=railgrid-provider-hub-token',
         'hub.tokenSecretRef.key=token',
         'operator.enabled=true',
         'operator.clusterAdmin=true',
-        'operator.providerWorkspace=root:faros:providers:infrastructure',
-        'operator.providerKubeconfigSecret.name=faros-infrastructure-kubeconfig',
+        'operator.providerWorkspace=root:railgrid:providers:infrastructure',
+        'operator.providerKubeconfigSecret.name=railgrid-infrastructure-kubeconfig',
         'operator.providerKubeconfigSecret.key=kubeconfig',
-        'operator.provider.image.repository=faros-infrastructure-provider',
+        'operator.provider.image.repository=railgrid-infrastructure-provider',
         'operator.provider.image.tag=dev',
         'operator.provider.replicas=%s' % replica_count,
         'operator.provider.port=8082',
@@ -1774,7 +1774,7 @@ k8s_yaml(helm(
         'operator.application.gateway.namespace=envoy-gateway-system',
         'operator.publishing.baseDomain=%s' % app_base_domain,
         'operator.publishing.accessProxyImage=%s' % access_proxy_image,
-        'operator.publishing.hubURL=https://faros-hub.%s.svc:9443' % hub_namespace,
+        'operator.publishing.hubURL=https://railgrid-hub.%s.svc:9443' % hub_namespace,
         'operator.publishing.hubPublicURL=%s' % hub_external_url,
         'operator.publishing.insecure=true',
         'operator.publishing.publicScheme=https',
@@ -1785,7 +1785,7 @@ k8s_yaml(helm(
 ))
 k8s_resource(
     'infrastructure-operator',
-    resource_deps=['faros-hub', 'kcp-dns', 'infrastructure-secrets', 'access-proxy-image-load'],
+    resource_deps=['railgrid-hub', 'kcp-dns', 'infrastructure-secrets', 'access-proxy-image-load'],
     labels=['providers-kro'],
 )
 
@@ -1797,7 +1797,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=INFRA_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-kro'],
 )
 
@@ -1814,13 +1814,13 @@ local_resource(
     # init reads kcp server URL from the kubeconfig — only the path needs
     # overriding. KRO_KUBECONFIG is also forwarded so init writes the seed
     # kro.run/cluster=true Secret into the same in-cluster kro install
-    # (not the legacy faros-kro cluster).
+    # (not the legacy railgrid-kro cluster).
     cmd=('KROMC_KCP_KUBECONFIG={kc} KRO_KUBECONFIG={kro} ' +
          'make init-provider-infrastructure').format(
              kc=KCP_ADMIN_KUBECONFIG, kro=KIND_HOST_KUBECONFIG),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub', 'infrastructure-register'],
+    resource_deps=['railgrid-hub', 'infrastructure-register'],
     labels=['providers-kro'],
 )
 
@@ -1832,7 +1832,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=INFRA_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-kro'],
 )
 
@@ -1849,12 +1849,12 @@ local_resource(
 # resource. Together they demonstrate how an infrastructure Template uses KRO
 # to compose a Config Connector CR in the operator-managed runtime. Click them
 # in order only when the local .env contains a disposable
-# FAROS_CONFIG_CONNECTOR_GCP_PROJECT and an absolute
-# FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (the legacy FAROS_E2E_GCP_*
+# RAILGRID_CONFIG_CONNECTOR_GCP_PROJECT and an absolute
+# RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (the legacy RAILGRID_E2E_GCP_*
 # names remain accepted by the Make targets).
 local_resource(
     'config-connector-install',
-    cmd=('FAROS_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
+    cmd=('RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
          'make config-connector-install').format(runtime=KIND_HOST_KUBECONFIG),
     deps=[
         '.env',
@@ -1867,9 +1867,9 @@ local_resource(
 
 local_resource(
     'config-connector-enable',
-    cmd=('FAROS_E2E_TILT_KUBECONFIG={admin} ' +
-         'FAROS_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
-         'FAROS_KCC_KCP_SERVER={server} ' +
+    cmd=('RAILGRID_E2E_TILT_KUBECONFIG={admin} ' +
+         'RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
+         'RAILGRID_KCC_KCP_SERVER={server} ' +
          'make config-connector-enable').format(
              admin=KCP_ADMIN_KUBECONFIG, runtime=KIND_HOST_KUBECONFIG,
              server=KCP_ADMIN_SERVER),
@@ -1886,8 +1886,8 @@ local_resource(
 
 local_resource(
     'config-connector-smoke',
-    cmd=('FAROS_E2E_TILT_KUBECONFIG={admin} ' +
-         'FAROS_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
+    cmd=('RAILGRID_E2E_TILT_KUBECONFIG={admin} ' +
+         'RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
          'make config-connector-smoke').format(
              admin=KCP_ADMIN_KUBECONFIG, runtime=KIND_HOST_KUBECONFIG),
     deps=[
@@ -1906,7 +1906,7 @@ local_resource(
 # Template, execute Terraform, or retain Terraform state.
 local_resource(
     'terraform-install',
-    cmd=('FAROS_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
+    cmd=('RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
          'TERRAFORM_KIND_CLUSTER_NAME={name} make terraform-install').format(
              runtime=KIND_HOST_KUBECONFIG, name=cluster_name),
     deps=[
@@ -1919,9 +1919,9 @@ local_resource(
 
 local_resource(
     'terraform-enable',
-    cmd=('FAROS_E2E_TILT_KUBECONFIG={admin} ' +
-         'FAROS_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
-         'FAROS_TERRAFORM_KCP_SERVER={server} ' +
+    cmd=('RAILGRID_E2E_TILT_KUBECONFIG={admin} ' +
+         'RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
+         'RAILGRID_TERRAFORM_KCP_SERVER={server} ' +
          'make terraform-enable').format(
              admin=KCP_ADMIN_KUBECONFIG, runtime=KIND_HOST_KUBECONFIG,
              server=KCP_ADMIN_SERVER),
@@ -1937,8 +1937,8 @@ local_resource(
 
 local_resource(
     'terraform-smoke',
-    cmd=('FAROS_E2E_TILT_KUBECONFIG={admin} ' +
-         'FAROS_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
+    cmd=('RAILGRID_E2E_TILT_KUBECONFIG={admin} ' +
+         'RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
          'make terraform-smoke').format(
              admin=KCP_ADMIN_KUBECONFIG, runtime=KIND_HOST_KUBECONFIG),
     deps=[
@@ -1998,13 +1998,13 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=CODE_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-code'],
 )
 
 # Writes the runtime kubeconfig (derived from the front-proxy admin kubeconfig)
 # and ensures the APIExportEndpointSlice. Order:
-#   code-register → creates root:faros:providers:code
+#   code-register → creates root:railgrid:providers:code
 #   code-init     → writes kubeconfig + endpoint slice
 #   code (serve)  → restarts when the kubeconfig dep appears
 local_resource(
@@ -2014,7 +2014,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub', 'code-register'],
+    resource_deps=['railgrid-hub', 'code-register'],
     labels=['providers-code'],
 )
 
@@ -2026,7 +2026,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=CODE_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['providers-code'],
 )
 
@@ -2052,7 +2052,7 @@ local_resource(
     ],
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub', 'code-init'],
+    resource_deps=['railgrid-hub', 'code-init'],
     labels=['bootstrap'],
 )
 
@@ -2081,7 +2081,7 @@ local_resource(
 #   1. Click ▶ on `edge-{kube,server}-create` to log in via static token,
 #      register the Edge with the hub, and write .env.edge.<type>.
 #   2. Click ▶ on `edge-{kube,server}-agent` to run the agent.
-#        - kubernetes: also spins up a `faros-agent` kind cluster on first run.
+#        - kubernetes: also spins up a `railgrid-agent` kind cluster on first run.
 #        - server: also click ▶ on `ssh-server` so the agent has an SSH target.
 #   3. Home Assistant (to exercise the Service kind + its MCP tools):
 #        - kube edge:   ▶ `ha-kube-deploy`, then ▶ `ha-kube-forward` to onboard
@@ -2094,23 +2094,23 @@ local_resource(
 #        - server edge: install HA on the host; the agent discovers it and the
 #          Service appears on its own — only the token needs attaching.
 #
-# `resource_deps=['faros-hub']` because the hub workload here is named
-# faros-hub (it's `hub` in the embedded-kcp Tiltfile).
+# `resource_deps=['railgrid-hub']` because the hub workload here is named
+# railgrid-hub (it's `hub` in the embedded-kcp Tiltfile).
 # ---------------------------------------------------------------------------
 local_resource(
     'edge-kube-create',
     # 1. Drop any saved agent kubeconfig from a previous hub/kcp incarnation.
-    #    A stale ~/.faros/agent-<edge>.kubeconfig points at an old workspace +
+    #    A stale ~/.railgrid/agent-<edge>.kubeconfig points at an old workspace +
     #    revoked SA token; the agent would load it, skip re-registration, and
     #    fail every call with "workspace access not permitted" (User "").
     # 2. DEV_EDGE_NAME is passed explicitly (not left to the Makefile's `?=`
     #    default) because an inherited DEV_EDGE_NAME in the env defeats the
     #    TYPE-based default — a server create would otherwise reuse the kube
     #    name. Command-line vars win over both env and `?=`.
-    cmd='rm -f ~/.faros/agent-dev-edge-kube-1.kubeconfig ~/.faros/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
+    cmd='rm -f ~/.railgrid/agent-dev-edge-kube-1.kubeconfig ~/.railgrid/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['edges'],
 )
 
@@ -2119,12 +2119,12 @@ local_resource(
     serve_cmd='make dev-run-edge TYPE=kubernetes',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['edges'],
 )
 
 # Same agent, but as a Deployment INSIDE the edge cluster — the way the
-# faros-agent chart runs it in production.
+# railgrid-agent chart runs it in production.
 #
 # Use this instead of `edge-kube-agent` when you need the Service (svc) path:
 # a Service on a kube edge is dialled over cluster DNS
@@ -2145,7 +2145,7 @@ local_resource(
     cmd='make dev-edge-agent-incluster',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['edges'],
 )
 
@@ -2154,10 +2154,10 @@ local_resource(
     # Same stale-kubeconfig cleanup + explicit DEV_EDGE_NAME as edge-kube-create
     # (see note there). The explicit name is what keeps a server create from
     # reusing the kube edge name when DEV_EDGE_NAME leaks in from the env.
-    cmd='rm -f ~/.faros/agent-dev-edge-server-1.kubeconfig ~/.faros/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
+    cmd='rm -f ~/.railgrid/agent-dev-edge-server-1.kubeconfig ~/.railgrid/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['edges'],
 )
 
@@ -2166,7 +2166,7 @@ local_resource(
     serve_cmd='make dev-run-edge TYPE=server',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub'],
+    resource_deps=['railgrid-hub'],
     labels=['edges'],
 )
 
@@ -2181,7 +2181,7 @@ local_resource(
     labels=['edges'],
 )
 
-# Home Assistant inside the `faros-agent` kind cluster — a real target for the
+# Home Assistant inside the `railgrid-agent` kind cluster — a real target for the
 # kube-edge Service path (spec.targetRef → home-assistant.home.svc:8123). Note
 # this is the *agent's* kind cluster, not the one hosting kcp + the hub here.
 # Creates it if edge-kube-agent hasn't yet, so no resource_deps; first run pulls
@@ -2207,4 +2207,4 @@ local_resource(
     labels=['edges'],
 )
 
-print('  faros-hub:      %s (in-cluster, static token: dev-token)' % hub_external_url)
+print('  railgrid-hub:      %s (in-cluster, static token: dev-token)' % hub_external_url)

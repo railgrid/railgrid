@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -583,7 +583,7 @@ func TestPrivatePreviewConfiguredHubOriginRequiresAbsoluteHTTPSOrigin(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubPublicURL: tc.url}).privatePreviewConfiguredHubOrigin()
-			if err == nil || !strings.Contains(err.Error(), "FAROS_HUB_PUBLIC_URL") || !strings.Contains(err.Error(), "hub.publicURL") {
+			if err == nil || !strings.Contains(err.Error(), "RAILGRID_HUB_PUBLIC_URL") || !strings.Contains(err.Error(), "hub.publicURL") {
 				t.Fatalf("configured origin %q error = %v, want missing/invalid public URL naming the chart value", tc.url, err)
 			}
 		})
@@ -593,7 +593,7 @@ func TestPrivatePreviewConfiguredHubOriginRequiresAbsoluteHTTPSOrigin(t *testing
 func TestPrivatePreviewUnconfiguredHubOriginIsActionableForModelAndFeed(t *testing.T) {
 	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).privatePreviewConfiguredHubOrigin()
 	if err == nil {
-		t.Fatal("missing FAROS_HUB_PUBLIC_URL was accepted")
+		t.Fatal("missing RAILGRID_HUB_PUBLIC_URL was accepted")
 	}
 	// The model sees the tool failure text; it must say what to fix.
 	result := projectEinoAssistantSafeToolFailureResult(browserMCPToolNavigate, err)
@@ -603,8 +603,8 @@ func TestPrivatePreviewUnconfiguredHubOriginIsActionableForModelAndFeed(t *testi
 	// The action feed classifies it as a preview problem with the same cause,
 	// not as an unknown failure.
 	diagnostic := projectAssistantActionFeedDiagnosticForTool("navigate-call", browserMCPToolNavigate, projectEinoAssistantSafeErrorText(err))
-	if diagnostic == nil || diagnostic.Category != "runtime" || !strings.Contains(diagnostic.Message, "FAROS_HUB_PUBLIC_URL") || !strings.Contains(diagnostic.Message, "hub.publicURL") {
-		t.Fatalf("diagnostic = %#v, want runtime preview diagnostic naming FAROS_HUB_PUBLIC_URL", diagnostic)
+	if diagnostic == nil || diagnostic.Category != "runtime" || !strings.Contains(diagnostic.Message, "RAILGRID_HUB_PUBLIC_URL") || !strings.Contains(diagnostic.Message, "hub.publicURL") {
+		t.Fatalf("diagnostic = %#v, want runtime preview diagnostic naming RAILGRID_HUB_PUBLIC_URL", diagnostic)
 	}
 }
 

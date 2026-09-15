@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -59,9 +59,9 @@ func TestSplitBaseAndCluster(t *testing.T) {
 		},
 		{
 			name:        "localhost URL with cluster",
-			input:       "https://faros.localhost:6444/clusters/root:faros:user-default",
-			wantBase:    "https://faros.localhost:6444",
-			wantCluster: "root:faros:user-default",
+			input:       "https://railgrid.localhost:6444/clusters/root:railgrid:user-default",
+			wantBase:    "https://railgrid.localhost:6444",
+			wantCluster: "root:railgrid:user-default",
 		},
 		{
 			name:        "http scheme",
@@ -77,15 +77,15 @@ func TestSplitBaseAndCluster(t *testing.T) {
 		},
 		{
 			name:        "internal kcp URL with /clusters/ (no /api prefix)",
-			input:       "https://localhost:6443/clusters/root:faros:providers",
+			input:       "https://localhost:6443/clusters/root:railgrid:providers",
 			wantBase:    "https://localhost:6443",
-			wantCluster: "root:faros:providers",
+			wantCluster: "root:railgrid:providers",
 		},
 		{
 			name:        "internal kcp URL with /clusters/ and extra path",
-			input:       "https://localhost:6443/clusters/root:faros/api/v1",
+			input:       "https://localhost:6443/clusters/root:railgrid/api/v1",
 			wantBase:    "https://localhost:6443",
-			wantCluster: "root:faros",
+			wantCluster: "root:railgrid",
 		},
 	}
 
@@ -130,8 +130,8 @@ func TestHubServerURL(t *testing.T) {
 		{
 			name:    "kcp colon-path cluster",
 			hubBase: "https://hub:9443",
-			cluster: "root:faros:user-default",
-			want:    "https://hub:9443/clusters/root:faros:user-default",
+			cluster: "root:railgrid:user-default",
+			want:    "https://hub:9443/clusters/root:railgrid:user-default",
 		},
 	}
 
@@ -158,14 +158,14 @@ func TestEdgeAgentProxyPath(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "proxy",
-			want:        "/services/agent-proxy/abc123/apis/faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:        "/services/agent-proxy/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/proxy",
 		},
 		{
 			name:        "status subresource",
-			cluster:     "root:faros:user-default",
+			cluster:     "root:railgrid:user-default",
 			edgeName:    "edge-1",
 			subresource: "status",
-			want:        "/services/agent-proxy/root:faros:user-default/apis/faros.sh/v1alpha1/edges/edge-1/status",
+			want:        "/services/agent-proxy/root:railgrid:user-default/apis/railgrid.ai/v1alpha1/edges/edge-1/status",
 		},
 	}
 
@@ -195,7 +195,7 @@ func TestEdgeAgentProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "proxy",
-			want:        "https://hub:9443/services/agent-proxy/abc123/apis/faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:        "https://hub:9443/services/agent-proxy/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/proxy",
 		},
 		{
 			name:        "hub base with trailing slash",
@@ -203,7 +203,7 @@ func TestEdgeAgentProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "proxy",
-			want:        "https://hub:9443/services/agent-proxy/abc123/apis/faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:        "https://hub:9443/services/agent-proxy/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/proxy",
 		},
 	}
 
@@ -231,14 +231,14 @@ func TestEdgeProxyPath(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "k8s",
-			want:        "/services/edges-proxy/clusters/abc123/apis/faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:        "/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/k8s",
 		},
 		{
 			name:        "ssh subresource",
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "ssh",
-			want:        "/services/edges-proxy/clusters/abc123/apis/faros.sh/v1alpha1/edges/my-edge/ssh",
+			want:        "/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/ssh",
 		},
 	}
 
@@ -268,7 +268,7 @@ func TestEdgeProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "k8s",
-			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/k8s",
 		},
 		{
 			name:        "ssh URL",
@@ -276,7 +276,7 @@ func TestEdgeProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "server-1",
 			subresource: "ssh",
-			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/faros.sh/v1alpha1/edges/server-1/ssh",
+			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/server-1/ssh",
 		},
 		{
 			name:        "hub base with trailing slash",
@@ -284,7 +284,7 @@ func TestEdgeProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "k8s",
-			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/k8s",
 		},
 	}
 
@@ -314,8 +314,8 @@ func TestEdgeProviderCoordinates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			provider, group, resource := EdgeProviderCoordinates(tt.edgeType)
-			if provider != "edges" || group != "edges.faros.sh" || resource != tt.resource {
-				t.Fatalf("EdgeProviderCoordinates(%q) = (%q, %q, %q), want (edges, edges.faros.sh, %s)",
+			if provider != "edges" || group != "edges.railgrid.ai" || resource != tt.resource {
+				t.Fatalf("EdgeProviderCoordinates(%q) = (%q, %q, %q), want (edges, edges.railgrid.ai, %s)",
 					tt.edgeType, provider, group, resource, tt.resource)
 			}
 		})
@@ -323,8 +323,8 @@ func TestEdgeProviderCoordinates(t *testing.T) {
 }
 
 func TestProviderAgentProxyURLUsesMacOSResource(t *testing.T) {
-	got := ProviderAgentProxyURL("https://hub:9443/", "macos", "root:faros:tenant", "mac-mini", "proxy")
-	want := "https://hub:9443/services/providers/edges/agent/root:faros:tenant/apis/edges.faros.sh/v1alpha1/macosservers/mac-mini/proxy"
+	got := ProviderAgentProxyURL("https://hub:9443/", "macos", "root:railgrid:tenant", "mac-mini", "proxy")
+	want := "https://hub:9443/services/providers/edges/agent/root:railgrid:tenant/apis/edges.railgrid.ai/v1alpha1/macosservers/mac-mini/proxy"
 	if got != want {
 		t.Fatalf("ProviderAgentProxyURL() = %q, want %q", got, want)
 	}
@@ -346,13 +346,13 @@ func TestEdgeAPIPath(t *testing.T) {
 			name:     "standard edge",
 			cluster:  "abc123",
 			edgeName: "my-edge",
-			want:     "/clusters/abc123/apis/faros.sh/v1alpha1/edges/my-edge",
+			want:     "/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge",
 		},
 		{
 			name:     "kcp colon-path cluster",
-			cluster:  "root:faros:user-default",
+			cluster:  "root:railgrid:user-default",
 			edgeName: "edge-1",
-			want:     "/clusters/root:faros:user-default/apis/faros.sh/v1alpha1/edges/edge-1",
+			want:     "/clusters/root:railgrid:user-default/apis/railgrid.ai/v1alpha1/edges/edge-1",
 		},
 	}
 
@@ -376,9 +376,9 @@ func TestExternalizeURL(t *testing.T) {
 	}{
 		{
 			name:    "api services path gets externalized",
-			edgeURL: "/services/edges-proxy/clusters/abc123/apis/faros.sh/v1alpha1/edges/my-edge/k8s",
+			edgeURL: "/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/k8s",
 			hubBase: "https://hub:9443",
-			want:    "https://hub:9443/services/edges-proxy/clusters/abc123/apis/faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:    "https://hub:9443/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/k8s",
 		},
 		{
 			name:    "absolute URL returned unchanged",
@@ -388,15 +388,15 @@ func TestExternalizeURL(t *testing.T) {
 		},
 		{
 			name:    "non-services path returned unchanged",
-			edgeURL: "/clusters/abc123/apis/faros.sh/v1alpha1/edges/my-edge",
+			edgeURL: "/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge",
 			hubBase: "https://hub:9443",
-			want:    "/clusters/abc123/apis/faros.sh/v1alpha1/edges/my-edge",
+			want:    "/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge",
 		},
 		{
 			name:    "hub base with trailing slash",
-			edgeURL: "/services/agent-proxy/abc123/apis/faros.sh/v1alpha1/edges/my-edge/proxy",
+			edgeURL: "/services/agent-proxy/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/proxy",
 			hubBase: "https://hub:9443/",
-			want:    "https://hub:9443/services/agent-proxy/abc123/apis/faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:    "https://hub:9443/services/agent-proxy/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/proxy",
 		},
 	}
 

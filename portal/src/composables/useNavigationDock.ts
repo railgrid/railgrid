@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ export function clampDockPosition(
   }
 }
 
-const DOCK_STORAGE_KEY = 'faros-dock-state'
+const DOCK_STORAGE_KEY = 'railgrid-dock-state'
 const SNAP_THRESHOLD = 80
 
 function browserStorage(): Storage | null {

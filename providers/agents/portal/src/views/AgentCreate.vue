@@ -239,7 +239,7 @@ async function submit(): Promise<void> {
 
           <CreateGuidance
             title="Prepare a usable agent"
-            description="Choose the identity Faros will create and the model it can use immediately."
+            description="Choose the identity Railgrid will create and the model it can use immediately."
             :prerequisites="[
               credentialOptions.length ? 'A model credential is available in this workspace.' : 'Add a model credential before creating the agent.',
               'Optional channel connections can be added now or attached later from Config.',
@@ -251,7 +251,7 @@ async function submit(): Promise<void> {
               { label: 'Capabilities', value: capabilities },
             ]"
             :next-steps="[
-              'Faros creates the agent and opens its Config workspace.',
+              'Railgrid creates the agent and opens its Config workspace.',
               'Start a conversation to verify the model and instructions.',
               'Attach toolsets, schedules, and triggers when the core behavior is ready.',
             ]"

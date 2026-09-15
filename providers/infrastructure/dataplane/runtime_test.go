@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,13 +29,13 @@ import (
 	"k8s.io/client-go/dynamic/fake"
 	clienttesting "k8s.io/client-go/testing"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 func TestRecordActivityPatchesRuntimeAnnotation(t *testing.T) {
-	gvr := schema.GroupVersionResource{Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "instances"}
+	gvr := schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances"}
 	runtimeObject := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Instance",
 		"metadata": map[string]any{
 			"name":      "sandbox",
@@ -74,7 +74,7 @@ func TestRecordActivityPatchesRuntimeAnnotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get runtime object: %v", err)
 	}
-	value := got.GetAnnotations()[infrav1alpha1.FarosLastActivityAnnotation]
+	value := got.GetAnnotations()[infrav1alpha1.RailgridLastActivityAnnotation]
 	if value == "" {
 		t.Fatal("activity annotation is empty")
 	}

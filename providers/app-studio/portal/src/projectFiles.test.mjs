@@ -90,8 +90,8 @@ test('file API routes use providerFetch with tenant headers and the agreed wire 
   assert.deepEqual(created, { path: 'notes.md', size: 0, version: 'sha256:00', binary: false })
   assert.equal(calls[0].url, '/services/providers/app-studio/api/projects/demo/files/content?path=notes.md')
   assert.equal(calls[0].init.headers['If-None-Match'], '*')
-  assert.equal(calls[0].init.headers['X-Faros-Org'], 'org-1')
-  assert.equal(calls[0].init.headers['X-Faros-Workspace'], 'ws-1')
+  assert.equal(calls[0].init.headers['X-Railgrid-Org'], 'org-1')
+  assert.equal(calls[0].init.headers['X-Railgrid-Workspace'], 'ws-1')
   assert.match(calls[0].init.headers['Content-Type'], /^text\/plain/)
 
   await api.putProjectFile(ctx, 'demo', 'a.bin', new Blob([new Uint8Array([0])]), { ifMatch: 'sha256:aa' })

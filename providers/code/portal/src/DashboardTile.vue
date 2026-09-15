@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Dashboard tile for the code provider, mounted by
-// <faros-dashboard-tile-code> (see element.ts).
+// <railgrid-dashboard-tile-code> (see element.ts).
 //
 // What a user needs to know about Code at a glance is not "how many
 // repositories exist" — it is whether the thing repositories depend on is

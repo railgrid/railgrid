@@ -258,7 +258,7 @@ describe('Connections resource tables', () => {
   })
 
   it('keeps a Slack request URL masked and copies it only from the explicit handoff action', async () => {
-    const requestURL = 'https://faros.example.test/services/providers/agents/inbound/slack/secret'
+    const requestURL = 'https://railgrid.example.test/services/providers/agents/inbound/slack/secret'
     const item = { metadata: { name: 'slack' }, spec: { type: 'slack', displayName: 'Slack', channel: 'C012345' } } satisfies Connection
     const enableInbound = vi.fn().mockResolvedValue({ registered: false, note: 'Paste this request URL into Slack.', webhookURL: requestURL })
     const api = stubApi({ enableInbound, listConnections: () => Promise.resolve([item]) })
@@ -547,7 +547,7 @@ describe('Connections resource tables', () => {
       method: 'enableInbound',
       idleLabel: 'Enable inbound chat for telegram',
       busyLabel: 'Enabling inbound chat for telegram…',
-      result: { registered: true, note: 'Inbound enabled.', webhookURL: 'https://faros.example.test/webhook' },
+      result: { registered: true, note: 'Inbound enabled.', webhookURL: 'https://railgrid.example.test/webhook' },
       opensTab: false,
     },
     {

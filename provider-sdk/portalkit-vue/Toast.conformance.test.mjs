@@ -5,13 +5,13 @@ import test from 'node:test'
 const toast = readFileSync(new URL('./toast.ts', import.meta.url), 'utf8')
 const host = readFileSync(new URL('./ToastHost.vue', import.meta.url), 'utf8')
 const inline = readFileSync(new URL('./InlineNotification.vue', import.meta.url), 'utf8')
-const styles = readFileSync(new URL('../portalkit/faros-ui.css', import.meta.url), 'utf8')
+const styles = readFileSync(new URL('../portalkit/railgrid-ui.css', import.meta.url), 'utf8')
 
 test('Vue toast transport is versioned and shared across independent bundles', () => {
   assert.match(toast, /TOAST_TRANSPORT_VERSION = 1/)
-  assert.match(toast, /TOAST_TRANSPORT_EVENT = ['"]faros:portalkit:toast['"]/
+  assert.match(toast, /TOAST_TRANSPORT_EVENT = ['"]railgrid:portalkit:toast['"]/
   )
-  assert.match(toast, /Symbol\.for\('faros\.portalkit\.vue\.toast\.bridge\.v1'\)/)
+  assert.match(toast, /Symbol\.for\('railgrid\.portalkit\.vue\.toast\.bridge\.v1'\)/)
   assert.match(toast, /version: TOAST_TRANSPORT_VERSION/)
   assert.match(toast, /doc\.dispatchEvent\(new CustomEvent<ToastTransportDetail>/)
 })
@@ -68,7 +68,7 @@ test('Vue toast API supports legacy calls plus scoped dedupe and clear', () => {
 test('only the active host renders, with pre-mounted status and alert channels', () => {
   assert.match(host, /owner\?: ToastHostRole/)
   assert.match(host, /owner: 'primary'/)
-  assert.match(host, /data-faros-toast-host/)
+  assert.match(host, /data-railgrid-toast-host/)
   assert.match(host, /class="k-toast-host__channel k-toast-host__channel--status" role="status"/)
   assert.match(host, /class="k-toast-host__channel k-toast-host__channel--alert" role="alert"/)
   assert.match(host, /<Teleport to="body">/)
@@ -91,7 +91,7 @@ test('inline notifications expose contextual recovery and accessible tone semant
   assert.match(inline, /announce\?: InlineNotificationAnnouncement/)
   assert.match(inline, /announce === 'off'/)
   assert.match(inline, /actionLabel/)
-  assert.match(styles, /--faros-ui-core-version:\s*18;/)
+  assert.match(styles, /--railgrid-ui-core-version:\s*18;/)
   assert.match(styles, /safe-area-inset-bottom/)
   assert.match(styles, /safe-area-inset-left/)
   assert.match(styles, /min-width: 44px/)

@@ -6,9 +6,9 @@ interface ProviderScriptLoad {
 }
 
 const PROVIDER_SCRIPT_LOAD_TIMEOUT_MS = 15_000
-const PROVIDER_SCRIPT_LOADS_KEY = '__farosProviderScriptLoadsV1'
-const PROVIDER_BOOTSTRAP_GENERATIONS_KEY = '__farosProviderBootstrapGenerationsV1'
-const PROVIDER_BOOTSTRAP_GENERATION_COUNTER_KEY = '__farosProviderBootstrapGenerationCounterV1'
+const PROVIDER_SCRIPT_LOADS_KEY = '__railgridProviderScriptLoadsV1'
+const PROVIDER_BOOTSTRAP_GENERATIONS_KEY = '__railgridProviderBootstrapGenerationsV1'
+const PROVIDER_BOOTSTRAP_GENERATION_COUNTER_KEY = '__railgridProviderBootstrapGenerationCounterV1'
 // App Studio keeps stable custom-element wrappers and replaces only their lazy
 // loaders, so its bootstrap can safely be superseded in-place. Other providers
 // register immutable custom-element classes directly. Loading two versions of
@@ -108,11 +108,11 @@ function injectProviderScript(
   integrity: string | null,
   bundleSrc: string | null,
 ): ProviderScriptAttempt {
-  const scriptID = `faros-provider-script-${name}`
+  const scriptID = `railgrid-provider-script-${name}`
   const current = doc.getElementById(scriptID) as HTMLScriptElement | null
   if (
-    current?.dataset.farosProviderVersion === version &&
-    current.dataset.farosProviderLoadState === 'loaded'
+    current?.dataset.railgridProviderVersion === version &&
+    current.dataset.railgridProviderLoadState === 'loaded'
   ) {
     return { promise: Promise.resolve(), cancel: () => {} }
   }
@@ -136,7 +136,7 @@ function injectProviderScript(
         script.remove()
         reject(error)
       } else {
-        script.dataset.farosProviderLoadState = 'loaded'
+        script.dataset.railgridProviderLoadState = 'loaded'
         resolve()
       }
     }
@@ -156,15 +156,15 @@ function injectProviderScript(
     } else {
       // eslint-disable-next-line no-console
       console.warn(
-        `[faros] loading provider "${name}" bundle without an integrity pin; the hub has not hashed ${src}`,
+        `[railgrid] loading provider "${name}" bundle without an integrity pin; the hub has not hashed ${src}`,
       )
     }
-    script.dataset.farosProviderVersion = version
+    script.dataset.railgridProviderVersion = version
     // Provider bootstraps with mutable global side effects must verify this
     // host-issued generation before installing them. Removing a prepared
     // classic script does not guarantee its body will not execute later.
-    script.dataset.farosProviderBootstrapGeneration = bootstrapGeneration
-    script.dataset.farosProviderLoadState = 'loading'
+    script.dataset.railgridProviderBootstrapGeneration = bootstrapGeneration
+    script.dataset.railgridProviderLoadState = 'loading'
     script.onload = () => finish()
     script.onerror = () => finish(new Error(`failed to load ${src}`))
     cancel = (reason = new Error(`cancelled loading ${src}`)) => finish(reason)
@@ -265,9 +265,9 @@ export function invalidateProviderScript(
     loads.delete(name)
   }
 
-  const script = doc.getElementById(`faros-provider-script-${name}`) as HTMLScriptElement | null
-  if (script?.dataset.farosProviderVersion === requestedVersion) {
-    const generation = script.dataset.farosProviderBootstrapGeneration
+  const script = doc.getElementById(`railgrid-provider-script-${name}`) as HTMLScriptElement | null
+  if (script?.dataset.railgridProviderVersion === requestedVersion) {
+    const generation = script.dataset.railgridProviderBootstrapGeneration
     if (generation) revokeProviderBootstrapGeneration(doc, name, generation)
     script.remove()
   }

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -49,18 +49,18 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/bindings"
-	"github.com/faroshq/provider-app-studio/hubmcp"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
+	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const (
 	// finalizer guards instance teardown on Project deletion.
-	finalizer = "ai.faros.sh/instances"
+	finalizer = "ai.railgrid.ai/instances"
 	// requeueInterval polls instance status while not Ready. Instances are
 	// not watched (their kinds are per-template and dynamic); polling keeps
 	// the controller simple and deterministic.
@@ -74,8 +74,8 @@ const (
 	projectDevelopmentEnvironmentName = "development"
 	projectDevelopmentBindingName     = "dev"
 	projectDevelopmentProvider        = "app-studio"
-	appStudioAPIExportName            = "ai.faros.sh"
-	appStudioAPIExportPath            = "root:faros:providers:app-studio"
+	appStudioAPIExportName            = "ai.railgrid.ai"
+	appStudioAPIExportPath            = "root:railgrid:providers:app-studio"
 )
 
 type tenantPathResolver func(context.Context, client.Client, string) (string, error)
@@ -147,7 +147,7 @@ func (r *Reconciler) tenantClient(clusterName, token string, vw client.Client) (
 		return r.TenantClientFor(clusterName, token)
 	}
 	if r.HubBase == "" {
-		log.Printf("WARNING app-studio project reconciler: FAROS_HUB_URL is empty; falling back to the claimed-VW client, which cannot serve workspaces whose infrastructure/code provider identity differs from this deployment's pins")
+		log.Printf("WARNING app-studio project reconciler: RAILGRID_HUB_URL is empty; falling back to the claimed-VW client, which cannot serve workspaces whose infrastructure/code provider identity differs from this deployment's pins")
 		return vw, nil
 	}
 	return tenantaccess.NewClient(r.HubBase, clusterName, token, r.HubInsecure)

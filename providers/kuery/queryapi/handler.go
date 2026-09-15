@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,10 +29,10 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/kuery/apis/query/v1alpha1"
-	"github.com/faroshq/kuery/pkg/engine"
+	"github.com/railgrid/kuery/apis/query/v1alpha1"
+	"github.com/railgrid/kuery/pkg/engine"
 
-	"github.com/faroshq/provider-kuery/engagement"
+	"github.com/railgrid/provider-kuery/engagement"
 )
 
 // Handler serves POST /api/query.
@@ -43,8 +43,8 @@ type Handler struct {
 // Identity is the hub-injected caller identity: the tenant workspace's kcp
 // logical-cluster ID plus the user. Both hub paths carry the ID — the
 // backend proxy (/services/providers/kuery/*) and the MCP aggregate's
-// federation client inject X-Faros-Cluster on every request, and
-// X-Faros-Tenant carries the same ID. Without an identity (direct pod
+// federation client inject X-Railgrid-Cluster on every request, and
+// X-Railgrid-Tenant carries the same ID. Without an identity (direct pod
 // access) requests are refused.
 type Identity struct {
 	// Cluster is the tenant's kcp logical-cluster ID — the tenant key kuery
@@ -56,10 +56,10 @@ type Identity struct {
 var (
 	// ErrMissingIdentity is returned when no identity header identifies the
 	// caller's tenant.
-	ErrMissingIdentity = errors.New("missing tenant identity (X-Faros-Cluster)")
+	ErrMissingIdentity = errors.New("missing tenant identity (X-Railgrid-Cluster)")
 	// ErrInvalidIdentity is returned when an identity header carries
 	// something other than a kcp logical-cluster ID — typically a workspace
-	// path (root:faros:tenants:...), which kuery never accepts as a tenant
+	// path (root:railgrid:tenants:...), which kuery never accepts as a tenant
 	// key.
 	ErrInvalidIdentity = errors.New("invalid tenant identity")
 )
@@ -75,31 +75,31 @@ func IsClusterID(s string) bool {
 }
 
 // IdentityFromRequest extracts the proxy-injected identity. The cluster ID
-// is taken from X-Faros-Cluster; X-Faros-Tenant is consulted only when that
+// is taken from X-Railgrid-Cluster; X-Railgrid-Tenant is consulted only when that
 // header is absent, and only if it holds a cluster ID — a workspace path
 // there is an error, not a fallback (kuery keys nothing by path).
 //
-// With FAROS_DEV_ALLOW_TENANT_QUERY=true (dev only), ?tenant=<clusterID>
+// With RAILGRID_DEV_ALLOW_TENANT_QUERY=true (dev only), ?tenant=<clusterID>
 // substitutes for the headers — same escape hatch as the infrastructure
 // provider.
 func IdentityFromRequest(r *http.Request) (Identity, error) {
-	id := Identity{User: r.Header.Get("X-Faros-User")}
+	id := Identity{User: r.Header.Get("X-Railgrid-User")}
 
-	if v := strings.TrimSpace(r.Header.Get("X-Faros-Cluster")); v != "" {
+	if v := strings.TrimSpace(r.Header.Get("X-Railgrid-Cluster")); v != "" {
 		if !IsClusterID(v) {
-			return id, fmt.Errorf("%w: X-Faros-Cluster %q is not a kcp logical-cluster ID", ErrInvalidIdentity, v)
+			return id, fmt.Errorf("%w: X-Railgrid-Cluster %q is not a kcp logical-cluster ID", ErrInvalidIdentity, v)
 		}
 		id.Cluster = v
 		return id, nil
 	}
-	if v := strings.TrimSpace(r.Header.Get("X-Faros-Tenant")); v != "" {
+	if v := strings.TrimSpace(r.Header.Get("X-Railgrid-Tenant")); v != "" {
 		if !IsClusterID(v) {
-			return id, fmt.Errorf("%w: X-Faros-Tenant %q is a workspace path, not a kcp logical-cluster ID; kuery identifies tenants by cluster ID only (send X-Faros-Cluster)", ErrInvalidIdentity, v)
+			return id, fmt.Errorf("%w: X-Railgrid-Tenant %q is a workspace path, not a kcp logical-cluster ID; kuery identifies tenants by cluster ID only (send X-Railgrid-Cluster)", ErrInvalidIdentity, v)
 		}
 		id.Cluster = v
 		return id, nil
 	}
-	if os.Getenv("FAROS_DEV_ALLOW_TENANT_QUERY") == "true" {
+	if os.Getenv("RAILGRID_DEV_ALLOW_TENANT_QUERY") == "true" {
 		if v := strings.TrimSpace(r.URL.Query().Get("tenant")); v != "" {
 			if !IsClusterID(v) {
 				return id, fmt.Errorf("%w: ?tenant=%q is not a kcp logical-cluster ID", ErrInvalidIdentity, v)

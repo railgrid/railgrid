@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -61,17 +61,17 @@ func crbMissing(t *testing.T, c dynamic.Interface, name string) bool {
 func TestEnsureWorkspaceAdmin_GrantsAreAdditive(t *testing.T) {
 	c := newCRBClient(t)
 	ctx := context.Background()
-	for _, id := range []string{"faros:alice@example.com", "faros:bob@example.com", "faros:alice@example.com"} {
+	for _, id := range []string{"railgrid:alice@example.com", "railgrid:bob@example.com", "railgrid:alice@example.com"} {
 		if err := ensureWorkspaceAdmin(ctx, c, id); err != nil {
 			t.Fatalf("ensure %s: %v", id, err)
 		}
 	}
-	for _, id := range []string{"faros:alice@example.com", "faros:bob@example.com"} {
+	for _, id := range []string{"railgrid:alice@example.com", "railgrid:bob@example.com"} {
 		if got := crbSubjects(t, c, userAdminCRBName(id)); len(got) != 1 || got[0] != id {
 			t.Errorf("binding for %s: subjects %v", id, got)
 		}
 	}
-	if userAdminCRBName("faros:alice@example.com") == userAdminCRBName("faros:bob@example.com") {
+	if userAdminCRBName("railgrid:alice@example.com") == userAdminCRBName("railgrid:bob@example.com") {
 		t.Error("per-user binding names collide")
 	}
 }
@@ -85,20 +85,20 @@ func TestEnsureWorkspaceAdmin_MigratesLegacySharedBinding(t *testing.T) {
 		"metadata":   map[string]interface{}{"name": legacyWorkspaceAdminCRB},
 		"roleRef":    map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "cluster-admin"},
 		"subjects": []interface{}{
-			map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "User", "name": "faros:carol@example.com"},
+			map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "User", "name": "railgrid:carol@example.com"},
 		},
 	}}
 	if _, err := c.Resource(clusterRoleBindingGVR).Create(ctx, legacy, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("seed legacy: %v", err)
 	}
-	if err := ensureWorkspaceAdmin(ctx, c, "faros:dave@example.com"); err != nil {
+	if err := ensureWorkspaceAdmin(ctx, c, "railgrid:dave@example.com"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	// carol, who only held access through the shared binding, keeps it.
-	if got := crbSubjects(t, c, userAdminCRBName("faros:carol@example.com")); len(got) != 1 || got[0] != "faros:carol@example.com" {
+	if got := crbSubjects(t, c, userAdminCRBName("railgrid:carol@example.com")); len(got) != 1 || got[0] != "railgrid:carol@example.com" {
 		t.Errorf("carol not migrated: %v", got)
 	}
-	if got := crbSubjects(t, c, userAdminCRBName("faros:dave@example.com")); len(got) != 1 || got[0] != "faros:dave@example.com" {
+	if got := crbSubjects(t, c, userAdminCRBName("railgrid:dave@example.com")); len(got) != 1 || got[0] != "railgrid:dave@example.com" {
 		t.Errorf("dave not granted: %v", got)
 	}
 	if !crbMissing(t, c, legacyWorkspaceAdminCRB) {
@@ -109,22 +109,22 @@ func TestEnsureWorkspaceAdmin_MigratesLegacySharedBinding(t *testing.T) {
 func TestRevokeWorkspaceAdmin_OnlyTouchesThatUser(t *testing.T) {
 	c := newCRBClient(t)
 	ctx := context.Background()
-	for _, id := range []string{"faros:alice@example.com", "faros:bob@example.com"} {
+	for _, id := range []string{"railgrid:alice@example.com", "railgrid:bob@example.com"} {
 		if err := ensureWorkspaceAdmin(ctx, c, id); err != nil {
 			t.Fatalf("ensure %s: %v", id, err)
 		}
 	}
-	if err := revokeWorkspaceAdmin(ctx, c, "faros:bob@example.com"); err != nil {
+	if err := revokeWorkspaceAdmin(ctx, c, "railgrid:bob@example.com"); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
-	if !crbMissing(t, c, userAdminCRBName("faros:bob@example.com")) {
+	if !crbMissing(t, c, userAdminCRBName("railgrid:bob@example.com")) {
 		t.Error("bob still bound")
 	}
-	if got := crbSubjects(t, c, userAdminCRBName("faros:alice@example.com")); len(got) != 1 {
+	if got := crbSubjects(t, c, userAdminCRBName("railgrid:alice@example.com")); len(got) != 1 {
 		t.Errorf("alice lost her binding: %v", got)
 	}
 	// Idempotent on NotFound.
-	if err := revokeWorkspaceAdmin(ctx, c, "faros:bob@example.com"); err != nil {
+	if err := revokeWorkspaceAdmin(ctx, c, "railgrid:bob@example.com"); err != nil {
 		t.Errorf("second revoke: %v", err)
 	}
 }

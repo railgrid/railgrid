@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ import (
 	"k8s.io/client-go/rest"
 	clienttesting "k8s.io/client-go/testing"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 // saToken -> (cluster it is valid in, username kube reports).
@@ -193,7 +193,7 @@ func TestVerifierHubUserMembership(t *testing.T) {
 		{name: "org admin covers every workspace", cluster: tenantPathRoot + org + ":" + ws2, index: orgAdmin, wantWS: ws2},
 		{name: "org admin covers the org cluster", cluster: tenantPathRoot + org, index: orgAdmin},
 		{name: "soft-deleted membership", cluster: tenantPathRoot + gone, index: idx, wantErr: ErrForbidden},
-		{name: "cluster outside the tenants tree", cluster: "root:faros:providers:infra", index: orgAdmin, wantErr: ErrForbidden},
+		{name: "cluster outside the tenants tree", cluster: "root:railgrid:providers:infra", index: orgAdmin, wantErr: ErrForbidden},
 		{name: "no index at all", cluster: tenantPathRoot + org, index: nil, wantErr: ErrForbidden},
 	}
 	for _, tc := range cases {
@@ -339,7 +339,7 @@ func TestVerifierServiceAccountTenant(t *testing.T) {
 		t.Fatalf("missing LogicalCluster: Verify() = %v, want ErrForbidden", err)
 	}
 
-	v, _ = newTestVerifier(t, resolve("root:faros:system:mcp", nil))
+	v, _ = newTestVerifier(t, resolve("root:railgrid:system:mcp", nil))
 	caller, err := v.Verify(request(t, "sa-tenant-a"), "sa-tenant-a", "tenant-a", "default")
 	if err != nil {
 		t.Fatalf("non-tenant cluster: Verify() = %v, want nil", err)
@@ -364,12 +364,12 @@ func TestTenantFromPath(t *testing.T) {
 		org, ws string
 		ok      bool
 	}{
-		{path: "root:faros:tenants:org1", org: "org1", ok: true},
-		{path: "root:faros:tenants:org1:ws1", org: "org1", ws: "ws1", ok: true},
-		{path: "root:faros:tenants:org1:ws1:edge"},
-		{path: "root:faros:tenants:"},
-		{path: "root:faros:tenants:org1:"},
-		{path: "root:faros:providers:infra"},
+		{path: "root:railgrid:tenants:org1", org: "org1", ok: true},
+		{path: "root:railgrid:tenants:org1:ws1", org: "org1", ws: "ws1", ok: true},
+		{path: "root:railgrid:tenants:org1:ws1:edge"},
+		{path: "root:railgrid:tenants:"},
+		{path: "root:railgrid:tenants:org1:"},
+		{path: "root:railgrid:providers:infra"},
 		{path: "root"},
 		{path: ""},
 	}

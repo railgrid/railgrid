@@ -6,7 +6,7 @@ App Studio's development environment is **Template-backed**. A Project records
 the selected infrastructure `Template`; the Template's development contract
 declares its instance resource and one or more development components. App
 Studio does not assume a `SandboxRunner` kind, a single container, or a fixed
-toolchain. The selected Template is provisioned with `farosMode: development`
+toolchain. The selected Template is provisioned with `railgridMode: development`
 and its own graph owns the runtime namespace, workloads, services, routes, and
 development-agent configuration.
 
@@ -37,7 +37,7 @@ token-authenticated App Studio → Infrastructure control contract remains on th
 component Service's `7070` control port and `7071` exec port, using
 `X-Sandbox-Control-Token`. The coordinator owns that contract and durable
 session/idempotency state on a separate per-component platform-state PVC
-mounted at `/faros/state`; it has no app environment or secrets.
+mounted at `/railgrid/state`; it has no app environment or secrets.
 
 The app runtime supervisor owns the app environment/secrets and starts or
 restarts the app, but has no platform token or platform-state mount. The
@@ -54,7 +54,7 @@ container is restarted; the coordinator remains running.
 
 That profile still shares the host kernel with the node. The infrastructure
 provider therefore accepts a platform-configured RuntimeClass
-(`FAROS_SANDBOX_RUNTIME_CLASS_NAME`, chart value `sandbox.runtimeClassName`,
+(`RAILGRID_SANDBOX_RUNTIME_CLASS_NAME`, chart value `sandbox.runtimeClassName`,
 `InfrastructureProvider.spec.sandbox.runtimeClassName`) and stamps it as
 `spec.runtimeClassName` on every synthesized development pod, including the
 universal coding sandbox. It is a platform decision, never a Template schema

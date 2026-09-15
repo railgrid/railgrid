@@ -1,11 +1,11 @@
 ---
-{"schema":1,"id":"design.foundations.recipes","title":"Shared k-* recipes","kind":"recipe","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The canonical stylesheet is copied to the host and each vendored PortalKit bundle."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/recipes.md#shared-k-recipes","role":"design"},{"path":"provider-sdk/portalkit/faros-ui.css","role":"implementation"},{"path":"hack/sync-portalkit.sh","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[]}
+{"schema":1,"id":"design.foundations.recipes","title":"Shared k-* recipes","kind":"recipe","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The canonical stylesheet is copied to the host and each vendored PortalKit bundle."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/recipes.md#shared-k-recipes","role":"design"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"},{"path":"hack/sync-portalkit.sh","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[]}
 ---
 
 # Shared k recipes
 
-`provider-sdk/portalkit/faros-ui.css` is the canonical core component vocabulary.
-`portal/src/assets/faros-ui.css` and copies under each portal's `src/portalkit/`
+`provider-sdk/portalkit/railgrid-ui.css` is the canonical core component vocabulary.
+`portal/src/assets/railgrid-ui.css` and copies under each portal's `src/portalkit/`
 are exact sync outputs. `make sync-portalkit` writes them and
 `make verify-portalkit` rejects drift or unexpected files. Use these classes
 before writing local CSS.

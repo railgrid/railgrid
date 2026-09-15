@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,9 +22,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestProjectComponentSyncSkippedReasons(t *testing.T) {
@@ -144,7 +144,7 @@ func TestSyncProjectDevelopmentTargetReportsSkippedFiles(t *testing.T) {
 	defer hub.Close()
 
 	instance := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Instance",
 		"metadata":   map[string]any{"name": "demo-dev"},
 	}}
@@ -153,7 +153,7 @@ func TestSyncProjectDevelopmentTargetReportsSkippedFiles(t *testing.T) {
 		ResourceName: "demo-dev",
 		Resource:     "instances",
 		Kind:         "Instance",
-		APIVersion:   "infrastructure.faros.sh/v1alpha1",
+		APIVersion:   "infrastructure.railgrid.ai/v1alpha1",
 		Components:   map[string]projectTemplateComponent{"web": {WorkspacePath: "web"}, "api": {WorkspacePath: "api"}},
 	}
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: hub.URL, workspaces: workspaces}

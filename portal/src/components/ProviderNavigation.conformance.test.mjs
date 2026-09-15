@@ -31,9 +31,9 @@ test('provider page and dashboard consumers coordinate versioned bootstrap reloa
 
 test('provider hosts recover a retained wrapper after its lazy chunk is retired', () => {
   for (const source of [frame, tile]) {
-    assert.match(source, /addEventListener\('faros-provider-bootstrap-retry', onProviderBootstrapRetry\)/)
+    assert.match(source, /addEventListener\('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry\)/)
     assert.match(source, /function onProviderBootstrapRetry\(event: Event\)[\s\S]*event\.preventDefault\(\)/)
-    assert.match(source, /removeEventListener\('faros-provider-bootstrap-retry', onProviderBootstrapRetry\)/)
+    assert.match(source, /removeEventListener\('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry\)/)
   }
   assert.match(frame, /function onProviderBootstrapRetry\(event: Event\)[\s\S]*retryProviderBundle\(\)/)
   assert.match(tile, /function onProviderBootstrapRetry\(event: Event\)[\s\S]*invalidateProviderScript\(props\.provider\.name, props\.provider\.version\)[\s\S]*retryLoad\(\)/)

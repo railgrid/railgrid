@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package provider implements an end-to-end suite for the faros provider
-// extension surface. It starts the faros-hub with embedded kcp and the
+// Package provider implements an end-to-end suite for the railgrid provider
+// extension surface. It starts the railgrid-hub with embedded kcp and the
 // reference quickstart provider as host subprocesses, following the current
 // bootstrap flow: Provider + CatalogEntry applied into
-// root:faros:system:providers (the hub's Provider controller materializes
+// root:railgrid:system:providers (the hub's Provider controller materializes
 // the sub-workspace + SA + provider-token), then `quickstart-provider init`
 // with the minted SA kubeconfig (APIExport + schemas + bind grant), then
 // serve. The tests exercise the full lifecycle: catalog provisioning, the
@@ -76,7 +76,7 @@ func TestMain(m *testing.M) {
 	// Fail fast if a previous run left ports bound.
 	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
 		if portInUse(p) {
-			fmt.Fprintf(os.Stderr, "port :%s already in use; run `pkill faros-hub; pkill quickstart-provider` and retry\n", p)
+			fmt.Fprintf(os.Stderr, "port :%s already in use; run `pkill railgrid-hub; pkill quickstart-provider` and retry\n", p)
 			os.Exit(2)
 		}
 	}
@@ -87,16 +87,16 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	dataDir, err := os.MkdirTemp("", "faros-e2e-provider-")
+	dataDir, err := os.MkdirTemp("", "railgrid-e2e-provider-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tempdir:", err)
 		os.Exit(1)
 	}
 	// Don't auto-clean dataDir on failure — useful for post-mortem.
-	keepData := os.Getenv("FAROS_E2E_KEEP_DATA") == "true"
+	keepData := os.Getenv("RAILGRID_E2E_KEEP_DATA") == "true"
 
 	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
-	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "faros-hub"),
+	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "railgrid-hub"),
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
 		"--kcp-secure-port", kcpPort,
@@ -140,9 +140,9 @@ func TestMain(m *testing.M) {
 	}
 	adminToken = tok
 
-	// Provisioning: Provider + CatalogEntry into root:faros:system:providers
+	// Provisioning: Provider + CatalogEntry into root:railgrid:system:providers
 	// (mirrors `make install-provider-quickstart`); the hub's Provider
-	// controller materializes root:faros:providers:quickstart, the provider
+	// controller materializes root:railgrid:providers:quickstart, the provider
 	// SA, and the provider-token Secret.
 	if err := applyQuickstartManifests(); err != nil {
 		cleanup()
@@ -167,11 +167,11 @@ func TestMain(m *testing.M) {
 	}
 	initCmd := exec.Command(filepath.Join(repoRoot, "bin", "quickstart-provider"), "init")
 	initCmd.Env = append(os.Environ(),
-		"FAROS_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"QUICKSTART_WORKSPACE_PATH="+workspacePath,
 		// The greetings APIResourceSchema the chart ships — init reads the
 		// schemas dir to author the APIExport's resources.
-		"FAROS_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "quickstart", "deploy", "chart", "files", "schemas"),
+		"RAILGRID_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "quickstart", "deploy", "chart", "files", "schemas"),
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -190,9 +190,9 @@ func TestMain(m *testing.M) {
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "quickstart-provider"))
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
-		"FAROS_HUB_URL="+hubURL,
-		"FAROS_HUB_TOKEN="+staticToken,
-		"FAROS_PROVIDER_NAME=quickstart",
+		"RAILGRID_HUB_URL="+hubURL,
+		"RAILGRID_HUB_TOKEN="+staticToken,
+		"RAILGRID_PROVIDER_NAME=quickstart",
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog
@@ -252,18 +252,18 @@ func mintRuntimeKubeconfig(path string, timeout time.Duration) error {
 	kc := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
-- name: faros
+- name: railgrid
   cluster:
     server: %s/clusters/%s
     insecure-skip-tls-verify: true
 contexts:
-- name: faros
+- name: railgrid
   context:
-    cluster: faros
-    user: faros
-current-context: faros
+    cluster: railgrid
+    user: railgrid
+current-context: railgrid
 users:
-- name: faros
+- name: railgrid
   user:
     token: %s
 `, kcpServer, workspacePath, token)

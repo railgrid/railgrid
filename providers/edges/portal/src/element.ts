@@ -1,22 +1,22 @@
-// EdgesElement is the custom element the faros portal renders for the edges
+// EdgesElement is the custom element the railgrid portal renders for the edges
 // provider. It mounts a Vue 3 app in its own light-DOM container and survives
 // portal re-renders by keeping a single app instance whose props are driven by
-// the .farosContext setter. Mirrors the code/infrastructure providers.
+// the .railgridContext setter. Mirrors the code/infrastructure providers.
 
 import { createApp, h, reactive, type App as VueApp } from 'vue'
 import App from './App.vue'
 import DashboardTile from './DashboardTile.vue'
-import type { FarosContext } from './types'
+import type { RailgridContext } from './types'
 
 export class EdgesElement extends HTMLElement {
   private _vueApp: VueApp | null = null
-  private _state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
+  private _state = reactive<{ ctx: RailgridContext | null }>({ ctx: null })
   private _host: HTMLDivElement | null = null
 
-  set farosContext(v: FarosContext | null) {
+  set railgridContext(v: RailgridContext | null) {
     this._state.ctx = v
   }
-  get farosContext(): FarosContext | null {
+  get railgridContext(): RailgridContext | null {
     return this._state.ctx
   }
 
@@ -44,17 +44,17 @@ export class EdgesElement extends HTMLElement {
 }
 
 // EdgesDashboardTileElement is the console's dashboard summary card. Same
-// farosContext setter contract as the page element, so the shell pushes
+// railgridContext setter contract as the page element, so the shell pushes
 // context through one hook for both.
 export class EdgesDashboardTileElement extends HTMLElement {
   private _vueApp: VueApp | null = null
-  private _state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
+  private _state = reactive<{ ctx: RailgridContext | null }>({ ctx: null })
   private _host: HTMLDivElement | null = null
 
-  set farosContext(v: FarosContext | null) {
+  set railgridContext(v: RailgridContext | null) {
     this._state.ctx = v
   }
-  get farosContext(): FarosContext | null {
+  get railgridContext(): RailgridContext | null {
     return this._state.ctx
   }
 

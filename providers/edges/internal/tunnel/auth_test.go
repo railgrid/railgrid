@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -148,10 +148,10 @@ func writeJSON(t *testing.T, w http.ResponseWriter, obj any) {
 // authenticates natively through the APIExport virtual workspace scoped to that
 // cluster, keeps its real groups, and is authorized under its plain
 // system:serviceaccount: name — the subject the hub's cluster-admin binding for
-// faros-du-* names.
+// railgrid-du-* names.
 func TestAuthorizeAcceptsADelegatedUserToken(t *testing.T) {
 	const cluster = "260dym853j73uupr"
-	const sa = "faros-du-9f2c1a7b5e4d3c2b1a09"
+	const sa = "railgrid-du-9f2c1a7b5e4d3c2b1a09"
 
 	rec := &authRecorder{
 		username:      "system:serviceaccount:default:" + sa,
@@ -166,7 +166,7 @@ func TestAuthorizeAcceptsADelegatedUserToken(t *testing.T) {
 
 	token := delegatedSAToken(t, cluster, sa)
 	err := authorize(context.Background(), tenantCfg, kcpCfg, token, cluster,
-		"proxy", "edges.faros.sh", "services", "provider-infrastructure")
+		"proxy", "edges.railgrid.ai", "services", "provider-infrastructure")
 	if err != nil {
 		t.Fatalf("authorize() = %v, want nil — a delegated token must reach an edge the caller may use", err)
 	}
@@ -189,7 +189,7 @@ func TestAuthorizeAcceptsADelegatedUserToken(t *testing.T) {
 		t.Errorf("SAR groups = %v, want the reviewed groups kept for a workspace-local SA", rec.sarGroups[0])
 	}
 	want := authorizationv1.ResourceAttributes{
-		Verb: "proxy", Group: "edges.faros.sh", Version: "v1alpha1",
+		Verb: "proxy", Group: "edges.railgrid.ai", Version: "v1alpha1",
 		Resource: "services", Name: "provider-infrastructure",
 	}
 	if rec.sarAttributes[0] != want {
@@ -203,14 +203,14 @@ func TestAuthorizeAcceptsADelegatedUserToken(t *testing.T) {
 func TestAuthorizeRefusesADelegatedTokenWithoutTheProxyGrant(t *testing.T) {
 	const cluster = "260dym853j73uupr"
 	rec := &authRecorder{
-		username:      "system:serviceaccount:default:faros-du-9f2c1a7b5e4d3c2b1a09",
+		username:      "system:serviceaccount:default:railgrid-du-9f2c1a7b5e4d3c2b1a09",
 		authenticated: true,
 		allowed:       false,
 	}
 	cfg := rec.start(t)
 
-	err := authorize(context.Background(), cfg, cfg, delegatedSAToken(t, cluster, "faros-du-9f2c1a7b5e4d3c2b1a09"), cluster,
-		"proxy", "edges.faros.sh", "linuxservers", "prod-eu")
+	err := authorize(context.Background(), cfg, cfg, delegatedSAToken(t, cluster, "railgrid-du-9f2c1a7b5e4d3c2b1a09"), cluster,
+		"proxy", "edges.railgrid.ai", "linuxservers", "prod-eu")
 	if err == nil {
 		t.Fatal("authorize() = nil, want a denial when the SAR says no")
 	}
@@ -223,8 +223,8 @@ func TestAuthorizeRefusesAnUnauthenticatedToken(t *testing.T) {
 	rec := &authRecorder{authenticated: false, allowed: true}
 	cfg := rec.start(t)
 
-	err := authorize(context.Background(), cfg, cfg, delegatedSAToken(t, "260dym853j73uupr", "faros-du-dead"), "260dym853j73uupr",
-		"proxy", "edges.faros.sh", "services", "svc")
+	err := authorize(context.Background(), cfg, cfg, delegatedSAToken(t, "260dym853j73uupr", "railgrid-du-dead"), "260dym853j73uupr",
+		"proxy", "edges.railgrid.ai", "services", "svc")
 	if err == nil {
 		t.Fatal("authorize() = nil, want a refusal for an unauthenticated token")
 	}
@@ -253,7 +253,7 @@ func TestParseServiceAccountTokenShapes(t *testing.T) {
 	})
 
 	t.Run("bound delegated token is not a foreign SA", func(t *testing.T) {
-		if _, ok := parseServiceAccountToken(delegatedSAToken(t, cluster, "faros-du-abc")); ok {
+		if _, ok := parseServiceAccountToken(delegatedSAToken(t, cluster, "railgrid-du-abc")); ok {
 			t.Error("a bound delegated token was classed as a foreign SA; it would be reviewed in the wrong workspace")
 		}
 	})
@@ -285,7 +285,7 @@ func TestAuthorizeRequalifiesAForeignServiceAccount(t *testing.T) {
 	// Both configs point at the recorder so the foreign branch (which re-roots
 	// kcpConfig at the SA's home cluster) still reaches it.
 	if err := authorize(context.Background(), cfg, cfg, legacySAToken(t, home, "provider-edges"), consumer,
-		"proxy", "edges.faros.sh", "services", "svc"); err != nil {
+		"proxy", "edges.railgrid.ai", "services", "svc"); err != nil {
 		t.Fatalf("authorize() = %v, want nil", err)
 	}
 
@@ -308,7 +308,7 @@ func TestAuthorizeRefusesAForeignTokenThatResolvesToANonServiceAccount(t *testin
 	cfg := rec.start(t)
 
 	err := authorize(context.Background(), cfg, cfg, legacySAToken(t, "1a2b3c4d5e6f7g8h", "x"), "260dym853j73uupr",
-		"proxy", "edges.faros.sh", "services", "svc")
+		"proxy", "edges.railgrid.ai", "services", "svc")
 	if err == nil {
 		t.Fatal("authorize() = nil, want a refusal")
 	}
@@ -345,7 +345,7 @@ func TestMacOSAgentIngressRejectsAServiceAccountForAnotherEdge(t *testing.T) {
 	s.logger = klog.Background()
 
 	req := httptest.NewRequest(http.MethodGet,
-		"/"+consumer+"/apis/edges.faros.sh/v1alpha1/macosservers/build/proxy", nil)
+		"/"+consumer+"/apis/edges.railgrid.ai/v1alpha1/macosservers/build/proxy", nil)
 	req.Header.Set("Authorization", "Bearer "+legacySAToken(t, home, "macos-edge-other"))
 	rr := httptest.NewRecorder()
 	s.AgentIngressHandler().ServeHTTP(rr, req)
@@ -366,7 +366,7 @@ func TestMacOSAgentIngressRejectsAServiceAccountForAnotherEdge(t *testing.T) {
 		t.Fatalf("foreign Mac SA groups = %v, want none", got)
 	}
 	want := authorizationv1.ResourceAttributes{
-		Verb: "proxy", Group: "edges.faros.sh", Version: "v1alpha1",
+		Verb: "proxy", Group: "edges.railgrid.ai", Version: "v1alpha1",
 		Resource: "macosservers", Name: "build",
 	}
 	if len(rec.sarAttributes) != 1 || rec.sarAttributes[0] != want {

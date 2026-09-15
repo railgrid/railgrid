@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,9 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/tenant"
-	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/tenant"
+	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
 )
 
 func scopedClient(t *testing.T, proxy *tenanttest.Server) *Client {
@@ -45,7 +45,7 @@ func scopedClient(t *testing.T, proxy *tenanttest.Server) *Client {
 
 func TestStatusPatchReturnsCompleteProject(t *testing.T) {
 	proxy := tenanttest.NewServer(t)
-	proxy.Add(ProjectGVR, tenanttest.ObjectFromYAML(t, `apiVersion: ai.faros.sh/v1alpha1
+	proxy.Add(ProjectGVR, tenanttest.ObjectFromYAML(t, `apiVersion: ai.railgrid.ai/v1alpha1
 kind: Project
 metadata:
   name: complete-project
@@ -89,7 +89,7 @@ status:
 		t.Fatalf("ResourceVersion = %q, want a fresh server-assigned version", got.ResourceVersion)
 	}
 	patches := proxy.RequestsFor(http.MethodPatch, ProjectGVR)
-	if len(patches) != 1 || patches[0].Subresource != "status" || patches[0].Path != "/clusters/cluster-id/apis/ai.faros.sh/v1alpha1/projects/complete-project/status" {
+	if len(patches) != 1 || patches[0].Subresource != "status" || patches[0].Path != "/clusters/cluster-id/apis/ai.railgrid.ai/v1alpha1/projects/complete-project/status" {
 		t.Fatalf("patch requests = %#v, want one merge patch on the status subresource", patches)
 	}
 	if patches[0].Bearer != "caller-token" {
@@ -101,12 +101,12 @@ status:
 }
 
 func TestResourceListForwardsLabelSelectorToServer(t *testing.T) {
-	const selector = "code.faros.sh/repository=repo-a"
-	packagesGVR := schema.GroupVersionResource{Group: "code.faros.sh", Version: "v1alpha1", Resource: "packages"}
+	const selector = "code.railgrid.ai/repository=repo-a"
+	packagesGVR := schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "packages"}
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(packagesGVR,
-		tenanttest.ObjectFromYAML(t, "apiVersion: code.faros.sh/v1alpha1\nkind: Package\nmetadata:\n  name: app-a\n  labels:\n    code.faros.sh/repository: repo-a\nspec:\n  repositoryRef: repo-a\n"),
-		tenanttest.ObjectFromYAML(t, "apiVersion: code.faros.sh/v1alpha1\nkind: Package\nmetadata:\n  name: app-b\n  labels:\n    code.faros.sh/repository: repo-b\nspec:\n  repositoryRef: repo-b\n"),
+		tenanttest.ObjectFromYAML(t, "apiVersion: code.railgrid.ai/v1alpha1\nkind: Package\nmetadata:\n  name: app-a\n  labels:\n    code.railgrid.ai/repository: repo-a\nspec:\n  repositoryRef: repo-a\n"),
+		tenanttest.ObjectFromYAML(t, "apiVersion: code.railgrid.ai/v1alpha1\nkind: Package\nmetadata:\n  name: app-b\n  labels:\n    code.railgrid.ai/repository: repo-b\nspec:\n  repositoryRef: repo-b\n"),
 	)
 	client := scopedClient(t, proxy)
 	res := tenant.Resource{GVR: packagesGVR, Kind: "Package", Plural: "Packages"}
@@ -130,7 +130,7 @@ func TestResourceCreateAndUpdateAreUpserts(t *testing.T) {
 	projects := client.Resource(projectResource, "")
 
 	// Update on a missing object creates it.
-	first := tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\nspec:\n  displayName: First\n")
+	first := tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\nspec:\n  displayName: First\n")
 	created, err := projects.Update(context.Background(), first, metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("update-as-create: %v", err)
@@ -140,7 +140,7 @@ func TestResourceCreateAndUpdateAreUpserts(t *testing.T) {
 	}
 
 	// Create on an existing object updates it without a resourceVersion.
-	second := tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\nspec:\n  displayName: Second\n")
+	second := tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\nspec:\n  displayName: Second\n")
 	updated, err := projects.Create(context.Background(), second, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("create-as-update: %v", err)
@@ -176,7 +176,7 @@ func TestProjectDeleteUsesNativeUIDPrecondition(t *testing.T) {
 				if r.Method != http.MethodDelete {
 					t.Fatalf("method = %s, want DELETE", r.Method)
 				}
-				if got, want := r.URL.Path, "/clusters/cluster-id/apis/ai.faros.sh/v1alpha1/projects/demo"; got != want {
+				if got, want := r.URL.Path, "/clusters/cluster-id/apis/ai.railgrid.ai/v1alpha1/projects/demo"; got != want {
 					t.Fatalf("delete path = %q, want %q", got, want)
 				}
 				if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {

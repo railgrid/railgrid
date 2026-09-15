@@ -6,8 +6,8 @@
  * accidentally advertise AI support to an older or unrelated bundle.
  */
 :root {
-  --faros-agent-ui-canonical: 1;
-  --faros-agent-ui-version: 6;
+  --railgrid-agent-ui-canonical: 1;
+  --railgrid-agent-ui-version: 6;
 }
 
 /* Conversation headers keep their neutral icon-only back control in the core

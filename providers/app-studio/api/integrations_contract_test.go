@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,8 +24,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/faroshq/provider-sdk/actionwire"
 	"github.com/gorilla/mux"
+	"github.com/railgrid/provider-sdk/actionwire"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,13 +33,13 @@ import (
 	"k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
 )
 
 var testDatabricksTableGVR = schema.GroupVersionResource{
-	Group: "databricks.faros.sh", Version: "v1alpha1", Resource: "tables",
+	Group: "databricks.railgrid.ai", Version: "v1alpha1", Resource: "tables",
 }
 
 const (
@@ -47,7 +47,7 @@ const (
 	projectIntegrationActionQueryTable   = "query_table"
 	projectIntegrationActionVersionV1    = "v1"
 	testProjectActionSchemaDigest        = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	databricksTableAPIVersion            = "databricks.faros.sh/v1alpha1"
+	databricksTableAPIVersion            = "databricks.railgrid.ai/v1alpha1"
 	databricksTableKind                  = "Table"
 	databricksTableResource              = "tables"
 )
@@ -223,14 +223,14 @@ func TestProviderActionForwardingAppendsConfiguredCAToSystemTrust(t *testing.T) 
 func TestProviderActionForwardingUsesVerifiedOrgWorkspaceHeaders(t *testing.T) {
 	ref := &aiv1alpha1.ProjectProviderResourceReference{Name: "item", APIVersion: "example/v1", Kind: "Item", Resource: "items"}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("X-Faros-Org"); got != "org-verified" {
-			t.Errorf("X-Faros-Org = %q, want org-verified", got)
+		if got := r.Header.Get("X-Railgrid-Org"); got != "org-verified" {
+			t.Errorf("X-Railgrid-Org = %q, want org-verified", got)
 		}
-		if got := r.Header.Get("X-Faros-Workspace"); got != "workspace-verified" {
-			t.Errorf("X-Faros-Workspace = %q, want workspace-verified", got)
+		if got := r.Header.Get("X-Railgrid-Workspace"); got != "workspace-verified" {
+			t.Errorf("X-Railgrid-Workspace = %q, want workspace-verified", got)
 		}
-		if got := r.Header.Get("X-Faros-Tenant"); got != "cluster-a" {
-			t.Errorf("X-Faros-Tenant = %q", got)
+		if got := r.Header.Get("X-Railgrid-Tenant"); got != "cluster-a" {
+			t.Errorf("X-Railgrid-Tenant = %q", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {
 			t.Errorf("Authorization = %q", got)
@@ -243,10 +243,10 @@ func TestProviderActionForwardingUsesVerifiedOrgWorkspaceHeaders(t *testing.T) {
 	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, hubBase: upstream.URL, actionsExternalURL: "https://hub.example"}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Faros-Org", "spoofed")
-	request.Header.Set("X-Faros-Workspace", "spoofed")
+	request.Header.Set("X-Railgrid-Org", "spoofed")
+	request.Header.Set("X-Railgrid-Workspace", "spoofed")
 	status, envelope, err := s.forwardProjectProviderAction(request, identity{
-		tenant: "cluster-a", workspacePath: "root:faros:tenants:org-verified:workspace-verified", orgUUID: "org-verified", workspaceUUID: "workspace-verified", token: "caller-token", clusterID: "cluster-a",
+		tenant: "cluster-a", workspacePath: "root:railgrid:tenants:org-verified:workspace-verified", orgUUID: "org-verified", workspaceUUID: "workspace-verified", token: "caller-token", clusterID: "cluster-a",
 	}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
 	if err != nil || status != http.StatusOK || envelope.Error != nil {
 		t.Fatalf("forward = status %d envelope %#v err %v", status, envelope, err)
@@ -307,7 +307,7 @@ type integrationHTTPFixture struct {
 }
 
 var testInfrastructureApplicationGVR = schema.GroupVersionResource{
-	Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "applications",
+	Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "applications",
 }
 
 type integrationActionRequest struct {
@@ -466,14 +466,14 @@ func projectWithDevelopmentRuntimeBinding() *aiv1alpha1.Project {
 					Name: projectDevelopmentBindingName, Provider: projectDevelopmentProviderAppStudio,
 					Kind: aiv1alpha1.ProjectBindingKindProviderResource,
 					ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
-						Name: "demo-dev", APIVersion: "infrastructure.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
+						Name: "demo-dev", APIVersion: "infrastructure.railgrid.ai/v1alpha1", Kind: "Application", Resource: "applications",
 					},
 					Values: runtime.RawExtension{Raw: []byte(`{
 						"name":"demo-dev",
-						"farosMode":"development",
-						"farosActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
-						"farosActionsBaseURL":"https://stale.example/services/providers/app-studio",
-						"farosActionsTenantPath":"stale-tenant"
+						"railgridMode":"development",
+						"railgridActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
+						"railgridActionsBaseURL":"https://stale.example/services/providers/app-studio",
+						"railgridActionsTenantPath":"stale-tenant"
 					}`)},
 				}},
 			}},
@@ -484,21 +484,21 @@ func projectWithDevelopmentRuntimeBinding() *aiv1alpha1.Project {
 
 func developmentApplicationObject() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Application",
 		"metadata":   map[string]any{"name": "demo-dev"},
 		"spec": map[string]any{
-			"name":                    "demo-dev",
-			"farosMode":               "development",
-			"farosActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
-			"farosActionsBaseURL":     "https://stale.example/services/providers/app-studio",
-			"farosActionsTenantPath":  "stale-tenant",
-			"farosActionsProject":     "stale-project",
-			"farosActionsProjectUID":  "stale-project-uid",
-			"farosActionsEnvironment": "stale-environment",
-			"farosActionsInstance":    "stale-instance",
-			"farosActionsOrg":         "stale-org",
-			"farosActionsWorkspace":   "stale-workspace",
+			"name":                       "demo-dev",
+			"railgridMode":               "development",
+			"railgridActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
+			"railgridActionsBaseURL":     "https://stale.example/services/providers/app-studio",
+			"railgridActionsTenantPath":  "stale-tenant",
+			"railgridActionsProject":     "stale-project",
+			"railgridActionsProjectUID":  "stale-project-uid",
+			"railgridActionsEnvironment": "stale-environment",
+			"railgridActionsInstance":    "stale-instance",
+			"railgridActionsOrg":         "stale-org",
+			"railgridActionsWorkspace":   "stale-workspace",
 		},
 	}}
 }
@@ -526,11 +526,11 @@ func integrationHTTPTestRequest(method, path, body string) *http.Request {
 	request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Faros-User", "alice@example.com")
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
-	request.Header.Set("X-Faros-Org", "org-a")
-	request.Header.Set("X-Faros-Workspace", "workspace-a")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-User", "alice@example.com")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Org", "org-a")
+	request.Header.Set("X-Railgrid-Workspace", "workspace-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
 }
 
@@ -547,7 +547,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 	router := mux.NewRouter()
 	server.Register(router)
 
-	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.faros.sh/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
+	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.railgrid.ai/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
 	addResponse := httptest.NewRecorder()
 	router.ServeHTTP(addResponse, add)
 	if addResponse.Code != http.StatusCreated {
@@ -575,7 +575,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 	invokeRequest := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations/sales/invoke", `{"action":"query_table/v1","input":{"columns":["id"],"limit":2}}`)
 	invokeRequest.Header.Set("Idempotency-Key", "idem-1")
 	invokeRequest.Header.Set("X-Request-ID", "request-1")
-	invokeRequest.Header.Set("X-Faros-Action-Deadline-Ms", "45000")
+	invokeRequest.Header.Set("X-Railgrid-Action-Deadline-Ms", "45000")
 	router.ServeHTTP(invokeResponse, invokeRequest)
 	if invokeResponse.Code != http.StatusOK {
 		t.Fatalf("invoke status = %d: %s", invokeResponse.Code, invokeResponse.Body.String())
@@ -599,11 +599,11 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 		t.Fatalf("provider action URL = %q, want data-plane action route", actionRequest.URL)
 	}
 	if actionRequest.Headers.Get("Authorization") != "Bearer caller-token" ||
-		actionRequest.Headers.Get("X-Faros-Tenant") != "cluster-a" ||
-		actionRequest.Headers.Get("X-Faros-Cluster") != "cluster-a" ||
+		actionRequest.Headers.Get("X-Railgrid-Tenant") != "cluster-a" ||
+		actionRequest.Headers.Get("X-Railgrid-Cluster") != "cluster-a" ||
 		actionRequest.Headers.Get("Idempotency-Key") != "idem-1" ||
 		actionRequest.Headers.Get("X-Request-ID") != "request-1" ||
-		actionRequest.Headers.Get("X-Faros-Action-Deadline-Ms") != "45000" {
+		actionRequest.Headers.Get("X-Railgrid-Action-Deadline-Ms") != "45000" {
 		t.Fatalf("provider action caller headers = %#v, want propagated auth/tenant/correlation/deadline", actionRequest.Headers)
 	}
 	for _, field := range []string{"provider", "action", "actionVersion", "schemaDigest", "resourceRef"} {
@@ -643,7 +643,7 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 	router := mux.NewRouter()
 	server.Register(router)
 
-	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.faros.sh/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
+	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.railgrid.ai/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
 	addResponse := httptest.NewRecorder()
 	router.ServeHTTP(addResponse, add)
 	if addResponse.Code != http.StatusCreated {
@@ -654,11 +654,11 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 	if !ok {
 		t.Fatalf("Application spec = %#v, want object", addedApplication.Object["spec"])
 	}
-	if got := addedSpec["farosActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
-		t.Fatalf("after grant farosActionsExchangeURL = %v, want unchanged provider resource", got)
+	if got := addedSpec["railgridActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
+		t.Fatalf("after grant railgridActionsExchangeURL = %v, want unchanged provider resource", got)
 	}
-	if got := addedSpec["farosActionsBaseURL"]; got != "https://stale.example/services/providers/app-studio" {
-		t.Fatalf("after grant farosActionsBaseURL = %v, want unchanged provider resource", got)
+	if got := addedSpec["railgridActionsBaseURL"]; got != "https://stale.example/services/providers/app-studio" {
+		t.Fatalf("after grant railgridActionsBaseURL = %v, want unchanged provider resource", got)
 	}
 
 	// Revocation remains a Project-spec mutation even when the external origin
@@ -677,8 +677,8 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 		t.Fatalf("reconciled Application spec after revoke = %#v, want object", revokedApplication.Object["spec"])
 	}
 	for field, want := range map[string]string{
-		"farosActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
-		"farosActionsBaseURL":     "https://stale.example/services/providers/app-studio",
+		"railgridActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
+		"railgridActionsBaseURL":     "https://stale.example/services/providers/app-studio",
 	} {
 		if got := revokedSpec[field]; got != want {
 			t.Fatalf("after grant revocation %s = %v, want unchanged provider resource", field, got)
@@ -697,8 +697,8 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 		t.Fatalf("reconciled Application spec after removal = %#v, want object", removedApplication.Object["spec"])
 	}
 	for field, want := range map[string]string{
-		"farosActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
-		"farosActionsBaseURL":     "https://stale.example/services/providers/app-studio",
+		"railgridActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
+		"railgridActionsBaseURL":     "https://stale.example/services/providers/app-studio",
 	} {
 		if got := removedSpec[field]; got != want {
 			t.Fatalf("after grant removal %s = %v, want unchanged provider resource", field, got)
@@ -717,13 +717,13 @@ func TestProjectIntegrationAddRejectsMissingActionsURLWithoutMutation(t *testing
 	router := mux.NewRouter()
 	server.Register(router)
 
-	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.faros.sh/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
+	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.railgrid.ai/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, add)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("add without actions URL status = %d, want %d: %s", response.Code, http.StatusBadRequest, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "FAROS_ACTIONS_EXTERNAL_URL") {
+	if !strings.Contains(response.Body.String(), "RAILGRID_ACTIONS_EXTERNAL_URL") {
 		t.Fatalf("add without actions URL error = %s, want configuration guidance", response.Body.String())
 	}
 	if got := fixture.project(t); !reflect.DeepEqual(got.Spec, before.Spec) {
@@ -734,8 +734,8 @@ func TestProjectIntegrationAddRejectsMissingActionsURLWithoutMutation(t *testing
 	if !ok {
 		t.Fatalf("runtime Application spec = %#v, want object", application.Object["spec"])
 	}
-	if got := spec["farosActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
-		t.Fatalf("runtime changed after rejected grant: farosActionsExchangeURL = %v", got)
+	if got := spec["railgridActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
+		t.Fatalf("runtime changed after rejected grant: railgridActionsExchangeURL = %v", got)
 	}
 }
 
@@ -785,7 +785,7 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("reactivation with actions URL %q status = %d, want %d: %s", actionsURL, response.Code, http.StatusBadRequest, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "FAROS_ACTIONS_EXTERNAL_URL") {
+	if !strings.Contains(response.Body.String(), "RAILGRID_ACTIONS_EXTERNAL_URL") {
 		t.Fatalf("reactivation with actions URL %q error = %s, want configuration guidance", actionsURL, response.Body.String())
 	}
 	if got := fixture.project(t); !reflect.DeepEqual(got.Spec, before.Spec) {
@@ -796,8 +796,8 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 	if !ok {
 		t.Fatalf("runtime Application spec = %#v, want object", application.Object["spec"])
 	}
-	if got := spec["farosActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
-		t.Fatalf("runtime changed after rejected reactivation: farosActionsExchangeURL = %v", got)
+	if got := spec["railgridActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
+		t.Fatalf("runtime changed after rejected reactivation: railgridActionsExchangeURL = %v", got)
 	}
 }
 
@@ -895,16 +895,16 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 			Name: projectDevelopmentBindingName, Provider: projectDevelopmentProviderAppStudio,
 			Kind: aiv1alpha1.ProjectBindingKindProviderResource,
 			ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
-				Name: "demo-dev", APIVersion: "infrastructure.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
+				Name: "demo-dev", APIVersion: "infrastructure.railgrid.ai/v1alpha1", Kind: "Application", Resource: "applications",
 			},
 		})
 	scheme := runtime.NewScheme()
 	if err := aiv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add App Studio scheme: %v", err)
 	}
-	applicationGVR := schema.GroupVersionResource{Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "applications"}
+	applicationGVR := schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "applications"}
 	oldApplication := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1", "kind": "Application",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1", "kind": "Application",
 		"metadata": map[string]any{"name": "demo-dev"},
 	}}
 	table := &unstructured.Unstructured{Object: map[string]any{
@@ -941,7 +941,7 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 		Name: projectProductionBindingName, Provider: projectDevelopmentProviderAppStudio,
 		Kind: aiv1alpha1.ProjectBindingKindProviderResource,
 		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
-			Name: "demo-prod", APIVersion: "infrastructure.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
+			Name: "demo-prod", APIVersion: "infrastructure.railgrid.ai/v1alpha1", Kind: "Application", Resource: "applications",
 		},
 	})
 	if _, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, actionsExternalURL: "https://hub.example"}).reconcileProjectLiveBindings(context.Background(), c, project, id); err != nil {
@@ -970,9 +970,9 @@ func TestProviderActionForwardingAcceptsSharedProviderEnvelopes(t *testing.T) {
 	for _, provider := range []string{"code", "linear"} {
 		for _, failed := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/failure=%v", provider, failed), func(t *testing.T) {
-				ref := &aiv1alpha1.ProjectProviderResourceReference{Name: "bound", APIVersion: "code.faros.sh/v1alpha1", Kind: "Repository", Resource: "repositories"}
+				ref := &aiv1alpha1.ProjectProviderResourceReference{Name: "bound", APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository", Resource: "repositories"}
 				if provider == "linear" {
-					ref.APIVersion, ref.Kind, ref.Resource = "linear.providers.faros.sh/v1alpha1", "Team", "teams"
+					ref.APIVersion, ref.Kind, ref.Resource = "linear.providers.railgrid.ai/v1alpha1", "Team", "teams"
 				}
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					var payload map[string]json.RawMessage

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import (
 const (
 	platformInfraIdentity = "63be8c1a76ad6131708a5df7f0642887a8ead7a46c8558e9017053693681928b"
 	byoInfraIdentity      = "91fbfd3b7f016e07cf3e4a577687c38246e17bf53e4fc77416797259e2f606ff"
-	byoInfraPath          = "root:faros:tenants:86b7f9e7:providers:infrastructure"
+	byoInfraPath          = "root:railgrid:tenants:86b7f9e7:providers:infrastructure"
 )
 
 // compareClaims calls the real decision function. Re-implementing it here would
@@ -30,7 +30,7 @@ func compareClaims(claims []ProviderClaim, declared map[string]string, serving m
 }
 
 func infraClaim() ProviderClaim {
-	return ProviderClaim{Group: "infrastructure.faros.sh", Resource: "instances", Accepted: true}
+	return ProviderClaim{Group: "infrastructure.railgrid.ai", Resource: "instances", Accepted: true}
 }
 
 // The case that motivated this: app-studio pins the PLATFORM infrastructure
@@ -40,8 +40,8 @@ func infraClaim() ProviderClaim {
 func TestClaimIdentityMismatchIsDetected(t *testing.T) {
 	got := compareClaims(
 		[]ProviderClaim{infraClaim()},
-		map[string]string{"infrastructure.faros.sh/instances": platformInfraIdentity},
-		map[string]servingExport{"infrastructure.faros.sh": {path: byoInfraPath, identity: byoInfraIdentity}},
+		map[string]string{"infrastructure.railgrid.ai/instances": platformInfraIdentity},
+		map[string]servingExport{"infrastructure.railgrid.ai": {path: byoInfraPath, identity: byoInfraIdentity}},
 	)
 
 	if len(got) != 1 {
@@ -61,13 +61,13 @@ func TestClaimIdentityMismatchErrorNamesBothSides(t *testing.T) {
 	err := &ClaimIdentityMismatchError{
 		Provider: "app-studio",
 		Mismatches: []ClaimIdentityMismatch{{
-			Group: "infrastructure.faros.sh", Resource: "instances",
+			Group: "infrastructure.railgrid.ai", Resource: "instances",
 			Declared: platformInfraIdentity, Actual: byoInfraIdentity, ServingExportPath: byoInfraPath,
 		}},
 	}
 
 	msg := err.Error()
-	for _, want := range []string{"app-studio", "infrastructure.faros.sh/instances", byoInfraPath} {
+	for _, want := range []string{"app-studio", "infrastructure.railgrid.ai/instances", byoInfraPath} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message omits %q: %s", want, msg)
 		}
@@ -92,12 +92,12 @@ func TestOnlyOrgScopedExportsMayBeRepointed(t *testing.T) {
 		want bool
 	}{
 		{name: "self-hosted org copy", path: byoInfraPath, want: true},
-		{name: "org copy of app-studio", path: "root:faros:tenants:86b7f9e7:providers:app-studio", want: true},
-		{name: "platform provider", path: "root:faros:providers:app-studio", want: false},
-		{name: "platform system workspace", path: "root:faros:system:providers", want: false},
+		{name: "org copy of app-studio", path: "root:railgrid:tenants:86b7f9e7:providers:app-studio", want: true},
+		{name: "platform provider", path: "root:railgrid:providers:app-studio", want: false},
+		{name: "platform system workspace", path: "root:railgrid:system:providers", want: false},
 		{name: "empty", path: "", want: false},
 		// Must not be fooled by a path that merely starts with the same letters.
-		{name: "lookalike sibling of the tenants parent", path: "root:faros:tenantsandthings:providers:x", want: false},
+		{name: "lookalike sibling of the tenants parent", path: "root:railgrid:tenantsandthings:providers:x", want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := orgScopedExport(tc.path); got != tc.want {
@@ -118,13 +118,13 @@ func TestClaimIdentityMismatchQuietCases(t *testing.T) {
 	}{{
 		name:     "identities agree",
 		claims:   []ProviderClaim{infraClaim()},
-		declared: map[string]string{"infrastructure.faros.sh/instances": byoInfraIdentity},
-		serving:  map[string]servingExport{"infrastructure.faros.sh": {path: byoInfraPath, identity: byoInfraIdentity}},
+		declared: map[string]string{"infrastructure.railgrid.ai/instances": byoInfraIdentity},
+		serving:  map[string]servingExport{"infrastructure.railgrid.ai": {path: byoInfraPath, identity: byoInfraIdentity}},
 	}, {
 		name:     "claim was rejected by the user, so it grants nothing",
-		claims:   []ProviderClaim{{Group: "infrastructure.faros.sh", Resource: "instances", Accepted: false}},
-		declared: map[string]string{"infrastructure.faros.sh/instances": platformInfraIdentity},
-		serving:  map[string]servingExport{"infrastructure.faros.sh": {path: byoInfraPath, identity: byoInfraIdentity}},
+		claims:   []ProviderClaim{{Group: "infrastructure.railgrid.ai", Resource: "instances", Accepted: false}},
+		declared: map[string]string{"infrastructure.railgrid.ai/instances": platformInfraIdentity},
+		serving:  map[string]servingExport{"infrastructure.railgrid.ai": {path: byoInfraPath, identity: byoInfraIdentity}},
 	}, {
 		name:     "core types carry no identity by construction",
 		claims:   []ProviderClaim{{Group: "", Resource: "secrets", Accepted: true}},
@@ -135,15 +135,15 @@ func TestClaimIdentityMismatchQuietCases(t *testing.T) {
 		// a clear "enable X first" into a confusing identity error.
 		name:     "group not served in this workspace yet",
 		claims:   []ProviderClaim{infraClaim()},
-		declared: map[string]string{"infrastructure.faros.sh/instances": platformInfraIdentity},
+		declared: map[string]string{"infrastructure.railgrid.ai/instances": platformInfraIdentity},
 		serving:  map[string]servingExport{},
 	}, {
 		// kcp stamps identityHash asynchronously. Mid-provisioning is not a
 		// misconfiguration, and failing here would make Enable flaky.
 		name:     "serving export exists but its identity is not stamped yet",
 		claims:   []ProviderClaim{infraClaim()},
-		declared: map[string]string{"infrastructure.faros.sh/instances": platformInfraIdentity},
-		serving:  map[string]servingExport{"infrastructure.faros.sh": {path: byoInfraPath, identity: ""}},
+		declared: map[string]string{"infrastructure.railgrid.ai/instances": platformInfraIdentity},
+		serving:  map[string]servingExport{"infrastructure.railgrid.ai": {path: byoInfraPath, identity: ""}},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := compareClaims(tc.claims, tc.declared, tc.serving); len(got) != 0 {

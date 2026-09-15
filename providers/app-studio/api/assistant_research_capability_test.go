@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ func TestProjectAssistantResearchPhraseRequested(t *testing.T) {
 		{"investigate the swipe UX market", true},
 		{"investgate what competitors charge", true},
 		{"open an investigation into onboarding patterns", true},
-		{"do a deep dive on the Faros docs", true},
+		{"do a deep dive on the Railgrid docs", true},
 		{"Deep-Dive: kcp vs vcluster", true},
 		{"deepdive into oauth device flow", true},
 		{"dig into how Vercel prices previews", true},
@@ -267,9 +267,9 @@ func TestProjectAssistantResearchConversation(t *testing.T) {
 		t.Fatalf("run state without model messages must fall back to the request conversation, got %#v", got)
 	}
 	state.RecordModelInput(req.Conversation)
-	state.RecordSteeringInput("do a deep research for https://faros.sh/docs/")
+	state.RecordSteeringInput("do a deep research for https://railgrid.ai/docs/")
 	got := projectAssistantResearchConversation(req, state)
-	if latest := projectAssistantLatestUserMessage(got); latest != "do a deep research for https://faros.sh/docs/" {
+	if latest := projectAssistantLatestUserMessage(got); latest != "do a deep research for https://railgrid.ai/docs/" {
 		t.Fatalf("steered user message must be the latest, got %q from %#v", latest, got)
 	}
 }
@@ -307,7 +307,7 @@ func TestProjectEinoAssistantRefreshToolDiscoveryActivatesResearchForSteeredMess
 	// The user steers a research request into the running turn. The request
 	// conversation is frozen at run start; only the run state sees the message.
 	state.RecordModelInput(req.Conversation)
-	state.RecordSteeringInput("do a deep research for https://faros.sh/docs/")
+	state.RecordSteeringInput("do a deep research for https://railgrid.ai/docs/")
 	second := projectEinoAssistantRefreshToolDiscovery(context.Background(), server, req, state)
 	if !strings.Contains(second.Prompt, "Research delegation capability") || !strings.Contains(second.Prompt, "researcher") {
 		t.Fatalf("steered research request must activate delegation, got prompt %q", second.Prompt)

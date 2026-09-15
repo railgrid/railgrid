@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ limitations under the License.
 package auth
 
 // OIDCConfig holds OIDC provider configuration.
-// ClientSecret is intentionally absent: faros uses PKCE (public client flow)
+// ClientSecret is intentionally absent: railgrid uses PKCE (public client flow)
 // so no client secret is required on the hub side.
 type OIDCConfig struct {
 	IssuerURL      string

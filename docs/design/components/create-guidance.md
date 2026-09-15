@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.create-guidance","title":"CreateGuidance","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"CreateGuidance is the shared guidance rail for route-owned forms; provider copy and value derivation remain local."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/create-guidance.md#createguidance","role":"design"},{"path":"provider-sdk/portalkit-vue/CreateGuidance.vue","role":"implementation"},{"path":"provider-sdk/portalkit/faros-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.patterns.resource-creation","relation":"implements","path":"docs/design/patterns/resource-creation.md"},{"id":"design.components.first-run-guide","relation":"see-also","path":"docs/design/components/first-run-guide.md"},{"id":"design.content.ui-copy","relation":"prerequisite","path":"docs/design/content/ui-copy.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"}]}
+{"schema":1,"id":"design.components.create-guidance","title":"CreateGuidance","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"CreateGuidance is the shared guidance rail for route-owned forms; provider copy and value derivation remain local."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/create-guidance.md#createguidance","role":"design"},{"path":"provider-sdk/portalkit-vue/CreateGuidance.vue","role":"implementation"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.patterns.resource-creation","relation":"implements","path":"docs/design/patterns/resource-creation.md"},{"id":"design.components.first-run-guide","relation":"see-also","path":"docs/design/components/first-run-guide.md"},{"id":"design.content.ui-copy","relation":"prerequisite","path":"docs/design/content/ui-copy.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"}]}
 ---
 
 # CreateGuidance
@@ -8,7 +8,7 @@
 
 When a route-owned form benefits from domain help, place `CreateGuidance.vue`
 beside a `k-create-fields` region inside `k-create-surface--guided`. The rail
-contains only timely prerequisites, a live and non-secret summary of what Faros
+contains only timely prerequisites, a live and non-secret summary of what Railgrid
 will create, and controller-owned next steps. Provider copy and value derivation
 remain local.
 
@@ -31,13 +31,13 @@ the shared component supplies the guidance-rail structure.
 
 ## Behavior
 
-The rail presents a live, non-secret summary of what Faros will create and
+The rail presents a live, non-secret summary of what Railgrid will create and
 controller-owned next steps. It contains timely prerequisites rather than stale
 or unrelated help.
 
 ## Content
 
-Include only timely prerequisites, a live and non-secret summary of what Faros
+Include only timely prerequisites, a live and non-secret summary of what Railgrid
 will create, and controller-owned next steps. Provider copy and value derivation
 remain local.
 
@@ -57,7 +57,7 @@ accessible structure and preserve the form's control labels.
 ## Code and evidence
 
 The canonical component is [`CreateGuidance.vue`](../../../provider-sdk/portalkit-vue/CreateGuidance.vue),
-with shared styling in [`faros-ui.css`](../../../provider-sdk/portalkit/faros-ui.css).
+with shared styling in [`railgrid-ui.css`](../../../provider-sdk/portalkit/railgrid-ui.css).
 Distribution is checked by `make verify-portalkit`.
 
 ## Related guidance

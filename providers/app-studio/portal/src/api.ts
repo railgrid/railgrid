@@ -1,7 +1,7 @@
 import type {
   DevelopmentTemplate,
   ImportRepository,
-  FarosContext,
+  RailgridContext,
   ListResponse,
   Project,
   ProjectRestoreResult,
@@ -92,7 +92,7 @@ export function isProjectAPINotFoundError(err: unknown): err is ProjectAPIReques
 // tenantSelection reads the active org/workspace. Delegates to the shared,
 // security-critical portalkit/tenant helper so the storage key + shape stay in
 // lockstep with every other portal.
-function tenantSelection(ctx: FarosContext | null): TenantSelection {
+function tenantSelection(ctx: RailgridContext | null): TenantSelection {
   if (ctx && ('orgUUID' in ctx || 'workspaceUUID' in ctx)) {
     return { orgUUID: ctx.orgUUID ?? null, workspaceUUID: ctx.workspaceUUID ?? null }
   }
@@ -102,19 +102,19 @@ function tenantSelection(ctx: FarosContext | null): TenantSelection {
 // providerBase resolves the hub backend-proxy prefix for this provider from the
 // micro-frontend basePath the host injects (/ui/providers/app-studio →
 // /services/providers/app-studio). The hub strips that prefix, injects the
-// verified X-Faros-Tenant/X-Faros-User headers, and forwards to the provider's
+// verified X-Railgrid-Tenant/X-Railgrid-User headers, and forwards to the provider's
 // /api/* routes. Falls back to the well-known prefix if no basePath arrived yet.
-function providerBase(ctx: FarosContext | null): string {
+function providerBase(ctx: RailgridContext | null): string {
   const derived = ctx?.basePath ? serviceBase(ctx.basePath) : ''
   return (derived || '/services/providers/app-studio').replace(/\/$/, '')
 }
 
-function baseURL(ctx: FarosContext | null): string {
+function baseURL(ctx: RailgridContext | null): string {
   const t = tenantSelection(ctx)
   if (!t.orgUUID || !t.workspaceUUID) {
     throw new Error('select an organization and workspace first')
   }
-  // org/workspace travel as X-Faros-Org / X-Faros-Workspace headers (see
+  // org/workspace travel as X-Railgrid-Org / X-Railgrid-Workspace headers (see
   // request()); the hub resolves them to the workspace the provider acts on.
   return `${providerBase(ctx)}/api/projects`
 }
@@ -134,7 +134,7 @@ export interface ProjectAssistantThreadItemPage {
   nextCursor: string
 }
 
-async function request<T>(ctx: FarosContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
+async function request<T>(ctx: RailgridContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
   const headers = tenantHeaders({ json: body !== undefined })
   const controller = options.timeoutMS ? new AbortController() : null
   let timedOut = false
@@ -178,7 +178,7 @@ async function request<T>(ctx: FarosContext | null, method: string, path: string
   return (text ? JSON.parse(text) : null) as T
 }
 
-async function requestBlob(ctx: FarosContext | null, path: string, signal?: AbortSignal): Promise<Blob> {
+async function requestBlob(ctx: RailgridContext | null, path: string, signal?: AbortSignal): Promise<Blob> {
   const res = await providerFetch(ctx)(path, {
     method: 'GET',
     credentials: 'same-origin',
@@ -193,7 +193,7 @@ async function requestBlob(ctx: FarosContext | null, path: string, signal?: Abor
 }
 
 async function requestAssistantAttachmentUpload(
-  ctx: FarosContext | null,
+  ctx: RailgridContext | null,
   path: string,
   file: File,
   signal?: AbortSignal,
@@ -205,7 +205,7 @@ async function requestAssistantAttachmentUpload(
   const headers = tenantHeaders({})
   // The server promotes this provisional receipt atomically when the turn is
   // accepted; abandoned drafts are bounded by the provider retention policy.
-  headers['X-Faros-Attachment-Draft'] = 'true'
+  headers['X-Railgrid-Attachment-Draft'] = 'true'
   const res = await providerFetch(ctx)(path, {
     method: 'POST',
     credentials: 'same-origin',
@@ -255,7 +255,7 @@ export function isProjectFileRequestError(err: unknown): err is ProjectFileReque
   return err instanceof ProjectFileRequestError
 }
 
-function projectFileContentURL(ctx: FarosContext | null, name: string, path: string): string {
+function projectFileContentURL(ctx: RailgridContext | null, name: string, path: string): string {
   return `${baseURL(ctx)}/${encodeURIComponent(name)}/files/content?path=${encodeURIComponent(path)}`
 }
 
@@ -313,7 +313,7 @@ function isProjectAPIInitializingResponse(status: number, reason: string, messag
 }
 
 async function requestAssistantThreadEventStream(
-  ctx: FarosContext | null,
+  ctx: RailgridContext | null,
   name: string,
   threadID: string,
   afterSequence: number,
@@ -501,22 +501,22 @@ function normalizeExportPackage(value: unknown, fallback?: Record<string, unknow
 }
 
 export const api = {
-  async listProviders(ctx: FarosContext | null): Promise<ProviderItem[]> {
+  async listProviders(ctx: RailgridContext | null): Promise<ProviderItem[]> {
     const body = await request<ListResponse<ProviderItem>>(ctx, 'GET', '/api/providers')
     return body.items ?? []
   },
 
-  async listProjects(ctx: FarosContext | null): Promise<Project[]> {
+  async listProjects(ctx: RailgridContext | null): Promise<Project[]> {
     const body = await request<ListResponse<Project>>(ctx, 'GET', baseURL(ctx))
     return body.items ?? []
   },
 
-  async connectProjectRepository(ctx: FarosContext | null, project: string, connectionRef: string, retry?: { retryRepositoryRef: string; projectUID: string }): Promise<Project> {
+  async connectProjectRepository(ctx: RailgridContext | null, project: string, connectionRef: string, retry?: { retryRepositoryRef: string; projectUID: string }): Promise<Project> {
     return request<Project>(ctx, 'PUT', `${baseURL(ctx)}/${encodeURIComponent(project)}/repository`, { connectionRef, ...retry })
   },
 
   async createProject(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     body: {
       displayName?: string
       description?: string
@@ -536,7 +536,7 @@ export const api = {
   // …) via onStatus, and resolves with the created Project. Same inputs as
   // createProject; the caller starts the first assistant turn afterward.
   async createProjectStream(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     body: {
       displayName?: string
       description?: string
@@ -607,7 +607,7 @@ export const api = {
   // template, whether starter code will be attached) WITHOUT creating —
   // the wizard's confirm step. See ProjectPlan in the backend.
   async planProject(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     body: { prompt?: string; templateName?: string },
   ): Promise<ProjectPlan> {
     return request<ProjectPlan>(ctx, 'POST', `${baseURL(ctx)}/plan`, body)
@@ -616,7 +616,7 @@ export const api = {
   // reseedScaffold re-attaches the template's starter code to an empty
   // workspace (retry after a failed seed, or seed a legacy project).
   async reseedScaffold(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
   ): Promise<{ template: string; scaffold: { repository: string; ref?: string }; seeded: number }> {
     return request(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/scaffold`, {})
@@ -624,13 +624,13 @@ export const api = {
 
   // listProjectFiles returns the live dev workspace file tree (flat, sorted
   // paths with sizes) for the code explorer.
-  async listProjectFiles(ctx: FarosContext | null, name: string): Promise<ProjectFileList> {
+  async listProjectFiles(ctx: RailgridContext | null, name: string): Promise<ProjectFileList> {
     return request<ProjectFileList>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/files`)
   },
 
   // readProjectFile returns one workspace file's bounded content plus its full
   // size and version. Binary files return empty content with binary=true.
-  async readProjectFile(ctx: FarosContext | null, name: string, path: string): Promise<ProjectFileContent> {
+  async readProjectFile(ctx: RailgridContext | null, name: string, path: string): Promise<ProjectFileContent> {
     const body = await request<ProjectFileContent>(
       ctx,
       'GET',
@@ -642,7 +642,7 @@ export const api = {
   // rawProjectFileURL is the files/raw address. Auth is header-based, so this
   // URL is only for providerFetch — never an <img src> or <a href>; use
   // fetchProjectFileRaw and an object URL instead.
-  rawProjectFileURL(ctx: FarosContext | null, name: string, path: string, options: { download?: boolean } = {}): string {
+  rawProjectFileURL(ctx: RailgridContext | null, name: string, path: string, options: { download?: boolean } = {}): string {
     const query = new URLSearchParams({ path })
     if (options.download) query.set('download', '1')
     return `${baseURL(ctx)}/${encodeURIComponent(name)}/files/raw?${query}`
@@ -651,7 +651,7 @@ export const api = {
   // fetchProjectFileRaw returns a workspace file's raw bytes for previews and
   // downloads.
   async fetchProjectFileRaw(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     path: string,
     options: { download?: boolean; signal?: AbortSignal } = {},
@@ -671,7 +671,7 @@ export const api = {
   // createOnly sends If-None-Match: * (412 when the path exists); ifMatch
   // replaces only an unchanged version (412 when it changed).
   async putProjectFile(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     path: string,
     body: Blob | string,
@@ -695,7 +695,7 @@ export const api = {
 
   // deleteProjectFile removes one workspace file (204); ifMatch guards against
   // deleting a file that changed since it was loaded.
-  async deleteProjectFile(ctx: FarosContext | null, name: string, path: string, options: { ifMatch?: string } = {}): Promise<void> {
+  async deleteProjectFile(ctx: RailgridContext | null, name: string, path: string, options: { ifMatch?: string } = {}): Promise<void> {
     const headers = tenantHeaders({})
     if (options.ifMatch) headers['If-Match'] = options.ifMatch
     const res = await providerFetch(ctx)(projectFileContentURL(ctx, name, path), {
@@ -710,7 +710,7 @@ export const api = {
   // into dir ("" = workspace root). Without overwrite an existing path fails
   // the request (reason "exists").
   async uploadProjectFiles(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     files: File[],
     options: { dir?: string; overwrite?: boolean; signal?: AbortSignal } = {},
@@ -742,7 +742,7 @@ export const api = {
       .map((entry) => ({ ...entry, size: typeof entry.size === 'number' ? entry.size : 0 }))
   },
 
-  async listDevelopmentTemplates(ctx: FarosContext | null): Promise<DevelopmentTemplate[]> {
+  async listDevelopmentTemplates(ctx: RailgridContext | null): Promise<DevelopmentTemplate[]> {
     const body = await request<{ templates: DevelopmentTemplate[] }>(
       ctx,
       'GET',
@@ -751,7 +751,7 @@ export const api = {
     return body.templates ?? []
   },
 
-  async listImportRepositories(ctx: FarosContext | null): Promise<ImportRepository[]> {
+  async listImportRepositories(ctx: RailgridContext | null): Promise<ImportRepository[]> {
     const body = await request<{ repositories: ImportRepository[] }>(
       ctx,
       'GET',
@@ -761,7 +761,7 @@ export const api = {
   },
 
   async setProjectTemplate(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     template: string,
   ): Promise<{ template: string; components: Record<string, string> }> {
@@ -773,7 +773,7 @@ export const api = {
     )
   },
 
-  async restoreWorkspace(ctx: FarosContext | null, name: string, commitSHA: string, expectedSourceRevision: number): Promise<ProjectRestoreResult> {
+  async restoreWorkspace(ctx: RailgridContext | null, name: string, commitSHA: string, expectedSourceRevision: number): Promise<ProjectRestoreResult> {
     return request<ProjectRestoreResult>(
       ctx,
       'POST',
@@ -782,7 +782,7 @@ export const api = {
     )
   },
 
-  async getPromotion(ctx: FarosContext | null, name: string): Promise<ProjectPromotionReadiness> {
+  async getPromotion(ctx: RailgridContext | null, name: string): Promise<ProjectPromotionReadiness> {
     return request<ProjectPromotionReadiness>(
       ctx,
       'GET',
@@ -790,7 +790,7 @@ export const api = {
     )
   },
 
-  async listReleases(ctx: FarosContext | null, name: string): Promise<ProjectRelease[]> {
+  async listReleases(ctx: RailgridContext | null, name: string): Promise<ProjectRelease[]> {
     const body = await request<ProjectReleasesResponse>(
       ctx,
       'GET',
@@ -799,7 +799,7 @@ export const api = {
     return body.items ?? []
   },
 
-  async getCheckpoints(ctx: FarosContext | null, name: string): Promise<ProjectCheckpoints> {
+  async getCheckpoints(ctx: RailgridContext | null, name: string): Promise<ProjectCheckpoints> {
     return request<ProjectCheckpoints>(
       ctx,
       'GET',
@@ -808,7 +808,7 @@ export const api = {
   },
 
   async promoteProject(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     values?: Record<string, unknown>,
     commitSHA?: string,
@@ -828,7 +828,7 @@ export const api = {
 
   // Preview visibility is the development-side counterpart of publishing: the
   // same two modes on the dev URL, defaulting to restricted.
-  async getPreviewAccess(ctx: FarosContext | null, name: string): Promise<ProjectPreviewAccess> {
+  async getPreviewAccess(ctx: RailgridContext | null, name: string): Promise<ProjectPreviewAccess> {
     return request<ProjectPreviewAccess>(
       ctx,
       'GET',
@@ -837,7 +837,7 @@ export const api = {
   },
 
   async setPreviewAccess(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     mode: ProjectPublishingMode,
   ): Promise<ProjectPreviewAccess> {
@@ -849,7 +849,7 @@ export const api = {
     )
   },
 
-  async listPreviewGrants(ctx: FarosContext | null, name: string): Promise<ProjectPublishingGrant[]> {
+  async listPreviewGrants(ctx: RailgridContext | null, name: string): Promise<ProjectPublishingGrant[]> {
     const res = await request<{ items?: ProjectPublishingGrant[] }>(
       ctx,
       'GET',
@@ -859,7 +859,7 @@ export const api = {
   },
 
   async createPreviewGrant(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     user: string,
     invite = false,
@@ -874,7 +874,7 @@ export const api = {
   },
 
   async revokePreviewGrant(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     grant: string,
   ): Promise<ProjectPublishingGrant[]> {
@@ -886,7 +886,7 @@ export const api = {
     return res.items ?? []
   },
 
-  async getPublishing(ctx: FarosContext | null, name: string): Promise<ProjectPublishing> {
+  async getPublishing(ctx: RailgridContext | null, name: string): Promise<ProjectPublishing> {
     return request<ProjectPublishing>(
       ctx,
       'GET',
@@ -895,7 +895,7 @@ export const api = {
   },
 
   async publishProject(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     mode: ProjectPublishingMode,
   ): Promise<ProjectPublishing> {
@@ -907,7 +907,7 @@ export const api = {
     )
   },
 
-  async unpublishProject(ctx: FarosContext | null, name: string): Promise<ProjectPublishing> {
+  async unpublishProject(ctx: RailgridContext | null, name: string): Promise<ProjectPublishing> {
     return request<ProjectPublishing>(
       ctx,
       'DELETE',
@@ -915,7 +915,7 @@ export const api = {
     )
   },
 
-  async listPublishingMembers(ctx: FarosContext | null, name: string): Promise<ProjectPublishingMember[]> {
+  async listPublishingMembers(ctx: RailgridContext | null, name: string): Promise<ProjectPublishingMember[]> {
     const body = await request<{ items?: ProjectPublishingMember[] }>(
       ctx,
       'GET',
@@ -924,7 +924,7 @@ export const api = {
     return body.items ?? []
   },
 
-  async listPublishingGrants(ctx: FarosContext | null, name: string): Promise<ProjectPublishingGrant[]> {
+  async listPublishingGrants(ctx: RailgridContext | null, name: string): Promise<ProjectPublishingGrant[]> {
     const body = await request<{ items?: ProjectPublishingGrant[] }>(
       ctx,
       'GET',
@@ -934,7 +934,7 @@ export const api = {
   },
 
   async grantPublishingAccess(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     user: string,
     invite = false,
@@ -950,7 +950,7 @@ export const api = {
     )
   },
 
-  async revokePublishingAccess(ctx: FarosContext | null, name: string, grant: string): Promise<ProjectPublishingGrant> {
+  async revokePublishingAccess(ctx: RailgridContext | null, name: string, grant: string): Promise<ProjectPublishingGrant> {
     return request<ProjectPublishingGrant>(
       ctx,
       'POST',
@@ -958,11 +958,11 @@ export const api = {
     )
   },
 
-  async getProjectCreateReadiness(ctx: FarosContext | null): Promise<ProjectCreateReadiness> {
+  async getProjectCreateReadiness(ctx: RailgridContext | null): Promise<ProjectCreateReadiness> {
     return request<ProjectCreateReadiness>(ctx, 'GET', `${baseURL(ctx)}/create-readiness`)
   },
 
-  async listAssistantSkills(ctx: FarosContext | null, name: string): Promise<ProjectAssistantSkillsResponse> {
+  async listAssistantSkills(ctx: RailgridContext | null, name: string): Promise<ProjectAssistantSkillsResponse> {
     const body = await request<ProjectAssistantSkillsResponse>(
       ctx,
       'GET',
@@ -975,7 +975,7 @@ export const api = {
     }
   },
 
-  async getAssistantSkill(ctx: FarosContext | null, name: string, packageName: string): Promise<ProjectAssistantSkillDetail> {
+  async getAssistantSkill(ctx: RailgridContext | null, name: string, packageName: string): Promise<ProjectAssistantSkillDetail> {
     const body = await request<ProjectAssistantSkillDetail>(
       ctx,
       'GET',
@@ -985,7 +985,7 @@ export const api = {
   },
 
   /** Fetch author-visible detail for a catalog entry by its qualified ID. */
-  async getAssistantSkillDetail(ctx: FarosContext | null, name: string, id: string): Promise<ProjectAssistantSkillDetail> {
+  async getAssistantSkillDetail(ctx: RailgridContext | null, name: string, id: string): Promise<ProjectAssistantSkillDetail> {
     const body = await request<ProjectAssistantSkillDetail>(
       ctx,
       'GET',
@@ -995,7 +995,7 @@ export const api = {
   },
 
   async createAssistantSkill(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     body: ProjectAssistantSkillPackage,
   ): Promise<ProjectAssistantSkillDetail> {
@@ -1010,7 +1010,7 @@ export const api = {
 
   /** Import uses the same bounded package payload as create, on its dedicated route. */
   async importAssistantSkill(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     body: ProjectAssistantSkillPackage,
   ): Promise<ProjectAssistantSkillDetail> {
@@ -1024,7 +1024,7 @@ export const api = {
   },
 
   async updateAssistantSkill(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     packageName: string,
     body: ProjectAssistantSkillPackage,
@@ -1040,7 +1040,7 @@ export const api = {
   },
 
   async setAssistantSkillActivation(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     id: string,
     enabled: boolean,
@@ -1054,7 +1054,7 @@ export const api = {
     return normalizeAssistantSkillDetail(result)
   },
 
-  async exportAssistantSkill(ctx: FarosContext | null, name: string, packageName: string): Promise<ProjectAssistantSkillExport> {
+  async exportAssistantSkill(ctx: RailgridContext | null, name: string, packageName: string): Promise<ProjectAssistantSkillExport> {
     const result = await request<Record<string, unknown>>(
       ctx,
       'GET',
@@ -1063,7 +1063,7 @@ export const api = {
     return normalizeAssistantSkillExport(result)
   },
 
-  async deleteAssistantSkill(ctx: FarosContext | null, name: string, packageName: string, expectedDigest: string): Promise<void> {
+  async deleteAssistantSkill(ctx: RailgridContext | null, name: string, packageName: string, expectedDigest: string): Promise<void> {
     await request<null>(
       ctx,
       'DELETE',
@@ -1071,33 +1071,33 @@ export const api = {
     )
   },
 
-  async getLLMSettings(ctx: FarosContext | null): Promise<ProjectLLMSettings> {
+  async getLLMSettings(ctx: RailgridContext | null): Promise<ProjectLLMSettings> {
     return request<ProjectLLMSettings>(ctx, 'GET', `${baseURL(ctx)}/llm-settings`)
   },
 
   async discoverLLMModels(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     body: { provider: string; baseURL: string; apiKey?: string; existingModelID?: string },
   ): Promise<ProjectLLMModelDiscovery> {
     return request<ProjectLLMModelDiscovery>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/models/discover`, body)
   },
 
   async patchLLMSettings(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     body: { provider?: string; baseURL?: string; model?: string; apiKey?: string },
   ): Promise<ProjectLLMSettings> {
     return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings`, body)
   },
 
   async createLLMModel(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     body: { name: string; provider?: string; baseURL?: string; model: string; apiKey: string },
   ): Promise<ProjectLLMSettings> {
     return request<ProjectLLMSettings>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/models`, body)
   },
 
   async testLLMConnection(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     body: { provider?: string; baseURL?: string; model: string; apiKey: string; existingModelID?: string },
   ): Promise<{ ok: boolean }> {
     return request<{ ok: boolean }>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/test`, body, {
@@ -1107,31 +1107,31 @@ export const api = {
   },
 
   async patchLLMModel(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     modelID: string,
     body: { name?: string; provider?: string; baseURL?: string; model?: string; apiKey?: string },
   ): Promise<ProjectLLMSettings> {
     return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings/models/${encodeURIComponent(modelID)}`, body)
   },
 
-  async deleteLLMModel(ctx: FarosContext | null, modelID: string): Promise<ProjectLLMSettings> {
+  async deleteLLMModel(ctx: RailgridContext | null, modelID: string): Promise<ProjectLLMSettings> {
     return request<ProjectLLMSettings>(ctx, 'DELETE', `${baseURL(ctx)}/llm-settings/models/${encodeURIComponent(modelID)}`)
   },
 
-  async setDefaultLLMModel(ctx: FarosContext | null, modelID: string): Promise<ProjectLLMSettings> {
+  async setDefaultLLMModel(ctx: RailgridContext | null, modelID: string): Promise<ProjectLLMSettings> {
     return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings/default`, { modelID })
   },
 
-  async getProject(ctx: FarosContext | null, name: string): Promise<Project> {
+  async getProject(ctx: RailgridContext | null, name: string): Promise<Project> {
     return request<Project>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
   },
 
-  async getProjectThumbnail(ctx: FarosContext | null, name: string, revision = ''): Promise<Blob> {
+  async getProjectThumbnail(ctx: RailgridContext | null, name: string, revision = ''): Promise<Blob> {
     const suffix = revision ? `?revision=${encodeURIComponent(revision)}` : ''
     return requestBlob(ctx, `${baseURL(ctx)}/${encodeURIComponent(name)}/thumbnail${suffix}`)
   },
 
-  async listProjectIntegrations(ctx: FarosContext | null, name: string): Promise<ProjectIntegration[]> {
+  async listProjectIntegrations(ctx: RailgridContext | null, name: string): Promise<ProjectIntegration[]> {
     const body = await request<ListResponse<ProjectIntegration>>(
       ctx,
       'GET',
@@ -1141,7 +1141,7 @@ export const api = {
   },
 
   async createProjectIntegration(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     body: {
       alias: string
@@ -1161,7 +1161,7 @@ export const api = {
   },
 
   async patchProjectIntegration(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     alias: string,
     body: { allowedActions: ProjectProviderActionGrant[]; consentAccepted?: boolean },
@@ -1174,7 +1174,7 @@ export const api = {
     )
   },
 
-  async removeProjectIntegration(ctx: FarosContext | null, name: string, alias: string): Promise<void> {
+  async removeProjectIntegration(ctx: RailgridContext | null, name: string, alias: string): Promise<void> {
     await request<null>(
       ctx,
       'DELETE',
@@ -1183,7 +1183,7 @@ export const api = {
   },
 
   async patchProject(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     body: {
       displayName?: string
@@ -1198,7 +1198,7 @@ export const api = {
   // created for the project (never an adopted one; the server answers 409).
   // By default the repository survives and only its project claim is released.
   async deleteProject(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     uid: string,
     options: { deleteRepository?: boolean } = {},
@@ -1210,15 +1210,15 @@ export const api = {
     await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}?${query}`)
   },
 
-  async syncDevelopment(ctx: FarosContext | null, name: string): Promise<unknown> {
+  async syncDevelopment(ctx: RailgridContext | null, name: string): Promise<unknown> {
     return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/sync-development`)
   },
 
-  async authorizeDevelopmentPreview(ctx: FarosContext | null, name: string): Promise<unknown> {
+  async authorizeDevelopmentPreview(ctx: RailgridContext | null, name: string): Promise<unknown> {
     return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/authorize-development-preview`)
   },
 
-  async listAssistantThreads(ctx: FarosContext | null, name: string, includeArchived = false): Promise<ProjectAssistantThread[]> {
+  async listAssistantThreads(ctx: RailgridContext | null, name: string, includeArchived = false): Promise<ProjectAssistantThread[]> {
     const threads: ProjectAssistantThread[] = []
     const seenCursors = new Set<string>()
     let cursor = ''
@@ -1251,7 +1251,7 @@ export const api = {
   },
 
   async createAssistantThread(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     title?: string,
     threadID?: string,
@@ -1265,7 +1265,7 @@ export const api = {
   },
 
   async patchAssistantThread(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     threadID: string,
     body: { title?: string; archived?: boolean },
@@ -1278,7 +1278,7 @@ export const api = {
     )
   },
 
-  async deleteAssistantThread(ctx: FarosContext | null, name: string, threadID: string): Promise<void> {
+  async deleteAssistantThread(ctx: RailgridContext | null, name: string, threadID: string): Promise<void> {
     await request<null>(
       ctx,
       'DELETE',
@@ -1287,7 +1287,7 @@ export const api = {
   },
 
   async listAssistantThreadItemPage(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     threadID: string,
     beforeSequence = '',
@@ -1308,22 +1308,22 @@ export const api = {
   // Compatibility helper for call sites that only need the newest bounded
   // window. Interactive history uses listAssistantThreadItemPage so older
   // turns remain explicitly addressable without an unbounded response.
-  async listAssistantThreadItems(ctx: FarosContext | null, name: string, threadID: string): Promise<ProjectAssistantThreadItem[]> {
+  async listAssistantThreadItems(ctx: RailgridContext | null, name: string, threadID: string): Promise<ProjectAssistantThreadItem[]> {
     return (await api.listAssistantThreadItemPage(ctx, name, threadID)).items
   },
 
   /** List durable project-scoped receipts; content parts carry only these references. */
-  async listAssistantAttachments(ctx: FarosContext | null, name: string): Promise<ProjectAssistantAttachmentReceipt[]> {
+  async listAssistantAttachments(ctx: RailgridContext | null, name: string): Promise<ProjectAssistantAttachmentReceipt[]> {
     const body = await request<unknown>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/attachments`)
     return assistantAttachmentReceipts(body)
   },
 
-  async getAssistantAttachment(ctx: FarosContext | null, name: string, attachmentID: string, signal?: AbortSignal): Promise<Blob> {
+  async getAssistantAttachment(ctx: RailgridContext | null, name: string, attachmentID: string, signal?: AbortSignal): Promise<Blob> {
     return requestBlob(ctx, `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/attachments/${encodeURIComponent(attachmentID)}`, signal)
   },
 
   async uploadAssistantAttachment(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     file: File,
     signal?: AbortSignal,
@@ -1338,19 +1338,19 @@ export const api = {
     )
   },
 
-  async deleteAssistantAttachment(ctx: FarosContext | null, name: string, attachmentID: string): Promise<void> {
+  async deleteAssistantAttachment(ctx: RailgridContext | null, name: string, attachmentID: string): Promise<void> {
     await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/attachments/${encodeURIComponent(attachmentID)}`)
   },
 
-  async startAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; modelID?: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; modelID?: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns`, body)
   },
 
-  async startAssistantReview(ctx: FarosContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; modelID?: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantReview(ctx: RailgridContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; modelID?: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/reviews`, body)
   },
 
-  async getActiveAssistantTurn(ctx: FarosContext | null, name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
+  async getActiveAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
     const headers = tenantHeaders({})
     const res = await providerFetch(ctx)(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/active`, { credentials: 'same-origin', headers })
     if (res.status === 204) return undefined
@@ -1358,27 +1358,27 @@ export const api = {
     return res.json() as Promise<ProjectAssistantTurn>
   },
 
-  async steerAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
+  async steerAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
     return request<ProjectAssistantTurn>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/steer`, body)
   },
 
-  async interruptAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, turnID: string, clientRequestID: string): Promise<{ turnID: string; status: ProjectAssistantRunStatus }> {
+  async interruptAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, clientRequestID: string): Promise<{ turnID: string; status: ProjectAssistantRunStatus }> {
     return request<{ turnID: string; status: ProjectAssistantRunStatus }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/interrupt`, { clientRequestID })
   },
 
-  async continueAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
+  async continueAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/continue`, body)
   },
 
-  async respondAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, turnID: string, kind: 'approval' | 'input', body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; answers?: Record<string, { answers: string[] }> }): Promise<ProjectAssistantTurn> {
+  async respondAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, kind: 'approval' | 'input', body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; answers?: Record<string, { answers: string[] }> }): Promise<ProjectAssistantTurn> {
     return request<ProjectAssistantTurn>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/${kind}`, body)
   },
 
-  async streamAssistantThread(ctx: FarosContext | null, name: string, threadID: string, afterSequence: number, onEvent: (event: ProjectAssistantThreadEvent) => void, signal?: AbortSignal): Promise<void> {
+  async streamAssistantThread(ctx: RailgridContext | null, name: string, threadID: string, afterSequence: number, onEvent: (event: ProjectAssistantThreadEvent) => void, signal?: AbortSignal): Promise<void> {
     return requestAssistantThreadEventStream(ctx, name, threadID, afterSequence, onEvent, signal)
   },
 
-  async getAssistantApprovalMode(ctx: FarosContext | null, name: string): Promise<ProjectAssistantApprovalPreference> {
+  async getAssistantApprovalMode(ctx: RailgridContext | null, name: string): Promise<ProjectAssistantApprovalPreference> {
     return request<ProjectAssistantApprovalPreference>(
       ctx,
       'GET',
@@ -1387,7 +1387,7 @@ export const api = {
   },
 
   async patchAssistantApprovalMode(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     mode: ProjectAssistantApprovalMode,
   ): Promise<ProjectAssistantApprovalPreference> {
@@ -1400,7 +1400,7 @@ export const api = {
   },
 
   async createPreviewBridgeSession(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     generation: string,
     portalInstanceID: string,
@@ -1415,7 +1415,7 @@ export const api = {
   },
 
   async deletePreviewBridgeSession(
-    ctx: FarosContext | null,
+    ctx: RailgridContext | null,
     name: string,
     sessionID: string,
   ): Promise<void> {

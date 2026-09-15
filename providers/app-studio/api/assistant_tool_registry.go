@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 type projectAssistantToolRegistry struct {
@@ -533,7 +533,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 			spec: projectAssistantToolSpec{
 				Name:        projectToolPromoteProject,
 				Description: "Promote the project to production: stand up (or redeploy) a long-running production instance of the project's template from its built container images, running alongside the development sandbox on its own URL. Requires a green build — call check_project_build first and only promote when status is \"built\". Optional values carry the template's production settings (ports, replicas, auth); the image digests, instance name, and production mode are set automatically. Confirm with the user before promoting.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"values":{"type":"object","description":"Optional production template inputs (e.g. ports, replicas, oidc). Image fields, name, and farosMode are platform-owned and ignored here."}}}`),
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"values":{"type":"object","description":"Optional production template inputs (e.g. ports, replicas, oidc). Image fields, name, and railgridMode are platform-owned and ignored here."}}}`),
 				Risk:        projectAssistantToolRiskRuntime,
 			},
 			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {

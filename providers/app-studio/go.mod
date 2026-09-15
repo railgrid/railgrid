@@ -1,4 +1,4 @@
-module github.com/faroshq/provider-app-studio
+module github.com/railgrid/provider-app-studio
 
 go 1.26.8
 
@@ -9,7 +9,7 @@ require (
 	github.com/cloudwego/eino-ext/components/model/gemini v0.1.32
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/eino-contrib/jsonschema v1.0.3
-	github.com/faroshq/provider-sdk v0.1.0
+	github.com/railgrid/provider-sdk v0.1.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/kcp-dev/multicluster-provider v0.8.0
@@ -147,4 +147,4 @@ replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2
 // In-tree SDK: the monorepo is the source of truth until the SDK is
 // published with every package providers use (leaderelection landed after
 // v0.1.0). Image builds copy provider-sdk into the build context.
-replace github.com/faroshq/provider-sdk => ../../provider-sdk
+replace github.com/railgrid/provider-sdk => ../../provider-sdk

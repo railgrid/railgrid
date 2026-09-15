@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ func TestWorkloadMCPAuthorization(t *testing.T) {
 			cs.PrependReactor("create", "subjectaccessreviews", func(action clienttesting.Action) (bool, runtime.Object, error) {
 				checked = true
 				req := action.(clienttesting.CreateAction).GetObject().(*authorizationv1.SubjectAccessReview)
-				want := authorizationv1.SubjectAccessReviewSpec{User: user.Username, UID: user.UID, Groups: user.Groups, Extra: map[string]authorizationv1.ExtraValue{"scope": {"verified"}}, ResourceAttributes: &authorizationv1.ResourceAttributes{Group: "faros.sh", Resource: "mcpservers", Name: "default", Verb: "use"}}
+				want := authorizationv1.SubjectAccessReviewSpec{User: user.Username, UID: user.UID, Groups: user.Groups, Extra: map[string]authorizationv1.ExtraValue{"scope": {"verified"}}, ResourceAttributes: &authorizationv1.ResourceAttributes{Group: "railgrid.ai", Resource: "mcpservers", Name: "default", Verb: "use"}}
 				if !reflect.DeepEqual(req.Spec, want) {
 					t.Fatalf("review = %#v, want %#v", req.Spec, want)
 				}
@@ -100,7 +100,7 @@ func TestWorkloadMCPAuthorization(t *testing.T) {
 					return nil
 				}})
 				response := toolsList(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					r.URL.Path = "/tenant-a/apis/faros.sh/v1alpha1/mcpservers/default/mcp"
+					r.URL.Path = "/tenant-a/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp"
 					h.ServeHTTP(w, r)
 				}), "project-token")
 				wantStatus := http.StatusServiceUnavailable

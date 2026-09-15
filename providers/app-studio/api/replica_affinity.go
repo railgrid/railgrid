@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,19 +40,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const (
 	// replicaForwardedHeader marks a request already forwarded by a peer —
 	// the loop guard. Only the internal listener may set it; the public
 	// listener strips it.
-	replicaForwardedHeader = "X-Faros-AppStudio-Forwarded"
+	replicaForwardedHeader = "X-Railgrid-AppStudio-Forwarded"
 	// replicaInternalTokenHeader authenticates peer-forwarded requests on the
 	// internal listener. Deliberately not Authorization: that header carries
 	// the caller's bearer and is forwarded untouched.
-	replicaInternalTokenHeader = "X-Faros-AppStudio-Internal-Token"
+	replicaInternalTokenHeader = "X-Railgrid-AppStudio-Internal-Token"
 
 	// projectClaimTTL is how stale a project pin may go before any replica
 	// may take the project over (workspace re-hydration is Phase C; until

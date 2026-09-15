@@ -1,13 +1,13 @@
-project_name: kubectl-faros
+project_name: kubectl-railgrid
 version: 2
 env:
   - CGO_ENABLED=0
   - LDFLAGS={{ .Env.LDFLAGS }}
 
 builds:
-  - id: kubectl-faros
-    dir: cmd/faros
-    binary: kubectl-faros
+  - id: kubectl-railgrid
+    dir: cmd/railgrid
+    binary: kubectl-railgrid
     ldflags: "{{ .Env.LDFLAGS }}"
     goos:
       - linux
@@ -24,15 +24,15 @@ builds:
         goarch: ppc64le
 
 archives:
-  - id: kubectl-faros-plugin
+  - id: kubectl-railgrid-plugin
     ids:
-    - kubectl-faros
-    # uname-compatible names so `curl .../kubectl-faros_$(uname -s)_$(uname -m).tar.gz`
+    - kubectl-railgrid
+    # uname-compatible names so `curl .../kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz`
     # resolves: title-case OS (Linux/Darwin/Windows) and map Go's arch names to
     # what `uname -m` reports — amd64→x86_64 everywhere, arm64→aarch64 on Linux
     # (macOS keeps arm64), 386→i386.
     name_template: >-
-      kubectl-faros_
+      kubectl-railgrid_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if and (eq .Arch "arm64") (eq .Os "linux") }}aarch64
@@ -43,31 +43,31 @@ release:
   prerelease: auto
   mode: keep-existing
   github:
-    owner: faroshq
+    owner: railgrid
 
 blobs:
   - provider: s3
     endpoint: https://d7fc6dd1a6252d2a0ea1a629770cd3a8.r2.cloudflarestorage.com
     region: auto
     ids:
-    - kubectl-faros-plugin
-    bucket: faros
-    directory: "cli/faros/{{.Tag}}"
+    - kubectl-railgrid-plugin
+    bucket: railgrid
+    directory: "cli/railgrid/{{.Tag}}"
 
 krews:
-- name: faros
+- name: railgrid
   ids:
-  - kubectl-faros-plugin
+  - kubectl-railgrid-plugin
   repository:
-    owner: faroshq
+    owner: railgrid
     name: krew-index
     token: "{{ .Env.KREW_GITHUB_TOKEN }}"
-  homepage: "https://faros.sh/"
-  url_template: "https://downloads.faros.sh/cli/faros/{{ .Tag }}/{{ .ArtifactName }}"
+  homepage: "https://railgrid.ai/"
+  url_template: "https://downloads.railgrid.ai/cli/railgrid/{{ .Tag }}/{{ .ArtifactName }}"
   description: |
-    Manage faros edges and workloads from the command line.
-    kubectl faros login - Log in to a faros hub
-    kubectl faros ws - Navigate kcp workspaces
-    kubectl faros edge - Manage edges
-  short_description: "Manage faros edges and workloads from the command line."
+    Manage railgrid edges and workloads from the command line.
+    kubectl railgrid login - Log in to a railgrid hub
+    kubectl railgrid ws - Navigate kcp workspaces
+    kubectl railgrid edge - Manage edges
+  short_description: "Manage railgrid edges and workloads from the command line."
   skip_upload: auto

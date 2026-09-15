@@ -52,7 +52,7 @@ jobs:
           cd "$scratch"
           npm init --yes >/dev/null
           for attempt in $(seq 1 12); do
-            if npm install --ignore-scripts --no-audit --no-fund "@faros/actions-node@npm:@crwilhit/faros-actions-node@$version"; then
+            if npm install --ignore-scripts --no-audit --no-fund "@railgrid/actions-node@npm:@crwilhit/railgrid-actions-node@$version"; then
               break
             fi
             if [ "$attempt" -eq 12 ]; then
@@ -60,4 +60,4 @@ jobs:
             fi
             sleep 10
           done
-          node --input-type=module --eval "import { createActionsClient } from '@faros/actions-node'; if (typeof createActionsClient !== 'function') process.exit(1)"
+          node --input-type=module --eval "import { createActionsClient } from '@railgrid/actions-node'; if (typeof createActionsClient !== 'function') process.exit(1)"

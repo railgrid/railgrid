@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -53,9 +53,9 @@ var (
 )
 
 const (
-	configConnectorGCPOptIn             = "FAROS_E2E_CONFIG_CONNECTOR_GCP"
-	configConnectorGCPProjectEnv        = "FAROS_E2E_GCP_PROJECT"
-	configConnectorGCPCredentialsEnv    = "FAROS_E2E_GCP_CREDENTIALS_FILE"
+	configConnectorGCPOptIn             = "RAILGRID_E2E_CONFIG_CONNECTOR_GCP"
+	configConnectorGCPProjectEnv        = "RAILGRID_E2E_GCP_PROJECT"
+	configConnectorGCPCredentialsEnv    = "RAILGRID_E2E_GCP_CREDENTIALS_FILE"
 	configConnectorName                 = "configconnector.core.cnrm.cloud.google.com"
 	configConnectorPubSubCRDName        = "pubsubtopics.pubsub.cnrm.cloud.google.com"
 	configConnectorPubSubTemplatePrefix = "gcp-pubsub-kcc-demo-"
@@ -73,7 +73,7 @@ const (
 
 var (
 	configConnectorProjectPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
-	configConnectorTopicPattern   = regexp.MustCompile(`^faros-kcc-e2e-[0-9a-f]{8}$`)
+	configConnectorTopicPattern   = regexp.MustCompile(`^railgrid-kcc-e2e-[0-9a-f]{8}$`)
 )
 
 // TestConfigConnectorGCPPubSubLifecycle is the isolated real-cloud extension
@@ -139,8 +139,8 @@ func runConfigConnectorGCPPubSubLifecycle(t *testing.T, useEnabledTemplate bool)
 	requireHealthyConfigConnector(t, runtimeClient)
 
 	providerClient := kcpAdminDynamic(t, providerWorkspace)
-	parentClient := kcpAdminDynamic(t, "root:faros")
-	topicName := "faros-kcc-e2e-" + configConnectorGCPNonce()
+	parentClient := kcpAdminDynamic(t, "root:railgrid")
+	topicName := "railgrid-kcc-e2e-" + configConnectorGCPNonce()
 	if !configConnectorTopicPattern.MatchString(topicName) {
 		t.Fatalf("generated topic %q is outside the E2E ownership boundary", topicName)
 	}
@@ -384,7 +384,7 @@ func runConfigConnectorGCPPubSubLifecycle(t *testing.T, useEnabledTemplate bool)
 		t.Fatalf("Pub/Sub REST API never proved topic %q absent", topicResource)
 	}
 	cloudAbsent = true
-	t.Logf("KRO and Config Connector created Pub/Sub topic %q, direct REST proved it existed, and deleting the Faros parent removed both child and cloud topic", topicResource)
+	t.Logf("KRO and Config Connector created Pub/Sub topic %q, direct REST proved it existed, and deleting the Railgrid parent removed both child and cloud topic", topicResource)
 }
 
 func requireHealthyConfigConnector(t *testing.T, runtimeClient dynamic.Interface) {
@@ -408,7 +408,7 @@ func requireHealthyConfigConnector(t *testing.T, runtimeClient dynamic.Interface
 
 func requiredConfigConnectorRuntimeClient(t *testing.T) dynamic.Interface {
 	t.Helper()
-	path := envOr("FAROS_E2E_TILT_RUNTIME_KUBECONFIG", filepath.Join(repoRoot, ".faros-cluster.kubeconfig"))
+	path := envOr("RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG", filepath.Join(repoRoot, ".railgrid-cluster.kubeconfig"))
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
 		t.Fatalf("runtime kubeconfig is required at %q when the real-cloud E2E is enabled", path)
 	}

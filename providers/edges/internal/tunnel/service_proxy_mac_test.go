@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -70,7 +70,7 @@ func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"apiVersion": "edges.faros.sh/v1alpha1",
+			"apiVersion": "edges.railgrid.ai/v1alpha1",
 			"kind":       "Service",
 			"metadata":   map[string]any{"name": serviceName},
 			"spec": map[string]any{
@@ -91,7 +91,7 @@ func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (
 	}
 	s.authorizeFn = func(_ context.Context, _ *rest.Config, _ *rest.Config, token, gotCluster, verb, group, resource, name string) error {
 		if token != "caller-token" || gotCluster != cluster || verb != "proxy" ||
-			group != "edges.faros.sh" || resource != serviceResource || name != serviceName {
+			group != "edges.railgrid.ai" || resource != serviceResource || name != serviceName {
 			return errors.New("unexpected delegated authorization request")
 		}
 		return nil
@@ -108,7 +108,7 @@ func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (
 func TestMacOSServiceProxyUsesTheMacTunnelAndHostLoopback(t *testing.T) {
 	s, dialer := newServiceProxyTestServer(t, macOSServerKind, "mac-1")
 	req := httptest.NewRequest(http.MethodGet,
-		"/clusters/tenant-a/apis/edges.faros.sh/v1alpha1/services/mac-service/proxy/api/ping", nil)
+		"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy/api/ping", nil)
 	rr := httptest.NewRecorder()
 
 	s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "/api/ping")
@@ -145,7 +145,7 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 	t.Run("GET redirects to the slash form", func(t *testing.T) {
 		s, dialer := newServiceProxyTestServer(t, macOSServerKind, "mac-1")
 		req := httptest.NewRequest(http.MethodGet,
-			"/clusters/tenant-a/apis/edges.faros.sh/v1alpha1/services/mac-service/proxy?tab=1", nil)
+			"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy?tab=1", nil)
 		rr := httptest.NewRecorder()
 
 		s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "")
@@ -166,7 +166,7 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 		// No body: the in-memory agent answers without reading one, and
 		// net.Pipe is unbuffered.
 		req := httptest.NewRequest(http.MethodPost,
-			"/clusters/tenant-a/apis/edges.faros.sh/v1alpha1/services/mac-service/proxy", nil)
+			"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy", nil)
 		rr := httptest.NewRecorder()
 
 		s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "")
@@ -190,7 +190,7 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 func TestServiceProxyRejectsUnknownEdgeKindBeforeDialing(t *testing.T) {
 	s, dialer := newServiceProxyTestServer(t, "UnexpectedKind", "mac-1")
 	req := httptest.NewRequest(http.MethodGet,
-		"/clusters/tenant-a/apis/edges.faros.sh/v1alpha1/services/mac-service/proxy", nil)
+		"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy", nil)
 	rr := httptest.NewRecorder()
 
 	s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "")

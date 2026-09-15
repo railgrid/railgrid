@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -6,10 +6,10 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// kuery is the faros provider for fleet-wide object search, relationship
+// kuery is the railgrid provider for fleet-wide object search, relationship
 // traversal, and impact analysis across connected edge clusters, built on
-// github.com/faroshq/kuery. See docs/kuery-provider-architecture.md in the
-// faros repo for the design and phasing.
+// github.com/railgrid/kuery. See docs/kuery-provider-architecture.md in the
+// railgrid repo for the design and phasing.
 //
 // Phase 1 skeleton: registration surface only (healthz, heartbeat, portal
 // placeholder, /api/status). Phase 2 embeds the kuery engine + the Edge
@@ -48,12 +48,12 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/faroshq/provider-kuery/core"
-	"github.com/faroshq/provider-kuery/engagement"
-	"github.com/faroshq/provider-kuery/mcpserver"
-	"github.com/faroshq/provider-kuery/queryapi"
+	"github.com/railgrid/provider-kuery/core"
+	"github.com/railgrid/provider-kuery/engagement"
+	"github.com/railgrid/provider-kuery/mcpserver"
+	"github.com/railgrid/provider-kuery/queryapi"
 
-	"github.com/faroshq/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/hubclient"
 )
 
 // envOr returns the env value or a default.
@@ -66,12 +66,12 @@ func envOr(key, def string) string {
 
 // loadProviderConfig loads the minted provider kubeconfig — the credential
 // whose SA token the Enable-time edges-proxy grant authorizes. Resolution
-// order matches the other providers: FAROS_PROVIDER_KUBECONFIG, then the
+// order matches the other providers: RAILGRID_PROVIDER_KUBECONFIG, then the
 // conventional mount path, then KUBECONFIG.
 func loadProviderConfig() (*rest.Config, error) {
 	candidates := []string{
-		os.Getenv("FAROS_PROVIDER_KUBECONFIG"),
-		"/var/run/secrets/faros/faros-provider-kubeconfig",
+		os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),
+		"/var/run/secrets/railgrid/railgrid-provider-kubeconfig",
 		os.Getenv("KUBECONFIG"),
 	}
 	for _, path := range candidates {
@@ -87,7 +87,7 @@ func loadProviderConfig() (*rest.Config, error) {
 		}
 		return cfg, nil
 	}
-	return nil, fmt.Errorf("no kubeconfig found (set FAROS_PROVIDER_KUBECONFIG)")
+	return nil, fmt.Errorf("no kubeconfig found (set RAILGRID_PROVIDER_KUBECONFIG)")
 }
 
 type statusResponse struct {
@@ -110,7 +110,7 @@ type statusResponse struct {
 //
 //	kuery-provider init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    FAROS_PROVIDER_KUBECONFIG (+ KUERY_EDGES_IDENTITY_HASH). See init_cmd.go.
+//	    RAILGRID_PROVIDER_KUBECONFIG (+ KUERY_EDGES_IDENTITY_HASH). See init_cmd.go.
 //	kuery-provider serve  — runtime (default).
 func main() {
 	if len(os.Args) > 1 {
@@ -168,8 +168,8 @@ func runServe() {
 		ctrl.SetLogger(klog.NewKlogr())
 		engagementCtl, err = engagement.New(engagement.Config{
 			ProviderConfig: providerCfg,
-			HubBaseURL:     os.Getenv("FAROS_HUB_URL"),
-			APIExportName:  envOr("KUERY_APIEXPORT_NAME", "kuery.providers.faros.sh"),
+			HubBaseURL:     os.Getenv("RAILGRID_HUB_URL"),
+			APIExportName:  envOr("KUERY_APIEXPORT_NAME", "kuery.providers.railgrid.ai"),
 			Sync:           kc.Sync,
 			Store:          kc.Store,
 		})
@@ -193,7 +193,7 @@ func runServe() {
 
 	// Tenant-scoped query API — the only path to the kuery store. Tenant
 	// identity is the kcp logical-cluster ID the hub injects
-	// (X-Faros-Cluster); see queryapi.IdentityFromRequest.
+	// (X-Railgrid-Cluster); see queryapi.IdentityFromRequest.
 	mux.Handle("/api/query", &queryapi.Handler{Engine: kc.Engine})
 
 	// QuerySpec JSON Schema — powers the playground editor's autocomplete and
@@ -222,7 +222,7 @@ func runServe() {
 			Message:     "kuery provider: fleet query engine",
 			Provider:    "kuery",
 			ServedAt:    time.Now().UTC(),
-			UserHeader:  r.Header.Get("X-Faros-User"),
+			UserHeader:  r.Header.Get("X-Railgrid-User"),
 			StoreDriver: storeDriver,
 		}
 		if id, err := queryapi.IdentityFromRequest(r); err == nil {
@@ -285,8 +285,8 @@ func runServe() {
 
 	// Heartbeat goroutine — POSTs to the hub every 30s so the catalog
 	// controller's TTL doesn't flip us to NotReady. Configured from
-	// FAROS_HUB_URL / FAROS_PROVIDER_NAME / FAROS_HUB_INSECURE and the
-	// provider SA token (see provider-sdk/hubclient); an empty FAROS_HUB_URL
+	// RAILGRID_HUB_URL / RAILGRID_PROVIDER_NAME / RAILGRID_HUB_INSECURE and the
+	// provider SA token (see provider-sdk/hubclient); an empty RAILGRID_HUB_URL
 	// disables it (useful for tests / dry-run).
 	hb, err := hubclient.ConfigFromEnv("kuery", heartbeatVersion)
 	if err != nil {

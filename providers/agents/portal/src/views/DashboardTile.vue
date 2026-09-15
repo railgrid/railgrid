@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { AlertTriangle, Bot, ChevronRight, Clock } from 'lucide-vue-next'
 import { ApiClient } from '../api'
 import { hashFor } from '../router'
-import type { Agent, FarosContext, RunSummary, Schedule } from '../types'
+import type { Agent, RailgridContext, RunSummary, Schedule } from '../types'
 import {
   TILE_ROWS,
   createTilePoller,
@@ -14,7 +14,7 @@ import {
 } from '../portalkit/dashboardtile'
 
 const FAILED_PHASES = new Set(['Failed', 'Error', 'Cancelled', 'Timeout'])
-const props = defineProps<{ context: FarosContext | null }>()
+const props = defineProps<{ context: RailgridContext | null }>()
 const emit = defineEmits<{ navigate: [path: string] }>()
 
 const agents = ref<Agent[]>([])
@@ -26,10 +26,10 @@ const hasSnapshot = ref(false)
 const api = new ApiClient()
 let poller: TilePoller | null = null
 let contextGeneration = 0
-let activeContext: FarosContext | null = null
+let activeContext: RailgridContext | null = null
 let activeAuthorityKey = ''
 
-function applyContext(context: FarosContext | null): void {
+function applyContext(context: RailgridContext | null): void {
   const nextAuthorityKey = authorityKey(context)
   const authorityChanged = nextAuthorityKey !== activeAuthorityKey
   activeContext = context
@@ -121,12 +121,12 @@ function phaseDot(phase: string): string {
   return 'agents-tile-dot-idle'
 }
 
-function contextKey(context: FarosContext | null): string {
+function contextKey(context: RailgridContext | null): string {
   if (!context) return ''
   return [context.tenant, context.orgUUID, context.workspaceUUID].map(part => part ?? '').join('\u0000')
 }
 
-function authorityKey(context: FarosContext | null): string {
+function authorityKey(context: RailgridContext | null): string {
   if (!context) return ''
   return [
     contextKey(context),

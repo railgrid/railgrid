@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 // Per-project ServiceAccount identity.
@@ -41,7 +41,7 @@ import (
 // automatically, because the objects are owned by the Project and
 // garbage-collected with it.
 
-func identityName(project string) string { return "faros-appstudio-" + project }
+func identityName(project string) string { return "railgrid-appstudio-" + project }
 
 // projectOwnerRef points identity objects at the Project so kcp
 // garbage-collects them with it.
@@ -64,7 +64,7 @@ func (r *Reconciler) ensureIdentity(ctx context.Context, c client.Client, p *aiv
 		{
 			// Admission to the aggregate does not grant downstream provider
 			// permissions: federation retains this project's bearer.
-			APIGroups:     []string{"faros.sh"},
+			APIGroups:     []string{"railgrid.ai"},
 			Resources:     []string{"mcpservers"},
 			ResourceNames: []string{"default"},
 			Verbs:         []string{"use"},
@@ -72,14 +72,14 @@ func (r *Reconciler) ensureIdentity(ctx context.Context, c client.Client, p *aiv
 		{
 			// Full lifecycle: the reconciler creates, converges, and (on
 			// Project deletion) deletes the project's environment instances.
-			APIGroups: []string{"infrastructure.faros.sh"},
+			APIGroups: []string{"infrastructure.railgrid.ai"},
 			Resources: []string{"*"},
 			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 		},
 		{
 			// No delete: repositories hold user code and deliberately survive
 			// project deletion.
-			APIGroups: []string{"code.faros.sh"},
+			APIGroups: []string{"code.railgrid.ai"},
 			Resources: []string{"*"},
 			Verbs:     []string{"get", "list", "watch", "create", "update", "patch"},
 		},

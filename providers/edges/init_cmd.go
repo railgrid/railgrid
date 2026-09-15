@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,16 +17,16 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
-	sdkinstall "github.com/faroshq/provider-sdk/install"
+	sdkinstall "github.com/railgrid/provider-sdk/install"
 )
 
 const (
-	apiExportName = "edges.providers.faros.sh"
+	apiExportName = "edges.providers.railgrid.ai"
 )
 
 // runInitCmd bootstraps the provider's APIExport into its workspace: it applies
 // the KubernetesCluster + LinuxServer + MacOSServer APIResourceSchemas from
-// FAROS_SCHEMAS_DIR, creates the edges.providers.faros.sh APIExport referencing
+// RAILGRID_SCHEMAS_DIR, creates the edges.providers.railgrid.ai APIExport referencing
 // them, the endpoint slice, and the bind grant. Tenants that bind this export get
 // all three edge kinds.
 func runInitCmd(ctx context.Context) error {
@@ -34,7 +34,7 @@ func runInitCmd(ctx context.Context) error {
 
 	config, err := loadInitConfig()
 	if err != nil {
-		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
+		return fmt.Errorf("init needs a kubeconfig (set RAILGRID_PROVIDER_KUBECONFIG): %w", err)
 	}
 	// Empty means "the workspace this kubeconfig already points at": kcp
 	// resolves an unset APIExportEndpointSlice export path to the slice's own
@@ -42,11 +42,11 @@ func runInitCmd(ctx context.Context) error {
 	// both the platform workspace and an org's self-hosted copy. Set the env
 	// var only to reference an export in a different workspace.
 	workspacePath := os.Getenv("EDGES_WORKSPACE_PATH")
-	schemasDir := os.Getenv("FAROS_SCHEMAS_DIR")
+	schemasDir := os.Getenv("RAILGRID_SCHEMAS_DIR")
 	if schemasDir == "" {
-		schemasDir = "/etc/faros/schemas"
+		schemasDir = "/etc/railgrid/schemas"
 	}
-	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
+	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:        config,
@@ -84,7 +84,7 @@ func runInitCmd(ctx context.Context) error {
 }
 
 func loadInitConfig() (*rest.Config, error) {
-	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"); p != "" {
 		return clientcmd.BuildConfigFromFlags("", p)
 	}
 	if p := os.Getenv("KUBECONFIG"); p != "" {

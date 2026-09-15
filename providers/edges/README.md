@@ -1,10 +1,10 @@
 # edges provider
 
-Connectivity core for faros. Owns `edges.faros.sh`: `KubernetesCluster` and
+Connectivity core for railgrid. Owns `edges.railgrid.ai`: `KubernetesCluster` and
 `LinuxServer` edges, the agent reverse tunnel, `Service` connectors, and
 `Workload` / `Placement` scheduling.
 
-An **edge** is a cluster or host you connect to faros. The agent you install
+An **edge** is a cluster or host you connect to railgrid. The agent you install
 there dials *out* to the platform and holds open a WebSocket reverse tunnel
 (revdial), so nothing needs an inbound firewall hole, a VPN, or a public IP. The
 provider terminates those tunnels and re-exposes each edge as data-plane
@@ -20,12 +20,12 @@ subresources on its CR (`…/k8s`, `…/ssh`, `…/mcp`).
 | `Workload` (`wl`) | Namespaced | Manifests to deploy onto edges. |
 | `Placement` | Namespaced | Binds a `Workload` to an edge. |
 
-APIExport: `edges.providers.faros.sh`, in `root:faros:providers:edges` (or your
+APIExport: `edges.providers.railgrid.ai`, in `root:railgrid:providers:edges` (or your
 own workspace when self-hosted).
 
 ## Connecting an edge
 
-1. Create the CR — `faros edge create`, or apply a `KubernetesCluster`.
+1. Create the CR — `railgrid edge create`, or apply a `KubernetesCluster`.
 2. The provider mints a one-time **join token** into `status.joinToken` and sets
    `Registered=False/AwaitingAgent`.
 3. Install the agent with that token. It dials the tunnel endpoint, and the
@@ -48,7 +48,7 @@ and prunes what disappears. `Placement.spec.manifests[]` is the rendered
 output — read it to see exactly what lands on the edge.
 
 ```yaml
-apiVersion: edges.faros.sh/v1alpha1
+apiVersion: edges.railgrid.ai/v1alpha1
 kind: Workload
 metadata:
   name: kiosk-whoami
@@ -59,7 +59,7 @@ spec:
     strategy: Spread          # or Singleton
     edgeSelector:
       matchExpressions:
-        - {key: edges.faros.sh/name, operator: In, values: [home, minis]}
+        - {key: edges.railgrid.ai/name, operator: In, values: [home, minis]}
   replicas: 1                 # per edge
   simple:
     image: ghcr.io/example/app:1.0
@@ -77,7 +77,7 @@ spec:
   `simple.imagePullSecrets` names docker-registry Secrets that must already
   exist in the target namespace on each edge — the Workload ships no Secrets.
 - `template` is a pod template: `template.metadata.labels` / `.annotations`
-  land on the pods (the provider's `edges.faros.sh/workload` selector label is
+  land on the pods (the provider's `edges.railgrid.ai/workload` selector label is
   always added and cannot be overridden) and `template.spec` is a full PodSpec
   (so `imagePullSecrets`, volumes, sidecars, …).
 - `helm` templates the chart hub-side into the target namespace
@@ -97,7 +97,7 @@ path as opaque, so scaling needs no agent change.
 
 You can run edges in your own cluster instead of using the platform's — see
 [docs/byo-providers.md](../../docs/byo-providers.md) and
-[deploy/chart/README.md](deploy/chart/README.md). faros creates the workspace,
+[deploy/chart/README.md](deploy/chart/README.md). railgrid creates the workspace,
 mints the credential, and generates the install commands under
 **Providers → Self-Hosting** in the portal.
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,12 +28,12 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/backend"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/backend"
 )
 
 func TestDependencyEventsEnqueueOnlyTenantRepositories(t *testing.T) {
-	t.Setenv("FAROS_TENANT_CREDENTIALS_NAMESPACE", "credentials")
+	t.Setenv("RAILGRID_TENANT_CREDENTIALS_NAMESPACE", "credentials")
 	connection := func(name, namespace string) *codev1alpha1.Connection {
 		return &codev1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: codev1alpha1.ConnectionSpec{SecretRef: codev1alpha1.LocalSecretReference{Name: "token", Namespace: namespace}}}
 	}

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -43,8 +43,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/backend"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/backend"
 )
 
 // Name is the backend identifier operators put in Template.spec.backend.
@@ -58,14 +58,14 @@ type Backend struct {
 	// pointed at by KRO_KUBECONFIG.
 	runtime dynamic.Interface
 
-	// tokens are the platform-config values substituted for reserved ${faros.*}
+	// tokens are the platform-config values substituted for reserved ${railgrid.*}
 	// placeholders in a Template's backendConfig before the RGD is authored —
 	// platform-wide settings that belong on the backend, not in per-tenant data.
 	// See substituteTokens in rgd.go. The tokens are the exposure-layer Gateway
-	// parent (${faros.gatewayName}/${faros.gatewayNamespace}) — the ONE Gateway
+	// parent (${railgrid.gatewayName}/${railgrid.gatewayNamespace}) — the ONE Gateway
 	// every template's HTTPRoutes attach to (cfgate cloudflare-tunnel in prod,
-	// envoy locally) — plus ${faros.appPublicPort} and the dev-overlay images
-	// (${faros.devImage.<toolchain>}, ${faros.devAgentImage}); per-instance
+	// envoy locally) — plus ${railgrid.appPublicPort} and the dev-overlay images
+	// (${railgrid.devImage.<toolchain>}, ${railgrid.devAgentImage}); per-instance
 	// inputs like container images are schema fields with defaults, not tokens
 	// (see providers/infrastructure/docs/template-conventions.md).
 	tokens map[string]string
@@ -74,7 +74,7 @@ type Backend struct {
 var _ backend.Backend = (*Backend)(nil)
 
 // DefaultGatewayName / DefaultGatewayNamespace are used when
-// FAROS_GATEWAY_NAME / FAROS_GATEWAY_NAMESPACE are unset. They point at the
+// RAILGRID_GATEWAY_NAME / RAILGRID_GATEWAY_NAMESPACE are unset. They point at the
 // cfgate Cloudflare Tunnel Gateway we ship with (the Gateway API exposure
 // layer: reverse tunnels, edge TLS).
 const (
@@ -89,11 +89,11 @@ const (
 // backendConfig at RGD build time (so changing it is a config change, not a
 // template edit):
 //
-//   - FAROS_GATEWAY_NAME / FAROS_GATEWAY_NAMESPACE — the exposure-layer Gateway
+//   - RAILGRID_GATEWAY_NAME / RAILGRID_GATEWAY_NAMESPACE — the exposure-layer Gateway
 //     parent every template's HTTPRoutes attach to (defaults
 //     "cloudflare-tunnel" / "cfgate-system").
-//   - FAROS_APP_PUBLIC_PORT — bare port number appended (as ":<port>") to
-//     synthesized exposure URLs via ${faros.appPublicPort}. Unset in
+//   - RAILGRID_APP_PUBLIC_PORT — bare port number appended (as ":<port>") to
+//     synthesized exposure URLs via ${railgrid.appPublicPort}. Unset in
 //     production (443 implied); local kind sets 10443 (the envoy
 //     port-forward).
 //
@@ -102,52 +102,52 @@ const (
 // spec.version), the same convention every other template follows. See
 // providers/infrastructure/docs/template-conventions.md.
 func New(runtime dynamic.Interface) *Backend {
-	gatewayName := os.Getenv("FAROS_GATEWAY_NAME")
+	gatewayName := os.Getenv("RAILGRID_GATEWAY_NAME")
 	if gatewayName == "" {
 		gatewayName = DefaultGatewayName
 	}
-	gatewayNamespace := os.Getenv("FAROS_GATEWAY_NAMESPACE")
+	gatewayNamespace := os.Getenv("RAILGRID_GATEWAY_NAMESPACE")
 	if gatewayNamespace == "" {
 		gatewayNamespace = DefaultGatewayNamespace
 	}
 	tokens := map[string]string{
 		gatewayNameToken:      gatewayName,
 		gatewayNamespaceToken: gatewayNamespace,
-		appPublicPortToken:    appPublicPortSuffix(os.Getenv("FAROS_APP_PUBLIC_PORT")),
+		appPublicPortToken:    appPublicPortSuffix(os.Getenv("RAILGRID_APP_PUBLIC_PORT")),
 		previewBridgeVerificationJWKSConfigKey: strings.TrimSpace(
-			os.Getenv("FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS"),
+			os.Getenv("RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS"),
 		),
-		sandboxRuntimeClassNameConfigKey: strings.TrimSpace(os.Getenv("FAROS_SANDBOX_RUNTIME_CLASS_NAME")),
+		sandboxRuntimeClassNameConfigKey: strings.TrimSpace(os.Getenv("RAILGRID_SANDBOX_RUNTIME_CLASS_NAME")),
 	}
 	maps.Copy(tokens, accessGateTokens())
 	maps.Copy(tokens, devImageTokens())
 	return &Backend{runtime: runtime, tokens: tokens}
 }
 
-// DefaultAccessProxyImage backs ${faros.accessProxyImage} when
-// FAROS_ACCESS_PROXY_IMAGE is unset. Production should pin a digest — the
+// DefaultAccessProxyImage backs ${railgrid.accessProxyImage} when
+// RAILGRID_ACCESS_PROXY_IMAGE is unset. Production should pin a digest — the
 // gate fronts every published app.
-const DefaultAccessProxyImage = "ghcr.io/faroshq/faros-access-proxy:latest"
+const DefaultAccessProxyImage = "ghcr.io/railgrid/railgrid-access-proxy:latest"
 
 // accessGateTokens resolves the access-gate token family (see rgd.go). The
 // hub URLs may legitimately be empty on hubs that never publish privately;
 // the gate only requires them in private mode, so empty substitution renders
 // a public-only gate rather than failing template setup.
 func accessGateTokens() map[string]string {
-	image := strings.TrimSpace(os.Getenv("FAROS_ACCESS_PROXY_IMAGE"))
+	image := strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_PROXY_IMAGE"))
 	if image == "" {
 		image = DefaultAccessProxyImage
 	}
-	hubURL := strings.TrimSpace(os.Getenv("FAROS_ACCESS_HUB_URL"))
+	hubURL := strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_URL"))
 	if hubURL == "" {
-		hubURL = strings.TrimSpace(os.Getenv("FAROS_HUB_URL"))
+		hubURL = strings.TrimSpace(os.Getenv("RAILGRID_HUB_URL"))
 	}
-	hubPublicURL := strings.TrimSpace(os.Getenv("FAROS_ACCESS_HUB_PUBLIC_URL"))
+	hubPublicURL := strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_PUBLIC_URL"))
 	if hubPublicURL == "" {
 		hubPublicURL = hubURL
 	}
 	hubInsecure := "false"
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_ACCESS_HUB_INSECURE")), "true") {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_INSECURE")), "true") {
 		hubInsecure = "true"
 	}
 	return map[string]string{
@@ -158,7 +158,7 @@ func accessGateTokens() map[string]string {
 	}
 }
 
-// appPublicPortSuffix turns FAROS_APP_PUBLIC_PORT into the ":<port>" suffix
+// appPublicPortSuffix turns RAILGRID_APP_PUBLIC_PORT into the ":<port>" suffix
 // spliced into backendConfig JSON/CEL by plain byte substitution. The value is
 // operator-provided and substituted unescaped, so accept only a bare port in
 // the valid range (a stray quote, ":", or path would corrupt every synthesized
@@ -171,26 +171,26 @@ func appPublicPortSuffix(raw string) string {
 	if n, err := strconv.Atoi(port); err == nil && n >= 1 && n <= 65535 {
 		return ":" + strconv.Itoa(n)
 	}
-	klog.Background().Info("ignoring invalid FAROS_APP_PUBLIC_PORT (want a bare port number 1-65535)", "value", raw)
+	klog.Background().Info("ignoring invalid RAILGRID_APP_PUBLIC_PORT (want a bare port number 1-65535)", "value", raw)
 	return ""
 }
 
 // DefaultNodeDevImage / DefaultUniversalDevImage / DefaultDevAgentImage back
 // the dev-overlay images when the env knobs are unset, so a stock deployment
 // (and local dev) can run node or universal coding sandboxes out of the box.
-// Production should pin digests via FAROS_DEV_IMAGE_NODE,
-// FAROS_DEV_IMAGE_UNIVERSAL, and FAROS_DEV_AGENT_IMAGE (they run tenant code —
+// Production should pin digests via RAILGRID_DEV_IMAGE_NODE,
+// RAILGRID_DEV_IMAGE_UNIVERSAL, and RAILGRID_DEV_AGENT_IMAGE (they run tenant code —
 // see docs/app-studio-template-sandboxes.md §9).
 const (
 	// DefaultNodeDevImage is a plain node toolchain image — the dev agent is
-	// injected by init container, so nothing faros-specific is baked in
+	// injected by init container, so nothing railgrid-specific is baked in
 	// (bookworm, not slim: dev flows need git and the usual build tools).
 	DefaultNodeDevImage      = "docker.io/library/node:22-bookworm"
-	DefaultUniversalDevImage = "ghcr.io/faroshq/faros-universal-dev:latest"
+	DefaultUniversalDevImage = "ghcr.io/railgrid/railgrid-universal-dev:latest"
 	// DevAgentImageRepository is where provider-release.yaml publishes the
 	// dev-agent injector, tagged with the infrastructure provider's own
 	// release version (vX.Y.Z) alongside :latest.
-	DevAgentImageRepository = "ghcr.io/faroshq/faros-dev-agent"
+	DevAgentImageRepository = "ghcr.io/railgrid/railgrid-dev-agent"
 	// DefaultDevAgentImage is the dev-agent default for non-release builds
 	// (local `go build`, Tilt, kind side-loading). Release builds default to
 	// DevAgentImageRepository:<version> instead — see defaultDevAgentImage.
@@ -221,7 +221,7 @@ func IsReleaseVersion(version string) bool {
 }
 
 // defaultDevAgentImage is the dev-agent injector image used when
-// FAROS_DEV_AGENT_IMAGE is unset. A release build pins the dev agent shipped
+// RAILGRID_DEV_AGENT_IMAGE is unset. A release build pins the dev agent shipped
 // in the SAME release (DevAgentImageRepository:<version>): a mutable :latest
 // combined with the injector's IfNotPresent pull policy would keep whatever
 // :latest a node cached first, so provider upgrades would never reach
@@ -235,7 +235,7 @@ func defaultDevAgentImage() string {
 }
 
 // devImageTokens collects the platform-managed dev-mode images: every
-// FAROS_DEV_IMAGE_<TOOLCHAIN> env var becomes ${faros.devImage.<toolchain>}
+// RAILGRID_DEV_IMAGE_<TOOLCHAIN> env var becomes ${railgrid.devImage.<toolchain>}
 // (underscores → dashes, lowercased), plus the agent injector image. The node
 // toolchain and the agent get in-binary defaults; any other toolchain a
 // template references without configuration fails that template's setup with
@@ -246,7 +246,7 @@ func devImageTokens() map[string]string {
 		devImageTokenPrefix + "universal}": DefaultUniversalDevImage,
 		devAgentImageToken:                 defaultDevAgentImage(),
 	}
-	const envPrefix = "FAROS_DEV_IMAGE_"
+	const envPrefix = "RAILGRID_DEV_IMAGE_"
 	for _, kv := range os.Environ() {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok || v == "" || !strings.HasPrefix(k, envPrefix) {
@@ -258,7 +258,7 @@ func devImageTokens() map[string]string {
 		}
 		out[devImageTokenPrefix+toolchain+"}"] = v
 	}
-	if v := os.Getenv("FAROS_DEV_AGENT_IMAGE"); v != "" {
+	if v := os.Getenv("RAILGRID_DEV_AGENT_IMAGE"); v != "" {
 		out[devAgentImageToken] = v
 	}
 	return out

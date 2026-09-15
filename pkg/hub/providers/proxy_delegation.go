@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 //
 // Org-owned providers are never a question of mode: they always receive the
 // delegated token (see serveOverEdge). The mode decides what a PLATFORM
-// provider — one in root:faros:providers, dialled directly by the hub — gets.
+// provider — one in root:railgrid:providers, dialled directly by the hub — gets.
 type DelegationMode string
 
 const (
@@ -65,13 +65,13 @@ func ParseDelegationMode(s string) (DelegationMode, error) {
 // and, for an edge with spec.sshUserMapping=identity, uses the resulting
 // username as the Linux user to log in as
 // (providers/edges/internal/tunnel/edges_proxy_builder.go fetchSSHCredentials).
-// A delegated token resolves to system:serviceaccount:default:faros-du-<hash>,
+// A delegated token resolves to system:serviceaccount:default:railgrid-du-<hash>,
 // which is not the human's account and is not a login name on any host, so the
 // session would be refused or land on the wrong user. Everything else in edges
 // — the tunnel, the k8s subresource, the Service proxy — works with a
 // delegated token and already receives one on the org-owned provider path
 // (serveOverEdge). Lifting this needs the SSH path to take its identity from
-// X-Faros-User (which the hub still sends) rather than from the bearer.
+// X-Railgrid-User (which the hub still sends) rather than from the bearer.
 var DefaultDelegationExclude = []string{EdgesProviderName}
 
 // DelegationPolicy is the backend proxy's answer to "does this platform

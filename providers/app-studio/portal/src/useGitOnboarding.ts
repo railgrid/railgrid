@@ -1,13 +1,13 @@
 import { computed, ref, watch } from 'vue'
-import type { FarosContext } from './types'
+import type { RailgridContext } from './types'
 
-export function gitOnboardingStorageKey(ctx: FarosContext | null): string | null {
+export function gitOnboardingStorageKey(ctx: RailgridContext | null): string | null {
   const user = ctx?.user?.sub || ctx?.user?.userId || ctx?.user?.email
   if (!user || !ctx?.orgUUID || !ctx?.workspaceUUID) return null
-  return `faros:app-studio:git-skipped:${JSON.stringify([user, ctx.orgUUID, ctx.workspaceUUID])}`
+  return `railgrid:app-studio:git-skipped:${JSON.stringify([user, ctx.orgUUID, ctx.workspaceUUID])}`
 }
 
-export function useGitOnboarding(context: () => FarosContext | null) {
+export function useGitOnboarding(context: () => RailgridContext | null) {
   const skipped = ref(false)
   const key = computed(() => gitOnboardingStorageKey(context()))
   watch(key, (value) => {

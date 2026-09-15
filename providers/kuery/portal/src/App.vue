@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Braces, Network, TableProperties } from 'lucide-vue-next'
 
 import type { ObjectResult } from './api'
-import type { FarosContext } from './element'
+import type { RailgridContext } from './element'
 import { createKueryRequestContext, errorMessage } from './kuery'
 import ImpactView from './components/ImpactView.vue'
 import InventoryView from './components/InventoryView.vue'
@@ -11,7 +11,7 @@ import PlaygroundView from './components/PlaygroundView.vue'
 import TopologyView from './components/TopologyView.vue'
 import Tabs from './portalkit/Tabs.vue'
 
-const props = defineProps<{ state: { context: FarosContext | null } }>()
+const props = defineProps<{ state: { context: RailgridContext | null } }>()
 const context = computed(() => props.state.context)
 const requestContext = computed(() => createKueryRequestContext(context.value))
 const identity = computed(() => requestContext.value.scopeIdentity)

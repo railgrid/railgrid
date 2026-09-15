@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,25 +26,25 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	farosclient "github.com/faroshq/faros/pkg/client"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
-// edgeKindGVRs are the connectable kinds a `faros edge`/`faros agent` command
+// edgeKindGVRs are the connectable kinds a `railgrid edge`/`railgrid agent` command
 // may address by name. KubernetesCluster is tried first (the common case).
 var edgeKindGVRs = []schema.GroupVersionResource{
-	farosclient.KubernetesClusterGVR,
-	farosclient.LinuxServerGVR,
-	farosclient.MacOSServerGVR,
+	railgridclient.KubernetesClusterGVR,
+	railgridclient.LinuxServerGVR,
+	railgridclient.MacOSServerGVR,
 }
 
 func edgeGVRForKind(kind string) schema.GroupVersionResource {
 	switch kind {
 	case "LinuxServer":
-		return farosclient.LinuxServerGVR
+		return railgridclient.LinuxServerGVR
 	case "MacOSServer":
-		return farosclient.MacOSServerGVR
+		return railgridclient.MacOSServerGVR
 	default:
-		return farosclient.KubernetesClusterGVR
+		return railgridclient.KubernetesClusterGVR
 	}
 }
 
@@ -85,7 +85,7 @@ func listAllEdges(ctx context.Context, dyn dynamic.Interface) ([]unstructured.Un
 		// LinuxServer correctly instead of falling back to Kubernetes.
 		for i := range list.Items {
 			if list.Items[i].GetKind() == "" {
-				list.Items[i].SetKind(farosclient.EdgeKindForType(farosclient.EdgeTypeForGVR(gvr)))
+				list.Items[i].SetKind(railgridclient.EdgeKindForType(railgridclient.EdgeTypeForGVR(gvr)))
 			}
 			if list.Items[i].GetAPIVersion() == "" {
 				list.Items[i].SetAPIVersion(gvr.GroupVersion().String())
@@ -101,4 +101,4 @@ func listAllEdges(ctx context.Context, dyn dynamic.Interface) ([]unstructured.Un
 
 // errEdgesNotEnabled is returned when the edges API is absent from the
 // workspace: the provider has not been enabled there.
-var errEdgesNotEnabled = fmt.Errorf("the edges provider is not enabled in this workspace (no edges.faros.sh API); enable it in the console's Providers page, then retry")
+var errEdgesNotEnabled = fmt.Errorf("the edges provider is not enabled in this workspace (no edges.railgrid.ai API); enable it in the console's Providers page, then retry")

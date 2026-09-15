@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -13,7 +13,7 @@ import (
 
 func TestEnvelopePreservesNullResultsAndExclusiveErrors(t *testing.T) {
 	r := httptest.NewRequest("POST", "/", nil)
-	e := New(r, "code", "find_pull_request", ResourceRef{APIVersion: "code.faros.sh/v1alpha1", Kind: "Repository", Resource: "repositories", Name: "repo"})
+	e := New(r, "code", "find_pull_request", ResourceRef{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository", Resource: "repositories", Name: "repo"})
 	data, err := e.Success(nil)
 	if err != nil {
 		t.Fatal(err)

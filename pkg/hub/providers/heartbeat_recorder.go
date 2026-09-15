@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,11 +28,11 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 var catalogEntryGVR = schema.GroupVersionResource{
-	Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
+	Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries",
 }
 
 // ClusterResolver reports the logical cluster a provider's CatalogEntry lives
@@ -44,11 +44,11 @@ type ClusterResolver interface {
 
 // NewCatalogHeartbeatRecorder returns a HeartbeatRecorder that stamps
 // CatalogEntry.status in the provider's own workspace
-// (root:faros:providers/<name>), where each provider's `init` self-registers
+// (root:railgrid:providers/<name>), where each provider's `init` self-registers
 // its entry.
 //
 // Addressing the entry by cluster rather than by a fixed path matters: an
-// earlier version wrote to root:faros:system:providers, which serves the API but
+// earlier version wrote to root:railgrid:system:providers, which serves the API but
 // holds no entries, so every beat 404'd and provider liveness never crossed
 // replicas.
 //

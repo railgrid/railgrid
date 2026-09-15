@@ -191,13 +191,13 @@ describe('retiring the assist card', () => {
   // Dismissal is per workspace: setting search up in one says nothing about
   // another, and one dismissal must not hide the card everywhere.
   it('does not leak the dismissal to another workspace', async () => {
-    localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: 'o1', workspaceUUID: 'w1' }))
+    localStorage.setItem('railgrid:portal:tenant', JSON.stringify({ orgUUID: 'o1', workspaceUUID: 'w1' }))
     const first = await mountConnections({ providers: ['infrastructure'] })
     first.el.querySelector<HTMLButtonElement>('.agents-assist button[aria-label="Dismiss this suggestion"]')!.click()
     await settle(first.el, 4)
     expect(first.el.querySelector('.agents-assist')).toBeNull()
 
-    localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: 'o1', workspaceUUID: 'w2' }))
+    localStorage.setItem('railgrid:portal:tenant', JSON.stringify({ orgUUID: 'o1', workspaceUUID: 'w2' }))
     const second = await mountConnections({ providers: ['infrastructure'] })
     expect(second.el.querySelector('.agents-assist')).not.toBeNull()
   })
@@ -232,7 +232,7 @@ describe('composed prompt', () => {
   // "token" and "Secret" do appear — telling the agent there are none.)
   it('asks for no credential input and no URL to copy back', () => {
     expect(prompt).not.toContain('tokenSecretRef')
-    expect(prompt).not.toContain('faros-agents-conn-')
+    expect(prompt).not.toContain('railgrid-agents-conn-')
     expect(prompt).not.toContain('status.url')
     expect(prompt).toContain('internal-only')
   })
@@ -242,14 +242,14 @@ describe('composed prompt', () => {
     expect(prompt).toContain('web_search')
   })
 
-  // Left to pick its own smoke-test query, an agent asks "what is Faros AI and
-  // what does it do" and the open web answers with faros.ai — a different
+  // Left to pick its own smoke-test query, an agent asks "what is Railgrid AI and
+  // what does it do" and the open web answers with railgrid.ai — a different
   // company that outranks us on the bare name. Pinning the domain keeps the
   // proof-of-life search pointed at us.
   it('pins the smoke-test query to our own domain', () => {
-    expect(SMOKE_QUERY).toBe('faros.sh')
-    expect(prompt).toContain('exactly this query: `faros.sh`')
-    expect(prompt).not.toMatch(/Faros AI/i)
+    expect(SMOKE_QUERY).toBe('railgrid.ai')
+    expect(prompt).toContain('exactly this query: `railgrid.ai`')
+    expect(prompt).not.toMatch(/Railgrid AI/i)
   })
 })
 

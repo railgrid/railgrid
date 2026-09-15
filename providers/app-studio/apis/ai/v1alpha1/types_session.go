@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,12 +15,12 @@ import (
 )
 
 // SessionFinalizer guards the store purge on Session deletion.
-const SessionFinalizer = "ai.faros.sh/purge"
+const SessionFinalizer = "ai.railgrid.ai/purge"
 
 // +genclient
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,categories=faros
+// +kubebuilder:resource:scope=Cluster,categories=railgrid
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Project",type=string,JSONPath=".spec.projectRef"
 // +kubebuilder:printcolumn:name="Title",type=string,JSONPath=".status.title"

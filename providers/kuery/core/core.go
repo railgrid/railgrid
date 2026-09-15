@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -9,7 +9,7 @@
 // Package core wires the embedded kuery engine: SQL store, query engine,
 // multi-cluster sync controller, and the stale-cluster garbage collector.
 // The engagement controller feeds clusters in; the query API and MCP tools
-// read out. See docs/kuery-provider-architecture.md (faros repo).
+// read out. See docs/kuery-provider-architecture.md (railgrid repo).
 package core
 
 import (
@@ -20,10 +20,10 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/faroshq/kuery/pkg/engine"
-	"github.com/faroshq/kuery/pkg/gc"
-	"github.com/faroshq/kuery/pkg/store"
-	kuerysync "github.com/faroshq/kuery/pkg/sync"
+	"github.com/railgrid/kuery/pkg/engine"
+	"github.com/railgrid/kuery/pkg/gc"
+	"github.com/railgrid/kuery/pkg/store"
+	kuerysync "github.com/railgrid/kuery/pkg/sync"
 )
 
 // Config selects the store backend and the resources excluded from sync.

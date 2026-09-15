@@ -13,7 +13,7 @@ trap 'rm -rf "$state_dir" "$fake_bin"' EXIT
 cat >"$fake_bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-state_dir="${FAROS_DNS_TEST_STATE:?}"
+state_dir="${RAILGRID_DNS_TEST_STATE:?}"
 case " $* " in
   *" get configmap coredns "*)
     [[ -f "$state_dir/corefile" ]] || exit 1
@@ -41,12 +41,12 @@ case " $* " in
 esac
 EOF
 chmod +x "$fake_bin/kubectl"
-export FAROS_DNS_TEST_STATE="$state_dir"
+export RAILGRID_DNS_TEST_STATE="$state_dir"
 export PATH="$fake_bin:$PATH"
 
 printf '%s\n' '.:53 {' 'errors' 'forward . /etc/resolv.conf' '}' >"$state_dir/corefile"
 "$script_dir/configure-tilt-preview-dns.sh" fake-context apps.127.0.0.1.sslip.io 10.96.2.2 console.127.0.0.1.sslip.io 172.18.0.1
-grep -F '# faros-preview-dns' "$state_dir/corefile" >/dev/null
+grep -F '# railgrid-preview-dns' "$state_dir/corefile" >/dev/null
 grep -F '10.96.2.2' "$state_dir/corefile" >/dev/null
 grep -F 'console\.127\.0\.0\.1\.sslip\.io' "$state_dir/corefile" >/dev/null
 grep -F '172.18.0.1' "$state_dir/corefile" >/dev/null
@@ -55,11 +55,11 @@ grep -F '172.18.0.1' "$state_dir/corefile" >/dev/null
 # field. The second helper must retain the first helper's independently managed
 # block, and its cleanup must leave the preview route intact.
 "$script_dir/configure-tilt-kcp-dns.sh" fake-context 10.96.2.2
-grep -F '# faros-preview-dns' "$state_dir/corefile" >/dev/null
-grep -F '# faros-kcp-dns' "$state_dir/corefile" >/dev/null
+grep -F '# railgrid-preview-dns' "$state_dir/corefile" >/dev/null
+grep -F '# railgrid-kcp-dns' "$state_dir/corefile" >/dev/null
 "$script_dir/configure-tilt-kcp-dns.sh" --cleanup fake-context 10.96.2.2
-grep -F '# faros-preview-dns' "$state_dir/corefile" >/dev/null
-if grep -F '# faros-kcp-dns' "$state_dir/corefile" >/dev/null; then
+grep -F '# railgrid-preview-dns' "$state_dir/corefile" >/dev/null
+if grep -F '# railgrid-kcp-dns' "$state_dir/corefile" >/dev/null; then
   echo 'managed kcp CoreDNS block survived cleanup' >&2
   exit 1
 fi
@@ -70,7 +70,7 @@ second_event_count="$(wc -l <"$state_dir/events")"
 [[ "$first_event_count" == "$second_event_count" ]]
 
 "$script_dir/configure-tilt-preview-dns.sh" --cleanup fake-context apps.127.0.0.1.sslip.io 10.96.2.2
-if grep -F '# faros-preview-dns' "$state_dir/corefile" >/dev/null; then
+if grep -F '# railgrid-preview-dns' "$state_dir/corefile" >/dev/null; then
   echo 'managed CoreDNS block survived cleanup' >&2
   exit 1
 fi

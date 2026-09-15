@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
 
-	farosclient "github.com/faroshq/faros/pkg/client"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 // wsSshMsg mirrors the wsMsg type used by pkg/util/ssh.
@@ -57,10 +57,10 @@ that is connected to the hub.
 
 Examples:
   # Interactive session
-  faros ssh my-server
+  railgrid ssh my-server
 
   # Run a single command (non-interactive)
-  faros ssh my-server -- echo hello
+  railgrid ssh my-server -- echo hello
 `,
 		Args:              cobra.MinimumNArgs(1),
 		ValidArgsFunction: completeServerEdgeNames,
@@ -90,33 +90,33 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	}
 
 	// Fetch the Edge resource to get the proxy URL from status. The Edge type
-	// now lives in the edges-connectivity provider (edges.faros.sh), so we
+	// now lives in the edges-connectivity provider (edges.railgrid.ai), so we
 	// read it via the dynamic client and pull status.URL out of the unstructured.
-	client, err := farosclient.NewForConfig(config)
+	client, err := railgridclient.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("creating faros client: %w", err)
+		return fmt.Errorf("creating railgrid client: %w", err)
 	}
 
 	edge, gvr, err := getEdgeByName(ctx, client.Dynamic(), name)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
-			return fmt.Errorf("edge %q not found in this workspace (faros edge list)", name)
+			return fmt.Errorf("edge %q not found in this workspace (railgrid edge list)", name)
 		}
 		return fmt.Errorf("fetching edge %q: %w", name, err)
 	}
 	switch gvr {
-	case farosclient.LinuxServerGVR:
-	case farosclient.KubernetesClusterGVR:
-		return fmt.Errorf("edge %q is a Kubernetes cluster, not a Linux server; use: faros connect %s", name, name)
+	case railgridclient.LinuxServerGVR:
+	case railgridclient.KubernetesClusterGVR:
+		return fmt.Errorf("edge %q is a Kubernetes cluster, not a Linux server; use: railgrid connect %s", name, name)
 	default:
-		return fmt.Errorf("edge %q is a %s edge; SSH is only available for Linux server edges", name, farosclient.EdgeTypeForGVR(gvr))
+		return fmt.Errorf("edge %q is a %s edge; SSH is only available for Linux server edges", name, railgridclient.EdgeTypeForGVR(gvr))
 	}
 
 	edgeURL, _, _ := unstructured.NestedString(edge.Object, "status", "URL")
 	if edgeURL == "" {
 		connected, _, _ := unstructured.NestedBool(edge.Object, "status", "connected")
 		if !connected {
-			return fmt.Errorf("edge %q is not connected; start the agent on it ('faros edge join-command %s' prints how)", name, name)
+			return fmt.Errorf("edge %q is not connected; start the agent on it ('railgrid edge join-command %s' prints how)", name, name)
 		}
 		return fmt.Errorf("edge %q has no proxy URL in status yet; retry shortly", name)
 	}
@@ -162,7 +162,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 // Edge.Status.URL for server-type edges is the edges-provider proxy path
 // (externalized against the current kubeconfig host by the caller):
 //
-//	https://<hub>/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/linuxservers/{name}/ssh
+//	https://<hub>/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/linuxservers/{name}/ssh
 //
 // This function simply converts the scheme to WebSocket (https→wss, http→ws)
 // and optionally appends the "cmd" query parameter for non-interactive SSH exec.
@@ -198,7 +198,7 @@ func buildSSHWebSocketURL(_ *rest.Config, edgeURL, remoteCmd string) (string, er
 // command itself was already conveyed to the hub via the "cmd" query
 // parameter in the WebSocket URL. What is written here is the command's
 // stdin: when the local stdin is a pipe or file its bytes are forwarded as
-// "cmd" messages followed by "eof" (so `cat f | faros ssh x -- "cat > f"`
+// "cmd" messages followed by "eof" (so `cat f | railgrid ssh x -- "cat > f"`
 // copies the file); when it is a terminal an "eof" goes out at once so
 // commands that read stdin do not hang waiting for the keyboard.
 func runSSHCommandStream(ctx context.Context, conn *websocket.Conn) error {
@@ -249,7 +249,7 @@ func forwardSSHStdin(conn *websocket.Conn, r io.Reader, isTerminal bool) {
 func runSSHInteractive(ctx context.Context, conn *websocket.Conn) error {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return fmt.Errorf("stdin is not a terminal; use 'faros ssh <name> -- <command>' for non-interactive use")
+		return fmt.Errorf("stdin is not a terminal; use 'railgrid ssh <name> -- <command>' for non-interactive use")
 	}
 
 	oldState, err := term.MakeRaw(fd)
@@ -318,7 +318,7 @@ func sendSSHResize(conn *websocket.Conn, cols, rows int) {
 // rest client — which means the kubeconfig's credentials have to be applied by
 // hand. Reading config.BearerToken is not enough: that field is empty for every
 // kubeconfig that authenticates through an exec credential plugin (the common
-// case for `faros login`), a token file, basic auth, or a client certificate,
+// case for `railgrid login`), a token file, basic auth, or a client certificate,
 // and the dial then goes out unauthenticated and the hub answers 401 — which
 // gorilla surfaces only as "websocket: bad handshake".
 //

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,12 +33,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic/fake"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 var (
-	publishingTestTargetGVR = schema.GroupVersionResource{Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "instances"}
+	publishingTestTargetGVR = schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances"}
 	clusterRoleGVR          = clusterRoleResource.GVR
 	clusterRoleBindingGVR   = clusterRoleBindingResource.GVR
 )
@@ -122,9 +122,9 @@ func rawJSONForPublishing(value any) runtime.RawExtension {
 }
 
 func setPublishingIdentity(r *http.Request) {
-	r.Header.Set("X-Faros-Tenant", "cluster-a")
-	r.Header.Set("X-Faros-Cluster", "cluster-a")
-	r.Header.Set("X-Faros-User", "alice")
+	r.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	r.Header.Set("X-Railgrid-Cluster", "cluster-a")
+	r.Header.Set("X-Railgrid-User", "alice")
 	r.Header.Set("Authorization", "Bearer test-token")
 }
 
@@ -327,7 +327,7 @@ func TestGrantLifecycleWritesRBACOnly(t *testing.T) {
 		publishingTestProject("demo", "project-uid", "private"),
 		publishingTestTarget("demo-prod", "runtime-uid-1", "private", "https://demo-prod-abc.apps.test"),
 	)
-	router := publishingTestServer(t, dyn, publishingMember{User: "bob", RBACIdentity: "faros:bob@example.com", Role: "member"})
+	router := publishingTestServer(t, dyn, publishingMember{User: "bob", RBACIdentity: "railgrid:bob@example.com", Role: "member"})
 
 	// Email identities are rejected.
 	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"bob@example.com"}`)
@@ -385,8 +385,8 @@ func TestGrantLifecycleWritesRBACOnly(t *testing.T) {
 	subject, _ := subjects[0].(map[string]any)
 	// The subject must be the kcp RBAC identity — the username kcp actually
 	// evaluates — never the User CR name (no kcp binding references it).
-	if subject["kind"] != "User" || subject["name"] != "faros:bob@example.com" {
-		t.Fatalf("binding subject = %#v, want User faros:bob@example.com", subject)
+	if subject["kind"] != "User" || subject["name"] != "railgrid:bob@example.com" {
+		t.Fatalf("binding subject = %#v, want User railgrid:bob@example.com", subject)
 	}
 
 	// Idempotent re-grant.
@@ -420,7 +420,7 @@ func TestGrantInviteByEmailProvisionsThroughHubAndWritesRBAC(t *testing.T) {
 		},
 		publishingMemberInviter: func(_ context.Context, _ identity, email string) (publishingMember, error) {
 			invitedEmail = email
-			return publishingMember{User: "user-carol", RBACIdentity: "faros:carol@example.com"}, nil
+			return publishingMember{User: "user-carol", RBACIdentity: "railgrid:carol@example.com"}, nil
 		},
 	}
 	router := mux.NewRouter()
@@ -458,7 +458,7 @@ func TestGrantCreationRequiresPrivateAccess(t *testing.T) {
 		publishingTestProject("demo", "project-uid", "public"),
 		publishingTestTarget("demo-prod", "runtime-uid-1", "public", "https://demo-prod-abc.apps.test"),
 	)
-	router := publishingTestServer(t, dyn, publishingMember{User: "bob", RBACIdentity: "faros:bob@example.com"})
+	router := publishingTestServer(t, dyn, publishingMember{User: "bob", RBACIdentity: "railgrid:bob@example.com"})
 	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"bob"}`)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "private access") {
 		t.Fatalf("public-mode grant status = %d: %s", rec.Code, rec.Body.String())
@@ -639,7 +639,7 @@ func publishingBindingSubject(t *testing.T, dyn *fake.FakeDynamicClient, instanc
 // identity the hub reports.
 func TestInviteByEmailPostsOrgMembershipScopedToWorkspace(t *testing.T) {
 	hub := newPublishingHubStub(t, http.StatusCreated,
-		`{"user":"user-carol","rbacIdentity":"faros:carol@example.com","email":"carol@example.com","role":"member","orgUUID":"org-a"}`,
+		`{"user":"user-carol","rbacIdentity":"railgrid:carol@example.com","email":"carol@example.com","role":"member","orgUUID":"org-a"}`,
 		nil, nil)
 	dyn := publishingInviteDynamic()
 	router := publishingServerAgainstHub(t, dyn, hub.URL)
@@ -652,11 +652,11 @@ func TestInviteByEmailPostsOrgMembershipScopedToWorkspace(t *testing.T) {
 		t.Fatalf("hub call = %s %s, want POST /api/orgs/org-a/memberships", hub.inviteMethod, hub.invitePath)
 	}
 	for header, want := range map[string]string{
-		"Authorization":     "Bearer test-token",
-		"X-Faros-Org":       "org-a",
-		"X-Faros-Workspace": "ws-1",
-		"X-Faros-User":      "alice",
-		"Content-Type":      "application/json",
+		"Authorization":        "Bearer test-token",
+		"X-Railgrid-Org":       "org-a",
+		"X-Railgrid-Workspace": "ws-1",
+		"X-Railgrid-User":      "alice",
+		"Content-Type":         "application/json",
 	} {
 		if got := hub.inviteHeader.Get(header); got != want {
 			t.Errorf("invite header %s = %q, want %q", header, got, want)
@@ -669,7 +669,7 @@ func TestInviteByEmailPostsOrgMembershipScopedToWorkspace(t *testing.T) {
 	if body["user"] != "carol@example.com" || body["role"] != "member" || body["invite"] != true || len(body) != 3 {
 		t.Fatalf("invite body = %v, want user/role=member/invite=true", body)
 	}
-	if subject := publishingBindingSubject(t, dyn, "demo-prod", "user-carol"); subject != "faros:carol@example.com" {
+	if subject := publishingBindingSubject(t, dyn, "demo-prod", "user-carol"); subject != "railgrid:carol@example.com" {
 		t.Fatalf("grant bound %q, want the hub-reported RBAC identity", subject)
 	}
 }
@@ -701,7 +701,7 @@ func TestInviteForbiddenByHubAnswersForbidden(t *testing.T) {
 func TestInviteConflictProceedsWithExistingMember(t *testing.T) {
 	hub := newPublishingHubStub(t, http.StatusConflict,
 		`{"kind":"Status","status":"Failure","reason":"AlreadyExists","code":409,"message":"user carol@example.com already exists"}`,
-		[]publishingMember{{User: "user-carol", RBACIdentity: "faros:carol@example.com", Email: "Carol@Example.com", Role: "member"}},
+		[]publishingMember{{User: "user-carol", RBACIdentity: "railgrid:carol@example.com", Email: "Carol@Example.com", Role: "member"}},
 		nil)
 	dyn := publishingInviteDynamic()
 	router := publishingServerAgainstHub(t, dyn, hub.URL)
@@ -710,7 +710,7 @@ func TestInviteConflictProceedsWithExistingMember(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("invite status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if subject := publishingBindingSubject(t, dyn, "demo-prod", "user-carol"); subject != "faros:carol@example.com" {
+	if subject := publishingBindingSubject(t, dyn, "demo-prod", "user-carol"); subject != "railgrid:carol@example.com" {
 		t.Fatalf("grant bound %q, want the roster's RBAC identity", subject)
 	}
 }
@@ -719,7 +719,7 @@ func TestInviteConflictProceedsWithExistingMember(t *testing.T) {
 func TestInviteConflictWithoutRosterMatchAnswersConflict(t *testing.T) {
 	hub := newPublishingHubStub(t, http.StatusConflict,
 		`{"kind":"Status","status":"Failure","reason":"AlreadyExists","code":409,"message":"user carol@example.com already exists"}`,
-		[]publishingMember{{User: "bob", RBACIdentity: "faros:bob@example.com", Email: "bob@example.com"}}, nil)
+		[]publishingMember{{User: "bob", RBACIdentity: "railgrid:bob@example.com", Email: "bob@example.com"}}, nil)
 	dyn := publishingInviteDynamic()
 	router := publishingServerAgainstHub(t, dyn, hub.URL)
 
@@ -749,7 +749,7 @@ func TestInviteRejectedCredentialAnswersBadGateway(t *testing.T) {
 // must keep it (it used to drop it, so every such grant failed with 502).
 func TestGrantExistingMemberKeepsHubRBACIdentity(t *testing.T) {
 	hub := newPublishingHubStub(t, http.StatusInternalServerError, "",
-		[]publishingMember{{User: "bob", RBACIdentity: "faros:bob@example.com", Email: "bob@example.com", Role: "member"}},
+		[]publishingMember{{User: "bob", RBACIdentity: "railgrid:bob@example.com", Email: "bob@example.com", Role: "member"}},
 		[]publishingMember{{User: "bob", Role: "admin"}})
 	dyn := publishingInviteDynamic()
 	router := publishingServerAgainstHub(t, dyn, hub.URL)
@@ -758,7 +758,7 @@ func TestGrantExistingMemberKeepsHubRBACIdentity(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("grant status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if subject := publishingBindingSubject(t, dyn, "demo-prod", "bob"); subject != "faros:bob@example.com" {
+	if subject := publishingBindingSubject(t, dyn, "demo-prod", "bob"); subject != "railgrid:bob@example.com" {
 		t.Fatalf("grant bound %q, want the org roster's RBAC identity", subject)
 	}
 	if hub.inviteMethod != "" {

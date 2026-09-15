@@ -2,10 +2,10 @@
 layout: default
 title: Install — Embedded kcp
 nav_order: 7
-description: "Install faros hub with embedded kcp behind the same Gateway API setup, with optional Cloudflare DNS"
+description: "Install railgrid hub with embedded kcp behind the same Gateway API setup, with optional Cloudflare DNS"
 ---
 
-# Install: faros hub with embedded kcp
+# Install: railgrid hub with embedded kcp
 {: .no_toc }
 
 The single-binary installation: the hub chart runs kcp (with its embedded
@@ -25,7 +25,7 @@ cert-manager / etcd / kcp-operator machinery.
 ## How this guide stays correct
 
 Like the multi-shard guide, each step is a script in
-[`hack/install/`](https://github.com/faroshq/faros/tree/main/hack/install)
+[`hack/install/`](https://github.com/railgrid/railgrid/tree/main/hack/install)
 and `make e2e-install-embedded` runs those scripts verbatim in CI. Change the
 scripts and this page together.
 
@@ -43,12 +43,12 @@ scripts and this page together.
 ## Prerequisites
 
 Same as the multi-shard guide: kind, kubectl, Helm v3+, Docker, and a repo
-checkout for `deploy/charts/faros-hub`.
+checkout for `deploy/charts/railgrid-hub`.
 
 ## Step 1 — create the cluster
 
 ```bash
-hack/install/01-kind-cluster.sh          # kind create cluster --name faros
+hack/install/01-kind-cluster.sh          # kind create cluster --name railgrid
 ```
 
 ## Step 2 — Envoy Gateway (optional but recommended)
@@ -61,29 +61,29 @@ production-shaped SNI routing and the Cloudflare DNS option.
 hack/install/03-envoy-gateway.sh
 ```
 
-## Step 3 — faros hub (embedded kcp)
+## Step 3 — railgrid hub (embedded kcp)
 
 ```bash
-hack/install/08-faros-hub-embedded.sh
+hack/install/08-railgrid-hub-embedded.sh
 ```
 
 which is, in essence:
 
 ```bash
-kubectl create namespace faros-system
+kubectl create namespace railgrid-system
 
-helm upgrade --install faros-hub deploy/charts/faros-hub \
-  --namespace faros-system \
+helm upgrade --install railgrid-hub deploy/charts/railgrid-hub \
+  --namespace railgrid-system \
   --set hub.hubExternalURL=https://localhost:9443 \
   --set hub.devMode=true \
-  --set "hub.staticAuthTokens={$(cat .faros-install/hub-token)}" \
-  --set 'hub.tls.selfSigned.dnsNames={faros.kcp.localhost}' \
+  --set "hub.staticAuthTokens={$(cat .railgrid-install/hub-token)}" \
+  --set 'hub.tls.selfSigned.dnsNames={railgrid.kcp.localhost}' \
   --wait
 ```
 
 The static token is not a fixed value: the first `hack/install` script you
-run generates a random one, saves it to `.faros-install/hub-token` and prints
-it; every later script reuses it. Export `FAROS_STATIC_TOKEN` before step 1 to
+run generates a random one, saves it to `.railgrid-install/hub-token` and prints
+it; every later script reuses it. Export `RAILGRID_STATIC_TOKEN` before step 1 to
 bring your own.
 
 No `kcp.*` overrides: embedded kcp is the chart default. The pod runs two
@@ -92,7 +92,7 @@ serving, so first startup takes 30–60s. kcp state persists on the release's
 PVC.
 
 If the gateway from step 2 is present, the script also attaches the hub to it
-with a `TLSRoute` (SNI `faros.kcp.localhost` → `faros-hub:9443`) — the hub
+with a `TLSRoute` (SNI `railgrid.kcp.localhost` → `railgrid-hub:9443`) — the hub
 still terminates its own TLS.
 
 ### Verify
@@ -101,11 +101,11 @@ still terminates its own TLS.
 hack/install/port-forward.sh start
 
 curl -k https://localhost:9443/healthz            # → ok
-curl -k --resolve faros.kcp.localhost:8443:127.0.0.1 \
-  https://faros.kcp.localhost:8443/healthz              # hub via the gateway
+curl -k --resolve railgrid.kcp.localhost:8443:127.0.0.1 \
+  https://railgrid.kcp.localhost:8443/healthz              # hub via the gateway
 
-faros login --hub-url https://localhost:9443 \
-  --token "$(cat .faros-install/hub-token)" --insecure-skip-tls-verify
+railgrid login --hub-url https://localhost:9443 \
+  --token "$(cat .railgrid-install/hub-token)" --insecure-skip-tls-verify
 kubectl get organizations
 ```
 
@@ -148,7 +148,7 @@ hack/install/teardown.sh
 
 `make e2e-install-embedded` runs scripts `01`, `03`, `08` plus the
 port-forwards, then asserts the hub is healthy directly and through the
-gateway SNI route, `faros login` works with the static token, and organization
+gateway SNI route, `railgrid login` works with the static token, and organization
 and workspace CRUD function end-to-end.
 
 Moving from embedded to multi-shard later: the kcp data does not migrate

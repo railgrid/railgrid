@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,14 +37,14 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	sdkinstall "github.com/faroshq/provider-sdk/install"
+	sdkinstall "github.com/railgrid/provider-sdk/install"
 
-	"github.com/faroshq/provider-infrastructure/install"
+	"github.com/railgrid/provider-infrastructure/install"
 )
 
 // apiExportName is the infrastructure provider's APIExport (manifest.yaml
 // spec.apiExport.name).
-const apiExportName = "infrastructure.providers.faros.sh"
+const apiExportName = "infrastructure.providers.railgrid.ai"
 
 // runInitCmd drives the bootstrap chain. Reads admin credentials from
 // INFRASTRUCTURE_ADMIN_KUBECONFIG (preferred) or the standard
@@ -138,10 +138,10 @@ func runInitCmd(ctx context.Context) error {
 	}
 
 	// CatalogEntry self-registration: apply the provider's CatalogEntry into its
-	// own workspace (the Provider controller bound providers.faros.sh
+	// own workspace (the Provider controller bound providers.railgrid.ai
 	// here). adminConfig.Host already targets the provider workspace. Empty
-	// FAROS_CATALOGENTRY_FILE → skip.
-	if f := os.Getenv("FAROS_CATALOGENTRY_FILE"); f != "" {
+	// RAILGRID_CATALOGENTRY_FILE → skip.
+	if f := os.Getenv("RAILGRID_CATALOGENTRY_FILE"); f != "" {
 		log.Printf("init: self-registering CatalogEntry from %s", f)
 		if err := sdkinstall.ApplyCatalogEntry(ctx, dynCl, f); err != nil {
 			return fmt.Errorf("apply CatalogEntry: %w", err)

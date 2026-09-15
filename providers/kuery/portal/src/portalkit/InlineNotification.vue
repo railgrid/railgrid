@@ -9,7 +9,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Check, Info, TriangleAlert, X } from 'lucide-vue-next'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 export type InlineNotificationTone = 'info' | 'success' | 'warning' | 'error'
 export type InlineNotificationAnnouncement = 'auto' | 'polite' | 'assertive' | 'off'
@@ -43,7 +43,7 @@ const emit = defineEmits<{
   dismiss: []
 }>()
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 const assertive = () => props.tone === 'error'
 const liveRole = () => {

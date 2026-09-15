@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import (
 	"time"
 )
 
-const testMCPPath = "/some-cluster/apis/faros.sh/v1alpha1/mcpservers/default/mcp"
+const testMCPPath = "/some-cluster/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp"
 
 // allowAll is the verifier the federation-focused tests use so they exercise
 // the aggregate itself rather than bearer verification.
@@ -284,9 +284,9 @@ func TestParseMCPServerPath(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"/",
-		"/cluster/apis/faros.sh/v1alpha1/mcpservers",                // too short
+		"/cluster/apis/railgrid.ai/v1alpha1/mcpservers",             // too short
 		"/cluster/apis/wrong.group/v1alpha1/mcpservers/default/mcp", // wrong group
-		"/cluster/apis/faros.sh/v1alpha1/mcpservers/default/x",      // not /mcp
+		"/cluster/apis/railgrid.ai/v1alpha1/mcpservers/default/x",   // not /mcp
 	} {
 		if _, _, ok := parseMCPServerPath(bad); ok {
 			t.Errorf("parseMCPServerPath(%q) = ok, want !ok", bad)
@@ -440,7 +440,7 @@ func TestPublicHostOverLoopbackIsServed(t *testing.T) {
 	srv := httptest.NewServer(h) // listens on 127.0.0.1
 	defer srv.Close()
 
-	for _, host := range []string{"localhost:9443", "console.127.0.0.1.sslip.io:9443", "faros.example.com"} {
+	for _, host := range []string{"localhost:9443", "console.127.0.0.1.sslip.io:9443", "railgrid.example.com"} {
 		req, err := http.NewRequest(http.MethodPost, srv.URL+testMCPPath, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 		if err != nil {
 			t.Fatal(err)

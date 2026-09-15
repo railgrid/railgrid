@@ -8,7 +8,7 @@ import { mountVue, settleVue } from './vue-helper'
 // Portal Docker builds intentionally receive only this portal directory during
 // the frontend stage. Exercise the synced PortalKit copies that the standalone
 // bundle actually ships so the prebuild remains hermetic in that context.
-const tabStyles = readFileSync(resolve(process.cwd(), 'src/portalkit/faros-ui.css'), 'utf8')
+const tabStyles = readFileSync(resolve(process.cwd(), 'src/portalkit/railgrid-ui.css'), 'utf8')
 const tabsComponent = readFileSync(resolve(process.cwd(), 'src/portalkit/Tabs.vue'), 'utf8')
 
 // Import the real entrypoint so this contract covers the light-DOM bundle's
@@ -52,6 +52,6 @@ describe('PortalKit tabs contract', () => {
   })
 
   it('loads the provider stylesheet handoff from the entrypoint', () => {
-    expect(document.getElementById('faros-provider-agents-css')).toBeTruthy()
+    expect(document.getElementById('railgrid-provider-agents-css')).toBeTruthy()
   })
 })

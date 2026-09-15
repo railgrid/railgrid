@@ -1,6 +1,6 @@
-# Faros design knowledge base
+# Railgrid design knowledge base
 
-Violet Circuit is Faros's shared visual constitution: light by default with a
+Violet Circuit is Railgrid's shared visual constitution: light by default with a
 first-class dark theme, sharp, dense, mono-heavy, and lit only where a state is
 alive. This directory is the
 browsable authority. Use the navigation order below to distinguish an existing

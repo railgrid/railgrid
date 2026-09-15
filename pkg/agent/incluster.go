@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -63,7 +63,7 @@ func inClusterNamespace() (string, error) {
 // AgentKubeconfigSecretName returns the name of the Secret used to persist
 // the hub kubeconfig for the given edge when running in-cluster.
 func AgentKubeconfigSecretName(edgeName string) string {
-	return "faros-agent-" + edgeName + "-kubeconfig"
+	return "railgrid-agent-" + edgeName + "-kubeconfig"
 }
 
 // newInClusterKubernetesClient builds a Kubernetes clientset using in-cluster

@@ -2,13 +2,13 @@
 layout: default
 title: MCP Architecture
 nav_order: 9
-description: "How faros aggregates Model Context Protocol (MCP) tools from in-binary edges and out-of-process providers into one endpoint"
+description: "How railgrid aggregates Model Context Protocol (MCP) tools from in-binary edges and out-of-process providers into one endpoint"
 ---
 
 # MCP Architecture
 {: .no_toc }
 
-How faros exposes a single Model Context Protocol (MCP) endpoint that federates
+How railgrid exposes a single Model Context Protocol (MCP) endpoint that federates
 tools from connected **edges** (compiled into the hub) and from **providers**
 that run as separate processes.
 {: .fs-6 .fw-300 }
@@ -28,7 +28,7 @@ There is **one** MCP endpoint a client connects to — the *aggregate MCPServer
 virtual workspace*, served by the hub:
 
 ```
-https://<hub>/services/mcpserver/{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp
+https://<hub>/services/mcpserver/{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp
 ```
 
 That single endpoint is filled, **per request**, from two sources:
@@ -50,17 +50,17 @@ and never the caller's bearer — see
 
 ## The aggregate endpoint
 
-The MCP surface is registered as a faros *built-in provider* and mounted by the
+The MCP surface is registered as a railgrid *built-in provider* and mounted by the
 hub as a virtual workspace.
 
-- **Registration** — [`providers/mcp/manifest.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/manifest.go) calls
+- **Registration** — [`providers/mcp/manifest.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/manifest.go) calls
   `providers.RegisterBuiltin(...)` with
   `VirtualWorkspaceMount = apiurl.PathPrefixMCPServer` (`/services/mcpserver`)
   and `VirtualWorkspaceHandler = mcpvirtual.Build`.
-- **Mounting** — [`pkg/hub/server.go`](https://github.com/faroshq/faros/blob/main/pkg/hub/server.go) loops over `providers.AllBuiltins()`
+- **Mounting** — [`pkg/hub/server.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/server.go) loops over `providers.AllBuiltins()`
   and mounts each builtin's VW handler at its prefix.
-- **Handler** — [`providers/mcp/virtual/builder.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/virtual/builder.go) `Build()` parses
-  `/{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp`, reads the
+- **Handler** — [`providers/mcp/virtual/builder.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/virtual/builder.go) `Build()` parses
+  `/{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp`, reads the
   `MCPServer` CR (for the edge selector + toolset config), then composes an
   aggregate `mcp.Server`.
 
@@ -77,17 +77,17 @@ Edge providers contribute their tools by registering a `ToolFamily` at package
 `init()`:
 
 - The registry is **in-process and `init()`-only** —
-  [`providers/mcp/aggregate/registry.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/aggregate/registry.go) (`RegisterToolFamily`,
+  [`providers/mcp/aggregate/registry.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/aggregate/registry.go) (`RegisterToolFamily`,
   `RegisteredFamilies`). A `ToolFamily` has a `Name`, an `EdgeType`, and a
   `Register(srv, familyCtx)` callback invoked once per request.
-- **Kubernetes edges** — [`providers/kubernetesedges/mcp/family.go`](https://github.com/faroshq/faros/blob/main/providers/kubernetesedges/mcp/family.go)
+- **Kubernetes edges** — [`providers/kubernetesedges/mcp/family.go`](https://github.com/railgrid/railgrid/blob/main/providers/kubernetesedges/mcp/family.go)
   registers `{Name: "kubernetes", EdgeType: "kubernetes"}`. The family is wired
   in via a side-effect import in
-  [`providers/kubernetesedges/manifest.go`](https://github.com/faroshq/faros/blob/main/providers/kubernetesedges/manifest.go).
-- **Server (Linux) edges** — [`providers/serveredges/mcp/family.go`](https://github.com/faroshq/faros/blob/main/providers/serveredges/mcp/family.go)
+  [`providers/kubernetesedges/manifest.go`](https://github.com/railgrid/railgrid/blob/main/providers/kubernetesedges/manifest.go).
+- **Server (Linux) edges** — [`providers/serveredges/mcp/family.go`](https://github.com/railgrid/railgrid/blob/main/providers/serveredges/mcp/family.go)
   registers `{Name: "linux", EdgeType: "server"}`.
 
-At request time, [`providers/mcp/aggregate/aggregatemcp.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/aggregate/aggregatemcp.go) `newServer`
+At request time, [`providers/mcp/aggregate/aggregatemcp.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/aggregate/aggregatemcp.go) `newServer`
 iterates `RegisteredFamilies()` and calls each `Register(...)`, filtering edges
 by `EdgeType` against the `MCPServer`'s selector. An edge tool call is proxied
 to the actual edge over its **agent-proxy / tunnel** connection (tracked in the
@@ -104,11 +104,11 @@ are folded into the same aggregate over HTTP.
 
 **Discovery.** Providers are registered via a `ProviderCatalogEntry` and kept
 in an in-memory registry with a `BackendURL` and a heartbeat
-([`pkg/hub/providers/registry.go`](https://github.com/faroshq/faros/blob/main/pkg/hub/providers/registry.go)). `Provider.Ready()` requires
+([`pkg/hub/providers/registry.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/providers/registry.go)). `Provider.Ready()` requires
 valid endpoints and a fresh heartbeat (TTL ~90s).
 
 **Enumeration.** The hub wires `mcpaggregate.RegistryEnumerator`
-([`pkg/hub/mcpaggregate/enumerator.go`](https://github.com/faroshq/faros/blob/main/pkg/hub/mcpaggregate/enumerator.go)) into the aggregate. It is
+([`pkg/hub/mcpaggregate/enumerator.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/mcpaggregate/enumerator.go)) into the aggregate. It is
 called with the **verified caller** — the Org, Workspace and user (or
 ServiceAccount) the bearer verifier resolved from the cluster in the request
 path, never anything from request headers — and lists
@@ -118,7 +118,7 @@ provider's is reached over its edge route (below). Targets are sorted by name,
 so the aggregate's tool list is stable.
 
 **Federation.** Per request,
-[`providers/mcp/aggregate/provider_proxy.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/aggregate/provider_proxy.go) `registerProviderTools`:
+[`providers/mcp/aggregate/provider_proxy.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/aggregate/provider_proxy.go) `registerProviderTools`:
 
 1. enumerates Ready providers,
 2. `POST`s `tools/list` to each `{BackendURL}/mcp`,
@@ -129,7 +129,7 @@ A provider that fails `tools/list`, or a tool whose schema fails `AddTool`, is
 **logged and skipped** — one bad provider never poisons the aggregate.
 
 The provider's own MCP handler — e.g.
-[`providers/infrastructure/mcpserver/server.go`](https://github.com/faroshq/faros/blob/main/providers/infrastructure/mcpserver/server.go) — is an ordinary
+[`providers/infrastructure/mcpserver/server.go`](https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/mcpserver/server.go) — is an ordinary
 streamable-HTTP MCP server built fresh per request.
 
 ### Org-owned (bring-your-own) providers
@@ -156,7 +156,7 @@ those too, under three rules:
    delegated-token swap the backend proxy uses for
    `/services/providers/{name}`). The request carries a **delegated user
    token** — a ten-minute ServiceAccount token minted in the caller's team
-   workspace for (user, provider), `faros-du-<hash>` — and `X-Faros-User`
+   workspace for (user, provider), `railgrid-du-<hash>` — and `X-Railgrid-User`
    naming the human. The federation client does not even attach the caller's
    bearer to such a request, and the transport refuses to send the delegated
    token anywhere but that provider's edge route. When no delegated token can
@@ -194,13 +194,13 @@ get a delegated token instead — see
 ```go
 // providers/mcp/aggregate/provider_proxy.go
 cli := newProviderMCPClient(cfg.BearerToken, cfg.Cluster)
-//                          └ caller's token   └ tenant cluster ID (→ X-Faros-Tenant + X-Faros-Cluster)
+//                          └ caller's token   └ tenant cluster ID (→ X-Railgrid-Tenant + X-Railgrid-Cluster)
 ```
 
 - `cfg.BearerToken` is the token the client authenticated the **aggregate**
   request with (`builder.ExtractBearerToken(r)`).
 - `cfg.Cluster` is the tenant workspace's kcp logical-cluster ID parsed off
-  the MCPServer URL, forwarded as both `X-Faros-Tenant` and `X-Faros-Cluster`
+  the MCPServer URL, forwarded as both `X-Railgrid-Tenant` and `X-Railgrid-Cluster`
   on every federated call — the same pair the hub backend proxy injects, so a
   provider sees one identity contract whichever way it is reached.
 
@@ -212,14 +212,14 @@ AI client ──Bearer T──▶ hub aggregate VW              (T = the MCPServ
                           ├─ in-binary families ─────▶ edges (agent-proxy / tunnel)
                           └─ federation (platform provider): POST {provider BackendURL}/mcp
                                Authorization: Bearer T
-                               X-Faros-Tenant: {cluster}
-                               X-Faros-Cluster: {cluster}
+                               X-Railgrid-Tenant: {cluster}
+                               X-Railgrid-Cluster: {cluster}
                              (org-owned provider: POST via edges tunnel,
                                Authorization: Bearer <delegated token>, never T)
                                     │
                                     ▼
                         out-of-process provider (own /mcp)
-                          identity = { cluster: X-Faros-Cluster (= X-Faros-Tenant), token: Bearer T }
+                          identity = { cluster: X-Railgrid-Cluster (= X-Railgrid-Tenant), token: Bearer T }
                           tenant client uses T, scoped to {cluster}
                           → acts AS the caller, authorized by the caller's RBAC
 ```
@@ -231,7 +231,7 @@ the URL and requires the reviewed identity to be that MCPServer's own
 ServiceAccount (`system:serviceaccount:default:{name}-mcp`, the account the
 `MCPServer` controller provisions). Other authenticated tenant ServiceAccounts
 must pass a `SubjectAccessReview` in that same workspace for verb `use` on
-`faros.sh/mcpservers`, restricted to the requested server name (cluster-scoped,
+`railgrid.ai/mcpservers`, restricted to the requested server name (cluster-scoped,
 no namespace). The review uses the identity, groups, UID and extras returned by
 TokenReview. Access is denied unless explicitly allowed; review failures fail
 closed before any federation. The original caller bearer is still forwarded to
@@ -241,7 +241,7 @@ New App Studio project identities receive `use` on `mcpservers/default`; existin
 identity roles are not migrated by this change.
 
 A hub user bearer (static token or OIDC,
-as used by `faros mcp` and the e2e suites) is accepted instead when the hub's
+as used by `railgrid mcp` and the e2e suites) is accepted instead when the hub's
 normal identity path resolves it and the user holds a live Membership covering
 the cluster's Organization or Workspace per the `UserMembershipIndex`. Anything
 else is answered with `401` (unrecognised) or `403` (valid, but for another
@@ -264,18 +264,18 @@ Two consequences:
   `MCPServer.status.tokenSecretRef` (the token itself never lands in the CR; the
   portal reads the Secret to render the connect command). A user OIDC token
   would expire and silently break a long-lived MCP connection — see the
-  `MCPServer` controller in [`pkg/hub/controllers/mcpserver/`](https://github.com/faroshq/faros/blob/main/pkg/hub/controllers/mcpserver/).
+  `MCPServer` controller in [`pkg/hub/controllers/mcpserver/`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/controllers/mcpserver/).
 - **Scoped token permissions.** The ServiceAccount is bound to a generated
-  ClusterRole `faros:mcpserver:<name>` in the tenant workspace, never to
+  ClusterRole `railgrid:mcpserver:<name>` in the tenant workspace, never to
   `cluster-admin`. The controller regenerates the role on every reconcile
   (including the 60s tools refresh) from the tenant's `APIBindings`: each
   `status.boundResources[]` group/resource gets `get,list,watch` plus
   `create,update,patch,delete`; `spec.readOnly` drops the write verbs. On top
   of that it grants the RBAC coordinates provider data planes check via
-  SubjectAccessReview as the caller — verb `proxy` on `edges.faros.sh` objects
+  SubjectAccessReview as the caller — verb `proxy` on `edges.railgrid.ai` objects
   (tunnel `k8s`/`ssh`/`mcp` subresources, kept for readOnly servers because
   read-only tools cannot reach an edge without it), `create` on
-  `infrastructure.faros.sh` `<instance>/exec` (dropped for readOnly), and
+  `infrastructure.railgrid.ai` `<instance>/exec` (dropped for readOnly), and
   `create` on `<resource>/<action>` for every action declared in the platform
   provider catalog whose resource is bound (read-only actions survive
   readOnly) — plus read-only `core.kcp.io/logicalclusters` and
@@ -283,8 +283,8 @@ Two consequences:
   RBAC, or APIBinding access, so a leaked token cannot escalate.
 - **No provider-wide identity.** A federated provider must perform its tenant
   work as the forwarded caller token, scoped to the workspace whose cluster ID
-  is in `X-Faros-Cluster` / `X-Faros-Tenant`. The infrastructure provider does this in
-  [`providers/infrastructure/tenant/client.go`](https://github.com/faroshq/faros/blob/main/providers/infrastructure/tenant/client.go): the tenant client is
+  is in `X-Railgrid-Cluster` / `X-Railgrid-Tenant`. The infrastructure provider does this in
+  [`providers/infrastructure/tenant/client.go`](https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/tenant/client.go): the tenant client is
   built per-(tenant, caller) from the request token; the provider's own
   credentials are never used for tenant work.
 - **Federation routes to published endpoints, not backends.** The aggregator
@@ -324,8 +324,8 @@ Use this when your integration runs as its own process/binary.
 2. Register a `ProviderCatalogEntry` and **heartbeat** so the hub marks you
    `Ready` with a reachable `BackendURL`. The aggregate fetches `{BackendURL}/mcp`.
 3. **Honour the forwarded identity.** Read the caller from each request:
-   `X-Faros-Cluster` (the tenant workspace's kcp logical-cluster ID; the
-   hub sends the same value as `X-Faros-Tenant`) and
+   `X-Railgrid-Cluster` (the tenant workspace's kcp logical-cluster ID; the
+   hub sends the same value as `X-Railgrid-Tenant`) and
    `Authorization: Bearer <token>` for the credential (see
    `providers/infrastructure/mcpserver/context.go`).
    Do all tenant work **as that token**, scoped to that workspace — never with a
@@ -341,12 +341,12 @@ each provider separately.
 2. Hub routes to `mcpvirtual.Build` → `aggregatemcp.Handler`.
 3. A fresh `mcp.Server` is built:
    - each registered `ToolFamily.Register` runs (edges, filtered by selector),
-   - `list_targets` + the `faros://about` resource are added,
+   - `list_targets` + the `railgrid://about` resource are added,
    - `registerProviderTools` enumerates Ready providers and federates their
      `/mcp` tools as `<provider>__<tool>`.
 4. The composed server answers `tools/list` / `tools/call`.
 5. Federated `tools/call` is forwarded to the provider's `/mcp` with
-   `X-Faros-Tenant` / `X-Faros-Cluster` (the cluster ID) and — for a platform
+   `X-Railgrid-Tenant` / `X-Railgrid-Cluster` (the cluster ID) and — for a platform
    provider — the caller's bearer, or —
    for an org-owned provider — over the edge tunnel with a delegated token.
 
@@ -379,4 +379,4 @@ each provider separately.
 | Backend proxy (header/token forwarding) | `pkg/hub/providers/proxy.go` |
 | Example out-of-process provider MCP | `providers/infrastructure/mcpserver/` |
 | Caller-scoped tenant client | `providers/infrastructure/tenant/client.go` |
-| Per-MCPServer SA token + scoped role | `pkg/hub/controllers/mcpserver/` (`rbac.go`), `apis/faros/v1alpha1/types_mcpserver.go` (`status.tokenSecretRef`) |
+| Per-MCPServer SA token + scoped role | `pkg/hub/controllers/mcpserver/` (`rbac.go`), `apis/railgrid/v1alpha1/types_mcpserver.go` (`status.tokenSecretRef`) |

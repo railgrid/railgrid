@@ -15,7 +15,7 @@
 //   toast('ok', 'Instance provisioned')
 //   toast('error', 'Build failed', { label: 'View log', run: () => open() })
 
-import { ensureFarosUIStyles } from './styles'
+import { ensureRailgridUIStyles } from './styles'
 
 export type ToastKind = 'ok' | 'error' | 'info'
 
@@ -40,7 +40,7 @@ const X_ICON =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>'
 
 function host(): HTMLElement {
-  ensureFarosUIStyles()
+  ensureRailgridUIStyles()
   let el = document.getElementById(HOST_ID)
   if (!el) {
     el = document.createElement('div')
@@ -56,7 +56,7 @@ function host(): HTMLElement {
 // them render into the document-level toast host. Keep numeric IDs in a
 // shared global sequence so one bundle cannot dismiss another bundle's card
 // or timer after both start at sequence 1.
-const TOAST_SEQUENCE_KEY = Symbol.for('faros.portalkit.toast.sequence')
+const TOAST_SEQUENCE_KEY = Symbol.for('railgrid.portalkit.toast.sequence')
 type ToastGlobal = typeof globalThis & { [key: symbol]: unknown }
 const toastGlobal = globalThis as ToastGlobal
 

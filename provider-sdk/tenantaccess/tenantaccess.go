@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -137,11 +137,11 @@ func EnsureIdentity(ctx context.Context, c client.Client, name string, refs []me
 // given bearer token. The proxy authorizes the caller against their workspace
 // membership and forwards to kcp as that identity, so a provider reaches any
 // workspace the caller belongs to — the same path kubectl and the portals
-// use. insecure relaxes TLS for in-cluster hub certs (the FAROS_HUB_INSECURE
+// use. insecure relaxes TLS for in-cluster hub certs (the RAILGRID_HUB_INSECURE
 // knob).
 func RESTConfig(hubBase, clusterID, token string, insecure bool) (*rest.Config, error) {
 	if hubBase == "" {
-		return nil, fmt.Errorf("hub base URL is empty (FAROS_HUB_URL)")
+		return nil, fmt.Errorf("hub base URL is empty (RAILGRID_HUB_URL)")
 	}
 	if clusterID == "" {
 		return nil, fmt.Errorf("workspace cluster id is empty")
@@ -173,7 +173,7 @@ func NewClient(hubBase, clusterID, token string, insecure bool) (client.Client, 
 
 // NewDynamicClient builds a dynamic client on one workspace cluster via
 // RESTConfig. Provider API handlers that act on the caller's behalf (bearer
-// from the incoming request, cluster from X-Faros-Cluster) use this to read
+// from the incoming request, cluster from X-Railgrid-Cluster) use this to read
 // and write the tenant's resources without a typed scheme.
 func NewDynamicClient(hubBase, clusterID, token string, insecure bool) (dynamic.Interface, error) {
 	cfg, err := RESTConfig(hubBase, clusterID, token, insecure)

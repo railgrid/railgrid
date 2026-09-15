@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,69 +21,69 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
-// Reserved ${faros.*} placeholders a Template author writes in backendConfig to
+// Reserved ${railgrid.*} placeholders a Template author writes in backendConfig to
 // defer a platform-owned value (the exposure Gateway, the sandbox runner images)
 // out of per-tenant data. They are substituted for the configured value before
-// the RGD is authored. The "faros." namespace keeps them from colliding with
+// the RGD is authored. The "railgrid." namespace keeps them from colliding with
 // kro's own ${...} reference syntax (${schema.spec.x}, ${res.metadata.name}).
 const (
-	gatewayNameToken      = "${faros.gatewayName}"
-	gatewayNamespaceToken = "${faros.gatewayNamespace}"
+	gatewayNameToken      = "${railgrid.gatewayName}"
+	gatewayNamespaceToken = "${railgrid.gatewayNamespace}"
 
 	// devImageTokenPrefix is the reserved token family template authors put in
-	// spec.development.components[].devImage — ${faros.devImage.<toolchain>},
-	// resolved from FAROS_DEV_IMAGE_<TOOLCHAIN>. Platform-managed: tenants
+	// spec.development.components[].devImage — ${railgrid.devImage.<toolchain>},
+	// resolved from RAILGRID_DEV_IMAGE_<TOOLCHAIN>. Platform-managed: tenants
 	// never pick dev images (docs/app-studio-template-sandboxes.md §1).
-	devImageTokenPrefix = "${faros.devImage."
+	devImageTokenPrefix = "${railgrid.devImage."
 
 	// devAgentImageToken is the injector image carrying the static
-	// faros-dev-agent binary every dev-mode component runs
-	// (FAROS_DEV_AGENT_IMAGE).
-	devAgentImageToken = "${faros.devAgentImage}"
+	// railgrid-dev-agent binary every dev-mode component runs
+	// (RAILGRID_DEV_AGENT_IMAGE).
+	devAgentImageToken = "${railgrid.devAgentImage}"
 
 	// previewBridgeVerificationJWKSConfigKey is internal backend configuration,
 	// not a template substitution token. The provider passes the platform-owned
 	// current/previous public ES256 keys to dev-agent init containers, which
 	// install them beside the Vite plugin. Private signing keys never enter the
 	// infrastructure provider or tenant pod.
-	previewBridgeVerificationJWKSConfigKey = "faros.previewBridgeVerificationJWKS"
+	previewBridgeVerificationJWKSConfigKey = "railgrid.previewBridgeVerificationJWKS"
 
 	// sandboxRuntimeClassNameConfigKey is internal backend configuration, not
 	// a template substitution token. When the operator sets
-	// FAROS_SANDBOX_RUNTIME_CLASS_NAME (chart value sandbox.runtimeClassName),
+	// RAILGRID_SANDBOX_RUNTIME_CLASS_NAME (chart value sandbox.runtimeClassName),
 	// every synthesized development pod, including the universal coding
 	// sandbox, is scheduled with that RuntimeClass (for example gVisor or
 	// Kata). Empty keeps the cluster default runtime.
-	sandboxRuntimeClassNameConfigKey = "faros.sandboxRuntimeClassName"
+	sandboxRuntimeClassNameConfigKey = "railgrid.sandboxRuntimeClassName"
 
 	// appPublicPortToken is the ":<port>" suffix templates append to
 	// synthesized exposure URLs (status.url). Empty in production — the
 	// Gateway serves on 443 and the URL implies it — and ":10443" style when
 	// the Gateway is only reachable on a forwarded port (local kind).
-	// Resolved from FAROS_APP_PUBLIC_PORT (the bare port number).
-	appPublicPortToken = "${faros.appPublicPort}"
+	// Resolved from RAILGRID_APP_PUBLIC_PORT (the bare port number).
+	appPublicPortToken = "${railgrid.appPublicPort}"
 
 	// Access-gate token family. Publishable templates render the platform
-	// faros-access-proxy as a component of their own graph (the gate) and the
+	// railgrid-access-proxy as a component of their own graph (the gate) and the
 	// shared-Gateway HTTPRoute always points at it. These tokens carry the
 	// platform-owned gate configuration; tenants never choose the gate image
 	// or the hub endpoints.
 	//
 	//   - accessProxyImageToken — the gate container image
-	//     (FAROS_ACCESS_PROXY_IMAGE).
+	//     (RAILGRID_ACCESS_PROXY_IMAGE).
 	//   - hubURLToken — in-cluster hub origin the gate exchanges sign-in codes
-	//     against (FAROS_ACCESS_HUB_URL, falling back to FAROS_HUB_URL).
+	//     against (RAILGRID_ACCESS_HUB_URL, falling back to RAILGRID_HUB_URL).
 	//   - hubPublicURLToken — browser-reachable hub origin for sign-in
-	//     redirects (FAROS_ACCESS_HUB_PUBLIC_URL, falling back to hubURLToken).
+	//     redirects (RAILGRID_ACCESS_HUB_PUBLIC_URL, falling back to hubURLToken).
 	//   - hubInsecureToken — "true"/"false" TLS-verification skip for gate→hub
-	//     calls (FAROS_ACCESS_HUB_INSECURE; local self-signed hubs only).
-	accessProxyImageToken = "${faros.accessProxyImage}"
-	hubURLToken           = "${faros.hubUrl}"
-	hubPublicURLToken     = "${faros.hubPublicUrl}"
-	hubInsecureToken      = "${faros.hubInsecure}"
+	//     calls (RAILGRID_ACCESS_HUB_INSECURE; local self-signed hubs only).
+	accessProxyImageToken = "${railgrid.accessProxyImage}"
+	hubURLToken           = "${railgrid.hubUrl}"
+	hubPublicURLToken     = "${railgrid.hubPublicUrl}"
+	hubInsecureToken      = "${railgrid.hubInsecure}"
 )
 
 const (
@@ -145,7 +145,7 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 
 	// A development block extends the graph with the mechanically synthesized
 	// dev overlay (mode-gated dev workloads, workspace PVCs, control plane)
-	// and injects the farosMode field into the RGD schema. See devoverlay.go.
+	// and injects the railgridMode field into the RGD schema. See devoverlay.go.
 	if tmpl.Spec.Development != nil {
 		resources, status, err = applyDevOverlay(tmpl, simpleSpec, resources, status, tokens)
 		if err != nil {
@@ -182,12 +182,12 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 		"metadata": map[string]any{
 			"name": tmpl.Name,
 			// Trace the RGD back to its Template + version, and mark it
-			// faros-authored so a human (or a future GC) can tell these
+			// railgrid-authored so a human (or a future GC) can tell these
 			// apart from hand-applied RGDs on the runtime cluster.
 			"labels": map[string]any{
-				"faros.sh/template":            tmpl.Name,
-				"faros.sh/template-version":    tmpl.Spec.Version,
-				"app.kubernetes.io/managed-by": "faros-infrastructure",
+				"railgrid.ai/template":         tmpl.Name,
+				"railgrid.ai/template-version": tmpl.Spec.Version,
+				"app.kubernetes.io/managed-by": "railgrid-infrastructure",
 			},
 		},
 		"spec": map[string]any{
@@ -372,9 +372,9 @@ func backendConfig(tmpl *infrav1alpha1.Template, tokens map[string]string) (reso
 	return res, status, nil
 }
 
-// substituteTokens replaces reserved faros ${faros.*} placeholders in a raw
+// substituteTokens replaces reserved railgrid ${railgrid.*} placeholders in a raw
 // backendConfig with the configured platform values, before the JSON is parsed
-// into the RGD. Only the faros namespace is touched; kro's own ${...} references
+// into the RGD. Only the railgrid namespace is touched; kro's own ${...} references
 // pass through untouched for kro to resolve at reconcile time.
 //
 // The replacement is a plain string substitution on the JSON bytes — safe

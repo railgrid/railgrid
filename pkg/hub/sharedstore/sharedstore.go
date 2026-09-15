@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ limitations under the License.
 // Both are minted by whichever replica served the request and redeemed by
 // whichever replica the load balancer picks next, so process-local maps break as
 // soon as the hub runs more than one pod. Entries live as Secrets in
-// root:faros:system:controllers — a hub-internal workspace no tenant, provider,
+// root:railgrid:system:controllers — a hub-internal workspace no tenant, provider,
 // or user identity can reach — which keeps the hub's only hard dependency kcp.
 //
 // Values are opaque to this package. Keys are hashed into the object name, so
@@ -50,7 +50,7 @@ var ErrNotFound = errors.New("sharedstore: entry not found")
 const (
 	// LabelKind marks every Secret this package owns and names the logical
 	// collection, so the sweeper can list one kind without touching the other.
-	LabelKind = "faros.sh/shared-store"
+	LabelKind = "railgrid.ai/shared-store"
 
 	dataKeyValue     = "value"
 	dataKeyExpiresAt = "expiresAt"

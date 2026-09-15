@@ -250,7 +250,7 @@ check source copies and explicit manifests, including the declared canonical-to-
 CSS is imported through Vite's `?inline` path and may be minified in the
 bundle; the authored canonical rules and synced source copies remain
 byte-identical. The current contracts are core PortalKit version 18 (from
-`FAROS_UI_CORE_VERSION` in `provider-sdk/portalkit/styles.ts`) and AgentKit
+`RAILGRID_UI_CORE_VERSION` in `provider-sdk/portalkit/styles.ts`) and AgentKit
 style/runtime version 6 (from `AGENT_UI_VERSION` in
 `provider-sdk/agentkit/styles.ts`). Desktop rails stretch
 to the flex row's cross-axis so content-sized conversation frames retain a

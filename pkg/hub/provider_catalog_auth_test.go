@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,11 +18,11 @@ import (
 
 	"k8s.io/client-go/rest"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/hub/hubaccess"
-	"github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/hub/tenant"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
 func TestProviderCatalogPreservesHumanMiddleware(t *testing.T) {
@@ -65,7 +65,7 @@ func TestProviderCatalogWorkloadAuthentication(t *testing.T) {
 		{name: "no other routes", token: "runtime", org: "org", workspace: "workspace", path: "/api/other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			transport := workloadResolverRoundTripper{token: "runtime", serviceAccount: "faros-wi-test", tenantPath: "root:faros:tenants:org:workspace", forged: tc.forged}
+			transport := workloadResolverRoundTripper{token: "runtime", serviceAccount: "railgrid-wi-test", tenantPath: "root:railgrid:tenants:org:workspace", forged: tc.forged}
 			if tc.delegated {
 				transport.delegatedUser = "alice"
 			}
@@ -94,9 +94,9 @@ func TestProviderCatalogWorkloadAuthentication(t *testing.T) {
 			if tc.token != "" {
 				r.Header.Set("Authorization", "Bearer "+tc.token)
 			}
-			r.Header.Set("X-Faros-Org", tc.org)
-			r.Header.Set("X-Faros-Workspace", tc.workspace)
-			r.Header.Set("X-Faros-Tenant", "root:faros:tenants:spoofed:workspace")
+			r.Header.Set("X-Railgrid-Org", tc.org)
+			r.Header.Set("X-Railgrid-Workspace", tc.workspace)
+			r.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:spoofed:workspace")
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, r)
 			want := http.StatusUnauthorized
@@ -146,7 +146,7 @@ func (f fakeGrantReader) Get(_ context.Context, key hubaccess.GrantKey) (*tenanc
 func fakeServiceAccountJWT() string {
 	enc := base64.RawURLEncoding.EncodeToString
 	return enc([]byte(`{"alg":"RS256"}`)) + "." +
-		enc([]byte(`{"iss":"https://kcp.default.svc","kubernetes.io":{"namespace":"default","serviceaccount":{"name":"faros-du-test"}}}`)) + ".sig"
+		enc([]byte(`{"iss":"https://kcp.default.svc","kubernetes.io":{"namespace":"default","serviceaccount":{"name":"railgrid-du-test"}}}`)) + ".sig"
 }
 
 // TestHubAccessGateEndToEnd drives the gate with the real delegated-token
@@ -236,7 +236,7 @@ func TestHubAccessGateEndToEnd(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			token := fakeServiceAccountJWT()
-			transport := workloadResolverRoundTripper{token: token, serviceAccount: "faros-du-test", tenantPath: "root:faros:tenants:org:workspace", provider: tc.provider, providerOrg: tc.providerOrg}
+			transport := workloadResolverRoundTripper{token: token, serviceAccount: "railgrid-du-test", tenantPath: "root:railgrid:tenants:org:workspace", provider: tc.provider, providerOrg: tc.providerOrg}
 			if tc.delegated {
 				transport.delegatedUser = "alice"
 			}
@@ -262,8 +262,8 @@ func TestHubAccessGateEndToEnd(t *testing.T) {
 			}
 			r := httptest.NewRequest(method, tc.path, nil)
 			r.Header.Set("Authorization", "Bearer "+token)
-			r.Header.Set("X-Faros-Org", org)
-			r.Header.Set("X-Faros-Workspace", ws)
+			r.Header.Set("X-Railgrid-Org", org)
+			r.Header.Set("X-Railgrid-Workspace", ws)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, r)
 

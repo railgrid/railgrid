@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -38,16 +38,16 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 const (
 	// templateLabel matches the infrastructure provider's attribution label.
-	templateLabel = "faros.sh/template"
+	templateLabel = "railgrid.ai/template"
 	// studioLabel attributes a shared instance back to the Studio.
-	studioLabel = "ai.faros.sh/studio"
+	studioLabel = "ai.railgrid.ai/studio"
 	// searchTemplate is the template shared search is provisioned from.
 	searchTemplate = "searxng"
 	// SearchInstanceName is the workspace's shared search backend. Fixed,
@@ -94,11 +94,11 @@ func (r *Reconciler) ensureIdentity(ctx context.Context, c client.Client, st *ai
 		Controller: &controller,
 	}
 	rules := []rbacv1.PolicyRule{{
-		APIGroups: []string{"infrastructure.faros.sh"},
+		APIGroups: []string{"infrastructure.railgrid.ai"},
 		Resources: []string{"*"},
 		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 	}}
-	return tenantaccess.EnsureIdentity(ctx, c, "faros-appstudio-studio-"+st.Name, []metav1.OwnerReference{owner}, rules)
+	return tenantaccess.EnsureIdentity(ctx, c, "railgrid-appstudio-studio-"+st.Name, []metav1.OwnerReference{owner}, rules)
 }
 
 // tenantClient resolves the client used for instance writes. vw is the
@@ -110,7 +110,7 @@ func (r *Reconciler) tenantClient(clusterName, token string, vw client.Client) (
 		return r.TenantClientFor(clusterName, token)
 	}
 	if r.HubBase == "" {
-		log.Printf("WARNING app-studio studio reconciler: FAROS_HUB_URL is empty; falling back to the claimed-VW client, which cannot serve workspaces whose infrastructure provider identity differs from this deployment's pins")
+		log.Printf("WARNING app-studio studio reconciler: RAILGRID_HUB_URL is empty; falling back to the claimed-VW client, which cannot serve workspaces whose infrastructure provider identity differs from this deployment's pins")
 		return vw, nil
 	}
 	return tenantaccess.NewClient(r.HubBase, clusterName, token, r.HubInsecure)

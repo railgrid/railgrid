@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,23 +30,23 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros/pkg/agent/discovery"
+	"github.com/railgrid/railgrid/pkg/agent/discovery"
 )
 
 // svcTargetHeader carries the provider-computed upstream target for the /svc
 // reverse proxy, e.g. "http://127.0.0.1:8123". The provider is the only writer;
 // the agent decides whether it will dial the host (see vetSvcHost).
-const svcTargetHeader = "X-Faros-Svc-Target"
+const svcTargetHeader = "X-Railgrid-Svc-Target"
 
 // svcTLSInsecureHeader is set to "true" by the provider when the Service has
 // spec.tlsInsecureSkipVerify. The agent verifies upstream TLS certificates for
 // every non-loopback target unless this header is present.
-const svcTLSInsecureHeader = "X-Faros-Svc-TLS-Insecure"
+const svcTLSInsecureHeader = "X-Railgrid-Svc-TLS-Insecure"
 
 // svcPolicyHeader is the response header the agent stamps when the host
 // policy had something to say: "warn" when a disallowed target was dialed
 // anyway under --svc-policy=warn, "enforce" on the 403 that refuses it.
-const svcPolicyHeader = "X-Faros-Svc-Policy"
+const svcPolicyHeader = "X-Railgrid-Svc-Policy"
 
 // servicesResponse is the JSON body of GET /api/v1/services.
 type servicesResponse struct {
@@ -64,7 +64,7 @@ func newServicesHandler() http.HandlerFunc {
 }
 
 // newSvcProxyHandler reverse-proxies requests arriving over the tunnel under
-// /svc/ to a service named by the X-Faros-Svc-Target header.
+// /svc/ to a service named by the X-Railgrid-Svc-Target header.
 //
 // The provider resolves a Service CR to a target and sets the header; the agent
 // decides what it is willing to dial, and that decision is the SSRF boundary
@@ -81,11 +81,11 @@ func newServicesHandler() http.HandlerFunc {
 // Hostnames are resolved once and the dial is pinned to the vetted addresses,
 // so DNS rebinding cannot swap the target after the check. --svc-policy picks
 // what a denial does: enforce answers 403 without dialing, warn dials but logs
-// and stamps X-Faros-Svc-Policy: warn, allow-any skips the allow list.
+// and stamps X-Railgrid-Svc-Policy: warn, allow-any skips the allow list.
 //
 // TLS verification is skipped only for loopback targets (host-local
 // self-signed certs are common and the hop never leaves the host) or when the
-// provider sets X-Faros-Svc-TLS-Insecure from Service.spec.tlsInsecureSkipVerify.
+// provider sets X-Railgrid-Svc-TLS-Insecure from Service.spec.tlsInsecureSkipVerify.
 //
 // WebSocket/upgrade requests are handled by hijacking and piping raw bytes
 // (Home Assistant uses /api/websocket).
@@ -176,7 +176,7 @@ func newSvcProxyHandler(cfg svcProxyConfig) http.HandlerFunc {
 	}
 }
 
-// stampSvcPolicy makes X-Faros-Svc-Policy on a proxied response say exactly
+// stampSvcPolicy makes X-Railgrid-Svc-Policy on a proxied response say exactly
 // what this hop decided. The header is the agent's verdict, which the provider
 // turns into EdgeService conditions (a 403 carrying "enforce" is read as "the
 // agent refused spec.host"), so whatever the upstream service put there is

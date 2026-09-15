@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 var actionSegment = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,252}$`)
@@ -42,7 +42,7 @@ func (r *kcpTenantResolver) resolveTenantActionServiceAccount(req *http.Request)
 	if cluster == "" || r.workloadConfig == nil {
 		return "", "", errors.New("ordinary ServiceAccount requires a Provider Action route")
 	}
-	org, workspace := req.Header.Get(headerFarosOrg), req.Header.Get(headerFarosWorkspace)
+	org, workspace := req.Header.Get(headerRailgridOrg), req.Header.Get(headerRailgridWorkspace)
 	if !actionSegment.MatchString(org) || !actionSegment.MatchString(workspace) {
 		return "", "", errors.New("concrete tenant selection required")
 	}

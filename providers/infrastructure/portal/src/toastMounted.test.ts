@@ -67,7 +67,7 @@ function unmountComponent(mounted: MountedApp): void {
 }
 
 function toastRoot(owner: ToastHostRole = 'primary'): HTMLElement | null {
-  return document.querySelector<HTMLElement>(`[data-faros-toast-host="${owner}"]`)
+  return document.querySelector<HTMLElement>(`[data-railgrid-toast-host="${owner}"]`)
 }
 
 function visibleToast(owner: ToastHostRole = 'primary'): HTMLElement | null {
@@ -105,7 +105,7 @@ describe('mounted Vue ToastHost behavior', () => {
     const id = enqueue(scope, { message: 'shell notification', duration: 'persistent' })
     await flush()
 
-    expect(document.querySelectorAll('[data-faros-toast-host]')).toHaveLength(2)
+    expect(document.querySelectorAll('[data-railgrid-toast-host]')).toHaveLength(2)
     expect(toastRoot('primary')?.dataset.active).toBe('true')
     expect(toastRoot('fallback')?.dataset.active).toBe('false')
     expect(toastRoot('primary')?.querySelectorAll('.k-toast')).toHaveLength(1)

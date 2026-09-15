@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,12 +15,12 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=edges.faros.sh
+// +groupName=edges.railgrid.ai
 
 // Package v1alpha1 holds the edges provider's connectable kinds:
 // KubernetesCluster (a managed Kubernetes cluster), LinuxServer (a bare-metal
 // / VM Linux host), and MacOSServer (a macOS host), all reachable through the
 // hub over the agent's reverse tunnel. Each Status embeds the SDK's
 // edgeapi.ConnectionStatus so the SDK tunnel + controllers manage connection
-// state generically. All live in one group (edges.faros.sh) and one APIExport.
+// state generically. All live in one group (edges.railgrid.ai) and one APIExport.
 package v1alpha1

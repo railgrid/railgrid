@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/provider-edges/internal/kcpurl"
+	"github.com/railgrid/provider-edges/internal/kcpurl"
 )
 
 // serviceResource is the URL resource segment for the Service kind. It is
@@ -47,13 +47,13 @@ const serviceResource = "services"
 // decides whether it dials the host: loopback always, cluster DNS in kubernetes
 // mode, any other address only inside the agent's --svc-allow-cidr ranges
 // (link-local never). A refused target comes back as a 403 with
-// X-Faros-Svc-Policy: enforce, which this proxy passes through unchanged.
-const svcTargetHeader = "X-Faros-Svc-Target"
+// X-Railgrid-Svc-Policy: enforce, which this proxy passes through unchanged.
+const svcTargetHeader = "X-Railgrid-Svc-Target"
 
 // svcTLSInsecureHeader mirrors the agent-side constant: set to "true" from
 // spec.tlsInsecureSkipVerify so the agent skips certificate verification for
 // a non-loopback https host (e.g. a self-signed UniFi console).
-const svcTLSInsecureHeader = "X-Faros-Svc-TLS-Insecure"
+const svcTLSInsecureHeader = "X-Railgrid-Svc-TLS-Insecure"
 
 // serviceView is the projection of a Service CR the proxy needs. As
 // with sshEdgeView, every field must be exported and non-object fields tagged
@@ -80,7 +80,7 @@ type serviceView struct {
 	} `json:"spec"`
 }
 
-// Authorization modes, mirroring edges.faros.sh/v1alpha1 ServiceAuthMode. The
+// Authorization modes, mirroring edges.railgrid.ai/v1alpha1 ServiceAuthMode. The
 // SDK keeps its own copy for the same reason serviceView exists at all: this
 // package decodes tenant objects without importing any provider's types.
 const (
@@ -146,7 +146,7 @@ func (v *serviceView) targetHost() string {
 	return "127.0.0.1"
 }
 
-// target is the full X-Faros-Svc-Target value.
+// target is the full X-Railgrid-Svc-Target value.
 func (v *serviceView) target() string {
 	return fmt.Sprintf("%s://%s:%d", v.scheme(), v.targetHost(), v.Spec.Port)
 }
@@ -169,7 +169,7 @@ func (v *serviceView) setSvcHeaders(h http.Header) {
 //
 // Expected (after /edgeproxy is stripped):
 //
-//	/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/{subresource}[/rest...]
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/{subresource}[/rest...]
 func (p *Server) parseServicePath(path string) (cluster, name, subresource, rest string, ok bool) {
 	// [0]clusters [1]cluster [2]apis [3]group [4]version [5]resource [6]name [7]subresource [8...]rest
 	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 9)
@@ -331,7 +331,7 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 			applyServiceAuth(req.Header, mode, token)
 		},
 		// The agent's answer is relayed as-is, including a 403 with
-		// X-Faros-Svc-Policy: enforce when it refuses to dial spec.host.
+		// X-Railgrid-Svc-Policy: enforce when it refuses to dial spec.host.
 		Transport: transport,
 		// Unbuffered, as on the hub's own backend proxy: this path carries
 		// log tails and other streams (a provider backend reached over an

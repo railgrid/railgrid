@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -11,14 +11,14 @@ You may obtain a copy of the License at
 package install
 
 // CachedResource projection. Templates live in the provider workspace
-// (root:faros:providers:infrastructure). For tenants who APIBind to
+// (root:railgrid:providers:infrastructure). For tenants who APIBind to
 // the infrastructure APIExport to be able to `kubectl get templates`
 // in their OWN workspace, kcp needs a CachedResource here pointing at
-// templates.infrastructure.faros.sh. The kcp cache machinery
+// templates.infrastructure.railgrid.ai. The kcp cache machinery
 // then projects every Template into every tenant workspace that has
 // the binding — read-only, no extra controller required on our side.
 //
-// PR A took care of putting templates.infrastructure.faros.sh
+// PR A took care of putting templates.infrastructure.railgrid.ai
 // into APIExport.spec.resources (via install/apiexport.go). This
 // file is the second half: the CachedResource itself.
 //
@@ -39,7 +39,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // cachedResourceGVR is what we Get/Create against. CachedResource is
@@ -57,7 +57,7 @@ const CachedResourceTemplatesName = "publish-templates"
 
 // PlatformCachedResources ensures the CachedResource(s) the platform
 // owns exist in the provider workspace. There's one today:
-// publish-templates, projecting templates.infrastructure.faros.sh
+// publish-templates, projecting templates.infrastructure.railgrid.ai
 // to every APIBound tenant workspace.
 //
 // Idempotent. Errors mean "binary boot didn't complete" — same

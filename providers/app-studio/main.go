@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 //   - /healthz, /readyz, /api/projects/* — the backend API, liveness probe, and
 //     controller-backed readiness probe. Mounted under
 //     /services/providers/app-studio/; the hub backend proxy strips that prefix
-//     and injects X-Faros-Tenant/X-Faros-User plus the caller's bearer token.
+//     and injects X-Railgrid-Tenant/X-Railgrid-User plus the caller's bearer token.
 package main
 
 import (
@@ -43,11 +43,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/faroshq/provider-app-studio/api"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/tenant"
-	"github.com/faroshq/provider-app-studio/workspace"
-	"github.com/faroshq/provider-sdk/hubclient"
+	"github.com/railgrid/provider-app-studio/api"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/tenant"
+	"github.com/railgrid/provider-app-studio/workspace"
+	"github.com/railgrid/provider-sdk/hubclient"
 )
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
@@ -91,8 +91,8 @@ func previewBridgeEnvironmentConfig() (bool, string, string) {
 // the caller). Resolution order matches the other providers.
 func loadProviderConfig() (*rest.Config, error) {
 	candidates := []string{
-		os.Getenv("FAROS_PROVIDER_KUBECONFIG"),
-		"/var/run/secrets/faros/faros-provider-kubeconfig",
+		os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),
+		"/var/run/secrets/railgrid/railgrid-provider-kubeconfig",
 		os.Getenv("KUBECONFIG"),
 	}
 	for _, path := range candidates {
@@ -108,14 +108,14 @@ func loadProviderConfig() (*rest.Config, error) {
 		}
 		return cfg, nil
 	}
-	return nil, fmt.Errorf("no kubeconfig found (set FAROS_PROVIDER_KUBECONFIG)")
+	return nil, fmt.Errorf("no kubeconfig found (set RAILGRID_PROVIDER_KUBECONFIG)")
 }
 
 // Subcommands:
 //
 //	app-studio init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    FAROS_PROVIDER_KUBECONFIG. See init_cmd.go.
+//	    RAILGRID_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	app-studio serve  — runtime (default).
 func main() {
 	os.Exit(runMain(os.Args[1:]))
@@ -162,12 +162,12 @@ func runServe() {
 	defer stop()
 
 	// Tenant access goes through the hub's caller-scoped kcp proxy (the hub
-	// injects X-Faros-Cluster per request). Without a hub URL the project API returns
+	// injects X-Railgrid-Cluster per request). Without a hub URL the project API returns
 	// 501 (useful for UI-only dev), with a loud warning.
-	hubInsecure := os.Getenv("FAROS_HUB_INSECURE") == "true"
+	hubInsecure := os.Getenv("RAILGRID_HUB_INSECURE") == "true"
 	var tenantClient *tenant.Client
-	if hubURL := os.Getenv("FAROS_HUB_URL"); hubURL == "" {
-		log.Printf("WARNING project API disabled (no FAROS_HUB_URL)")
+	if hubURL := os.Getenv("RAILGRID_HUB_URL"); hubURL == "" {
+		log.Printf("WARNING project API disabled (no RAILGRID_HUB_URL)")
 	} else {
 		tenantClient = tenant.NewClient(hubURL, hubInsecure)
 	}
@@ -186,10 +186,10 @@ func runServe() {
 		tenantClient,
 		msgStore,
 		workspaces,
-		os.Getenv("FAROS_HUB_URL"),
+		os.Getenv("RAILGRID_HUB_URL"),
 		// The MCP virtual-workspace and authenticated catalog endpoints live on the
 		// same hub host as the tenant client above, so they must honor the standard
-		// FAROS_HUB_INSECURE knob every provider uses for in-cluster hub TLS (the
+		// RAILGRID_HUB_INSECURE knob every provider uses for in-cluster hub TLS (the
 		// hub serves its external cert, not one valid for the .svc.cluster.local
 		// name). Keep the MCP-specific override too, for callers that want to
 		// scope it narrowly. Provider Action invocation has its own verified
@@ -322,7 +322,7 @@ func runServe() {
 	go hubclient.RunHeartbeat(ctx, hb)
 
 	// Deterministic lifecycle: the Project reconciler converges instances
-	// across every tenant workspace. Opt-in via FAROS_PROVIDER_KUBECONFIG.
+	// across every tenant workspace. Opt-in via RAILGRID_PROVIDER_KUBECONFIG.
 	//
 	// Started in a retry loop because ordering is not guaranteed: the
 	// provider frequently comes up before `init` has created its workspace,
@@ -337,8 +337,8 @@ func runServe() {
 			Owns:        apiServer.OwnsProject,
 			OnCommitted: projectCommitNotifier(apiServer.ProjectCommitted),
 			Store:       msgStore,
-			HubBase:     strings.TrimRight(os.Getenv("FAROS_HUB_URL"), "/"),
-			HubInsecure: os.Getenv("FAROS_HUB_INSECURE") == "true",
+			HubBase:     strings.TrimRight(os.Getenv("RAILGRID_HUB_URL"), "/"),
+			HubInsecure: os.Getenv("RAILGRID_HUB_INSECURE") == "true",
 		}
 		start := func(startCtx context.Context, config *rest.Config, startDeps controllerDeps) error {
 			return startControllerManager(startCtx, config, startDeps, controllerHealth)
@@ -429,7 +429,7 @@ func newHandler(apiServer *api.Server, healthStates ...*controllerHealth) (http.
 func openWorkspaceStore() *workspace.FileStore {
 	root := strings.TrimSpace(os.Getenv("APP_STUDIO_WORKSPACE_ROOT"))
 	if root == "" {
-		root = filepath.Join(os.TempDir(), "faros-app-studio-workspaces")
+		root = filepath.Join(os.TempDir(), "railgrid-app-studio-workspaces")
 	}
 	log.Printf("app studio workspace root: %s", root)
 	return workspace.NewFileStore(root)

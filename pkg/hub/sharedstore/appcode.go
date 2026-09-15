@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,13 +26,13 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros/pkg/browsersession"
-	"github.com/faroshq/faros/pkg/hub/appauth"
+	"github.com/railgrid/railgrid/pkg/browsersession"
+	"github.com/railgrid/railgrid/pkg/hub/appauth"
 )
 
 // AppCodeKind is the shared-store collection holding published-app
 // authorization codes.
-const AppCodeKind = "faros-appcode"
+const AppCodeKind = "railgrid-appcode"
 
 // AppCodeStore adapts Store to appauth.CodeStore, so a code minted on the
 // replica that served the browser's authorize hop can be redeemed on whichever

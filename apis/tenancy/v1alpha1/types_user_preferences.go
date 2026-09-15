@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ import (
 // layout (tile geometry, hidden set, chosen column count) for every
 // workspace the user visits. metadata.name matches the User's
 // metadata.name; one UserPreferences exists per User, and it lives in the
-// same hub-mediated workspace (root:faros:system:tenants) as the User and
+// same hub-mediated workspace (root:railgrid:system:tenants) as the User and
 // UserMembershipIndex CRs.
 //
 // It is deliberately generic — a single per-user object the portal

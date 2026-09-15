@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 )
 
-var execInstanceGroupVersion = schema.GroupVersion{Group: "infrastructure.faros.sh", Version: "v1alpha1"}
+var execInstanceGroupVersion = schema.GroupVersion{Group: "infrastructure.railgrid.ai", Version: "v1alpha1"}
 
 // CallerAuthorizationClientFactory builds an authorization client scoped to
 // the tenant logical cluster and authenticated solely with the forwarded

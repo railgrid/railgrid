@@ -1,4 +1,4 @@
-apiVersion: faros.sh/v1alpha1
+apiVersion: railgrid.ai/v1alpha1
 kind: Edge
 metadata:
   name: test-edge

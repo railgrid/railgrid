@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 const (
@@ -258,7 +258,7 @@ func TestHandlerRejectsMissingToken(t *testing.T) {
 }
 
 func TestHandlerForwardsAuthzDenial(t *testing.T) {
-	denied := apierrors.NewForbidden(schema.GroupResource{Group: "infrastructure.faros.sh", Resource: "sandboxrunners"}, testNamespace, nil)
+	denied := apierrors.NewForbidden(schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "sandboxrunners"}, testNamespace, nil)
 	h := newTestHandler(t, &fakeInstanceGetter{err: denied}, &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("log"))
 	if rec.Code != http.StatusForbidden {
@@ -267,7 +267,7 @@ func TestHandlerForwardsAuthzDenial(t *testing.T) {
 }
 
 func TestHandlerForwardsNotFound(t *testing.T) {
-	missing := apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.faros.sh", Resource: "sandboxrunners"}, testNamespace)
+	missing := apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "sandboxrunners"}, testNamespace)
 	h := newTestHandler(t, &fakeInstanceGetter{err: missing}, &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("log"))
 	if rec.Code != http.StatusNotFound {
@@ -356,8 +356,8 @@ func TestParsePath(t *testing.T) {
 		ok   bool
 	}{
 		{
-			path: PathPrefix + "clusters/root:faros:orgs:acme/sandboxrunners/r1/log",
-			want: request{workspace: "root:faros:orgs:acme", resource: "sandboxrunners", name: "r1", verb: "log"},
+			path: PathPrefix + "clusters/root:railgrid:orgs:acme/sandboxrunners/r1/log",
+			want: request{workspace: "root:railgrid:orgs:acme", resource: "sandboxrunners", name: "r1", verb: "log"},
 			ok:   true,
 		},
 		{

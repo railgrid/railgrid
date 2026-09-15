@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/faros/pkg/runner/harness"
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 func TestNewUsesContractDefaultVersionPin(t *testing.T) {
@@ -296,7 +296,7 @@ func fakeCleanupCodexBinary(t *testing.T, pidFile, logFile string) string {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "codex")
-	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.153.4; exit 0; fi\nFAROS_FAKE_CLEANUP_CHILD=1 FAROS_FAKE_CLEANUP_PID=%q FAROS_FAKE_CLEANUP_LOG=%q exec %q -test.run=TestFakeCleanupAppServerProcess\n", pidFile, logFile, os.Args[0])
+	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.153.4; exit 0; fi\nRAILGRID_FAKE_CLEANUP_CHILD=1 RAILGRID_FAKE_CLEANUP_PID=%q RAILGRID_FAKE_CLEANUP_LOG=%q exec %q -test.run=TestFakeCleanupAppServerProcess\n", pidFile, logFile, os.Args[0])
 	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -304,10 +304,10 @@ func fakeCleanupCodexBinary(t *testing.T, pidFile, logFile string) string {
 }
 
 func TestFakeCleanupAppServerProcess(t *testing.T) {
-	if os.Getenv("FAROS_FAKE_CLEANUP_CHILD") != "1" {
+	if os.Getenv("RAILGRID_FAKE_CLEANUP_CHILD") != "1" {
 		return
 	}
-	logFile := os.Getenv("FAROS_FAKE_CLEANUP_LOG")
+	logFile := os.Getenv("RAILGRID_FAKE_CLEANUP_LOG")
 	log := func(message string) {
 		_ = os.WriteFile(logFile, []byte(message), 0o600)
 	}
@@ -316,7 +316,7 @@ func TestFakeCleanupAppServerProcess(t *testing.T) {
 		log("child start: " + err.Error())
 		os.Exit(2)
 	}
-	if err := os.WriteFile(os.Getenv("FAROS_FAKE_CLEANUP_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+	if err := os.WriteFile(os.Getenv("RAILGRID_FAKE_CLEANUP_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
 		log("pid write: " + err.Error())
 		os.Exit(2)
 	}

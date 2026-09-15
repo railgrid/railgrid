@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 )
 
 // The org/workspace scope is resolved from kcp through the workspace lookup;
@@ -40,7 +40,7 @@ func TestResolveWorkspace(t *testing.T) {
 		{
 			name: "no token on the request",
 			server: &Server{workspaces: staticWorkspaces{
-				"c1": {ClusterID: "c1", Path: "root:faros:tenants:o:w", OrgUUID: "o", WorkspaceUUID: "w"},
+				"c1": {ClusterID: "c1", Path: "root:railgrid:tenants:o:w", OrgUUID: "o", WorkspaceUUID: "w"},
 			}.lookup},
 			id:      identity{clusterID: "c1"},
 			wantErr: errNoWorkspaceLookup,
@@ -48,7 +48,7 @@ func TestResolveWorkspace(t *testing.T) {
 		{
 			name: "resolved",
 			server: &Server{workspaces: staticWorkspaces{
-				"c1": {ClusterID: "c1", Path: "root:faros:tenants:o:w", OrgUUID: "o", WorkspaceUUID: "w"},
+				"c1": {ClusterID: "c1", Path: "root:railgrid:tenants:o:w", OrgUUID: "o", WorkspaceUUID: "w"},
 			}.lookup},
 			id:      identity{clusterID: "c1", token: "t"},
 			wantOrg: "o", wantWS: "w",
@@ -56,7 +56,7 @@ func TestResolveWorkspace(t *testing.T) {
 		{
 			name: "organization workspace",
 			server: &Server{workspaces: staticWorkspaces{
-				"org": {ClusterID: "org", Path: "root:faros:tenants:o", OrgUUID: "o"},
+				"org": {ClusterID: "org", Path: "root:railgrid:tenants:o", OrgUUID: "o"},
 			}.lookup},
 			id:      identity{clusterID: "org", token: "t"},
 			wantOrg: "o",

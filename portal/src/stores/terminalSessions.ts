@@ -21,7 +21,7 @@ export interface PanelState {
   paneSizes: number[]
 }
 
-const STORAGE_KEY = 'faros-terminal-panel'
+const STORAGE_KEY = 'railgrid-terminal-panel'
 
 const defaultPanelState = (): PanelState => ({
   height: 420,

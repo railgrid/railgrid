@@ -1,10 +1,10 @@
 // Kubernetes REST client for the infrastructure provider's portal.
 //
 // Every read and write goes through the hub's kcp proxy at
-// /clusters/<cluster>/apis/infrastructure.faros.sh/v1alpha1/... — the same
+// /clusters/<cluster>/apis/infrastructure.railgrid.ai/v1alpha1/... — the same
 // workspace-scoped, caller-authenticated path kubectl would use. The shell
-// pushes farosContext.tenant (kcp cluster name, used as the /clusters path
-// segment) and farosContext.fetch (the host-owned transport that injects
+// pushes railgridContext.tenant (kcp cluster name, used as the /clusters path
+// segment) and railgridContext.fetch (the host-owned transport that injects
 // Authorization).
 //
 // The tenant-facing API surface is flat: Templates (the catalog) plus ONE
@@ -27,7 +27,7 @@ import {
 import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 import { columnsNeedInstanceData } from './view'
 
-const GROUP = 'infrastructure.faros.sh'
+const GROUP = 'infrastructure.railgrid.ai'
 const VERSION = 'v1alpha1'
 const INSTANCES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'instances' }
 const TEMPLATES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'templates' }
@@ -71,7 +71,7 @@ function assertCurrentContext(expected: RequestContext): void {
 export function setBasePath(_ctxBasePath?: string | null) {
   void _ctxBasePath
 }
-// setHostFetch installs the host-owned transport from farosContext.fetch. The
+// setHostFetch installs the host-owned transport from railgridContext.fetch. The
 // host injects Authorization itself; bearerToken then only fences in-flight
 // requests, and providerFetch falls back to it on older hosts without fetch.
 let hostFetch: ProviderFetch | null = null
@@ -252,7 +252,7 @@ function templateFromObject(obj: KubeObject): Template {
   }
   return {
     name,
-    platformOwned: labels['faros.sh/platform-owned'] === 'true',
+    platformOwned: labels['railgrid.ai/platform-owned'] === 'true',
     displayName: (spec.displayName as string) || name,
     description: (spec.description as string) ?? '',
     category: spec.category as string | undefined,
@@ -269,11 +269,11 @@ function templateFromObject(obj: KubeObject): Template {
 
 // instanceFromObj collapses an Instance CR into the shape the views read. The
 // originating Template comes from spec.template, falling back to the
-// faros.sh/template label. spec.values is an object on the wire; the string
+// railgrid.ai/template label. spec.values is an object on the wire; the string
 // form is tolerated for serialised copies.
 function instanceFromObj(c: RawObject): Instance {
   const labels = c.metadata?.labels ?? {}
-  const tmpl = c.spec?.template || labels['faros.sh/template'] || ''
+  const tmpl = c.spec?.template || labels['railgrid.ai/template'] || ''
   let values: Record<string, unknown> | undefined
   if (typeof c.spec?.values === 'string') {
     try {
@@ -363,7 +363,7 @@ function buildInstanceManifest(name: string, templateName: string, values: Recor
   return {
     apiVersion: GROUP + '/' + VERSION,
     kind: 'Instance',
-    metadata: { name, labels: { 'faros.sh/template': templateName } },
+    metadata: { name, labels: { 'railgrid.ai/template': templateName } },
     spec: { template: templateName, values },
   }
 }

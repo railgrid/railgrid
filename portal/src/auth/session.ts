@@ -11,7 +11,7 @@
 // The redirect itself lives in the shell (App.vue), reached via a window
 // event. We deliberately do NOT import `@/router` or any Pinia store
 // here: this module is pulled into provider micro-frontend bundles via
-// the `@faros-edges` alias, and a static router/store import drags the
+// the `@railgrid-edges` alias, and a static router/store import drags the
 // entire portal SPA into each provider's IIFE. Depending only on
 // `@/auth/token` (pure functions) and the DOM keeps this leaf-level and
 // cycle-free.
@@ -21,7 +21,7 @@ import { loadAuth, isExpired, refreshToken, authSessionRevision, assertAuthSessi
 // Window event the shell listens for to drop a dead session and redirect
 // to /login (see portal/src/App.vue). No-op inside provider
 // micro-frontends, which register no listener.
-export const SESSION_EXPIRED_EVENT = 'faros-session-expired'
+export const SESSION_EXPIRED_EVENT = 'railgrid-session-expired'
 
 // One page load can fan out a dozen authenticated requests (provider
 // list + admin probe + N workspace reads). When the token dies they all
@@ -66,7 +66,7 @@ export async function getBearerToken(): Promise<string | null> {
 }
 
 interface AuthHeaderOptions {
-  // tenant: include X-Faros-Org / X-Faros-Workspace from the sidebar
+  // tenant: include X-Railgrid-Org / X-Railgrid-Workspace from the sidebar
   // selection so workspace-scoped hub endpoints (/api/orgs/.../providers)
   // target the workspace the user is viewing. The hub re-verifies these
   // against the caller's membership, so they can't be spoofed.
@@ -76,8 +76,8 @@ interface AuthHeaderOptions {
 function tenantHeaders(): Record<string, string> {
   const h: Record<string, string> = {}
   const t = readTenant()
-  if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
-  if (t.workspaceUUID) h['X-Faros-Workspace'] = t.workspaceUUID
+  if (t.orgUUID) h['X-Railgrid-Org'] = t.orgUUID
+  if (t.workspaceUUID) h['X-Railgrid-Workspace'] = t.workspaceUUID
   return h
 }
 

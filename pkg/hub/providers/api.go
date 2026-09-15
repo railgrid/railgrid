@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,14 +22,14 @@ import (
 	"sort"
 	"sync"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	"github.com/faroshq/faros/pkg/hub/tenant"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
 // PathListProviders is the portal-facing list endpoint. It returns the names,
 // display labels, and routing metadata for every provider the hub knows
 // about. The portal builds its catalog page and dynamic side-nav from this
-// response. Auth is enforced by the standard faros token middleware mounted
+// response. Auth is enforced by the standard railgrid token middleware mounted
 // upstream of this handler.
 const PathListProviders = "/api/providers"
 
@@ -38,11 +38,11 @@ const PathListProviders = "/api/providers"
 // Provider scope values on the wire. Kept lowercase and stable — the portal
 // branches on them to render the "Self-managed" section of the catalog.
 const (
-	// ScopeGlobal is a platform provider under root:faros:providers, available
+	// ScopeGlobal is a platform provider under root:railgrid:providers, available
 	// to every Org.
 	ScopeGlobal = "global"
 	// ScopeOrg is a provider the caller's own Org registered and runs itself,
-	// under root:faros:tenants:<org>:providers.
+	// under root:railgrid:tenants:<org>:providers.
 	ScopeOrg = "org"
 )
 
@@ -50,7 +50,7 @@ type providerDTO struct {
 	Name string `json:"name"`
 	// Scope is "global" or "org" — see ScopeGlobal / ScopeOrg. The portal
 	// surfaces org-scoped providers separately, above the platform catalog, so
-	// users can tell what their own organization operates from what faros does.
+	// users can tell what their own organization operates from what railgrid does.
 	Scope string `json:"scope"`
 	// OwnerOrg is the owning Org's UUID for Scope=="org", empty for global.
 	OwnerOrg string `json:"ownerOrg,omitempty"`

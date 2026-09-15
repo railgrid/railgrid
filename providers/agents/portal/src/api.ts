@@ -1,10 +1,10 @@
 // ApiClient wraps the agents provider REST API.
 //
-// Tenant scope: the host pushes orgUUID/workspaceUUID on the FarosContext, and
+// Tenant scope: the host pushes orgUUID/workspaceUUID on the RailgridContext, and
 // those win. portalkit/tenant.ts's localStorage copy is the fallback for the
 // (brief) window before the host has pushed a context.
 //
-// Every call carries the Bearer token plus the X-Faros-Org / X-Faros-Workspace
+// Every call carries the Bearer token plus the X-Railgrid-Org / X-Railgrid-Workspace
 // headers the hub's tenant middleware requires.
 
 import type {
@@ -18,7 +18,7 @@ import type {
   CredentialTestResult,
   CredentialWrite,
   InboxItem,
-  FarosContext,
+  RailgridContext,
   ModelInfo,
   RunDetail,
   RunSummary,
@@ -89,13 +89,13 @@ export class ApiError extends Error {
 }
 
 export class ApiClient {
-  private ctx: FarosContext | null = null
+  private ctx: RailgridContext | null = null
 
-  setContext(ctx: FarosContext | null): void {
+  setContext(ctx: RailgridContext | null): void {
     this.ctx = ctx
   }
 
-  context(): FarosContext | null {
+  context(): RailgridContext | null {
     return this.ctx
   }
 
@@ -105,7 +105,7 @@ export class ApiClient {
     return serviceBase(this.ctx?.basePath || '/ui/providers/agents') + path
   }
 
-  tenant(context: FarosContext | null = this.ctx): Tenant {
+  tenant(context: RailgridContext | null = this.ctx): Tenant {
     const stored = readTenant()
     // A host-supplied tenant is authoritative even when it explicitly clears
     // one or both fields. Falling back through null here could keep using a
@@ -124,12 +124,12 @@ export class ApiClient {
   }
 
   // tenantKey identifies the current workspace for change-detection (load dedupe).
-  tenantKey(context: FarosContext | null = this.ctx): string {
+  tenantKey(context: RailgridContext | null = this.ctx): string {
     const t = this.tenant(context)
     return `${t.orgUUID || ''}/${t.workspaceUUID || ''}`
   }
 
-  contextAuthority(context: FarosContext | null = this.ctx): ContextAuthority {
+  contextAuthority(context: RailgridContext | null = this.ctx): ContextAuthority {
     const tenant = this.tenant(context)
     const user = context?.user as { sub?: unknown; userId?: unknown; email?: unknown } | null | undefined
     const userKey = [user?.sub, user?.userId, user?.email].find((value): value is string => typeof value === 'string' && value.length > 0) || null
@@ -153,10 +153,10 @@ export class ApiClient {
     const h = tenantHeaders({ json: hasBody })
     // Host context wins over the localStorage copy portalkit read.
     const t = this.tenant()
-    if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
-    else delete h['X-Faros-Org']
-    if (t.workspaceUUID) h['X-Faros-Workspace'] = t.workspaceUUID
-    else delete h['X-Faros-Workspace']
+    if (t.orgUUID) h['X-Railgrid-Org'] = t.orgUUID
+    else delete h['X-Railgrid-Org']
+    if (t.workspaceUUID) h['X-Railgrid-Workspace'] = t.workspaceUUID
+    else delete h['X-Railgrid-Workspace']
     return h
   }
 
@@ -291,7 +291,7 @@ export class ApiClient {
 
   // eventStream subscribes to GET /api/events (run + inbox pushes). It is a
   // plain fetch rather than EventSource because EventSource cannot send the
-  // Authorization / X-Faros-* headers the hub proxy requires. onOpen fires once
+  // Authorization / X-Railgrid-* headers the hub proxy requires. onOpen fires once
   // the response headers are in, which is the real liveness signal — the server
   // may legitimately send no parsable event for minutes.
   async *eventStream(signal: AbortSignal, onOpen?: () => void): AsyncGenerator<SSEEvent> {

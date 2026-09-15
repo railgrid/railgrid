@@ -1,0 +1,24 @@
+{{- if not .Values.kcp.external.enabled }}
+{{- $fullname := include "railgrid-hub.fullname" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-kcp
+  labels:
+    {{- include "railgrid-hub.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # The shard URL kcp advertises is this pod's DNS name under this Service
+  # (railgrid-hub.kcpShardURL). The hub dials it while it is still starting,
+  # before its readiness probe passes, so the record must exist for a
+  # not-ready pod too.
+  publishNotReadyAddresses: true
+  ports:
+    - name: kcp-https
+      port: {{ .Values.kcp.embedded.securePort }}
+      targetPort: {{ .Values.kcp.embedded.securePort }}
+      protocol: TCP
+  selector:
+    {{- include "railgrid-hub.selectorLabels" . | nindent 4 }}
+{{- end }}

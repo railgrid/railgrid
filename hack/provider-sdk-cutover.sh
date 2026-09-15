@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Copyright 2026 The Faros Authors. Licensed under the Apache License, Version 2.0.
+# Copyright 2026 The Railgrid Authors. Licensed under the Apache License, Version 2.0.
 #
-# provider-sdk-cutover.sh — run ONCE, after github.com/faroshq/provider-sdk is
+# provider-sdk-cutover.sh — run ONCE, after github.com/railgrid/provider-sdk is
 # published, to switch the provider modules off the local
 # `replace => ../../provider-sdk` and onto the published, go-gettable version.
 #
 # Why this exists: while the SDK is unpublished, every provider go.mod carries a
-# `replace github.com/faroshq/provider-sdk => ../../provider-sdk` so the monorepo
+# `replace github.com/railgrid/provider-sdk => ../../provider-sdk` so the monorepo
 # (and the repo-root-context Docker builds) can resolve it. That replace also
 # rides the split out to the read-only provider mirrors, where ../../provider-sdk
 # does not exist — so the mirrors can't `go get`/build standalone. Once the SDK
@@ -14,9 +14,9 @@
 #
 # Prerequisites:
 #   1. provider-sdk/vX.Y.Z tagged in the monorepo (release provider-sdk)
-#      and split to faroshq/provider-sdk (the split-provider-sdk workflow).
+#      and split to railgrid/provider-sdk (the split-provider-sdk workflow).
 #   2. That version is resolvable from the module proxy:
-#        GOWORK=off GOFLAGS=-mod=mod go list -m github.com/faroshq/provider-sdk@vX.Y.Z
+#        GOWORK=off GOFLAGS=-mod=mod go list -m github.com/railgrid/provider-sdk@vX.Y.Z
 #
 # Usage:
 #   hack/provider-sdk-cutover.sh vX.Y.Z
@@ -27,11 +27,11 @@ set -euo pipefail
 
 VERSION="${1:-}"
 if [ -z "${VERSION}" ]; then
-  echo "usage: $0 vX.Y.Z   (the published github.com/faroshq/provider-sdk version)" >&2
+  echo "usage: $0 vX.Y.Z   (the published github.com/railgrid/provider-sdk version)" >&2
   exit 2
 fi
 
-MOD="github.com/faroshq/provider-sdk"
+MOD="github.com/railgrid/provider-sdk"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${ROOT}"
 
@@ -71,7 +71,7 @@ COPY portal/ ./
 RUN npm run build
 
 # 2. Build the Go binary. The binary serves `init` + `serve`, so the whole
-#    module source has to be present. The faros-provider-sdk is now a published
+#    module source has to be present. The railgrid-provider-sdk is now a published
 #    dependency (no replace), so `go mod download` fetches it from the proxy.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
@@ -102,7 +102,7 @@ COPY portal/ ./
 RUN npm run build
 
 # 2. Build the Go binary. assets.go //go:embeds portal/dist; init_cmd.go uses
-#    the published faros-provider-sdk (no replace), fetched from the proxy.
+#    the published railgrid-provider-sdk (no replace), fetched from the proxy.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -112,10 +112,10 @@ COPY --from=portal /portal/dist ./portal/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/quickstart-provider .
 
 # 3. Minimal runtime image. APIResourceSchemas the `init` subcommand applies are
-#    baked at /etc/faros/schemas (FAROS_SCHEMAS_DIR).
+#    baked at /etc/railgrid/schemas (RAILGRID_SCHEMAS_DIR).
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/quickstart-provider /quickstart-provider
-COPY deploy/chart/files/schemas /etc/faros/schemas
+COPY deploy/chart/files/schemas /etc/railgrid/schemas
 EXPOSE 8081
 ENV PORT=8081
 USER nonroot:nonroot

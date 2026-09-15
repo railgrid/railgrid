@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 // is no provider-wide identity. Mirrors mcpserver.identityFromRequest but kept
 // local to avoid a package dependency.
 //
-// tenant is the hub's tenant identity for the request (X-Faros-Tenant: the
+// tenant is the hub's tenant identity for the request (X-Railgrid-Tenant: the
 // workspace's kcp logical-cluster ID). The data plane addresses the workspace
 // by the cluster ID in the URL and treats this value as opaque.
 type identity struct {
@@ -39,11 +39,11 @@ type identity struct {
 
 func identityFromRequest(r *http.Request) identity {
 	id := identity{
-		tenant: r.Header.Get("X-Faros-Tenant"),
-		user:   r.Header.Get("X-Faros-User"),
+		tenant: r.Header.Get("X-Railgrid-Tenant"),
+		user:   r.Header.Get("X-Railgrid-User"),
 		token:  bearerToken(r),
 	}
-	if os.Getenv("FAROS_DEV_ALLOW_TENANT_QUERY") == "true" && id.token == "" {
+	if os.Getenv("RAILGRID_DEV_ALLOW_TENANT_QUERY") == "true" && id.token == "" {
 		id.token = r.URL.Query().Get("token")
 	}
 	return id

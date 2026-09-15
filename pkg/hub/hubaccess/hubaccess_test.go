@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,9 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	farosclient "github.com/faroshq/faros/pkg/client"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 func TestMatchIsAClosedSet(t *testing.T) {
@@ -124,8 +124,8 @@ func newTestStore(t *testing.T) *Store {
 	if err := tenancyv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{farosclient.GrantGVR: "GrantList"})
-	return NewStore(farosclient.NewFromDynamic(dyn))
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{railgridclient.GrantGVR: "GrantList"})
+	return NewStore(railgridclient.NewFromDynamic(dyn))
 }
 
 func TestStorePutGetDelete(t *testing.T) {

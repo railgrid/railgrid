@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -55,15 +55,15 @@ import (
 const (
 	devAppsBaseDomain     = "apps.127.0.0.1.sslip.io"
 	devAppsNamespace      = "envoy-gateway-system"
-	devAppsGatewayName    = "faros-apps"
-	devAppsTLSSecret      = "faros-apps-tls"
+	devAppsGatewayName    = "railgrid-apps"
+	devAppsTLSSecret      = "railgrid-apps-tls"
 	devAppsListenerPort   = 10443
 	devAppsNodePort       = 30443
 	devEnvoyChartRef      = "oci://docker.io/envoyproxy/gateway-helm"
 	devEnvoyChartVersion  = "v1.7.0" // same as the kcp Tilt stack
 	devEnvoyReleaseName   = "envoy"
-	devCoreDNSMarkerStart = "# faros-dev-dns"
-	devCoreDNSMarkerEnd   = "# faros-dev-dns-end"
+	devCoreDNSMarkerStart = "# railgrid-dev-dns"
+	devCoreDNSMarkerEnd   = "# railgrid-dev-dns-end"
 )
 
 // appsGatewayEnabled: only the infrastructure provider publishes apps.
@@ -114,7 +114,7 @@ func (o *DevOptions) appsInfrastructureValues() map[string]any {
 
 // installAppsGateway installs Envoy Gateway (which brings the Gateway API
 // CRDs), a NodePort-backed GatewayClass, a wildcard certificate and the
-// faros-apps Gateway, then points in-cluster DNS at it. Idempotent.
+// railgrid-apps Gateway, then points in-cluster DNS at it. Idempotent.
 func (o *DevOptions) installAppsGateway(ctx context.Context, restConfig *rest.Config, kubeconfigPath string) error {
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Installing Envoy Gateway for apps under *.%s...\n", devAppsBaseDomain)
 	actionConfig, err := newHelmActionConfig(restConfig, devAppsNamespace)
@@ -163,7 +163,7 @@ func (o *DevOptions) installAppsGateway(ctx context.Context, restConfig *rest.Co
 	}
 
 	if !o.hubNodeHasPort(ctx, devAppsNodePort) {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: kind cluster %s was created without the apps port mapping, so apps are reachable only inside the cluster. Recreate it (faros dev delete && faros dev init) to reach them at https://<app>.%s%s\n", o.HubClusterName, devAppsBaseDomain, o.appsPublicURLSuffix())
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: kind cluster %s was created without the apps port mapping, so apps are reachable only inside the cluster. Recreate it (railgrid dev delete && railgrid dev init) to reach them at https://<app>.%s%s\n", o.HubClusterName, devAppsBaseDomain, o.appsPublicURLSuffix())
 	}
 	return nil
 }
@@ -318,7 +318,7 @@ func ensureDevCoreDNS(ctx context.Context, clientset kubernetes.Interface, envoy
 	}
 	// Restart rather than wait for the reload plugin to notice the mounted
 	// ConfigMap change (up to a couple of minutes).
-	patch := fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"faros.sh/dev-dns-restart":%q}}}}}`, time.Now().Format(time.RFC3339))
+	patch := fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"railgrid.ai/dev-dns-restart":%q}}}}}`, time.Now().Format(time.RFC3339))
 	_, err = clientset.AppsV1().Deployments("kube-system").Patch(ctx, "coredns", types.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{})
 	return err
 }

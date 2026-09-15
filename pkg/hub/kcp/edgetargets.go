@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -43,14 +43,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/faroshq/faros/pkg/kcppaths"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // kubernetesClusterGVR is the edges provider's cluster-kind edge. Only this
 // kind can host a provider: a LinuxServer edge has no cluster DNS and no
 // Kubernetes Service to route a provider backend to.
 var kubernetesClusterGVR = schema.GroupVersionResource{
-	Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters",
+	Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "kubernetesclusters",
 }
 
 // EdgeInstallTarget is one candidate cluster for a self-hosted provider,
@@ -71,7 +71,7 @@ type EdgeInstallTarget struct {
 	// Phase is status.phase, e.g. "AwaitingAgent" or "Connected". Carried so
 	// the UI can explain a not-Connected edge rather than just greying it out.
 	Phase string
-	// AgentVersion is the faros build running on the agent, when reported.
+	// AgentVersion is the railgrid build running on the agent, when reported.
 	AgentVersion string
 }
 
@@ -205,7 +205,7 @@ func edgeInstallTarget(u *unstructured.Unstructured, ws workspaceRef) EdgeInstal
 	}
 }
 
-// edgesNotServed reports whether err means "edges.faros.sh is not available in
+// edgesNotServed reports whether err means "edges.railgrid.ai is not available in
 // this workspace" rather than a real failure. kcp answers a request for an
 // unbound API with a 404 on the resource path; a client that built its mapping
 // from discovery answers with a no-match instead.

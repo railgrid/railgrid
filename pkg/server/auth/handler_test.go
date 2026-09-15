@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,8 +24,8 @@ import (
 
 func TestOAuth2EndpointWithBrowserAuthURLOverridesOnlyAuthorization(t *testing.T) {
 	discovered := oauth2.Endpoint{
-		AuthURL:  "https://dex.faros-system.svc.cluster.local:5554/dex/auth",
-		TokenURL: "https://dex.faros-system.svc.cluster.local:5554/dex/token",
+		AuthURL:  "https://dex.railgrid-system.svc.cluster.local:5554/dex/auth",
+		TokenURL: "https://dex.railgrid-system.svc.cluster.local:5554/dex/token",
 	}
 
 	got, err := oauth2EndpointWithBrowserAuthURL(discovered, "https://login.example.test/dex/auth")
@@ -38,7 +38,7 @@ func TestOAuth2EndpointWithBrowserAuthURLOverridesOnlyAuthorization(t *testing.T
 	if got.TokenURL != discovered.TokenURL {
 		t.Fatalf("token URL = %q, want discovery-derived %q", got.TokenURL, discovered.TokenURL)
 	}
-	if discovered.AuthURL != "https://dex.faros-system.svc.cluster.local:5554/dex/auth" {
+	if discovered.AuthURL != "https://dex.railgrid-system.svc.cluster.local:5554/dex/auth" {
 		t.Fatalf("discovered endpoint was mutated: %#v", discovered)
 	}
 }

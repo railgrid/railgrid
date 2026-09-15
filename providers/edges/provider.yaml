@@ -1,7 +1,7 @@
-# Provider — declarative provisioning record (admin.faros.sh, admin-only).
-# The hub's Provider controller creates root:faros:providers:edges, a "provider"
+# Provider — declarative provisioning record (admin.railgrid.ai, admin-only).
+# The hub's Provider controller creates root:railgrid:providers:edges, a "provider"
 # ServiceAccount, and its kubeconfig Secret.
-apiVersion: admin.faros.sh/v1alpha1
+apiVersion: admin.railgrid.ai/v1alpha1
 kind: Provider
 metadata:
   name: edges

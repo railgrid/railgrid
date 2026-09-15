@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=gbuildstatus
+// +kubebuilder:resource:scope=Cluster,categories=railgrid,shortName=gbuildstatus
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.repositoryRef`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Conclusion",type=string,JSONPath=`.status.run.conclusion`
@@ -74,7 +74,7 @@ type RepositoryBuildStatusSpec struct {
 	RepositoryRef string `json:"repositoryRef"`
 
 	// WorkflowFileName is the workflow file to inspect or dispatch
-	// (e.g. "faros-app-studio-build.yml").
+	// (e.g. "railgrid-app-studio-build.yml").
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255

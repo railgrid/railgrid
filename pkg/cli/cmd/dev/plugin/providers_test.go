@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -103,15 +103,15 @@ func TestProviderValuesWireDatabaseAndKubeconfig(t *testing.T) {
 			t.Errorf("%s: store.databaseURL = %v, want %s", name, store["databaseURL"], env.DatabaseURL)
 		}
 	}
-	if got := devDatabaseURL("agents", "agents"); got != "postgres://faros:faros-dev@agents-db.faros-providers.svc.cluster.local:5432/agents?sslmode=disable" {
+	if got := devDatabaseURL("agents", "agents"); got != "postgres://railgrid:railgrid-dev@agents-db.railgrid-providers.svc.cluster.local:5432/agents?sslmode=disable" {
 		t.Errorf("devDatabaseURL = %s", got)
 	}
 
 	infra, _ := devProviderSpecByName("infrastructure")
-	vals := infra.Values(o, devProviderEnv{KubeconfigSecret: "faros-infrastructure-kubeconfig"})
+	vals := infra.Values(o, devProviderEnv{KubeconfigSecret: "railgrid-infrastructure-kubeconfig"})
 	op, _ := vals["operator"].(map[string]any)
 	secret, _ := op["providerKubeconfigSecret"].(map[string]any)
-	if op["enabled"] != true || secret["name"] != "faros-infrastructure-kubeconfig" {
+	if op["enabled"] != true || secret["name"] != "railgrid-infrastructure-kubeconfig" {
 		t.Errorf("infrastructure must run in operator mode on the minted kubeconfig, got %v", op)
 	}
 	if ce, _ := vals["catalogEntry"].(map[string]any); ce["enabled"] != false {
@@ -181,7 +181,7 @@ func TestHubAdminValues(t *testing.T) {
 	o := NewDevOptions(genericclioptions.IOStreams{})
 	hub := map[string]any{}
 	o.hubAdminValues(hub)
-	if hub["internalURL"] != "https://faros-hub.faros-system.svc.cluster.local:9443" {
+	if hub["internalURL"] != "https://railgrid-hub.railgrid-system.svc.cluster.local:9443" {
 		t.Fatalf("internalURL = %v", hub["internalURL"])
 	}
 	if !reflect.DeepEqual(hub["adminUsers"], []string{devStaticAdminUser()}) {
@@ -208,7 +208,7 @@ func TestHubAdminValues(t *testing.T) {
 // automation puts on --admin-users, or every /api/admin call is refused. It
 // must not contain the token: --admin-users ends up in the hub's Helm values.
 func TestDevStaticAdminUserMatchesToken(t *testing.T) {
-	if got, want := devStaticAdminUser(), "faros:static:47b9dce0e91570a1"; got != want {
+	if got, want := devStaticAdminUser(), "railgrid:static:47b9dce0e91570a1"; got != want {
 		t.Fatalf("devStaticAdminUser() = %q, want %q (see identity.NewStaticToken)", got, want)
 	}
 	if strings.Contains(devStaticAdminUser(), devStaticToken()) {
@@ -236,10 +236,10 @@ func TestPinEmbeddedShardURL(t *testing.T) {
 	}
 }
 
-// The in-repo hub chart, installed the way `faros dev init` installs it,
+// The in-repo hub chart, installed the way `railgrid dev init` installs it,
 // must advertise the same stable shard URL the CLI pins for older charts.
 func TestHubChartRendersDevShardURL(t *testing.T) {
-	ch, err := loader.Load("../../../../../deploy/charts/faros-hub")
+	ch, err := loader.Load("../../../../../deploy/charts/railgrid-hub")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,13 +253,13 @@ func TestHubChartRendersDevShardURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workload := out["faros-hub/templates/workload.yaml"]
+	workload := out["railgrid-hub/templates/workload.yaml"]
 	for _, flag := range []string{"--kcp-shard-external-url=", "--kcp-shard-virtual-workspace-url="} {
 		if !strings.Contains(workload, flag+devKCPShardURL) {
 			t.Errorf("workload does not render %s%s", flag, devKCPShardURL)
 		}
 	}
-	if !strings.Contains(out["faros-hub/templates/service-kcp.yaml"], "publishNotReadyAddresses: true") {
+	if !strings.Contains(out["railgrid-hub/templates/service-kcp.yaml"], "publishNotReadyAddresses: true") {
 		t.Error("the headless kcp Service must publish not-ready addresses")
 	}
 }
@@ -352,26 +352,26 @@ func TestResyncEndpointSlices(t *testing.T) {
 	scheme := runtime.NewScheme()
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
 		map[schema.GroupVersionResource]string{apiExportEndpointSliceGVR: "APIExportEndpointSliceList"},
-		slice("ai.faros.sh"), slice("edges.providers.faros.sh", "https://shard/services/apiexport/x/edges"))
+		slice("ai.railgrid.ai"), slice("edges.providers.railgrid.ai", "https://shard/services/apiexport/x/edges"))
 	res := dyn.Resource(apiExportEndpointSliceGVR)
 
 	// Nothing publishes an endpoint in the fake, so the call times out — but
 	// only the empty slice may have been touched.
 	err := resyncEndpointSlices(context.Background(), res, time.Millisecond, 20*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "ai.faros.sh") || strings.Contains(err.Error(), "edges") {
-		t.Fatalf("err = %v, want only ai.faros.sh pending", err)
+	if err == nil || !strings.Contains(err.Error(), "ai.railgrid.ai") || strings.Contains(err.Error(), "edges") {
+		t.Fatalf("err = %v, want only ai.railgrid.ai pending", err)
 	}
-	ai, _ := res.Get(context.Background(), "ai.faros.sh", metav1.GetOptions{})
+	ai, _ := res.Get(context.Background(), "ai.railgrid.ai", metav1.GetOptions{})
 	if ai.GetAnnotations()[devSliceResyncAnnotation] == "" {
 		t.Error("the slice without endpoints was not touched")
 	}
-	edges, _ := res.Get(context.Background(), "edges.providers.faros.sh", metav1.GetOptions{})
+	edges, _ := res.Get(context.Background(), "edges.providers.railgrid.ai", metav1.GetOptions{})
 	if _, ok := edges.GetAnnotations()[devSliceResyncAnnotation]; ok {
 		t.Error("a slice that already has an endpoint must be left alone")
 	}
 
 	// Once every slice has an endpoint the resync is done.
-	if _, err := res.Update(context.Background(), slice("ai.faros.sh", "https://shard/services/apiexport/y/ai"), metav1.UpdateOptions{}); err != nil {
+	if _, err := res.Update(context.Background(), slice("ai.railgrid.ai", "https://shard/services/apiexport/y/ai"), metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := resyncEndpointSlices(context.Background(), res, time.Millisecond, time.Second); err != nil {
@@ -380,7 +380,7 @@ func TestResyncEndpointSlices(t *testing.T) {
 }
 
 func TestRehostURL(t *testing.T) {
-	got, err := rehostURL("https://faros-hub.faros-system.svc.cluster.local:9443/clusters/4a0d9qnjz8vqgjh6", "https://127.0.0.1:9443")
+	got, err := rehostURL("https://railgrid-hub.railgrid-system.svc.cluster.local:9443/clusters/4a0d9qnjz8vqgjh6", "https://127.0.0.1:9443")
 	if err != nil || got != "https://127.0.0.1:9443/clusters/4a0d9qnjz8vqgjh6" {
 		t.Fatalf("rehostURL = %q, %v", got, err)
 	}

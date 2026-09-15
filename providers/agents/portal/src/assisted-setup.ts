@@ -20,14 +20,14 @@ export const INSTANCE_SIZES: InstanceSize[] = ['small', 'medium', 'large']
 export const DNS_LABEL_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
 // SMOKE_QUERY is pinned rather than left to the agent. Left open ("run a search
-// and tell me what you got"), agents reach for the obvious "what is Faros and
-// what does it do" — which the open web answers with faros.ai, an unrelated
+// and tell me what you got"), agents reach for the obvious "what is Railgrid and
+// what does it do" — which the open web answers with railgrid.ai, an unrelated
 // engineering-analytics company that outranks us on our own name. The proof the
 // pipe works then reads as our own onboarding advertising someone else.
 //
 // The domain, not the word, is the disambiguator: it is unambiguous, it is ours,
 // and it reliably returns the site plus the GitHub org on any general engine.
-export const SMOKE_QUERY = 'faros.sh'
+export const SMOKE_QUERY = 'railgrid.ai'
 
 export interface SearxngSetupInput {
   // connection is the websearch Connection this portal has just created; it
@@ -73,7 +73,7 @@ export function selfHostedSearchConfigured(conns: Connection[]): boolean {
 // Manual dismissal is remembered per WORKSPACE, not per browser: search set up
 // in one workspace says nothing about another, and a card dismissed everywhere
 // at once would hide the affordance from a workspace that still needs it.
-const DISMISS_KEY = 'faros:agents:assisted-search-dismissed'
+const DISMISS_KEY = 'railgrid:agents:assisted-search-dismissed'
 
 function dismissKey(workspaceUUID: string | null): string {
   return `${DISMISS_KEY}:${workspaceUUID || 'none'}`

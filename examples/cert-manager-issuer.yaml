@@ -2,7 +2,7 @@
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: faros-letsencrypt-prod
+  name: railgrid-letsencrypt-prod
 spec:
   acme:
     # You must replace this email address with your own.

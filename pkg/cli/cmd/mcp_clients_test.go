@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -78,21 +78,21 @@ func TestProbeTLS(t *testing.T) {
 }
 
 func TestClientMCPArgs(t *testing.T) {
-	ep := &mcpEndpoint{URL: "https://hub.example:9443/services/mcpserver/c1/apis/faros.sh/v1alpha1/mcpservers/default/mcp", Token: "tok"}
+	ep := &mcpEndpoint{URL: "https://hub.example:9443/services/mcpserver/c1/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp", Token: "tok"}
 
-	remove, add := claudeMCPArgs("faros-default", "user", ep)
-	if !reflect.DeepEqual(remove, []string{"mcp", "remove", "faros-default", "--scope", "user"}) {
+	remove, add := claudeMCPArgs("railgrid-default", "user", ep)
+	if !reflect.DeepEqual(remove, []string{"mcp", "remove", "railgrid-default", "--scope", "user"}) {
 		t.Errorf("claude remove = %v", remove)
 	}
-	if !reflect.DeepEqual(add, []string{"mcp", "add", "--transport", "http", "--scope", "user", "faros-default", ep.URL, "--header", "Authorization: Bearer tok"}) {
+	if !reflect.DeepEqual(add, []string{"mcp", "add", "--transport", "http", "--scope", "user", "railgrid-default", ep.URL, "--header", "Authorization: Bearer tok"}) {
 		t.Errorf("claude add = %v", add)
 	}
 
-	remove, add = codexMCPArgs("faros-default", ep)
-	if !reflect.DeepEqual(remove, []string{"mcp", "remove", "faros-default"}) {
+	remove, add = codexMCPArgs("railgrid-default", ep)
+	if !reflect.DeepEqual(remove, []string{"mcp", "remove", "railgrid-default"}) {
 		t.Errorf("codex remove = %v", remove)
 	}
-	if !reflect.DeepEqual(add, []string{"mcp", "add", "faros-default", "--url", ep.URL, "--bearer-token-env-var", codexTokenEnvVar}) {
+	if !reflect.DeepEqual(add, []string{"mcp", "add", "railgrid-default", "--url", ep.URL, "--bearer-token-env-var", codexTokenEnvVar}) {
 		t.Errorf("codex add = %v", add)
 	}
 }
@@ -122,7 +122,7 @@ func TestWriteCABundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(home, ".faros", "ca", "console.127.0.0.1.sslip.io.pem"); path != want {
+	if want := filepath.Join(home, ".railgrid", "ca", "console.127.0.0.1.sslip.io.pem"); path != want {
 		t.Errorf("bundle path = %s, want %s", path, want)
 	}
 	b, _ := os.ReadFile(path)
@@ -132,7 +132,7 @@ func TestWriteCABundle(t *testing.T) {
 }
 
 func TestMCPClientServerName(t *testing.T) {
-	if got := (&mcpClientOptions{mcpserverName: "default"}).serverName(); got != "faros-default" {
+	if got := (&mcpClientOptions{mcpserverName: "default"}).serverName(); got != "railgrid-default" {
 		t.Errorf("default name = %s", got)
 	}
 	if got := (&mcpClientOptions{mcpserverName: "default", name: "hub"}).serverName(); got != "hub" {

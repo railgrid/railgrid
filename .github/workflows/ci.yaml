@@ -51,7 +51,7 @@ jobs:
   # providers/edges, providers/agents or pkg/agent need this gate.
   #
   # No go.work is needed: every provider go.mod carries
-  # `replace github.com/faroshq/provider-sdk => ../../provider-sdk`, so the
+  # `replace github.com/railgrid/provider-sdk => ../../provider-sdk`, so the
   # in-tree SDK is what gets linked. When hack/provider-sdk-cutover.sh drops
   # that replace, copy the "Set up Go workspace" step from e2e.yaml into this
   # job, or it will silently test the published SDK instead of the diff.

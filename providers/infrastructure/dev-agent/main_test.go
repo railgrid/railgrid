@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -833,8 +833,8 @@ func TestAuthoritativeSyncReloadHookCannotMutateSourceManifest(t *testing.T) {
 		command    string
 		wantReload bool
 	}{
-		{name: "success", command: "printf mutated > package-lock.json; printf corrupted > .faros-workspace-manifest.json"},
-		{name: "failure", command: "printf mutated > package-lock.json; printf corrupted > .faros-workspace-manifest.json; exit 7", wantReload: true},
+		{name: "success", command: "printf mutated > package-lock.json; printf corrupted > .railgrid-workspace-manifest.json"},
+		{name: "failure", command: "printf mutated > package-lock.json; printf corrupted > .railgrid-workspace-manifest.json; exit 7", wantReload: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workdir := t.TempDir()
@@ -1174,7 +1174,7 @@ func TestStatusReportsCurrentAttemptAndDeclaredPortReadiness(t *testing.T) {
 
 func TestEnvRejectsReservedAndSecretNames(t *testing.T) {
 	srv := newTestAgent(t, &agentConfig{})
-	for _, name := range []string{"FAROS_DEV_PORT", "API_TOKEN", "MY_SECRET"} {
+	for _, name := range []string{"RAILGRID_DEV_PORT", "API_TOKEN", "MY_SECRET"} {
 		if _, err := srv.supervisor.setEnv(map[string]string{name: "v"}); err == nil {
 			t.Errorf("setEnv(%s) accepted, want rejection", name)
 		}
@@ -1185,14 +1185,14 @@ func TestEnvRejectsReservedAndSecretNames(t *testing.T) {
 }
 
 func TestMergeChildEnvPortConventions(t *testing.T) {
-	out := mergeChildEnv([]string{"PATH=/bin", "FAROS_DEV_CONTROL_TOKEN=x", "FAROS_DEV_STATE_DIR=/state"}, map[string]string{"FOO": "bar"}, "8080")
+	out := mergeChildEnv([]string{"PATH=/bin", "RAILGRID_DEV_CONTROL_TOKEN=x", "RAILGRID_DEV_STATE_DIR=/state"}, map[string]string{"FOO": "bar"}, "8080")
 	joined := strings.Join(out, "\n")
 	for _, want := range []string{"PORT=8080", "FOO=bar", "PATH=/bin"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("child env lacks %s: %v", want, out)
 		}
 	}
-	if strings.Contains(joined, "FAROS_DEV_") {
+	if strings.Contains(joined, "RAILGRID_DEV_") {
 		t.Errorf("coordinator/runtime configuration leaked into child env: %v", out)
 	}
 	// An explicit PORT wins over the convention.
@@ -1265,8 +1265,8 @@ func TestContainerReloadExitsRuntimeSupervisorAndKeepsCoordinatorAlive(t *testin
 }
 
 func TestConfigSeparatesCoordinatorSecretsFromProcessEnvironment(t *testing.T) {
-	t.Setenv("FAROS_DEV_CONTROL_TOKEN", "top-secret")
-	t.Setenv("FAROS_DEV_STATE_DIR", t.TempDir())
+	t.Setenv("RAILGRID_DEV_CONTROL_TOKEN", "top-secret")
+	t.Setenv("RAILGRID_DEV_STATE_DIR", t.TempDir())
 	cfg, err := configFromEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -1274,11 +1274,11 @@ func TestConfigSeparatesCoordinatorSecretsFromProcessEnvironment(t *testing.T) {
 	if cfg.ControlToken != "top-secret" || cfg.StateDir == "" {
 		t.Fatalf("coordinator config = %+v", cfg)
 	}
-	if _, present := os.LookupEnv("FAROS_DEV_CONTROL_TOKEN"); present {
+	if _, present := os.LookupEnv("RAILGRID_DEV_CONTROL_TOKEN"); present {
 		t.Fatal("control token remains in process environment")
 	}
 	env := strings.Join(mergeChildEnv(os.Environ(), nil, ""), "\n")
-	if strings.Contains(env, "FAROS_DEV_STATE_DIR") || strings.Contains(env, "top-secret") {
+	if strings.Contains(env, "RAILGRID_DEV_STATE_DIR") || strings.Contains(env, "top-secret") {
 		t.Fatalf("runtime child environment contains coordinator state or secret: %s", env)
 	}
 }

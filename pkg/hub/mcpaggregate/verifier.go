@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 // BearerVerifier decides whether the bearer presented on an aggregate MCP
@@ -101,7 +101,7 @@ const serviceAccountPrefix = "system:serviceaccount:"
 // tenantPathRoot is the kcp path every Organization and child Workspace
 // lives under (mirrors orgWorkspaceParent in the organization controller and
 // workspacePathRoot in the hub's provider tenant resolver).
-const tenantPathRoot = "root:faros:tenants:"
+const tenantPathRoot = "root:railgrid:tenants:"
 
 // clusterPathTTL bounds how long a resolved cluster ID to workspace path
 // mapping is reused. Paths are set once at workspace creation and never
@@ -123,7 +123,7 @@ var logicalClusterGVR = schema.GroupVersionResource{
 //     tenant cluster named by the request, and the reviewed username must be
 //     ServiceAccountUsername(name) for the MCPServer named by the request.
 //  2. A hub user bearer (static token or OIDC id_token) as resolved by the
-//     hub's normal identity path; the CLI's `faros mcp` and the e2e suites
+//     hub's normal identity path; the CLI's `railgrid mcp` and the e2e suites
 //     use these. The user must hold a live Membership covering the tenant
 //     the cluster belongs to, per the UserMembershipIndex.
 //  3. Other tenant ServiceAccounts with explicit RBAC permission to use the
@@ -291,7 +291,7 @@ func (v *Verifier) verifyServiceAccount(ctx context.Context, token, cluster, mcp
 		Spec: authorizationv1.SubjectAccessReviewSpec{
 			User: user.Username, UID: user.UID, Groups: user.Groups, Extra: extra,
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Group: "faros.sh", Resource: "mcpservers", Name: mcpServerName, Verb: "use",
+				Group: "railgrid.ai", Resource: "mcpservers", Name: mcpServerName, Verb: "use",
 			},
 		},
 	}, metav1.CreateOptions{})
@@ -396,7 +396,7 @@ func (v *Verifier) lookupClusterPath(ctx context.Context, cluster string) (strin
 }
 
 // TenantFromPath splits a tenant workspace path into its Organization UUID
-// and optional child Workspace UUID. Paths outside root:faros:tenants, or
+// and optional child Workspace UUID. Paths outside root:railgrid:tenants, or
 // nested deeper than one child workspace, are not tenant workspaces users
 // can hold Memberships in.
 func TenantFromPath(path string) (orgUUID, wsUUID string, ok bool) {

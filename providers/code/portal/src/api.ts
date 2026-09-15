@@ -1,11 +1,11 @@
 // Kubernetes REST client for the code provider's portal.
 //
 // Every read and write goes through the hub's kcp proxy at
-// /clusters/<cluster>/apis/code.faros.sh/v1alpha1/… — plain Kubernetes wire
+// /clusters/<cluster>/apis/code.railgrid.ai/v1alpha1/… — plain Kubernetes wire
 // shapes: List envelopes for reads, server-side apply for create-or-update,
 // merge-patch for targeted updates, DELETE with a Status body on failure. The
-// shell pushes farosContext.tenant (kcp cluster name, used as the /clusters
-// path segment) and farosContext.token (bearer). The one non-kcp call is
+// shell pushes railgridContext.tenant (kcp cluster name, used as the /clusters
+// path segment) and railgridContext.token (bearer). The one non-kcp call is
 // oauthConfig, which probes the provider backend directly.
 
 import {
@@ -33,7 +33,7 @@ import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 
 export type { KubernetesListOptions, KubernetesListPage } from './types'
 
-const GROUP = 'code.faros.sh'
+const GROUP = 'code.railgrid.ai'
 const VERSION = 'v1alpha1'
 const CRED_NAMESPACE = 'default'
 const TOKEN_KEY = 'token'
@@ -67,7 +67,7 @@ let bearerToken: string | null = null
 let clusterName: string | null = null
 let providerBasePath: string | null = null
 let callerUser: string | null = null
-// hostFetch is the host-owned transport from farosContext.fetch. When set, the
+// hostFetch is the host-owned transport from railgridContext.fetch. When set, the
 // host injects Authorization itself and bearerToken is only a change signal;
 // providerFetch falls back to the global fetch + bearerToken on older hosts.
 let hostFetch: ProviderFetch | null = null
@@ -1034,7 +1034,7 @@ export const api = {
 
 // PACKAGE_REPO_LABEL mirrors codev1alpha1.LabelRepository — the crawler stamps
 // it on every Package so we can list one repository's packages by selector.
-const PACKAGE_REPO_LABEL = 'code.faros.sh/repository'
+const PACKAGE_REPO_LABEL = 'code.railgrid.ai/repository'
 
 function shortRand(): string {
   // Browser crypto for a short suffix; avoids name collisions without Date/Math.random concerns.

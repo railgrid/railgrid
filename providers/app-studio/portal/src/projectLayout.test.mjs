@@ -7,7 +7,7 @@ const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 test('defaults and persists the Projects layout through the shared browser preference contract', () => {
   assert.match(app, /import LayoutSelector from '\.\/portalkit\/LayoutSelector\.vue'/)
   assert.match(app, /import \{ readLayoutPreference, writeLayoutPreference, type LayoutMode \} from '\.\/portalkit\/layoutPreference'/)
-  assert.match(app, /const PROJECTS_LAYOUT_PREFERENCE_KEY = 'faros:portal:app-studio:projects-layout'/)
+  assert.match(app, /const PROJECTS_LAYOUT_PREFERENCE_KEY = 'railgrid:portal:app-studio:projects-layout'/)
   assert.match(app, /const projectLayout = ref<LayoutMode>\(readLayoutPreference\(PROJECTS_LAYOUT_PREFERENCE_KEY\)\)/)
   assert.match(app, /watch\(projectLayout, mode => writeLayoutPreference\(PROJECTS_LAYOUT_PREFERENCE_KEY, mode\)\)/)
   assert.match(app, /<LayoutSelector v-model="projectLayout"[^>]*aria-label="Project layout"/)

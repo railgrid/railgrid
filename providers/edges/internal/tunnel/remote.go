@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -50,7 +50,7 @@ const relayPath = "/relay"
 
 // relayUpgradeProto marks the 101 handshake so a misrouted HTTP client gets a
 // clean error instead of half a byte stream.
-const relayUpgradeProto = "faros-tunnel-relay"
+const relayUpgradeProto = "railgrid-tunnel-relay"
 
 // remoteDialer opens connections to an edge whose tunnel is held by a peer
 // replica, by relaying through that peer's internal listener.

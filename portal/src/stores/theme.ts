@@ -3,7 +3,7 @@ import { ref } from 'vue'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
-const STORAGE_KEY = 'faros-theme'
+const STORAGE_KEY = 'railgrid-theme'
 
 function getSystemTheme(): 'light' | 'dark' {
   // Light is the hard fallback (matches index.html's `class="light"`) when
@@ -36,7 +36,7 @@ function storeMode(mode: ThemeMode): void {
 function applyTheme(resolved: 'light' | 'dark') {
   document.documentElement.classList.toggle('dark', resolved === 'dark')
   document.documentElement.classList.toggle('light', resolved === 'light')
-  document.querySelector<HTMLMetaElement>('#faros-color-scheme')?.setAttribute('content', resolved)
+  document.querySelector<HTMLMetaElement>('#railgrid-color-scheme')?.setAttribute('content', resolved)
   document.documentElement.style.colorScheme = resolved
 }
 

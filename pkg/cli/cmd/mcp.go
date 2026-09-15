@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,15 +27,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/faroshq/faros/pkg/apiurl"
-	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 func newMCPCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "MCP endpoints for AI clients (Claude Code, Cursor, Codex)",
-		Long:  `Commands for interacting with the faros MCP endpoint.`,
+		Long:  `Commands for interacting with the railgrid MCP endpoint.`,
 	}
 
 	cmd.AddCommand(newMCPURLCommand())
@@ -58,12 +58,12 @@ Use --mcpserver-name to print the aggregate MCPServer endpoint URL — one
 endpoint that exposes both kube and linux edges plus a list_targets tool the
 AI uses to discover what's reachable.  This is the entry point for
 Claude / Cursor / similar MCP clients:
-  https://faros.example.com/services/mcpserver/root:faros:user-default/apis/faros.sh/v1alpha1/mcpservers/default/mcp
+  https://railgrid.example.com/services/mcpserver/root:railgrid:user-default/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp
 The configuration hints then carry the workspace's long-lived MCP token from
 the hub's connect endpoint, which also works after an OIDC login.
 
 Use --edge to print the per-edge MCP endpoint URL (single Kubernetes edge):
-  https://faros.example.com/services/providers/edges/agent/root:faros:user-default/apis/edges.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp
+  https://railgrid.example.com/services/providers/edges/agent/root:railgrid:user-default/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp
 
 The previous per-kind MCP endpoints (--name for KubernetesMCP,
 --linux-name for LinuxMCP) were removed; their tools now appear on the
@@ -72,7 +72,7 @@ MCPServer aggregate via the in-binary ToolFamily registry.
 Usage with Claude Desktop (claude_desktop_config.json):
   {
     "mcpServers": {
-      "faros": {
+      "railgrid": {
         "url": "<output of this command>"
       }
     }
@@ -178,7 +178,7 @@ func runMCPURL(_ *cobra.Command, edgeName, mcpserverName string) error {
 		}
 	}
 	if token == "" && tokenNote == "" {
-		tokenNote = "Your kubeconfig logs in through OIDC (no static token). 'faros env' prints a current TOKEN; it expires."
+		tokenNote = "Your kubeconfig logs in through OIDC (no static token). 'railgrid env' prints a current TOKEN; it expires."
 	}
 
 	fmt.Println(mcpURL)
@@ -215,24 +215,24 @@ func runMCPURL(_ *cobra.Command, edgeName, mcpserverName string) error {
 	fmt.Println()
 	fmt.Println("To add to Codex:")
 	if token != "" {
-		fmt.Printf("  export FAROS_MCP_TOKEN=%s\n", shellSingleQuote(token))
+		fmt.Printf("  export RAILGRID_MCP_TOKEN=%s\n", shellSingleQuote(token))
 	} else {
-		fmt.Println("  export FAROS_MCP_TOKEN='<your-token>'")
+		fmt.Println("  export RAILGRID_MCP_TOKEN='<your-token>'")
 	}
 	fmt.Printf("  codex mcp add %s \\\n", mcpName)
 	fmt.Printf("    --url %s \\\n", shellSingleQuote(mcpURL))
-	fmt.Println("    --bearer-token-env-var FAROS_MCP_TOKEN")
+	fmt.Println("    --bearer-token-env-var RAILGRID_MCP_TOKEN")
 	if mcpserverName != "" {
 		fmt.Println()
 		fmt.Println("To connect as yourself instead (your own login, refreshed automatically; also")
 		fmt.Println("federates your organization's own providers), run the proxy as a stdio server:")
-		fmt.Printf("  claude mcp add %s -- faros mcp proxy --mcpserver-name %s\n", mcpName, mcpserverName)
+		fmt.Printf("  claude mcp add %s -- railgrid mcp proxy --mcpserver-name %s\n", mcpName, mcpserverName)
 	}
 	return nil
 }
 
 // connectMCPForURL asks the hub for the aggregate MCPServer's endpoint and
-// long-lived token, provided the faros context targets the same workspace as
+// long-lived token, provided the railgrid context targets the same workspace as
 // serverURL (the kubeconfig's current context).
 func connectMCPForURL(serverURL, mcpserverName string) (*mcpConnectInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -242,7 +242,7 @@ func connectMCPForURL(serverURL, mcpserverName string) (*mcpConnectInfo, error) 
 		return nil, err
 	}
 	if _, cluster := apiurl.SplitBaseAndCluster(serverURL); cluster != s.Cluster {
-		return nil, fmt.Errorf("current context targets %s, the faros context %s", cluster, s.Cluster)
+		return nil, fmt.Errorf("current context targets %s, the railgrid context %s", cluster, s.Cluster)
 	}
 	return s.mcpConnect(ctx, mcpserverName)
 }
@@ -252,7 +252,7 @@ func shellSingleQuote(value string) string {
 }
 
 // mcpServerName chooses a friendly identifier for the `claude mcp add`
-// name argument. All names share a `faros-` prefix so multiple faros
+// name argument. All names share a `railgrid-` prefix so multiple railgrid
 // MCP servers registered in a single client config sort together.
 // Aggregate MCPServer entries take the CR name directly; per-edge
 // entries derive their middle segment from the edge's spec.type
@@ -263,11 +263,11 @@ func shellSingleQuote(value string) string {
 func mcpServerName(edgeName, mcpserverName string) string {
 	switch {
 	case mcpserverName != "":
-		return "faros-" + mcpserverName
+		return "railgrid-" + mcpserverName
 	case edgeName != "":
-		return "faros-" + edgeTypeKind(edgeName) + "-" + edgeName
+		return "railgrid-" + edgeTypeKind(edgeName) + "-" + edgeName
 	}
-	return "faros"
+	return "railgrid"
 }
 
 // edgeTypeKind returns the singular per-edge segment matching the edge's
@@ -278,7 +278,7 @@ func edgeTypeKind(edgeName string) string {
 	if err != nil {
 		return "kubernetes-cluster"
 	}
-	edge, err := dynClient.Resource(farosclient.KubernetesClusterGVR).Get(context.Background(), edgeName, metav1.GetOptions{})
+	edge, err := dynClient.Resource(railgridclient.KubernetesClusterGVR).Get(context.Background(), edgeName, metav1.GetOptions{})
 	if err != nil {
 		return "kubernetes-cluster"
 	}
@@ -292,8 +292,8 @@ func edgeTypeKind(edgeName string) string {
 
 // mcpURLFromServerURL derives the per-edge MCP endpoint URL from a kcp server URL and edge name.
 //
-// Input:  https://faros.example.com/clusters/11tcw27t4rdtnacy, "my-edge"
-// Output: https://faros.example.com/services/providers/edges/agent/11tcw27t4rdtnacy/apis/edges.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp
+// Input:  https://railgrid.example.com/clusters/11tcw27t4rdtnacy, "my-edge"
+// Output: https://railgrid.example.com/services/providers/edges/agent/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp
 //
 // Per-edge MCP exposes the kube toolset against a single KubernetesCluster edge,
 // so the URL targets the `kubernetesclusters` resource on the decoupled edges
@@ -316,8 +316,8 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 // mcpAggregateURLFromServerURL derives the aggregate MCPServer endpoint URL
 // from a kcp server URL and an MCPServer object name.
 //
-// Input:  https://faros.example.com/clusters/root:faros:user-default, "default"
-// Output: https://faros.example.com/services/mcpserver/root:faros:user-default/apis/faros.sh/v1alpha1/mcpservers/default/mcp
+// Input:  https://railgrid.example.com/clusters/root:railgrid:user-default, "default"
+// Output: https://railgrid.example.com/services/mcpserver/root:railgrid:user-default/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp
 func mcpAggregateURLFromServerURL(serverURL, mcpserverName string) (string, error) {
 	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
 	if cluster == "default" {

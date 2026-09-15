@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/hub/tenant"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
 // These tests wire the REAL list handler behind the REAL OptionalOrgMiddleware.
@@ -117,7 +117,7 @@ func TestListHandler_AcceptedCredentialWithoutRecordSeesOnlyPlatform(t *testing.
 	})
 
 	names := listWith(t, scopedRegistry(), resolver, lookup,
-		map[string]string{tenant.HeaderFarosOrg: "org-1"})
+		map[string]string{tenant.HeaderRailgridOrg: "org-1"})
 	if hasName(names, "acme-secrets") {
 		t.Errorf("org provider leaked when identity could not be resolved: %v", names)
 	}
@@ -140,7 +140,7 @@ func TestListHandler_HeaderAloneCannotClaimAnotherOrg(t *testing.T) {
 	})
 
 	names := listWith(t, scopedRegistry(), resolver, lookup,
-		map[string]string{tenant.HeaderFarosOrg: "org-1"})
+		map[string]string{tenant.HeaderRailgridOrg: "org-1"})
 
 	if hasName(names, "acme-secrets") {
 		t.Fatalf("org-1's provider leaked to a member of org-2 who spoofed the header: %v", names)
@@ -165,7 +165,7 @@ func TestListHandler_VerifiedMemberSeesOwnOrg(t *testing.T) {
 	})
 
 	names := listWith(t, scopedRegistry(), resolver, lookup,
-		map[string]string{tenant.HeaderFarosOrg: "org-1"})
+		map[string]string{tenant.HeaderRailgridOrg: "org-1"})
 
 	if !hasName(names, "acme-secrets") {
 		t.Errorf("verified member did not see their own org's provider: %v", names)

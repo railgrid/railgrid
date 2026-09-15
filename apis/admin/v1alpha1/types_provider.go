@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,10 +32,10 @@ import (
 
 // Provider declaratively provisions the kcp-side scaffolding a third-party
 // extension needs to run: the per-provider sub-workspace
-// root:faros:providers:<name>, a "provider" ServiceAccount with cluster-admin
+// root:railgrid:providers:<name>, a "provider" ServiceAccount with cluster-admin
 // inside that workspace, and a long-lived kubeconfig the provider pod mounts —
-// written into a Secret in root:faros:system:providers (the same workspace this CR
-// lives in). It also binds the providers.faros.sh APIExport (CatalogEntry)
+// written into a Secret in root:railgrid:system:providers (the same workspace this CR
+// lives in). It also binds the providers.railgrid.ai APIExport (CatalogEntry)
 // into the new sub-workspace so the provider can self-register its CatalogEntry.
 //
 // It is deliberately minimal: workspace + ServiceAccount + kubeconfig Secret +
@@ -44,8 +44,8 @@ import (
 // come from the provider's own `init` (running inside the sub-workspace with the
 // minted kubeconfig).
 //
-// Provider lives in the admin.faros.sh APIExport, bound ONLY in
-// root:faros:system:providers — a provider cannot create a Provider from its own
+// Provider lives in the admin.railgrid.ai APIExport, bound ONLY in
+// root:railgrid:system:providers — a provider cannot create a Provider from its own
 // sub-workspace, so it cannot bootstrap sibling providers.
 //
 // WARNING: deleting a Provider triggers FULL teardown — its finalizer deletes
@@ -63,17 +63,17 @@ type Provider struct {
 
 // ProviderSpec defines the desired state of a Provider. The provider's name
 // (metadata.name) is the identity: it drives the sub-workspace path
-// (root:faros:providers:<name>) and the ServiceAccount, so the spec carries
+// (root:railgrid:providers:<name>) and the ServiceAccount, so the spec carries
 // only optional knobs.
 type ProviderSpec struct {
 	// DisplayName is informational, shown in admin tooling. The provisioned
-	// sub-workspace is always root:faros:providers:<metadata.name> regardless.
+	// sub-workspace is always root:railgrid:providers:<metadata.name> regardless.
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	DisplayName string `json:"displayName,omitempty"`
 
 	// SecretName overrides the name of the kubeconfig Secret the controller
-	// writes into root:faros:system:providers. Defaults to "<name>-kubeconfig".
+	// writes into root:railgrid:system:providers. Defaults to "<name>-kubeconfig".
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	SecretName string `json:"secretName,omitempty"`
@@ -89,7 +89,7 @@ type ProviderSpec struct {
 // ProviderStatus defines the observed state of a Provider.
 type ProviderStatus struct {
 	// WorkspacePath is the kcp workspace path the controller provisioned, e.g.
-	// "root:faros:providers:kuery".
+	// "root:railgrid:providers:kuery".
 	// +optional
 	WorkspacePath string `json:"workspacePath,omitempty"`
 
@@ -99,7 +99,7 @@ type ProviderStatus struct {
 	WorkspaceCluster string `json:"workspaceCluster,omitempty"`
 
 	// SecretRef points at the kubeconfig Secret the controller wrote into
-	// root:faros:system:providers.
+	// root:railgrid:system:providers.
 	// +optional
 	SecretRef *ProviderSecretRef `json:"secretRef,omitempty"`
 
@@ -115,10 +115,10 @@ type ProviderStatus struct {
 }
 
 // ProviderSecretRef locates the minted kubeconfig Secret in
-// root:faros:system:providers.
+// root:railgrid:system:providers.
 type ProviderSecretRef struct {
 	// Namespace is the namespace the Secret lives in within
-	// root:faros:system:providers. Typically "default".
+	// root:railgrid:system:providers. Typically "default".
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 

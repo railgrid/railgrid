@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,8 +36,8 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 const (
@@ -239,8 +239,8 @@ func completeReview(review Review) bool {
 
 func parseTenantPath(value string) (string, string, error) {
 	parts := strings.Split(strings.TrimSpace(value), ":")
-	if len(parts) != 5 || parts[0] != "root" || parts[1] != "faros" || parts[2] != "tenants" || parts[3] == "" || parts[4] == "" {
-		return "", "", errors.New("tenantPath must be root:faros:tenants:<orgUUID>:<workspaceUUID>")
+	if len(parts) != 5 || parts[0] != "root" || parts[1] != "railgrid" || parts[2] != "tenants" || parts[3] == "" || parts[4] == "" {
+		return "", "", errors.New("tenantPath must be root:railgrid:tenants:<orgUUID>:<workspaceUUID>")
 	}
 	return parts[3], parts[4], nil
 }

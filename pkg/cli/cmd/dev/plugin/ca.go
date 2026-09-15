@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,14 +39,14 @@ import (
 // (Codex, browsers you want to stop warning) can trust the local hub and its
 // published apps instead:
 //
-//	faros mcp codex --ca-file faros-hub-ca.crt
+//	railgrid mcp codex --ca-file railgrid-hub-ca.crt
 //
 // The chart's own self-signed option is no use for this: Helm regenerates that
 // CA on every render, so after a re-run the Secret no longer matches the
 // certificate the running hub serves.
 const (
-	devCAName      = "faros-dev-ca" // Certificate, Secret and ClusterIssuer
-	devCANamespace = "cert-manager" // a CA ClusterIssuer reads its Secret here
+	devCAName      = "railgrid-dev-ca" // Certificate, Secret and ClusterIssuer
+	devCANamespace = "cert-manager"    // a CA ClusterIssuer reads its Secret here
 )
 
 // devCAFile is where the CA is exported for clients.
@@ -54,7 +54,7 @@ func (o *DevOptions) devCAFile() string {
 	return o.HubClusterName + "-ca.crt"
 }
 
-// ensureDevCA creates the CA (issued by the faros-selfsigned ClusterIssuer)
+// ensureDevCA creates the CA (issued by the railgrid-selfsigned ClusterIssuer)
 // and a ClusterIssuer that signs with it, then waits until it is Ready.
 // Idempotent: cert-manager keeps the existing CA across re-runs.
 func ensureDevCA(ctx context.Context, kubeconfigPath string) error {
@@ -68,7 +68,7 @@ metadata:
   namespace: %[2]s
 spec:
   isCA: true
-  commonName: faros local dev CA
+  commonName: railgrid local dev CA
   secretName: %[1]s
   duration: 87600h # 10y: re-trusting a new CA every year is pointless for a laptop
   privateKey:

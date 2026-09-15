@@ -40,7 +40,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-vue-next'
-import type { FarosContext, ProjectFileInfo, ProjectFileContent, ProjectFileWriteResult } from './types'
+import type { RailgridContext, ProjectFileInfo, ProjectFileContent, ProjectFileWriteResult } from './types'
 import { api, isProjectFileRequestError } from './api'
 import { confirmDialog } from './portalkit/confirm'
 import { toast } from './portalkit/toast'
@@ -64,7 +64,7 @@ import {
 // binary files. Writes are paused while an assistant run owns the project.
 
 const props = withDefaults(defineProps<{
-  ctx: FarosContext | null
+  ctx: RailgridContext | null
   projectName: string
   refreshRevision: number
   /** An assistant run owns the workspace; the server answers writes with 409. */
@@ -264,7 +264,7 @@ function handleTreeKeydown(event: KeyboardEvent, row: Row, index: number) {
   }
 }
 
-function isCurrentProject(projectName: string, ctx: FarosContext | null): boolean {
+function isCurrentProject(projectName: string, ctx: RailgridContext | null): boolean {
   return props.projectName === projectName && props.ctx === ctx
 }
 
@@ -337,7 +337,7 @@ async function refreshWorkspaceSnapshot() {
 }
 
 /** Reload the tree after a write and select the written file. */
-async function refreshAndSelect(path: string, projectName: string, requestContext: FarosContext | null) {
+async function refreshAndSelect(path: string, projectName: string, requestContext: RailgridContext | null) {
   workspaceRefreshSerial++
   await loadTree()
   if (!isCurrentProject(projectName, requestContext) || !files.value.some((file) => file.path === path)) return

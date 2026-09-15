@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=grepo
+// +kubebuilder:resource:scope=Cluster,categories=railgrid,shortName=grepo
 // +kubebuilder:printcolumn:name="Connection",type=string,JSONPath=`.spec.connectionRef`
 // +kubebuilder:printcolumn:name="Repo",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Visibility",type=string,JSONPath=`.spec.visibility`
@@ -146,4 +146,4 @@ type RepositoryStatus struct {
 
 // FinalizerRepository is added by the RepositoryController so the host-side
 // repository is deleted before the CR disappears.
-const FinalizerRepository = "repositories.code.faros.sh/finalizer"
+const FinalizerRepository = "repositories.code.railgrid.ai/finalizer"

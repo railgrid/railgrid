@@ -16,7 +16,7 @@ export interface AssistantAnnotationDraftStorage {
   removeItem(key: string): void
 }
 
-const STORAGE_PREFIX = 'faros:app-studio:assistant-annotation-draft:v1'
+const STORAGE_PREFIX = 'railgrid:app-studio:assistant-annotation-draft:v1'
 const STORAGE_VERSION = 1
 const MAX_SCOPE_PART_LENGTH = 512
 export const ASSISTANT_ANNOTATION_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1_000

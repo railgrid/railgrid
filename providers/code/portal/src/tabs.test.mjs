@@ -16,6 +16,6 @@ describe('Code route tabs', () => {
   })
 
   it('leaves tab presentation to PortalKit', () => {
-    expect(style).not.toMatch(/faros-provider-code \.tabs(?:\s|\{|\.)/)
+    expect(style).not.toMatch(/railgrid-provider-code \.tabs(?:\s|\{|\.)/)
   })
 })

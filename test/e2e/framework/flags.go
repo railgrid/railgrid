@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package framework provides shared test infrastructure for faros e2e tests.
+// Package framework provides shared test infrastructure for railgrid e2e tests.
 package framework
 
 import (
@@ -37,8 +37,8 @@ var (
 	// for debugging failures.
 	KeepClusters bool
 
-	// FarosBin is the path to the faros binary under test.
-	FarosBin string
+	// RailgridBin is the path to the railgrid binary under test.
+	RailgridBin string
 
 	// DevToken is the static auth token used in standalone (non-OIDC) test suites.
 	DevToken string
@@ -46,7 +46,7 @@ var (
 
 func init() {
 	flag.BoolVar(&KeepClusters, "keep-clusters", false, "Keep kind clusters after test run (useful for debugging failures)")
-	flag.StringVar(&FarosBin, "faros-bin", "bin/faros", "Path to the faros CLI binary")
+	flag.StringVar(&RailgridBin, "railgrid-bin", "bin/railgrid", "Path to the railgrid CLI binary")
 	flag.StringVar(&DevToken, "dev-token", "dev-token", "Static auth token for non-OIDC test suites")
 	flag.DurationVar(&SSHKeepaliveDuration, "ssh-keepalive-duration", 60*time.Second, "How long to hold the long-lived SSH session open in the keepalive test (minimum 60s so the 30s ticker fires at least once)")
 }

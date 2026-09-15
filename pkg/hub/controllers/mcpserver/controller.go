@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@ limitations under the License.
 
 // Package mcpserver reconciles MCPServer objects. MCPServer is a built-in,
 // core-hosted "provider": the CRD is distributed to tenant workspaces via the
-// core.faros.sh APIExport/APIBinding, and this reconciler — running in-process
-// in the hub against the core.faros.sh multicluster manager — provisions each
+// core.railgrid.ai APIExport/APIBinding, and this reconciler — running in-process
+// in the hub against the core.railgrid.ai multicluster manager — provisions each
 // server's long-lived identity (ServiceAccount + token Secret + RBAC) and
 // publishes its endpoint URL + token reference on status. The aggregate MCP
 // serving itself lives in pkg/hub/mcpaggregate.
@@ -45,9 +45,9 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	farosv1alpha1 "github.com/faroshq/faros/apis/faros/v1alpha1"
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/hub/mcpaggregate"
+	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
 )
 
 // mcpIdentityNamespace is the tenant-workspace namespace the per-MCPServer
@@ -77,7 +77,7 @@ type Reconciler struct {
 	actionGrants ActionGrantSource
 }
 
-// SetupWithManager registers the MCPServer controller with the core.faros.sh
+// SetupWithManager registers the MCPServer controller with the core.railgrid.ai
 // multicluster manager. kcpConfig is the hub's admin config, used to build a
 // direct per-tenant client for identity provisioning (the token controller
 // populates legacy token Secrets written through a direct client, which the
@@ -91,7 +91,7 @@ func SetupWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExternal
 	r.actionGrants = cachedActionGrants(catalogActionGrants(kcpConfig), actionGrantCacheTTL)
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("mcpserver").
-		For(&farosv1alpha1.MCPServer{}).
+		For(&railgridv1alpha1.MCPServer{}).
 		Complete(r)
 }
 
@@ -108,7 +108,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	c := cl.GetClient()
 
-	var srv farosv1alpha1.MCPServer
+	var srv railgridv1alpha1.MCPServer
 	if err := c.Get(ctx, req.NamespacedName, &srv); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -149,15 +149,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	switch {
 	case provErr != nil:
-		srv.Status.Phase = farosv1alpha1.MCPServerPhaseError
+		srv.Status.Phase = railgridv1alpha1.MCPServerPhaseError
 		setCondition(&srv.Status.Conditions, "Ready", metav1.ConditionFalse, "ProvisioningFailed", provErr.Error(), srv.Generation)
 	case !tokenReady:
 		srv.Status.TokenSecretRef = ref
-		srv.Status.Phase = farosv1alpha1.MCPServerPhaseProvisioning
+		srv.Status.Phase = railgridv1alpha1.MCPServerPhaseProvisioning
 		setCondition(&srv.Status.Conditions, "Ready", metav1.ConditionFalse, "TokenPending", "waiting for token controller to populate the Secret", srv.Generation)
 	default:
 		srv.Status.TokenSecretRef = ref
-		srv.Status.Phase = farosv1alpha1.MCPServerPhaseReady
+		srv.Status.Phase = railgridv1alpha1.MCPServerPhaseReady
 		setCondition(&srv.Status.Conditions, "Ready", metav1.ConditionTrue, "EndpointReady", "endpoint provisioned", srv.Generation)
 		// Discover the tools this endpoint federates, using its OWN token so the
 		// set reflects exactly what this server can reach (per-server targeted
@@ -207,21 +207,21 @@ func statusCaller(clusterPath, mcpServerName string) mcpaggregate.Caller {
 // discoverTools runs federation discovery for one server with its own token and
 // maps the result into the CR status shape. Returns nil when no enumerator is
 // wired (e.g. minimal hubs), so status simply carries no federated providers.
-func (r *Reconciler) discoverTools(ctx context.Context, cluster string, caller mcpaggregate.Caller, token string) []farosv1alpha1.FederatedMCPProvider {
+func (r *Reconciler) discoverTools(ctx context.Context, cluster string, caller mcpaggregate.Caller, token string) []railgridv1alpha1.FederatedMCPProvider {
 	if r.enumerate == nil {
 		return nil
 	}
 	targets := r.enumerate(ctx, caller)
 	discovered := mcpaggregate.DiscoverFederation(ctx, targets, token, cluster)
-	out := make([]farosv1alpha1.FederatedMCPProvider, 0, len(discovered))
+	out := make([]railgridv1alpha1.FederatedMCPProvider, 0, len(discovered))
 	for _, p := range discovered {
-		tools := make([]farosv1alpha1.FederatedMCPTool, 0, len(p.Tools))
+		tools := make([]railgridv1alpha1.FederatedMCPTool, 0, len(p.Tools))
 		for _, t := range p.Tools {
-			tools = append(tools, farosv1alpha1.FederatedMCPTool{
+			tools = append(tools, railgridv1alpha1.FederatedMCPTool{
 				Name: t.Name, Title: t.Title, Description: t.Description,
 			})
 		}
-		out = append(out, farosv1alpha1.FederatedMCPProvider{
+		out = append(out, railgridv1alpha1.FederatedMCPProvider{
 			Name:        p.Name,
 			DisplayName: p.DisplayName,
 			Reachable:   p.Reachable,
@@ -242,7 +242,7 @@ func (r *Reconciler) tenantConfig(clusterName string) *rest.Config {
 
 // desiredRules computes the ClusterRole rules for one server from the tenant's
 // APIBindings and the platform action catalog (see rbac.go).
-func (r *Reconciler) desiredRules(ctx context.Context, kcp kcpclientset.Interface, srv *farosv1alpha1.MCPServer) ([]rbacv1.PolicyRule, error) {
+func (r *Reconciler) desiredRules(ctx context.Context, kcp kcpclientset.Interface, srv *railgridv1alpha1.MCPServer) ([]rbacv1.PolicyRule, error) {
 	bound, err := listBoundResources(ctx, kcp)
 	if err != nil {
 		return nil, fmt.Errorf("listing bound resources: %w", err)
@@ -268,12 +268,12 @@ func (r *Reconciler) desiredRules(ctx context.Context, kcp kcpclientset.Interfac
 // token Secret with a TokenRequest issued through EnsureWorkloadIdentity once
 // the portal has a rotation flow — the token is user-held, so it cannot be
 // rotated silently.
-func ensureMCPIdentity(ctx context.Context, cs kubernetes.Interface, srv *farosv1alpha1.MCPServer, rules []rbacv1.PolicyRule) (*corev1.SecretReference, string, bool, error) {
+func ensureMCPIdentity(ctx context.Context, cs kubernetes.Interface, srv *railgridv1alpha1.MCPServer, rules []rbacv1.PolicyRule) (*corev1.SecretReference, string, bool, error) {
 	saName := mcpaggregate.ServiceAccountName(srv.Name)
 	secretName := saName + "-token"
 
 	owner := metav1.OwnerReference{
-		APIVersion: farosv1alpha1.SchemeGroupVersion.String(),
+		APIVersion: railgridv1alpha1.SchemeGroupVersion.String(),
 		Kind:       "MCPServer",
 		Name:       srv.Name,
 		UID:        srv.UID,
@@ -337,7 +337,7 @@ func lookupClusterPath(ctx context.Context, c client.Client) string {
 
 // directClusterPath reads the workspace path off the LogicalCluster singleton
 // through the hub's direct tenant client. The multicluster client addresses
-// the core.faros.sh APIExport virtual workspace, which need not serve
+// the core.railgrid.ai APIExport virtual workspace, which need not serve
 // core.kcp.io LogicalClusters; status discovery needs the tenant regardless,
 // to apply the Org's provider shadowing. Returns "" on any failure.
 func directClusterPath(ctx context.Context, kcp kcpclientset.Interface) string {

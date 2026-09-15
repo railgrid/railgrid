@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,9 +34,9 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	"github.com/faroshq/faros/pkg/kcppaths"
-	"github.com/faroshq/faros/utils/testfakes"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
+	"github.com/railgrid/railgrid/utils/testfakes"
 )
 
 type httpDoerFunc func(*http.Request) (*http.Response, error)
@@ -537,7 +537,7 @@ func TestCatalogReconcilerSweepsRotatedProviderCredentials(t *testing.T) {
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
-			APIExport: &providersv1alpha1.ProviderAPIExport{Name: "cost.providers.faros.sh"},
+			APIExport: &providersv1alpha1.ProviderAPIExport{Name: "cost.providers.railgrid.ai"},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -576,7 +576,7 @@ func TestCatalogReconcilerSurvivesASweepFailure(t *testing.T) {
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
-			APIExport: &providersv1alpha1.ProviderAPIExport{Name: "cost.providers.faros.sh"},
+			APIExport: &providersv1alpha1.ProviderAPIExport{Name: "cost.providers.railgrid.ai"},
 		},
 	}
 	c := fake.NewClientBuilder().

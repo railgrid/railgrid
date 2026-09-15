@@ -6,7 +6,7 @@
 # Issuer lives in the SAME namespace as the kcp custom resources (default)
 # because RootShard/Shard reference it by name with kind Issuer.
 #
-# For production TLS on the *faros hub* (browser-facing), see the Cloudflare
+# For production TLS on the *railgrid hub* (browser-facing), see the Cloudflare
 # section of the install docs — kcp itself stays on the operator-managed CA
 # either way, clients trust it via the extracted kubeconfigs.
 

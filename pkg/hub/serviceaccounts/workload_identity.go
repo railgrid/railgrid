@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,14 +40,14 @@ import (
 
 const (
 	// WorkloadIdentityBootstrapAudience is the audience expected by the
-	// provider-owned bootstrap attestor. It is never used for the minted Faros
+	// provider-owned bootstrap attestor. It is never used for the minted Railgrid
 	// capability.
-	WorkloadIdentityBootstrapAudience = "faros-provider-actions-bootstrap"
+	WorkloadIdentityBootstrapAudience = "railgrid-provider-actions-bootstrap"
 
 	// WorkloadIdentityTokenAudience is the audience requested for the minted
 	// runtime capability. KCP's embedded and deployed API servers issue and
 	// validate ServiceAccount tokens for this issuer audience; using the
-	// legacy proxy-only "faros" audience would make the token fail at the
+	// legacy proxy-only "railgrid" audience would make the token fail at the
 	// provider's tenant API before the action reached its backend.
 	WorkloadIdentityTokenAudience = "https://kcp.default.svc"
 
@@ -58,35 +58,35 @@ const (
 
 	// LabelWorkloadIdentity marks service accounts created for the provider
 	// action runtime. These accounts intentionally do not carry
-	// LabelFarosSA, so the ordinary user-managed service-account CRUD surface
+	// LabelRailgridSA, so the ordinary user-managed service-account CRUD surface
 	// cannot list, patch, or rotate them.
-	LabelWorkloadIdentity = "faros.sh/workload-identity"
+	LabelWorkloadIdentity = "railgrid.ai/workload-identity"
 
 	// AnnotationWorkloadIdentityScope is a compact, non-secret audit marker.
 	// The token itself is never persisted in an annotation or Secret.
-	AnnotationWorkloadIdentityScope = "faros.sh/workload-identity-scope"
+	AnnotationWorkloadIdentityScope = "railgrid.ai/workload-identity-scope"
 
 	// AnnotationWorkloadIdentityTenantPath binds a workload ServiceAccount to
 	// the child workspace in which it was issued. The tenant resolver checks
-	// this marker after an online TokenReview, preventing a valid Faros token
+	// this marker after an online TokenReview, preventing a valid Railgrid token
 	// from being replayed with another tenant's selection headers.
-	AnnotationWorkloadIdentityTenantPath = "faros.sh/workload-identity-tenant"
+	AnnotationWorkloadIdentityTenantPath = "railgrid.ai/workload-identity-tenant"
 
 	// The remaining annotations carry the exact project identity tuple used to
 	// derive the deterministic workload ServiceAccount name. They are retained
 	// separately from the compact scope marker so an online verifier can load
 	// and compare the live Project before authorizing an action invocation.
-	AnnotationWorkloadIdentityProject     = "faros.sh/workload-identity-project"
-	AnnotationWorkloadIdentityProjectUID  = "faros.sh/workload-identity-project-uid"
-	AnnotationWorkloadIdentityEnvironment = "faros.sh/workload-identity-environment"
-	AnnotationWorkloadIdentityInstance    = "faros.sh/workload-identity-instance"
+	AnnotationWorkloadIdentityProject     = "railgrid.ai/workload-identity-project"
+	AnnotationWorkloadIdentityProjectUID  = "railgrid.ai/workload-identity-project-uid"
+	AnnotationWorkloadIdentityEnvironment = "railgrid.ai/workload-identity-environment"
+	AnnotationWorkloadIdentityInstance    = "railgrid.ai/workload-identity-instance"
 
-	workloadIdentityNamePrefix = "faros-wi-"
+	workloadIdentityNamePrefix = "railgrid-wi-"
 	workloadIdentityRoleSuffix = "-access"
 
 	// The project resource is owned by App Studio. Provider-resource rules are
 	// derived from the verified Project environment and are never hard-coded.
-	workloadProjectGroup    = "ai.faros.sh"
+	workloadProjectGroup    = "ai.railgrid.ai"
 	workloadProjectResource = "projects"
 )
 

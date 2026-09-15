@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,16 +27,16 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/provider-edges/internal/events"
-	"github.com/faroshq/provider-edges/internal/kcpurl"
-	utilhttp "github.com/faroshq/provider-edges/internal/wsutil"
-	"github.com/faroshq/provider-sdk/revdial"
+	"github.com/railgrid/provider-edges/internal/events"
+	"github.com/railgrid/provider-edges/internal/kcpurl"
+	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
+	"github.com/railgrid/provider-sdk/revdial"
 )
 
 // KindConfig declares one connectable kind the tunnel serves. All kinds a
 // Server serves MUST share a group + version (they live in one APIExport); they
 // differ only by resource/kind (e.g. kubernetesclusters/KubernetesCluster,
-// linuxservers/LinuxServer, and macosservers/MacOSServer under edges.faros.sh).
+// linuxservers/LinuxServer, and macosservers/MacOSServer under edges.railgrid.ai).
 type KindConfig struct {
 	// GVR is the connectable kind's GroupVersionResource.
 	GVR schema.GroupVersionResource
@@ -51,7 +51,7 @@ type authorizeFnType func(ctx context.Context, tenantCfg, kcpConfig *rest.Config
 
 // TenantConfigGetter returns a *rest.Config scoped to the given kcp tenant
 // logical cluster, able to read/write the Edge resources (and their
-// faros-system Secrets) the provider owns in that workspace.
+// railgrid-system Secrets) the provider owns in that workspace.
 //
 // It exists because the provider's own SA credential (p.kcpConfig) is
 // workspace-scoped: re-rooting it to /clusters/<tenant> is rejected by kcp
@@ -67,7 +67,7 @@ type TenantConfigGetter func(ctx context.Context, cluster string) (*rest.Config,
 
 // Server is the SDK's generic tunnel plane. The single `edges` provider
 // constructs one serving all connectable kinds (KubernetesCluster, LinuxServer,
-// and MacOSServer under edges.faros.sh): it terminates their agent reverse tunnels
+// and MacOSServer under edges.railgrid.ai): it terminates their agent reverse tunnels
 // (revdial + one in-process ConnManager, keyed by resource/cluster/name) and
 // serves the k8s / ssh data-plane subresources. Requests are dispatched to the
 // right kind by the resource segment in the URL path.
@@ -296,7 +296,7 @@ func (p *Server) tenantConfigFor(ctx context.Context, cluster string) (*rest.Con
 //
 // Without it the edgeproxy / service handlers wrapped their authorization in
 // `if p.kcpConfig != nil`, so a provider that started without a usable kcp
-// kubeconfig — including one whose FAROS_PROVIDER_KUBECONFIG is set but
+// kubeconfig — including one whose RAILGRID_PROVIDER_KUBECONFIG is set but
 // unreadable, which loadKCPConfig silently degrades to nil — served the data
 // plane to any non-empty bearer. The handlers are mounted unconditionally, so
 // "no kcp config" must mean "refuse traffic", not "skip the check".
@@ -339,7 +339,7 @@ func (s *Server) ConnManager() *ConnManager { return s.edgeConnManager }
 
 // AgentIngressHandler terminates agent reverse tunnels. Mounted (behind the hub
 // backend proxy) at /services/providers/edges/agent/. Path after
-// StripPrefix: /{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy
+// StripPrefix: /{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy
 // and /proxy (revdial pickup).
 func (s *Server) AgentIngressHandler() http.Handler {
 	return s.buildEdgeAgentProxyHandler()
@@ -347,7 +347,7 @@ func (s *Server) AgentIngressHandler() http.Handler {
 
 // EdgeProxyHandler serves the consumer data-plane subresources. Mounted (behind
 // the hub backend proxy) at /services/providers/edges/edgeproxy/.
-// Path after StripPrefix: /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{k8s|ssh}.
+// Path after StripPrefix: /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{k8s|ssh}.
 func (s *Server) EdgeProxyHandler() http.Handler {
 	return s.buildEdgesProxyHandler()
 }

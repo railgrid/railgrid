@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros/pkg/kcppaths"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // Edge routing for org-owned providers.
@@ -42,15 +42,15 @@ import (
 // Workspace — an object in the org's tree that only the hub writes.
 const (
 	// EdgeRouteWorkspaceAnnotation is the team workspace holding the edge.
-	EdgeRouteWorkspaceAnnotation = "edges.faros.sh/route-workspace"
+	EdgeRouteWorkspaceAnnotation = "edges.railgrid.ai/route-workspace"
 	// EdgeRouteEdgeAnnotation is the KubernetesCluster edge's name.
-	EdgeRouteEdgeAnnotation = "edges.faros.sh/route-edge"
+	EdgeRouteEdgeAnnotation = "edges.railgrid.ai/route-edge"
 )
 
 // edgeServiceGVR is the edges provider's Service — the reverse-proxy record the
 // agent turns into an HTTP hop inside the tenant's cluster.
 var edgeServiceGVR = schema.GroupVersionResource{
-	Group: "edges.faros.sh", Version: "v1alpha1", Resource: "services",
+	Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "services",
 }
 
 // EdgeRoute is where a self-hosted provider's backend is reached: which
@@ -61,7 +61,7 @@ type EdgeRoute struct {
 	WorkspaceUUID string
 	// EdgeName is the KubernetesCluster edge whose agent carries the tunnel.
 	EdgeName string
-	// ServiceName is the hub-owned edges.faros.sh/Service. Derived, never read
+	// ServiceName is the hub-owned edges.railgrid.ai/Service. Derived, never read
 	// from tenant input.
 	ServiceName string
 	// Cluster is WorkspaceUUID's kcp logical-cluster ID — what the edges proxy
@@ -211,7 +211,7 @@ type ClusterServiceTarget struct {
 // The provider's own CatalogEntry is the only thing that knows where it listens
 // in the tenant's cluster — the chart's fullname and namespace are its choice,
 // not something the hub can predict (an operator-mode install lands on
-// `<release>-<chart>.<serve-ns>.svc`, not the `<name>.faros-provider-<name>.svc`
+// `<release>-<chart>.<serve-ns>.svc`, not the `<name>.railgrid-provider-<name>.svc`
 // a hub-side guess would produce). So the address is read from there but not
 // trusted: it must be a `.svc` / `.svc.cluster.local` name, so the worst a
 // tenant can aim this at is something inside the cluster the tunnel already
@@ -253,7 +253,7 @@ func ParseClusterServiceTarget(backendURL string) (*ClusterServiceTarget, error)
 	return &ClusterServiceTarget{Name: labels[0], Namespace: labels[1], Port: port, Scheme: u.Scheme}, nil
 }
 
-// EnsureProviderEdgeService reconciles the hub-owned edges.faros.sh/Service
+// EnsureProviderEdgeService reconciles the hub-owned edges.railgrid.ai/Service
 // that fronts one org-owned provider.
 //
 // spec.auth is "passthrough": a provider backend authorizes the END USER, so
@@ -279,14 +279,14 @@ func (b *Bootstrapper) EnsureProviderEdgeService(ctx context.Context, orgUUID st
 		"auth":      "passthrough",
 	}
 	labels := map[string]any{
-		"edges.faros.sh/edge":      route.EdgeName,
-		"providers.faros.sh/owned": "true",
+		"edges.railgrid.ai/edge":      route.EdgeName,
+		"providers.railgrid.ai/owned": "true",
 	}
 
 	existing, err := wsClient.Resource(edgeServiceGVR).Get(ctx, route.ServiceName, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
 		obj := &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "edges.faros.sh/v1alpha1",
+			"apiVersion": "edges.railgrid.ai/v1alpha1",
 			"kind":       "Service",
 			"metadata":   map[string]any{"name": route.ServiceName, "labels": labels},
 			"spec":       desired,

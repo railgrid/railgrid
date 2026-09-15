@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,8 +33,8 @@ limitations under the License.
 //     before;
 //   - pods in the same workspace's other runtime namespaces (a workspace that
 //     uses several kcp namespaces), matched by the provider-owned
-//     faros.sh/tenant + faros.sh/managed-by namespace labels;
-//   - the exposure Gateway's namespace (FAROS_GATEWAY_NAMESPACE): the HTTPRoute
+//     railgrid.ai/tenant + railgrid.ai/managed-by namespace labels;
+//   - the exposure Gateway's namespace (RAILGRID_GATEWAY_NAMESPACE): the HTTPRoute
 //     → <name>-gate / <name>-oauth hop is dialled by the Gateway's data-plane
 //     pods (cfgate's cloudflared, Envoy Gateway's envoy);
 //   - operator-configured extra namespaces and CIDRs — in particular whatever
@@ -62,18 +62,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/faroshq/provider-infrastructure/kro"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 const (
 	// Name is the NetworkPolicy's name in every tenant runtime namespace.
-	Name = "faros-tenant-isolation"
+	Name = "railgrid-tenant-isolation"
 
 	// LabelKey / LabelValue mark the policy as the provider-owned tenant
 	// isolation policy, alongside kro.LabelManagedBy. Enabled, the provider
 	// owns the name and converges any object called Name onto the desired
 	// policy; disabled, it deletes only an object carrying both labels.
-	LabelKey   = "faros.sh/network-policy"
+	LabelKey   = "railgrid.ai/network-policy"
 	LabelValue = "tenant-isolation"
 
 	// namespaceNameLabel is the immutable label the API server stamps on every
@@ -88,16 +88,16 @@ const (
 	// EnvEnabled turns the policy on ("true") or off ("false", the default).
 	// Off also removes a previously created provider-owned policy, so the
 	// switch is a reversible kill switch.
-	EnvEnabled = "FAROS_TENANT_NETWORK_POLICY_ENABLED"
+	EnvEnabled = "RAILGRID_TENANT_NETWORK_POLICY_ENABLED"
 	// EnvAllowedNamespaces is a comma-separated list of extra namespaces whose
 	// pods may reach tenant pods (e.g. a Gateway implementation that runs its
 	// proxies outside the Gateway's namespace, kube-system for
 	// konnectivity-agent, a monitoring namespace).
-	EnvAllowedNamespaces = "FAROS_TENANT_NETWORK_POLICY_ALLOWED_NAMESPACES"
+	EnvAllowedNamespaces = "RAILGRID_TENANT_NETWORK_POLICY_ALLOWED_NAMESPACES"
 	// EnvAllowedCIDRs is a comma-separated list of CIDRs admitted as ipBlock
 	// peers — typically the addresses the runtime kube-apiserver's
 	// services/proxy traffic arrives from when it runs on another node.
-	EnvAllowedCIDRs = "FAROS_TENANT_NETWORK_POLICY_ALLOWED_CIDRS"
+	EnvAllowedCIDRs = "RAILGRID_TENANT_NETWORK_POLICY_ALLOWED_CIDRS"
 )
 
 // EnvNames lists every variable above, for the operator's passthrough.
@@ -109,7 +109,7 @@ type Config struct {
 	// When false the provider removes the policy it previously created.
 	Enabled bool
 	// GatewayNamespace is the exposure Gateway's namespace
-	// (FAROS_GATEWAY_NAMESPACE); always admitted when non-empty.
+	// (RAILGRID_GATEWAY_NAMESPACE); always admitted when non-empty.
 	GatewayNamespace string
 	// AllowedNamespaces are extra namespaces whose pods are admitted.
 	AllowedNamespaces []string
@@ -118,7 +118,7 @@ type Config struct {
 }
 
 // FromEnv reads the configuration from the environment. gatewayNamespace is
-// the resolved exposure Gateway namespace (FAROS_GATEWAY_NAMESPACE with its
+// the resolved exposure Gateway namespace (RAILGRID_GATEWAY_NAMESPACE with its
 // in-binary default applied).
 func FromEnv(gatewayNamespace string) (Config, error) {
 	cfg := Config{

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
-	"github.com/faroshq/faros/pkg/kcppaths"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // DelegatedTokenIssuer mints the credential the hub sends to an org-owned
@@ -74,7 +74,7 @@ func (p *ProviderProxy) resolveProvider(r *http.Request, name string) (Provider,
 
 // callerOrgUUID derives the caller's Org from the tenant workspace path the
 // resolver returns, which is Organization.Status.WorkspacePath —
-// root:faros:tenants:{orgUUID}[:{wsUUID}].
+// root:railgrid:tenants:{orgUUID}[:{wsUUID}].
 //
 // Returns "" on any doubt. Every caller falls back to platform-scoped
 // resolution in that case, which is the pre-existing behaviour: unresolvable
@@ -88,7 +88,7 @@ func (p *ProviderProxy) callerOrgUUID(r *http.Request) string {
 	return orgUUID
 }
 
-// splitTenantPath takes root:faros:tenants:{org}[:{ws}] apart. Both results
+// splitTenantPath takes root:railgrid:tenants:{org}[:{ws}] apart. Both results
 // are empty when the path is not under the tenants parent; ws is empty for an
 // org-scope path.
 func splitTenantPath(tenantPath string) (orgUUID, wsUUID string) {
@@ -120,7 +120,7 @@ func splitTenantPath(tenantPath string) (orgUUID, wsUUID string) {
 // rather than fall back to forwarding the bearer.
 //
 // The delegated account is minted in the workspace the caller selected
-// (X-Faros-Workspace, verified against their membership by the resolver). An
+// (X-Railgrid-Workspace, verified against their membership by the resolver). An
 // org-scope selection has nowhere to mint it — org workspaces are sealed
 // (O-10) and the hub's SA proxy path refuses tokens bound there — so it is
 // refused for platform providers exactly as for org-owned ones.
@@ -206,11 +206,11 @@ func issueDelegatedToken(ctx context.Context, issuer DelegatedTokenIssuer, prov 
 	}
 	if caller.WorkspaceUUID == "" {
 		// The delegated account lives in a team workspace; an org-scope
-		// resolution (no X-Faros-Workspace) has nowhere to mint it. The portal
+		// resolution (no X-Railgrid-Workspace) has nowhere to mint it. The portal
 		// sends the workspace header on provider calls whenever a workspace
 		// is selected.
 		return "", &delegationRefusal{status: http.StatusForbidden, reason: "no team workspace to mint in",
-			message: "a workspace selection (X-Faros-Workspace) is required to reach provider: " + prov.Name}
+			message: "a workspace selection (X-Railgrid-Workspace) is required to reach provider: " + prov.Name}
 	}
 	if issuer == nil {
 		return "", &delegationRefusal{status: http.StatusServiceUnavailable, reason: "no delegated token issuer wired",

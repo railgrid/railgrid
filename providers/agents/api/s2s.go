@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,15 +30,15 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/store"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/store"
 )
 
 // Service-to-service invocation.
 //
 // Every other way into this provider assumes a human: the hub authenticates the
-// caller, resolves their workspace, and injects X-Faros-* headers. That chain
+// caller, resolves their workspace, and injects X-Railgrid-* headers. That chain
 // runs on a User CR and a Membership, so a caller with neither — another
 // provider, a CI job, a cron — has no way in, and the only workaround was to
 // borrow a user's token.
@@ -56,7 +56,7 @@ import (
 //  1. TokenReview resolves the identity, in the workspace that issued the token.
 //  2. SubjectAccessReview asks the TARGET workspace's RBAC whether that identity
 //     may run this agent — verb create (or get, to read a run) on
-//     agents.faros.sh/agents/delegate, named for the agent.
+//     agents.railgrid.ai/agents/delegate, named for the agent.
 //
 // Both go through the APIExport virtual workspace scoped to the target cluster.
 // Neither re-roots the provider's own kubeconfig at the tenant path: that is the
@@ -66,7 +66,7 @@ import (
 // A tenant grants access by writing ordinary RBAC in their workspace, e.g.
 //
 //	kind: ClusterRole            rules:
-//	  - apiGroups: [agents.faros.sh]
+//	  - apiGroups: [agents.railgrid.ai]
 //	    resources: [agents/delegate]
 //	    verbs: [create, get]
 //	    resourceNames: [researcher]   # optional: one agent only

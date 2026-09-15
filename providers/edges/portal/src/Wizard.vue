@@ -88,12 +88,12 @@ const edgeGuidanceValues = computed<CreateGuidanceValue[]>(() => [
   { label: 'Scheduling labels', value: labels.value.trim() || 'None', technical: true },
 ])
 const edgePrerequisites = [
-  'Access to the target cluster with Helm, or to the Linux/macOS host with the Faros CLI.',
+  'Access to the target cluster with Helm, or to the Linux/macOS host with the Railgrid CLI.',
   'A unique Kubernetes-compatible name in this workspace.',
   'Optional key=value labels if Workloads will target this edge.',
 ]
 const edgeNextSteps = [
-  'Faros creates a KubernetesCluster, LinuxServer, or MacOSServer resource and mints a one-time join token.',
+  'Railgrid creates a KubernetesCluster, LinuxServer, or MacOSServer resource and mints a one-time join token.',
   'Run the generated command on the target; the token is masked here and copied only when requested.',
   'The agent exchanges the token for an edge-scoped credential and opens its outbound tunnel.',
 ]
@@ -104,15 +104,15 @@ const hubURL = computed(() => {
 
 const masked = MACOS_MASKED_JOIN_TOKEN
 function helmSnippet(token: string) {
-  return `helm install faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\
-  --namespace faros-agent --create-namespace \\
+  return `helm install railgrid-agent oci://ghcr.io/railgrid/charts/railgrid-agent \\
+  --namespace railgrid-agent --create-namespace \\
   --set agent.edgeName=${trimmed.value} \\
   --set agent.hub.url=${hubURL.value} \\
   --set agent.hub.token=${token}`
 }
 function cliSnippet(token: string) {
   if (edgeType.value === 'macos') return macosJoinSnippet(trimmed.value, props.cluster, token)
-  return `faros agent join \\
+  return `railgrid agent join \\
   --hub-url ${hubURL.value} \\
   --edge-name ${trimmed.value} \\
   --type ${edgeType.value} \\
@@ -196,7 +196,7 @@ function startPolling() {
       if (!active || step.value !== 2 || !p) return
       if (!joinToken.value && p.joinToken) joinToken.value = p.joinToken
       if (!joinToken.value && Date.now() > tokenDeadline) {
-        tokenError.value = `Could not retrieve join token. Run: faros edge join-command ${edgeName}`
+        tokenError.value = `Could not retrieve join token. Run: railgrid edge join-command ${edgeName}`
       }
       if (p.connected) {
         agentVersion.value = p.agentVersion ?? null
@@ -279,7 +279,7 @@ function fmt(s: number) {
         </div>
         <CreateGuidance
           title="Configure the edge"
-          description="Choose how Faros will identify and manage this target. After creation, install the agent from the generated command."
+          description="Choose how Railgrid will identify and manage this target. After creation, install the agent from the generated command."
           :prerequisites="edgePrerequisites"
           :values="edgeGuidanceValues"
           :next-steps="edgeNextSteps"
@@ -313,7 +313,7 @@ function fmt(s: number) {
           <pre>{{ helmText }}</pre>
         </div>
         <div class="snippet">
-          <div class="snippet-head"><span>CLI — faros agent join</span>
+          <div class="snippet-head"><span>CLI — railgrid agent join</span>
             <button
               type="button"
               class="k-icon-action snippet-copy"

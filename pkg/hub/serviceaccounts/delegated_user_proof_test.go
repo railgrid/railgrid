@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-const proofTestNamespace = "faros-hub"
+const proofTestNamespace = "railgrid-hub"
 
 // The key has to outlive a hub restart and be identical across replicas, or a
 // token minted by one hub stops verifying at the next. It is therefore stored,

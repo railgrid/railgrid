@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,16 +24,16 @@ import (
 )
 
 func testServer(edgeProxyPublicPath string) *Server {
-	kube := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
-	linux := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
-	mac := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "macosservers"}
+	kube := schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "kubernetesclusters"}
+	linux := schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "linuxservers"}
+	mac := schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "macosservers"}
 	return &Server{
 		kinds: map[string]KindConfig{
 			kube.Resource:  {GVR: kube, Kind: "KubernetesCluster"},
 			linux.Resource: {GVR: linux, Kind: "LinuxServer"},
 			mac.Resource:   {GVR: mac, Kind: "MacOSServer"},
 		},
-		group:               "edges.faros.sh",
+		group:               "edges.railgrid.ai",
 		version:             "v1alpha1",
 		edgeProxyPublicPath: edgeProxyPublicPath,
 	}
@@ -55,14 +55,14 @@ func TestEdgeProxyStatusURL(t *testing.T) {
 			gvr:     s.kinds["kubernetesclusters"].GVR,
 			cluster: "11tcw27t4rdtnacy",
 			obj:     "dev-edge-kube-1",
-			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.faros.sh/v1alpha1/kubernetesclusters/dev-edge-kube-1/k8s",
+			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/dev-edge-kube-1/k8s",
 		},
 		{
 			name:    "linux server maps to ssh subresource",
 			gvr:     s.kinds["linuxservers"].GVR,
 			cluster: "11tcw27t4rdtnacy",
 			obj:     "dev-edge-srv-1",
-			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.faros.sh/v1alpha1/linuxservers/dev-edge-srv-1/ssh",
+			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/linuxservers/dev-edge-srv-1/ssh",
 		},
 		{
 			name:    "macOS server has no consumer data-plane URL",

@@ -4,7 +4,7 @@
 
 # UI copy policy
 
-Copy is part of the interaction contract: it tells a user what Faros is doing,
+Copy is part of the interaction contract: it tells a user what Railgrid is doing,
 what exists, and what can be done next. This policy governs visible labels,
 state messages, guidance, and safe technical detail. Component mechanics stay
 in the [component entries](../components/); page composition stays in the

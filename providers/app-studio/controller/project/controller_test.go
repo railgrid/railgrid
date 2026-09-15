@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,9 +32,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/bindings"
-	"github.com/faroshq/provider-app-studio/store"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 func binding(name string) aiv1alpha1.ProjectProviderBindingSpec {
@@ -43,7 +43,7 @@ func binding(name string) aiv1alpha1.ProjectProviderBindingSpec {
 		Provider: "infrastructure",
 		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
 		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
-			APIVersion: "infrastructure.faros.sh/v1alpha1",
+			APIVersion: "infrastructure.railgrid.ai/v1alpha1",
 			Kind:       "Instance",
 			Resource:   "instances",
 		},
@@ -242,11 +242,11 @@ func TestReconcileDevelopmentPreviewPolicy(t *testing.T) {
 func TestEqualSpecAndMetaDetectsDrift(t *testing.T) {
 	base := func() *unstructured.Unstructured {
 		return &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "infrastructure.faros.sh/v1alpha1",
+			"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 			"kind":       "Application",
 			"metadata": map[string]any{
 				"name":   "demo-dev",
-				"labels": map[string]any{"app-studio.faros.sh/project": "demo"},
+				"labels": map[string]any{"app-studio.railgrid.ai/project": "demo"},
 			},
 			"spec": map[string]any{"webImage": "x"},
 			// Instance-owned fields must not count as drift.
@@ -314,7 +314,7 @@ func TestEnsureInstanceDeepMergesComputedFieldsAndRetriesConflict(t *testing.T) 
 					"computed": "preserve-nested",
 				},
 				bindings.ActionsExchangeURLField: "https://stale.example/exchange",
-				"farosActionsFutureField":        "stale",
+				"railgridActionsFutureField":     "stale",
 			},
 		},
 	}}
@@ -401,7 +401,7 @@ func TestEnsureInstanceDeepMergesComputedFieldsAndRetriesConflict(t *testing.T) 
 
 // Keep the conflict test independent of provider-specific API discovery.
 func schemaGroupResourceForTest() schema.GroupResource {
-	return schema.GroupResource{Group: "infrastructure.faros.sh", Resource: "applications"}
+	return schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "applications"}
 }
 
 func TestResolveLogicalClusterPathFromAppStudioBinding(t *testing.T) {
@@ -413,10 +413,10 @@ func TestResolveLogicalClusterPathFromAppStudioBinding(t *testing.T) {
 		want     string
 		wantErr  string
 	}{
-		{name: "success", cluster: "cluster-a", path: "root:faros:tenants:org:workspace", want: "root:faros:tenants:org:workspace"},
-		{name: "cluster mismatch", cluster: "cluster-b", path: "root:faros:tenants:org:workspace", wantErr: "does not match request cluster"},
+		{name: "success", cluster: "cluster-a", path: "root:railgrid:tenants:org:workspace", want: "root:railgrid:tenants:org:workspace"},
+		{name: "cluster mismatch", cluster: "cluster-b", path: "root:railgrid:tenants:org:workspace", wantErr: "does not match request cluster"},
 		{name: "missing path", cluster: "cluster-a", wantErr: "no kcp.io/path annotation"},
-		{name: "multiple bindings", cluster: "cluster-a", path: "root:faros:tenants:org:workspace", multiple: true, wantErr: "multiple APIBindings"},
+		{name: "multiple bindings", cluster: "cluster-a", path: "root:railgrid:tenants:org:workspace", multiple: true, wantErr: "multiple APIBindings"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			newBinding := func(name string) *apisv1alpha2.APIBinding {
@@ -470,18 +470,18 @@ func TestOverlayDevelopmentBindingUsesAuthoritativeConfigAndClearsRevokedTranspo
 	}
 	binding := actionsDevelopmentBinding(`{
 		"name":"demo-dev",
-		"farosActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
-		"farosActionsBaseURL":"https://stale.example/services/providers/app-studio",
-		"farosActionsCABundle":"stale-ca",
-		"farosActionsTenantPath":"stale-tenant",
-		"farosActionsProject":"stale-project"
+		"railgridActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
+		"railgridActionsBaseURL":"https://stale.example/services/providers/app-studio",
+		"railgridActionsCABundle":"stale-ca",
+		"railgridActionsTenantPath":"stale-tenant",
+		"railgridActionsProject":"stale-project"
 	}`)
 	r := &Reconciler{Actions: bindings.ActionsRuntimeConfig{
 		ExternalURL: "https://actions.example",
 		CABundle:    "authoritative-ca",
 	}}
 
-	updated, err := r.overlayDevelopmentBinding(p, binding, "root:faros:tenants:authoritative-org:authoritative-workspace")
+	updated, err := r.overlayDevelopmentBinding(p, binding, "root:railgrid:tenants:authoritative-org:authoritative-workspace")
 	if err != nil {
 		t.Fatalf("active overlay: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestOverlayDevelopmentBindingUsesAuthoritativeConfigAndClearsRevokedTranspo
 		bindings.ActionsExchangeURLField: "https://actions.example/api/provider-actions/workload/exchange",
 		bindings.ActionsBaseURLField:     "https://actions.example/services/providers/app-studio",
 		bindings.ActionsCABundleField:    "authoritative-ca",
-		bindings.ActionsTenantPathField:  "root:faros:tenants:authoritative-org:authoritative-workspace",
+		bindings.ActionsTenantPathField:  "root:railgrid:tenants:authoritative-org:authoritative-workspace",
 		bindings.ActionsOrgField:         "authoritative-org",
 		bindings.ActionsWorkspaceField:   "authoritative-workspace",
 		bindings.ActionsProjectField:     "demo",
@@ -510,7 +510,7 @@ func TestOverlayDevelopmentBindingUsesAuthoritativeConfigAndClearsRevokedTranspo
 	if bindings.HasActiveProviderActionGrant(p) {
 		t.Fatal("revoked test grant is still active")
 	}
-	updated, err = r.overlayDevelopmentBinding(p, binding, "root:faros:tenants:authoritative-org:authoritative-workspace")
+	updated, err = r.overlayDevelopmentBinding(p, binding, "root:railgrid:tenants:authoritative-org:authoritative-workspace")
 	if err != nil {
 		t.Fatalf("revoked overlay: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestOverlayDevelopmentBindingUsesAuthoritativeConfigAndClearsRevokedTranspo
 			t.Errorf("revoked transport field %s survived: %v", key, values[key])
 		}
 	}
-	if values[bindings.ActionsTenantPathField] != "root:faros:tenants:authoritative-org:authoritative-workspace" {
+	if values[bindings.ActionsTenantPathField] != "root:railgrid:tenants:authoritative-org:authoritative-workspace" {
 		t.Fatalf("revoked tenant path = %v, want authoritative identity", values[bindings.ActionsTenantPathField])
 	}
 }
@@ -560,7 +560,7 @@ func TestActionsTenantPathRejectsConflictingProjectAnnotations(t *testing.T) {
 				}}},
 			}
 			r := &Reconciler{ResolveTenantPath: func(context.Context, client.Client, string) (string, error) {
-				return "root:faros:tenants:org:workspace", nil
+				return "root:railgrid:tenants:org:workspace", nil
 			}}
 			_, err := r.actionsTenantPath(context.Background(), nil, p, providerBindings(p), "cluster-a")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {

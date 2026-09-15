@@ -1,5 +1,5 @@
 <!--
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -44,8 +44,8 @@ function validatedInternalPath(value: unknown): string {
   }
 
   try {
-    const parsed = new URL(candidate, 'https://faros.internal')
-    if (parsed.origin !== 'https://faros.internal') return '/'
+    const parsed = new URL(candidate, 'https://railgrid.internal')
+    if (parsed.origin !== 'https://railgrid.internal') return '/'
     if (
       parsed.pathname === '/organizations' ||
       parsed.pathname.startsWith('/organizations/') ||
@@ -115,11 +115,11 @@ async function createOrganization() {
         <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
         <span>Back</span>
       </button>
-      <div class="flex items-center gap-2 text-text-muted" aria-label="Faros">
+      <div class="flex items-center gap-2 text-text-muted" aria-label="Railgrid">
         <span class="flex h-6 w-6 items-center justify-center rounded-md border border-border-subtle bg-surface-raised text-accent">
           <Hexagon class="h-3.5 w-3.5" :stroke-width="1.5" aria-hidden="true" />
         </span>
-        <span class="type-display text-[12px] font-semibold tracking-[0.22em] text-text-primary">FAROS</span>
+        <span class="type-display text-[12px] font-semibold tracking-[0.22em] text-text-primary">RAILGRID</span>
       </div>
     </header>
 

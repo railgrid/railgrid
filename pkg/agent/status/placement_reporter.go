@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,8 +39,8 @@ import (
 const (
 	placementReporterName = "placement-status-reporter"
 
-	edgesGroup = "edges.faros.sh"
-	// PlacementLabel identifies local Deployments managed by a faros Placement.
+	edgesGroup = "edges.railgrid.ai"
+	// PlacementLabel identifies local Deployments managed by a railgrid Placement.
 	PlacementLabel               = edgesGroup + "/placement"
 	placementNamespaceAnnotation = edgesGroup + "/placement-namespace"
 )
@@ -103,7 +103,7 @@ func (r *PlacementReporter) enqueueDeployment(obj interface{}) {
 		}
 	}
 
-	// Only process Deployments managed by faros.
+	// Only process Deployments managed by railgrid.
 	if _, ok := deployment.Labels[PlacementLabel]; !ok {
 		return
 	}

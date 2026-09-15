@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -9,7 +9,7 @@ You may obtain a copy of the License at
 */
 
 // Package scheme builds the runtime.Scheme the code provider's controller
-// manager and clients share: the provider's own code.faros.sh types
+// manager and clients share: the provider's own code.railgrid.ai types
 // plus core/v1 (the controllers read/write Secrets in tenant workspaces) and
 // the kcp apis.kcp.io types the multicluster apiexport provider needs.
 package scheme
@@ -23,7 +23,7 @@ import (
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 )
 
 // NewScheme returns a fully-populated scheme. Panics on registration error

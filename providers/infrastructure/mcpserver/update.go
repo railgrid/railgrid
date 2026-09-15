@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@ package mcpserver
 // agents had to delete+re-provision, wiping managed state.
 //
 // Guardrails: identity and platform-owned fields are always immutable
-// (name, farosMode, expose, credentialsSecretName); templates declare their
-// own immutable inputs via the faros.sh/immutable-inputs annotation
+// (name, railgridMode, expose, credentialsSecretName); templates declare their
+// own immutable inputs via the railgrid.ai/immutable-inputs annotation
 // (e.g. database.version — a Postgres major upgrade is not an in-place
 // operation). A rejected update names the offending path and why.
 
@@ -34,14 +34,14 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/faroshq/provider-infrastructure/kro"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 // alwaysImmutableInputs are denied on every template. name is child-resource
-// (and host) identity; farosMode is a lifecycle transition (dev↔production
+// (and host) identity; railgridMode is a lifecycle transition (dev↔production
 // swaps the resource graph — recreate instead); expose/credentialsSecretName
 // are platform-stamped.
-var alwaysImmutableInputs = []string{"name", "farosMode", "expose", "credentialsSecretName"}
+var alwaysImmutableInputs = []string{"name", "railgridMode", "expose", "credentialsSecretName"}
 
 // updateInstance locates the named instance, merge-patches its spec.values,
 // rejects immutable-path changes, and writes the CR back. Returns the
@@ -115,7 +115,7 @@ func immutableReason(input string) string {
 	switch input {
 	case "name":
 		return "it is the instance's identity — child resources and the public hostname derive from it"
-	case "farosMode":
+	case "railgridMode":
 		return "development↔production is a lifecycle transition that swaps the resource graph, not a config edit"
 	case "expose", "credentialsSecretName":
 		return "it is platform-stamped"

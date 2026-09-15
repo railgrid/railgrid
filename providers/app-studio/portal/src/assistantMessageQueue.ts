@@ -19,8 +19,8 @@ export interface AssistantMessageQueueStorage {
   removeItem(key: string): void
 }
 
-const STORAGE_PREFIX = 'faros:app-studio:assistant-message-queue:v1'
-const PREFERENCE_STORAGE_PREFIX = 'faros:app-studio:assistant-message-queueing:v1'
+const STORAGE_PREFIX = 'railgrid:app-studio:assistant-message-queue:v1'
+const PREFERENCE_STORAGE_PREFIX = 'railgrid:app-studio:assistant-message-queueing:v1'
 const STORAGE_VERSION = 1
 const MAX_SCOPE_PART_LENGTH = 512
 export const ASSISTANT_MESSAGE_QUEUE_MAX_ITEMS = 20

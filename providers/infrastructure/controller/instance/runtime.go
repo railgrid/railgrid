@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,8 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/kro"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 // runtimeRefKey is the status field recording where the runtime CR was
@@ -326,7 +326,7 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 		next[runtimeRefKey] = prev
 	}
 	if networkPhase, ok := runtimeNetworkPhase(tmpl, runtimeObj); ok {
-		next[infrav1alpha1.FarosNetworkPhaseStatusField] = networkPhase
+		next[infrav1alpha1.RailgridNetworkPhaseStatusField] = networkPhase
 	}
 
 	ready := conditionTrue(conds, "Ready")
@@ -354,13 +354,13 @@ func runtimeNetworkPhase(tmpl *infrav1alpha1.Template, runtimeObj *unstructured.
 		return "", false
 	}
 	if runtimeObj == nil {
-		return infrav1alpha1.FarosNetworkPhaseSetup, true
+		return infrav1alpha1.RailgridNetworkPhaseSetup, true
 	}
-	phase, found, err := unstructured.NestedString(runtimeObj.Object, "spec", infrav1alpha1.FarosNetworkPhaseField)
-	if err != nil || !found || phase != infrav1alpha1.FarosNetworkPhaseRuntime || !runtimeReadyForNetwork(runtimeObj) {
-		return infrav1alpha1.FarosNetworkPhaseSetup, true
+	phase, found, err := unstructured.NestedString(runtimeObj.Object, "spec", infrav1alpha1.RailgridNetworkPhaseField)
+	if err != nil || !found || phase != infrav1alpha1.RailgridNetworkPhaseRuntime || !runtimeReadyForNetwork(runtimeObj) {
+		return infrav1alpha1.RailgridNetworkPhaseSetup, true
 	}
-	return infrav1alpha1.FarosNetworkPhaseRuntime, true
+	return infrav1alpha1.RailgridNetworkPhaseRuntime, true
 }
 
 // upsertCondition replaces the entry of cond's type. To avoid churning

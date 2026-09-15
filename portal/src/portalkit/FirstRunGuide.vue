@@ -6,9 +6,9 @@
 <script setup lang="ts">
 import { ArrowRight, Check, CircleDot } from 'lucide-vue-next'
 import { computed, useId } from 'vue'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 export interface FirstRunStep {
   label: string

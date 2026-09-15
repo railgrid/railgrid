@@ -1,8 +1,8 @@
-module github.com/faroshq/faros
+module github.com/railgrid/railgrid
 
 go 1.26.8
 
-replace github.com/faroshq/provider-sdk => ./provider-sdk
+replace github.com/railgrid/provider-sdk => ./provider-sdk
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/coreos/go-oidc v2.5.0+incompatible
 	github.com/docker/docker v28.5.2+incompatible
-	github.com/faroshq/provider-sdk v0.0.1
+	github.com/railgrid/provider-sdk v0.0.1
 	github.com/function61/holepunch-server v0.0.0-20210312073819-8f5e8775e813
 	github.com/go-logr/logr v1.4.3
 	github.com/google/uuid v1.6.0

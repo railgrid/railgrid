@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 )
 
 func searchConn(name string, spec agentsv1alpha1.ConnectionSpec) *agentsv1alpha1.Connection {
@@ -29,7 +29,7 @@ func TestSearchRequest(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("brave is the default and keeps its own auth header", func(t *testing.T) {
-		req, err := searchRequest(ctx, searchConn("brave", agentsv1alpha1.ConnectionSpec{}), DataPlane{}, "tok", "faros agents")
+		req, err := searchRequest(ctx, searchConn("brave", agentsv1alpha1.ConnectionSpec{}), DataPlane{}, "tok", "railgrid agents")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -39,7 +39,7 @@ func TestSearchRequest(t *testing.T) {
 		if req.Header.Get("X-Subscription-Token") != "tok" {
 			t.Fatalf("missing Brave subscription header: %v", req.Header)
 		}
-		if req.URL.Query().Get("q") != "faros agents" {
+		if req.URL.Query().Get("q") != "railgrid agents" {
 			t.Fatalf("query not passed through: %s", req.URL)
 		}
 	})
@@ -279,18 +279,18 @@ func TestFetchReturnBudget(t *testing.T) {
 	}
 }
 
-// A private faros app answers an anonymous request with a 302 to the hub's
+// A private railgrid app answers an anonymous request with a 302 to the hub's
 // sign-in. Following it used to return the portal's login page as the app's
 // own "HTTP 200", which a model read as a broken endpoint.
-func TestWebFetchReportsFarosSignIn(t *testing.T) {
+func TestWebFetchReportsRailgridSignIn(t *testing.T) {
 	hubHit := false
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hubHit = true
-		_, _ = w.Write([]byte("<title>Faros Portal</title>"))
+		_, _ = w.Write([]byte("<title>Railgrid Portal</title>"))
 	}))
 	defer hub.Close()
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, hub.URL+farosAppSignInPath+"?name=shop-prod", http.StatusFound)
+		http.Redirect(w, r, hub.URL+railgridAppSignInPath+"?name=shop-prod", http.StatusFound)
 	}))
 	defer app.Close()
 
@@ -301,7 +301,7 @@ func TestWebFetchReportsFarosSignIn(t *testing.T) {
 	if !strings.HasPrefix(got, "HTTP 302 "+app.URL+"/api/summary") {
 		t.Fatalf("want the gate's 302 for the requested URL, got %q", got)
 	}
-	if !strings.Contains(got, "private faros app") || strings.Contains(got, "Faros Portal") {
+	if !strings.Contains(got, "private railgrid app") || strings.Contains(got, "Railgrid Portal") {
 		t.Fatalf("want a sign-in explanation instead of the portal page, got %q", got)
 	}
 	if hubHit {

@@ -17,7 +17,7 @@
     "agentkit"
   ],
   "canonicalConsumerPaths": [
-    "portal/src/assets/faros-ui.css"
+    "portal/src/assets/railgrid-ui.css"
   ],
   "tokenAuthorityPaths": [
     "portal/src/assets/main.css",

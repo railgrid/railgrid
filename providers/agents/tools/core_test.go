@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 )
 
 // scheduleCR is an in-memory CRAccess exercising the self-scheduling tools.
@@ -35,7 +35,7 @@ func newScheduleCR(items ...*agentsv1alpha1.Schedule) *scheduleCR {
 	return cr
 }
 
-var scheduleResource = schema.GroupResource{Group: "agents.faros.sh", Resource: "schedules"}
+var scheduleResource = schema.GroupResource{Group: "agents.railgrid.ai", Resource: "schedules"}
 
 func (c *scheduleCR) GetAgent(context.Context, string) (*agentsv1alpha1.Agent, error) {
 	return nil, nil
@@ -120,7 +120,7 @@ func coreTool(t *testing.T, d Deps, name string) func(context.Context, string) (
 
 func scheduleDeps(cr *scheduleCR) Deps {
 	return Deps{
-		Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "faros"}},
+		Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "railgrid"}},
 		CR:    cr,
 	}
 }
@@ -129,7 +129,7 @@ func scheduleDeps(cr *scheduleCR) Deps {
 // asked to move its daily-news cron to 09:00 could only create and list, so it
 // gave up. Updating in place must retime the existing schedule.
 func TestScheduleUpdateRetimesCron(t *testing.T) {
-	cr := newScheduleCR(cronSchedule("daily-news", "faros", "30 * * * *"))
+	cr := newScheduleCR(cronSchedule("daily-news", "railgrid", "30 * * * *"))
 	exec := coreTool(t, scheduleDeps(cr), "schedule_update")
 
 	out, err := exec(t.Context(), `{"name":"daily-news","schedule":"0 9 * * *","timeZone":"Europe/Vilnius"}`)
@@ -151,7 +151,7 @@ func TestScheduleUpdateRetimesCron(t *testing.T) {
 // TestScheduleUpdateSuspendResume asserts suspend round-trips both ways —
 // suspend=false must be applied, not read as "absent".
 func TestScheduleUpdateSuspendResume(t *testing.T) {
-	cr := newScheduleCR(cronSchedule("daily-news", "faros", "0 9 * * *"))
+	cr := newScheduleCR(cronSchedule("daily-news", "railgrid", "0 9 * * *"))
 	exec := coreTool(t, scheduleDeps(cr), "schedule_update")
 
 	if _, err := exec(t.Context(), `{"name":"daily-news","suspend":true}`); err != nil {
@@ -170,7 +170,7 @@ func TestScheduleUpdateSuspendResume(t *testing.T) {
 
 // TestScheduleUpdateRejectsEmptyPatch keeps a no-op call from reporting success.
 func TestScheduleUpdateRejectsEmptyPatch(t *testing.T) {
-	cr := newScheduleCR(cronSchedule("daily-news", "faros", "0 9 * * *"))
+	cr := newScheduleCR(cronSchedule("daily-news", "railgrid", "0 9 * * *"))
 	exec := coreTool(t, scheduleDeps(cr), "schedule_update")
 
 	if _, err := exec(t.Context(), `{"name":"daily-news"}`); err == nil {
@@ -200,7 +200,7 @@ func TestScheduleToolsRejectOtherAgents(t *testing.T) {
 }
 
 func TestScheduleDelete(t *testing.T) {
-	cr := newScheduleCR(cronSchedule("daily-news", "faros", "0 9 * * *"))
+	cr := newScheduleCR(cronSchedule("daily-news", "railgrid", "0 9 * * *"))
 	d := scheduleDeps(cr)
 
 	if _, err := coreTool(t, d, "schedule_delete")(t.Context(), `{"name":"daily-news"}`); err != nil {
@@ -219,7 +219,7 @@ func TestScheduleDelete(t *testing.T) {
 // TestScheduleCreateDuplicateSuggestsUpdate: the model's next move after a name
 // collision should be schedule_update, so the error has to say so.
 func TestScheduleCreateDuplicateSuggestsUpdate(t *testing.T) {
-	cr := newScheduleCR(cronSchedule("daily-news", "faros", "30 * * * *"))
+	cr := newScheduleCR(cronSchedule("daily-news", "railgrid", "30 * * * *"))
 	exec := coreTool(t, scheduleDeps(cr), "schedule_create")
 
 	_, err := exec(t.Context(), `{"name":"daily-news","type":"cron","schedule":"0 9 * * *","task":"post the news"}`)

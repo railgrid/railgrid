@@ -77,7 +77,7 @@ pattern validation.
 {{- end -}}
 
 {{/*
-devAgentImage resolves FAROS_DEV_AGENT_IMAGE (the faros-dev-agent injector
+devAgentImage resolves RAILGRID_DEV_AGENT_IMAGE (the railgrid-dev-agent injector
 every development pod runs). Both consumers — the legacy serve Deployment
 (init + serve containers) and the operator-managed InfrastructureProvider CR —
 go through this helper so they can never disagree.
@@ -104,7 +104,7 @@ release predating development.agentImageRepository.
 {{- if $dev.agentImage -}}
 {{- $dev.agentImage -}}
 {{- else if and (regexMatch `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$` $appVersion) (not (hasSuffix "-dirty" $appVersion)) -}}
-{{- printf "%s:%s" (default "ghcr.io/faroshq/faros-dev-agent" $dev.agentImageRepository) $appVersion -}}
+{{- printf "%s:%s" (default "ghcr.io/railgrid/railgrid-dev-agent" $dev.agentImageRepository) $appVersion -}}
 {{- end -}}
 {{- end -}}
 
@@ -160,20 +160,20 @@ kubeconfig
 
 {{/*
 tenantNetworkPolicyEnv renders tenantNetworkPolicy.* as the
-FAROS_TENANT_NETWORK_POLICY_* env of whichever container runs the Instance
+RAILGRID_TENANT_NETWORK_POLICY_* env of whichever container runs the Instance
 controller: the legacy serve Deployment, or the operator, which copies them
 onto the serve Deployment it owns.
 */}}
 {{- define "infrastructure.tenantNetworkPolicyEnv" -}}
 {{- $np := .Values.tenantNetworkPolicy | default dict -}}
-- name: FAROS_TENANT_NETWORK_POLICY_ENABLED
+- name: RAILGRID_TENANT_NETWORK_POLICY_ENABLED
   value: {{ ternary "true" "false" (eq (toString $np.enabled) "true") | quote }}
 {{- with $np.allowedNamespaces }}
-- name: FAROS_TENANT_NETWORK_POLICY_ALLOWED_NAMESPACES
+- name: RAILGRID_TENANT_NETWORK_POLICY_ALLOWED_NAMESPACES
   value: {{ join "," . | quote }}
 {{- end }}
 {{- with $np.allowedCIDRs }}
-- name: FAROS_TENANT_NETWORK_POLICY_ALLOWED_CIDRS
+- name: RAILGRID_TENANT_NETWORK_POLICY_ALLOWED_CIDRS
   value: {{ join "," . | quote }}
 {{- end }}
 {{- end -}}

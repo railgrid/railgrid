@@ -2,13 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Play } from 'lucide-vue-next'
 
-import type { FarosContext } from '../element'
+import type { RailgridContext } from '../element'
 import type { QuerySpec } from '../api'
 import { createKueryRequestContext, errorMessage, serviceBase, useKueryApi } from '../kuery'
 import { collectSchemaWords, createEditor, EXAMPLES, loadCodeMirror, type EditorHandle } from '../playground'
 import FormSelect from '../portalkit/FormSelect.vue'
 
-const props = defineProps<{ context: FarosContext | null; active: boolean }>()
+const props = defineProps<{ context: RailgridContext | null; active: boolean }>()
 const context = computed(() => props.context)
 const { api, query } = useKueryApi(context)
 const editorHost = ref<HTMLElement | null>(null)

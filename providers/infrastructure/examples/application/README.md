@@ -34,8 +34,8 @@ the app dir).
 builds and pushes both on every change to `:latest` (multi-arch on `main`,
 build-only on PRs):
 
-- `ghcr.io/faroshq/faros-infrastructure-example-frontend:latest`
-- `ghcr.io/faroshq/faros-infrastructure-example-backend:latest`
+- `ghcr.io/railgrid/railgrid-infrastructure-example-frontend:latest`
+- `ghcr.io/railgrid/railgrid-infrastructure-example-backend:latest`
 
 The template's `spec.sampleValues`
 ([install/templates/application.yaml](../../install/templates/application.yaml))

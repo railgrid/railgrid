@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -57,12 +57,12 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	"github.com/faroshq/provider-agents/channels"
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/executor"
-	"github.com/faroshq/provider-agents/llm"
-	"github.com/faroshq/provider-agents/store"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/channels"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/executor"
+	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-agents/store"
 )
 
 var sliceGVR = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiexportendpointslices"}
@@ -116,7 +116,7 @@ type background struct {
 // provider then serves per-request traffic only.
 func (s *Server) StartBackground(ctx context.Context) {
 	if s.cfg.ProviderKubeconfig == "" {
-		log.Printf("background executor disabled (set FAROS_PROVIDER_KUBECONFIG to enable autonomous schedules/webhooks)")
+		log.Printf("background executor disabled (set RAILGRID_PROVIDER_KUBECONFIG to enable autonomous schedules/webhooks)")
 		return
 	}
 	base, err := clientcmd.BuildConfigFromFlags("", s.cfg.ProviderKubeconfig)
@@ -146,7 +146,7 @@ func (s *Server) webhookKeyBytes() []byte {
 	}
 	if s.cfg.ProviderKubeconfig != "" {
 		if b, err := os.ReadFile(s.cfg.ProviderKubeconfig); err == nil {
-			sum := sha256.Sum256(append(b, []byte("faros-agents-webhook")...))
+			sum := sha256.Sum256(append(b, []byte("railgrid-agents-webhook")...))
 			return sum[:]
 		}
 	}
@@ -366,7 +366,7 @@ func (b *background) agentToken(ctx context.Context, dyn dynamic.Interface, clus
 }
 
 // apiExportNameForSlice is the slice name (same as the export by convention).
-const apiExportNameForSlice = "agents.faros.sh"
+const apiExportNameForSlice = "agents.railgrid.ai"
 
 // scoped returns a dynamic client bound to one tenant logical cluster, on
 // whichever shard's VW actually serves it.

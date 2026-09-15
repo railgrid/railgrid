@@ -2,7 +2,7 @@
 import { portalHref } from '../portalkit/navigation'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
-import type { FarosContext } from '../element'
+import type { RailgridContext } from '../element'
 import type { ObjectResult, QuerySpec } from '../api'
 import {
   buildElements, IMPACT_RELATIONS, mountGraph, relationColor, RELATION_DIR, RELATION_LABELS, RELATION_METADATA,
@@ -12,7 +12,7 @@ import { createKueryRequestContext, errorMessage, resourceLabel, useKueryApi } f
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 
-const props = defineProps<{ context: FarosContext | null; anchor: ObjectResult }>()
+const props = defineProps<{ context: RailgridContext | null; anchor: ObjectResult }>()
 const emit = defineEmits<{ back: []; inspect: [row: ObjectResult] }>()
 const context = computed(() => props.context)
 const { api, query } = useKueryApi(context)

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ func TestRenderResultPreservesOriginPayloadAndCloseTiming(t *testing.T) {
 			`role="status" aria-live="polite"`,
 			`<h1 id="status-heading">GitHub connected</h1>`,
 			`postMessage(payload, "https://portal.example")`,
-			`"type":"faros-github-oauth"`,
+			`"type":"railgrid-github-oauth"`,
 			`"state":"state\u003c\u0026"`,
 			`"token":"token\u003c\u0026"`,
 			`setTimeout(function(){ window.close(); }, payload.error ? 4000 : 600);`,

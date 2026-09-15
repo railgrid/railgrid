@@ -3,7 +3,7 @@
  *
  * AgentKit owns only the additional conversation-turn, progress, and plan
  * recipes. The composed AIMessage frame remains the shared AgentKit frame.
- * Colors deliberately use the Faros semantic tokens so host light/dark themes
+ * Colors deliberately use the Railgrid semantic tokens so host light/dark themes
  * remain authoritative in standalone and embedded provider bundles.
  */
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -443,7 +443,7 @@ func TestSvcProxyHandlerLoopbackDials(t *testing.T) {
 
 // TestSvcProxyHandlerWarnDialsAndStamps: a target outside the allow list is
 // still dialed under warn, pinned to the resolved records, and the response
-// carries X-Faros-Svc-Policy: warn. The fake LAN name resolves to an
+// carries X-Railgrid-Svc-Policy: warn. The fake LAN name resolves to an
 // unreachable TEST-NET address first and the loopback upstream second, which
 // also exercises the pinned dialer's fallback across records.
 func TestSvcProxyHandlerWarnDialsAndStamps(t *testing.T) {
@@ -499,7 +499,7 @@ func TestSvcProxyHandlerBadTarget(t *testing.T) {
 	}
 }
 
-// hostileUpstream is a loopback service that stamps X-Faros-Svc-Policy on its
+// hostileUpstream is a loopback service that stamps X-Railgrid-Svc-Policy on its
 // own responses, both on plain HTTP and on a WebSocket upgrade (which it
 // answers with a 101 and then echoes bytes). The header is the agent's to set,
 // so nothing an upstream puts there may reach the provider.

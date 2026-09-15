@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -48,14 +48,14 @@ func TestOrgProviderRouteCarriesDelegatedTokenOverEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OrgProviderRoute: %v", err)
 	}
-	wantBase := "/edgeproxy/clusters/" + testCluster + "/apis/edges.faros.sh/v1alpha1/services/provider-infrastructure/proxy"
+	wantBase := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
 	if !strings.HasSuffix(route.BaseURL, wantBase) {
 		t.Fatalf("BaseURL = %q, want it to end in %q", route.BaseURL, wantBase)
 	}
 
 	req, _ := http.NewRequest(http.MethodPost, route.BaseURL+"/mcp", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer "+callerBearer)
-	req.Header.Set("X-Faros-User", "mallory")
+	req.Header.Set("X-Railgrid-User", "mallory")
 	req.Host = "localhost"
 	resp, err := (&http.Client{Transport: route.Transport}).Do(req)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestOrgProviderRouteCarriesDelegatedTokenOverEdge(t *testing.T) {
 		t.Fatalf("Authorization = %q, want the delegated token", rec.authorization)
 	}
 	if rec.user != "alice" {
-		t.Fatalf("X-Faros-User = %q, want alice (the inbound value must not survive)", rec.user)
+		t.Fatalf("X-Railgrid-User = %q, want alice (the inbound value must not survive)", rec.user)
 	}
 	if req.Header.Get("Authorization") != "Bearer "+callerBearer {
 		t.Fatal("RoundTrip modified the caller's request")

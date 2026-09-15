@@ -1,8 +1,8 @@
-# faros-app-studio-provider
+# railgrid-app-studio-provider
 
 App Studio provider chart. Ships the provider Deployment, Service, and CatalogEntry. Configure durable App Studio message storage with store.databaseURLSecretRef.
 
-Helm chart for the faros **app-studio** provider. `values.yaml` is the source of
+Helm chart for the railgrid **app-studio** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
 
 ## Installing
@@ -10,22 +10,22 @@ truth and carries the full inline notes; this table summarises it.
 A provider needs a kcp credential for the workspace it registers into.
 
 - **On the platform**, an admin mints it during provider onboarding.
-- **Running it yourself**, faros creates the workspace, mints the credential,
+- **Running it yourself**, railgrid creates the workspace, mints the credential,
   and generates these exact commands for you under **Providers → Self-Hosting**
   in the portal. See [docs/byo-providers.md](../../../../docs/byo-providers.md).
 
 ```bash
-kubectl create namespace faros-provider-app-studio
+kubectl create namespace railgrid-provider-app-studio
 
 # The data key MUST be `kubeconfig` — the chart mounts that exact key.
-kubectl --namespace faros-provider-app-studio create secret generic faros-provider-kubeconfig \
+kubectl --namespace railgrid-provider-app-studio create secret generic railgrid-provider-kubeconfig \
   --from-file=kubeconfig=./app-studio.kubeconfig
 
-helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-provider \
-  --namespace faros-provider-app-studio \
-  --set hub.url=https://faros.example.com \
-  --set hub.publicURL=https://faros.example.com \
-  --set providerKubeconfig.secretName=faros-provider-kubeconfig \
+helm upgrade --install app-studio oci://ghcr.io/railgrid/charts/railgrid-app-studio-provider \
+  --namespace railgrid-provider-app-studio \
+  --set hub.url=https://railgrid.example.com \
+  --set hub.publicURL=https://railgrid.example.com \
+  --set providerKubeconfig.secretName=railgrid-provider-kubeconfig \
   --set catalogEntry.enabled=true
 ```
 
@@ -38,7 +38,7 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `replicaCount` | `1` | Must remain `1`. Each workspace has one shared, single-session Playwright Browser, while browser session ownership is process-local. The chart rejects values greater than `1` and uses Recreate upgrades to prevent transient pod overlap. |
 | `internalPort` | `8091` | internalPort carries peer-forwarded project requests between replicas. Deliberately not part of the Service. |
 | `image` |  |  |
-| `image.repository` | `ghcr.io/faroshq/faros/app-studio-provider` |  |
+| `image.repository` | `ghcr.io/railgrid/railgrid/app-studio-provider` |  |
 | `image.tag` | `""` |  |
 | `image.pullPolicy` | `IfNotPresent` |  |
 | `serviceAccount` |  | Preview inspection no longer runs a browser sidecar here. The assistant drives the workspace's shared headless browser — the infrastructure provider's Playwright MCP "browser" template, provisioned once per workspace by the Studio reconciler — over the infrastructure data plane. Nothing to config… |
@@ -53,7 +53,7 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `catalogEntry.uiURL` | `""` |  |
 | `catalogEntry.backendURL` | `""` |  |
 | `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted by the platform admin via /bonkers (admin onboarding). Consumed by both the init container and the serve container. Key must be "kubeconfig". |
-| `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |
+| `providerKubeconfig.secretName` | `railgrid-provider-kubeconfig` |  |
 | `assistant` |  | Assistant chat behavior. |
 | `assistant.toolDisclosure` | `""` | How much tool-level detail the chat disclosures show. "" / "summary" (default) — tool names + per-tool sanitized summaries (paths, queries, counts — never raw file contents or secrets). "minimal" — fully opaque generic labels only ("Edited files"), for deployments whose users should not see imple… |
 | `assistant.runSandbox.mode` | `off` | Coding sandbox policy: off disables it, byo-only fails closed until a scoped BYO binding resolves, and force uses the platform provider only with explicit development mode. |
@@ -78,14 +78,14 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `store.messageEncryptionKeysSecretRef.name` | `""` |  |
 | `store.messageEncryptionKeysSecretRef.key` | `keys` |  |
 | `workspace` |  | Persistent project source storage, including projects without Git. Uses a PVC by default. |
-| `workspace.path` | `/var/lib/faros-app-studio/workspaces` |  |
+| `workspace.path` | `/var/lib/railgrid-app-studio/workspaces` |  |
 | `workspace.existingClaim` | `""` |  |
 | `workspace.emptyDir` | `false` | Use ephemeral storage only for disposable projects; pod replacement loses local source. |
 | `workspace.persistence.enabled` | `true` |  |
 | `workspace.persistence.size` | `1Gi` |  |
 | `workspace.persistence.storageClassName` | `""` |  |
 | `hub` |  |  |
-| `hub.url` | `"http://faros-hub.faros.svc.cluster.local:8080"` |  |
+| `hub.url` | `"http://railgrid-hub.railgrid.svc.cluster.local:8080"` |  |
 | `hub.publicURL` | `""` | Browser-reachable HTTPS hub origin for private preview authorization redirects and one-use browser-session handoffs. It may differ from `hub.url`, which is the internal provider-to-hub route; private browser inspection fails closed when this is unset or invalid. |
 | `hub.actionsExternalURL` | `""` | Public hub origin used by action-enabled development runtimes. Keep this separate from hub.url: the latter is an internal provider-to-hub address. Production action-enabled projects require an absolute HTTPS origin. |
 | `hub.actionsCABundleConfigMap` |  | Optional public CA bundle for that origin. The referenced ConfigMap is mounted at a dedicated path so it augments (never masks) image/system trust. Leave empty when the origin chains to the system CA. |

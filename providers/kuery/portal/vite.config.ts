@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// The faros hub serves this provider under /ui/providers/kuery/. The
+// The railgrid hub serves this provider under /ui/providers/kuery/. The
 // ProviderFrame component injects a <script src="/ui/providers/kuery/main.js">
-// tag once and waits for the faros-provider-kuery custom element to be
+// tag once and waits for the railgrid-provider-kuery custom element to be
 // defined. So the build needs to:
 //
 //   1. Emit the entry script at exactly /main.js (no hash, no /assets/ prefix)
@@ -19,7 +19,7 @@ import vue from '@vitejs/plugin-vue'
 // even when the page itself was navigated to from inside the portal SPA.
 export default defineConfig({
   plugins: [vue({
-    template: { compilerOptions: { isCustomElement: (tag) => tag.startsWith('faros-provider-') } },
+    template: { compilerOptions: { isCustomElement: (tag) => tag.startsWith('railgrid-provider-') } },
   })],
   // Library mode leaves Vue's feature-flag globals unresolved. This bundle is
   // loaded directly as a classic script by ProviderFrame, so replace them at
@@ -39,7 +39,7 @@ export default defineConfig({
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],
-      name: 'FarosProviderKuery',
+      name: 'RailgridProviderKuery',
       fileName: () => 'main.js',
     },
     rollupOptions: {

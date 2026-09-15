@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createServer } from 'vite'
 
-const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/faros-vite-assistant-verification', configFile: false, server: { middlewareMode: true } })
+const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/railgrid-vite-assistant-verification', configFile: false, server: { middlewareMode: true } })
 const { assistantVerificationBanner } = await vite.ssrLoadModule('/src/assistantVerification.ts')
 test.after(async () => vite.close())
 

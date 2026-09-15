@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -45,9 +45,9 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
-	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
-	utilssh "github.com/faroshq/provider-edges/internal/ssh"
-	utilhttp "github.com/faroshq/provider-edges/internal/wsutil"
+	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
+	utilssh "github.com/railgrid/provider-edges/internal/ssh"
+	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
 )
 
 // buildEdgesProxyHandler creates the HTTP handler for user-facing access to
@@ -55,7 +55,7 @@ import (
 //
 // Path (relative to /services/edges-proxy/ mount point):
 //
-//	/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/{subresource}[/...]
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/{subresource}[/...]
 //
 // Supported subresources:
 //   - k8s  — reverse-proxy to the Kubernetes API of a type=kubernetes edge
@@ -87,13 +87,13 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 		// 2. Parse cluster, resource (kind), name, and subresource from the URL path.
 		cluster, resource, name, subresource, ok := p.parseEdgesProxyPath(r.URL.Path)
 		if !ok {
-			http.Error(w, "invalid path: expected /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{subresource}[/...]", http.StatusBadRequest)
+			http.Error(w, "invalid path: expected /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{subresource}[/...]", http.StatusBadRequest)
 			return
 		}
 
 		// 3. Delegated authorization via kcp. Every bearer goes through
 		// authorizeFn — hub static-token users are ordinary kcp identities
-		// (faros:static:<hash>) and pass TokenReview + SAR like any other caller.
+		// (railgrid:static:<hash>) and pass TokenReview + SAR like any other caller.
 		// Step 1a already refused the request if there is no kcp credential, so
 		// a nil kcpConfig here only happens under the test-only bypass.
 		if p.kcpConfig != nil {
@@ -202,7 +202,7 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 	// Parse cluster and edge name from the key (format: "edges/{cluster}/{name}")
 	cluster, edgeName := parseEdgeConnKey(key)
 
-	// Optional non-interactive exec mode (e.g. `faros ssh <name> -- <cmd>`).
+	// Optional non-interactive exec mode (e.g. `railgrid ssh <name> -- <cmd>`).
 	remoteCmd := r.URL.Query().Get("cmd")
 	// stdin=1 is set by CLIs that forward their stdin for non-interactive
 	// commands (and send "eof" when it ends); older clients never send it,
@@ -795,7 +795,7 @@ func (t *edgeDeviceConnTransport) RoundTrip(req *http.Request) (*http.Response, 
 //
 // Expected format:
 //
-//	/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{subresource}[/...]
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{subresource}[/...]
 func (p *Server) parseEdgesProxyPath(path string) (cluster, resource, name, subresource string, ok bool) {
 	// Segments: [0]clusters [1]cluster [2]apis [3]group [4]version [5]resource
 	//           [6]name [7]subresource (may have more after for k8s pass-through)
@@ -845,7 +845,7 @@ func (p *Server) edgeProxyStatusURL(gvr schema.GroupVersionResource, cluster, na
 // extractEdgeK8sPath strips the edges-proxy prefix from the request path,
 // keeping the /k8s/ prefix that the agent expects.
 //
-// Input:  /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/k8s/api/v1/pods
+// Input:  /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/k8s/api/v1/pods
 // Output: /k8s/api/v1/pods
 func extractEdgeK8sPath(path string) string {
 	idx := strings.Index(path, "/k8s/")

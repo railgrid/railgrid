@@ -79,7 +79,7 @@ function deferred() {
 
 async function establishProjection(store, body = {
   bindingNamesByProvider: { edges: 'binding-edges' },
-  bindingsByProvider: { edges: { bindingName: 'binding-edges', exportPath: 'root:faros:providers:edges', selfHosted: false } },
+  bindingsByProvider: { edges: { bindingName: 'binding-edges', exportPath: 'root:railgrid:providers:edges', selfHosted: false } },
 }) {
   const pending = deferred()
   globalThis.__providerAuthFetch = () => pending.promise
@@ -232,8 +232,8 @@ test('enable keeps the current projection until its post-write refresh completes
     ready: true,
     hasUI: true,
     hasBackend: true,
-    apiExportPath: 'root:faros:providers:edges',
-    apiExportName: 'edges.providers.faros.sh',
+    apiExportPath: 'root:railgrid:providers:edges',
+    apiExportName: 'edges.providers.railgrid.ai',
   }, [])
   for (let i = 0; i < 10 && store.bindingsLoadState !== 'loading'; i++) await Promise.resolve()
   assert.equal(store.bindingsLoadState, 'loading')

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-const testNamespace = "faros-hub"
+const testNamespace = "railgrid-hub"
 
 // newTestStore returns a Store over a fake API, plus a clock the test drives.
 // Two Stores sharing one clientset stand in for two hub replicas talking to the

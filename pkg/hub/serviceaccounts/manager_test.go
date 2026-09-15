@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -125,8 +125,8 @@ func TestCreate_HappyPath(t *testing.T) {
 	if got.Annotations[AnnotationRole] != RoleAdmin {
 		t.Errorf("role annotation missing: %#v", got.Annotations)
 	}
-	if got.Labels[LabelFarosSA] != "true" {
-		t.Errorf("faros-sa label missing: %#v", got.Labels)
+	if got.Labels[LabelRailgridSA] != "true" {
+		t.Errorf("railgrid-sa label missing: %#v", got.Labels)
 	}
 
 	crb, err := cs.RbacV1().ClusterRoleBindings().Get(context.Background(), crbName(sa.UUID), metav1.GetOptions{})
@@ -178,7 +178,7 @@ func TestList_FiltersByLabel(t *testing.T) {
 	}
 }
 
-func TestGet_NotFoundForNonFarosSA(t *testing.T) {
+func TestGet_NotFoundForNonRailgridSA(t *testing.T) {
 	stranger := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: "not-ours", Namespace: Namespace},
 	}
@@ -187,7 +187,7 @@ func TestGet_NotFoundForNonFarosSA(t *testing.T) {
 
 	_, err := m.Get(context.Background(), "org", "ws", "not-ours")
 	if !apierrors.IsNotFound(err) {
-		t.Errorf("expected NotFound for non-faros SA, got %v", err)
+		t.Errorf("expected NotFound for non-railgrid SA, got %v", err)
 	}
 }
 

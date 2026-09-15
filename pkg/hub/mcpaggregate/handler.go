@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // DefaultVerifyCacheTTL is how long a successful bearer verification — and the
@@ -64,8 +64,8 @@ type RateLimiter interface {
 
 // impl is the MCP Implementation advertised on `initialize`.
 var impl = &mcp.Implementation{
-	Name:    "faros-mcpserver",
-	Title:   "Faros aggregate MCP",
+	Name:    "railgrid-mcpserver",
+	Title:   "Railgrid aggregate MCP",
 	Version: "v1alpha1",
 }
 
@@ -75,7 +75,7 @@ type Options struct {
 	// verified caller. Required.
 	Providers ProviderEnumerator
 	// ExternalURL is the hub's externally reachable base URL, used only to
-	// self-describe the endpoint in the faros://about resource. Optional.
+	// self-describe the endpoint in the railgrid://about resource. Optional.
 	ExternalURL string
 	// Logger is used for federation diagnostics. Optional.
 	Logger logr.Logger
@@ -102,7 +102,7 @@ type Options struct {
 
 // New returns the http.Handler mounted at apiurl.PathPrefixMCPServer. The
 // handler expects the prefix to have been stripped, so it sees
-// /{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp.
+// /{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp.
 func New(opts Options) http.Handler {
 	h := &handler{
 		opts:      opts,
@@ -141,7 +141,7 @@ type verifiedEntry struct {
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cluster, name, ok := parseMCPServerPath(r.URL.Path)
 	if !ok {
-		http.Error(w, "invalid path: expected /{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp", http.StatusBadRequest)
+		http.Error(w, "invalid path: expected /{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp", http.StatusBadRequest)
 		return
 	}
 	token := extractBearer(r)
@@ -299,14 +299,14 @@ type buildParams struct {
 }
 
 // buildServer constructs the aggregate mcp.Server for one request: generic
-// per-tenant metadata, the faros://about resource, and every Ready provider's
+// per-tenant metadata, the railgrid://about resource, and every Ready provider's
 // federated tools. It never fails — with no providers it serves an empty but
 // valid MCP server.
 func buildServer(ctx context.Context, p buildParams) *mcp.Server {
-	title := fmt.Sprintf("Faros — %s (tenant %s)", p.name, p.cluster)
+	title := fmt.Sprintf("Railgrid — %s (tenant %s)", p.name, p.cluster)
 	instructions := fmt.Sprintf(
-		"You are connected to the faros aggregate MCP endpoint %q in tenant workspace %q.\n\n"+
-			"This single endpoint federates the tools of every enabled faros provider in this tenant "+
+		"You are connected to the railgrid aggregate MCP endpoint %q in tenant workspace %q.\n\n"+
+			"This single endpoint federates the tools of every enabled railgrid provider in this tenant "+
 			"(for example infrastructure, code, and edge access). Provider tools are namespaced as "+
 			"\"<provider>__<tool>\". Call tools/list to enumerate what is currently reachable — the set "+
 			"reflects which providers are enabled and healthy right now.",
@@ -321,7 +321,7 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 
 	// cluster is the workspace's kcp logical-cluster ID parsed off the
 	// MCPServer URL. It is the tenant's identity towards providers: the
-	// federation client forwards it as BOTH X-Faros-Tenant and X-Faros-Cluster,
+	// federation client forwards it as BOTH X-Railgrid-Tenant and X-Railgrid-Cluster,
 	// the same pair the hub backend proxy injects on /services/providers/*
 	// (this federation path POSTs directly, so it sets them itself).
 	found := p.discovery.discover(ctx, p.log, newProviderMCPClient(p.token, p.cluster), targets)
@@ -349,7 +349,7 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 	return srv
 }
 
-// aboutDoc is the structured self-description served at faros://about.
+// aboutDoc is the structured self-description served at railgrid://about.
 type aboutDoc struct {
 	Role        string `json:"role"`
 	Tenant      string `json:"tenant"`
@@ -358,13 +358,13 @@ type aboutDoc struct {
 	EndpointURL string `json:"endpointURL,omitempty"`
 }
 
-const aboutResourceURI = "faros://about"
+const aboutResourceURI = "railgrid://about"
 
 func registerAboutResource(srv *mcp.Server, about aboutDoc) {
 	srv.AddResource(&mcp.Resource{
 		URI:         aboutResourceURI,
-		Name:        "faros-about",
-		Title:       "About this faros MCP endpoint",
+		Name:        "railgrid-about",
+		Title:       "About this railgrid MCP endpoint",
 		MIMEType:    "application/json",
 		Description: "Structured JSON describing this endpoint's role, tenant context, and URL. Read once on connect.",
 	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
@@ -397,14 +397,14 @@ func extractBearer(r *http.Request) string {
 //
 // Expected format:
 //
-//	/{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp
+//	/{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp
 func parseMCPServerPath(path string) (cluster, name string, ok bool) {
 	path = strings.TrimPrefix(path, "/")
 	parts := strings.SplitN(path, "/", 8)
 	if len(parts) < 7 {
 		return "", "", false
 	}
-	if parts[1] != "apis" || parts[2] != "faros.sh" || parts[3] != "v1alpha1" ||
+	if parts[1] != "apis" || parts[2] != "railgrid.ai" || parts[3] != "v1alpha1" ||
 		parts[4] != "mcpservers" || parts[6] != "mcp" {
 		return "", "", false
 	}

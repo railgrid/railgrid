@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,10 +36,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/bindings"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 // Multipart adds room for MIME headers and form boundaries while the stored
@@ -239,7 +239,7 @@ func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http
 		return
 	}
 	if id.user == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "caller identity missing — the hub did not provide X-Faros-User")
+		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "caller identity missing — the hub did not provide X-Railgrid-User")
 		return
 	}
 	if project.DeletionTimestamp != nil {
@@ -528,7 +528,7 @@ func projectAttachmentCandidateContentType(filename, declared string, data []byt
 func parseAttachmentDraft(r *http.Request) (bool, error) {
 	raw := strings.TrimSpace(r.FormValue("draft"))
 	if raw == "" {
-		raw = strings.TrimSpace(r.Header.Get("X-Faros-Attachment-Draft"))
+		raw = strings.TrimSpace(r.Header.Get("X-Railgrid-Attachment-Draft"))
 	}
 	if raw == "" {
 		return true, nil
@@ -581,7 +581,7 @@ func (s *Server) deleteProjectAssistantAttachment(w http.ResponseWriter, r *http
 		return
 	}
 	if id.user == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "caller identity missing — the hub did not provide X-Faros-User")
+		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "caller identity missing — the hub did not provide X-Railgrid-User")
 		return
 	}
 	attachmentStore, ok := s.projectAttachmentStore(w)

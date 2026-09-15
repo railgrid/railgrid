@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ import (
 
 const (
 	testEdgeName = "build"
-	testEdgeGVR  = "edges.faros.sh/v1alpha1"
+	testEdgeGVR  = "edges.railgrid.ai/v1alpha1"
 )
 
 func rbacTestOwner(kind, name, uid string) metav1.OwnerReference {
@@ -85,8 +85,8 @@ func TestLinuxAndMacOSCredentialsAreDisjointForTheSameEdgeName(t *testing.T) {
 		t.Fatalf("create MacOSServer ClusterRoleBinding: %v", err)
 	}
 
-	linux := &RBACReconciler{gvr: schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}}
-	mac := &RBACReconciler{gvr: schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "macosservers"}}
+	linux := &RBACReconciler{gvr: schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "linuxservers"}}
+	mac := &RBACReconciler{gvr: schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "macosservers"}}
 	if err := linux.ensureEdgeProxyGrant(ctx, c, linuxName, testEdgeName, linuxOwner); err != nil {
 		t.Fatalf("create Linux proxy grant: %v", err)
 	}
@@ -109,14 +109,14 @@ func TestLinuxAndMacOSCredentialsAreDisjointForTheSameEdgeName(t *testing.T) {
 			t.Errorf("ServiceAccount %q owner references = %+v, want the same-named edge", tc.name, sa.OwnerReferences)
 		}
 		var binding rbacv1.ClusterRoleBinding
-		if err := c.Get(ctx, client.ObjectKey{Name: "faros-edge-" + tc.name}, &binding); err != nil {
+		if err := c.Get(ctx, client.ObjectKey{Name: "railgrid-edge-" + tc.name}, &binding); err != nil {
 			t.Fatalf("get agent binding %q: %v", tc.name, err)
 		}
 		if len(binding.Subjects) != 1 || binding.Subjects[0].Name != tc.name || binding.Subjects[0].Namespace != edgeNamespace {
 			t.Errorf("agent binding %q subjects = %+v, want ServiceAccount %s/%s", tc.name, binding.Subjects, edgeNamespace, tc.name)
 		}
 		var grant rbacv1.ClusterRole
-		if err := c.Get(ctx, client.ObjectKey{Name: "faros-edge-proxy-" + tc.name}, &grant); err != nil {
+		if err := c.Get(ctx, client.ObjectKey{Name: "railgrid-edge-proxy-" + tc.name}, &grant); err != nil {
 			t.Fatalf("get proxy grant %q: %v", tc.name, err)
 		}
 		if len(grant.Rules) != 1 || len(grant.Rules[0].Resources) != 1 || grant.Rules[0].Resources[0] != tc.resource ||
@@ -124,7 +124,7 @@ func TestLinuxAndMacOSCredentialsAreDisjointForTheSameEdgeName(t *testing.T) {
 			t.Errorf("proxy grant %q rules = %+v, want only %s/%q", tc.name, grant.Rules, tc.resource, testEdgeName)
 		}
 		var proxyBinding rbacv1.ClusterRoleBinding
-		if err := c.Get(ctx, client.ObjectKey{Name: "faros-edge-proxy-" + tc.name}, &proxyBinding); err != nil {
+		if err := c.Get(ctx, client.ObjectKey{Name: "railgrid-edge-proxy-" + tc.name}, &proxyBinding); err != nil {
 			t.Fatalf("get proxy binding %q: %v", tc.name, err)
 		}
 		if len(proxyBinding.Subjects) != 1 || proxyBinding.Subjects[0].Name != tc.name || proxyBinding.Subjects[0].Namespace != edgeNamespace {
@@ -138,7 +138,7 @@ func TestCredentialHelpersRefuseAResourceControlledByAnotherEdge(t *testing.T) {
 	foreignOwner := rbacTestOwner("LinuxServer", testEdgeName, "linux-uid")
 	macOwner := rbacTestOwner("MacOSServer", testEdgeName, "mac-uid")
 	macName := edgeCredentialName("MacOSServer", testEdgeName)
-	macGrantName := "faros-edge-proxy-" + macName
+	macGrantName := "railgrid-edge-proxy-" + macName
 
 	cases := []struct {
 		name string
@@ -155,7 +155,7 @@ func TestCredentialHelpersRefuseAResourceControlledByAnotherEdge(t *testing.T) {
 		{
 			name: "agent role binding",
 			obj: &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{
-				Name: "faros-edge-" + macName, OwnerReferences: []metav1.OwnerReference{foreignOwner},
+				Name: "railgrid-edge-" + macName, OwnerReferences: []metav1.OwnerReference{foreignOwner},
 			}},
 			call: func(c client.Client) error { return ensureClusterRoleBinding(ctx, c, macName, macOwner) },
 		},
@@ -165,7 +165,7 @@ func TestCredentialHelpersRefuseAResourceControlledByAnotherEdge(t *testing.T) {
 				Name: macGrantName, OwnerReferences: []metav1.OwnerReference{foreignOwner},
 			}},
 			call: func(c client.Client) error {
-				r := &RBACReconciler{gvr: schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "macosservers"}}
+				r := &RBACReconciler{gvr: schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "macosservers"}}
 				return r.ensureEdgeProxyGrant(ctx, c, macName, testEdgeName, macOwner)
 			},
 		},

@@ -25,7 +25,7 @@ valid_material() {
   [[ -s "${ca_file}" && -s "${cert_file}" && -s "${key_file}" ]] || return 1
   openssl x509 -in "${ca_file}" -noout -checkend 86400 >/dev/null 2>&1 || return 1
   openssl x509 -in "${cert_file}" -noout -checkend 86400 >/dev/null 2>&1 || return 1
-  openssl x509 -in "${cert_file}" -noout -checkhost "faros-hub.${namespace}.svc" >/dev/null 2>&1 || return 1
+  openssl x509 -in "${cert_file}" -noout -checkhost "railgrid-hub.${namespace}.svc" >/dev/null 2>&1 || return 1
   openssl x509 -in "${cert_file}" -noout -checkhost localhost >/dev/null 2>&1 || return 1
   # Regenerate material minted before the browser-facing sslip.io host was
   # added, otherwise the portal is served a certificate that does not cover it.
@@ -49,21 +49,21 @@ if ! valid_material; then
     -out "${work_dir}/ca.key" >/dev/null 2>&1
   openssl req -x509 -new -sha256 -days 365 \
     -key "${work_dir}/ca.key" \
-    -subj '/CN=faros-hub-ca' \
+    -subj '/CN=railgrid-hub-ca' \
     -out "${work_dir}/ca.crt"
 
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
     -out "${work_dir}/tls.key" >/dev/null 2>&1
   openssl req -new -sha256 \
     -key "${work_dir}/tls.key" \
-    -subj '/CN=faros-hub' \
+    -subj '/CN=railgrid-hub' \
     -out "${work_dir}/tls.csr"
   printf '%s\n' \
     '[v3_req]' \
     'basicConstraints=critical,CA:FALSE' \
     'keyUsage=critical,digitalSignature,keyEncipherment' \
     'extendedKeyUsage=serverAuth' \
-    "subjectAltName=DNS:localhost,DNS:${browser_host},DNS:faros-hub,DNS:faros-hub-dex,DNS:faros-hub.${namespace}.svc,DNS:faros-hub-dex.${namespace}.svc,IP:127.0.0.1" \
+    "subjectAltName=DNS:localhost,DNS:${browser_host},DNS:railgrid-hub,DNS:railgrid-hub-dex,DNS:railgrid-hub.${namespace}.svc,DNS:railgrid-hub-dex.${namespace}.svc,IP:127.0.0.1" \
     >"${work_dir}/tls.ext"
   openssl x509 -req -sha256 -days 365 \
     -in "${work_dir}/tls.csr" \

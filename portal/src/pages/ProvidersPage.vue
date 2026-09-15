@@ -304,7 +304,7 @@ function sectionHeaderFor(card: ProviderCard, index: number): { title: string; s
   if (!orderedCards.value.some((c) => providers.isSelfManaged(c))) return null
   return own
     ? { title: 'Self-managed', subtitle: 'Providers your organization registered and runs itself.' }
-    : { title: 'Platform catalog', subtitle: 'Providers operated by faros.' }
+    : { title: 'Platform catalog', subtitle: 'Providers operated by railgrid.' }
 }
 
 function categoryIcon(name: string | null): unknown {
@@ -436,7 +436,7 @@ function dependencyNotice(p: ProviderDTO): string {
           Providers
         </h1>
         <p class="mt-1 text-sm text-text-muted">
-          Extensions registered with this faros instance. Click <strong>Enable</strong>
+          Extensions registered with this railgrid instance. Click <strong>Enable</strong>
           to create an APIBinding in your workspace and unlock the provider's CRs;
           <strong>Open</strong> launches its UI in the portal.
         </p>
@@ -486,13 +486,13 @@ function dependencyNotice(p: ProviderDTO): string {
       <!-- ===== Self-Hosting tab ===== -->
       <div v-else-if="tab === 'self-hosting'" class="space-y-6">
         <p class="text-sm text-text-muted">
-          Run a provider inside your own cluster instead of using the platform's copy. faros
+          Run a provider inside your own cluster instead of using the platform's copy. railgrid
           creates a workspace for it in your organization and gives you a credential scoped
           to that workspace only; you deploy the provider with Helm. Your workspaces then
           enable your copy exactly like any other provider.
         </p>
         <p class="-mt-3 text-[11px] text-text-muted">
-          The cluster must be connected to faros as an edge first. faros reaches a
+          The cluster must be connected to railgrid as an edge first. railgrid reaches a
           self-hosted provider over that cluster's outbound tunnel — there is no route
           into your network from the platform side.
         </p>

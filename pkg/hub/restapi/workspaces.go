@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 const workspaceGracePeriod = 30 * 24 * time.Hour
@@ -119,7 +119,7 @@ func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ListResponse[WorkspaceView]{Items: out})
 }
 
-// createWorkspace materialises the kcp Workspace, binds the faros
+// createWorkspace materialises the kcp Workspace, binds the railgrid
 // APIBinding, grants admin RBAC and seeds the default MCPServer (the
 // same chain the bootstrap controller drives for the personal Org).
 // Admin only (or member if Org.spec.workspaceCreation=="members"; the
@@ -157,7 +157,7 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := h.mgr.bootstrapper.EnsureChildWorkspaceFarosBinding(r.Context(), orgUUID, wsUUID); err != nil {
+	if err := h.mgr.bootstrapper.EnsureChildWorkspaceRailgridBinding(r.Context(), orgUUID, wsUUID); err != nil {
 		writeError(w, err)
 		return
 	}

@@ -10,7 +10,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Check, Info, Loader2, TriangleAlert, X } from 'lucide-vue-next'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 import {
   dismissToast,
   registerToastHost,
@@ -29,7 +29,7 @@ const props = withDefaults(defineProps<{
   owner: 'primary',
 })
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 interface ToastEntry extends ToastView {
   action?: ToastAction
@@ -401,7 +401,7 @@ onBeforeUnmount(() => {
       ref="root"
       class="k-toast-host"
       :class="{ 'k-toast-host--dormant': !active }"
-      :data-faros-toast-host="props.owner"
+      :data-railgrid-toast-host="props.owner"
       :data-active="active ? 'true' : 'false'"
       :aria-hidden="active ? undefined : 'true'"
     >

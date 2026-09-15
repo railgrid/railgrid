@@ -1,14 +1,14 @@
 {{- define "appstudio.catalogEntry" -}}
-apiVersion: providers.faros.sh/v1alpha1
+apiVersion: providers.railgrid.ai/v1alpha1
 kind: CatalogEntry
 metadata:
   name: app-studio
   annotations:
-    providers.faros.sh/builtin: "false"
+    providers.railgrid.ai/builtin: "false"
 spec:
   displayName: "App Studio"
   description: "Persistent AI project workspace for planning, memory, and chat."
-  vendor: "faros"
+  vendor: "railgrid"
   version: {{ .Chart.AppVersion | quote }}
   category: "AI"
   iconURL: "/ui/providers/app-studio/icon.svg"
@@ -19,20 +19,20 @@ spec:
     indexPath: "/"
   backend:
     # The hub backend proxy forwards /services/providers/app-studio/* here,
-    # injecting the verified X-Faros-Tenant/X-Faros-User headers and the
+    # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the
     # caller's bearer token. The provider serves /api/projects/*, /healthz
     # (liveness), and /readyz (controller-aware readiness).
     url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
     healthPath: "/readyz"
   # Reference-only: the APIExport, schemas, slice, and bind grant are created by
-  # this chart's init container (provider `init`, via the faros-provider-sdk).
+  # this chart's init container (provider `init`, via the railgrid-provider-sdk).
   apiExport:
-    name: "ai.faros.sh"
+    name: "ai.railgrid.ai"
     # Keep in sync with init_cmd.go (APIExport claims) and manifest.yaml —
     # the hub writes these into the tenant APIBinding at Enable time; a claim
     # missing here is silently denied at reconcile.
     permissionClaims:
-      # Built-in types ONLY — deliberately no first-party (*.faros.sh)
+      # Built-in types ONLY — deliberately no first-party (*.railgrid.ai)
       # claims: those pin one APIExport identityHash for every consumer at
       # once and break mixed platform/self-hosted dependency deployments.
       # Instance and repository lifecycling acts as per-project/per-studio
@@ -73,13 +73,13 @@ spec:
 
 {{- if .Values.catalogEntry.enabled -}}
 {{- if .Values.catalogEntry.renderAsConfigMap }}
-# CatalogEntry registers this provider with the faros hub for routing + the
-# portal Enable flow. It is a kcp resource (providers.faros.sh/v1alpha1),
+# CatalogEntry registers this provider with the railgrid hub for routing + the
+# portal Enable flow. It is a kcp resource (providers.railgrid.ai/v1alpha1),
 # so it MUST NOT be applied to the hosting cluster where this chart installs.
 # Instead the chart renders it into a ConfigMap that the init container mounts
 # and applies into the provider workspace via the provider kubeconfig
-# (FAROS_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
-# CatalogEntries in every workspace bound to providers.faros.sh, including
+# (RAILGRID_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
+# CatalogEntries in every workspace bound to providers.railgrid.ai, including
 # the provider's own, so a self-registered entry is seen.
 #
 # It only REFERENCES the APIExport (apiExport.name); the APIExport, its
@@ -103,12 +103,12 @@ data:
       selfHosting:
         supported: true
         chart:
-          repository: "oci://ghcr.io/faroshq/charts"
-          name: "faros-app-studio-provider"
+          repository: "oci://ghcr.io/railgrid/charts"
+          name: "railgrid-app-studio-provider"
           version: {{ .Chart.Version | quote }}
-        namespace: "faros-provider-app-studio"
+        namespace: "railgrid-provider-app-studio"
         releaseName: "app-studio"
-        docsURL: "https://github.com/faroshq/faros/blob/main/providers/app-studio/deploy/chart/README.md"
+        docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/app-studio/deploy/chart/README.md"
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}

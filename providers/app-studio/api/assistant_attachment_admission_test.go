@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,10 +33,10 @@ import (
 	"k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/bindings"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 func TestEnsureProjectAttachmentAdmissionAddsScopeAndFinalizer(t *testing.T) {
@@ -137,10 +137,10 @@ func TestCreateProjectAssistantAttachmentRejectsMetadataWriteFailureBeforeStore(
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
-	request.Header.Set("X-Faros-Tenant", "cluster")
+	request.Header.Set("X-Railgrid-Tenant", "cluster")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster")
-	request.Header.Set("X-Faros-User", "alice")
+	request.Header.Set("X-Railgrid-Cluster", "cluster")
+	request.Header.Set("X-Railgrid-User", "alice")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusConflict {

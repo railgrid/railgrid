@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/faros/pkg/runner/harness"
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 func TestGitResultExportTracksCommittedAndUncommittedWorktree(t *testing.T) {
@@ -100,7 +100,7 @@ func TestGitResultExportTracksCommittedAndUncommittedWorktree(t *testing.T) {
 		t.Fatalf("bundle heads = %q", heads)
 	}
 	show := string(runGit(t, got.Workdir, "show", "-s", "--format=%P%n%an%n%ae%n%cn%n%ce%n%at%n%ct%n%B", document.Commit))
-	if !strings.Contains(show, commit+"\nFaros Runner\nrunner@localhost\nFaros Runner\nrunner@localhost\n946684800\n946684800\nImplementation snapshot\n") {
+	if !strings.Contains(show, commit+"\nRailgrid Runner\nrunner@localhost\nRailgrid Runner\nrunner@localhost\n946684800\n946684800\nImplementation snapshot\n") {
 		t.Fatalf("result commit metadata = %q", show)
 	}
 	expectedHead := <-harnessHead

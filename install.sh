@@ -1,24 +1,24 @@
 #!/bin/sh
-# faros CLI installer.
+# railgrid CLI installer.
 #
 # Usage:
-#   curl -fsSL https://downloads.faros.sh/install.sh | sh
+#   curl -fsSL https://downloads.railgrid.ai/install.sh | sh
 #
 # Environment variables:
-#   FAROS_VERSION    Install a specific version (default: latest GitHub release).
+#   RAILGRID_VERSION    Install a specific version (default: latest GitHub release).
 #   INSTALL_DIR      Target directory (default: $HOME/.local/bin — no sudo
 #                    required). To install system-wide instead:
-#                      curl -fsSL https://downloads.faros.sh/install.sh \
+#                      curl -fsSL https://downloads.railgrid.ai/install.sh \
 #                        | INSTALL_DIR=/usr/local/bin sudo -E sh
-#   FAROS_BASE_URL   Override the binary download base (default:
-#                    https://downloads.faros.sh/cli/faros).
+#   RAILGRID_BASE_URL   Override the binary download base (default:
+#                    https://downloads.railgrid.ai/cli/railgrid).
 
 set -eu
 
-REPO="faroshq/faros"
+REPO="railgrid/railgrid"
 INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
-VERSION="${FAROS_VERSION:-}"
-BASE_URL="${FAROS_BASE_URL:-https://downloads.faros.sh/cli/faros}"
+VERSION="${RAILGRID_VERSION:-}"
+BASE_URL="${RAILGRID_BASE_URL:-https://downloads.railgrid.ai/cli/railgrid}"
 
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || err "missing required tool: $1"; }
@@ -28,8 +28,8 @@ need tar
 need uname
 
 # Release archives are named after `uname` (see .goreleaser.yml): title-case
-# OS and the machine name as uname reports it — kubectl-faros_Linux_x86_64,
-# kubectl-faros_Linux_aarch64, kubectl-faros_Darwin_arm64, ….
+# OS and the machine name as uname reports it — kubectl-railgrid_Linux_x86_64,
+# kubectl-railgrid_Linux_aarch64, kubectl-railgrid_Darwin_arm64, ….
 os="$(uname -s)"
 case "$os" in
     Linux)  os=Linux ;;
@@ -53,13 +53,13 @@ if [ -z "$VERSION" ]; then
     [ -n "$VERSION" ] || err "could not resolve latest release tag from GitHub"
 fi
 
-archive="kubectl-faros_${os}_${arch}.tar.gz"
+archive="kubectl-railgrid_${os}_${arch}.tar.gz"
 url="${BASE_URL}/${VERSION}/${archive}"
 
-tmp="$(mktemp -d 2>/dev/null || mktemp -d -t faros-install)"
+tmp="$(mktemp -d 2>/dev/null || mktemp -d -t railgrid-install)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-printf 'Downloading faros %s for %s/%s...\n' "$VERSION" "$os" "$arch"
+printf 'Downloading railgrid %s for %s/%s...\n' "$VERSION" "$os" "$arch"
 if ! curl -fsSL -o "${tmp}/${archive}" "$url"; then
     # Fallback: GitHub release asset.
     url="https://github.com/${REPO}/releases/download/${VERSION}/${archive}"
@@ -68,10 +68,10 @@ if ! curl -fsSL -o "${tmp}/${archive}" "$url"; then
         || err "failed to download ${archive} (${VERSION})"
 fi
 
-tar -xz -C "$tmp" -f "${tmp}/${archive}" kubectl-faros \
+tar -xz -C "$tmp" -f "${tmp}/${archive}" kubectl-railgrid \
     || err "failed to extract ${archive}"
 
-target="${INSTALL_DIR}/faros"
+target="${INSTALL_DIR}/railgrid"
 if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
     err "cannot create ${INSTALL_DIR} — pick a writable INSTALL_DIR or rerun with sudo"
 fi
@@ -79,12 +79,12 @@ if [ ! -w "$INSTALL_DIR" ]; then
     err "${INSTALL_DIR} is not writable — pick a writable INSTALL_DIR (e.g. \$HOME/.local/bin) or rerun with sudo"
 fi
 
-mv "${tmp}/kubectl-faros" "$target"
+mv "${tmp}/kubectl-railgrid" "$target"
 chmod +x "$target"
 
 cat <<EOF
 
-Installed faros ${VERSION} → ${target}
+Installed railgrid ${VERSION} → ${target}
 
 EOF
 
@@ -104,9 +104,9 @@ esac
 
 cat <<EOF
 Next:
-    faros login --hub-url https://<your-hub>   # sign in (browser OIDC, or --token <token>)
-    faros use                                  # pick an organization and workspace
-    faros edge create <name>                   # register your first edge and print its join command
-    faros --help                               # everything else
+    railgrid login --hub-url https://<your-hub>   # sign in (browser OIDC, or --token <token>)
+    railgrid use                                  # pick an organization and workspace
+    railgrid edge create <name>                   # register your first edge and print its join command
+    railgrid --help                               # everything else
 
 EOF

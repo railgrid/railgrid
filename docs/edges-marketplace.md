@@ -24,18 +24,18 @@ an edges `Service` so its MCP tools light up once the operator pastes a token.
 This closes the loop we already built: the MCP **service catalog**
 (`providers/edges/internal/tunnel/svc_catalog.go`, portal `PRESETS` in
 `providers/edges/portal/src/Services.vue`) knows how to *talk to* these apps;
-the marketplace makes faros able to *run* them too.
+the marketplace makes railgrid able to *run* them too.
 
 ## Where things stand (read this first)
 
 All paths relative to repo root; the edges provider is a separate Go module at
-`providers/edges` (module `github.com/faroshq/provider-edges`).
+`providers/edges` (module `github.com/railgrid/provider-edges`).
 
 ### Deploy path that already works end-to-end
 
 1. **`Workload` CR** — `providers/edges/apis/v1alpha1/types_workload.go`.
    Namespaced on the hub (portal creates in ns `default`), group
-   `edges.faros.sh`. `spec.targetNamespace` (DNS label, default `default`) is
+   `edges.railgrid.ai`. `spec.targetNamespace` (DNS label, default `default`) is
    the namespace on the **edge** the rendered objects land in — the hub
    namespace is never carried over. `spec.simple` = `{image, ports, env,
    resources, command, args, imagePullSecrets}` (there is also
@@ -45,7 +45,7 @@ All paths relative to repo root; the edges provider is a separate Go module at
    currently mostly unused).
 2. **Scheduler** — `providers/edges/internal/scheduler/` fans a Workload out
    into one `Placement` per matching KubernetesCluster edge.
-3. **Agent** — `pkg/agent/reconciler/workload.go` (main faros module) watches
+3. **Agent** — `pkg/agent/reconciler/workload.go` (main railgrid module) watches
    Placements through the hub and applies each Placement's rendered bundle
    with server-side apply into the namespace every object names (falling back
    to `default` only for objects that carry none). It stamps every applied
@@ -54,7 +54,7 @@ All paths relative to repo root; the edges provider is a separate Go module at
    `spec.targetNamespace` can put a Workload's objects anywhere and the label,
    not the namespace, ties them to the Placement. Namespaces themselves are
    never pruned. Agent RBAC is already `*` on core/apps
-   (`deploy/charts/faros-agent/templates/rbac.yaml`).
+   (`deploy/charts/railgrid-agent/templates/rbac.yaml`).
 4. **Portal** — `providers/edges/portal/src/Workloads.vue` (list, with the
    target namespace as a column and in the expanded per-edge row) +
    `WorkloadCreate.vue` (route-owned create form with "Target namespace" and,
@@ -102,7 +102,7 @@ Three additive `Workload` spec fields, all rendered hub-side by
   `ImagePullBackOff` on the edges that lack it. `template` mode already had
   `imagePullSecrets` through the full `PodSpec`.
 - **`spec.template.metadata.{labels,annotations}`** — stamped on every pod of
-  the template-mode Deployment. The provider's `edges.faros.sh/workload`
+  the template-mode Deployment. The provider's `edges.railgrid.ai/workload`
   selector label is always added on top and cannot be overridden.
 
 Prune semantics: the agent labels every applied object with the placement
@@ -116,14 +116,14 @@ Private-image recipe (simple mode):
 
 ```sh
 # 1. On each selected edge (repeat per edge; the Secret never leaves the edge):
-faros kubeconfig edge <edge-name> > /tmp/edge.kubeconfig
+railgrid kubeconfig edge <edge-name> > /tmp/edge.kubeconfig
 KUBECONFIG=/tmp/edge.kubeconfig kubectl create namespace kiosk   # optional; the agent creates it too
 KUBECONFIG=/tmp/edge.kubeconfig kubectl -n kiosk create secret docker-registry ghcr-pull \
   --docker-server=ghcr.io --docker-username=<user> --docker-password=<token>
 
 # 2. On the hub: the Workload only references the Secret by name.
 kubectl apply -f - <<'EOF'
-apiVersion: edges.faros.sh/v1alpha1
+apiVersion: edges.railgrid.ai/v1alpha1
 kind: Workload
 metadata:
   name: kiosk-app
@@ -173,14 +173,14 @@ set with server-side apply". Release state stays in kcp, not on edges.
 
 ### Phase 1 — agent: generic manifest-bundle apply/prune
 
-`pkg/agent/reconciler/workload.go` (main faros module, ships in the
-faros-agent image — rebuild/rollout needed; Tiltfile.cluster covers dev kind):
+`pkg/agent/reconciler/workload.go` (main railgrid module, ships in the
+railgrid-agent image — rebuild/rollout needed; Tiltfile.cluster covers dev kind):
 
 - Placement gains a rendered-manifests payload (list of objects or one
   multi-doc YAML string — pick with an eye on etcd object size; prune
   whitespace/comments from rendered output).
-- Agent applies the set with SSA (field manager `faros-agent`), labels every
-  object `edges.faros.sh/workload=<name>`, prunes labeled objects that
+- Agent applies the set with SSA (field manager `railgrid-agent`), labels every
+  object `edges.railgrid.ai/workload=<name>`, prunes labeled objects that
   vanished from the bundle, and deletes the set on Placement deletion.
   Agent RBAC is already `*` on core/apps/rbac/networking — no chart change.
 - Migrate simple mode to the same path: the **scheduler/provider** renders
@@ -274,10 +274,10 @@ login), **pihole** (session) — then fan out.
    endpoint (hub aggregate → edges provider federation is already
    live-tested). Repeat for pihole (session auth) and grafana (Bearer).
 4. `make codegen-edges-provider` after any `apis/v1alpha1` change. Do NOT run
-   root `make crds` (see memory: it guts core.faros.sh).
+   root `make crds` (see memory: it guts core.railgrid.ai).
 5. Build gates: `cd providers/edges && go build ./... && go vet ./internal/...`;
    portal `npx vue-tsc --noEmit && npm run build`; main module `go build
-   ./pkg/agent/...` for Phase 1. Agent changes need the faros-agent image
+   ./pkg/agent/...` for Phase 1. Agent changes need the railgrid-agent image
    rebuilt/rolled on the dev edge cluster.
 
 ## Gotchas / context for the next model

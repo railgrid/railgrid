@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -168,7 +168,7 @@ func TestHeartbeatWithoutRecorder(t *testing.T) {
 
 // The recorder must address a provider's CatalogEntry by the cluster the
 // catalog watch observed it in. An earlier version wrote to a fixed workspace
-// path (root:faros:system:providers) that serves the API but holds no entries,
+// path (root:railgrid:system:providers) that serves the API but holds no entries,
 // so every beat 404'd and liveness never reached the other replicas.
 func TestCatalogEntryClusterComesFromTheObservedEntry(t *testing.T) {
 	reg := NewRegistry()

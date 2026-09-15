@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/faroshq/provider-agents/store"
-	"github.com/faroshq/provider-agents/tools"
+	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 // Completion callbacks. A caller that neither waits nor polls can name a URL to
@@ -51,7 +51,7 @@ const (
 	callbackTimeout = 10 * time.Second
 	// callbackSignatureHeader carries the HMAC over the body, so a receiver can
 	// tell a real callback from anything else that finds the URL.
-	callbackSignatureHeader = "X-Faros-Signature"
+	callbackSignatureHeader = "X-Railgrid-Signature"
 )
 
 // runCallback is where to report a finished run.
@@ -155,7 +155,7 @@ func postCallback(ctx context.Context, client *http.Client, cb *runCallback, bod
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "faros-agents/0.1")
+	req.Header.Set("User-Agent", "railgrid-agents/0.1")
 	if secret := strings.TrimSpace(cb.Secret); secret != "" {
 		mac := hmac.New(sha256.New, []byte(secret))
 		mac.Write(body)

@@ -8,7 +8,7 @@
 <script setup lang="ts">
 import { Check, ChevronDown } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 export interface FormSelectOption {
   value: string
@@ -42,7 +42,7 @@ const emit = defineEmits<{
   'update:modelValue': [value: string]
 }>()
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 const instanceID = useId()
 const triggerID = computed(() => props.id || `form-select-${instanceID}`)

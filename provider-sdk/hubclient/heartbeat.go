@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,15 +34,15 @@ import (
 const (
 	// EnvHubURL is the hub base URL (https://localhost:9443 in dev). Empty
 	// disables the heartbeat, which is what tests and dry runs want.
-	EnvHubURL = "FAROS_HUB_URL"
+	EnvHubURL = "RAILGRID_HUB_URL"
 	// EnvProviderName is this provider's CatalogEntry name.
-	EnvProviderName = "FAROS_PROVIDER_NAME"
+	EnvProviderName = "RAILGRID_PROVIDER_NAME"
 	// EnvProviderVersion lets a chart override the version the heartbeat
 	// reports so a separately packaged binary matches its CatalogEntry/image.
-	EnvProviderVersion = "FAROS_PROVIDER_VERSION"
+	EnvProviderVersion = "RAILGRID_PROVIDER_VERSION"
 	// EnvHubInsecure set to exactly "true" skips TLS verification of the hub.
 	// Dev-only, for self-signed certificates.
-	EnvHubInsecure = "FAROS_HUB_INSECURE"
+	EnvHubInsecure = "RAILGRID_HUB_INSECURE"
 
 	// DefaultHeartbeatInterval is how often a provider beats. The hub's TTL
 	// is ~90s, so three missed beats flip the provider to NotReady.
@@ -87,16 +87,16 @@ type HeartbeatConfig struct {
 }
 
 // ConfigFromEnv builds a HeartbeatConfig from the environment every provider
-// chart already sets: FAROS_HUB_URL, FAROS_PROVIDER_NAME (defaultName when
-// unset), FAROS_HUB_INSECURE, FAROS_PROVIDER_VERSION (version when unset),
-// and the bearer from ResolveHubToken (FAROS_HUB_TOKEN, else the token in
-// FAROS_PROVIDER_KUBECONFIG).
+// chart already sets: RAILGRID_HUB_URL, RAILGRID_PROVIDER_NAME (defaultName when
+// unset), RAILGRID_HUB_INSECURE, RAILGRID_PROVIDER_VERSION (version when unset),
+// and the bearer from ResolveHubToken (RAILGRID_HUB_TOKEN, else the token in
+// RAILGRID_PROVIDER_KUBECONFIG).
 //
 // A token-resolution failure is returned together with a usable config whose
 // Token is empty, so a caller can log the error and still run the heartbeat
 // unauthenticated rather than not at all.
 //
-// An empty FAROS_HUB_URL disables the heartbeat, so the token is not resolved
+// An empty RAILGRID_HUB_URL disables the heartbeat, so the token is not resolved
 // at all in that case: reading the provider kubeconfig for a beat that will
 // never be sent is wasted work, and its failure logs a misleading token error
 // in tests and local runs. The returned config is still usable — RunHeartbeat
@@ -155,7 +155,7 @@ func RunHeartbeat(ctx context.Context, cfg HeartbeatConfig) {
 	client := &http.Client{Timeout: cfg.Timeout}
 	if cfg.Insecure {
 		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via FAROS_HUB_INSECURE
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via RAILGRID_HUB_INSECURE
 		}
 	}
 

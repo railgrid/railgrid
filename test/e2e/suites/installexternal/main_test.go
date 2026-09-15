@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package installexternal covers docs/install-external-kcp.md end to end: it
 // executes the hack/install scripts the guide quotes (kind cluster →
-// cert-manager → Envoy Gateway → etcd → kcp-operator → two-shard kcp → faros
+// cert-manager → Envoy Gateway → etcd → kcp-operator → two-shard kcp → railgrid
 // hub against that external kcp) and then asserts the documented verify steps.
 package installexternal
 
@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
-	"github.com/faroshq/faros/test/e2e/framework"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 var testenv env.Environment
@@ -44,15 +44,15 @@ var installScripts = []string{
 	"04-etcd.sh",
 	"05-kcp-operator.sh",
 	"06-kcp-shards.sh",
-	"07-faros-hub-external.sh",
+	"07-railgrid-hub-external.sh",
 }
 
 func TestMain(m *testing.M) {
 	// Opt-in only: this suite provisions its own kind cluster and takes tens
 	// of minutes; the dedicated Make target sets the gate. This keeps the
 	// suite out of broad `go test ./test/e2e/suites/...` sweeps (e2e-all).
-	if os.Getenv("FAROS_E2E_INSTALL") != "true" {
-		fmt.Println("skipping install e2e suite: FAROS_E2E_INSTALL != true (run via `make e2e-install-external`)")
+	if os.Getenv("RAILGRID_E2E_INSTALL") != "true" {
+		fmt.Println("skipping install e2e suite: RAILGRID_E2E_INSTALL != true (run via `make e2e-install-external`)")
 		os.Exit(0)
 	}
 

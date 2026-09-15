@@ -18,8 +18,8 @@ staticClients:
   # The hub and CLI are one PKCE public client: no secret, and refresh tokens
   # (offline_access) work without one. A `secret:` here would make dex reject
   # both the code exchange and every refresh with invalid_client.
-  - id: faros
-    name: Faros
+  - id: railgrid
+    name: Railgrid
     public: true
     redirectURIs:
       - https://console.127.0.0.1.sslip.io:9443/auth/callback

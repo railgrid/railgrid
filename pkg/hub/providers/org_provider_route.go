@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -114,9 +114,9 @@ func (t *delegatedEdgeTransport) RoundTrip(req *http.Request) (*http.Response, e
 	// The provider at the far end attributes the call to the person; the
 	// credential that proves it is the delegated token, never the bearer the
 	// hub received.
-	out.Header.Del("X-Faros-User")
+	out.Header.Del("X-Railgrid-User")
 	if t.user != "" {
-		out.Header.Set("X-Faros-User", t.user)
+		out.Header.Set("X-Railgrid-User", t.user)
 	}
 	setDelegatedAuthorization(out.Header, t.token)
 	return t.base.RoundTrip(out)

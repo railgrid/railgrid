@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -146,7 +146,7 @@ type appSyncSkippedFile struct {
 	Reason string `json:"reason"`
 }
 
-// appSyncOutput is what 'faros app sync -o json' prints.
+// appSyncOutput is what 'railgrid app sync -o json' prints.
 type appSyncOutput struct {
 	Hydrate json.RawMessage `json:"hydrate"`
 	Sync    json.RawMessage `json:"sync"`
@@ -176,14 +176,14 @@ func newAppCommand() *cobra.Command {
 		Short:   "Manage App Studio projects: list, create, status, sync, promote, publish",
 		Long: `Manage App Studio projects through the App Studio REST API, as you.
 
-  faros app create shop --template application --display-name Shop --wait
-  faros app status shop
-  faros app sync shop
-  faros app promote shop --hostname-prefix shop
-  faros app publish shop --mode public
+  railgrid app create shop --template application --display-name Shop --wait
+  railgrid app status shop
+  railgrid app sync shop
+  railgrid app promote shop --hostname-prefix shop
+  railgrid app publish shop --mode public
 
-Develop with 'faros sandbox' against <project>-dev and record commits with
-'faros commit <repository ref>' (the ref is shown by 'faros app status').`,
+Develop with 'railgrid sandbox' against <project>-dev and record commits with
+'railgrid commit <repository ref>' (the ref is shown by 'railgrid app status').`,
 	}
 	target.addFlags(cmd)
 	cmd.AddCommand(
@@ -287,13 +287,13 @@ suffixed. If a Repository with that name already exists (often one left behind
 by a deleted project, which keeps its repository), the hub answers 409 Conflict:
 choose another name. Without a validated Git connection the project starts with
 no repository, and one connected later gets a suffixed name, so read the
-repository ref from 'faros app status'. With --wait the command returns
+repository ref from 'railgrid app status'. With --wait the command returns
 once the repository is ready and the scaffold commit has succeeded — the point
-from which cloning and 'faros commit' work. Without --template, --prompt lets
+from which cloning and 'railgrid commit' work. Without --template, --prompt lets
 App Studio infer the template. --existing-repository adopts a code Repository
 you created first (one that names an existing GitHub repo): the project
 hydrates from its default branch instead of getting a scaffold, and nothing in
-that repository's history is promotable until the first 'faros commit'.`,
+that repository's history is promotable until the first 'railgrid commit'.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(output); err != nil {
@@ -340,11 +340,11 @@ func runAppCreate(ctx context.Context, out, errOut io.Writer, target hubTarget, 
 		return fmt.Errorf("decoding project: %w", err)
 	}
 	if wait {
-		_, _ = fmt.Fprintf(errOut, "faros app: waiting for repository and scaffold commit of %s…\n", p.Name)
+		_, _ = fmt.Fprintf(errOut, "railgrid app: waiting for repository and scaffold commit of %s…\n", p.Name)
 		deadline := time.Now().Add(timeout)
 		for !appScaffolded(p) {
 			if time.Now().After(deadline) {
-				return fmt.Errorf("project %s: repository not ready with a succeeded commit after %s; check 'faros app status %s'", p.Name, timeout, p.Name)
+				return fmt.Errorf("project %s: repository not ready with a succeeded commit after %s; check 'railgrid app status %s'", p.Name, timeout, p.Name)
 			}
 			select {
 			case <-ctx.Done():
@@ -386,7 +386,7 @@ func appScaffolded(p appProjectView) bool {
 	return false
 }
 
-// appStatus is what `faros app status` gathers; -o json prints it whole.
+// appStatus is what `railgrid app status` gathers; -o json prints it whole.
 type appStatus struct {
 	Project         json.RawMessage `json:"project"`
 	Promotion       json.RawMessage `json:"promotion,omitempty"`
@@ -549,7 +549,7 @@ func publishingSummary(pub appPublishingView) string {
 }
 
 // repositoryStallThreshold is how long a fresh project's repository may stay
-// not-ready before `faros app status` stops calling it latency. Measured on a
+// not-ready before `railgrid app status` stops calling it latency. Measured on a
 // dev hub the repository is ready in ~10 s and the scaffold commit lands
 // within 40 s; anything past two minutes with no status at all means the
 // code provider is not reconciling.
@@ -568,7 +568,7 @@ func repositoryStallHint(p appProjectView, now time.Time) string {
 	if age < repositoryStallThreshold {
 		return ""
 	}
-	return fmt.Sprintf("not ready for %s with no status: the code provider is not reconciling (kubectl get repositories.code.faros.sh %s -o yaml has no status); wait for the operator, don't recreate the project",
+	return fmt.Sprintf("not ready for %s with no status: the code provider is not reconciling (kubectl get repositories.code.railgrid.ai %s -o yaml has no status); wait for the operator, don't recreate the project",
 		age.Truncate(time.Minute), formatStringOrDash(r.Ref))
 }
 
@@ -622,10 +622,10 @@ func newAppSyncCommand(target *hubTarget) *cobra.Command {
 		Short: "Load the repository into the project workspace and sync it to <name>-dev",
 		Long: `Hydrate the project workspace from its repository's default branch, then run
 App Studio's authoritative development sync, which pushes the workspace to
-every component of the <name>-dev instance. Afterwards 'faros sandbox exec'
+every component of the <name>-dev instance. Afterwards 'railgrid sandbox exec'
 works against <name>-dev.
 
-Use this rather than 'faros sandbox sync' on an App Studio dev instance: App
+Use this rather than 'railgrid sandbox sync' on an App Studio dev instance: App
 Studio owns that instance's file set, and a sandbox sync replaces it. Files
 the sync left out (binaries a component's dev agent cannot take, files over
 the size limits) are listed per component.`,
@@ -647,11 +647,11 @@ func runAppSync(ctx context.Context, out, errOut io.Writer, target hubTarget, na
 		return err
 	}
 	var res appSyncOutput
-	_, _ = fmt.Fprintf(errOut, "faros app: loading %s's workspace from its repository…\n", name)
+	_, _ = fmt.Fprintf(errOut, "railgrid app: loading %s's workspace from its repository…\n", name)
 	if err := s.do(ctx, http.MethodPost, projectURL(s, name, "hydrate-workspace"), map[string]any{}, &res.Hydrate); err != nil {
 		return fmt.Errorf("hydrating the workspace: %w", err)
 	}
-	_, _ = fmt.Fprintf(errOut, "faros app: syncing %s's workspace to its development instance…\n", name)
+	_, _ = fmt.Fprintf(errOut, "railgrid app: syncing %s's workspace to its development instance…\n", name)
 	if err := s.do(ctx, http.MethodPost, projectURL(s, name, "sync-development"), map[string]any{}, &res.Sync); err != nil {
 		return fmt.Errorf("syncing the development instance: %w", err)
 	}
@@ -723,7 +723,7 @@ func newAppPromoteCommand(target *hubTarget) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "promote <name>",
 		Short: "Promote the latest built commit (or --commit) to production",
-		Long: `Create or update the <name>-prod instance from a built, faros-recorded commit.
+		Long: `Create or update the <name>-prod instance from a built, railgrid-recorded commit.
 
 The hostname prefix is locked after the first production deploy: pass
 --hostname-prefix on the first promote, and later either the same value or
@@ -759,7 +759,7 @@ nothing. Each promote rolls pods, even for the same commit.`,
 		},
 	}
 	cmd.Flags().StringVar(&hostnamePrefix, "hostname-prefix", "", "Production hostname prefix (locked after the first promote)")
-	cmd.Flags().StringVar(&commitSHA, "commit", "", "Promote this faros-recorded commit instead of the latest")
+	cmd.Flags().StringVar(&commitSHA, "commit", "", "Promote this railgrid-recorded commit instead of the latest")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output format: json")
 	return cmd
 }

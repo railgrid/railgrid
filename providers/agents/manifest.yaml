@@ -1,4 +1,4 @@
-# Agents provider — register with the faros hub.
+# Agents provider — register with the railgrid hub.
 #
 # The agents provider hosts long-running personal AI agents: chat, scheduled
 # and heartbeat runs, tool use, and durable memory. It is standalone — its only
@@ -7,8 +7,8 @@
 # infrastructure provider is present, so infrastructure is an OPTIONAL
 # dependency and is intentionally not listed under spec.dependencies.
 #
-# Apply this against the kcp workspace where the faros.sh APIExport is
-# bound (typically root:faros:providers when running embedded kcp for dev):
+# Apply this against the kcp workspace where the railgrid.ai APIExport is
+# bound (typically root:railgrid:providers when running embedded kcp for dev):
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
 #
@@ -22,16 +22,16 @@
 # provider's init command creates the APIExport, schemas, endpoint slice, and
 # bind grant from deploy/chart/files/schemas.
 ---
-apiVersion: providers.faros.sh/v1alpha1
+apiVersion: providers.railgrid.ai/v1alpha1
 kind: CatalogEntry
 metadata:
   name: agents
   annotations:
-    providers.faros.sh/builtin: "false"
+    providers.railgrid.ai/builtin: "false"
 spec:
   displayName: "Agents"
   description: "Long-running personal AI agents: chat, scheduled runs, tools, and durable memory."
-  vendor: "faros"
+  vendor: "railgrid"
   version: "0.1.0"
   category: "AI"
   iconURL: "/ui/providers/agents/icon.svg"
@@ -42,13 +42,13 @@ spec:
     indexPath: "/"
   backend:
     # The hub backend proxy forwards /services/providers/agents/* here,
-    # injecting the verified X-Faros-Tenant/X-Faros-User headers and the
+    # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the
     # caller's bearer token. The provider serves /api/* + /healthz.
     url: "http://localhost:8087"
     healthPath: "/healthz"
 
   apiExport:
-    name: "agents.faros.sh"
+    name: "agents.railgrid.ai"
     # The provider stores per-workspace model credentials and per-connection
     # secrets in Secrets in the tenant workspace; the claim lets it read/write
     # them as the calling user.
@@ -96,11 +96,11 @@ spec:
   selfHosting:
     supported: true
     chart:
-      repository: "oci://ghcr.io/faroshq/charts"
-      name: "faros-agents-provider"
-    namespace: "faros-provider-agents"
+      repository: "oci://ghcr.io/railgrid/charts"
+      name: "railgrid-agents-provider"
+    namespace: "railgrid-provider-agents"
     releaseName: "agents"
-    docsURL: "https://github.com/faroshq/faros/blob/main/providers/agents/deploy/chart/README.md"
+    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/agents/deploy/chart/README.md"
     requiredValues:
       - name: store.databaseURLSecretRef.name
         description: >-

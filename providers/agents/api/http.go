@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/store"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/store"
 )
 
 // identity carries the verified tenant context the hub injects on every proxied
@@ -27,18 +27,18 @@ import (
 // forwarding, so these headers are trusted.
 //
 // The tenant is identified by the workspace's kcp logical-cluster ID: the hub
-// sends it in both X-Faros-Tenant and X-Faros-Cluster and never sends the
+// sends it in both X-Railgrid-Tenant and X-Railgrid-Cluster and never sends the
 // workspace path. The organization / workspace UUIDs the store is keyed on are
 // therefore not parsed from any header; they come from kcp (the workspace's
 // LogicalCluster, read as the caller) via Server.workspaces.
 type identity struct {
-	tenant        string // X-Faros-Tenant: the workspace's kcp logical-cluster ID
-	clusterID     string // X-Faros-Cluster: the same ID; what the tenant client addresses
-	workspacePath string // resolved from kcp, e.g. root:faros:tenants:<org>:<ws>; never from a header
+	tenant        string // X-Railgrid-Tenant: the workspace's kcp logical-cluster ID
+	clusterID     string // X-Railgrid-Cluster: the same ID; what the tenant client addresses
+	workspacePath string // resolved from kcp, e.g. root:railgrid:tenants:<org>:<ws>; never from a header
 	orgUUID       string // from workspacePath
 	workspaceUUID string // from workspacePath ("" for an organization workspace)
 	workspaceErr  error  // why workspacePath could not be resolved, when it could not
-	user          string // X-Faros-User
+	user          string // X-Railgrid-User
 	token         string // bearer token, forwarded as-is from Authorization
 }
 
@@ -54,9 +54,9 @@ type workspaceLookup func(ctx context.Context, clusterID, token string) (tenanta
 // that only needs the cluster ID keeps working when the lookup is unavailable.
 func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool) {
 	id := identity{
-		tenant:    strings.TrimSpace(r.Header.Get("X-Faros-Tenant")),
-		clusterID: strings.TrimSpace(r.Header.Get("X-Faros-Cluster")),
-		user:      strings.TrimSpace(r.Header.Get("X-Faros-User")),
+		tenant:    strings.TrimSpace(r.Header.Get("X-Railgrid-Tenant")),
+		clusterID: strings.TrimSpace(r.Header.Get("X-Railgrid-Cluster")),
+		user:      strings.TrimSpace(r.Header.Get("X-Railgrid-User")),
 		token:     bearerToken(r),
 	}
 	if id.tenant == "" {
@@ -64,7 +64,7 @@ func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (id
 		return identity{}, false
 	}
 	if id.clusterID == "" {
-		// Older hubs sent only X-Faros-Tenant; both carry the cluster ID now.
+		// Older hubs sent only X-Railgrid-Tenant; both carry the cluster ID now.
 		id.clusterID = id.tenant
 	}
 	s.resolveWorkspace(r.Context(), &id)
@@ -181,11 +181,11 @@ func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsc
 		return nil, identity{}, false
 	}
 	if s.tenant == nil {
-		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant access not configured — provider has no hub URL (set FAROS_HUB_URL)")
+		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant access not configured — provider has no hub URL (set RAILGRID_HUB_URL)")
 		return nil, identity{}, false
 	}
 	if id.clusterID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Faros-Cluster missing) — the hub did not resolve a cluster")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Railgrid-Cluster missing) — the hub did not resolve a cluster")
 		return nil, identity{}, false
 	}
 	if id.workspaceUUID == "" {

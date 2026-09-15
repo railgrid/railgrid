@@ -18,7 +18,7 @@
 * (c) 2018-present Yuxi (Evan) You and Vue contributors
 * @license MIT
 **/let Is;const mo=typeof window<"u"&&window.trustedTypes;if(mo)try{Is=mo.createPolicy("vue",{createHTML:e=>e})}catch{}const vo=Is?e=>Is.createHTML(e):e=>e,Zl="http://www.w3.org/2000/svg",ea="http://www.w3.org/1998/Math/MathML",ot=typeof document<"u"?document:null,bo=ot&&ot.createElement("template"),ta={insert:(e,t,n)=>{t.insertBefore(e,n||null)},remove:e=>{const t=e.parentNode;t&&t.removeChild(e)},createElement:(e,t,n,s)=>{const r=t==="svg"?ot.createElementNS(Zl,e):t==="mathml"?ot.createElementNS(ea,e):n?ot.createElement(e,{is:n}):ot.createElement(e);return e==="select"&&s&&s.multiple!=null&&r.setAttribute("multiple",s.multiple),r},createText:e=>ot.createTextNode(e),createComment:e=>ot.createComment(e),setText:(e,t)=>{e.nodeValue=t},setElementText:(e,t)=>{e.textContent=t},parentNode:e=>e.parentNode,nextSibling:e=>e.nextSibling,querySelector:e=>ot.querySelector(e),setScopeId(e,t){e.setAttribute(t,"")},insertStaticContent(e,t,n,s,r,o){const i=n?n.previousSibling:t.lastChild;if(r&&(r===o||r.nextSibling))for(;t.insertBefore(r.cloneNode(!0),n),!(r===o||!(r=r.nextSibling)););else{bo.innerHTML=vo(s==="svg"?`<svg>${e}</svg>`:s==="mathml"?`<math>${e}</math>`:e);const l=bo.content;if(s==="svg"||s==="mathml"){const a=l.firstChild;for(;a.firstChild;)l.appendChild(a.firstChild);l.removeChild(a)}t.insertBefore(l,n)}return[i?i.nextSibling:t.firstChild,n?n.previousSibling:t.lastChild]}},na=Symbol("_vtc");function sa(e,t,n){const s=e[na];s&&(t=(t?[t,...s]:[...s]).join(" ")),t==null?e.removeAttribute("class"):n?e.setAttribute("class",t):e.className=t}const yo=Symbol("_vod"),ra=Symbol("_vsh"),oa=Symbol(""),ia=/(?:^|;)\s*display\s*:/;function la(e,t,n){const s=e.style,r=re(n);let o=!1;if(n&&!r){if(t)if(re(t))for(const i of t.split(";")){const l=i.slice(0,i.indexOf(":")).trim();n[l]==null&&sn(s,l,"")}else for(const i in t)n[i]==null&&sn(s,i,"");for(const i in n){i==="display"&&(o=!0);const l=n[i];l!=null?ca(e,i,!re(t)&&t?t[i]:void 0,l)||sn(s,i,l):sn(s,i,"")}}else if(r){if(t!==n){const i=s[oa];i&&(n+=";"+i),s.cssText=n,o=ia.test(n)}}else t&&e.removeAttribute("style");yo in e&&(e[yo]=o?s.display:"",e[ra]&&(s.display="none"))}const xo=/\s*!important$/;function sn(e,t,n){if(P(n))n.forEach(s=>sn(e,t,s));else if(n==null&&(n=""),t.startsWith("--"))e.setProperty(t,n);else{const s=aa(e,t);xo.test(n)?e.setProperty(pt(s),n.replace(xo,""),"important"):e[s]=n}}const _o=["Webkit","Moz","ms"],Ms={};function aa(e,t){const n=Ms[t];if(n)return n;let s=Ne(t);if(s!=="filter"&&s in e)return Ms[t]=s;s=Ys(s);for(let r=0;r<_o.length;r++){const o=_o[r]+s;if(o in e)return Ms[t]=o}return t}function ca(e,t,n,s){return e.tagName==="TEXTAREA"&&(t==="width"||t==="height")&&re(s)&&n===s}const wo="http://www.w3.org/1999/xlink";function So(e,t,n,s,r,o=ci(t)){s&&t.startsWith("xlink:")?n==null?e.removeAttributeNS(wo,t.slice(6,t.length)):e.setAttributeNS(wo,t,n):n==null||o&&!Zs(n)?e.removeAttribute(t):e.setAttribute(t,o?"":Pe(n)?String(n):n)}function ko(e,t,n,s,r){if(t==="innerHTML"||t==="textContent"){n!=null&&(e[t]=t==="innerHTML"?vo(n):n);return}const o=e.tagName;if(t==="value"&&o!=="PROGRESS"&&!o.includes("-")){const l=o==="OPTION"?e.getAttribute("value")||"":e.value,a=n==null?e.type==="checkbox"?"on":"":String(n);(l!==a||!("_value"in e))&&(e.value=a),n==null&&e.removeAttribute(t),e._value=n;return}let i=!1;if(n===""||n==null){const l=typeof e[t];l==="boolean"?n=Zs(n):n==null&&l==="string"?(n="",i=!0):l==="number"&&(n=0,i=!0)}try{e[t]=n}catch{}i&&e.removeAttribute(r||t)}function _t(e,t,n,s){e.addEventListener(t,n,s)}function ua(e,t,n,s){e.removeEventListener(t,n,s)}const Co=Symbol("_vei");function fa(e,t,n,s,r=null){const o=e[Co]||(e[Co]={}),i=o[t];if(s&&i)i.value=s;else{const[l,a]=ha(t);if(s){const d=o[t]=va(s,r);_t(e,l,d,a)}else i&&(ua(e,l,i,a),o[t]=void 0)}}const da=/(Once|Passive|Capture)$/,pa=/^on:?(?:Once|Passive|Capture)$/;function ha(e){let t,n;for(;(n=e.match(da))&&!pa.test(e);)t||(t={}),e=e.slice(0,e.length-n[1].length),t[n[1].toLowerCase()]=!0;return[e[2]===":"?e.slice(3):pt(e.slice(2)),t]}let Os=0;const ga=Promise.resolve(),ma=()=>Os||(ga.then(()=>Os=0),Os=Date.now());function va(e,t){const n=s=>{if(!s._vts)s._vts=Date.now();else if(s._vts<=n.attached)return;const r=n.value;if(P(r)){const o=s.stopImmediatePropagation;s.stopImmediatePropagation=()=>{o.call(s),s._stopped=!0};const i=r.slice(),l=[s];for(let a=0;a<i.length&&!s._stopped;a++){const d=i[a];d&&De(d,t,5,l)}}else De(r,t,5,[s])};return n.value=e,n.attached=ma(),n}const To=e=>e.charCodeAt(0)===111&&e.charCodeAt(1)===110&&e.charCodeAt(2)>96&&e.charCodeAt(2)<123,ba=(e,t,n,s,r,o)=>{const i=r==="svg";t==="class"?sa(e,s,i):t==="style"?la(e,n,s):cn(t)?un(t)||fa(e,t,n,s,o):(t[0]==="."?(t=t.slice(1),!0):t[0]==="^"?(t=t.slice(1),!1):ya(e,t,s,i))?(ko(e,t,s),!e.tagName.includes("-")&&(t==="value"||t==="checked"||t==="selected")&&So(e,t,s,i,o,t!=="value")):e._isVueCE&&(xa(e,t)||e._def.__asyncLoader&&(/[A-Z]/.test(t)||!re(s)))?ko(e,Ne(t),s,o,t):(t==="true-value"?e._trueValue=s:t==="false-value"&&(e._falseValue=s),So(e,t,s,i))};function ya(e,t,n,s){if(s)return!!(t==="innerHTML"||t==="textContent"||t in e&&To(t)&&F(n));if(t==="spellcheck"||t==="draggable"||t==="translate"||t==="autocorrect"||t==="sandbox"&&e.tagName==="IFRAME"||t==="form"||t==="list"&&e.tagName==="INPUT"||t==="type"&&e.tagName==="TEXTAREA")return!1;if(t==="width"||t==="height"){const r=e.tagName;if(r==="IMG"||r==="VIDEO"||r==="CANVAS"||r==="SOURCE")return!1}return To(t)&&re(n)?!1:t in e}function xa(e,t){const n=e._def.props;if(!n)return!1;const s=Ne(t);return Array.isArray(n)?n.some(r=>Ne(r)===s):Object.keys(n).some(r=>Ne(r)===s)}const Hn=e=>{const t=e.props["onUpdate:modelValue"]||!1;return P(t)?n=>pn(t,n):t};function _a(e){e.target.composing=!0}function $o(e){const t=e.target;t.composing&&(t.composing=!1,t.dispatchEvent(new Event("input")))}const wt=Symbol("_assign"),Un=Symbol("_initialValue");function Ps(e,t,n){return t&&(e=e.trim()),n&&(e=hn(e)),e}const xe={created(e,{modifiers:{lazy:t,trim:n,number:s}},r){e.parentNode&&(e.type==="text"?e[Un]=e.defaultValue.replace(/[\r\n]/g,""):e.type==="textarea"&&(e[Un]=e.defaultValue.replace(/\r\n?/g,`
-`))),e[wt]=Hn(r);const o=s||r.props&&r.props.type==="number";_t(e,t?"change":"input",i=>{i.target.composing||e[wt](Ps(e.value,n,o))}),(n||o)&&_t(e,"change",()=>{e.value=Ps(e.value,n,o)}),t||(_t(e,"compositionstart",_a),_t(e,"compositionend",$o),_t(e,"change",$o))},mounted(e,{value:t,modifiers:{trim:n,number:s}}){const r=t??"",o=e[Un];delete e[Un],o!==void 0&&(e.type==="text"||e.type==="textarea")&&e.value!==o?e[wt](Ps(e.value,n,s)):e.value=r},beforeUpdate(e,{value:t,oldValue:n,modifiers:{lazy:s,trim:r,number:o}},i){if(e[wt]=Hn(i),e.composing)return;const l=(o||e.type==="number")&&!/^0\d/.test(e.value)?hn(e.value):e.value,a=t??"";if(l===a)return;const d=e.getRootNode();(d instanceof Document||d instanceof ShadowRoot)&&d.activeElement===e&&e.type!=="range"&&(s&&t===n||r&&e.value.trim()===a)||(e.value=a)}},Eo={deep:!0,created(e,{value:t,modifiers:{number:n}},s){e._modelValue=t,_t(e,"change",()=>{const r=Array.prototype.filter.call(e.options,o=>o.selected).map(o=>n?hn(Bn(o)):Bn(o));e[wt](e.multiple?fn(e._modelValue)?new Set(r):r:r[0]),e._assigning=!0,Tn(()=>{e._assigning=!1})}),e[wt]=Hn(s)},mounted(e,{value:t}){Ao(e,t)},beforeUpdate(e,{value:t},n){e._modelValue=t,e[wt]=Hn(n)},updated(e,{value:t}){e._assigning||Ao(e,t)}};function Ao(e,t){const n=e.multiple,s=P(t);if(!(n&&!s&&!fn(t))){for(let r=0,o=e.options.length;r<o;r++){const i=e.options[r],l=Bn(i);if(n)if(s){const a=typeof l;a==="string"||a==="number"?i.selected=t.some(d=>String(d)===String(l)):i.selected=fi(t,l)>-1}else i.selected=t.has(l);else if(Dt(Bn(i),t)){e.selectedIndex!==r&&(e.selectedIndex=r);return}}!n&&e.selectedIndex!==-1&&(e.selectedIndex=-1)}}function Bn(e){return"_value"in e?e._value:e.value}const wa=["ctrl","shift","alt","meta"],Sa={stop:e=>e.stopPropagation(),prevent:e=>e.preventDefault(),self:e=>e.target!==e.currentTarget,ctrl:e=>!e.ctrlKey,shift:e=>!e.shiftKey,alt:e=>!e.altKey,meta:e=>!e.metaKey,left:e=>"button"in e&&e.button!==0,middle:e=>"button"in e&&e.button!==1,right:e=>"button"in e&&e.button!==2,exact:(e,t)=>wa.some(n=>e[`${n}Key`]&&!t.includes(n))},zn=(e,t)=>{if(!e)return e;const n=e._withMods||(e._withMods={}),s=t.join(".");return n[s]||(n[s]=((r,...o)=>{for(let i=0;i<t.length;i++){const l=Sa[t[i]];if(l&&l(r,t))return}return e(r,...o)}))},ka=de({patchProp:ba},ta);let Ro;function Ca(){return Ro||(Ro=Ml(ka))}const Ta=((...e)=>{const t=Ca().createApp(...e),{mount:n}=t;return t.mount=s=>{const r=Ea(s);if(!r)return;const o=t._component;!F(o)&&!o.render&&!o.template&&(o.template=r.innerHTML),r.nodeType===1&&(r.textContent="");const i=n(r,!1,$a(r));return r instanceof Element&&(r.removeAttribute("v-cloak"),r.setAttribute("data-v-app","")),i},t});function $a(e){if(e instanceof SVGElement)return"svg";if(typeof MathMLElement=="function"&&e instanceof MathMLElement)return"mathml"}function Ea(e){return re(e)?document.querySelector(e):e}const Ns="secrets.faros.sh",Wn="secrets_faros_sh",St="v1alpha1",Gn="default",Io="token",Vs="-vault-token";let Fs=null,Ds=null;function Tu(e){}function Aa(e){Fs=e||null}function Ra(e){Ds=e||null}async function rn(e,t){if(!Ds)throw{reason:"TenantMissing",message:"no workspace selected"};const n={"Content-Type":"application/json",Accept:"application/json"};Fs&&(n.Authorization="Bearer "+Fs);const s=await fetch("/graphql/"+Ds,{method:"POST",credentials:"same-origin",headers:n,body:JSON.stringify({query:e,variables:t})}),r=await s.text();if(!s.ok)throw{reason:s.status===404?"NotFound":"HTTPError",message:r||s.statusText};const o=r?JSON.parse(r):{};if(o.errors&&o.errors.length)throw{reason:"GraphQLError",message:o.errors.map(i=>i.message).join("; ")};return o.data??{}}function Ls(e,t){return(e.status?.conditions??[]).some(n=>n.type===t&&n.status==="True")}function Ks(e,t){const n=(e.status?.conditions??[]).find(s=>s.type===t);if(!(!n||n.status==="True"))return n.message||n.reason}function Mo(e){return(e.status?.conditions??[]).map(t=>({type:t.type,status:t.status,reason:t.reason,message:t.message,lastTransitionTime:t.lastTransitionTime}))}function Oo(e){const t=e.spec??{},n=e.status??{},s=t.vault??{},r=t.secretRef??{};return{name:e.metadata.name,backend:String(t.backend??""),address:s.address?String(s.address):"",mount:s.mount?String(s.mount):void 0,vaultNamespace:s.namespace?String(s.namespace):void 0,secretName:String(r.name??""),secretNamespace:r.namespace?String(r.namespace):void 0,secretKey:r.key?String(r.key):void 0,backendVersion:n.backendVersion?String(n.backendVersion):void 0,validated:Ls(e,"Validated"),ready:Ls(e,"Ready"),message:Ks(e,"Validated")??Ks(e,"Ready"),creationTimestamp:e.metadata.creationTimestamp,generation:typeof e.metadata.generation=="number"?e.metadata.generation:void 0,observedGeneration:typeof n.observedGeneration=="number"?n.observedGeneration:void 0,conditions:Mo(e)}}function Po(e){const t=e.spec??{},n=e.status??{},s=t.storeRef??{},r=t.target??{},o=Array.isArray(t.data)?t.data:[],i=Array.isArray(t.dataFrom)?t.dataFrom:[];return{name:e.metadata.name,namespace:e.metadata.namespace??"",store:String(s.name??""),targetSecret:String(n.secretName||r.name||e.metadata.name),refreshInterval:String(t.refreshInterval??"1h"),dataFrom:i.map(l=>String(l.path??"")),data:o.map(l=>{const a=l.remoteRef??{};return{secretKey:String(l.secretKey??""),path:String(a.path??""),property:a.property?String(a.property):void 0}}),syncedKeys:typeof n.syncedKeys=="number"?n.syncedKeys:void 0,syncedVersion:n.syncedVersion?String(n.syncedVersion):void 0,lastSyncTime:n.lastSyncTime?String(n.lastSyncTime):void 0,ready:Ls(e,"Ready"),message:Ks(e,"Ready"),creationTimestamp:e.metadata.creationTimestamp,generation:typeof e.metadata.generation=="number"?e.metadata.generation:void 0,observedGeneration:typeof n.observedGeneration=="number"?n.observedGeneration:void 0,conditions:Mo(e)}}function No(e){return e.toLowerCase().replace(/[^a-z0-9-]+/g,"-").replace(/^-+|-+$/g,"").slice(0,253)||"x"}async function js(e){const n=(await rn("mutation($y: String!) { applyYaml(yaml: $y) }",{y:JSON.stringify(e)})).applyYaml;return typeof n=="string"?JSON.parse(n||"{}"):n??{}}async function Ia(e,t){await rn("mutation($n: String!, $ns: String!) { v1 { deleteSecret(name: $n, namespace: $ns) } }",{n:e,ns:t})}const Vo="conditions { type status reason message lastTransitionTime }",Ma=`metadata { name uid resourceVersion generation creationTimestamp } spec { backend vault { address mount namespace } secretRef { name namespace key } } status { observedGeneration backendVersion ${Vo} }`,Oa=`metadata { name namespace uid resourceVersion generation creationTimestamp } spec { storeRef { name } refreshInterval target { name } data { secretKey remoteRef { path property } } dataFrom { path property } } status { observedGeneration secretName lastSyncTime syncedVersion syncedKeys ${Vo} }`;async function Fo(e,t){const n=`query { ${Wn} { ${St} { ${e} { items { ${t} } } } } }`;return(await rn(n,{}))[Wn]?.[St]?.[e]?.items??[]}const kt={async listStores(){return(await Fo("SecretStores",Ma)).map(Oo)},async createStore(e){const t=No(e.name),n={address:e.address};e.mount&&(n.mount=e.mount),e.vaultNamespace&&(n.namespace=e.vaultNamespace);const s=e.credential.mode==="token",r=s?{name:t+Vs,namespace:Gn,key:Io}:{name:e.credential.mode==="existing"?e.credential.secretName:"",...e.credential.mode==="existing"&&e.credential.secretNamespace?{namespace:e.credential.secretNamespace}:{},...e.credential.mode==="existing"&&e.credential.secretKey?{key:e.credential.secretKey}:{}},o=await js({apiVersion:`${Ns}/${St}`,kind:"SecretStore",metadata:{name:t},spec:{backend:"vault",vault:n,secretRef:r}});return s&&e.credential.mode==="token"&&await js({apiVersion:"v1",kind:"Secret",metadata:{name:t+Vs,namespace:Gn,ownerReferences:[{apiVersion:`${Ns}/${St}`,kind:"SecretStore",name:t,uid:o.metadata.uid}]},type:"Opaque",stringData:{[Io]:e.credential.token}}),Oo(o)},async deleteStore(e){if(await rn(`mutation($n: String!) { ${Wn} { ${St} { deleteSecretStore(name: $n) } } }`,{n:e.name}),e.secretName===e.name+Vs)try{await Ia(e.secretName,e.secretNamespace||Gn)}catch(t){if(!/not\s*found/i.test(t.message??""))throw t}},async listSynced(){return(await Fo("SyncedSecrets",Oa)).map(Po)},async createSynced(e){const t=No(e.name),n={storeRef:{name:e.store}};e.refreshInterval&&(n.refreshInterval=e.refreshInterval),e.targetName&&(n.target={name:e.targetName});const s=e.dataFrom.map(i=>i.trim()).filter(i=>i);s.length&&(n.dataFrom=s.map(i=>({path:i})));const r=e.data.filter(i=>i.secretKey.trim()&&i.path.trim());r.length&&(n.data=r.map(i=>({secretKey:i.secretKey.trim(),remoteRef:{path:i.path.trim(),...i.property?.trim()?{property:i.property.trim()}:{}}})));const o=await js({apiVersion:`${Ns}/${St}`,kind:"SyncedSecret",metadata:{name:t,namespace:e.namespace||Gn},spec:n});return Po(o)},async deleteSynced(e,t){await rn(`mutation($n: String!, $ns: String!) { ${Wn} { ${St} { deleteSyncedSecret(name: $n, namespace: $ns) } } }`,{n:e,ns:t})}};function Do(e){if(!e)return"—";const t=Date.parse(e);if(Number.isNaN(t))return"—";const n=Math.max(0,Math.floor((Date.now()-t)/1e3));if(n<60)return`${n}s`;const s=Math.floor(n/60);if(s<60)return`${s}m`;const r=Math.floor(s/60);return r<24?`${r}h`:`${Math.floor(r/24)}d`}function Pa(e){return e?(e.startsWith("sha256:")?e.slice(7):e).slice(0,8):"—"}function Na(e){if(!e)return"—";const t=Date.parse(e);return Number.isNaN(t)?e:new Date(t).toLocaleString(void 0,{year:"numeric",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}const le=Bt({open:!1,title:"",message:"",confirmLabel:"Confirm",cancelLabel:"Cancel",danger:!1,resolve:null});function Lo(e){return le.resolve&&(le.resolve(!1),le.resolve=null),le.title=e.title,le.message=e.message??"",le.confirmLabel=e.confirmLabel??"Confirm",le.cancelLabel=e.cancelLabel??"Cancel",le.danger=e.danger??!1,le.open=!0,new Promise(t=>{le.resolve=t})}function Ko(e){le.open=!1;const t=le.resolve;le.resolve=null,t&&t(e)}/**
+`))),e[wt]=Hn(r);const o=s||r.props&&r.props.type==="number";_t(e,t?"change":"input",i=>{i.target.composing||e[wt](Ps(e.value,n,o))}),(n||o)&&_t(e,"change",()=>{e.value=Ps(e.value,n,o)}),t||(_t(e,"compositionstart",_a),_t(e,"compositionend",$o),_t(e,"change",$o))},mounted(e,{value:t,modifiers:{trim:n,number:s}}){const r=t??"",o=e[Un];delete e[Un],o!==void 0&&(e.type==="text"||e.type==="textarea")&&e.value!==o?e[wt](Ps(e.value,n,s)):e.value=r},beforeUpdate(e,{value:t,oldValue:n,modifiers:{lazy:s,trim:r,number:o}},i){if(e[wt]=Hn(i),e.composing)return;const l=(o||e.type==="number")&&!/^0\d/.test(e.value)?hn(e.value):e.value,a=t??"";if(l===a)return;const d=e.getRootNode();(d instanceof Document||d instanceof ShadowRoot)&&d.activeElement===e&&e.type!=="range"&&(s&&t===n||r&&e.value.trim()===a)||(e.value=a)}},Eo={deep:!0,created(e,{value:t,modifiers:{number:n}},s){e._modelValue=t,_t(e,"change",()=>{const r=Array.prototype.filter.call(e.options,o=>o.selected).map(o=>n?hn(Bn(o)):Bn(o));e[wt](e.multiple?fn(e._modelValue)?new Set(r):r:r[0]),e._assigning=!0,Tn(()=>{e._assigning=!1})}),e[wt]=Hn(s)},mounted(e,{value:t}){Ao(e,t)},beforeUpdate(e,{value:t},n){e._modelValue=t,e[wt]=Hn(n)},updated(e,{value:t}){e._assigning||Ao(e,t)}};function Ao(e,t){const n=e.multiple,s=P(t);if(!(n&&!s&&!fn(t))){for(let r=0,o=e.options.length;r<o;r++){const i=e.options[r],l=Bn(i);if(n)if(s){const a=typeof l;a==="string"||a==="number"?i.selected=t.some(d=>String(d)===String(l)):i.selected=fi(t,l)>-1}else i.selected=t.has(l);else if(Dt(Bn(i),t)){e.selectedIndex!==r&&(e.selectedIndex=r);return}}!n&&e.selectedIndex!==-1&&(e.selectedIndex=-1)}}function Bn(e){return"_value"in e?e._value:e.value}const wa=["ctrl","shift","alt","meta"],Sa={stop:e=>e.stopPropagation(),prevent:e=>e.preventDefault(),self:e=>e.target!==e.currentTarget,ctrl:e=>!e.ctrlKey,shift:e=>!e.shiftKey,alt:e=>!e.altKey,meta:e=>!e.metaKey,left:e=>"button"in e&&e.button!==0,middle:e=>"button"in e&&e.button!==1,right:e=>"button"in e&&e.button!==2,exact:(e,t)=>wa.some(n=>e[`${n}Key`]&&!t.includes(n))},zn=(e,t)=>{if(!e)return e;const n=e._withMods||(e._withMods={}),s=t.join(".");return n[s]||(n[s]=((r,...o)=>{for(let i=0;i<t.length;i++){const l=Sa[t[i]];if(l&&l(r,t))return}return e(r,...o)}))},ka=de({patchProp:ba},ta);let Ro;function Ca(){return Ro||(Ro=Ml(ka))}const Ta=((...e)=>{const t=Ca().createApp(...e),{mount:n}=t;return t.mount=s=>{const r=Ea(s);if(!r)return;const o=t._component;!F(o)&&!o.render&&!o.template&&(o.template=r.innerHTML),r.nodeType===1&&(r.textContent="");const i=n(r,!1,$a(r));return r instanceof Element&&(r.removeAttribute("v-cloak"),r.setAttribute("data-v-app","")),i},t});function $a(e){if(e instanceof SVGElement)return"svg";if(typeof MathMLElement=="function"&&e instanceof MathMLElement)return"mathml"}function Ea(e){return re(e)?document.querySelector(e):e}const Ns="secrets.railgrid.ai",Wn="secrets_railgrid_sh",St="v1alpha1",Gn="default",Io="token",Vs="-vault-token";let Fs=null,Ds=null;function Tu(e){}function Aa(e){Fs=e||null}function Ra(e){Ds=e||null}async function rn(e,t){if(!Ds)throw{reason:"TenantMissing",message:"no workspace selected"};const n={"Content-Type":"application/json",Accept:"application/json"};Fs&&(n.Authorization="Bearer "+Fs);const s=await fetch("/graphql/"+Ds,{method:"POST",credentials:"same-origin",headers:n,body:JSON.stringify({query:e,variables:t})}),r=await s.text();if(!s.ok)throw{reason:s.status===404?"NotFound":"HTTPError",message:r||s.statusText};const o=r?JSON.parse(r):{};if(o.errors&&o.errors.length)throw{reason:"GraphQLError",message:o.errors.map(i=>i.message).join("; ")};return o.data??{}}function Ls(e,t){return(e.status?.conditions??[]).some(n=>n.type===t&&n.status==="True")}function Ks(e,t){const n=(e.status?.conditions??[]).find(s=>s.type===t);if(!(!n||n.status==="True"))return n.message||n.reason}function Mo(e){return(e.status?.conditions??[]).map(t=>({type:t.type,status:t.status,reason:t.reason,message:t.message,lastTransitionTime:t.lastTransitionTime}))}function Oo(e){const t=e.spec??{},n=e.status??{},s=t.vault??{},r=t.secretRef??{};return{name:e.metadata.name,backend:String(t.backend??""),address:s.address?String(s.address):"",mount:s.mount?String(s.mount):void 0,vaultNamespace:s.namespace?String(s.namespace):void 0,secretName:String(r.name??""),secretNamespace:r.namespace?String(r.namespace):void 0,secretKey:r.key?String(r.key):void 0,backendVersion:n.backendVersion?String(n.backendVersion):void 0,validated:Ls(e,"Validated"),ready:Ls(e,"Ready"),message:Ks(e,"Validated")??Ks(e,"Ready"),creationTimestamp:e.metadata.creationTimestamp,generation:typeof e.metadata.generation=="number"?e.metadata.generation:void 0,observedGeneration:typeof n.observedGeneration=="number"?n.observedGeneration:void 0,conditions:Mo(e)}}function Po(e){const t=e.spec??{},n=e.status??{},s=t.storeRef??{},r=t.target??{},o=Array.isArray(t.data)?t.data:[],i=Array.isArray(t.dataFrom)?t.dataFrom:[];return{name:e.metadata.name,namespace:e.metadata.namespace??"",store:String(s.name??""),targetSecret:String(n.secretName||r.name||e.metadata.name),refreshInterval:String(t.refreshInterval??"1h"),dataFrom:i.map(l=>String(l.path??"")),data:o.map(l=>{const a=l.remoteRef??{};return{secretKey:String(l.secretKey??""),path:String(a.path??""),property:a.property?String(a.property):void 0}}),syncedKeys:typeof n.syncedKeys=="number"?n.syncedKeys:void 0,syncedVersion:n.syncedVersion?String(n.syncedVersion):void 0,lastSyncTime:n.lastSyncTime?String(n.lastSyncTime):void 0,ready:Ls(e,"Ready"),message:Ks(e,"Ready"),creationTimestamp:e.metadata.creationTimestamp,generation:typeof e.metadata.generation=="number"?e.metadata.generation:void 0,observedGeneration:typeof n.observedGeneration=="number"?n.observedGeneration:void 0,conditions:Mo(e)}}function No(e){return e.toLowerCase().replace(/[^a-z0-9-]+/g,"-").replace(/^-+|-+$/g,"").slice(0,253)||"x"}async function js(e){const n=(await rn("mutation($y: String!) { applyYaml(yaml: $y) }",{y:JSON.stringify(e)})).applyYaml;return typeof n=="string"?JSON.parse(n||"{}"):n??{}}async function Ia(e,t){await rn("mutation($n: String!, $ns: String!) { v1 { deleteSecret(name: $n, namespace: $ns) } }",{n:e,ns:t})}const Vo="conditions { type status reason message lastTransitionTime }",Ma=`metadata { name uid resourceVersion generation creationTimestamp } spec { backend vault { address mount namespace } secretRef { name namespace key } } status { observedGeneration backendVersion ${Vo} }`,Oa=`metadata { name namespace uid resourceVersion generation creationTimestamp } spec { storeRef { name } refreshInterval target { name } data { secretKey remoteRef { path property } } dataFrom { path property } } status { observedGeneration secretName lastSyncTime syncedVersion syncedKeys ${Vo} }`;async function Fo(e,t){const n=`query { ${Wn} { ${St} { ${e} { items { ${t} } } } } }`;return(await rn(n,{}))[Wn]?.[St]?.[e]?.items??[]}const kt={async listStores(){return(await Fo("SecretStores",Ma)).map(Oo)},async createStore(e){const t=No(e.name),n={address:e.address};e.mount&&(n.mount=e.mount),e.vaultNamespace&&(n.namespace=e.vaultNamespace);const s=e.credential.mode==="token",r=s?{name:t+Vs,namespace:Gn,key:Io}:{name:e.credential.mode==="existing"?e.credential.secretName:"",...e.credential.mode==="existing"&&e.credential.secretNamespace?{namespace:e.credential.secretNamespace}:{},...e.credential.mode==="existing"&&e.credential.secretKey?{key:e.credential.secretKey}:{}},o=await js({apiVersion:`${Ns}/${St}`,kind:"SecretStore",metadata:{name:t},spec:{backend:"vault",vault:n,secretRef:r}});return s&&e.credential.mode==="token"&&await js({apiVersion:"v1",kind:"Secret",metadata:{name:t+Vs,namespace:Gn,ownerReferences:[{apiVersion:`${Ns}/${St}`,kind:"SecretStore",name:t,uid:o.metadata.uid}]},type:"Opaque",stringData:{[Io]:e.credential.token}}),Oo(o)},async deleteStore(e){if(await rn(`mutation($n: String!) { ${Wn} { ${St} { deleteSecretStore(name: $n) } } }`,{n:e.name}),e.secretName===e.name+Vs)try{await Ia(e.secretName,e.secretNamespace||Gn)}catch(t){if(!/not\s*found/i.test(t.message??""))throw t}},async listSynced(){return(await Fo("SyncedSecrets",Oa)).map(Po)},async createSynced(e){const t=No(e.name),n={storeRef:{name:e.store}};e.refreshInterval&&(n.refreshInterval=e.refreshInterval),e.targetName&&(n.target={name:e.targetName});const s=e.dataFrom.map(i=>i.trim()).filter(i=>i);s.length&&(n.dataFrom=s.map(i=>({path:i})));const r=e.data.filter(i=>i.secretKey.trim()&&i.path.trim());r.length&&(n.data=r.map(i=>({secretKey:i.secretKey.trim(),remoteRef:{path:i.path.trim(),...i.property?.trim()?{property:i.property.trim()}:{}}})));const o=await js({apiVersion:`${Ns}/${St}`,kind:"SyncedSecret",metadata:{name:t,namespace:e.namespace||Gn},spec:n});return Po(o)},async deleteSynced(e,t){await rn(`mutation($n: String!, $ns: String!) { ${Wn} { ${St} { deleteSyncedSecret(name: $n, namespace: $ns) } } }`,{n:e,ns:t})}};function Do(e){if(!e)return"—";const t=Date.parse(e);if(Number.isNaN(t))return"—";const n=Math.max(0,Math.floor((Date.now()-t)/1e3));if(n<60)return`${n}s`;const s=Math.floor(n/60);if(s<60)return`${s}m`;const r=Math.floor(s/60);return r<24?`${r}h`:`${Math.floor(r/24)}d`}function Pa(e){return e?(e.startsWith("sha256:")?e.slice(7):e).slice(0,8):"—"}function Na(e){if(!e)return"—";const t=Date.parse(e);return Number.isNaN(t)?e:new Date(t).toLocaleString(void 0,{year:"numeric",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}const le=Bt({open:!1,title:"",message:"",confirmLabel:"Confirm",cancelLabel:"Cancel",danger:!1,resolve:null});function Lo(e){return le.resolve&&(le.resolve(!1),le.resolve=null),le.title=e.title,le.message=e.message??"",le.confirmLabel=e.confirmLabel??"Confirm",le.cancelLabel=e.cancelLabel??"Cancel",le.danger=e.danger??!1,le.open=!0,new Promise(t=>{le.resolve=t})}function Ko(e){le.open=!1;const t=le.resolve;le.resolve=null,t&&t(e)}/**
  * @license lucide-vue-next v0.475.0 - ISC
  *
  * This source code is licensed under the ISC license.
@@ -139,23 +139,23 @@
 @media (hover: none) {
   .pk-resource-delete { opacity: 1; }
 }
-`,tc=["title","aria-label","aria-busy","disabled"],Go="faros-portalkit-resource-table-delete-css",qo=ct({__name:"ResourceTableDeleteButton",props:{label:{},busyLabel:{default:"Deleting…"},busy:{type:Boolean,default:!1},disabled:{type:Boolean,default:!1}},emits:["click"],setup(e,{emit:t}){if(typeof document<"u"){let o=document.getElementById(Go);o||(o=document.createElement("style"),o.id=Go,document.head.appendChild(o)),o.textContent!==Wo&&(o.textContent=Wo)}const n=e,s=ye(()=>n.busy?n.busyLabel:n.label),r=t;return(o,i)=>(M(),D("button",{class:Ie(["pk-resource-delete",{"is-busy":e.busy}]),type:"button",title:s.value,"aria-label":s.value,"aria-busy":e.busy||void 0,disabled:e.disabled||e.busy,onClick:i[0]||(i[0]=zn(l=>r("click",l),["stop"]))},[e.busy?(M(),xt(Ce(Ka),{key:0,class:"pk-resource-delete-icon is-spinning","stroke-width":1.75,"aria-hidden":"true"})):(M(),xt(Ce(ja),{key:1,class:"pk-resource-delete-icon","stroke-width":1.75,"aria-hidden":"true"}))],10,tc))}}),nc={class:"status-badge-dot-wrap"},Jn=ct({__name:"StatusBadge",props:{status:{},connected:{type:[Boolean,null],default:null},tone:{default:null}},setup(e){const t=e,n={success:{toneClass:"tone-success",dotClass:"dot-success",pulseClass:"pulse-success"},warning:{toneClass:"tone-warning",dotClass:"dot-warning",pulseClass:"pulse-warning"},danger:{toneClass:"tone-danger",dotClass:"dot-danger",pulseClass:"pulse-danger"},muted:{toneClass:"tone-muted",dotClass:"dot-muted",pulseClass:"pulse-muted"}},s=ye(()=>{if(t.connected===!1)return{...n.danger,icon:Da};if(t.tone)return{...n[t.tone],icon:t.tone==="danger"?zo:t.tone==="warning"?Bo:t.tone==="success"?Ho:Uo};switch(t.status?.toLowerCase()){case"ready":case"succeeded":case"committed":case"active":case"loaded":return{...n.success,icon:Ho};case"scheduling":case"pending":case"provisioning":case"running":case"retrying":case"status unavailable":case"loading":case"starting":case"loaded unverified":return{...n.warning,icon:Bo};case"terminating":case"failed":case"error":case"repository missing":case"connection missing":case"needs attention":return{...n.danger,icon:zo};default:return{...n.muted,icon:Uo}}});return(r,o)=>(M(),D("span",{class:Ie(["status-badge",s.value.toneClass])},[h("span",nc,[e.status?.toLowerCase()==="ready"&&e.connected!==!1?(M(),D("span",{key:0,class:Ie(["live-dot status-badge-pulse",s.value.pulseClass])},null,2)):be("",!0),h("span",{class:Ie(["status-badge-dot",s.value.dotClass])},null,2)]),Zt(" "+H(e.status),1)],2))}}),sc={class:"conditions-panel"},rc={key:0,class:"conditions-stale"},oc={class:"conditions-type"},ic={class:"conditions-message"},lc={class:"conditions-muted"},Jo=ct({__name:"ConditionsPanel",props:{conditions:{},generation:{},observedGeneration:{},emptyText:{}},setup(e){const t=e,n=ye(()=>t.observedGeneration===void 0||t.generation===void 0||t.observedGeneration>=t.generation),s=ye(()=>t.conditions.map(o=>({...o,reasonLabel:o.reason||"-",messageLabel:o.message||"-",sinceLabel:o.lastTransitionTime||"-"})));function r(o){return o==="True"?"success":o==="False"?"warning":"muted"}return(o,i)=>(M(),D("div",sc,[i[0]||(i[0]=h("h3",{class:"conditions-title"},"Conditions",-1)),e.observedGeneration!==void 0&&!n.value?(M(),D("p",rc," Controller has not caught up - spec generation "+H(e.generation)+", observed "+H(e.observedGeneration)+". ",1)):be("",!0),X(Hs,{columns:[{key:"type",label:"Type"},{key:"status",label:"Status"},{key:"reasonLabel",label:"Reason"},{key:"messageLabel",label:"Message"},{key:"sinceLabel",label:"Since"}],rows:s.value,interactive:!1,"empty-text":e.emptyText||"No conditions yet. The controller has not reconciled this resource."},{type:ie(({value:l})=>[h("span",oc,H(l),1)]),status:ie(({value:l})=>[X(Jn,{status:String(l),tone:r(String(l))},null,8,["status","tone"])]),messageLabel:ie(({value:l})=>[h("span",ic,H(l),1)]),sinceLabel:ie(({value:l})=>[h("span",lc,H(l),1)]),_:1},8,["rows","empty-text"])]))}}),ac={class:"page"},cc={class:"page-head"},uc={class:"actions"},fc={key:0,class:"panel"},dc={class:"field"},pc={class:"field"},hc={class:"field"},gc={class:"field"},mc={class:"field"},vc={class:"field"},bc={class:"field"},yc={class:"field"},xc={class:"field"},_c={class:"actions"},wc=["disabled"],Sc={key:0,class:"error"},kc={class:"mono"},Cc={class:"mono"},Tc={class:"mono"},$c={class:"mono"},Ec={key:1,class:"panel"},Ac={class:"panel-head"},Rc={class:"panel-title"},Ic={key:0,class:"muted"},Mc=ct({__name:"StoresView",setup(e){const t=B([]),n=B(null),s=B(!1),r=B(!1),o=B(null),i=B(null),l=ye(()=>t.value.find(oe=>oe.name===i.value)??null),a=B(!1),d=B(""),u=B(""),p=B(""),x=B(""),k=B("token"),L=B(""),A=B(""),z=B(""),W=B(""),U=B(!1),K=B(null);let R;function ne(){d.value=u.value=p.value=x.value="",L.value=A.value=z.value=W.value="",k.value="token",K.value=null}async function fe(){s.value=!0;try{t.value=await kt.listStores(),n.value=null,r.value=!0}catch(oe){const E=oe;n.value=E.reason==="TenantMissing"?null:`${E.reason}: ${E.message}`}finally{s.value=!1}}async function $e(){if(K.value=null,!d.value||!u.value){K.value="name and vault address are required";return}if(k.value==="token"&&!L.value){K.value="paste a vault token or reference an existing secret";return}if(k.value==="existing"&&!A.value){K.value="the credential secret name is required";return}U.value=!0;try{await kt.createStore({name:d.value,address:u.value,mount:p.value||void 0,vaultNamespace:x.value||void 0,credential:k.value==="token"?{mode:"token",token:L.value}:{mode:"existing",secretName:A.value,secretNamespace:z.value||void 0,secretKey:W.value||void 0}}),ne(),a.value=!1,await fe()}catch(oe){const E=oe;K.value=`${E.reason}: ${E.message}`}finally{U.value=!1}}async function Oe(oe){if(await Lo({title:`Delete store "${oe.name}"?`,message:"SyncedSecrets referencing it will stop syncing.",confirmLabel:"Delete",danger:!0})){o.value=oe.name;try{await kt.deleteStore(oe),i.value===oe.name&&(i.value=null),await fe()}catch(j){const dt=j;n.value=`${dt.reason}: ${dt.message}`}finally{o.value=null}}}function ft(oe){const E=String(oe.name);i.value=i.value===E?null:E}const ke=[{key:"name",label:"Name"},{key:"backend",label:"Backend"},{key:"address",label:"Address"},{key:"validated",label:"Validated"},{key:"ready",label:"Ready"},{key:"backendVersion",label:"Version"},{key:"age",label:"Age"},{key:"actions",label:""}],lt=ye(()=>t.value.map(oe=>({...oe,age:Do(oe.creationTimestamp)})));return xs(()=>{fe(),R=window.setInterval(fe,5e3)}),Mn(()=>window.clearInterval(R)),(oe,E)=>(M(),D("section",ac,[h("header",cc,[E[12]||(E[12]=h("div",null,[h("h2",{class:"page-title"},"Secret stores"),h("p",{class:"page-meta"}," A store binds this workspace to one external secret backend (Vault). Synced secrets read through it; the external store stays the source of truth. ")],-1)),h("div",uc,[h("button",{class:"primary",onClick:E[0]||(E[0]=j=>a.value=!a.value)},H(a.value?"Cancel":"Add store"),1)])]),a.value?(M(),D("div",fc,[E[24]||(E[24]=h("h3",{class:"panel-title"},"New secret store",-1)),h("form",{class:"form",onSubmit:zn($e,["prevent"])},[h("div",dc,[E[13]||(E[13]=h("span",{class:"field-label"},"Name",-1)),ue(h("input",{"onUpdate:modelValue":E[1]||(E[1]=j=>d.value=j),placeholder:"prod-vault",autocomplete:"off"},null,512),[[xe,d.value]])]),h("div",pc,[E[14]||(E[14]=h("span",{class:"field-label"},"Vault address",-1)),ue(h("input",{"onUpdate:modelValue":E[2]||(E[2]=j=>u.value=j),placeholder:"https://vault.example.com:8200",autocomplete:"off"},null,512),[[xe,u.value]])]),h("div",hc,[E[15]||(E[15]=h("span",{class:"field-label"},'Mount (KV v2, optional — defaults to "secret")',-1)),ue(h("input",{"onUpdate:modelValue":E[3]||(E[3]=j=>p.value=j),placeholder:"secret",autocomplete:"off"},null,512),[[xe,p.value]])]),h("div",gc,[E[16]||(E[16]=h("span",{class:"field-label"},"Vault namespace (Enterprise, optional)",-1)),ue(h("input",{"onUpdate:modelValue":E[4]||(E[4]=j=>x.value=j),placeholder:"",autocomplete:"off"},null,512),[[xe,x.value]])]),h("div",mc,[E[18]||(E[18]=h("span",{class:"field-label"},"Credential",-1)),ue(h("select",{"onUpdate:modelValue":E[5]||(E[5]=j=>k.value=j)},[...E[17]||(E[17]=[h("option",{value:"token"},"Paste a Vault token (stored as a new Secret)",-1),h("option",{value:"existing"},"Reference an existing Secret",-1)])],512),[[Eo,k.value]])]),k.value==="token"?(M(),D(se,{key:0},[h("div",vc,[E[19]||(E[19]=h("span",{class:"field-label"},"Vault token",-1)),ue(h("input",{"onUpdate:modelValue":E[6]||(E[6]=j=>L.value=j),type:"password",placeholder:"hvs.…",autocomplete:"off"},null,512),[[xe,L.value]])]),E[20]||(E[20]=h("p",{class:"muted"},"The token is stored as a Secret in your workspace, owned by the store so it is cleaned up with it. The provider validates it and reports the result below.",-1))],64)):(M(),D(se,{key:1},[h("div",bc,[E[21]||(E[21]=h("span",{class:"field-label"},"Secret name",-1)),ue(h("input",{"onUpdate:modelValue":E[7]||(E[7]=j=>A.value=j),placeholder:"vault-credentials",autocomplete:"off"},null,512),[[xe,A.value]])]),h("div",yc,[E[22]||(E[22]=h("span",{class:"field-label"},'Secret namespace (optional — defaults to "default")',-1)),ue(h("input",{"onUpdate:modelValue":E[8]||(E[8]=j=>z.value=j),placeholder:"default",autocomplete:"off"},null,512),[[xe,z.value]])]),h("div",xc,[E[23]||(E[23]=h("span",{class:"field-label"},'Secret key (optional — defaults to "token")',-1)),ue(h("input",{"onUpdate:modelValue":E[9]||(E[9]=j=>W.value=j),placeholder:"token",autocomplete:"off"},null,512),[[xe,W.value]])])],64)),h("div",_c,[h("button",{class:"primary",type:"submit",disabled:U.value},H(U.value?"Creating…":"Create"),9,wc),h("button",{class:"secondary",type:"button",onClick:E[10]||(E[10]=()=>{a.value=!1,ne()})},"Cancel"),K.value?(M(),D("span",Sc,H(K.value),1)):be("",!0)])],32)])):be("",!0),X(Hs,{columns:ke,rows:lt.value,loaded:r.value,loading:s.value,error:n.value,stale:!!n.value&&t.value.length>0,retryable:"","empty-text":"No secret stores yet. Add one to connect this workspace to Vault.",onRowClick:ft,onRetry:fe},{name:ie(({value:j})=>[h("span",kc,H(j),1)]),backend:ie(({value:j})=>[h("span",Cc,H(j),1)]),address:ie(({value:j})=>[h("span",Tc,H(j||"—"),1)]),validated:ie(({row:j})=>[X(Jn,{status:j.validated?"validated":"pending",tone:j.validated?"success":"warning"},null,8,["status","tone"])]),ready:ie(({row:j})=>[X(Jn,{status:j.ready?"ready":"pending"},null,8,["status"])]),backendVersion:ie(({value:j})=>[h("span",$c,H(j||"—"),1)]),actions:ie(({row:j})=>[X(qo,{label:"Delete store",busy:o.value===j.name,onClick:dt=>Oe(j)},null,8,["busy","onClick"])]),_:1},8,["rows","loaded","loading","error","stale"]),l.value?(M(),D("div",Ec,[h("div",Ac,[h("h3",Rc,H(l.value.name)+" — conditions",1),h("button",{class:"link",onClick:E[11]||(E[11]=j=>i.value=null)},"Close")]),l.value.message?(M(),D("p",Ic,H(l.value.message),1)):be("",!0),X(Jo,{conditions:l.value.conditions,generation:l.value.generation,"observed-generation":l.value.observedGeneration},null,8,["conditions","generation","observed-generation"])])):be("",!0)]))}}),Oc={class:"page"},Pc={class:"page-head"},Nc={class:"actions"},Vc={key:0,class:"panel"},Fc={class:"field"},Dc={class:"field"},Lc={class:"field"},Kc=["value"],jc={key:0,class:"muted"},Hc={class:"field"},Uc={class:"field"},Bc={class:"field"},zc=["onUpdate:modelValue"],Wc=["onClick","disabled"],Gc={class:"field"},qc=["onUpdate:modelValue"],Jc=["onUpdate:modelValue"],Yc=["onUpdate:modelValue"],Xc=["onClick"],Qc={class:"actions"},Zc=["disabled"],eu={key:0,class:"error"},tu={class:"mono"},nu={class:"mono"},su={class:"mono"},ru={class:"mono"},ou={class:"mono"},iu=["title"],lu={key:1,class:"panel"},au={class:"panel-head"},cu={class:"panel-title"},uu={key:0,class:"muted"},fu=ct({__name:"SyncedSecretsView",setup(e){const t=B([]),n=B([]),s=B(null),r=B(!1),o=B(!1),i=B(null),l=B(null),a=ye(()=>t.value.find(N=>d(N)===l.value)??null);function d(N){return N.namespace+"/"+N.name}const u=B(!1),p=B(""),x=B("default"),k=B(""),L=B("1h"),A=B(""),z=B([""]),W=B([]),U=B(!1),K=B(null);let R;function ne(){p.value=A.value="",x.value="default",k.value=n.value[0]?.name??"",L.value="1h",z.value=[""],W.value=[],K.value=null}function fe(){z.value.push("")}function $e(N){z.value.splice(N,1)}function Oe(){W.value.push({secretKey:"",path:"",property:""})}function ft(N){W.value.splice(N,1)}async function ke(){r.value=!0;try{const[N,T]=await Promise.all([kt.listSynced(),kt.listStores()]);t.value=N,n.value=T,!k.value&&T.length&&(k.value=T[0].name),s.value=null,o.value=!0}catch(N){const T=N;s.value=T.reason==="TenantMissing"?null:`${T.reason}: ${T.message}`}finally{r.value=!1}}async function lt(){if(K.value=null,!p.value||!k.value){K.value="name and store are required";return}const N=z.value.map(_=>_.trim()).filter(_=>_),T=W.value.filter(_=>_.secretKey.trim()&&_.path.trim());if(!N.length&&!T.length){K.value="add at least one path (or key mapping) to sync";return}U.value=!0;try{await kt.createSynced({name:p.value,namespace:x.value||"default",store:k.value,refreshInterval:L.value||void 0,targetName:A.value||void 0,dataFrom:N,data:T}),ne(),u.value=!1,await ke()}catch(_){const ae=_;K.value=`${ae.reason}: ${ae.message}`}finally{U.value=!1}}async function oe(N){if(await Lo({title:`Delete synced secret "${N.name}"?`,message:`The projected Secret "${N.targetSecret}" in namespace "${N.namespace}" is removed with it.`,confirmLabel:"Delete",danger:!0})){i.value=d(N);try{await kt.deleteSynced(N.name,N.namespace),l.value===d(N)&&(l.value=null),await ke()}catch(_){const ae=_;s.value=`${ae.reason}: ${ae.message}`}finally{i.value=null}}}function E(N){const T=String(N.key);l.value=l.value===T?null:T}const j=[{key:"name",label:"Name"},{key:"namespace",label:"Namespace"},{key:"store",label:"Store"},{key:"targetSecret",label:"Target Secret"},{key:"refreshInterval",label:"Refresh"},{key:"syncedKeys",label:"Keys"},{key:"syncedVersion",label:"Version"},{key:"lastSyncTime",label:"Last Sync"},{key:"ready",label:"Ready"},{key:"actions",label:""}],dt=ye(()=>t.value.map(N=>({...N,key:d(N),age:Do(N.creationTimestamp)})));return xs(()=>{ke(),R=window.setInterval(ke,5e3)}),Mn(()=>window.clearInterval(R)),(N,T)=>(M(),D("section",Oc,[h("header",Pc,[T[8]||(T[8]=h("div",null,[h("h2",{class:"page-title"},"Synced secrets"),h("p",{class:"page-meta"}," A synced secret projects material from a store into a workspace Secret on a refresh interval — declare paths and key mappings instead of hand-placing Secrets. ")],-1)),h("div",Nc,[h("button",{class:"primary",onClick:T[0]||(T[0]=_=>u.value=!u.value)},H(u.value?"Cancel":"Add synced secret"),1)])]),u.value?(M(),D("div",Vc,[T[16]||(T[16]=h("h3",{class:"panel-title"},"New synced secret",-1)),h("form",{class:"form",onSubmit:zn(lt,["prevent"])},[h("div",Fc,[T[9]||(T[9]=h("span",{class:"field-label"},"Name",-1)),ue(h("input",{"onUpdate:modelValue":T[1]||(T[1]=_=>p.value=_),placeholder:"db-credentials",autocomplete:"off"},null,512),[[xe,p.value]])]),h("div",Dc,[T[10]||(T[10]=h("span",{class:"field-label"},"Namespace",-1)),ue(h("input",{"onUpdate:modelValue":T[2]||(T[2]=_=>x.value=_),placeholder:"default",autocomplete:"off"},null,512),[[xe,x.value]])]),h("div",Lc,[T[11]||(T[11]=h("span",{class:"field-label"},"Store",-1)),ue(h("select",{"onUpdate:modelValue":T[3]||(T[3]=_=>k.value=_)},[(M(!0),D(se,null,ut(n.value,_=>(M(),D("option",{key:_.name,value:_.name},H(_.name),9,Kc))),128))],512),[[Eo,k.value]]),n.value.length?be("",!0):(M(),D("p",jc,"No secret stores yet — create one on the Stores tab first."))]),h("div",Hc,[T[12]||(T[12]=h("span",{class:"field-label"},'Refresh interval (optional — defaults to "1h")',-1)),ue(h("input",{"onUpdate:modelValue":T[4]||(T[4]=_=>L.value=_),placeholder:"1h",autocomplete:"off"},null,512),[[xe,L.value]])]),h("div",Uc,[T[13]||(T[13]=h("span",{class:"field-label"},"Target Secret name (optional — defaults to the synced secret's name)",-1)),ue(h("input",{"onUpdate:modelValue":T[5]||(T[5]=_=>A.value=_),placeholder:"",autocomplete:"off"},null,512),[[xe,A.value]])]),h("div",Bc,[T[14]||(T[14]=h("span",{class:"field-label"},"Pull whole paths (dataFrom)",-1)),(M(!0),D(se,null,ut(z.value,(_,ae)=>(M(),D("div",{key:"df"+ae,class:"row-line"},[ue(h("input",{"onUpdate:modelValue":Ee=>z.value[ae]=Ee,placeholder:"apps/myapp/db",autocomplete:"off"},null,8,zc),[[xe,z.value[ae]]]),h("button",{class:"danger",type:"button",onClick:Ee=>$e(ae),disabled:z.value.length===1&&!z.value[0]},"Remove",8,Wc)]))),128)),h("div",null,[h("button",{class:"secondary",type:"button",onClick:fe},"Add path")])]),h("div",Gc,[T[15]||(T[15]=h("span",{class:"field-label"},"Key mappings (optional — cherry-pick and rename properties)",-1)),(M(!0),D(se,null,ut(W.value,(_,ae)=>(M(),D("div",{key:"dm"+ae,class:"row-line"},[ue(h("input",{"onUpdate:modelValue":Ee=>_.secretKey=Ee,placeholder:"secret key",autocomplete:"off"},null,8,qc),[[xe,_.secretKey]]),ue(h("input",{"onUpdate:modelValue":Ee=>_.path=Ee,placeholder:"remote path",autocomplete:"off"},null,8,Jc),[[xe,_.path]]),ue(h("input",{"onUpdate:modelValue":Ee=>_.property=Ee,placeholder:"property (optional)",autocomplete:"off"},null,8,Yc),[[xe,_.property]]),h("button",{class:"danger",type:"button",onClick:Ee=>ft(ae)},"Remove",8,Xc)]))),128)),h("div",null,[h("button",{class:"secondary",type:"button",onClick:Oe},"Add mapping")])]),h("div",Qc,[h("button",{class:"primary",type:"submit",disabled:U.value},H(U.value?"Creating…":"Create"),9,Zc),h("button",{class:"secondary",type:"button",onClick:T[6]||(T[6]=()=>{u.value=!1,ne()})},"Cancel"),K.value?(M(),D("span",eu,H(K.value),1)):be("",!0)])],32)])):be("",!0),X(Hs,{columns:j,rows:dt.value,"row-key":"key",loaded:o.value,loading:r.value,error:s.value,stale:!!s.value&&t.value.length>0,retryable:"","empty-text":"No synced secrets yet. Add one to project material from a store.",onRowClick:E,onRetry:ke},{name:ie(({value:_})=>[h("span",tu,H(_),1)]),namespace:ie(({value:_})=>[h("span",nu,H(_),1)]),store:ie(({value:_})=>[h("span",su,H(_),1)]),targetSecret:ie(({value:_})=>[h("span",ru,H(_),1)]),refreshInterval:ie(({value:_})=>[h("span",ou,H(_),1)]),syncedKeys:ie(({value:_})=>[Zt(H(_??"—"),1)]),syncedVersion:ie(({row:_})=>[h("span",{class:"mono",title:String(_.syncedVersion??"")},H(Ce(Pa)(_.syncedVersion)),9,iu)]),lastSyncTime:ie(({value:_})=>[Zt(H(Ce(Na)(_)),1)]),ready:ie(({row:_})=>[X(Jn,{status:_.ready?"ready":"pending"},null,8,["status"])]),actions:ie(({row:_})=>[X(qo,{label:"Delete synced secret",busy:i.value===_.key,onClick:ae=>oe(_)},null,8,["busy","onClick"])]),_:1},8,["rows","loaded","loading","error","stale"]),a.value?(M(),D("div",lu,[h("div",au,[h("h3",cu,H(a.value.namespace)+"/"+H(a.value.name)+" — conditions",1),h("button",{class:"link",onClick:T[7]||(T[7]=_=>l.value=null)},"Close")]),a.value.message?(M(),D("p",uu,H(a.value.message),1)):be("",!0),X(Jo,{conditions:a.value.conditions,generation:a.value.generation,"observed-generation":a.value.observedGeneration},null,8,["conditions","generation","observed-generation"])])):be("",!0)]))}}),du={id:"pk-modal-title",class:"pk-title"},pu={class:"pk-actions"},hu=((e,t)=>{const n=e.__vccOpts||e;for(const[s,r]of t)n[s]=r;return n})(ct({__name:"ConfirmDialog",setup(e){const t=B(null),n=B(null);let s=null;const r=ye(()=>le.message.split(`
-`).map(a=>a.trim()).filter(Boolean));function o(){Ko(!0)}function i(){Ko(!1)}function l(a){if(le.open)if(a.key==="Tab"){const d=Array.from(n.value?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')??[]);if(d.length===0){a.preventDefault();return}const u=d[0],p=d[d.length-1];a.shiftKey&&document.activeElement===u?(a.preventDefault(),p.focus()):!a.shiftKey&&document.activeElement===p&&(a.preventDefault(),u.focus())}else a.key==="Escape"?(a.preventDefault(),i()):a.key==="Enter"&&(a.preventDefault(),o())}return bt(()=>le.open,a=>{if(a)s=document.activeElement instanceof HTMLElement?document.activeElement:null,window.addEventListener("keydown",l),Tn(()=>t.value?.focus());else{window.removeEventListener("keydown",l);const d=s;s=null,Tn(()=>d?.isConnected&&d.focus())}}),Nr(()=>window.removeEventListener("keydown",l)),(a,d)=>Ce(le).open?(M(),D("div",{key:0,class:"pk-overlay",onClick:zn(i,["self"])},[h("div",{ref_key:"modalRef",ref:n,class:Ie(["pk-modal",{danger:Ce(le).danger}]),role:"alertdialog","aria-modal":"true","aria-labelledby":"pk-modal-title"},[h("h3",du,H(Ce(le).title),1),(M(!0),D(se,null,ut(r.value,(u,p)=>(M(),D("p",{key:p,class:"pk-message"},H(u),1))),128)),h("div",pu,[h("button",{type:"button",class:"pk-btn cancel",onClick:i},H(Ce(le).cancelLabel),1),h("button",{ref_key:"confirmBtn",ref:t,type:"button",class:Ie(["pk-btn confirm",{danger:Ce(le).danger}]),onClick:o},H(Ce(le).confirmLabel),3)])],2)])):be("",!0)}}),[["__scopeId","data-v-3a559676"]]),gu={class:"tabs"},mu={key:0,class:"empty"},vu=ct({__name:"App",props:{ctx:{}},setup(e){const t=e;function n(l){const a=(l??"").replace(/^\/+|\/+$/g,"");return a==="synced"||a.startsWith("synced/")?"synced":"stores"}const s=ye(()=>n(t.ctx?.subPath));bt(()=>t.ctx?.basePath,l=>void 0,{immediate:!0}),bt(()=>t.ctx?.token,l=>Aa(l),{immediate:!0}),bt(()=>t.ctx?.tenant,l=>Ra(l),{immediate:!0});const r=ye(()=>!!t.ctx?.tenant),o=B(null);function i(l){const a=o.value;a&&a.dispatchEvent(new CustomEvent("faros-navigate",{detail:{path:l},bubbles:!0}))}return(l,a)=>(M(),D("div",{ref_key:"rootRef",ref:o,class:"app"},[h("nav",gu,[h("button",{class:Ie({active:s.value==="stores"}),onClick:a[0]||(a[0]=d=>i("stores"))},"Stores",2),h("button",{class:Ie({active:s.value==="synced"}),onClick:a[1]||(a[1]=d=>i("synced"))},"Synced Secrets",2)]),r.value?(M(),D(se,{key:1},[s.value==="synced"?(M(),xt(fu,{key:0})):(M(),xt(Mc,{key:1}))],64)):(M(),D("p",mu,"Select a workspace to manage secrets.")),X(hu)],512))}});class bu extends HTMLElement{_vueApp=null;_state=Bt({ctx:null});_host=null;set farosContext(t){this._state.ctx=t}get farosContext(){return this._state.ctx}connectedCallback(){this._vueApp||(this._host=document.createElement("div"),this._host.className="secrets-host",this.appendChild(this._host),this._vueApp=Ta({render:()=>jn(vu,{ctx:this._state.ctx})}),this._vueApp.mount(this._host))}disconnectedCallback(){this._vueApp&&(this._vueApp.unmount(),this._vueApp=null),this._host&&this._host.parentNode===this&&this.removeChild(this._host),this._host=null}}const yu=`/*
+`,tc=["title","aria-label","aria-busy","disabled"],Go="railgrid-portalkit-resource-table-delete-css",qo=ct({__name:"ResourceTableDeleteButton",props:{label:{},busyLabel:{default:"Deleting…"},busy:{type:Boolean,default:!1},disabled:{type:Boolean,default:!1}},emits:["click"],setup(e,{emit:t}){if(typeof document<"u"){let o=document.getElementById(Go);o||(o=document.createElement("style"),o.id=Go,document.head.appendChild(o)),o.textContent!==Wo&&(o.textContent=Wo)}const n=e,s=ye(()=>n.busy?n.busyLabel:n.label),r=t;return(o,i)=>(M(),D("button",{class:Ie(["pk-resource-delete",{"is-busy":e.busy}]),type:"button",title:s.value,"aria-label":s.value,"aria-busy":e.busy||void 0,disabled:e.disabled||e.busy,onClick:i[0]||(i[0]=zn(l=>r("click",l),["stop"]))},[e.busy?(M(),xt(Ce(Ka),{key:0,class:"pk-resource-delete-icon is-spinning","stroke-width":1.75,"aria-hidden":"true"})):(M(),xt(Ce(ja),{key:1,class:"pk-resource-delete-icon","stroke-width":1.75,"aria-hidden":"true"}))],10,tc))}}),nc={class:"status-badge-dot-wrap"},Jn=ct({__name:"StatusBadge",props:{status:{},connected:{type:[Boolean,null],default:null},tone:{default:null}},setup(e){const t=e,n={success:{toneClass:"tone-success",dotClass:"dot-success",pulseClass:"pulse-success"},warning:{toneClass:"tone-warning",dotClass:"dot-warning",pulseClass:"pulse-warning"},danger:{toneClass:"tone-danger",dotClass:"dot-danger",pulseClass:"pulse-danger"},muted:{toneClass:"tone-muted",dotClass:"dot-muted",pulseClass:"pulse-muted"}},s=ye(()=>{if(t.connected===!1)return{...n.danger,icon:Da};if(t.tone)return{...n[t.tone],icon:t.tone==="danger"?zo:t.tone==="warning"?Bo:t.tone==="success"?Ho:Uo};switch(t.status?.toLowerCase()){case"ready":case"succeeded":case"committed":case"active":case"loaded":return{...n.success,icon:Ho};case"scheduling":case"pending":case"provisioning":case"running":case"retrying":case"status unavailable":case"loading":case"starting":case"loaded unverified":return{...n.warning,icon:Bo};case"terminating":case"failed":case"error":case"repository missing":case"connection missing":case"needs attention":return{...n.danger,icon:zo};default:return{...n.muted,icon:Uo}}});return(r,o)=>(M(),D("span",{class:Ie(["status-badge",s.value.toneClass])},[h("span",nc,[e.status?.toLowerCase()==="ready"&&e.connected!==!1?(M(),D("span",{key:0,class:Ie(["live-dot status-badge-pulse",s.value.pulseClass])},null,2)):be("",!0),h("span",{class:Ie(["status-badge-dot",s.value.dotClass])},null,2)]),Zt(" "+H(e.status),1)],2))}}),sc={class:"conditions-panel"},rc={key:0,class:"conditions-stale"},oc={class:"conditions-type"},ic={class:"conditions-message"},lc={class:"conditions-muted"},Jo=ct({__name:"ConditionsPanel",props:{conditions:{},generation:{},observedGeneration:{},emptyText:{}},setup(e){const t=e,n=ye(()=>t.observedGeneration===void 0||t.generation===void 0||t.observedGeneration>=t.generation),s=ye(()=>t.conditions.map(o=>({...o,reasonLabel:o.reason||"-",messageLabel:o.message||"-",sinceLabel:o.lastTransitionTime||"-"})));function r(o){return o==="True"?"success":o==="False"?"warning":"muted"}return(o,i)=>(M(),D("div",sc,[i[0]||(i[0]=h("h3",{class:"conditions-title"},"Conditions",-1)),e.observedGeneration!==void 0&&!n.value?(M(),D("p",rc," Controller has not caught up - spec generation "+H(e.generation)+", observed "+H(e.observedGeneration)+". ",1)):be("",!0),X(Hs,{columns:[{key:"type",label:"Type"},{key:"status",label:"Status"},{key:"reasonLabel",label:"Reason"},{key:"messageLabel",label:"Message"},{key:"sinceLabel",label:"Since"}],rows:s.value,interactive:!1,"empty-text":e.emptyText||"No conditions yet. The controller has not reconciled this resource."},{type:ie(({value:l})=>[h("span",oc,H(l),1)]),status:ie(({value:l})=>[X(Jn,{status:String(l),tone:r(String(l))},null,8,["status","tone"])]),messageLabel:ie(({value:l})=>[h("span",ic,H(l),1)]),sinceLabel:ie(({value:l})=>[h("span",lc,H(l),1)]),_:1},8,["rows","empty-text"])]))}}),ac={class:"page"},cc={class:"page-head"},uc={class:"actions"},fc={key:0,class:"panel"},dc={class:"field"},pc={class:"field"},hc={class:"field"},gc={class:"field"},mc={class:"field"},vc={class:"field"},bc={class:"field"},yc={class:"field"},xc={class:"field"},_c={class:"actions"},wc=["disabled"],Sc={key:0,class:"error"},kc={class:"mono"},Cc={class:"mono"},Tc={class:"mono"},$c={class:"mono"},Ec={key:1,class:"panel"},Ac={class:"panel-head"},Rc={class:"panel-title"},Ic={key:0,class:"muted"},Mc=ct({__name:"StoresView",setup(e){const t=B([]),n=B(null),s=B(!1),r=B(!1),o=B(null),i=B(null),l=ye(()=>t.value.find(oe=>oe.name===i.value)??null),a=B(!1),d=B(""),u=B(""),p=B(""),x=B(""),k=B("token"),L=B(""),A=B(""),z=B(""),W=B(""),U=B(!1),K=B(null);let R;function ne(){d.value=u.value=p.value=x.value="",L.value=A.value=z.value=W.value="",k.value="token",K.value=null}async function fe(){s.value=!0;try{t.value=await kt.listStores(),n.value=null,r.value=!0}catch(oe){const E=oe;n.value=E.reason==="TenantMissing"?null:`${E.reason}: ${E.message}`}finally{s.value=!1}}async function $e(){if(K.value=null,!d.value||!u.value){K.value="name and vault address are required";return}if(k.value==="token"&&!L.value){K.value="paste a vault token or reference an existing secret";return}if(k.value==="existing"&&!A.value){K.value="the credential secret name is required";return}U.value=!0;try{await kt.createStore({name:d.value,address:u.value,mount:p.value||void 0,vaultNamespace:x.value||void 0,credential:k.value==="token"?{mode:"token",token:L.value}:{mode:"existing",secretName:A.value,secretNamespace:z.value||void 0,secretKey:W.value||void 0}}),ne(),a.value=!1,await fe()}catch(oe){const E=oe;K.value=`${E.reason}: ${E.message}`}finally{U.value=!1}}async function Oe(oe){if(await Lo({title:`Delete store "${oe.name}"?`,message:"SyncedSecrets referencing it will stop syncing.",confirmLabel:"Delete",danger:!0})){o.value=oe.name;try{await kt.deleteStore(oe),i.value===oe.name&&(i.value=null),await fe()}catch(j){const dt=j;n.value=`${dt.reason}: ${dt.message}`}finally{o.value=null}}}function ft(oe){const E=String(oe.name);i.value=i.value===E?null:E}const ke=[{key:"name",label:"Name"},{key:"backend",label:"Backend"},{key:"address",label:"Address"},{key:"validated",label:"Validated"},{key:"ready",label:"Ready"},{key:"backendVersion",label:"Version"},{key:"age",label:"Age"},{key:"actions",label:""}],lt=ye(()=>t.value.map(oe=>({...oe,age:Do(oe.creationTimestamp)})));return xs(()=>{fe(),R=window.setInterval(fe,5e3)}),Mn(()=>window.clearInterval(R)),(oe,E)=>(M(),D("section",ac,[h("header",cc,[E[12]||(E[12]=h("div",null,[h("h2",{class:"page-title"},"Secret stores"),h("p",{class:"page-meta"}," A store binds this workspace to one external secret backend (Vault). Synced secrets read through it; the external store stays the source of truth. ")],-1)),h("div",uc,[h("button",{class:"primary",onClick:E[0]||(E[0]=j=>a.value=!a.value)},H(a.value?"Cancel":"Add store"),1)])]),a.value?(M(),D("div",fc,[E[24]||(E[24]=h("h3",{class:"panel-title"},"New secret store",-1)),h("form",{class:"form",onSubmit:zn($e,["prevent"])},[h("div",dc,[E[13]||(E[13]=h("span",{class:"field-label"},"Name",-1)),ue(h("input",{"onUpdate:modelValue":E[1]||(E[1]=j=>d.value=j),placeholder:"prod-vault",autocomplete:"off"},null,512),[[xe,d.value]])]),h("div",pc,[E[14]||(E[14]=h("span",{class:"field-label"},"Vault address",-1)),ue(h("input",{"onUpdate:modelValue":E[2]||(E[2]=j=>u.value=j),placeholder:"https://vault.example.com:8200",autocomplete:"off"},null,512),[[xe,u.value]])]),h("div",hc,[E[15]||(E[15]=h("span",{class:"field-label"},'Mount (KV v2, optional — defaults to "secret")',-1)),ue(h("input",{"onUpdate:modelValue":E[3]||(E[3]=j=>p.value=j),placeholder:"secret",autocomplete:"off"},null,512),[[xe,p.value]])]),h("div",gc,[E[16]||(E[16]=h("span",{class:"field-label"},"Vault namespace (Enterprise, optional)",-1)),ue(h("input",{"onUpdate:modelValue":E[4]||(E[4]=j=>x.value=j),placeholder:"",autocomplete:"off"},null,512),[[xe,x.value]])]),h("div",mc,[E[18]||(E[18]=h("span",{class:"field-label"},"Credential",-1)),ue(h("select",{"onUpdate:modelValue":E[5]||(E[5]=j=>k.value=j)},[...E[17]||(E[17]=[h("option",{value:"token"},"Paste a Vault token (stored as a new Secret)",-1),h("option",{value:"existing"},"Reference an existing Secret",-1)])],512),[[Eo,k.value]])]),k.value==="token"?(M(),D(se,{key:0},[h("div",vc,[E[19]||(E[19]=h("span",{class:"field-label"},"Vault token",-1)),ue(h("input",{"onUpdate:modelValue":E[6]||(E[6]=j=>L.value=j),type:"password",placeholder:"hvs.…",autocomplete:"off"},null,512),[[xe,L.value]])]),E[20]||(E[20]=h("p",{class:"muted"},"The token is stored as a Secret in your workspace, owned by the store so it is cleaned up with it. The provider validates it and reports the result below.",-1))],64)):(M(),D(se,{key:1},[h("div",bc,[E[21]||(E[21]=h("span",{class:"field-label"},"Secret name",-1)),ue(h("input",{"onUpdate:modelValue":E[7]||(E[7]=j=>A.value=j),placeholder:"vault-credentials",autocomplete:"off"},null,512),[[xe,A.value]])]),h("div",yc,[E[22]||(E[22]=h("span",{class:"field-label"},'Secret namespace (optional — defaults to "default")',-1)),ue(h("input",{"onUpdate:modelValue":E[8]||(E[8]=j=>z.value=j),placeholder:"default",autocomplete:"off"},null,512),[[xe,z.value]])]),h("div",xc,[E[23]||(E[23]=h("span",{class:"field-label"},'Secret key (optional — defaults to "token")',-1)),ue(h("input",{"onUpdate:modelValue":E[9]||(E[9]=j=>W.value=j),placeholder:"token",autocomplete:"off"},null,512),[[xe,W.value]])])],64)),h("div",_c,[h("button",{class:"primary",type:"submit",disabled:U.value},H(U.value?"Creating…":"Create"),9,wc),h("button",{class:"secondary",type:"button",onClick:E[10]||(E[10]=()=>{a.value=!1,ne()})},"Cancel"),K.value?(M(),D("span",Sc,H(K.value),1)):be("",!0)])],32)])):be("",!0),X(Hs,{columns:ke,rows:lt.value,loaded:r.value,loading:s.value,error:n.value,stale:!!n.value&&t.value.length>0,retryable:"","empty-text":"No secret stores yet. Add one to connect this workspace to Vault.",onRowClick:ft,onRetry:fe},{name:ie(({value:j})=>[h("span",kc,H(j),1)]),backend:ie(({value:j})=>[h("span",Cc,H(j),1)]),address:ie(({value:j})=>[h("span",Tc,H(j||"—"),1)]),validated:ie(({row:j})=>[X(Jn,{status:j.validated?"validated":"pending",tone:j.validated?"success":"warning"},null,8,["status","tone"])]),ready:ie(({row:j})=>[X(Jn,{status:j.ready?"ready":"pending"},null,8,["status"])]),backendVersion:ie(({value:j})=>[h("span",$c,H(j||"—"),1)]),actions:ie(({row:j})=>[X(qo,{label:"Delete store",busy:o.value===j.name,onClick:dt=>Oe(j)},null,8,["busy","onClick"])]),_:1},8,["rows","loaded","loading","error","stale"]),l.value?(M(),D("div",Ec,[h("div",Ac,[h("h3",Rc,H(l.value.name)+" — conditions",1),h("button",{class:"link",onClick:E[11]||(E[11]=j=>i.value=null)},"Close")]),l.value.message?(M(),D("p",Ic,H(l.value.message),1)):be("",!0),X(Jo,{conditions:l.value.conditions,generation:l.value.generation,"observed-generation":l.value.observedGeneration},null,8,["conditions","generation","observed-generation"])])):be("",!0)]))}}),Oc={class:"page"},Pc={class:"page-head"},Nc={class:"actions"},Vc={key:0,class:"panel"},Fc={class:"field"},Dc={class:"field"},Lc={class:"field"},Kc=["value"],jc={key:0,class:"muted"},Hc={class:"field"},Uc={class:"field"},Bc={class:"field"},zc=["onUpdate:modelValue"],Wc=["onClick","disabled"],Gc={class:"field"},qc=["onUpdate:modelValue"],Jc=["onUpdate:modelValue"],Yc=["onUpdate:modelValue"],Xc=["onClick"],Qc={class:"actions"},Zc=["disabled"],eu={key:0,class:"error"},tu={class:"mono"},nu={class:"mono"},su={class:"mono"},ru={class:"mono"},ou={class:"mono"},iu=["title"],lu={key:1,class:"panel"},au={class:"panel-head"},cu={class:"panel-title"},uu={key:0,class:"muted"},fu=ct({__name:"SyncedSecretsView",setup(e){const t=B([]),n=B([]),s=B(null),r=B(!1),o=B(!1),i=B(null),l=B(null),a=ye(()=>t.value.find(N=>d(N)===l.value)??null);function d(N){return N.namespace+"/"+N.name}const u=B(!1),p=B(""),x=B("default"),k=B(""),L=B("1h"),A=B(""),z=B([""]),W=B([]),U=B(!1),K=B(null);let R;function ne(){p.value=A.value="",x.value="default",k.value=n.value[0]?.name??"",L.value="1h",z.value=[""],W.value=[],K.value=null}function fe(){z.value.push("")}function $e(N){z.value.splice(N,1)}function Oe(){W.value.push({secretKey:"",path:"",property:""})}function ft(N){W.value.splice(N,1)}async function ke(){r.value=!0;try{const[N,T]=await Promise.all([kt.listSynced(),kt.listStores()]);t.value=N,n.value=T,!k.value&&T.length&&(k.value=T[0].name),s.value=null,o.value=!0}catch(N){const T=N;s.value=T.reason==="TenantMissing"?null:`${T.reason}: ${T.message}`}finally{r.value=!1}}async function lt(){if(K.value=null,!p.value||!k.value){K.value="name and store are required";return}const N=z.value.map(_=>_.trim()).filter(_=>_),T=W.value.filter(_=>_.secretKey.trim()&&_.path.trim());if(!N.length&&!T.length){K.value="add at least one path (or key mapping) to sync";return}U.value=!0;try{await kt.createSynced({name:p.value,namespace:x.value||"default",store:k.value,refreshInterval:L.value||void 0,targetName:A.value||void 0,dataFrom:N,data:T}),ne(),u.value=!1,await ke()}catch(_){const ae=_;K.value=`${ae.reason}: ${ae.message}`}finally{U.value=!1}}async function oe(N){if(await Lo({title:`Delete synced secret "${N.name}"?`,message:`The projected Secret "${N.targetSecret}" in namespace "${N.namespace}" is removed with it.`,confirmLabel:"Delete",danger:!0})){i.value=d(N);try{await kt.deleteSynced(N.name,N.namespace),l.value===d(N)&&(l.value=null),await ke()}catch(_){const ae=_;s.value=`${ae.reason}: ${ae.message}`}finally{i.value=null}}}function E(N){const T=String(N.key);l.value=l.value===T?null:T}const j=[{key:"name",label:"Name"},{key:"namespace",label:"Namespace"},{key:"store",label:"Store"},{key:"targetSecret",label:"Target Secret"},{key:"refreshInterval",label:"Refresh"},{key:"syncedKeys",label:"Keys"},{key:"syncedVersion",label:"Version"},{key:"lastSyncTime",label:"Last Sync"},{key:"ready",label:"Ready"},{key:"actions",label:""}],dt=ye(()=>t.value.map(N=>({...N,key:d(N),age:Do(N.creationTimestamp)})));return xs(()=>{ke(),R=window.setInterval(ke,5e3)}),Mn(()=>window.clearInterval(R)),(N,T)=>(M(),D("section",Oc,[h("header",Pc,[T[8]||(T[8]=h("div",null,[h("h2",{class:"page-title"},"Synced secrets"),h("p",{class:"page-meta"}," A synced secret projects material from a store into a workspace Secret on a refresh interval — declare paths and key mappings instead of hand-placing Secrets. ")],-1)),h("div",Nc,[h("button",{class:"primary",onClick:T[0]||(T[0]=_=>u.value=!u.value)},H(u.value?"Cancel":"Add synced secret"),1)])]),u.value?(M(),D("div",Vc,[T[16]||(T[16]=h("h3",{class:"panel-title"},"New synced secret",-1)),h("form",{class:"form",onSubmit:zn(lt,["prevent"])},[h("div",Fc,[T[9]||(T[9]=h("span",{class:"field-label"},"Name",-1)),ue(h("input",{"onUpdate:modelValue":T[1]||(T[1]=_=>p.value=_),placeholder:"db-credentials",autocomplete:"off"},null,512),[[xe,p.value]])]),h("div",Dc,[T[10]||(T[10]=h("span",{class:"field-label"},"Namespace",-1)),ue(h("input",{"onUpdate:modelValue":T[2]||(T[2]=_=>x.value=_),placeholder:"default",autocomplete:"off"},null,512),[[xe,x.value]])]),h("div",Lc,[T[11]||(T[11]=h("span",{class:"field-label"},"Store",-1)),ue(h("select",{"onUpdate:modelValue":T[3]||(T[3]=_=>k.value=_)},[(M(!0),D(se,null,ut(n.value,_=>(M(),D("option",{key:_.name,value:_.name},H(_.name),9,Kc))),128))],512),[[Eo,k.value]]),n.value.length?be("",!0):(M(),D("p",jc,"No secret stores yet — create one on the Stores tab first."))]),h("div",Hc,[T[12]||(T[12]=h("span",{class:"field-label"},'Refresh interval (optional — defaults to "1h")',-1)),ue(h("input",{"onUpdate:modelValue":T[4]||(T[4]=_=>L.value=_),placeholder:"1h",autocomplete:"off"},null,512),[[xe,L.value]])]),h("div",Uc,[T[13]||(T[13]=h("span",{class:"field-label"},"Target Secret name (optional — defaults to the synced secret's name)",-1)),ue(h("input",{"onUpdate:modelValue":T[5]||(T[5]=_=>A.value=_),placeholder:"",autocomplete:"off"},null,512),[[xe,A.value]])]),h("div",Bc,[T[14]||(T[14]=h("span",{class:"field-label"},"Pull whole paths (dataFrom)",-1)),(M(!0),D(se,null,ut(z.value,(_,ae)=>(M(),D("div",{key:"df"+ae,class:"row-line"},[ue(h("input",{"onUpdate:modelValue":Ee=>z.value[ae]=Ee,placeholder:"apps/myapp/db",autocomplete:"off"},null,8,zc),[[xe,z.value[ae]]]),h("button",{class:"danger",type:"button",onClick:Ee=>$e(ae),disabled:z.value.length===1&&!z.value[0]},"Remove",8,Wc)]))),128)),h("div",null,[h("button",{class:"secondary",type:"button",onClick:fe},"Add path")])]),h("div",Gc,[T[15]||(T[15]=h("span",{class:"field-label"},"Key mappings (optional — cherry-pick and rename properties)",-1)),(M(!0),D(se,null,ut(W.value,(_,ae)=>(M(),D("div",{key:"dm"+ae,class:"row-line"},[ue(h("input",{"onUpdate:modelValue":Ee=>_.secretKey=Ee,placeholder:"secret key",autocomplete:"off"},null,8,qc),[[xe,_.secretKey]]),ue(h("input",{"onUpdate:modelValue":Ee=>_.path=Ee,placeholder:"remote path",autocomplete:"off"},null,8,Jc),[[xe,_.path]]),ue(h("input",{"onUpdate:modelValue":Ee=>_.property=Ee,placeholder:"property (optional)",autocomplete:"off"},null,8,Yc),[[xe,_.property]]),h("button",{class:"danger",type:"button",onClick:Ee=>ft(ae)},"Remove",8,Xc)]))),128)),h("div",null,[h("button",{class:"secondary",type:"button",onClick:Oe},"Add mapping")])]),h("div",Qc,[h("button",{class:"primary",type:"submit",disabled:U.value},H(U.value?"Creating…":"Create"),9,Zc),h("button",{class:"secondary",type:"button",onClick:T[6]||(T[6]=()=>{u.value=!1,ne()})},"Cancel"),K.value?(M(),D("span",eu,H(K.value),1)):be("",!0)])],32)])):be("",!0),X(Hs,{columns:j,rows:dt.value,"row-key":"key",loaded:o.value,loading:r.value,error:s.value,stale:!!s.value&&t.value.length>0,retryable:"","empty-text":"No synced secrets yet. Add one to project material from a store.",onRowClick:E,onRetry:ke},{name:ie(({value:_})=>[h("span",tu,H(_),1)]),namespace:ie(({value:_})=>[h("span",nu,H(_),1)]),store:ie(({value:_})=>[h("span",su,H(_),1)]),targetSecret:ie(({value:_})=>[h("span",ru,H(_),1)]),refreshInterval:ie(({value:_})=>[h("span",ou,H(_),1)]),syncedKeys:ie(({value:_})=>[Zt(H(_??"—"),1)]),syncedVersion:ie(({row:_})=>[h("span",{class:"mono",title:String(_.syncedVersion??"")},H(Ce(Pa)(_.syncedVersion)),9,iu)]),lastSyncTime:ie(({value:_})=>[Zt(H(Ce(Na)(_)),1)]),ready:ie(({row:_})=>[X(Jn,{status:_.ready?"ready":"pending"},null,8,["status"])]),actions:ie(({row:_})=>[X(qo,{label:"Delete synced secret",busy:i.value===_.key,onClick:ae=>oe(_)},null,8,["busy","onClick"])]),_:1},8,["rows","loaded","loading","error","stale"]),a.value?(M(),D("div",lu,[h("div",au,[h("h3",cu,H(a.value.namespace)+"/"+H(a.value.name)+" — conditions",1),h("button",{class:"link",onClick:T[7]||(T[7]=_=>l.value=null)},"Close")]),a.value.message?(M(),D("p",uu,H(a.value.message),1)):be("",!0),X(Jo,{conditions:a.value.conditions,generation:a.value.generation,"observed-generation":a.value.observedGeneration},null,8,["conditions","generation","observed-generation"])])):be("",!0)]))}}),du={id:"pk-modal-title",class:"pk-title"},pu={class:"pk-actions"},hu=((e,t)=>{const n=e.__vccOpts||e;for(const[s,r]of t)n[s]=r;return n})(ct({__name:"ConfirmDialog",setup(e){const t=B(null),n=B(null);let s=null;const r=ye(()=>le.message.split(`
+`).map(a=>a.trim()).filter(Boolean));function o(){Ko(!0)}function i(){Ko(!1)}function l(a){if(le.open)if(a.key==="Tab"){const d=Array.from(n.value?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')??[]);if(d.length===0){a.preventDefault();return}const u=d[0],p=d[d.length-1];a.shiftKey&&document.activeElement===u?(a.preventDefault(),p.focus()):!a.shiftKey&&document.activeElement===p&&(a.preventDefault(),u.focus())}else a.key==="Escape"?(a.preventDefault(),i()):a.key==="Enter"&&(a.preventDefault(),o())}return bt(()=>le.open,a=>{if(a)s=document.activeElement instanceof HTMLElement?document.activeElement:null,window.addEventListener("keydown",l),Tn(()=>t.value?.focus());else{window.removeEventListener("keydown",l);const d=s;s=null,Tn(()=>d?.isConnected&&d.focus())}}),Nr(()=>window.removeEventListener("keydown",l)),(a,d)=>Ce(le).open?(M(),D("div",{key:0,class:"pk-overlay",onClick:zn(i,["self"])},[h("div",{ref_key:"modalRef",ref:n,class:Ie(["pk-modal",{danger:Ce(le).danger}]),role:"alertdialog","aria-modal":"true","aria-labelledby":"pk-modal-title"},[h("h3",du,H(Ce(le).title),1),(M(!0),D(se,null,ut(r.value,(u,p)=>(M(),D("p",{key:p,class:"pk-message"},H(u),1))),128)),h("div",pu,[h("button",{type:"button",class:"pk-btn cancel",onClick:i},H(Ce(le).cancelLabel),1),h("button",{ref_key:"confirmBtn",ref:t,type:"button",class:Ie(["pk-btn confirm",{danger:Ce(le).danger}]),onClick:o},H(Ce(le).confirmLabel),3)])],2)])):be("",!0)}}),[["__scopeId","data-v-3a559676"]]),gu={class:"tabs"},mu={key:0,class:"empty"},vu=ct({__name:"App",props:{ctx:{}},setup(e){const t=e;function n(l){const a=(l??"").replace(/^\/+|\/+$/g,"");return a==="synced"||a.startsWith("synced/")?"synced":"stores"}const s=ye(()=>n(t.ctx?.subPath));bt(()=>t.ctx?.basePath,l=>void 0,{immediate:!0}),bt(()=>t.ctx?.token,l=>Aa(l),{immediate:!0}),bt(()=>t.ctx?.tenant,l=>Ra(l),{immediate:!0});const r=ye(()=>!!t.ctx?.tenant),o=B(null);function i(l){const a=o.value;a&&a.dispatchEvent(new CustomEvent("railgrid-navigate",{detail:{path:l},bubbles:!0}))}return(l,a)=>(M(),D("div",{ref_key:"rootRef",ref:o,class:"app"},[h("nav",gu,[h("button",{class:Ie({active:s.value==="stores"}),onClick:a[0]||(a[0]=d=>i("stores"))},"Stores",2),h("button",{class:Ie({active:s.value==="synced"}),onClick:a[1]||(a[1]=d=>i("synced"))},"Synced Secrets",2)]),r.value?(M(),D(se,{key:1},[s.value==="synced"?(M(),xt(fu,{key:0})):(M(),xt(Mc,{key:1}))],64)):(M(),D("p",mu,"Select a workspace to manage secrets.")),X(hu)],512))}});class bu extends HTMLElement{_vueApp=null;_state=Bt({ctx:null});_host=null;set railgridContext(t){this._state.ctx=t}get railgridContext(){return this._state.ctx}connectedCallback(){this._vueApp||(this._host=document.createElement("div"),this._host.className="secrets-host",this.appendChild(this._host),this._vueApp=Ta({render:()=>jn(vu,{ctx:this._state.ctx})}),this._vueApp.mount(this._host))}disconnectedCallback(){this._vueApp&&(this._vueApp.unmount(),this._vueApp=null),this._host&&this._host.parentNode===this&&this.removeChild(this._host),this._host=null}}const yu=`/*
  * secrets provider element styles. Imported as a string by main.ts and injected
  * as one <style> tag in the host document. The element renders in LIGHT DOM so
  * the portal's CSS custom properties (--color-*) cascade in; every selector is
- * namespaced under faros-provider-secrets so these styles cannot leak into the
+ * namespaced under railgrid-provider-secrets so these styles cannot leak into the
  * portal. Structure + tokens mirror the code provider so the two look like one
  * product.
  */
 
-faros-provider-secrets {
+railgrid-provider-secrets {
   display: block;
   font-family: inherit;
   color: var(--color-text-primary, inherit);
 }
 
-faros-provider-secrets .app {
+railgrid-provider-secrets .app {
   padding: 8px 0;
   display: flex;
   flex-direction: column;
@@ -163,11 +163,11 @@ faros-provider-secrets .app {
 }
 
 /* Tabs (segmented sub-nav) */
-faros-provider-secrets .tabs {
+railgrid-provider-secrets .tabs {
   display: flex;
   gap: 4px;
 }
-faros-provider-secrets .tabs button {
+railgrid-provider-secrets .tabs button {
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -178,11 +178,11 @@ faros-provider-secrets .tabs button {
   font-size: 12px;
   font-weight: 500;
 }
-faros-provider-secrets .tabs button:hover {
+railgrid-provider-secrets .tabs button:hover {
   color: var(--color-text-primary, inherit);
   background: var(--color-surface-hover, rgba(255, 255, 255, 0.07));
 }
-faros-provider-secrets .tabs button.active {
+railgrid-provider-secrets .tabs button.active {
   color: var(--color-accent, #8b6bff);
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
   border-color: var(--color-accent, #8b6bff);
@@ -190,23 +190,23 @@ faros-provider-secrets .tabs button.active {
 }
 
 /* Page scaffold */
-faros-provider-secrets .page {
+railgrid-provider-secrets .page {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
-faros-provider-secrets .page-head {
+railgrid-provider-secrets .page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
-faros-provider-secrets .page-title {
+railgrid-provider-secrets .page-title {
   margin: 0 0 4px;
   font-size: 15px;
   font-weight: 600;
 }
-faros-provider-secrets .page-meta {
+railgrid-provider-secrets .page-meta {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-secondary, #8a8ca6);
@@ -215,7 +215,7 @@ faros-provider-secrets .page-meta {
 }
 
 /* Panels (cards) */
-faros-provider-secrets .panel {
+railgrid-provider-secrets .panel {
   background: var(--color-surface-raised, #111320);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
@@ -224,7 +224,7 @@ faros-provider-secrets .panel {
   flex-direction: column;
   gap: 10px;
 }
-faros-provider-secrets .panel-title {
+railgrid-provider-secrets .panel-title {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -232,7 +232,7 @@ faros-provider-secrets .panel-title {
   text-transform: uppercase;
   color: var(--color-text-secondary, currentColor);
 }
-faros-provider-secrets .panel-head {
+railgrid-provider-secrets .panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -240,7 +240,7 @@ faros-provider-secrets .panel-head {
 }
 
 /* Buttons */
-faros-provider-secrets button.primary {
+railgrid-provider-secrets button.primary {
   background: var(--color-accent, #8b6bff);
   color: #fff;
   border: 1px solid var(--color-accent, #8b6bff);
@@ -253,15 +253,15 @@ faros-provider-secrets button.primary {
   box-shadow: 0 0 16px var(--color-accent-glow);
   transition: background-color 0.12s ease, box-shadow 0.12s ease;
 }
-faros-provider-secrets button.primary:hover {
+railgrid-provider-secrets button.primary:hover {
   background: var(--color-accent-hover, #a18aff);
   box-shadow: 0 0 22px var(--color-accent-glow);
 }
-faros-provider-secrets button.primary:disabled {
+railgrid-provider-secrets button.primary:disabled {
   opacity: 0.55;
   cursor: progress;
 }
-faros-provider-secrets button.secondary {
+railgrid-provider-secrets button.secondary {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, inherit);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
@@ -271,10 +271,10 @@ faros-provider-secrets button.secondary {
   font-size: 12px;
   cursor: pointer;
 }
-faros-provider-secrets button.secondary:hover {
+railgrid-provider-secrets button.secondary:hover {
   background: var(--color-surface-hover, #1e2033);
 }
-faros-provider-secrets button.danger {
+railgrid-provider-secrets button.danger {
   background: transparent;
   color: var(--color-danger, #ff5d5d);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
@@ -285,15 +285,15 @@ faros-provider-secrets button.danger {
   cursor: pointer;
   transition: all 0.12s ease;
 }
-faros-provider-secrets button.danger:hover {
+railgrid-provider-secrets button.danger:hover {
   border-color: var(--color-danger, #ff5d5d);
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
 }
-faros-provider-secrets button.danger:disabled {
+railgrid-provider-secrets button.danger:disabled {
   opacity: 0.4;
   cursor: default;
 }
-faros-provider-secrets button.link {
+railgrid-provider-secrets button.link {
   background: transparent;
   border: none;
   color: var(--color-accent, #8b6bff);
@@ -302,36 +302,36 @@ faros-provider-secrets button.link {
   cursor: pointer;
   padding: 0;
 }
-faros-provider-secrets button.link:hover {
+railgrid-provider-secrets button.link:hover {
   color: var(--color-accent-hover, #a18aff);
 }
 
-faros-provider-secrets .actions {
+railgrid-provider-secrets .actions {
   display: flex;
   gap: 8px;
   align-items: center;
 }
 
 /* Forms */
-faros-provider-secrets .form {
+railgrid-provider-secrets .form {
   display: flex;
   flex-direction: column;
   gap: 12px;
   max-width: 36rem;
 }
-faros-provider-secrets .field {
+railgrid-provider-secrets .field {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-faros-provider-secrets .field-label {
+railgrid-provider-secrets .field-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--color-text-secondary, currentColor);
 }
-faros-provider-secrets .field input,
-faros-provider-secrets .field select,
-faros-provider-secrets .field textarea {
+railgrid-provider-secrets .field input,
+railgrid-provider-secrets .field select,
+railgrid-provider-secrets .field textarea {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, inherit);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
@@ -342,40 +342,40 @@ faros-provider-secrets .field textarea {
   width: 100%;
   box-sizing: border-box;
 }
-faros-provider-secrets .field input::placeholder,
-faros-provider-secrets .field textarea::placeholder {
+railgrid-provider-secrets .field input::placeholder,
+railgrid-provider-secrets .field textarea::placeholder {
   color: var(--color-text-muted, #5d5f78);
 }
-faros-provider-secrets .field input:focus,
-faros-provider-secrets .field select:focus,
-faros-provider-secrets .field textarea:focus {
+railgrid-provider-secrets .field input:focus,
+railgrid-provider-secrets .field select:focus,
+railgrid-provider-secrets .field textarea:focus {
   outline: none;
   border-color: var(--color-accent, #8b6bff);
   box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow);
 }
-faros-provider-secrets .field .muted {
+railgrid-provider-secrets .field .muted {
   margin: 0;
 }
 
 /* Repeated rows inside a form (dataFrom paths / key mappings) */
-faros-provider-secrets .row-line {
+railgrid-provider-secrets .row-line {
   display: flex;
   gap: 8px;
   align-items: center;
 }
-faros-provider-secrets .row-line input {
+railgrid-provider-secrets .row-line input {
   flex: 1;
   min-width: 0;
 }
 
 /* Mono identifiers (names, addresses, hashes) */
-faros-provider-secrets .mono {
+railgrid-provider-secrets .mono {
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace);
   font-size: 12px;
 }
 
 /* Solid destructive button — emphasis variant for confirm-dialog actions */
-faros-provider-secrets button.danger-solid {
+railgrid-provider-secrets button.danger-solid {
   background: var(--color-danger, #ff5d5d);
   color: #fff;
   border: 1px solid var(--color-danger, #ff5d5d);
@@ -387,12 +387,12 @@ faros-provider-secrets button.danger-solid {
   cursor: pointer;
   transition: background-color 0.12s ease;
 }
-faros-provider-secrets button.danger-solid:hover {
+railgrid-provider-secrets button.danger-solid:hover {
   background: var(--color-danger-hover, #e64c4c);
 }
 
 /* Confirm dialog (in-app modal replacing window.confirm) */
-faros-provider-secrets .modal-overlay {
+railgrid-provider-secrets .modal-overlay {
   position: fixed;
   inset: 0;
   z-index: 1000;
@@ -403,7 +403,7 @@ faros-provider-secrets .modal-overlay {
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(2px);
 }
-faros-provider-secrets .modal {
+railgrid-provider-secrets .modal {
   width: 100%;
   max-width: 26rem;
   background: var(--color-surface-raised, #111320);
@@ -415,19 +415,19 @@ faros-provider-secrets .modal {
   gap: 10px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
-faros-provider-secrets .modal-title {
+railgrid-provider-secrets .modal-title {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--color-text-primary, inherit);
 }
-faros-provider-secrets .modal-message {
+railgrid-provider-secrets .modal-message {
   margin: 0;
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-secondary, #8a8ca6);
 }
-faros-provider-secrets .modal-actions {
+railgrid-provider-secrets .modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -435,27 +435,27 @@ faros-provider-secrets .modal-actions {
 }
 
 /* Misc text */
-faros-provider-secrets .muted {
+railgrid-provider-secrets .muted {
   color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
 }
-faros-provider-secrets .error {
+railgrid-provider-secrets .error {
   color: var(--color-danger, #ff5d5d);
   font-size: 12px;
 }
-faros-provider-secrets .empty {
+railgrid-provider-secrets .empty {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
   padding: 8px 0;
 }
-faros-provider-secrets a {
+railgrid-provider-secrets a {
   color: var(--color-accent, #8b6bff);
   text-decoration: none;
 }
-faros-provider-secrets a:hover {
+railgrid-provider-secrets a:hover {
   text-decoration: underline;
 }
-faros-provider-secrets code {
+railgrid-provider-secrets code {
   background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
@@ -465,14 +465,14 @@ faros-provider-secrets code {
 }
 
 /* PortalKit ResourceTable */
-faros-provider-secrets .resource-table {
+railgrid-provider-secrets .resource-table {
   background: color-mix(in srgb, var(--color-surface-raised, #111320) 80%, transparent);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
   overflow: hidden;
 }
 
-faros-provider-secrets .resource-table-error {
+railgrid-provider-secrets .resource-table-error {
   align-items: center;
   color: var(--color-danger, #ff5d5d);
   display: flex;
@@ -481,13 +481,13 @@ faros-provider-secrets .resource-table-error {
   padding: 16px;
 }
 
-faros-provider-secrets .resource-table-error-icon {
+railgrid-provider-secrets .resource-table-error-icon {
   flex-shrink: 0;
   height: 16px;
   width: 16px;
 }
 
-faros-provider-secrets .resource-table-stale {
+railgrid-provider-secrets .resource-table-stale {
   align-items: center;
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   color: var(--color-danger, #ff5d5d);
@@ -497,7 +497,7 @@ faros-provider-secrets .resource-table-stale {
   padding: 10px 16px;
 }
 
-faros-provider-secrets .resource-table-retry {
+railgrid-provider-secrets .resource-table-retry {
   background: transparent;
   border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
   border-radius: 4px;
@@ -509,81 +509,81 @@ faros-provider-secrets .resource-table-retry {
   padding: 3px 10px;
 }
 
-faros-provider-secrets .resource-table-loading-head,
-faros-provider-secrets .resource-table-loading-row {
+railgrid-provider-secrets .resource-table-loading-head,
+railgrid-provider-secrets .resource-table-loading-row {
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
 }
 
-faros-provider-secrets .resource-table-loading-head {
+railgrid-provider-secrets .resource-table-loading-head {
   padding: 12px 20px;
 }
 
-faros-provider-secrets .resource-table-loading-row {
+railgrid-provider-secrets .resource-table-loading-row {
   align-items: center;
   display: flex;
   gap: 24px;
   padding: 14px 20px;
 }
 
-faros-provider-secrets .resource-table-loading-row:last-child {
+railgrid-provider-secrets .resource-table-loading-row:last-child {
   border-bottom: none;
 }
 
-faros-provider-secrets .resource-table-skeleton {
+railgrid-provider-secrets .resource-table-skeleton {
   border-radius: 4px;
   height: 12px;
 }
 
-faros-provider-secrets .resource-table-skeleton-short {
+railgrid-provider-secrets .resource-table-skeleton-short {
   width: 96px;
 }
 
-faros-provider-secrets .resource-table-skeleton-wide {
+railgrid-provider-secrets .resource-table-skeleton-wide {
   width: 128px;
 }
 
-faros-provider-secrets .resource-table-skeleton-mid {
+railgrid-provider-secrets .resource-table-skeleton-mid {
   width: 80px;
 }
 
-faros-provider-secrets .resource-table-skeleton-small {
+railgrid-provider-secrets .resource-table-skeleton-small {
   width: 64px;
 }
 
-faros-provider-secrets .shimmer {
+railgrid-provider-secrets .shimmer {
   background: linear-gradient(90deg, var(--color-surface-overlay, #171927), var(--color-surface-hover, #1e2033), var(--color-surface-overlay, #171927));
   background-size: 200% 100%;
   animation: provider-shimmer 1.4s ease-in-out infinite;
 }
 
-faros-provider-secrets .resource-table-table {
+railgrid-provider-secrets .resource-table-table {
   border-collapse: collapse;
   min-width: 100%;
   width: 100%;
 }
 
-faros-provider-secrets .resource-table-head-row,
-faros-provider-secrets .resource-table-row {
+railgrid-provider-secrets .resource-table-head-row,
+railgrid-provider-secrets .resource-table-row {
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
 }
 
-faros-provider-secrets .resource-table-row {
+railgrid-provider-secrets .resource-table-row {
   transition: background-color 0.15s ease, color 0.1s ease;
 }
 
-faros-provider-secrets .resource-table-row:last-child {
+railgrid-provider-secrets .resource-table-row:last-child {
   border-bottom: none;
 }
 
-faros-provider-secrets .resource-table-row.is-interactive {
+railgrid-provider-secrets .resource-table-row.is-interactive {
   cursor: pointer;
 }
 
-faros-provider-secrets .resource-table-row.is-interactive:hover {
+railgrid-provider-secrets .resource-table-row.is-interactive:hover {
   background: color-mix(in srgb, var(--color-accent, #8b6bff) 3%, transparent);
 }
 
-faros-provider-secrets .resource-table-heading {
+railgrid-provider-secrets .resource-table-heading {
   color: var(--color-text-muted, #5d5f78);
   font-size: 10px;
   font-weight: 600;
@@ -593,7 +593,7 @@ faros-provider-secrets .resource-table-heading {
   text-transform: uppercase;
 }
 
-faros-provider-secrets .resource-table-cell {
+railgrid-provider-secrets .resource-table-cell {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 13px;
   padding: 12px 20px;
@@ -601,30 +601,30 @@ faros-provider-secrets .resource-table-cell {
   white-space: nowrap;
 }
 
-faros-provider-secrets .resource-table-row.is-interactive:hover .resource-table-cell {
+railgrid-provider-secrets .resource-table-row.is-interactive:hover .resource-table-cell {
   color: var(--color-text-primary, inherit);
 }
 
-faros-provider-secrets .resource-table-empty-cell {
+railgrid-provider-secrets .resource-table-empty-cell {
   padding: 64px 20px;
   text-align: center;
 }
 
-faros-provider-secrets .resource-table-empty-icon {
+railgrid-provider-secrets .resource-table-empty-icon {
   color: color-mix(in srgb, var(--color-text-muted, #5d5f78) 20%, transparent);
   height: 32px;
   margin: 0 auto;
   width: 32px;
 }
 
-faros-provider-secrets .resource-table-empty-label {
+railgrid-provider-secrets .resource-table-empty-label {
   color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
   margin: 8px 0 0;
 }
 
 /* PortalKit StatusBadge (square mono tags) */
-faros-provider-secrets .status-badge {
+railgrid-provider-secrets .status-badge {
   align-items: center;
   border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
   border-radius: 3px;
@@ -639,35 +639,35 @@ faros-provider-secrets .status-badge {
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-faros-provider-secrets .status-badge.tone-success {
+railgrid-provider-secrets .status-badge.tone-success {
   background: var(--color-success-subtle, rgba(47, 214, 160, 0.12));
   color: var(--color-success, #2fd6a0);
 }
 
-faros-provider-secrets .status-badge.tone-warning {
+railgrid-provider-secrets .status-badge.tone-warning {
   background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
   color: var(--color-warning, #f0a63a);
 }
 
-faros-provider-secrets .status-badge.tone-danger {
+railgrid-provider-secrets .status-badge.tone-danger {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   color: var(--color-danger, #ff5d5d);
 }
 
-faros-provider-secrets .status-badge.tone-muted {
+railgrid-provider-secrets .status-badge.tone-muted {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-muted, #5d5f78);
 }
 
-faros-provider-secrets .status-badge-dot-wrap {
+railgrid-provider-secrets .status-badge-dot-wrap {
   display: flex;
   height: 6px;
   position: relative;
   width: 6px;
 }
 
-faros-provider-secrets .status-badge-pulse,
-faros-provider-secrets .status-badge-dot {
+railgrid-provider-secrets .status-badge-pulse,
+railgrid-provider-secrets .status-badge-dot {
   border-radius: 999px;
   display: inline-flex;
   height: 6px;
@@ -675,39 +675,39 @@ faros-provider-secrets .status-badge-dot {
   width: 6px;
 }
 
-faros-provider-secrets .status-badge-pulse {
+railgrid-provider-secrets .status-badge-pulse {
   animation: provider-live-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
   opacity: 0.6;
 }
 
-faros-provider-secrets .dot-success,
-faros-provider-secrets .pulse-success {
+railgrid-provider-secrets .dot-success,
+railgrid-provider-secrets .pulse-success {
   background: var(--color-success, #2fd6a0);
 }
 
-faros-provider-secrets .dot-warning,
-faros-provider-secrets .pulse-warning {
+railgrid-provider-secrets .dot-warning,
+railgrid-provider-secrets .pulse-warning {
   background: var(--color-warning, #f0a63a);
 }
 
-faros-provider-secrets .dot-danger,
-faros-provider-secrets .pulse-danger {
+railgrid-provider-secrets .dot-danger,
+railgrid-provider-secrets .pulse-danger {
   background: var(--color-danger, #ff5d5d);
 }
 
-faros-provider-secrets .dot-muted,
-faros-provider-secrets .pulse-muted {
+railgrid-provider-secrets .dot-muted,
+railgrid-provider-secrets .pulse-muted {
   background: var(--color-text-muted, #5d5f78);
 }
 
 /* PortalKit ConditionsPanel */
-faros-provider-secrets .conditions-panel {
+railgrid-provider-secrets .conditions-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-faros-provider-secrets .conditions-title {
+railgrid-provider-secrets .conditions-title {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 11px;
   font-weight: 600;
@@ -716,25 +716,25 @@ faros-provider-secrets .conditions-title {
   text-transform: uppercase;
 }
 
-faros-provider-secrets .conditions-stale {
+railgrid-provider-secrets .conditions-stale {
   color: var(--color-warning, #f0a63a);
   font-size: 12px;
   margin: 0;
 }
 
-faros-provider-secrets .conditions-type {
+railgrid-provider-secrets .conditions-type {
   color: var(--color-text-primary, inherit);
   font-weight: 600;
 }
 
-faros-provider-secrets .conditions-message {
+railgrid-provider-secrets .conditions-message {
   display: block;
   max-width: 40ch;
   overflow-wrap: anywhere;
   white-space: normal;
 }
 
-faros-provider-secrets .conditions-muted {
+railgrid-provider-secrets .conditions-muted {
   color: var(--color-text-muted, #5d5f78);
 }
 
@@ -754,4 +754,4 @@ faros-provider-secrets .conditions-muted {
     transform: scale(2);
   }
 }
-`,Us="faros-provider-secrets";if(!customElements.get(Us)){const e=`${Us}-css`;if(!document.getElementById(e)){const t=document.createElement("style");t.id=e,t.textContent=yu,document.head.appendChild(t)}customElements.define(Us,bu)}})();
+`,Us="railgrid-provider-secrets";if(!customElements.get(Us)){const e=`${Us}-css`;if(!document.getElementById(e)){const t=document.createElement("style");t.id=e,t.textContent=yu,document.head.appendChild(t)}customElements.define(Us,bu)}})();

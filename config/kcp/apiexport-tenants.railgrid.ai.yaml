@@ -1,0 +1,37 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: tenants.railgrid.ai
+spec:
+  resources:
+  - group: tenants.railgrid.ai
+    name: grants
+    schema: v260912-b0309487-2.grants.tenants.railgrid.ai
+    storage:
+      crd: {}
+  - group: tenants.railgrid.ai
+    name: memberships
+    schema: v260615-5246b68.memberships.tenants.railgrid.ai
+    storage:
+      crd: {}
+  - group: tenants.railgrid.ai
+    name: organizations
+    schema: v260904-9ab06b67.organizations.tenants.railgrid.ai
+    storage:
+      crd: {}
+  - group: tenants.railgrid.ai
+    name: usermembershipindices
+    schema: v260615-5246b68.usermembershipindices.tenants.railgrid.ai
+    storage:
+      crd: {}
+  - group: tenants.railgrid.ai
+    name: userpreferences
+    schema: v260720-6391e6e.userpreferences.tenants.railgrid.ai
+    storage:
+      crd: {}
+  - group: tenants.railgrid.ai
+    name: users
+    schema: v260615-5246b68.users.tenants.railgrid.ai
+    storage:
+      crd: {}
+status: {}

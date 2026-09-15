@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -125,12 +125,12 @@ func TestInstallLaunchdDryRunDoesNotWriteOrLeakToken(t *testing.T) {
 
 	output, err := captureLaunchdStdout(t, func() error {
 		return installLaunchdAgent(launchdInstallOptions{
-			BinaryPath:    "/usr/local/bin/faros",
-			HubURL:        "https://hub.example/clusters/root:faros:tenant",
+			BinaryPath:    "/usr/local/bin/railgrid",
+			HubURL:        "https://hub.example/clusters/root:railgrid:tenant",
 			Token:         token,
 			EdgeName:      "macbook-01",
 			Type:          "macos",
-			Cluster:       "root:faros:tenant",
+			Cluster:       "root:railgrid:tenant",
 			WorkerUser:    u.Username,
 			WorkerHome:    workerHome,
 			PlistPath:     plistPath,
@@ -148,10 +148,10 @@ func TestInstallLaunchdDryRunDoesNotWriteOrLeakToken(t *testing.T) {
 	if _, err := os.Stat(plistPath); !os.IsNotExist(err) {
 		t.Fatalf("dry-run plist stat error = %v, want no file", err)
 	}
-	if _, err := os.Stat(filepath.Join(workerHome, ".faros")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(workerHome, ".railgrid")); !os.IsNotExist(err) {
 		t.Fatalf("dry-run created credential directory: %v", err)
 	}
-	for _, want := range []string{"com.faros.agent.macbook-01", "root:faros:tenant", "--svc-policy", "enforce"} {
+	for _, want := range []string{"com.railgrid.agent.macbook-01", "root:railgrid:tenant", "--svc-policy", "enforce"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("dry-run output lacks %q:\n%s", want, output)
 		}
@@ -160,11 +160,11 @@ func TestInstallLaunchdDryRunDoesNotWriteOrLeakToken(t *testing.T) {
 
 func TestRenderLaunchdPlistEscapesXML(t *testing.T) {
 	plist, err := renderLaunchdPlist(launchdPlistData{
-		Label:           `com.faros.agent.edge&<>",`,
+		Label:           `com.railgrid.agent.edge&<>",`,
 		UserName:        `worker&<>`,
 		GroupName:       `staff&<>`,
 		Home:            `/Users/worker&<>`,
-		ProgramArgs:     []string{"/usr/local/bin/faros", `arg&<>"'`},
+		ProgramArgs:     []string{"/usr/local/bin/railgrid", `arg&<>"'`},
 		StandardOutPath: `/Users/worker&<>/agent.log`,
 		StandardErrPath: `/Users/worker&<>/agent.error.log`,
 	})

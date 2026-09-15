@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,8 +30,8 @@ import (
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/instancespec"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/instancespec"
 )
 
 var viteShimPattern = regexp.MustCompile(`printf '%s' '([^']+)' \| base64 -d`)
@@ -199,19 +199,19 @@ func TestSeedTemplatesCodingSandboxIsOptIn(t *testing.T) {
 }
 
 func TestSeedTemplatesRequiresImmutableUniversalImageWhenEnabled(t *testing.T) {
-	t.Setenv("FAROS_CODING_SANDBOX_ENABLED", "true")
-	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/faroshq/faros-universal-dev:latest")
-	t.Setenv("FAROS_DEV_AGENT_IMAGE", "ghcr.io/faroshq/faros-dev-agent@sha256:"+strings.Repeat("b", 64))
+	t.Setenv("RAILGRID_CODING_SANDBOX_ENABLED", "true")
+	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "ghcr.io/railgrid/railgrid-universal-dev:latest")
+	t.Setenv("RAILGRID_DEV_AGENT_IMAGE", "ghcr.io/railgrid/railgrid-dev-agent@sha256:"+strings.Repeat("b", 64))
 	if err := validateSeedImageConfig(); err == nil {
 		t.Fatal("expected mutable universal image to be rejected")
 	}
 
-	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/faroshq/faros-universal-dev@sha256:"+strings.Repeat("a", 64))
+	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "ghcr.io/railgrid/railgrid-universal-dev@sha256:"+strings.Repeat("a", 64))
 	if err := validateSeedImageConfig(); err != nil {
 		t.Fatalf("valid universal and agent digests rejected: %v", err)
 	}
 
-	t.Setenv("FAROS_DEV_AGENT_IMAGE", "ghcr.io/faroshq/faros-dev-agent:latest")
+	t.Setenv("RAILGRID_DEV_AGENT_IMAGE", "ghcr.io/railgrid/railgrid-dev-agent:latest")
 	if err := validateSeedImageConfig(); err == nil || !strings.Contains(err.Error(), "dev-agent image") {
 		t.Fatalf("mutable dev-agent image error = %v, want dev-agent validation", err)
 	}
@@ -242,7 +242,7 @@ func TestUniversalCodingSandboxContract(t *testing.T) {
 		t.Fatalf("coding sandbox idle timeout = %d, want %d", got, want)
 	}
 	component, ok := tmpl.Spec.Development.Components["workspace"]
-	if !ok || component.DevImage != "${faros.devImage.universal}" || component.WorkspacePath != "." {
+	if !ok || component.DevImage != "${railgrid.devImage.universal}" || component.WorkspacePath != "." {
 		t.Fatalf("workspace development component = %#v", component)
 	}
 	var schema map[string]any
@@ -253,12 +253,12 @@ func TestUniversalCodingSandboxContract(t *testing.T) {
 	if !ok {
 		t.Fatal("coding sandbox schema has no properties")
 	}
-	legacyHostname, ok := properties["farosExposureHostname"].(map[string]any)
+	legacyHostname, ok := properties["railgridExposureHostname"].(map[string]any)
 	if !ok || legacyHostname["type"] != "string" {
-		t.Fatalf("farosExposureHostname compatibility property = %#v, want optional string", properties["farosExposureHostname"])
+		t.Fatalf("railgridExposureHostname compatibility property = %#v, want optional string", properties["railgridExposureHostname"])
 	}
 	if description, _ := legacyHostname["description"].(string); !strings.Contains(description, "Deprecated compatibility field") || !strings.Contains(description, "no hostname or route") {
-		t.Fatalf("farosExposureHostname description = %q, want an internal/deprecated compatibility explanation", description)
+		t.Fatalf("railgridExposureHostname description = %q, want an internal/deprecated compatibility explanation", description)
 	}
 	if tmpl.Spec.DataPlane == nil {
 		t.Fatal("coding sandbox has no data-plane contract")
@@ -316,7 +316,7 @@ func TestUniversalCodingSandboxContract(t *testing.T) {
 	if deployment["kind"] != "Deployment" {
 		t.Fatalf("workload kind = %#v", deployment["kind"])
 	}
-	if deployment["metadata"].(map[string]any)["annotations"].(map[string]any)["faros.sh/network-access"] != "default-deny-egress" {
+	if deployment["metadata"].(map[string]any)["annotations"].(map[string]any)["railgrid.ai/network-access"] != "default-deny-egress" {
 		t.Fatal("workload must carry default-deny egress marker")
 	}
 	podTemplate := deployment["spec"].(map[string]any)["template"].(map[string]any)
@@ -382,13 +382,13 @@ func TestUniversalCodingSandboxContract(t *testing.T) {
 			t.Fatalf("%s app selector = %#v, want platform name", id, labels["app"])
 		}
 		if wantPhase == "" {
-			if _, found := labels["faros.sh/network-phase"]; found {
+			if _, found := labels["railgrid.ai/network-phase"]; found {
 				t.Fatalf("%s selector unexpectedly pins a phase: %#v", id, labels)
 			}
 			return
 		}
-		if labels["faros.sh/network-phase"] != wantPhase {
-			t.Fatalf("%s phase selector = %#v, want %q", id, labels["faros.sh/network-phase"], wantPhase)
+		if labels["railgrid.ai/network-phase"] != wantPhase {
+			t.Fatalf("%s phase selector = %#v, want %q", id, labels["railgrid.ai/network-phase"], wantPhase)
 		}
 	}
 	assertPorts := func(id string, raw any, want ...struct {
@@ -409,7 +409,7 @@ func TestUniversalCodingSandboxContract(t *testing.T) {
 	}
 
 	defaultDeny := policy("workspaceDefaultDenyEgress")
-	assertIncludeWhen("workspaceDefaultDenyEgress", `${schema.spec.farosMode == "development"}`)
+	assertIncludeWhen("workspaceDefaultDenyEgress", `${schema.spec.railgridMode == "development"}`)
 	assertPolicyTypes("workspaceDefaultDenyEgress", defaultDeny)
 	assertSelector("workspaceDefaultDenyEgress", defaultDeny, "")
 	if _, found := defaultDeny["egress"]; found {
@@ -417,7 +417,7 @@ func TestUniversalCodingSandboxContract(t *testing.T) {
 	}
 
 	setup := policy("workspaceSetupEgress")
-	assertIncludeWhen("workspaceSetupEgress", `${schema.spec.farosMode == "development" && schema.spec.farosNetworkPhase == "setup"}`)
+	assertIncludeWhen("workspaceSetupEgress", `${schema.spec.railgridMode == "development" && schema.spec.railgridNetworkPhase == "setup"}`)
 	assertPolicyTypes("workspaceSetupEgress", setup)
 	assertSelector("workspaceSetupEgress", setup, "setup")
 	setupEgress, ok := setup["egress"].([]any)
@@ -426,7 +426,7 @@ func TestUniversalCodingSandboxContract(t *testing.T) {
 	}
 
 	runtimePolicy := policy("workspaceRuntimeEgress")
-	assertIncludeWhen("workspaceRuntimeEgress", `${schema.spec.farosMode == "development" && schema.spec.farosNetworkPhase == "runtime"}`)
+	assertIncludeWhen("workspaceRuntimeEgress", `${schema.spec.railgridMode == "development" && schema.spec.railgridNetworkPhase == "runtime"}`)
 	assertPolicyTypes("workspaceRuntimeEgress", runtimePolicy)
 	assertSelector("workspaceRuntimeEgress", runtimePolicy, "runtime")
 	runtimeEgress, ok := runtimePolicy["egress"].([]any)
@@ -623,8 +623,8 @@ func TestUniversalCodingSandboxAdmissionRejectsUnsafeVariants(t *testing.T) {
 // TestApplicationSeedsRouteEverythingThroughTheAccessGate encodes the
 // exposure invariants of the template-native access design:
 //
-//   - the schema declares platform-owned access + farosCluster fields;
-//   - a gate (faros-access-proxy) component exists, its image and hub
+//   - the schema declares platform-owned access + railgridCluster fields;
+//   - a gate (railgrid-access-proxy) component exists, its image and hub
 //     endpoints are platform tokens, and its mode is the tenant's
 //     spec.access value;
 //   - every HTTPRoute is unconditional and its only backend is the gate
@@ -632,7 +632,7 @@ func TestUniversalCodingSandboxAdmissionRejectsUnsafeVariants(t *testing.T) {
 //     mode, so flipping spec.access can never be routed around.
 func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 	// The gate's SAR targets the flattened tenant-facing resource — every
-	// template's instances are authored as instances.infrastructure.faros.sh,
+	// template's instances are authored as instances.infrastructure.railgrid.ai,
 	// so access grants live on instances/<name> subresource access.
 	instanceResource := map[string]string{
 		"simple-webapp.yaml": "instances",
@@ -665,12 +665,12 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 			if len(enum) != 2 || enum[0] != "public" || enum[1] != "private" {
 				t.Fatalf("access enum = %#v, want [public private]", enum)
 			}
-			cluster, ok := properties["farosCluster"].(map[string]any)
+			cluster, ok := properties["railgridCluster"].(map[string]any)
 			if !ok {
-				t.Fatal("seed schema has no farosCluster property")
+				t.Fatal("seed schema has no railgridCluster property")
 			}
 			if desc, _ := cluster["description"].(string); !strings.Contains(desc, "Computed by the platform") {
-				t.Fatalf("farosCluster description = %q, want platform-computed guidance", desc)
+				t.Fatalf("railgridCluster description = %q, want platform-computed guidance", desc)
 			}
 
 			var backend map[string]any
@@ -714,27 +714,27 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 				t.Fatal("seed has no gateDeployment component")
 			}
 			wantEnv := map[string]string{
-				"FAROS_ACCESS_PROXY_MODE": "${schema.spec.access}",
+				"RAILGRID_ACCESS_PROXY_MODE": "${schema.spec.access}",
 				// The external host includes the local Gateway's forwarded
-				// port when configured (${faros.appPublicPort} → ":<port>"
+				// port when configured (${railgrid.appPublicPort} → ":<port>"
 				// or "", substituted before kro sees the CEL).
-				"FAROS_ACCESS_PROXY_HOST":              `${schema.spec.expose.fqdn + "${faros.appPublicPort}"}`,
-				"FAROS_ACCESS_PROXY_INSTANCE_CLUSTER":  "${schema.spec.farosCluster}",
-				"FAROS_ACCESS_PROXY_INSTANCE_GROUP":    "infrastructure.faros.sh",
-				"FAROS_ACCESS_PROXY_INSTANCE_RESOURCE": instanceResource[file],
-				"FAROS_HUB_URL":                        "${faros.hubUrl}",
-				"FAROS_HUB_PUBLIC_URL":                 "${faros.hubPublicUrl}",
+				"RAILGRID_ACCESS_PROXY_HOST":              `${schema.spec.expose.fqdn + "${railgrid.appPublicPort}"}`,
+				"RAILGRID_ACCESS_PROXY_INSTANCE_CLUSTER":  "${schema.spec.railgridCluster}",
+				"RAILGRID_ACCESS_PROXY_INSTANCE_GROUP":    "infrastructure.railgrid.ai",
+				"RAILGRID_ACCESS_PROXY_INSTANCE_RESOURCE": instanceResource[file],
+				"RAILGRID_HUB_URL":                        "${railgrid.hubUrl}",
+				"RAILGRID_HUB_PUBLIC_URL":                 "${railgrid.hubPublicUrl}",
 			}
 			for name, want := range wantEnv {
 				if gateEnv[name] != want {
 					t.Errorf("gate env %s = %q, want %q", name, gateEnv[name], want)
 				}
 			}
-			if !strings.Contains(gateEnv["FAROS_ACCESS_PROXY_ROUTES"], ".svc.cluster.local:") {
-				t.Errorf("gate routes are not cluster-local Service targets: %q", gateEnv["FAROS_ACCESS_PROXY_ROUTES"])
+			if !strings.Contains(gateEnv["RAILGRID_ACCESS_PROXY_ROUTES"], ".svc.cluster.local:") {
+				t.Errorf("gate routes are not cluster-local Service targets: %q", gateEnv["RAILGRID_ACCESS_PROXY_ROUTES"])
 			}
-			if file == "application.yaml" && !strings.Contains(gateEnv["FAROS_ACCESS_PROXY_ROUTES"], `string(schema.spec.apiPort) + "/api,/=`) {
-				t.Errorf("application gate does not preserve the /api prefix upstream: %q", gateEnv["FAROS_ACCESS_PROXY_ROUTES"])
+			if file == "application.yaml" && !strings.Contains(gateEnv["RAILGRID_ACCESS_PROXY_ROUTES"], `string(schema.spec.apiPort) + "/api,/=`) {
+				t.Errorf("application gate does not preserve the /api prefix upstream: %q", gateEnv["RAILGRID_ACCESS_PROXY_ROUTES"])
 			}
 		})
 	}
@@ -776,7 +776,7 @@ func TestApplicationSeedsDeclareAndProjectRedeployRevision(t *testing.T) {
 		"simple-webapp.yaml": {"appDeployment": true},
 		"application.yaml":   {"webDeployment": true, "apiDeployment": true},
 	}
-	const annotationKey = "faros.sh/redeploy-revision"
+	const annotationKey = "railgrid.ai/redeploy-revision"
 
 	for file, want := range wantWorkloads {
 		t.Run(file, func(t *testing.T) {
@@ -800,16 +800,16 @@ func TestApplicationSeedsDeclareAndProjectRedeployRevision(t *testing.T) {
 			if !ok {
 				t.Fatal("seed schema has no properties")
 			}
-			revisionProperty, ok := properties["farosRedeployRevision"].(map[string]any)
+			revisionProperty, ok := properties["railgridRedeployRevision"].(map[string]any)
 			if !ok {
-				t.Fatal("seed schema has no farosRedeployRevision property")
+				t.Fatal("seed schema has no railgridRedeployRevision property")
 			}
 			if revisionProperty["type"] != "string" || revisionProperty["default"] != "initial" {
-				t.Fatalf("farosRedeployRevision property = %#v, want string default initial", revisionProperty)
+				t.Fatalf("railgridRedeployRevision property = %#v, want string default initial", revisionProperty)
 			}
 			description, _ := revisionProperty["description"].(string)
 			if !strings.Contains(description, "Computed by the platform") || !strings.Contains(description, "do NOT set") {
-				t.Fatalf("farosRedeployRevision description = %q, want platform-computed/not-user-set guidance", description)
+				t.Fatalf("railgridRedeployRevision description = %q, want platform-computed/not-user-set guidance", description)
 			}
 
 			var backend map[string]any
@@ -837,7 +837,7 @@ func TestApplicationSeedsDeclareAndProjectRedeployRevision(t *testing.T) {
 					if !want[id] {
 						t.Errorf("resource %q has unexpected rollout annotation", id)
 					}
-					if gotRevision != "${schema.spec.farosRedeployRevision}" {
+					if gotRevision != "${schema.spec.railgridRedeployRevision}" {
 						t.Errorf("resource %q rollout annotation = %#v, want schema revision expression", id, gotRevision)
 					}
 					found[id] = true
@@ -930,7 +930,7 @@ func TestApplicationLocksStatefulDatabaseInputsAfterCreation(t *testing.T) {
 	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
 		t.Fatal(err)
 	}
-	if got := tmpl.Annotations["faros.sh/immutable-inputs"]; got != "database.size,database.version" {
+	if got := tmpl.Annotations["railgrid.ai/immutable-inputs"]; got != "database.size,database.version" {
 		t.Fatalf("immutable database inputs = %q", got)
 	}
 }
@@ -980,13 +980,13 @@ func TestPreviewBridgePluginIsLimitedToBuiltInViteComponents(t *testing.T) {
 				t.Errorf("duplicate preview bridge discovery for %s", key)
 			}
 			found[key] = true
-			count := strings.Count(source, "file:///faros/bin/preview-bridge-plugin.mjs")
+			count := strings.Count(source, "file:///railgrid/bin/preview-bridge-plugin.mjs")
 			references += count
 			if count != 1 {
 				t.Errorf("%s Vite shim has %d preview-bridge imports, want exactly 1", key, count)
 			}
 			for _, required := range []string{
-				"await import('file:///faros/bin/preview-bridge-plugin.mjs')",
+				"await import('file:///railgrid/bin/preview-bridge-plugin.mjs')",
 				"forced.plugins = [previewBridgePlugin()]",
 				"} catch (e) {",
 				"return mergeConfig(base, forced)",

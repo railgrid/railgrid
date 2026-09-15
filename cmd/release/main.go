@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -6,18 +6,18 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 
-// Command release cuts release tags for faros components.
+// Command release cuts release tags for railgrid components.
 //
 // Each component has its own tag namespace and independent version line:
 //
 //	hub             v<X.Y.Z>                          repo-wide release: goreleaser
 //	                                                  CLI + hub/agent images +
-//	                                                  platform charts (faros-hub,
-//	                                                  faros-agent)
+//	                                                  platform charts (railgrid-hub,
+//	                                                  railgrid-agent)
 //	quickstart      providers/quickstart/v<X.Y.Z>     provider-release.yaml builds
 //	                                                  the image + chart stamped with
 //	                                                  this version; the source is
-//	                                                  also mirrored to faroshq/
+//	                                                  also mirrored to railgrid/
 //	                                                  provider-<name> (source only)
 //	infrastructure  providers/infrastructure/v<X.Y.Z>
 //	code            providers/code/v<X.Y.Z>
@@ -74,15 +74,15 @@ type component struct {
 var componentOrder = []string{"provider-sdk", "hub", "quickstart", "kuery", "app-studio", "infrastructure", "code", "edges", "agents"}
 
 var components = map[string]component{
-	"provider-sdk":   {"provider-sdk/v", "split → faroshq/provider-sdk; publishes the go-gettable SDK module (providers require this version once the replace is dropped)"},
-	"hub":            {"v", "goreleaser CLI release + hub/agent images + platform Helm charts (ghcr.io/faroshq)"},
-	"quickstart":     {"providers/quickstart/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-quickstart"},
-	"kuery":          {"providers/kuery/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-kuery"},
-	"app-studio":     {"providers/app-studio/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-app-studio"},
-	"infrastructure": {"providers/infrastructure/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-infrastructure"},
-	"code":           {"providers/code/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-code"},
-	"edges":          {"providers/edges/v", "provider-release.yaml builds the image (ghcr.io/faroshq/faros-edges-provider) + chart at this version; source mirror → faroshq/provider-edges"},
-	"agents":         {"providers/agents/v", "provider-release.yaml builds the image (ghcr.io/faroshq/faros-agents-provider) + chart at this version; no source mirror"},
+	"provider-sdk":   {"provider-sdk/v", "split → railgrid/provider-sdk; publishes the go-gettable SDK module (providers require this version once the replace is dropped)"},
+	"hub":            {"v", "goreleaser CLI release + hub/agent images + platform Helm charts (ghcr.io/railgrid)"},
+	"quickstart":     {"providers/quickstart/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-quickstart"},
+	"kuery":          {"providers/kuery/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-kuery"},
+	"app-studio":     {"providers/app-studio/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-app-studio"},
+	"infrastructure": {"providers/infrastructure/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-infrastructure"},
+	"code":           {"providers/code/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-code"},
+	"edges":          {"providers/edges/v", "provider-release.yaml builds the image (ghcr.io/railgrid/railgrid-edges-provider) + chart at this version; source mirror → railgrid/provider-edges"},
+	"agents":         {"providers/agents/v", "provider-release.yaml builds the image (ghcr.io/railgrid/railgrid-agents-provider) + chart at this version; no source mirror"},
 }
 
 func main() {
@@ -476,7 +476,7 @@ func gitRun(args ...string) error {
 }
 
 func usage() {
-	fmt.Print(`release — cut release tags for faros components
+	fmt.Print(`release — cut release tags for railgrid components
 
 Usage:
   release <component...|all> [flags]
@@ -485,7 +485,7 @@ Several components can be listed in one run; they are tagged in the order
 shown below (provider-sdk first), whatever order you type them in.
 
 Components:
-  provider-sdk    provider-sdk/v<X.Y.Z>             (split → faroshq/provider-sdk)
+  provider-sdk    provider-sdk/v<X.Y.Z>             (split → railgrid/provider-sdk)
   hub             v<X.Y.Z>                          (repo-wide release)
   quickstart      providers/quickstart/v<X.Y.Z>
   kuery           providers/kuery/v<X.Y.Z>

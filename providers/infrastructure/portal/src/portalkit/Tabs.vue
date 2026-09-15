@@ -5,12 +5,12 @@
 
   Tabs owns presentation and selection notification only. It deliberately does
   not know about routes: callers map `select` to their own navigation state.
-  The shared faros-ui.css recipe is injected once because standalone provider
+  The shared railgrid-ui.css recipe is injected once because standalone provider
   portals render this component in light DOM without a Vite CSS asset.
 -->
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 export interface PortalTabItem {
   id: string
@@ -32,7 +32,7 @@ const emit = defineEmits<{
   select: [id: string]
 }>()
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 function isActive(tab: PortalTabItem): boolean {
   return tab.active ?? props.active === tab.id

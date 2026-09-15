@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -59,7 +59,7 @@ import (
 const (
 	// SessionCookieName is intentionally a __Host cookie: Secure, Path=/, and
 	// no Domain attribute are mandatory.  The app proxy never forwards it.
-	SessionCookieName = "__Host-faros-app-session"
+	SessionCookieName = "__Host-railgrid-app-session"
 	// ReturnCookieName is the prefix for the short-lived cookies that carry the
 	// whole sign-in state — nonce, clean return path and expiry — while the
 	// browser completes the hub flow. Each authorization attempt gets a suffix
@@ -75,10 +75,10 @@ const (
 	// the nonce is compared against the state query parameter, the entry is
 	// single-use, and the return path is re-sanitised on the way out, so a
 	// planted cookie can only pin a state the planter already controls.
-	ReturnCookieName = "faros-app-return"
+	ReturnCookieName = "railgrid-app-return"
 	// CallbackPath is the reserved platform path on the app host. It must stay
 	// in lockstep with the hub's appauth.CallbackPath.
-	CallbackPath = "/__faros/auth/callback"
+	CallbackPath = "/__railgrid/auth/callback"
 
 	// hubAuthorizePath / hubExchangePath mirror pkg/hub/appauth. The contract
 	// is intentionally tiny (two endpoints, standard redirect + JSON), so the

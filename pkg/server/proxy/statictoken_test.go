@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,9 +27,9 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/klog/v2"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	farosclient "github.com/faroshq/faros/pkg/client"
-	"github.com/faroshq/faros/pkg/util/identity"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // A hex token is exactly what the docs generate (openssl rand -hex 32) and
@@ -40,12 +40,12 @@ func newStaticTokenTestProxy(t *testing.T, tokens ...string) *KCPProxy {
 	t.Helper()
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{
-			farosclient.UserGVR:                "UserList",
-			farosclient.OrganizationGVR:        "OrganizationList",
-			farosclient.UserMembershipIndexGVR: "UserMembershipIndexList",
+			railgridclient.UserGVR:                "UserList",
+			railgridclient.OrganizationGVR:        "OrganizationList",
+			railgridclient.UserMembershipIndexGVR: "UserMembershipIndexList",
 		})
 	return &KCPProxy{
-		farosClient:      farosclient.NewFromDynamic(dyn),
+		railgridClient:   railgridclient.NewFromDynamic(dyn),
 		staticAuthTokens: tokens,
 		logger:           klog.Background(),
 	}
@@ -57,16 +57,16 @@ func newStaticTokenTestProxy(t *testing.T, tokens ...string) *KCPProxy {
 func seedLegacyStaticTokenUser(t *testing.T, p *KCPProxy, token, personalOrg string) {
 	t.Helper()
 	id := identity.NewStaticToken(token)
-	_, err := p.farosClient.Users().Create(context.Background(), &tenancyv1alpha1.User{
+	_, err := p.railgridClient.Users().Create(context.Background(), &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: id.UserName,
 			Labels: map[string]string{
-				"tenants.faros.sh/sub":       id.Sub,
-				"tenants.faros.sh/auth-type": "static-token",
+				"tenants.railgrid.ai/sub":       id.Sub,
+				"tenants.railgrid.ai/auth-type": "static-token",
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
-			Email:        "static-" + token + "@faros.local",
+			Email:        "static-" + token + "@railgrid.local",
 			Name:         "Static Token User (" + token + ")",
 			RBACIdentity: id.RBACIdentity,
 		},
@@ -98,7 +98,7 @@ func assertShowsOnlyRBACIdentity(t *testing.T, user *tenancyv1alpha1.User, token
 
 func getStaticTokenUser(t *testing.T, p *KCPProxy, token string) *tenancyv1alpha1.User {
 	t.Helper()
-	user, err := p.farosClient.Users().Get(context.Background(), identity.NewStaticToken(token).UserName, metav1.GetOptions{})
+	user, err := p.railgridClient.Users().Get(context.Background(), identity.NewStaticToken(token).UserName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("getting user: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestScrubStaticTokenUsers(t *testing.T) {
 
 	// The startup pass rewrites; it must never create Users for tokens
 	// nobody has logged in with.
-	users, err := p.farosClient.Users().List(context.Background(), metav1.ListOptions{})
+	users, err := p.railgridClient.Users().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("listing users: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestScrubStaticTokenPersonalOrg(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newStaticTokenTestProxy(t, testStaticToken)
 			seedLegacyStaticTokenUser(t, p, testStaticToken, "org-personal")
-			if _, err := p.farosClient.Organizations().Create(ctx, &tenancyv1alpha1.Organization{
+			if _, err := p.railgridClient.Organizations().Create(ctx, &tenancyv1alpha1.Organization{
 				ObjectMeta: metav1.ObjectMeta{Name: "org-personal"},
 				Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: tc.orgName, Personal: true},
 			}, metav1.CreateOptions{}); err != nil {
@@ -181,7 +181,7 @@ func TestScrubStaticTokenPersonalOrg(t *testing.T) {
 			}
 			// A co-member of a workspace in the static user's personal Org,
 			// also in an unrelated Org.
-			if _, err := p.farosClient.UserMembershipIndices().Create(ctx, &tenancyv1alpha1.UserMembershipIndex{
+			if _, err := p.railgridClient.UserMembershipIndices().Create(ctx, &tenancyv1alpha1.UserMembershipIndex{
 				ObjectMeta: metav1.ObjectMeta{Name: "alice"},
 				Spec: tenancyv1alpha1.UserMembershipIndexSpec{Entries: []tenancyv1alpha1.MembershipIndexEntry{
 					{OrgUUID: "org-personal", OrgDisplayName: tc.orgName, Role: "member"},
@@ -197,14 +197,14 @@ func TestScrubStaticTokenPersonalOrg(t *testing.T) {
 			}
 
 			assertShowsOnlyRBACIdentity(t, getStaticTokenUser(t, p, testStaticToken), testStaticToken)
-			org, err := p.farosClient.Organizations().Get(ctx, "org-personal", metav1.GetOptions{})
+			org, err := p.railgridClient.Organizations().Get(ctx, "org-personal", metav1.GetOptions{})
 			if err != nil {
 				t.Fatalf("getting org: %v", err)
 			}
 			if org.Spec.DisplayName != tc.wantName {
 				t.Errorf("org displayName = %q, want %q", org.Spec.DisplayName, tc.wantName)
 			}
-			idx, err := p.farosClient.UserMembershipIndices().Get(ctx, "alice", metav1.GetOptions{})
+			idx, err := p.railgridClient.UserMembershipIndices().Get(ctx, "alice", metav1.GetOptions{})
 			if err != nil {
 				t.Fatalf("getting index: %v", err)
 			}

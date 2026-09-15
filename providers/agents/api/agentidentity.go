@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -62,15 +62,15 @@ const identityNamespace = "default"
 // agent's Role grants read across it; instance kinds are created at runtime
 // from Templates, so they cannot be enumerated ahead of time and the grant is
 // written against the group rather than a fixed resource list.
-const instanceGroup = "infrastructure.faros.sh"
+const instanceGroup = "infrastructure.railgrid.ai"
 
 // agentIdentityName is the ServiceAccount / ClusterRole / binding name for one
 // agent. Prefixed so it is obviously platform-managed in a workspace a human
 // also uses.
-func agentIdentityName(agent string) string { return "faros-agent-" + agent }
+func agentIdentityName(agent string) string { return "railgrid-agent-" + agent }
 
 // agentTokenSecretName is the Secret kcp's token controller populates.
-func agentTokenSecretName(agent string) string { return "faros-agent-" + agent + "-token" }
+func agentTokenSecretName(agent string) string { return "railgrid-agent-" + agent + "-token" }
 
 // identityCache memoises minted tokens per (cluster, agent). Provisioning is
 // idempotent but involves several API calls and a poll, and the background

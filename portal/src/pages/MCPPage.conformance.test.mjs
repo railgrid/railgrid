@@ -6,7 +6,7 @@ const page = fs.readFileSync(new URL('./MCPPage.vue', import.meta.url), 'utf8')
 const router = fs.readFileSync(new URL('../router/routes.ts', import.meta.url), 'utf8')
 
 test('MCP detail keeps the canonical borderless backlink before its resource page', () => {
-  const css = fs.readFileSync(new URL('../../../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../../../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const back = css.match(/\.k-back-action\s*\{([^}]*)\}/s)?.[1] ?? ''
   const hover = css.match(/\.k-back-action:hover\s*\{([^}]*)\}/s)?.[1] ?? ''
   const focus = css.match(/\.k-back-action:focus-visible\s*\{([^}]*)\}/s)?.[1] ?? ''

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,8 +31,8 @@ import (
 	"k8s.io/client-go/dynamic/fake"
 	clienttesting "k8s.io/client-go/testing"
 
-	"github.com/faroshq/provider-infrastructure/kro"
-	"github.com/faroshq/provider-infrastructure/networkpolicy"
+	"github.com/railgrid/provider-infrastructure/kro"
+	"github.com/railgrid/provider-infrastructure/networkpolicy"
 )
 
 const (

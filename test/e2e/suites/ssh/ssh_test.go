@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,13 +19,13 @@ package ssh
 import (
 	"testing"
 
-	"github.com/faroshq/faros/test/e2e/cases"
+	"github.com/railgrid/railgrid/test/e2e/cases"
 )
 
 // The SSH-to-edge connectivity cases (SSHServerModeConnect,
 // SSHDockerServerModeConnect, SSHEdgeURLSet, SSHUserMapping*) are parked while
 // edge connectivity is brought up as the standalone edges provider (group
-// edges.faros.sh, kind LinuxServer). They will be relocated to the
+// edges.railgrid.ai, kind LinuxServer). They will be relocated to the
 // dedicated edges suite that bootstraps that provider. See edgeSkip below and
 // docs/edges-providers-testing.md.
 func TestSSHServerModeConnect(t *testing.T)       { edgeSkip(t) }
@@ -39,7 +39,7 @@ func TestSSHUserMappingIdentity(t *testing.T)     { edgeSkip(t) }
 func edgeSkip(t *testing.T) {
 	t.Helper()
 	t.Skip("edge connectivity moved to the standalone edges provider " +
-		"(edges.faros.sh); e2e coverage pending the dedicated edges suite — " +
+		"(edges.railgrid.ai); e2e coverage pending the dedicated edges suite — " +
 		"see docs/edges-providers-testing.md")
 }
 

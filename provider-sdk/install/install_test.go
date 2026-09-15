@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,9 +18,9 @@ func TestSplitSchemaName(t *testing.T) {
 		wantResource string
 		wantGroup    string
 	}{
-		{"v260522-abc.greetings.hello.cost.faros.sh", "greetings", "hello.cost.faros.sh"},
-		{"v260609-fc69fa2.connections.code.faros.sh", "connections", "code.faros.sh"},
-		{"v1.savedviews.kuery.faros.sh", "savedviews", "kuery.faros.sh"},
+		{"v260522-abc.greetings.hello.cost.railgrid.ai", "greetings", "hello.cost.railgrid.ai"},
+		{"v260609-fc69fa2.connections.code.railgrid.ai", "connections", "code.railgrid.ai"},
+		{"v1.savedviews.kuery.railgrid.ai", "savedviews", "kuery.railgrid.ai"},
 		{"noversion", "", ""},     // no dot
 		{"version.only", "", ""},  // missing group segment
 		{"trailing.dot.", "", ""}, // trailing dot
@@ -39,14 +39,14 @@ func TestMergeAPIExportResources(t *testing.T) {
 		return map[string]any{"group": group, "name": name}
 	}
 	existing := []any{
-		res("code.faros.sh", "connections"),         // owned → replaced
-		res("code.faros.sh", "coderepos"),           // stale in owned group → pruned
-		res("infrastructure.faros.sh", "templates"), // foreign → preserved
+		res("code.railgrid.ai", "connections"),         // owned → replaced
+		res("code.railgrid.ai", "coderepos"),           // stale in owned group → pruned
+		res("infrastructure.railgrid.ai", "templates"), // foreign → preserved
 		"unparseable", // kept verbatim
 	}
 	owned := []any{
-		res("code.faros.sh", "connections"),
-		res("code.faros.sh", "repositories"),
+		res("code.railgrid.ai", "connections"),
+		res("code.railgrid.ai", "repositories"),
 	}
 	out := mergeAPIExportResources(existing, owned)
 

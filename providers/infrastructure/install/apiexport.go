@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -11,7 +11,7 @@ You may obtain a copy of the License at
 package install
 
 // PlatformSchemaInAPIExport: register the platform's own catalog CRD
-// (templates.infrastructure.faros.sh) as a resource on the
+// (templates.infrastructure.railgrid.ai) as a resource on the
 // provider's APIExport. The Template controller (which mints
 // per-template entries dynamically) deliberately does NOT do this —
 // otherwise tenants who APIBind before the FIRST Template is applied
@@ -44,12 +44,12 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // APIExportName must match the provider's CatalogEntry.spec.apiExport.name.
 // Hardcoded constant — the hub catalog controller is the canonical writer.
-const APIExportName = "infrastructure.providers.faros.sh"
+const APIExportName = "infrastructure.providers.railgrid.ai"
 
 var (
 	apiExportGVR = schema.GroupVersionResource{
@@ -71,7 +71,7 @@ var (
 // resource entry is left alone.
 //
 // templatesIdentityHash, when non-empty, switches the
-// templates.infrastructure.faros.sh entry to use storage.virtual
+// templates.infrastructure.railgrid.ai entry to use storage.virtual
 // (backed by the CachedResourceEndpointSlice from
 // install/endpointslice.go) so tenants who APIBind see Templates as
 // a read-only projection of the provider workspace. Empty falls back

@@ -1,9 +1,9 @@
-apiVersion: infrastructure.faros.sh/v1alpha1
+apiVersion: infrastructure.railgrid.ai/v1alpha1
 kind: Template
 metadata:
   name: universal-coding-sandbox
   labels:
-    faros.sh/platform-owned: "true"
+    railgrid.ai/platform-owned: "true"
 spec:
   displayName: "Universal coding sandbox"
   description: "A platform-owned, private coding workspace with bounded source operations and argv-only execution."
@@ -17,11 +17,11 @@ spec:
     name: coding-sandbox
   agent:
     usage: |
-      Provisions one private coding workspace. Set farosMode to development;
+      Provisions one private coding workspace. Set railgridMode to development;
       the platform replaces the workload image with the universal dev image,
       mounts a per-instance workspace, and injects the coordinator/executor.
       The image is platform-selected and should be pinned by the operator to a
-      digest with FAROS_DEV_IMAGE_UNIVERSAL and FAROS_DEV_AGENT_IMAGE. There is no public URL, no runtime
+      digest with RAILGRID_DEV_IMAGE_UNIVERSAL and RAILGRID_DEV_AGENT_IMAGE. There is no public URL, no runtime
       kubeconfig, and no ServiceAccount token in the workload containers.
 
       Use the component data plane at
@@ -35,7 +35,7 @@ spec:
 
       The development workload has an enforceable default-deny egress
       NetworkPolicy. During graph bootstrap only, a second policy permits DNS
-      and HTTPS while the platform-owned farosNetworkPhase is setup. Once the
+      and HTTPS while the platform-owned railgridNetworkPhase is setup. Once the
       Instance controller observes Ready it switches the phase to runtime,
       removes that setup allowance, and selects a runtime policy that permits
       DNS only to CoreDNS pods in kube-system and TCP 443 only to public IPv4
@@ -53,7 +53,7 @@ spec:
       - "components.workspace.exec — bounded argv execution; preserves the existing /exec contract."
       - "status.runtimeNamespace and status.controlSecretRef — platform-computed data-plane routing state."
   instanceCRD:
-    group: infrastructure.faros.sh
+    group: infrastructure.railgrid.ai
     version: v1alpha1
     resource: codingsandboxes
     kind: CodingSandbox
@@ -63,7 +63,7 @@ spec:
       name:
         type: string
         description: "Logical name; used for the private workspace workload."
-      farosExposureHostname:
+      railgridExposureHostname:
         type: string
         description: "Deprecated compatibility field retained for existing CodingSandbox instances. Ignored for internal sandboxes; no hostname or route is created."
     required:
@@ -82,7 +82,7 @@ spec:
     components:
       workspace:
         workspacePath: .
-        devImage: "${faros.devImage.universal}"
+        devImage: "${railgrid.devImage.universal}"
         workingDir: /workspace
         startCommand: "sleep infinity"
   dataPlane:
@@ -141,7 +141,7 @@ spec:
             name: ${schema.spec.name}
             namespace: default
             annotations:
-              faros.sh/network-access: default-deny-egress
+              railgrid.ai/network-access: default-deny-egress
           spec:
             replicas: 1
             strategy:
@@ -154,7 +154,7 @@ spec:
                 labels:
                   app: ${schema.spec.name}
                 annotations:
-                  faros.sh/network-access: default-deny-egress
+                  railgrid.ai/network-access: default-deny-egress
               spec:
                 automountServiceAccountToken: false
                 securityContext:
@@ -166,7 +166,7 @@ spec:
                     type: RuntimeDefault
                 containers:
                   - name: workspace
-                    image: ${faros.devImage.universal}
+                    image: ${railgrid.devImage.universal}
                     imagePullPolicy: IfNotPresent
                     command: ["/bin/sh", "-c", "sleep infinity"]
                     workingDir: /workspace
@@ -193,7 +193,7 @@ spec:
       # it. The phase-gated setup/runtime policies below are selected by a
       # controller-owned phase.
       - id: workspaceDefaultDenyEgress
-        includeWhen: ["${schema.spec.farosMode == \"development\"}"]
+        includeWhen: ["${schema.spec.railgridMode == \"development\"}"]
         template:
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
@@ -202,7 +202,7 @@ spec:
             namespace: default
             labels:
               app: ${schema.spec.name}
-              faros.sh/network-policy: default-deny-egress
+              railgrid.ai/network-policy: default-deny-egress
           spec:
             podSelector:
               matchLabels:
@@ -213,7 +213,7 @@ spec:
       # Keeping setup no broader than runtime prevents a stale Ready condition
       # during phase convergence from exposing private or metadata addresses.
       - id: workspaceSetupEgress
-        includeWhen: ["${schema.spec.farosMode == \"development\" && schema.spec.farosNetworkPhase == \"setup\"}"]
+        includeWhen: ["${schema.spec.railgridMode == \"development\" && schema.spec.railgridNetworkPhase == \"setup\"}"]
         template:
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
@@ -222,12 +222,12 @@ spec:
             namespace: default
             labels:
               app: ${schema.spec.name}
-              faros.sh/network-policy: setup-egress
+              railgrid.ai/network-policy: setup-egress
           spec:
             podSelector:
               matchLabels:
                 app: ${schema.spec.name}
-                faros.sh/network-phase: setup
+                railgrid.ai/network-phase: setup
             policyTypes: [Egress]
             egress:
               - to:
@@ -273,7 +273,7 @@ spec:
       # routable IPv4 addresses. The default-deny policy remains selected for
       # the same pod, so every other protocol and destination stays blocked.
       - id: workspaceRuntimeEgress
-        includeWhen: ["${schema.spec.farosMode == \"development\" && schema.spec.farosNetworkPhase == \"runtime\"}"]
+        includeWhen: ["${schema.spec.railgridMode == \"development\" && schema.spec.railgridNetworkPhase == \"runtime\"}"]
         template:
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
@@ -282,12 +282,12 @@ spec:
             namespace: default
             labels:
               app: ${schema.spec.name}
-              faros.sh/network-policy: runtime-egress
+              railgrid.ai/network-policy: runtime-egress
           spec:
             podSelector:
               matchLabels:
                 app: ${schema.spec.name}
-                faros.sh/network-phase: runtime
+                railgrid.ai/network-phase: runtime
             policyTypes: [Egress]
             egress:
               - to:

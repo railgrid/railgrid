@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 //go:embed templates/*.yaml
@@ -75,7 +75,7 @@ type SeedTemplatesOptions struct {
 // seed should not block the rest of the init chain (operators can
 // hand-apply later), but we still log loudly.
 func SeedTemplates(ctx context.Context, config *rest.Config) error {
-	enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("FAROS_CODING_SANDBOX_ENABLED")))
+	enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("RAILGRID_CODING_SANDBOX_ENABLED")))
 	if err := validateSeedImageConfig(); err != nil {
 		return err
 	}
@@ -83,14 +83,14 @@ func SeedTemplates(ctx context.Context, config *rest.Config) error {
 }
 
 func validateSeedImageConfig() error {
-	enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("FAROS_CODING_SANDBOX_ENABLED")))
+	enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("RAILGRID_CODING_SANDBOX_ENABLED")))
 	if !enabled {
 		return nil
 	}
-	if err := infrav1alpha1.ValidateImmutableImageRef(os.Getenv("FAROS_DEV_IMAGE_UNIVERSAL")); err != nil {
+	if err := infrav1alpha1.ValidateImmutableImageRef(os.Getenv("RAILGRID_DEV_IMAGE_UNIVERSAL")); err != nil {
 		return fmt.Errorf("coding sandbox universal image is not immutable: %w", err)
 	}
-	if err := infrav1alpha1.ValidateImmutableImageRef(os.Getenv("FAROS_DEV_AGENT_IMAGE")); err != nil {
+	if err := infrav1alpha1.ValidateImmutableImageRef(os.Getenv("RAILGRID_DEV_AGENT_IMAGE")); err != nil {
 		return fmt.Errorf("coding sandbox dev-agent image is not immutable: %w", err)
 	}
 	return nil

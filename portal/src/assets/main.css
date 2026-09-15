@@ -1,11 +1,11 @@
 @import "tailwindcss";
 /* The host imports this generated copy; provider-sdk/portalkit is canonical. */
-@import "./faros-ui.css" layer(components);
+@import "./railgrid-ui.css" layer(components);
 
 /*
  * Some built-in providers ship their UI as separate Vite bundles under
  * providers/{name}/portal/, but render inside this portal's DOM via the
- * <faros-provider-{name}> custom element and use Tailwind utilities without
+ * <railgrid-provider-{name}> custom element and use Tailwind utilities without
  * shipping any CSS of their own. Their classes therefore need to live in THIS
  * stylesheet (the only one the host page loads), so these @source directives
  * pull the provider .vue/.ts files into Tailwind's scan and compile them here.
@@ -126,7 +126,7 @@ body {
 
 /*
  * Display face (Söhne-Breit role). Archivo's width axis expanded to its max
- * (125%) — used for page titles, KPI numerals and the FAROS wordmark.
+ * (125%) — used for page titles, KPI numerals and the RAILGRID wordmark.
  * `font-stretch` drives the wdth axis on the variable font; if a target
  * browser mishandles it, swap to `font-variation-settings: "wdth" 125`.
  */
@@ -299,6 +299,6 @@ html.light .island {
 /* Provider-owned modals retain their scoped styles inside main. Raise that
    stacking context above shell navigation while a modal is mounted, but keep
    global confirmations and toasts above it. */
-.faros-shell-main:has([role="dialog"][aria-modal="true"]:not([hidden])) {
+.railgrid-shell-main:has([role="dialog"][aria-modal="true"]:not([hidden])) {
   z-index: calc(var(--k-layer-modal, 2147483000) - 2);
 }

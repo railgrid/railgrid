@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,12 +32,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/bindings"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/tenant"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/tenant"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 var (
@@ -46,7 +46,7 @@ var (
 )
 
 var runSandboxInstancesResource = tenant.Resource{
-	GVR:  schema.GroupVersionResource{Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: projectAssistantRunSandboxResource},
+	GVR:  schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: projectAssistantRunSandboxResource},
 	Kind: projectAssistantRunSandboxKind,
 }
 
@@ -466,7 +466,7 @@ func (s *Server) ensureProjectAssistantRunSandboxInstance(ctx context.Context, c
 	}
 	obj, err := c.Resource(runSandboxInstancesResource, "").Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
-		if obj.GetAnnotations()["faros.sh/app-studio-run-sandbox"] != "true" {
+		if obj.GetAnnotations()["railgrid.ai/app-studio-run-sandbox"] != "true" {
 			return false, fmt.Errorf("run sandbox instance %q is not App Studio-owned", name)
 		}
 		observed, _, _ := unstructured.NestedString(obj.Object, "spec", "template")
@@ -502,7 +502,7 @@ func (s *Server) ensureProjectAssistantRunSandboxInstance(ctx context.Context, c
 	now := time.Now().UTC()
 	labels := map[string]string{projectAssistantRunSandboxLabel: "true"}
 	if project != nil {
-		labels["faros.sh/project"] = dnsSafeSandboxName(project.Name)
+		labels["railgrid.ai/project"] = dnsSafeSandboxName(project.Name)
 	}
 	obj = &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": projectAssistantRunSandboxAPIVersion,
@@ -511,20 +511,20 @@ func (s *Server) ensureProjectAssistantRunSandboxInstance(ctx context.Context, c
 			"name":   name,
 			"labels": labels,
 			"annotations": map[string]any{
-				projectAssistantRunSandboxLabel:        "true",
-				"faros.sh/app-studio-run-sandbox-idle": projectAssistantRunSandboxIdleTTL.String(),
-				"faros.sh/app-studio-run-sandbox-hard": projectAssistantRunSandboxHardTTL.String(),
-				projectAssistantRunSandboxIdleExpiry:   now.Add(projectAssistantRunSandboxIdleTTL).Format(time.RFC3339Nano),
-				projectAssistantRunSandboxHardExpiry:   now.Add(projectAssistantRunSandboxHardTTL).Format(time.RFC3339Nano),
-				projectAssistantRunSandboxCacheState:   projectAssistantRunSandboxCacheStateNew,
-				projectAssistantRunSandboxLastActivity: now.Format(time.RFC3339Nano),
+				projectAssistantRunSandboxLabel:           "true",
+				"railgrid.ai/app-studio-run-sandbox-idle": projectAssistantRunSandboxIdleTTL.String(),
+				"railgrid.ai/app-studio-run-sandbox-hard": projectAssistantRunSandboxHardTTL.String(),
+				projectAssistantRunSandboxIdleExpiry:      now.Add(projectAssistantRunSandboxIdleTTL).Format(time.RFC3339Nano),
+				projectAssistantRunSandboxHardExpiry:      now.Add(projectAssistantRunSandboxHardTTL).Format(time.RFC3339Nano),
+				projectAssistantRunSandboxCacheState:      projectAssistantRunSandboxCacheStateNew,
+				projectAssistantRunSandboxLastActivity:    now.Format(time.RFC3339Nano),
 			},
 		},
 		"spec": map[string]any{
 			"template": template,
 			"values": map[string]any{
-				"name":      name,
-				"farosMode": "development",
+				"name":         name,
+				"railgridMode": "development",
 			},
 		},
 	}}

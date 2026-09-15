@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@ import (
 )
 
 func TestBootstrapOnceRejectsMutableUniversalImageBeforeSeed(t *testing.T) {
-	t.Setenv("FAROS_CODING_SANDBOX_ENABLED", "true")
-	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/faroshq/faros-universal-dev:latest")
+	t.Setenv("RAILGRID_CODING_SANDBOX_ENABLED", "true")
+	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "ghcr.io/railgrid/railgrid-universal-dev:latest")
 
 	err := bootstrapOnce(context.Background(), nil, nil, nil)
 	if err == nil {
@@ -28,18 +28,18 @@ func TestBootstrapOnceRejectsMutableUniversalImageBeforeSeed(t *testing.T) {
 }
 
 func TestValidateLegacyCodingSandboxImagePreservesDisabledPath(t *testing.T) {
-	t.Setenv("FAROS_CODING_SANDBOX_ENABLED", "false")
-	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/faroshq/faros-universal-dev:latest")
-	t.Setenv("FAROS_DEV_AGENT_IMAGE", "ghcr.io/faroshq/faros-dev-agent:latest")
+	t.Setenv("RAILGRID_CODING_SANDBOX_ENABLED", "false")
+	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "ghcr.io/railgrid/railgrid-universal-dev:latest")
+	t.Setenv("RAILGRID_DEV_AGENT_IMAGE", "ghcr.io/railgrid/railgrid-dev-agent:latest")
 	if err := validateLegacyCodingSandboxImage(); err != nil {
 		t.Fatalf("disabled coding sandbox rejected mutable image: %v", err)
 	}
 }
 
 func TestValidateLegacyCodingSandboxImageRejectsMutableDevAgent(t *testing.T) {
-	t.Setenv("FAROS_CODING_SANDBOX_ENABLED", "true")
-	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/faroshq/faros-universal-dev@sha256:"+strings.Repeat("a", 64))
-	t.Setenv("FAROS_DEV_AGENT_IMAGE", "ghcr.io/faroshq/faros-dev-agent:latest")
+	t.Setenv("RAILGRID_CODING_SANDBOX_ENABLED", "true")
+	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "ghcr.io/railgrid/railgrid-universal-dev@sha256:"+strings.Repeat("a", 64))
+	t.Setenv("RAILGRID_DEV_AGENT_IMAGE", "ghcr.io/railgrid/railgrid-dev-agent:latest")
 	if err := validateLegacyCodingSandboxImage(); err == nil || !strings.Contains(err.Error(), "dev-agent image") {
 		t.Fatalf("error = %v, want mutable dev-agent validation", err)
 	}

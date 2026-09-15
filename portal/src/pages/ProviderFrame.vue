@@ -25,7 +25,7 @@ const routeContext = useRouteContextStore()
 const { scopePath } = useScopedNavigation()
 
 // Micro-frontend mount: instead of dropping an iframe, we load the
-// provider's /main.js (which defines a custom element faros-provider-{name})
+// provider's /main.js (which defines a custom element railgrid-provider-{name})
 // and render that element directly in the portal's DOM tree. The provider
 // shares our stylesheet — CSS variables from :root cascade in — so there's
 // no visible boundary, no scrollbars, and no postMessage shuttle.
@@ -34,7 +34,7 @@ const { scopePath } = useScopedNavigation()
 // in this document. Two things bound what a bundle gets by default: the
 // script is pinned with the SRI hash the hub computed at registration
 // (catalog mainJSIntegrity), and the bundle talks to the hub through the
-// host-owned `farosContext.fetch` (providerFetch.ts) rather than holding the
+// host-owned `railgridContext.fetch` (providerFetch.ts) rather than holding the
 // user's raw id token. A sandboxed iframe with a postMessage bridge is the
 // larger follow-up for untrusted third-party providers.
 
@@ -62,10 +62,10 @@ const providerFullBleedOverride = ref<boolean | null>(null)
 let mountGeneration = 0
 let boundMount: HTMLDivElement | null = null
 
-// Each provider's tag is faros-provider-<name>. The hyphen requirement
+// Each provider's tag is railgrid-provider-<name>. The hyphen requirement
 // of custom element names matches naturally because provider names are
 // already kebab-case in the catalog.
-const tagFor = (name: string) => `faros-provider-${name}`
+const tagFor = (name: string) => `railgrid-provider-${name}`
 
 const APP_STUDIO_CREATE_ROUTE = '~new'
 const APP_STUDIO_MODELS_ROUTE = '~models'
@@ -281,15 +281,15 @@ function isCurrentMount(generation: number, name: string): boolean {
 function bindMountEvents() {
   const mount = mountRef.value
   if (!mount || boundMount === mount) return
-  boundMount?.removeEventListener('faros-route-ready', onRouteReady)
-  boundMount?.removeEventListener('faros-navigate', onNavigate)
-  boundMount?.removeEventListener('faros-layout-change', onLayoutChange)
-  boundMount?.removeEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
+  boundMount?.removeEventListener('railgrid-route-ready', onRouteReady)
+  boundMount?.removeEventListener('railgrid-navigate', onNavigate)
+  boundMount?.removeEventListener('railgrid-layout-change', onLayoutChange)
+  boundMount?.removeEventListener('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry)
   boundMount = mount
-  boundMount.addEventListener('faros-route-ready', onRouteReady)
-  boundMount.addEventListener('faros-navigate', onNavigate)
-  boundMount.addEventListener('faros-layout-change', onLayoutChange)
-  boundMount.addEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
+  boundMount.addEventListener('railgrid-route-ready', onRouteReady)
+  boundMount.addEventListener('railgrid-navigate', onNavigate)
+  boundMount.addEventListener('railgrid-layout-change', onLayoutChange)
+  boundMount.addEventListener('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry)
 }
 
 // Detach both the live element and any listeners attached to its mount point.
@@ -298,10 +298,10 @@ function bindMountEvents() {
 function clearMountedElement() {
   routeFocus.clear()
   mountGeneration++
-  boundMount?.removeEventListener('faros-route-ready', onRouteReady)
-  boundMount?.removeEventListener('faros-navigate', onNavigate)
-  boundMount?.removeEventListener('faros-layout-change', onLayoutChange)
-  boundMount?.removeEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
+  boundMount?.removeEventListener('railgrid-route-ready', onRouteReady)
+  boundMount?.removeEventListener('railgrid-navigate', onNavigate)
+  boundMount?.removeEventListener('railgrid-layout-change', onLayoutChange)
+  boundMount?.removeEventListener('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry)
   boundMount = null
   const element = elementRef.value
   if (element?.parentNode) element.parentNode.removeChild(element)
@@ -384,10 +384,10 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
 
 function pushContext() {
   const contextGeneration = routeContext.generation
-  const el = elementRef.value as HTMLElement & { farosContext?: unknown } | null
+  const el = elementRef.value as HTMLElement & { railgridContext?: unknown } | null
   if (!el || !entry.value || !accessAllowed.value) return
   const providerName = entry.value.name
-  el.farosContext = createProviderContext(
+  el.railgridContext = createProviderContext(
     {
       // subPath is what the shell's vue-router parsed from
       // /providers/{name}/<rest> — empty for the bare provider URL,
@@ -400,8 +400,8 @@ function pushContext() {
       user: auth.user,
       tenant: auth.clusterName,
       // Sidebar-selected org/workspace. The host fetch forwards these as
-      // X-Faros-Org / X-Faros-Workspace so the hub's tenant resolver can
-      // inject X-Faros-Tenant (the backend proxy honours the same headers
+      // X-Railgrid-Org / X-Railgrid-Workspace so the hub's tenant resolver can
+      // inject X-Railgrid-Tenant (the backend proxy honours the same headers
       // the console's own /api/orgs/* calls send). They are also exposed so
       // a provider can key its own caches on the active scope.
       orgUUID: tenant.orgUUID,
@@ -428,7 +428,7 @@ function onRouteReady(e: Event) {
   if (element && element.contains(e.target as Node)) routeFocus.ready(element)
 }
 
-// Bubble faros-navigate CustomEvents up into Vue Router.
+// Bubble railgrid-navigate CustomEvents up into Vue Router.
 function onNavigate(e: Event) {
   const ce = e as CustomEvent<{ path: string; replace?: boolean }>
   const p = ce.detail?.path

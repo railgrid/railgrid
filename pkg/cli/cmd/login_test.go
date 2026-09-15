@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,14 +25,14 @@ import (
 )
 
 // loginKubeconfig mimics what the hub's auth handler returns on login: the
-// "faros" cluster pointing at the user's home workspace.
+// "railgrid" cluster pointing at the user's home workspace.
 func loginKubeconfig(t *testing.T, server string) []byte {
 	t.Helper()
 	cfg := clientcmdapi.NewConfig()
-	cfg.Clusters["faros"] = &clientcmdapi.Cluster{Server: server}
+	cfg.Clusters["railgrid"] = &clientcmdapi.Cluster{Server: server}
 	cfg.AuthInfos["user-abc"] = &clientcmdapi.AuthInfo{Token: "tok"}
-	cfg.Contexts["faros"] = &clientcmdapi.Context{Cluster: "faros", AuthInfo: "user-abc"}
-	cfg.CurrentContext = "faros"
+	cfg.Contexts["railgrid"] = &clientcmdapi.Context{Cluster: "railgrid", AuthInfo: "user-abc"}
+	cfg.CurrentContext = "railgrid"
 	out, err := clientcmd.Write(*cfg)
 	if err != nil {
 		t.Fatalf("writing kubeconfig: %v", err)
@@ -43,10 +43,10 @@ func loginKubeconfig(t *testing.T, server string) []byte {
 func writeKubeconfigFile(t *testing.T, path, server string) {
 	t.Helper()
 	cfg := clientcmdapi.NewConfig()
-	cfg.Clusters["faros"] = &clientcmdapi.Cluster{Server: server}
+	cfg.Clusters["railgrid"] = &clientcmdapi.Cluster{Server: server}
 	cfg.AuthInfos["user-abc"] = &clientcmdapi.AuthInfo{Token: "old"}
-	cfg.Contexts["faros"] = &clientcmdapi.Context{Cluster: "faros", AuthInfo: "user-abc"}
-	cfg.CurrentContext = "faros"
+	cfg.Contexts["railgrid"] = &clientcmdapi.Context{Cluster: "railgrid", AuthInfo: "user-abc"}
+	cfg.CurrentContext = "railgrid"
 	if err := clientcmd.WriteToFile(*cfg, path); err != nil {
 		t.Fatalf("writing kubeconfig file: %v", err)
 	}
@@ -58,9 +58,9 @@ func mergedServer(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatalf("loading merged kubeconfig: %v", err)
 	}
-	cluster := cfg.Clusters["faros"]
+	cluster := cfg.Clusters["railgrid"]
 	if cluster == nil {
-		t.Fatalf("merged kubeconfig has no faros cluster")
+		t.Fatalf("merged kubeconfig has no railgrid cluster")
 	}
 	return cluster.Server
 }
@@ -73,34 +73,34 @@ func TestMergeKubeconfigPreservesWorkspaceSelection(t *testing.T) {
 		wantServer string
 	}{
 		{
-			name:       "relogin same hub keeps faros use selection",
-			existing:   "https://console-dev.faros.sh/clusters/jcb49sm6dkg85xwg",
-			incoming:   "https://console-dev.faros.sh/clusters/home111",
-			wantServer: "https://console-dev.faros.sh/clusters/jcb49sm6dkg85xwg",
+			name:       "relogin same hub keeps railgrid use selection",
+			existing:   "https://console-dev.railgrid.ai/clusters/jcb49sm6dkg85xwg",
+			incoming:   "https://console-dev.railgrid.ai/clusters/home111",
+			wantServer: "https://console-dev.railgrid.ai/clusters/jcb49sm6dkg85xwg",
 		},
 		{
 			name:       "different hub takes the new server",
-			existing:   "https://console-dev.faros.sh/clusters/jcb49sm6dkg85xwg",
-			incoming:   "https://console.faros.sh/clusters/home111",
-			wantServer: "https://console.faros.sh/clusters/home111",
+			existing:   "https://console-dev.railgrid.ai/clusters/jcb49sm6dkg85xwg",
+			incoming:   "https://console.railgrid.ai/clusters/home111",
+			wantServer: "https://console.railgrid.ai/clusters/home111",
 		},
 		{
 			name:       "fresh login takes the new server",
 			existing:   "",
-			incoming:   "https://console-dev.faros.sh/clusters/home111",
-			wantServer: "https://console-dev.faros.sh/clusters/home111",
+			incoming:   "https://console-dev.railgrid.ai/clusters/home111",
+			wantServer: "https://console-dev.railgrid.ai/clusters/home111",
 		},
 		{
 			name:       "existing server without cluster path takes the new server",
-			existing:   "https://console-dev.faros.sh",
-			incoming:   "https://console-dev.faros.sh/clusters/home111",
-			wantServer: "https://console-dev.faros.sh/clusters/home111",
+			existing:   "https://console-dev.railgrid.ai",
+			incoming:   "https://console-dev.railgrid.ai/clusters/home111",
+			wantServer: "https://console-dev.railgrid.ai/clusters/home111",
 		},
 		{
 			name:       "same workspace stays put",
-			existing:   "https://console-dev.faros.sh/clusters/home111",
-			incoming:   "https://console-dev.faros.sh/clusters/home111",
-			wantServer: "https://console-dev.faros.sh/clusters/home111",
+			existing:   "https://console-dev.railgrid.ai/clusters/home111",
+			incoming:   "https://console-dev.railgrid.ai/clusters/home111",
+			wantServer: "https://console-dev.railgrid.ai/clusters/home111",
 		},
 	}
 
@@ -115,7 +115,7 @@ func TestMergeKubeconfigPreservesWorkspaceSelection(t *testing.T) {
 				t.Fatalf("mergeKubeconfig: %v", err)
 			}
 			if got := mergedServer(t, path); got != tc.wantServer {
-				t.Errorf("faros cluster server = %q, want %q", got, tc.wantServer)
+				t.Errorf("railgrid cluster server = %q, want %q", got, tc.wantServer)
 			}
 		})
 	}

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,13 +29,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/kro"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 // templateGroup is the fixed group every Template + per-template instance
 // kind lives under (see apis/v1alpha1 TemplateInstanceCRD.Group).
-const templateGroup = "infrastructure.faros.sh"
+const templateGroup = "infrastructure.railgrid.ai"
 
 // templatesGVR is the cluster-scoped Template resource the portal and MCP
 // both read from the tenant workspace.
@@ -47,7 +47,7 @@ var instancesGVR = schema.GroupVersionResource{Group: templateGroup, Version: "v
 
 // templateLabel tags an instance CR with its originating Template's name so
 // listInstances can attribute a CR without a second lookup.
-const templateLabel = "faros.sh/template"
+const templateLabel = "railgrid.ai/template"
 
 // listTemplates reads every Template in the tenant workspace.
 func listTemplates(ctx context.Context, dyn dynamic.Interface) ([]kro.Template, error) {
@@ -131,7 +131,7 @@ func templateFromUnstructured(u *unstructured.Unstructured) kro.Template {
 // immutableInputsAnnotation lets a Template declare value dot-paths that
 // update_instance must reject (comma-separated). Rides on an annotation
 // rather than a spec field so the Template CRD schema stays untouched.
-const immutableInputsAnnotation = "faros.sh/immutable-inputs"
+const immutableInputsAnnotation = "railgrid.ai/immutable-inputs"
 
 func immutableInputsFromAnnotation(u *unstructured.Unstructured) []string {
 	raw := strings.TrimSpace(u.GetAnnotations()[immutableInputsAnnotation])
@@ -176,11 +176,11 @@ func templateDevelopmentFromSpec(u *unstructured.Unstructured) *kro.TemplateDeve
 
 // devImageTokenPrefix is the reserved token family template authors put in
 // spec.development.components[].devImage. The Template CRD validates the full
-// ${faros.devImage.<toolchain>} shape, so the toolchain is the token's suffix.
-const devImageTokenPrefix = "${faros.devImage."
+// ${railgrid.devImage.<toolchain>} shape, so the toolchain is the token's suffix.
+const devImageTokenPrefix = "${railgrid.devImage."
 
 // devToolchainFromImageToken extracts the toolchain name an agent needs
-// ("${faros.devImage.node}" → "node"). The MCP layer never resolves the token
+// ("${railgrid.devImage.node}" → "node"). The MCP layer never resolves the token
 // to a real image — that is the backend's job — it only names the runtime so
 // an agent knows which language the component must be written in.
 func devToolchainFromImageToken(devImage string) string {

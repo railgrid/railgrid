@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,10 +13,10 @@ package kcppaths
 import "testing"
 
 func TestOrgProviderPaths(t *testing.T) {
-	if got, want := OrgProvidersParent("org1"), "root:faros:tenants:org1:providers"; got != want {
+	if got, want := OrgProvidersParent("org1"), "root:railgrid:tenants:org1:providers"; got != want {
 		t.Errorf("OrgProvidersParent = %q, want %q", got, want)
 	}
-	if got, want := OrgProviderPath("org1", "vault"), "root:faros:tenants:org1:providers:vault"; got != want {
+	if got, want := OrgProviderPath("org1", "vault"), "root:railgrid:tenants:org1:providers:vault"; got != want {
 		t.Errorf("OrgProviderPath = %q, want %q", got, want)
 	}
 }
@@ -72,7 +72,7 @@ func TestSplitOrgProviderPath(t *testing.T) {
 			// A team workspace that happened to be named "providers" would sit at
 			// tenants:<org>:providers with nothing after it — still not a provider.
 			name: "org whose child is literally named providers",
-			path: "root:faros:tenants:org1:providers",
+			path: "root:railgrid:tenants:org1:providers",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

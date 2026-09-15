@@ -20,7 +20,7 @@ describe('Infrastructure composition contracts', () => {
   })
 
   it('keeps provisioning fields in one vertical column and the identity cap', () => {
-    const dynform = styles.match(/faros-provider-infrastructure \.dynform \{[\s\S]*?\n\}/)?.[0] ?? ''
+    const dynform = styles.match(/railgrid-provider-infrastructure \.dynform \{[\s\S]*?\n\}/)?.[0] ?? ''
     expect(dynform).toContain('display: flex;')
     expect(dynform).toContain('flex-direction: column;')
     expect(dynform).toContain('gap: 12px;')

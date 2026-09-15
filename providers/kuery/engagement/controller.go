@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 //   - Workspace discovery rides the APIExport virtual workspace's reflexive
 //     APIBinding serving: every consumer's binding to kuery's own export is
 //     visible without any claim.
-//   - Per workspace, a "faros-kuery" ServiceAccount (provisioned through the
+//   - Per workspace, a "railgrid-kuery" ServiceAccount (provisioned through the
 //     claimed built-in types, owned by the binding so it GCs with Disable) is
 //     granted read on kubernetesclusters, and edges are polled through the
 //     workspace's OWN edges binding — whichever copy of the edges provider
@@ -28,8 +28,8 @@
 //
 // Per edge, the data path is the edges provider's consumer proxy: a
 // rest.Config pointing at
-// /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/kubernetesclusters/{name}/k8s
-// authenticating as that same per-workspace "faros-kuery" ServiceAccount,
+// /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}/k8s
+// authenticating as that same per-workspace "railgrid-kuery" ServiceAccount,
 // which a separate grant (edgeProxyGrantName) authorizes for verb "proxy" on
 // kubernetesclusters. The credential is deliberately NOT the provider SA: the edges proxy
 // TokenReviews a foreign (provider-workspace) SA in the SA's home cluster
@@ -75,18 +75,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 
-	"github.com/faroshq/provider-sdk/apiexportprovider"
 	apiskcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	"github.com/railgrid/provider-sdk/apiexportprovider"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	kuerystore "github.com/faroshq/kuery/pkg/store"
-	kuerysync "github.com/faroshq/kuery/pkg/sync"
+	kuerystore "github.com/railgrid/kuery/pkg/store"
+	kuerysync "github.com/railgrid/kuery/pkg/sync"
 )
 
 // TenantLabel is the cluster label kuery rows are scoped by. Its value is the
@@ -104,7 +104,7 @@ const TenantLabel = "tenant"
 // edgeGVK is the edges provider's kubernetes-cluster kind, read unstructured
 // so this module does not import the edges provider module for one type.
 // LinuxServer edges carry no Kubernetes API and are not watched at all.
-var edgeGVK = schema.GroupVersionKind{Group: "edges.faros.sh", Version: "v1alpha1", Kind: "KubernetesCluster"}
+var edgeGVK = schema.GroupVersionKind{Group: "edges.railgrid.ai", Version: "v1alpha1", Kind: "KubernetesCluster"}
 
 // clusterTTLSeconds is how long a disengaged cluster's rows survive before
 // kuery's GC reaps them (matches kuery's default).
@@ -134,14 +134,14 @@ type Config struct {
 	// the per-edge edgeproxy data path; its bearer token is not (see the
 	// package comment).
 	ProviderConfig *rest.Config
-	// HubBaseURL is the faros hub root that serves the edges provider's
+	// HubBaseURL is the railgrid hub root that serves the edges provider's
 	// consumer proxy (/services/providers/edges/edgeproxy/...). When the hub
 	// and the kcp API share one front-proxy host (in-cluster production)
 	// this is empty and the base is derived from ProviderConfig.Host; in
 	// host-binary/Tilt dev the kcp API (kcp front proxy) and the hub are
-	// split across two ports, so the hub URL is passed via FAROS_HUB_URL.
+	// split across two ports, so the hub URL is passed via RAILGRID_HUB_URL.
 	HubBaseURL string
-	// APIExportName is the provider's APIExport ("kuery.providers.faros.sh").
+	// APIExportName is the provider's APIExport ("kuery.providers.railgrid.ai").
 	APIExportName string
 	// Sync is the kuery sync controller clusters are engaged into.
 	Sync *kuerysync.SyncController
@@ -320,7 +320,7 @@ func (c *Controller) EngagedCount() int {
 // edge selector. Answered from the shared store (active cluster rows carrying
 // the tenant label), so any replica serves the full fleet regardless of which
 // replica syncs each edge. The tenant key is the workspace's kcp
-// logical-cluster ID (the X-Faros-Cluster the hub injects); rows are named
+// logical-cluster ID (the X-Railgrid-Cluster the hub injects); rows are named
 // "{tenant}/{edge}".
 func (c *Controller) TenantEdges(ctx context.Context, tenant string) ([]string, error) {
 	var rows []kuerystore.ClusterModel
@@ -505,7 +505,7 @@ func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, token str
 // engagementIdentityName is the per-workspace ServiceAccount the edge poll
 // runs as. One per workspace, owned by the kuery APIBinding so Disable
 // garbage-collects it.
-const engagementIdentityName = "faros-kuery"
+const engagementIdentityName = "railgrid-kuery"
 
 // edgeProxyGrantName is the ClusterRole + ClusterRoleBinding that authorize
 // the engagement SA for verb "proxy" on kubernetesclusters — the edges
@@ -518,7 +518,7 @@ const engagementIdentityName = "faros-kuery"
 // existing APIBinding is never widened, so the identity role cannot be
 // updated in workspaces enabled before this grant existed. A new, created
 // object reaches every enabled workspace on the next reconcile.
-const edgeProxyGrantName = "faros-kuery-edgeproxy"
+const edgeProxyGrantName = "railgrid-kuery-edgeproxy"
 
 // ensureIdentity provisions the workspace's engagement ServiceAccount, RBAC,
 // and token Secret through the claimed built-in types, plus the edge-proxy
@@ -533,7 +533,7 @@ func (c *Controller) ensureIdentity(ctx context.Context, cl client.Client, bindi
 	rules := []rbacv1.PolicyRule{{
 		// Read-only: discovery only. The data path is authorized by the
 		// edge-proxy grant below.
-		APIGroups: []string{"edges.faros.sh"},
+		APIGroups: []string{"edges.railgrid.ai"},
 		Resources: []string{"kubernetesclusters"},
 		Verbs:     []string{"get", "list", "watch"},
 	}}
@@ -544,7 +544,7 @@ func (c *Controller) ensureIdentity(ctx context.Context, cl client.Client, bindi
 		// Read-only on the Kubernetes side: the proxied API is whatever the
 		// edge agent's credential allows, and kuery only lists and watches
 		// through it.
-		APIGroups: []string{"edges.faros.sh"},
+		APIGroups: []string{"edges.railgrid.ai"},
 		Resources: []string{"kubernetesclusters"},
 		Verbs:     []string{"proxy"},
 	}}
@@ -717,11 +717,11 @@ func edgeProxyConfig(hubBase, cluster, edgeName, token string, insecure bool) *r
 
 // edgeProxyURL is the edges provider's consumer-proxy endpoint for a
 // KubernetesCluster edge's Kubernetes API — pkg/apiurl.EdgeProviderCoordinates
-// + the edgeproxy mount in the faros monorepo, inlined so this module doesn't
+// + the edgeproxy mount in the railgrid monorepo, inlined so this module doesn't
 // depend on it. Keep the pattern in lockstep:
-// {hub}/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/kubernetesclusters/{name}/k8s
+// {hub}/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}/k8s
 func edgeProxyURL(hubBase, cluster, edgeName string) string {
-	return fmt.Sprintf("%s/services/providers/edges/edgeproxy/clusters/%s/apis/edges.faros.sh/v1alpha1/kubernetesclusters/%s/k8s",
+	return fmt.Sprintf("%s/services/providers/edges/edgeproxy/clusters/%s/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/%s/k8s",
 		strings.TrimRight(hubBase, "/"), cluster, edgeName)
 }
 

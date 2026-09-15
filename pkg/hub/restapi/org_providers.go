@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ package restapi
 //
 // An Org registers a provider it runs itself — typically in its own Kubernetes
 // cluster, reached over an edge — and the hub gives back a kubeconfig scoped to
-// a fresh provider workspace at root:faros:tenants:{org}:providers:{name}. The
+// a fresh provider workspace at root:railgrid:tenants:{org}:providers:{name}. The
 // Org then installs the provider's chart against that kubeconfig; the provider's
 // own `init` creates its APIExport, schemas, endpoint slice, and CatalogEntry,
 // exactly as a platform provider does. From there the entry flows into the
@@ -55,11 +55,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/hub/kcp"
-	"github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/hub/tenant"
-	"github.com/faroshq/faros/pkg/kcppaths"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // OrgProviderOps is the slice of *kcp.Bootstrapper this surface needs to build
@@ -256,7 +256,7 @@ func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Reques
 	// The tenant middleware resolves tc.Role against whichever (org, workspace)
 	// pair the headers name, and both scopes spell admin the same way — so a
 	// member who is admin of their own team workspace would otherwise pass this
-	// gate just by sending X-Faros-Workspace, which the portal attaches to every
+	// gate just by sending X-Railgrid-Workspace, which the portal attaches to every
 	// request by default. That would hand an org member a kcp cluster-admin
 	// kubeconfig the Org explicitly restricted to admins.
 	role, err := h.mgr.bootstrapper.GetOrgMembershipRole(r.Context(), tc.OrgUUID, tc.User)
@@ -453,7 +453,7 @@ func noEligibleEdgeReason(total int) string {
 	if total == 0 {
 		return "self-hosting needs a Kubernetes cluster connected as an edge — the hub reaches a self-hosted provider over that tunnel and has no other route into your cluster. Add a cluster in Edges first."
 	}
-	return "no connected edge: your Kubernetes cluster edges exist but none has an agent connected right now. Install or restart the faros agent in the cluster you want to host the provider."
+	return "no connected edge: your Kubernetes cluster edges exist but none has an agent connected right now. Install or restart the railgrid agent in the cluster you want to host the provider."
 }
 
 // requireEdgeInstallTarget enforces that the registration names an edge the
@@ -819,7 +819,7 @@ func (h *Handler) rotateOrgProviderCredential(w http.ResponseWriter, r *http.Req
 // requireOrgProviderAccess does: tc.Role is resolved against whichever
 // (org, workspace) pair the request headers name, and both scopes spell admin
 // the same way, so an org member who administers their own team workspace would
-// otherwise pass just by sending X-Faros-Workspace — which the portal attaches
+// otherwise pass just by sending X-Railgrid-Workspace — which the portal attaches
 // to every request.
 func (h *Handler) requireOrgAdminMembership(w http.ResponseWriter, r *http.Request, tc tenant.TenantContext, message string) bool {
 	role, err := h.mgr.bootstrapper.GetOrgMembershipRole(r.Context(), tc.OrgUUID, tc.User)

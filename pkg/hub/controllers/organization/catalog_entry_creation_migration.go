@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,13 +26,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 // AnnotationCatalogEntryCreationMigrated marks an Organization the one-time
 // catalogEntryCreation backfill has visited. Its absence is what identifies
 // an Organization that predates the admin default.
-const AnnotationCatalogEntryCreationMigrated = "tenants.faros.sh/catalog-entry-creation-migrated"
+const AnnotationCatalogEntryCreationMigrated = "tenants.railgrid.ai/catalog-entry-creation-migrated"
 
 // BackfillCatalogEntryCreation pins the pre-flip behaviour onto every
 // Organization created before spec.catalogEntryCreation defaulted to admin.

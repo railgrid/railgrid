@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/tools/clientcmd"
 
-	farosclient "github.com/faroshq/faros/pkg/client"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 // sshWsMsg mirrors the wsMsg type in pkg/util/ssh.
@@ -72,11 +72,11 @@ func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient,
 
 	// Look up the edge to get the correct status.URL (includes the real cluster
 	// name, e.g. /clusters/1fsiilmnkk22io6n/...).
-	farosClient, err := farosclient.NewForConfig(cfg)
+	railgridClient, err := railgridclient.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("creating faros client: %w", err)
+		return nil, fmt.Errorf("creating railgrid client: %w", err)
 	}
-	edge, err := farosClient.Dynamic().Resource(farosclient.LinuxServerGVR).Get(ctx, name, metav1.GetOptions{})
+	edge, err := railgridClient.Dynamic().Resource(railgridclient.LinuxServerGVR).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("fetching edge %q: %w", name, err)
 	}

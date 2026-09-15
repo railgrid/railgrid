@@ -1,8 +1,8 @@
 /*
  * App Studio provider styles — self-contained Tailwind build.
  *
- * This provider renders in LIGHT DOM via <faros-provider-app-studio> and
- * <faros-dashboard-tile-app-studio>, and ships its OWN compiled Tailwind; it is
+ * This provider renders in LIGHT DOM via <railgrid-provider-app-studio> and
+ * <railgrid-dashboard-tile-app-studio>, and ships its OWN compiled Tailwind; it is
  * no longer scanned by the host portal's @source directives. styles.ts imports
  * this file with ?inline (so the Tailwind Vite plugin processes it at build
  * time) and injects the result when either lazy provider surface first connects.

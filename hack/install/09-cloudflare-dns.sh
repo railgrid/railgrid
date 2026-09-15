@@ -40,7 +40,7 @@ helm upgrade --install external-dns external-dns/external-dns \
   --set "sources={gateway-tlsroute,gateway-httproute}" \
   --set "domainFilters={${CLOUDFLARE_DOMAIN_FILTER}}" \
   --set "policy=upsert-only" \
-  --set "txtOwnerId=faros-${FAROS_INSTALL_CLUSTER}" \
+  --set "txtOwnerId=railgrid-${RAILGRID_INSTALL_CLUSTER}" \
   --wait
 
 echo

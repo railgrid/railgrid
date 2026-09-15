@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 // fakeIndex is a small fixture builder for UserMembershipIndex.
@@ -76,7 +76,7 @@ func TestMiddleware_OrgScopeHappyPath(t *testing.T) {
 	h := Middleware(resolver, lookup)(captureNext(&got, reached))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/x/anything", nil)
-	req.Header.Set(HeaderFarosOrg, orgUUID)
+	req.Header.Set(HeaderRailgridOrg, orgUUID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -119,8 +119,8 @@ func TestMiddleware_WorkspaceScopeHappyPath(t *testing.T) {
 	h := Middleware(resolver, lookup)(captureNext(&got, reached))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/x/workspaces/y/anything", nil)
-	req.Header.Set(HeaderFarosOrg, orgUUID)
-	req.Header.Set(HeaderFarosWorkspace, wsUUID)
+	req.Header.Set(HeaderRailgridOrg, orgUUID)
+	req.Header.Set(HeaderRailgridWorkspace, wsUUID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -177,8 +177,8 @@ func TestMiddleware_WorkspaceAdminIsNotOrgAdmin(t *testing.T) {
 			reached := make(chan struct{}, 1)
 			h := Middleware(resolver, lookup)(captureNext(&got, reached))
 			req := httptest.NewRequest(http.MethodPost, "/api/orgs/org-uuid/memberships", nil)
-			req.Header.Set(HeaderFarosOrg, "org-uuid")
-			req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+			req.Header.Set(HeaderRailgridOrg, "org-uuid")
+			req.Header.Set(HeaderRailgridWorkspace, "ws-uuid")
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
@@ -210,8 +210,8 @@ func TestMiddleware_SoftDeletedWorkspaceDeniedForOrdinaryAPI(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces/ws-uuid/mcpservers", nil)
-	req.Header.Set(HeaderFarosOrg, "org-uuid")
-	req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+	req.Header.Set(HeaderRailgridOrg, "org-uuid")
+	req.Header.Set(HeaderRailgridWorkspace, "ws-uuid")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -244,7 +244,7 @@ func TestMiddleware_SoftDeletedWorkspaceStillListsAndUndeletes(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces", nil)
-		req.Header.Set(HeaderFarosOrg, "org-uuid")
+		req.Header.Set(HeaderRailgridOrg, "org-uuid")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -262,8 +262,8 @@ func TestMiddleware_SoftDeletedWorkspaceStillListsAndUndeletes(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		req := httptest.NewRequest(http.MethodPost, "/api/orgs/org-uuid/workspaces/ws-uuid/undelete", nil)
-		req.Header.Set(HeaderFarosOrg, "org-uuid")
-		req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+		req.Header.Set(HeaderRailgridOrg, "org-uuid")
+		req.Header.Set(HeaderRailgridWorkspace, "ws-uuid")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -293,7 +293,7 @@ func TestMiddleware_SoftDeletedOrgUndeleteAllowed(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	req := httptest.NewRequest(http.MethodPost, "/api/orgs/org-uuid/undelete", nil)
-	req.Header.Set(HeaderFarosOrg, "org-uuid")
+	req.Header.Set(HeaderRailgridOrg, "org-uuid")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -324,7 +324,7 @@ func TestMiddleware_SoftDeletedOrgDeniedForOrdinaryAPI(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid", nil)
-	req.Header.Set(HeaderFarosOrg, "org-uuid")
+	req.Header.Set(HeaderRailgridOrg, "org-uuid")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -354,7 +354,7 @@ func TestMiddleware_SoftDeletedOrgUndeleteBindsPathOrg(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/orgs/other-org/undelete", nil)
-	req.Header.Set(HeaderFarosOrg, "org-uuid")
+	req.Header.Set(HeaderRailgridOrg, "org-uuid")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -362,14 +362,14 @@ func TestMiddleware_SoftDeletedOrgUndeleteBindsPathOrg(t *testing.T) {
 		t.Errorf("status: got %d, want 403; body: %s", rec.Code, rec.Body.String())
 	}
 	if nextCalled {
-		t.Error("Org undelete reached handler when path Org differed from X-Faros-Org")
+		t.Error("Org undelete reached handler when path Org differed from X-Railgrid-Org")
 	}
 }
 
 func TestMiddleware_MissingOrgHeader(t *testing.T) {
 	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "alice", nil })
 	lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
-		t.Fatal("lookup should not be called when X-Faros-Org is missing")
+		t.Fatal("lookup should not be called when X-Railgrid-Org is missing")
 		return nil, nil
 	})
 
@@ -388,7 +388,7 @@ func TestMiddleware_MissingOrgHeader(t *testing.T) {
 	if nextCalled {
 		t.Error("next handler should not be called on missing header")
 	}
-	assertStatusEnvelope(t, rec, "BadRequest", HeaderFarosOrg)
+	assertStatusEnvelope(t, rec, "BadRequest", HeaderRailgridOrg)
 }
 
 func TestMiddleware_NoMatchingMembership(t *testing.T) {
@@ -405,7 +405,7 @@ func TestMiddleware_NoMatchingMembership(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderFarosOrg, "asked-for-org")
+	req.Header.Set(HeaderRailgridOrg, "asked-for-org")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -417,7 +417,7 @@ func TestMiddleware_NoMatchingMembership(t *testing.T) {
 
 func TestMiddleware_IndexNotFound(t *testing.T) {
 	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "alice", nil })
-	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "tenants.faros.sh", Resource: "usermembershipindices"}, "alice")
+	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "tenants.railgrid.ai", Resource: "usermembershipindices"}, "alice")
 	lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
 		return nil, notFound
 	})
@@ -427,7 +427,7 @@ func TestMiddleware_IndexNotFound(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderFarosOrg, "org")
+	req.Header.Set(HeaderRailgridOrg, "org")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -448,7 +448,7 @@ func TestMiddleware_LookupError(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderFarosOrg, "org")
+	req.Header.Set(HeaderRailgridOrg, "org")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -470,7 +470,7 @@ func TestMiddleware_Unauthenticated(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderFarosOrg, "org") // header present but irrelevant
+	req.Header.Set(HeaderRailgridOrg, "org") // header present but irrelevant
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -494,7 +494,7 @@ func TestMiddleware_ResolverInternalError(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderFarosOrg, "org")
+	req.Header.Set(HeaderRailgridOrg, "org")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -605,8 +605,8 @@ func TestMiddleware_OrgAdminImplicitWorkspaceAdmin(t *testing.T) {
 	h := Middleware(resolver, lookup)(captureNext(&got, reached))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces/ws-uuid/memberships", nil)
-	req.Header.Set(HeaderFarosOrg, "org-uuid")
-	req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+	req.Header.Set(HeaderRailgridOrg, "org-uuid")
+	req.Header.Set(HeaderRailgridWorkspace, "ws-uuid")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -638,8 +638,8 @@ func TestMiddleware_OrgAdminExplicitWorkspaceRowWins(t *testing.T) {
 	reached := make(chan struct{}, 1)
 	h := Middleware(resolver, lookup)(captureNext(&got, reached))
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces/ws-uuid/memberships", nil)
-	req.Header.Set(HeaderFarosOrg, "org-uuid")
-	req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+	req.Header.Set(HeaderRailgridOrg, "org-uuid")
+	req.Header.Set(HeaderRailgridWorkspace, "ws-uuid")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -667,8 +667,8 @@ func TestMiddleware_OrgMemberNeedsWorkspaceRow(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces/ws-uuid/memberships", nil)
-	req.Header.Set(HeaderFarosOrg, "org-uuid")
-	req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+	req.Header.Set(HeaderRailgridOrg, "org-uuid")
+	req.Header.Set(HeaderRailgridWorkspace, "ws-uuid")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -700,8 +700,8 @@ func TestMiddleware_SoftDeletedOrgAdminDoesNotReachWorkspace(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces/ws-uuid/memberships", nil)
-	req.Header.Set(HeaderFarosOrg, "org-uuid")
-	req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+	req.Header.Set(HeaderRailgridOrg, "org-uuid")
+	req.Header.Set(HeaderRailgridWorkspace, "ws-uuid")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {

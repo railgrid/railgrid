@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 )
 
 func TestProviderReadinessAggregatesBackendAndHeartbeat(t *testing.T) {
@@ -68,7 +68,7 @@ func TestParseProviderActionsCanonicalCatalogShape(t *testing.T) {
 	parsed, err := ParseProviderActions([]providersv1alpha1.ProviderActionSpec{{
 		ID: "query_table/v1",
 		BoundResource: providersv1alpha1.ProviderActionBoundResource{
-			APIVersion: "databricks.faros.sh/v1alpha1",
+			APIVersion: "databricks.railgrid.ai/v1alpha1",
 			Kind:       "Table",
 			Resource:   "tables",
 		},
@@ -89,7 +89,7 @@ func TestParseProviderActionsCanonicalCatalogShape(t *testing.T) {
 	if action.Name != "query_table" || action.Version != "v1" {
 		t.Fatalf("action identity = %#v", action)
 	}
-	if action.Resource.APIVersion != "databricks.faros.sh/v1alpha1" || action.Resource.Kind != "Table" || action.Resource.Resource != "tables" {
+	if action.Resource.APIVersion != "databricks.railgrid.ai/v1alpha1" || action.Resource.Kind != "Table" || action.Resource.Resource != "tables" {
 		t.Fatalf("action resource = %#v", action.Resource)
 	}
 	if string(action.InputSchema) != `{"type":"object","additionalProperties":false}` {
@@ -107,7 +107,7 @@ func TestParseProviderActionsRejectsExternalSchemaReferences(t *testing.T) {
 	_, err := ParseProviderActions([]providersv1alpha1.ProviderActionSpec{{
 		ID: "query_table/v1",
 		BoundResource: providersv1alpha1.ProviderActionBoundResource{
-			APIVersion: "databricks.faros.sh/v1alpha1", Kind: "Table", Resource: "tables",
+			APIVersion: "databricks.railgrid.ai/v1alpha1", Kind: "Table", Resource: "tables",
 		},
 		InputSchema:  &runtime.RawExtension{Raw: json.RawMessage(`{"type":"object","$ref":"https://attacker.invalid/schema"}`)},
 		OutputSchema: &runtime.RawExtension{Raw: json.RawMessage(`{"type":"object"}`)},

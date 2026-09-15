@@ -11,7 +11,7 @@ import { createServer } from 'vite'
 // instance — an inlined second copy would not see these refs as reactive.
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: join(tmpdir(), 'faros-vite-kuery-auth'),
+  cacheDir: join(tmpdir(), 'railgrid-vite-kuery-auth'),
   configFile: false,
   optimizeDeps: { noDiscovery: true },
   root: new URL('./', import.meta.url).pathname,
@@ -26,7 +26,7 @@ const basePath = '/ui/providers/kuery'
 // The host injects Authorization into its own fetch, so a context carrying
 // fetch is fully authenticated even with no token. Gating on the token would
 // strand Kuery in "waiting for workspace context" once hosts stop exposing the
-// deprecated farosContext.token.
+// deprecated railgridContext.token.
 test('initialises against a host that exposes fetch and no token', async () => {
   const calls = []
   const hostFetch = (input, init) => {

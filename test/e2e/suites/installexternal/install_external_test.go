@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,18 +26,18 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros/test/e2e/cases"
-	"github.com/faroshq/faros/test/e2e/framework"
+	"github.com/railgrid/railgrid/test/e2e/cases"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
-// TestHubHealth mirrors the doc's `curl -k https://faros.localhost:9443/healthz`.
+// TestHubHealth mirrors the doc's `curl -k https://railgrid.localhost:9443/healthz`.
 func TestHubHealth(t *testing.T) {
 	testenv.Test(t, cases.HubHealth())
 }
 
-// TestStaticTokenLogin mirrors the doc's `faros login --token <static token>`.
+// TestStaticTokenLogin mirrors the doc's `railgrid login --token <static token>`.
 // The install scripts generate a random token by default; this suite pins
-// FAROS_STATIC_TOKEN to framework.DevToken (see installScriptEnv).
+// RAILGRID_STATIC_TOKEN to framework.DevToken (see installScriptEnv).
 func TestStaticTokenLogin(t *testing.T) {
 	testenv.Test(t, cases.StaticTokenLogin())
 }
@@ -109,12 +109,12 @@ func TestKCPThroughGateway(t *testing.T) {
 }
 
 // TestHubThroughGateway mirrors the doc's verify step: the hub answers on the
-// gateway's SNI route (faros.kcp.localhost) as it would behind real DNS.
+// gateway's SNI route (railgrid.kcp.localhost) as it would behind real DNS.
 func TestHubThroughGateway(t *testing.T) {
 	f := features.New("hub through gateway").
 		Assess("healthz via SNI route returns 200", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
-				code, err := framework.GatewayGet(ctx, "faros.kcp.localhost", "/healthz")
+				code, err := framework.GatewayGet(ctx, "railgrid.kcp.localhost", "/healthz")
 				if err != nil {
 					t.Logf("gateway route not ready yet: %v", err)
 					return false, nil

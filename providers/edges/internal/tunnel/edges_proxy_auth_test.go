@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 
 // newAuthTestServer builds a Server with a kcp config present (so delegated
 // authorization is active), an injected authorize func, and a static-token set
-// populated the way a legacy FAROS_STATIC_TOKENS config would have — to prove
+// populated the way a legacy RAILGRID_STATIC_TOKENS config would have — to prove
 // that set no longer short-circuits authorization anywhere.
 func newAuthTestServer(t *testing.T, authorizeErr error, calls *[]string) *Server {
 	t.Helper()
@@ -50,8 +50,8 @@ func newAuthTestServer(t *testing.T, authorizeErr error, calls *[]string) *Serve
 }
 
 const (
-	authTestEdgePath    = "/clusters/ws-1/apis/edges.faros.sh/v1alpha1/linuxservers/edge-1/ssh"
-	authTestServicePath = "/clusters/ws-1/apis/edges.faros.sh/v1alpha1/services/svc-1/proxy/"
+	authTestEdgePath    = "/clusters/ws-1/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/ssh"
+	authTestServicePath = "/clusters/ws-1/apis/edges.railgrid.ai/v1alpha1/services/svc-1/proxy/"
 )
 
 func TestMacOSServerHasNoSSHOrKubernetesDataPlane(t *testing.T) {
@@ -60,7 +60,7 @@ func TestMacOSServerHasNoSSHOrKubernetesDataPlane(t *testing.T) {
 			var calls []string
 			s := newAuthTestServer(t, nil, &calls)
 			req := httptest.NewRequest(http.MethodGet,
-				"/clusters/ws-1/apis/edges.faros.sh/v1alpha1/macosservers/mac-1/"+subresource, nil)
+				"/clusters/ws-1/apis/edges.railgrid.ai/v1alpha1/macosservers/mac-1/"+subresource, nil)
 			req.Header.Set("Authorization", "Bearer caller-token")
 			rr := httptest.NewRecorder()
 
@@ -69,7 +69,7 @@ func TestMacOSServerHasNoSSHOrKubernetesDataPlane(t *testing.T) {
 			if rr.Code != http.StatusNotFound {
 				t.Fatalf("MacOSServer %s status = %d, want 404 (body %q)", subresource, rr.Code, rr.Body.String())
 			}
-			if len(calls) != 1 || calls[0] != "caller-token proxy edges.faros.sh/macosservers/mac-1@ws-1" {
+			if len(calls) != 1 || calls[0] != "caller-token proxy edges.railgrid.ai/macosservers/mac-1@ws-1" {
 				t.Fatalf("authorization calls = %v, want one per-edge Mac authorization", calls)
 			}
 		})
@@ -88,33 +88,33 @@ func TestEdgesProxyHandlerAuthorizesEveryToken(t *testing.T) {
 			name:     "static token is authorized like any other token",
 			token:    "static-secret",
 			path:     authTestEdgePath,
-			wantCall: "static-secret proxy edges.faros.sh/linuxservers/edge-1@ws-1",
+			wantCall: "static-secret proxy edges.railgrid.ai/linuxservers/edge-1@ws-1",
 		},
 		{
 			name:         "static token denied by kcp is forbidden",
 			token:        "static-secret",
 			path:         authTestEdgePath,
 			authorizeErr: errors.New("access denied"),
-			wantCall:     "static-secret proxy edges.faros.sh/linuxservers/edge-1@ws-1",
+			wantCall:     "static-secret proxy edges.railgrid.ai/linuxservers/edge-1@ws-1",
 		},
 		{
 			name:     "user token is authorized",
 			token:    "user-token",
 			path:     authTestEdgePath,
-			wantCall: "user-token proxy edges.faros.sh/linuxservers/edge-1@ws-1",
+			wantCall: "user-token proxy edges.railgrid.ai/linuxservers/edge-1@ws-1",
 		},
 		{
 			name:         "static token on the service proxy is authorized too",
 			token:        "static-secret",
 			path:         authTestServicePath,
 			authorizeErr: errors.New("access denied"),
-			wantCall:     "static-secret proxy edges.faros.sh/services/svc-1@ws-1",
+			wantCall:     "static-secret proxy edges.railgrid.ai/services/svc-1@ws-1",
 		},
 		{
 			name:     "user token on the service proxy is authorized",
 			token:    "user-token",
 			path:     authTestServicePath,
-			wantCall: "user-token proxy edges.faros.sh/services/svc-1@ws-1",
+			wantCall: "user-token proxy edges.railgrid.ai/services/svc-1@ws-1",
 		},
 	}
 
@@ -166,7 +166,7 @@ func (d *recordingDialer) Dial(context.Context) (net.Conn, error) {
 }
 
 // newNoKCPTestServer builds a Server with NO kcp credential and no test bypass —
-// the posture of a provider whose FAROS_PROVIDER_KUBECONFIG is missing or
+// the posture of a provider whose RAILGRID_PROVIDER_KUBECONFIG is missing or
 // unreadable — with a live tunnel already registered for both the edge and the
 // Service's edge.
 func newNoKCPTestServer(t *testing.T, calls *[]string) (*Server, *recordingDialer) {
@@ -242,7 +242,7 @@ func TestEdgesProxyServesUnderTestOnlyBypass(t *testing.T) {
 	s, dialer := newNoKCPTestServer(t, &calls)
 	s.allowStaticTokenBypass = true
 
-	req := httptest.NewRequest(http.MethodGet, "/clusters/ws-1/apis/edges.faros.sh/v1alpha1/linuxservers/edge-1/k8s", nil)
+	req := httptest.NewRequest(http.MethodGet, "/clusters/ws-1/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/k8s", nil)
 	req.Header.Set("Authorization", "Bearer any-token")
 	rr := httptest.NewRecorder()
 	s.buildEdgesProxyHandler().ServeHTTP(rr, req)
@@ -259,7 +259,7 @@ func TestEdgesProxyServesUnderTestOnlyBypass(t *testing.T) {
 // never alongside a kcp config.
 func TestNewRejectsStaticTokensOutsideTestBypass(t *testing.T) {
 	kind := KindConfig{
-		GVR:  schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "linuxservers"},
+		GVR:  schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "linuxservers"},
 		Kind: "LinuxServer",
 	}
 	base := Config{Kinds: []KindConfig{kind}, AgentPickupPath: "/agent/proxy", Logger: klog.Background()}

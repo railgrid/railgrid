@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ func (f fakeIdentities) ResolveIdentityHash(_ string, exportName string) string 
 func baseSelfHosting() *SelfHosting {
 	return &SelfHosting{
 		Supported:    true,
-		ChartRepo:    "oci://ghcr.io/faroshq/charts",
-		ChartName:    "faros-quickstart-provider",
+		ChartRepo:    "oci://ghcr.io/railgrid/charts",
+		ChartName:    "railgrid-quickstart-provider",
 		ChartVersion: "0.1.4",
 	}
 }
@@ -31,7 +31,7 @@ func baseSelfHosting() *SelfHosting {
 func baseOptions() InstallOptions {
 	return InstallOptions{
 		ProviderName:  "quickstart",
-		WorkspacePath: "root:faros:tenants:org1:providers:quickstart",
+		WorkspacePath: "root:railgrid:tenants:org1:providers:quickstart",
 		HubURL:        "https://hub.example.com",
 	}
 }
@@ -39,8 +39,8 @@ func baseOptions() InstallOptions {
 func TestRenderInstallInstructions(t *testing.T) {
 	got := RenderInstallInstructions(baseSelfHosting(), baseOptions())
 
-	if got.Namespace != "faros-provider-quickstart" {
-		t.Errorf("Namespace = %q, want the defaulted faros-provider-<name>", got.Namespace)
+	if got.Namespace != "railgrid-provider-quickstart" {
+		t.Errorf("Namespace = %q, want the defaulted railgrid-provider-<name>", got.Namespace)
 	}
 	if got.ReleaseName != "quickstart" {
 		t.Errorf("ReleaseName = %q, want the provider name", got.ReleaseName)
@@ -54,9 +54,9 @@ func TestRenderInstallInstructions(t *testing.T) {
 
 	install := got.Steps[2].Command
 	for _, want := range []string{
-		"helm upgrade --install quickstart oci://ghcr.io/faroshq/charts/faros-quickstart-provider",
+		"helm upgrade --install quickstart oci://ghcr.io/railgrid/charts/railgrid-quickstart-provider",
 		"--version 0.1.4",
-		"--namespace faros-provider-quickstart",
+		"--namespace railgrid-provider-quickstart",
 		"--set hub.url=https://hub.example.com",
 		"--set providerKubeconfig.secretName=" + KubeconfigSecretName,
 		"--set catalogEntry.enabled=true",
@@ -81,9 +81,9 @@ func TestRenderInstallInstructionsUpgradeCommand(t *testing.T) {
 	}
 	cmd := got.Upgrade.Command
 	for _, want := range []string{
-		"helm upgrade quickstart oci://ghcr.io/faroshq/charts/faros-quickstart-provider",
+		"helm upgrade quickstart oci://ghcr.io/railgrid/charts/railgrid-quickstart-provider",
 		"--version 0.1.4",
-		"--namespace faros-provider-quickstart",
+		"--namespace railgrid-provider-quickstart",
 		"--reset-then-reuse-values",
 	} {
 		if !strings.Contains(cmd, want) {
@@ -113,10 +113,10 @@ func TestRenderInstallInstructionsUpgradeCommand(t *testing.T) {
 func TestRenderInstallInstructionsResolvesIdentityHash(t *testing.T) {
 	sh := baseSelfHosting()
 	sh.RequiredValues = []SelfHostingValue{
-		{Name: "apiExport.edgesIdentityHash", IdentityFor: "edges.providers.faros.sh"},
+		{Name: "apiExport.edgesIdentityHash", IdentityFor: "edges.providers.railgrid.ai"},
 	}
 	opts := baseOptions()
-	opts.Identities = fakeIdentities{"edges.providers.faros.sh": "abc123"}
+	opts.Identities = fakeIdentities{"edges.providers.railgrid.ai": "abc123"}
 
 	got := RenderInstallInstructions(sh, opts)
 	if !strings.Contains(got.Steps[2].Command, "--set apiExport.edgesIdentityHash=abc123") {
@@ -137,7 +137,7 @@ func TestRenderInstallInstructionsResolvesIdentityHash(t *testing.T) {
 func TestRenderInstallInstructionsWarnsOnUnresolvedIdentity(t *testing.T) {
 	sh := baseSelfHosting()
 	sh.RequiredValues = []SelfHostingValue{
-		{Name: "apiExport.edgesIdentityHash", IdentityFor: "edges.providers.faros.sh"},
+		{Name: "apiExport.edgesIdentityHash", IdentityFor: "edges.providers.railgrid.ai"},
 	}
 	// No resolver wired at all — the hub could not look it up.
 	got := RenderInstallInstructions(sh, baseOptions())
@@ -199,7 +199,7 @@ func TestRenderInstallInstructionsExpandsPlaceholders(t *testing.T) {
 
 	cmd := got.Steps[2].Command
 	for _, want := range []string{
-		"--set bootstrap.workspacePath=root:faros:tenants:org1:providers:quickstart",
+		"--set bootstrap.workspacePath=root:railgrid:tenants:org1:providers:quickstart",
 		"--set bootstrap.kcpKubeconfigSecretRef.name=" + KubeconfigSecretName,
 		"--set bootstrap.kcpKubeconfigSecretRef.key=" + KubeconfigSecretKey,
 	} {
@@ -308,7 +308,7 @@ func TestRenderInstallInstructionsSurfacesTenantOwnedExposureValues(t *testing.T
 		{Name: "operator.application.gateway.name"},
 		{Name: "operator.application.gateway.namespace"},
 		{Name: "operator.publishing.hubPublicURL", Value: "{{hubURL}}"},
-		{Name: "operator.publishing.accessProxyImage", Value: "ghcr.io/faroshq/faros-access-proxy:v0.1.1"},
+		{Name: "operator.publishing.accessProxyImage", Value: "ghcr.io/railgrid/railgrid-access-proxy:v0.1.1"},
 	}
 
 	got := RenderInstallInstructions(sh, baseOptions())
@@ -336,7 +336,7 @@ func TestRenderInstallInstructionsSurfacesTenantOwnedExposureValues(t *testing.T
 	if !strings.Contains(cmd, "operator.publishing.hubPublicURL=https://hub.example.com") {
 		t.Errorf("hubPublicURL was not filled from the hub's own address:\n%s", cmd)
 	}
-	if !strings.Contains(cmd, "operator.publishing.accessProxyImage=ghcr.io/faroshq/faros-access-proxy:v0.1.1") {
+	if !strings.Contains(cmd, "operator.publishing.accessProxyImage=ghcr.io/railgrid/railgrid-access-proxy:v0.1.1") {
 		t.Errorf("accessProxyImage did not carry the platform's pinned build:\n%s", cmd)
 	}
 	for _, name := range []string{"operator.publishing.hubPublicURL", "operator.publishing.accessProxyImage"} {
@@ -425,7 +425,7 @@ func TestRenderInstallInstructionsNamesTheCredentialToUse(t *testing.T) {
 	}
 	// An edge context is a legitimate way to reach the cluster — the agent holds
 	// cluster-admin there — so the steps must offer it rather than warn it off.
-	if !strings.Contains(joined, "faros kubeconfig edge") {
+	if !strings.Contains(joined, "railgrid kubeconfig edge") {
 		t.Errorf("steps do not mention an edge context as a way to reach the cluster:\n%s", joined)
 	}
 }
@@ -456,7 +456,7 @@ func TestShellQuote(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"simple", "simple"},
 		{"https://hub.example.com", "https://hub.example.com"},
-		{"faros-provider-x", "faros-provider-x"},
+		{"railgrid-provider-x", "railgrid-provider-x"},
 		{"", "''"},
 		{"has space", "'has space'"},
 		{"semi;rm -rf /", "'semi;rm -rf /'"},

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"github.com/google/uuid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 func validateProjectRepositoryMode(req CreateProjectRequest) error {
@@ -114,9 +114,9 @@ func (s *Server) putProjectRepository(w http.ResponseWriter, r *http.Request) {
 		if p.Annotations == nil {
 			p.Annotations = map[string]string{}
 		}
-		p.Annotations["ai.faros.sh/initialize-repository"] = plan.Ref
-		p.Annotations["ai.faros.sh/org-uuid"] = id.orgUUID
-		p.Annotations["ai.faros.sh/workspace-uuid"] = id.workspaceUUID
+		p.Annotations["ai.railgrid.ai/initialize-repository"] = plan.Ref
+		p.Annotations["ai.railgrid.ai/org-uuid"] = id.orgUUID
+		p.Annotations["ai.railgrid.ai/workspace-uuid"] = id.workspaceUUID
 	}
 	// Even an idempotent retry requires update permission as the caller.
 	updated, err := c.Projects().Update(r.Context(), p, metav1.UpdateOptions{})

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ func (c *realClient) ListTemplates(ctx context.Context, filter TemplateFilter) (
 func (c *realClient) GetTemplate(ctx context.Context, name, version string) (*Template, error) {
 	// In kro, the RGD's metadata.name is unique cluster-wide. The
 	// {name, version} pair maps to either a single RGD with that
-	// faros.sh/template-version label, OR (for templates
+	// railgrid.ai/template-version label, OR (for templates
 	// without explicit versioning) the RGD whose metadata.name
 	// matches and whose label is the empty string. List + filter
 	// rather than Get-by-name so we honour the version label

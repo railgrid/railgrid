@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,14 +20,14 @@ package kcp
 //
 // An Org can register a provider it runs itself — typically inside its own
 // Kubernetes cluster, reached over an edge — instead of consuming only the
-// platform-global providers under root:faros:providers. The kcp layout mirrors
+// platform-global providers under root:railgrid:providers. The kcp layout mirrors
 // the platform one exactly, one level down:
 //
-//	root:faros:providers:<name>                       platform provider
-//	root:faros:tenants:<org>:providers:<name>          org-owned provider
+//	root:railgrid:providers:<name>                       platform provider
+//	root:railgrid:tenants:<org>:providers:<name>          org-owned provider
 //
 // The well-known `providers` child of an Org workspace is a plain `universal`
-// workspace, just like root:faros:providers. That is what lets each provider
+// workspace, just like root:railgrid:providers. That is what lets each provider
 // under it reuse the SAME restricted `provider` WorkspaceType
 // (config/kcp/workspacetype-provider.yaml), whose limitAllowedParents requires
 // a universal parent. The payoff is that the provider install path — the SA
@@ -52,11 +52,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros/pkg/kcppaths"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // EnsureOrgProvidersWorkspace materializes the well-known `providers` child of
-// an Org workspace (root:faros:tenants:{orgUUID}:providers) as a `universal`
+// an Org workspace (root:railgrid:tenants:{orgUUID}:providers) as a `universal`
 // workspace, and blocks until it is Ready. Idempotent.
 //
 // It is created lazily on the first org-provider registration rather than
@@ -102,7 +102,7 @@ func (b *Bootstrapper) EnsureOrgProvidersWorkspace(ctx context.Context, orgUUID 
 }
 
 // EnsureOrgProviderWorkspace materializes one org-owned provider workspace at
-// root:faros:tenants:{orgUUID}:providers:{name}, creating the parent `providers`
+// root:railgrid:tenants:{orgUUID}:providers:{name}, creating the parent `providers`
 // workspace first if needed. Blocks until Ready and returns the workspace's
 // logical cluster ID (Workspace.spec.cluster) — the same value kcp embeds in
 // the provider SA's token claims, which callers need to build qualified RBAC
@@ -129,7 +129,7 @@ func (b *Bootstrapper) EnsureOrgProviderWorkspace(ctx context.Context, orgUUID, 
 			// The same restricted type platform providers use: no `universal`
 			// extension (so the provider cannot spawn workspaces even though it
 			// holds cluster-admin over its own), and a defaultAPIBinding to
-			// providers.faros.sh so it can self-register its CatalogEntry.
+			// providers.railgrid.ai so it can self-register its CatalogEntry.
 			"type": map[string]any{"name": "provider", "path": kcppaths.Root},
 		},
 	}}
@@ -183,7 +183,7 @@ type OrgProviderWorkspace struct {
 }
 
 // ListOrgProviderWorkspaces returns the provider sub-workspaces under
-// root:faros:tenants:{orgUUID}:providers. An Org that has never registered one
+// root:railgrid:tenants:{orgUUID}:providers. An Org that has never registered one
 // has no `providers` workspace at all, which is not an error — it lists empty.
 func (b *Bootstrapper) ListOrgProviderWorkspaces(ctx context.Context, orgUUID string) ([]OrgProviderWorkspace, error) {
 	if orgUUID == "" {

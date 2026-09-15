@@ -15,17 +15,17 @@ const modelsSettings = await readFile(new URL('./ModelsSettings.vue', import.met
 const preProjectComposer = await readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8')
 const responseModePicker = await readFile(new URL('./ResponseModePicker.vue', import.meta.url), 'utf8')
 const skillsWorkbench = await readFile(new URL('./SkillsWorkbench.vue', import.meta.url), 'utf8')
-const canonicalFarosUI = await readFile(new URL('../../../../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
-const farosUIDestinations = await Promise.all([
-  '../../../../portal/src/assets/faros-ui.css',
-  '../../../../portal/src/portalkit/faros-ui.css',
-  '../../../agents/portal/src/portalkit/faros-ui.css',
-  './portalkit/faros-ui.css',
-  '../../../code/portal/src/portalkit/faros-ui.css',
-  '../../../edges/portal/src/portalkit/faros-ui.css',
-  '../../../infrastructure/portal/src/portalkit/faros-ui.css',
-  '../../../kuery/portal/src/portalkit/faros-ui.css',
-  '../../../quickstart/portal/src/portalkit/faros-ui.css',
+const canonicalRailgridUI = await readFile(new URL('../../../../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
+const railgridUIDestinations = await Promise.all([
+  '../../../../portal/src/assets/railgrid-ui.css',
+  '../../../../portal/src/portalkit/railgrid-ui.css',
+  '../../../agents/portal/src/portalkit/railgrid-ui.css',
+  './portalkit/railgrid-ui.css',
+  '../../../code/portal/src/portalkit/railgrid-ui.css',
+  '../../../edges/portal/src/portalkit/railgrid-ui.css',
+  '../../../infrastructure/portal/src/portalkit/railgrid-ui.css',
+  '../../../kuery/portal/src/portalkit/railgrid-ui.css',
+  '../../../quickstart/portal/src/portalkit/railgrid-ui.css',
 ].map((path) => readFile(new URL(path, import.meta.url), 'utf8')))
 
 test('announces asynchronous conversation and settings feedback', () => {
@@ -90,9 +90,9 @@ test('uses semantic overlay layers for tooltips and annotation editing', () => {
 })
 
 test('keeps the shared muted fallback readable in standalone providers', () => {
-  assert.match(canonicalFarosUI, /var\(--color-text-muted, #8587a1\)/)
-  assert.doesNotMatch(canonicalFarosUI, /#5d5f78/)
+  assert.match(canonicalRailgridUI, /var\(--color-text-muted, #8587a1\)/)
+  assert.doesNotMatch(canonicalRailgridUI, /#5d5f78/)
   // Databricks parity is verified in the private providers repository.
-  assert.equal(farosUIDestinations.length, 9)
-  for (const destination of farosUIDestinations) assert.equal(destination, canonicalFarosUI)
+  assert.equal(railgridUIDestinations.length, 9)
+  for (const destination of railgridUIDestinations) assert.equal(destination, canonicalRailgridUI)
 })

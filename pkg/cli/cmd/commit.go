@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ import (
 // the result is within the limit either way.
 const commitMessageLimit = 512
 
-// Binary file transport, shared by 'faros commit' and 'faros sandbox sync':
+// Binary file transport, shared by 'railgrid commit' and 'railgrid sandbox sync':
 // a file that is not UTF-8 text travels base64-encoded (standard alphabet,
 // padded) with encoding "base64". Limits count the raw (decoded) bytes.
 const (
@@ -97,23 +97,23 @@ func newCommitCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "commit <repositoryRef>",
-		Short: "Record local git commits through faros (code__commit_files)",
+		Short: "Record local git commits through railgrid (code__commit_files)",
 		Long: `Send the commits on HEAD that are not yet on <remote>/<branch> to the
-code provider's commit_files tool, so the commit is faros-recorded and App
-Studio can build and promote it. Never 'git push' to a faros-managed repo.
+code provider's commit_files tool, so the commit is railgrid-recorded and App
+Studio can build and promote it. Never 'git push' to a railgrid-managed repo.
 
 Run inside a clone of the repository:
 
   git add -A && git commit -m "Add cart"     # commit locally, do not push
-  faros commit shop                          # <repositoryRef> is the code Repository name
+  railgrid commit shop                          # <repositoryRef> is the code Repository name
 
 Every file that differs between <remote>/<branch> and HEAD is sent (deletions
 as deletePaths), with the local commit subjects as the message (capped at 512
 characters). Binary files are sent base64-encoded (at most 25 MiB each, 48 MiB
 per commit) when the hub's code provider supports them; otherwise the command
-refuses the change. When faros reports Succeeded the command
+refuses the change. When railgrid reports Succeeded the command
 fetches, checks that <remote>/<branch> now has exactly your HEAD tree, and
-resets the local branch onto it, so your clone carries the faros-recorded SHA.
+resets the local branch onto it, so your clone carries the railgrid-recorded SHA.
 The commit SHA is printed on stdout.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -122,8 +122,8 @@ The commit SHA is printed on stdout.`,
 	}
 	target.addFlags(cmd)
 	cmd.Flags().StringVar(&branch, "branch", "main", "Branch to commit to")
-	cmd.Flags().StringVar(&remote, "remote", "origin", "Git remote that tracks the faros-managed repository")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would be sent without calling faros")
+	cmd.Flags().StringVar(&remote, "remote", "origin", "Git remote that tracks the railgrid-managed repository")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would be sent without calling railgrid")
 	return cmd
 }
 
@@ -137,13 +137,13 @@ func runCommit(ctx context.Context, out, errOut io.Writer, target hubTarget, rep
 		return err
 	}
 	if plan == nil {
-		_, _ = fmt.Fprintf(errOut, "faros commit: nothing to send; HEAD matches %s/%s\n", remote, branch)
+		_, _ = fmt.Fprintf(errOut, "railgrid commit: nothing to send; HEAD matches %s/%s\n", remote, branch)
 		return nil
 	}
 	for _, w := range plan.warnings {
-		_, _ = fmt.Fprintf(errOut, "faros commit: warning: %s\n", w)
+		_, _ = fmt.Fprintf(errOut, "railgrid commit: warning: %s\n", w)
 	}
-	_, _ = fmt.Fprintf(errOut, "faros commit: sending %d file(s), %d deletion(s) to %s@%s\n", len(plan.args.Files), len(plan.args.DeletePaths), repo, branch)
+	_, _ = fmt.Fprintf(errOut, "railgrid commit: sending %d file(s), %d deletion(s) to %s@%s\n", len(plan.args.Files), len(plan.args.DeletePaths), repo, branch)
 	if dryRun {
 		for _, f := range plan.args.Files {
 			if f.Encoding == encodingBase64 {
@@ -190,7 +190,7 @@ func runCommit(ctx context.Context, out, errOut io.Writer, target hubTarget, rep
 	var res commitFilesResult
 	_ = json.Unmarshal(raw, &res)
 	if res.Phase != "Succeeded" || res.CommitSHA == "" {
-		return fmt.Errorf("commit not confirmed (phase=%s); result: %s\ncheck: kubectl get repositorycommits.code.faros.sh -l code.faros.sh/repository=%s",
+		return fmt.Errorf("commit not confirmed (phase=%s); result: %s\ncheck: kubectl get repositorycommits.code.railgrid.ai -l code.railgrid.ai/repository=%s",
 			formatStringOrDash(res.Phase), strings.TrimSpace(string(raw)), repo)
 	}
 
@@ -213,9 +213,9 @@ func runCommit(ctx context.Context, out, errOut io.Writer, target hubTarget, rep
 		return fmt.Errorf("recorded %s, but resetting onto %s failed: %w", res.CommitSHA, base, err)
 	}
 	if res.CommitURL != "" {
-		_, _ = fmt.Fprintf(errOut, "faros commit: recorded %s (%s); local branch reset onto %s\n", res.CommitSHA, res.CommitURL, base)
+		_, _ = fmt.Fprintf(errOut, "railgrid commit: recorded %s (%s); local branch reset onto %s\n", res.CommitSHA, res.CommitURL, base)
 	} else {
-		_, _ = fmt.Fprintf(errOut, "faros commit: recorded %s; local branch reset onto %s\n", res.CommitSHA, base)
+		_, _ = fmt.Fprintf(errOut, "railgrid commit: recorded %s; local branch reset onto %s\n", res.CommitSHA, base)
 	}
 	_, err = fmt.Fprintln(out, res.CommitSHA)
 	return err

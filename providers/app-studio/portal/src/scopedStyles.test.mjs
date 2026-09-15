@@ -4,16 +4,16 @@ import test from 'node:test'
 
 const css = await readFile(new URL('./style.css', import.meta.url), 'utf8')
 const styleLoader = await readFile(new URL('./styles.ts', import.meta.url), 'utf8')
-const scopePrelude = '@scope (faros-provider-app-studio, faros-dashboard-tile-app-studio)'
+const scopePrelude = '@scope (railgrid-provider-app-studio, railgrid-dashboard-tile-app-studio)'
 
 test('emits custom rules relative to both App Studio scope roots', () => {
   const authoredCSS = css.replace(/\/\*[\s\S]*?\*\//g, '')
   const emittedCSS = `${scopePrelude} {\n${authoredCSS}\n}`
   const scopeBody = emittedCSS.slice(emittedCSS.indexOf('{') + 1)
 
-  assert.match(styleLoader, /const APP_STUDIO_SCOPE = 'faros-provider-app-studio, faros-dashboard-tile-app-studio'/)
+  assert.match(styleLoader, /const APP_STUDIO_SCOPE = 'railgrid-provider-app-studio, railgrid-dashboard-tile-app-studio'/)
   assert.match(styleLoader, /`@scope \(\$\{APP_STUDIO_SCOPE\}\) \{\\n\$\{styles\}\\n\}`/)
-  assert.doesNotMatch(scopeBody, /faros-(?:provider|dashboard-tile)-app-studio/)
+  assert.doesNotMatch(scopeBody, /railgrid-(?:provider|dashboard-tile)-app-studio/)
 })
 
 test('targets root-owned and descendant behavior without nesting the scope roots', () => {

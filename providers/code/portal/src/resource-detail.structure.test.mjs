@@ -9,7 +9,7 @@ const connectionDetail = readSource('views/ConnectionDetailView.vue')
 const style = readSource('style.css')
 const sectionCard = readSource('portalkit/ResourceSectionCard.vue')
 const statCards = readSource('portalkit/ResourceStatCards.vue')
-const farosUI = readSource('portalkit/faros-ui.css')
+const railgridUI = readSource('portalkit/railgrid-ui.css')
 
 function resourcePageBlock(source) {
   const start = source.indexOf('<ResourcePage')
@@ -96,8 +96,8 @@ describe('Code repository resource detail cards', () => {
     expect(sectionCard).toMatch(/class="k-resource-section-card__actions"/)
     expect(sectionCard).toMatch(/class="k-resource-section-card__body"/)
     expect(statCards).toMatch(/interface ResourceStatCard/)
-    expect(farosUI).toMatch(/\.k-resource-stat-cards\s*\{[\s\S]*grid-template-columns: repeat\(3/)
-    expect(farosUI).toMatch(/\.k-resource-stat-cards--compact \.k-resource-stat-card\s*\{[\s\S]*min-height:/)
+    expect(railgridUI).toMatch(/\.k-resource-stat-cards\s*\{[\s\S]*grid-template-columns: repeat\(3/)
+    expect(railgridUI).toMatch(/\.k-resource-stat-cards--compact \.k-resource-stat-card\s*\{[\s\S]*min-height:/)
     expect(detail).toMatch(/import ResourceStatCards, \{ type ResourceStatCard \}/)
     expect(detail).toMatch(/import ResourceSectionCard from '..\/portalkit\/ResourceSectionCard\.vue'/)
     expect(detail).toMatch(/const repositoryStatCards = computed<ResourceStatCard\[\]>\(\(\) => \[/)
@@ -124,7 +124,7 @@ describe('Code repository resource detail cards', () => {
     expect(integration).toMatch(/:aria-expanded="connectionExpanded" aria-controls="repository-integration-editor"[\s\S]*Change/)
     expect(integration).toContain('for="repository-managing-connection"')
     expect(integration).toContain('id="repository-managing-connection"')
-    expect(integration).not.toMatch(/API version|Generation|Labels|Clone URL|SSH URL|Faros ID/)
+    expect(integration).not.toMatch(/API version|Generation|Labels|Clone URL|SSH URL|Railgrid ID/)
     expect(conditions).toMatch(/<ConditionsPanel[\s\S]*:conditions="repo\?\.conditions \|\| \[\]"/)
     expect(conditions).toMatch(/Provider status[\s\S]*Repository ID[\s\S]*Browser URL[\s\S]*Clone URL[\s\S]*SSH URL/)
     expect(detail).toMatch(/repo\?\.htmlURL \|\| '—'[\s\S]*repo\?\.cloneURL \|\| '—'[\s\S]*repo\?\.sshURL \|\| '—'/)
@@ -138,12 +138,12 @@ describe('Code repository resource detail cards', () => {
   })
 
   it('keeps repository resource tables wide inside their scroll regions', () => {
-    const tableRule = farosUI.match(/\.k-table\.k-table--resource \.k-table__scroll > \.k-table__table\s*\{([\s\S]*?)\}/)?.[1] ?? ''
+    const tableRule = railgridUI.match(/\.k-table\.k-table--resource \.k-table__scroll > \.k-table__table\s*\{([\s\S]*?)\}/)?.[1] ?? ''
     expect(tableRule).toMatch(/max-width:\s*none/)
     expect(tableRule).toMatch(/min-width:\s*100%/)
     expect(tableRule).toMatch(/width:\s*100%/)
-    expect(farosUI).toMatch(/\.k-table__scroll\s*\{[\s\S]*overflow-x:\s*auto/)
-    expect(farosUI).not.toMatch(/table-layout:\s*fixed/)
+    expect(railgridUI).toMatch(/\.k-table__scroll\s*\{[\s\S]*overflow-x:\s*auto/)
+    expect(railgridUI).not.toMatch(/table-layout:\s*fixed/)
     expect(style).not.toMatch(/\.k-table(?:-[A-Za-z0-9_-]+)?\b/)
   })
 })

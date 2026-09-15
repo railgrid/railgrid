@@ -2,19 +2,19 @@
 
 > [!IMPORTANT]
 > **Read-only mirror — do not push or open PRs here.**
-> The standalone [`faroshq/provider-code`](https://github.com/faroshq/provider-code)
-> repository is **automatically synced** from the faros monorepo
-> [`faroshq/faros`](https://github.com/faroshq/faros) (path `providers/code/`)
+> The standalone [`railgrid/provider-code`](https://github.com/railgrid/provider-code)
+> repository is **automatically synced** from the railgrid monorepo
+> [`railgrid/railgrid`](https://github.com/railgrid/railgrid) (path `providers/code/`)
 > via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
 > the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`faroshq/faros`](https://github.com/faroshq/faros) instead.
+> against [`railgrid/railgrid`](https://github.com/railgrid/railgrid) instead.
 > See [docs/provider-publishing.md](../../docs/provider-publishing.md) for how
 > the mirror is published.
 
-A faros provider that manages source-code repositories and their access —
+A railgrid provider that manages source-code repositories and their access —
 deploy keys, collaborators, and (read-only) published packages — across git
-hosting providers (**GitHub** today) on behalf of faros tenants. A tenant adds a
-**Connection** (a credential for one git account) in the faros portal — or via
+hosting providers (**GitHub** today) on behalf of railgrid tenants. A tenant adds a
+**Connection** (a credential for one git account) in the railgrid portal — or via
 an MCP-driven LLM — then declares **Repositories**, **DeployKeys**, and
 **Collaborators** as Kubernetes-style resources in their own kcp workspace. The
 provider's controllers reconcile those into real GitHub state.
@@ -48,8 +48,8 @@ Browser / MCP client
    │  bearer
    ▼
 hub /services/providers/code/{mcp, mcp/sse, oauth/github/*}
-   │  proxy injects X-Faros-Tenant + X-Faros-Cluster (the workspace's
-   │  kcp logical-cluster ID, in both) + X-Faros-User
+   │  proxy injects X-Railgrid-Tenant + X-Railgrid-Cluster (the workspace's
+   │  kcp logical-cluster ID, in both) + X-Railgrid-User
    ▼
 this provider pod
    │
@@ -59,7 +59,7 @@ this provider pod
    │    DeployKey   → register/generate keys
    │    Collaborator→ invite/manage access
    │    Package     → crawl host packages on a timer → Package CRs
-   │      └ kubeconfig: /var/run/secrets/faros/faros-provider-kubeconfig
+   │      └ kubeconfig: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
    │
    └  MCP (AS THE CALLER, caller's own bearer token)
 ```
@@ -67,7 +67,7 @@ this provider pod
 CRUD does **not** go through this pod's HTTP surface: the portal drives every CR —
 Connections, Repositories, DeployKeys, Collaborators, and the crawled Packages —
 through the hub's kube REST proxy at
-`/clusters/<cluster>/apis/code.faros.sh/v1alpha1/<resource>`. Reads are plain
+`/clusters/<cluster>/apis/code.railgrid.ai/v1alpha1/<resource>`. Reads are plain
 Kubernetes list/get calls; writes are server-side apply for create-or-update
 (which also writes the credential Secret under `/api/v1/namespaces/default/secrets`),
 merge-patch for targeted updates, and DELETE. The pod's HTTP surface is only for
@@ -91,7 +91,7 @@ curl -s localhost:8083/healthz
 
 `make run-provider-code` auto-sources `providers/code/.env` (gitignored) so
 GitHub OAuth + other dev env reach the provider — copy `.env.example` to `.env`
-to enable "Connect with GitHub" locally. In dev, `FAROS_DEV_ALLOW_TENANT_QUERY=true`
+to enable "Connect with GitHub" locally. In dev, `RAILGRID_DEV_ALLOW_TENANT_QUERY=true`
 lets `?tenant=` / `?token=` stand in for the hub-injected identity headers.
 
 ## Connecting an account
@@ -109,7 +109,7 @@ Connection — deleting the Connection garbage-collects the Secret.
 
 ## Repository Provider Actions
 
-Code owns Git-host credentials and transport for consumers such as other Faros
+Code owns Git-host credentials and transport for consumers such as other Railgrid
 providers. Repository-bound actions expose branch reads, PR lookup/create/update,
 PR and merge observations, checks/reviews (including inline comments and check
 annotations), issue comments, review replies, and canonical Runner snapshot
@@ -156,8 +156,8 @@ for publication, Pull requests read/write for PR collaboration, Issues write for
 issue comments, and Checks read for feedback. PAT and OAuth Connections continue
 to use their configured token key. The portal's existing PAT/OAuth flows remain.
 
-To register a repository whose lifecycle is managed outside Faros, annotate its
-Repository with `code.faros.sh/existing-only: "true"`. Reconciliation requires an
+To register a repository whose lifecycle is managed outside Railgrid, annotate its
+Repository with `code.railgrid.ai/existing-only: "true"`. Reconciliation requires an
 existing upstream repository; deleting this registration does not delete the
 upstream repository. A recorded upstream repository ID is pinned and a missing
 or replaced repository is never silently recreated.
@@ -171,7 +171,7 @@ it into a ConfigMap and the init container self-registers it into the workspace
 via the provider kubeconfig; alternatively apply the raw manifest yourself:
 
 ```sh
-kubectl --kubeconfig kcp-admin.kubeconfig ws use root:faros:providers
+kubectl --kubeconfig kcp-admin.kubeconfig ws use root:railgrid:providers
 kubectl apply -f manifest.yaml
 kubectl get catalogentry code -o yaml   # Ready flips True once heartbeats land
 ```
@@ -184,7 +184,7 @@ A three-stage build (portal → Go binary → distroless) that bakes the portal
 into the binary. Listens on `:8083`.
 
 ```sh
-docker build -t ghcr.io/faroshq/faros-code-provider:dev providers/code/
+docker build -t ghcr.io/railgrid/railgrid-code-provider:dev providers/code/
 ```
 
 ## Deploy with Helm
@@ -193,7 +193,7 @@ The chart ships the provider Deployment, a ClusterIP Service, the ServiceAccount
 and (optionally) the CatalogEntry ConfigMap the init container applies to kcp.
 The runtime kubeconfig the controllers need
 is **minted by the hub** when it reconciles the CatalogEntry and mounted from the
-`faros-provider-kubeconfig` Secret — the volume is `optional`, so the pod serves
+`railgrid-provider-kubeconfig` Secret — the volume is `optional`, so the pod serves
 portal/MCP/packages reads immediately and the controller manager engages once
 the Secret appears.
 
@@ -202,7 +202,7 @@ the Secret appears.
 ```sh
 helm install code providers/code/deploy/chart \
   -n code --create-namespace \
-  --set hub.url=https://faros-hub.faros.svc.cluster.local:9443 \
+  --set hub.url=https://railgrid-hub.railgrid.svc.cluster.local:9443 \
   --set image.tag=0.1.0
 ```
 
@@ -214,22 +214,22 @@ through the hub; once OAuth is enabled and the provider backend is reachable, th
 **Connect with GitHub** button appears.
 
 ```sh
-kubectl -n code create secret generic faros-code-github-oauth \
+kubectl -n code create secret generic railgrid-code-github-oauth \
   --from-literal=clientSecret=<oauth-app-client-secret>
 
 helm install code providers/code/deploy/chart \
   -n code --create-namespace \
-  --set hub.url=https://faros-hub.faros.svc.cluster.local:9443 \
+  --set hub.url=https://railgrid-hub.railgrid.svc.cluster.local:9443 \
   --set githubOAuth.enabled=true \
   --set githubOAuth.clientId=<oauth-app-client-id> \
-  --set githubOAuth.clientSecretRef.name=faros-code-github-oauth \
+  --set githubOAuth.clientSecretRef.name=railgrid-code-github-oauth \
   --set githubOAuth.redirectURL=https://<hub-host>/services/providers/code/oauth/github/callback \
   --set githubOAuth.portalOrigin=https://<hub-host>
 ```
 
 #### Choosing `redirectURL`
 
-GitHub's callback is a **top-level browser redirect with no faros auth**, so
+GitHub's callback is a **top-level browser redirect with no railgrid auth**, so
 `redirectURL` must be publicly reachable and forward to the provider's HTTP
 backend (`:8083`). It must end in `/callback`; the matching `/start` URL is
 derived automatically by swapping `/callback` → `/start` under the **same host
@@ -258,26 +258,26 @@ your portal.
 
 Provider running in its own namespace, registered against an already-running hub,
 with OAuth routed through the hub ingress (no per-provider ingress). The runtime
-kubeconfig the controllers need is supplied as the `faros-provider-kubeconfig`
+kubeconfig the controllers need is supplied as the `railgrid-provider-kubeconfig`
 Secret (its key **must** be `kubeconfig`) — mint it via the admin onboarding flow
 (`/bonkers`).
 
 ```sh
 # 1. Namespace.
-kubectl create namespace faros-prod-provider-code
+kubectl create namespace railgrid-prod-provider-code
 
 # 2. Provider kubeconfig Secret (key MUST be "kubeconfig").
-kubectl -n faros-prod-provider-code create secret generic faros-provider-kubeconfig \
-  --from-file=kubeconfig=faros/provider-code.kubeconfig
+kubectl -n railgrid-prod-provider-code create secret generic railgrid-provider-kubeconfig \
+  --from-file=kubeconfig=railgrid/provider-code.kubeconfig
 
 # 3. GitHub OAuth App client secret.
-kubectl -n faros-prod-provider-code create secret generic code-github-oauth \
+kubectl -n railgrid-prod-provider-code create secret generic code-github-oauth \
   --from-literal=clientSecret=<oauth-app-client-secret>
 
 # 4. Install the chart from the published OCI registry.
-helm upgrade --install code oci://ghcr.io/faroshq/charts/faros-code-provider:0.0.82 \
-  -n faros-prod-provider-code \
-  --set hub.url=https://faros-faros-hub.faros-prod.svc.cluster.local:9443 \
+helm upgrade --install code oci://ghcr.io/railgrid/charts/railgrid-code-provider:0.0.82 \
+  -n railgrid-prod-provider-code \
+  --set hub.url=https://railgrid-railgrid-hub.railgrid-prod.svc.cluster.local:9443 \
   --set hub.insecure=true \
   --set hub.tokenSecretRef.name="" \
   --set image.tag=v0.0.82 \
@@ -286,8 +286,8 @@ helm upgrade --install code oci://ghcr.io/faroshq/charts/faros-code-provider:0.0
   --set githubOAuth.clientId=<oauth-app-client-id> \
   --set githubOAuth.clientSecretRef.name=code-github-oauth \
   --set githubOAuth.clientSecretRef.key=clientSecret \
-  --set githubOAuth.redirectURL=https://faros.example.com/services/providers/code/oauth/github/callback \
-  --set githubOAuth.portalOrigin=https://faros.example.com
+  --set githubOAuth.redirectURL=https://railgrid.example.com/services/providers/code/oauth/github/callback \
+  --set githubOAuth.portalOrigin=https://railgrid.example.com
 ```
 
 Notes:
@@ -297,13 +297,13 @@ Notes:
 - `catalogEntry.enabled=false` means the chart does **not** manage the
   CatalogEntry — the hub uses whatever `backend.url` the existing CatalogEntry
   declares. **Make sure that `backend.url` points at this deployment's Service**
-  (`http://code-faros-code-provider.<namespace>.svc.cluster.local:8083`); a stale
+  (`http://code-railgrid-code-provider.<namespace>.svc.cluster.local:8083`); a stale
   namespace there makes the hub→provider proxy return **502** (and the OAuth
   button stays hidden). Leaving `catalogEntry.enabled=true` lets the init
   container keep `backend.url` in sync with the release namespace automatically.
 - After install, verify the OAuth probe returns `{"enabled":true}`:
   ```sh
-  curl -s https://faros.example.com/services/providers/code/oauth/github/config
+  curl -s https://railgrid.example.com/services/providers/code/oauth/github/config
   ```
 
 `values.yaml` documents the full surface — image, replicas, hub URL + token
@@ -315,9 +315,9 @@ tenant credential namespace, and the CatalogEntry toggle.
 ```jsonc
 {
   "mcpServers": {
-    "faros-code": {
-      "url": "https://<your-faros-hub>/services/providers/code/mcp",
-      "headers": { "Authorization": "Bearer <faros-bearer>" }
+    "railgrid-code": {
+      "url": "https://<your-railgrid-hub>/services/providers/code/mcp",
+      "headers": { "Authorization": "Bearer <railgrid-bearer>" }
     }
   }
 }
@@ -338,9 +338,9 @@ Rather than hitting GitHub on every page view (GitHub has no per-repo packages
 API and rate-limits the per-ecosystem listing hard), the **packages controller**
 crawls each Repository on a timer (`CODE_PACKAGE_CRAWL_INTERVAL`, default 2m) and
 reconciles one **Package CR** per artifact, owned by the Repository (so they're
-garbage-collected with it) and labelled `code.faros.sh/repository=<repo>`.
+garbage-collected with it) and labelled `code.railgrid.ai/repository=<repo>`.
 The portal then reads those CRs through the hub's kube REST proxy
-(`GET /clusters/<cluster>/apis/code.faros.sh/v1alpha1/packages?labelSelector=…`)
+(`GET /clusters/<cluster>/apis/code.railgrid.ai/v1alpha1/packages?labelSelector=…`)
 like any other CRD — no provider round-trip, no throttling. Crawling still needs
 the connection token's `read:packages` scope.
 
@@ -424,15 +424,15 @@ request accounting.
 |---|---|---|
 | `CODE_PACKAGE_CRAWL_INTERVAL` | `2m` | Repository package crawl interval; does not bypass the two-minute shared GitHub cache |
 | `PORT` | `8083` | Listen port |
-| `FAROS_HUB_URL` | (unset → heartbeat off) | Hub base URL for heartbeats |
-| `FAROS_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
-| `FAROS_PROVIDER_NAME` | `code` | CatalogEntry name |
-| `FAROS_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
+| `RAILGRID_HUB_URL` | (unset → heartbeat off) | Hub base URL for heartbeats |
+| `RAILGRID_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
+| `RAILGRID_PROVIDER_NAME` | `code` | CatalogEntry name |
+| `RAILGRID_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
 | `CODE_KUBECONFIG` | (unset → controllers disabled) | kcp kubeconfig for the multicluster controller manager |
-| `CODE_WORKSPACE_PATH` | `root:faros:providers:code` | Workspace the APIExportEndpointSlice is ensured in |
+| `CODE_WORKSPACE_PATH` | `root:railgrid:providers:code` | Workspace the APIExportEndpointSlice is ensured in |
 | `CODE_COMMIT_BUNDLE_DIR` | system temp dir | Directory for provider-owned RepositoryCommit source bundles; use shared storage before running multiple replicas |
-| `FAROS_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace the Connection credential Secret lives in |
-| `FAROS_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=`/`?token=` replace identity headers (dev only) |
+| `RAILGRID_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace the Connection credential Secret lives in |
+| `RAILGRID_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=`/`?token=` replace identity headers (dev only) |
 | `GITHUB_OAUTH_CLIENT_ID` | (unset → OAuth off) | GitHub OAuth App client ID |
 | `GITHUB_OAUTH_CLIENT_SECRET` | (unset) | GitHub OAuth App client secret |
 | `GITHUB_OAUTH_REDIRECT_URL` | (unset) | Absolute callback URL (must end in `/callback`); either the hub `/services/providers/code/oauth/github/callback` proxy route or the provider's own host. `/start` is derived from it |
@@ -449,12 +449,12 @@ local dev flow.
 
 ## Running it yourself
 
-This provider can run in your own cluster instead of on the platform. faros
+This provider can run in your own cluster instead of on the platform. railgrid
 creates a workspace for it in your organization, mints a credential scoped to
 that workspace alone, and generates the exact `helm` commands — under
 **Providers → Self-Hosting** in the portal.
 
-Nothing to fill in by faros. You still configure your Git backend (GitHub app or
+Nothing to fill in by railgrid. You still configure your Git backend (GitHub app or
 token) as you would on the platform — see the chart values.
 
 Once installed, the provider registers itself and your workspaces enable it
@@ -465,7 +465,7 @@ exactly like the platform copy. See
 ### Create-only repositories
 
 Clients creating a new repository without importing an existing remote must set
-`metadata.annotations["code.faros.sh/create-only"]: "true"`. App Studio sets this
+`metadata.annotations["code.railgrid.ai/create-only"]: "true"`. App Studio sets this
 on newly created repositories, including when connecting Git to an existing
 storage-backed project. That connect-later flow also reserves a fresh suffixed
 name instead of reusing the project name verbatim.
@@ -482,7 +482,7 @@ this conflict. It reserves a fresh name and uploads the project source, leaving
 the uncertain Repository resource and GitHub repository untouched for inspection.
 Requests are fenced to the current project UID and failed binding; confirmed or
 imported repositories cannot be replaced through recovery. A name match is not
-evidence that Faros created a remote. This contract does not retroactively change
+evidence that Railgrid created a remote. This contract does not retroactively change
 repositories already attached before create-only intent was introduced.
 
 Action bodies must complete within 30 seconds, after repository read and invoke

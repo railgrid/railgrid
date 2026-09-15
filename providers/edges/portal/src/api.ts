@@ -6,7 +6,7 @@
 // portal reads KubernetesClusters, LinuxServers, MacOSServers, Services and Workloads with
 // plain Kubernetes wire shapes — List envelopes, Status bodies, merge patches
 // and server-side apply — and no schema translation layer in between. The
-// host-owned transport (farosContext.fetch) injects Authorization; the cluster
+// host-owned transport (railgridContext.fetch) injects Authorization; the cluster
 // ID is the path segment.
 
 import type { Edge, EdgeDetail, EdgeType, ErrorResponse } from './types'
@@ -25,7 +25,7 @@ import {
 
 // Every edges kind the portal touches lives in one group/version. Resource
 // names are the plural REST segments from the provider's CRDs.
-const EDGES_GROUP = 'edges.faros.sh'
+const EDGES_GROUP = 'edges.railgrid.ai'
 const EDGES_VERSION = 'v1alpha1'
 const EDGES_API_VERSION = `${EDGES_GROUP}/${EDGES_VERSION}`
 const KUBERNETES_CLUSTERS: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'kubernetesclusters' }
@@ -36,7 +36,7 @@ const WORKLOADS: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION,
 const SECRETS: KubeResourceRef = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
 
 // Server-side-apply field manager for the portal's own writes.
-const FIELD_MANAGER = 'faros-edges-portal'
+const FIELD_MANAGER = 'railgrid-edges-portal'
 
 // Kubernetes list options are deliberately small: continue values are opaque
 // strings and the portal only needs bounded cursor pages.
@@ -118,7 +118,7 @@ export function setToken(token?: string | null) {
   if (next !== bearerToken) contextGeneration += 1
   bearerToken = next
 }
-// setHostFetch installs the host-owned transport from farosContext.fetch. The
+// setHostFetch installs the host-owned transport from railgridContext.fetch. The
 // host injects Authorization itself; bearerToken then only fences in-flight
 // requests, and providerFetch falls back to it on older hosts without fetch.
 let hostFetch: ProviderFetch | null = null
@@ -452,7 +452,7 @@ import type { EdgeService, EdgeServiceDraft } from './types'
 
 // Secrets holding EdgeService credentials live in this namespace (where the
 // edge SA secrets already live).
-const EDGE_SVC_SECRET_NS = 'faros-system'
+const EDGE_SVC_SECRET_NS = 'railgrid-system'
 
 interface RawEdgeService {
   metadata: { name: string; creationTimestamp?: string; labels?: Record<string, string> }
@@ -760,7 +760,7 @@ export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> 
     kind: 'Service',
     metadata: {
       name: d.name,
-      labels: { 'edges.faros.sh/edge': d.edgeName },
+      labels: { 'edges.railgrid.ai/edge': d.edgeName },
     },
     spec,
   }
@@ -776,14 +776,14 @@ export async function deleteEdgeService(name: string): Promise<void> {
 // spec.authSecretRef so the validation reconciler can authenticate the service.
 // The secret key is "token" (e.g. a Home Assistant long-lived access token).
 export async function connectEdgeService(name: string, token: string): Promise<void> {
-  const secretName = `faros-edges-svc-${name}`
+  const secretName = `railgrid-edges-svc-${name}`
 
   await withKube(async (client) => {
     // 1. Upsert the Secret holding the token. Server-side apply is idempotent —
     //    re-pasting a token just overwrites the old one, no
     //    create-then-update-on-error dance.
     //
-    //    The faros-system namespace already exists in the tenant workspace —
+    //    The railgrid-system namespace already exists in the tenant workspace —
     //    the edges RBAC reconciler creates it when an edge registers, which
     //    always precedes a Service.
     await client.apply(SECRETS, {
@@ -981,7 +981,7 @@ export async function deployMarketplaceApp(opts: {
         strategy: 'Singleton',
         // Target this one edge by its self-name label (stamped by the edge
         // lifecycle reconciler).
-        edgeSelector: { matchLabels: { 'edges.faros.sh/name': opts.edgeName } },
+        edgeSelector: { matchLabels: { 'edges.railgrid.ai/name': opts.edgeName } },
       },
     },
   }

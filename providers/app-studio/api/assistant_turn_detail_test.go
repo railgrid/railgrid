@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,8 +30,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 func TestGetProjectAssistantThreadTurnReturnsTerminalSettingsWithoutAudit(t *testing.T) {
@@ -148,16 +148,16 @@ func TestGetProjectAssistantThreadTurnEnforcesThreadOwnership(t *testing.T) {
 func assistantTurnDetailHTTPTestRequest(method, path, user string) *http.Request {
 	request := httptest.NewRequest(method, path, nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Faros-User", user)
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-User", user)
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
 }
 
 func newAssistantTurnDetailServer(messages store.Store) *Server {
 	scheme := runtime.NewScheme()
 	project := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "ai.faros.sh/v1alpha1",
+		"apiVersion": "ai.railgrid.ai/v1alpha1",
 		"kind":       "Project",
 		"metadata": map[string]any{
 			"name": "demo",

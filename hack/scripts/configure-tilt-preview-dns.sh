@@ -21,8 +21,8 @@ base_domain="$2"
 gateway_ip="$3"
 hub_host="${4:-}"
 hub_ip="${5:-}"
-marker_start="# faros-preview-dns"
-marker_end="# faros-preview-dns-end"
+marker_start="# railgrid-preview-dns"
+marker_end="# railgrid-preview-dns-end"
 
 if [[ ! "$base_domain" =~ ^[a-z0-9.-]+$ ]]; then
   echo "invalid preview base domain: $base_domain" >&2

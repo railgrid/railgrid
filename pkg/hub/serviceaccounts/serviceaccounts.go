@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,29 +16,29 @@ limitations under the License.
 
 // Package serviceaccounts implements roadmap step 9 (O-14): bot
 // identity for child Workspaces via native kube
-// `core/v1.ServiceAccount`s marked with faros annotations.
+// `core/v1.ServiceAccount`s marked with railgrid annotations.
 //
-// There is no wrapping faros CRD; an SA is exactly a kube SA in the
+// There is no wrapping railgrid CRD; an SA is exactly a kube SA in the
 // child workspace's `default` namespace, labelled and annotated to
 // project our domain concerns:
 //
 //	labels:
-//	  tenants.faros.sh/faros-sa: "true"
+//	  tenants.railgrid.ai/railgrid-sa: "true"
 //	annotations:
-//	  tenants.faros.sh/display-name:           <human label>
-//	  tenants.faros.sh/role:                   admin|member
-//	  tenants.faros.sh/last-token-issued-at:   <RFC3339>
+//	  tenants.railgrid.ai/display-name:           <human label>
+//	  tenants.railgrid.ai/role:                   admin|member
+//	  tenants.railgrid.ai/last-token-issued-at:   <RFC3339>
 //
 // Plus a ClusterRoleBinding owned by the SA that maps
 // `system:serviceaccount:default:<sa-name>` to `cluster-admin`
 // today; the binding target will switch to the documented
-// `faros:workspace:admin` / `faros:workspace:member` ClusterRoles
+// `railgrid:workspace:admin` / `railgrid:workspace:member` ClusterRoles
 // when those land. Until then the role annotation carries the user
 // intent so the REST layer can reflect it without breaking the
 // public contract.
 //
 // Tokens are minted via the kube TokenRequest API with audience
-// `faros` and a 1-year expiry. Revoke = delete the SA (kills all
+// `railgrid` and a 1-year expiry. Revoke = delete the SA (kills all
 // outstanding tokens; the ClusterRoleBinding GCs via owner ref) and
 // recreate under the same UUID + annotations.
 package serviceaccounts
@@ -64,31 +64,31 @@ import (
 
 const (
 	// Namespace is the kube namespace inside every child Workspace
-	// where faros ServiceAccounts live. The bootstrap controller
-	// creates this namespace right after binding the faros APIBinding
+	// where railgrid ServiceAccounts live. The bootstrap controller
+	// creates this namespace right after binding the railgrid APIBinding
 	// (see pkg/hub/kcp/bootstrap.go ensureDefaultNamespace), so it is
 	// always present by the time SA endpoints can be reached.
 	Namespace = "default"
 
-	// LabelFarosSA marks a kube ServiceAccount as a faros-managed SA.
+	// LabelRailgridSA marks a kube ServiceAccount as a railgrid-managed SA.
 	// Cheap listing selector; used both by the REST list endpoint and
 	// the soft-delete cascade if it ever wants to enumerate.
-	LabelFarosSA = "tenants.faros.sh/faros-sa"
+	LabelRailgridSA = "tenants.railgrid.ai/railgrid-sa"
 
 	// AnnotationDisplayName carries the human-facing label. Editable
 	// via PATCH; not unique.
-	AnnotationDisplayName = "tenants.faros.sh/display-name"
+	AnnotationDisplayName = "tenants.railgrid.ai/display-name"
 
 	// AnnotationRole carries the requested role ("admin" or
 	// "member"). The hub maintains a ClusterRoleBinding consistent
 	// with this value; the annotation is the source of truth for the
 	// REST projection. PATCH on this triggers a CRB rewrite.
-	AnnotationRole = "tenants.faros.sh/role"
+	AnnotationRole = "tenants.railgrid.ai/role"
 
 	// AnnotationLastTokenIssuedAt is RFC3339 — set on each successful
 	// /tokens POST so the portal can render "last issued N days ago"
 	// without scanning audit logs.
-	AnnotationLastTokenIssuedAt = "tenants.faros.sh/last-token-issued-at"
+	AnnotationLastTokenIssuedAt = "tenants.railgrid.ai/last-token-issued-at"
 
 	// RoleAdmin / RoleMember are the only valid role values. Mirrors
 	// Membership.role; validated at the REST boundary.
@@ -96,9 +96,9 @@ const (
 	RoleMember = "member"
 
 	// TokenAudience is the JWT audience claim we request for SA
-	// tokens. kcp validates against this; the faros proxy doesn't
+	// tokens. kcp validates against this; the railgrid proxy doesn't
 	// inspect it.
-	TokenAudience = "faros"
+	TokenAudience = "railgrid"
 
 	// DefaultTokenExpiry is the requested validity of a freshly
 	// minted SA token. 1 year matches the doc's "rotation reminder
@@ -108,7 +108,7 @@ const (
 	// crbNamePrefix is the prefix for the ClusterRoleBinding paired
 	// with each SA. Suffixed by the SA's UUID so listing per-SA is
 	// trivial.
-	crbNamePrefix = "faros-sa-"
+	crbNamePrefix = "railgrid-sa-"
 )
 
 // WorkspaceConfigBuilder produces a rest.Config targeting a specific
@@ -122,7 +122,7 @@ type WorkspaceConfigBuilder interface {
 	ChildWorkspaceConfig(orgUUID, wsUUID string) *rest.Config
 }
 
-// Manager is the per-Workspace CRUD surface for faros ServiceAccounts.
+// Manager is the per-Workspace CRUD surface for railgrid ServiceAccounts.
 // One Manager handles all Workspaces; each call builds a fresh kube
 // clientset targeting the requested (orgUUID, wsUUID).
 type Manager struct {
@@ -149,7 +149,7 @@ func NewManager(cfg WorkspaceConfigBuilder, proofKeys ...ProofKeySource) *Manage
 	return m
 }
 
-// SA is the REST-layer projection of a faros ServiceAccount. The
+// SA is the REST-layer projection of a railgrid ServiceAccount. The
 // underlying object is a kube SA + a ClusterRoleBinding; callers see
 // the union as one resource.
 type SA struct {
@@ -187,7 +187,7 @@ type Token struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// Create writes a new faros SA in the given Workspace. The hub
+// Create writes a new railgrid SA in the given Workspace. The hub
 // assigns a UUID; displayName and role are taken from input.
 func (m *Manager) Create(ctx context.Context, orgUUID, wsUUID, displayName, role string) (*SA, error) {
 	if err := validateRole(role); err != nil {
@@ -227,14 +227,14 @@ func (m *Manager) Create(ctx context.Context, orgUUID, wsUUID, displayName, role
 	return projectSA(created), nil
 }
 
-// List returns every faros SA in the Workspace.
+// List returns every railgrid SA in the Workspace.
 func (m *Manager) List(ctx context.Context, orgUUID, wsUUID string) ([]SA, error) {
 	cs, err := m.clientset(orgUUID, wsUUID)
 	if err != nil {
 		return nil, err
 	}
 	list, err := cs.CoreV1().ServiceAccounts(Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: LabelFarosSA + "=true",
+		LabelSelector: LabelRailgridSA + "=true",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing ServiceAccounts: %w", err)
@@ -246,7 +246,7 @@ func (m *Manager) List(ctx context.Context, orgUUID, wsUUID string) ([]SA, error
 	return out, nil
 }
 
-// Get returns a single faros SA by UUID, or a Kubernetes NotFound
+// Get returns a single railgrid SA by UUID, or a Kubernetes NotFound
 // error if it doesn't exist (so the handler can translate to 404).
 func (m *Manager) Get(ctx context.Context, orgUUID, wsUUID, saUUID string) (*SA, error) {
 	cs, err := m.clientset(orgUUID, wsUUID)
@@ -257,7 +257,7 @@ func (m *Manager) Get(ctx context.Context, orgUUID, wsUUID, saUUID string) (*SA,
 	if err != nil {
 		return nil, err
 	}
-	if !isFarosSA(sa) {
+	if !isRailgridSA(sa) {
 		// Found a kube SA with the requested name but it's not one
 		// we manage; surface as NotFound so the surface is uniform.
 		return nil, apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "serviceaccounts"}, saUUID)
@@ -300,7 +300,7 @@ func (m *Manager) PatchRoleAndDisplayName(ctx context.Context, orgUUID, wsUUID, 
 	if err != nil {
 		return nil, err
 	}
-	if !isFarosSA(sa) {
+	if !isRailgridSA(sa) {
 		return nil, apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "serviceaccounts"}, saUUID)
 	}
 
@@ -338,7 +338,7 @@ func (m *Manager) PatchRoleAndDisplayName(ctx context.Context, orgUUID, wsUUID, 
 }
 
 // IssueToken mints a fresh kube SA token via TokenRequest with
-// audience `faros` and the default expiry. Stamps the
+// audience `railgrid` and the default expiry. Stamps the
 // last-token-issued-at annotation on success.
 func (m *Manager) IssueToken(ctx context.Context, orgUUID, wsUUID, saUUID string) (*Token, error) {
 	cs, err := m.clientset(orgUUID, wsUUID)
@@ -351,7 +351,7 @@ func (m *Manager) IssueToken(ctx context.Context, orgUUID, wsUUID, saUUID string
 	if err != nil {
 		return nil, err
 	}
-	if !isFarosSA(sa) {
+	if !isRailgridSA(sa) {
 		return nil, apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "serviceaccounts"}, saUUID)
 	}
 
@@ -397,7 +397,7 @@ func (m *Manager) RevokeTokens(ctx context.Context, orgUUID, wsUUID, saUUID stri
 	if err != nil {
 		return err
 	}
-	if !isFarosSA(existing) {
+	if !isRailgridSA(existing) {
 		return apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "serviceaccounts"}, saUUID)
 	}
 
@@ -475,7 +475,7 @@ func buildSAObject(saUUID, displayName, role string, extraAnnos map[string]strin
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        saUUID,
 			Namespace:   Namespace,
-			Labels:      map[string]string{LabelFarosSA: "true"},
+			Labels:      map[string]string{LabelRailgridSA: "true"},
 			Annotations: annos,
 		},
 	}
@@ -483,7 +483,7 @@ func buildSAObject(saUUID, displayName, role string, extraAnnos map[string]strin
 
 // buildCRB constructs the ClusterRoleBinding for an SA. Role today
 // always maps to `cluster-admin`; will switch to
-// `faros:workspace:admin` / `faros:workspace:member` once those
+// `railgrid:workspace:admin` / `railgrid:workspace:member` once those
 // ClusterRoles are bootstrapped (open follow-up flagged in the
 // package doc).
 func buildCRB(saUUID string, saUID types.UID, role string) *rbacv1.ClusterRoleBinding {
@@ -498,7 +498,7 @@ func buildCRB(saUUID string, saUID types.UID, role string) *rbacv1.ClusterRoleBi
 				BlockOwnerDeletion: ptr(true),
 				Controller:         ptr(true),
 			}},
-			Labels: map[string]string{LabelFarosSA: "true"},
+			Labels: map[string]string{LabelRailgridSA: "true"},
 			Annotations: map[string]string{
 				AnnotationRole: role,
 			},
@@ -534,11 +534,11 @@ func projectSA(sa *corev1.ServiceAccount) *SA {
 	return out
 }
 
-func isFarosSA(sa *corev1.ServiceAccount) bool {
+func isRailgridSA(sa *corev1.ServiceAccount) bool {
 	if sa == nil {
 		return false
 	}
-	if v, ok := sa.Labels[LabelFarosSA]; ok && strings.EqualFold(v, "true") {
+	if v, ok := sa.Labels[LabelRailgridSA]; ok && strings.EqualFold(v, "true") {
 		return true
 	}
 	return false

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ArrowLeft, ArrowRight, Check, ExternalLink, Layers, Loader2, Package, RefreshCw } from 'lucide-vue-next'
-import type { FarosContext, ProjectPlan } from './types'
+import type { RailgridContext, ProjectPlan } from './types'
 import { api } from './api'
 import type { CreateSetupItem } from './createReadiness'
 import AssistantPreProjectComposer from './AssistantPreProjectComposer.vue'
@@ -12,7 +12,7 @@ import type { AssistantStagedAttachment } from './assistantAttachments'
 // thread-start path used by the landing composer and retries.
 
 const props = defineProps<{
-  ctx: FarosContext | null
+  ctx: RailgridContext | null
   // disabled blocks Create while the parent isn't ready (setup incomplete).
   disabled?: boolean
   disabledReason?: string
@@ -301,7 +301,7 @@ onMounted(async () => {
       <div class="k-create-body flex w-full flex-col gap-5 p-5 sm:p-7">
         <header class="k-create-header m-0">
           <h2 id="new-project-intake-title" ref="stepHeading" tabindex="-1" class="text-[20px] font-semibold text-text-primary outline-none">Describe your project</h2>
-          <p class="mt-1 text-[13px] leading-5 text-text-secondary">Share the app, dashboard, workflow, or API you want to make in this Faros workspace. You can review the suggested starting point before anything is created.</p>
+          <p class="mt-1 text-[13px] leading-5 text-text-secondary">Share the app, dashboard, workflow, or API you want to make in this Railgrid workspace. You can review the suggested starting point before anything is created.</p>
         </header>
 
         <div class="grid gap-2">

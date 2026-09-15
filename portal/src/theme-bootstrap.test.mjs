@@ -8,8 +8,8 @@ const bootstrap = fs.readFileSync(new URL('../public/theme-bootstrap.js', import
 const themeStore = fs.readFileSync(new URL('./stores/theme.ts', import.meta.url), 'utf8')
 
 test('the browser color scheme resolves before portal CSS and stays synchronized', () => {
-  const colorSchemeMeta = index.indexOf('<meta id="faros-color-scheme"')
-  const themeBootstrap = index.indexOf('<script id="faros-theme-bootstrap" src="/theme-bootstrap.js">')
+  const colorSchemeMeta = index.indexOf('<meta id="railgrid-color-scheme"')
+  const themeBootstrap = index.indexOf('<script id="railgrid-theme-bootstrap" src="/theme-bootstrap.js">')
   const themeBootstrapEnd = index.indexOf('</script>', themeBootstrap)
   const moduleScript = index.indexOf('<script type="module"')
 
@@ -25,7 +25,7 @@ test('the browser color scheme resolves before portal CSS and stays synchronized
 
   assert.match(
     themeStore,
-    /querySelector<HTMLMetaElement>\('#faros-color-scheme'\)\?\.setAttribute\('content', resolved\)/,
+    /querySelector<HTMLMetaElement>\('#railgrid-color-scheme'\)\?\.setAttribute\('content', resolved\)/,
   )
   assert.match(themeStore, /document\.documentElement\.style\.colorScheme = resolved/)
   assert.doesNotMatch(themeStore, /backgroundColor/)

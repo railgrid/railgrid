@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,8 +28,8 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 
-	v1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/networkpolicy"
+	v1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/networkpolicy"
 )
 
 // serveRBACConflictClient is a clientset whose serve ClusterRoleBinding
@@ -68,7 +68,7 @@ func serveRBACConflictClient(crbName, saName string, roleRefs ...string) *fake.C
 // least-privilege role only took effect on some later pass — or never.
 func TestEnsureServeRBACRejectsStaleBindingAfterCreateConflict(t *testing.T) {
 	const saName = "infrastructure"
-	crbName := "faros-infrastructure-serve-" + saName
+	crbName := "railgrid-infrastructure-serve-" + saName
 	t.Setenv(serveClusterRoleEnv, "infrastructure-serve")
 
 	client := serveRBACConflictClient(crbName, saName, "cluster-admin")
@@ -86,7 +86,7 @@ func TestEnsureServeRBACRejectsStaleBindingAfterCreateConflict(t *testing.T) {
 // state holds.
 func TestEnsureServeRBACAcceptsCreateConflictWithDesiredRoleRef(t *testing.T) {
 	const saName = "infrastructure"
-	crbName := "faros-infrastructure-serve-" + saName
+	crbName := "railgrid-infrastructure-serve-" + saName
 	t.Setenv(serveClusterRoleEnv, "infrastructure-serve")
 
 	client := serveRBACConflictClient(crbName, saName, "cluster-admin", "infrastructure-serve")
@@ -97,7 +97,7 @@ func TestEnsureServeRBACAcceptsCreateConflictWithDesiredRoleRef(t *testing.T) {
 
 func TestEnsureProviderServePropagatesPlatformPreviewBridgeJWKS(t *testing.T) {
 	const jwks = `{"keys":[{"kid":"current"}]}`
-	t.Setenv("FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS", "  "+jwks+"  ")
+	t.Setenv("RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS", "  "+jwks+"  ")
 	client := fake.NewSimpleClientset()
 	provider := &v1alpha1.InfrastructureProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"},
@@ -120,14 +120,14 @@ func TestEnsureProviderServePropagatesPlatformPreviewBridgeJWKS(t *testing.T) {
 		t.Fatalf("get managed provider Deployment: %v", err)
 	}
 	for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
-		if env.Name == "FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS" {
+		if env.Name == "RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS" {
 			if env.Value != jwks {
 				t.Errorf("verification JWKS = %q, want trimmed platform value %q", env.Value, jwks)
 			}
 			return
 		}
 	}
-	t.Error("managed provider Deployment lacks FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS")
+	t.Error("managed provider Deployment lacks RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS")
 }
 
 // The tenant isolation policy is configured on the operator (chart values),
@@ -176,7 +176,7 @@ func TestEnsureProviderServeBindsServeRoleFromEnv(t *testing.T) {
 			},
 		},
 	}
-	crbName := "faros-infrastructure-serve-" + provider.Name
+	crbName := "railgrid-infrastructure-serve-" + provider.Name
 	roleOf := func(t *testing.T) string {
 		t.Helper()
 		crb, err := client.RbacV1().ClusterRoleBindings().Get(context.Background(), crbName, metav1.GetOptions{})
@@ -226,7 +226,7 @@ func TestEnsureProviderServeBindsServeRoleFromEnv(t *testing.T) {
 }
 
 // The provider kubeconfig the operator mounts is also the heartbeat bearer:
-// the SDK reads it from FAROS_PROVIDER_KUBECONFIG. Without that variable serve
+// the SDK reads it from RAILGRID_PROVIDER_KUBECONFIG. Without that variable serve
 // beat unauthenticated, an enforcing hub answered 401, and the provider went
 // stale — which took every consumer of /ui/providers/infrastructure down with
 // it.
@@ -252,14 +252,14 @@ func TestEnsureProviderServeWiresHeartbeatCredential(t *testing.T) {
 	for _, variable := range deployment.Spec.Template.Spec.Containers[0].Env {
 		env[variable.Name] = variable.Value
 	}
-	if env["FAROS_PROVIDER_KUBECONFIG"] != providerKubeconfigMount {
-		t.Errorf("FAROS_PROVIDER_KUBECONFIG = %q, want %q", env["FAROS_PROVIDER_KUBECONFIG"], providerKubeconfigMount)
+	if env["RAILGRID_PROVIDER_KUBECONFIG"] != providerKubeconfigMount {
+		t.Errorf("RAILGRID_PROVIDER_KUBECONFIG = %q, want %q", env["RAILGRID_PROVIDER_KUBECONFIG"], providerKubeconfigMount)
 	}
 	if env["INFRASTRUCTURE_KUBECONFIG"] != providerKubeconfigMount {
 		t.Errorf("INFRASTRUCTURE_KUBECONFIG = %q, want %q", env["INFRASTRUCTURE_KUBECONFIG"], providerKubeconfigMount)
 	}
-	if _, set := env["FAROS_HUB_TOKEN"]; set {
-		t.Errorf("FAROS_HUB_TOKEN set without spec.hub.tokenSecret")
+	if _, set := env["RAILGRID_HUB_TOKEN"]; set {
+		t.Errorf("RAILGRID_HUB_TOKEN set without spec.hub.tokenSecret")
 	}
 }
 
@@ -294,14 +294,14 @@ func TestEnsureProviderServePropagatesPlatformPublishingConfig(t *testing.T) {
 		counts[variable.Name]++
 	}
 	want := map[string]string{
-		"FAROS_APP_BASE_DOMAIN":      "apps.example.test",
-		"FAROS_ACCESS_PROXY_IMAGE":   "example.test/access-proxy@sha256:deadbeef",
-		"FAROS_ACCESS_HUB_URL":       "https://access-hub.internal",
-		"FAROS_ACCESS_HUB_INSECURE":  "true",
-		"FAROS_ACCESS_PUBLIC_SCHEME": "https",
-		"FAROS_APP_PUBLIC_PORT":      "10443",
-		"FAROS_GATEWAY_NAME":         "shared",
-		"FAROS_GATEWAY_NAMESPACE":    "gateway-system",
+		"RAILGRID_APP_BASE_DOMAIN":      "apps.example.test",
+		"RAILGRID_ACCESS_PROXY_IMAGE":   "example.test/access-proxy@sha256:deadbeef",
+		"RAILGRID_ACCESS_HUB_URL":       "https://access-hub.internal",
+		"RAILGRID_ACCESS_HUB_INSECURE":  "true",
+		"RAILGRID_ACCESS_PUBLIC_SCHEME": "https",
+		"RAILGRID_APP_PUBLIC_PORT":      "10443",
+		"RAILGRID_GATEWAY_NAME":         "shared",
+		"RAILGRID_GATEWAY_NAMESPACE":    "gateway-system",
 	}
 	for name, value := range want {
 		if env[name] != value {
@@ -341,13 +341,13 @@ func TestEnsureProviderServePropagatesCodingSandboxConfig(t *testing.T) {
 	for _, variable := range deployment.Spec.Template.Spec.Containers[0].Env {
 		env[variable.Name] = variable.Value
 	}
-	if got := env["FAROS_CODING_SANDBOX_ENABLED"]; got != "true" {
-		t.Errorf("FAROS_CODING_SANDBOX_ENABLED = %q, want true", got)
+	if got := env["RAILGRID_CODING_SANDBOX_ENABLED"]; got != "true" {
+		t.Errorf("RAILGRID_CODING_SANDBOX_ENABLED = %q, want true", got)
 	}
-	if got := env["FAROS_DEV_IMAGE_UNIVERSAL"]; got != provider.Spec.Development.Images["universal"] {
-		t.Errorf("FAROS_DEV_IMAGE_UNIVERSAL = %q, want %q", got, provider.Spec.Development.Images["universal"])
+	if got := env["RAILGRID_DEV_IMAGE_UNIVERSAL"]; got != provider.Spec.Development.Images["universal"] {
+		t.Errorf("RAILGRID_DEV_IMAGE_UNIVERSAL = %q, want %q", got, provider.Spec.Development.Images["universal"])
 	}
-	if got := env["FAROS_DEV_AGENT_IMAGE"]; got != provider.Spec.Development.AgentImage {
-		t.Errorf("FAROS_DEV_AGENT_IMAGE = %q, want %q", got, provider.Spec.Development.AgentImage)
+	if got := env["RAILGRID_DEV_AGENT_IMAGE"]; got != provider.Spec.Development.AgentImage {
+		t.Errorf("RAILGRID_DEV_AGENT_IMAGE = %q, want %q", got, provider.Spec.Development.AgentImage)
 	}
 }

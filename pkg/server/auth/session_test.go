@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 	"golang.org/x/oauth2"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros/pkg/browsersession"
+	"github.com/railgrid/railgrid/pkg/browsersession"
 )
 
 func TestBrowserSessionBootstrapAndLogout(t *testing.T) {
@@ -193,7 +193,7 @@ func TestBrowserSessionLogoutGETRedirectsAndExpiresCookie(t *testing.T) {
 
 func TestLegacyAuthorizeForceRequestsFreshIdentityProviderLogin(t *testing.T) {
 	handler := &Handler{
-		oauth2Config:   &oauth2.Config{ClientID: "faros", Endpoint: oauth2.Endpoint{AuthURL: "https://idp.example.test/auth"}},
+		oauth2Config:   &oauth2.Config{ClientID: "railgrid", Endpoint: oauth2.Endpoint{AuthURL: "https://idp.example.test/auth"}},
 		hubExternalURL: "https://hub.example.test",
 		rateLimiter:    newRateLimiter(defaultRateLimit, defaultBurstDuration, klog.Background()),
 	}

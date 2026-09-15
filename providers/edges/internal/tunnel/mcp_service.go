@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,15 +27,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/provider-edges/internal/haclient"
-	"github.com/faroshq/provider-edges/internal/svccatalog"
+	"github.com/railgrid/provider-edges/internal/haclient"
+	"github.com/railgrid/provider-edges/internal/svccatalog"
 )
 
 // serviceMCPImpl is advertised on `initialize` for a per-Service MCP
 // endpoint.
 var serviceMCPImpl = &mcp.Implementation{
-	Name:    "faros-edgeservice",
-	Title:   "Faros Service",
+	Name:    "railgrid-edgeservice",
+	Title:   "Railgrid Service",
 	Version: "v1alpha1",
 }
 
@@ -67,7 +67,7 @@ func (p *Server) buildServiceMCPHandler(cluster, name, kcpToken string, svc *ser
 // buildServiceMCPServer constructs the MCP server for one Service.
 func (p *Server) buildServiceMCPServer(cluster, name, kcpToken string, svc *serviceView, dialer haclient.Dialer) *mcp.Server {
 	instructions := fmt.Sprintf(
-		"You are connected to the faros Service %q (type %q) in tenant workspace %q. "+
+		"You are connected to the railgrid Service %q (type %q) in tenant workspace %q. "+
 			"Tools here drive a real service running next to an edge agent. "+
 			"The call_service tool actuates physical devices — treat it with care.",
 		name, svc.Spec.Type, cluster,

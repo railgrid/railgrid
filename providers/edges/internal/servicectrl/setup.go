@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ package servicectrl
 import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	"github.com/faroshq/provider-edges/internal/events"
+	"github.com/railgrid/provider-edges/internal/events"
 )
 
 // Options configures the servicectrl controllers.

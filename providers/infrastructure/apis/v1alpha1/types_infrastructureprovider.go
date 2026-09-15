@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// InfrastructureProvider is the desired-state config for the faros
+// InfrastructureProvider is the desired-state config for the railgrid
 // infrastructure operator. One CR drives the whole runtime: the operator reads
 // two kubeconfigs (the kcp provider kubeconfig and the runtime-cluster
 // kubeconfig) from the referenced Secrets, continuously bootstraps the provider
@@ -33,7 +33,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,categories=faros,shortName=infraprovider
+// +kubebuilder:resource:scope=Namespaced,categories=railgrid,shortName=infraprovider
 // +kubebuilder:printcolumn:name="Workspace",type=string,JSONPath=`.spec.providerWorkspace`
 // +kubebuilder:printcolumn:name="kro",type=string,JSONPath=`.spec.kro.version`
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.provider.image.tag`
@@ -50,7 +50,7 @@ type InfrastructureProvider struct {
 // InfrastructureProviderSpec is the operator's input.
 type InfrastructureProviderSpec struct {
 	// ProviderWorkspace is the kcp workspace path the provider is bootstrapped
-	// into, e.g. "root:faros:providers:infrastructure". Optional: when the
+	// into, e.g. "root:railgrid:providers:infrastructure". Optional: when the
 	// provider kubeconfig is already scoped to the provider workspace (as the
 	// admin portal issues it), the operator discovers the path from the
 	// workspace's kcp.io/path annotation, so you don't need to set this. Set it
@@ -86,23 +86,23 @@ type InfrastructureProviderSpec struct {
 
 	// Application configures the `application` template's exposure layer — the
 	// public URL apps are served on and the Gateway API parent that fulfils it.
-	// Maps onto the serve container's FAROS_APP_BASE_DOMAIN / FAROS_GATEWAY_NAME
-	// / FAROS_GATEWAY_NAMESPACE env vars. Optional; without it app exposure stays
+	// Maps onto the serve container's RAILGRID_APP_BASE_DOMAIN / RAILGRID_GATEWAY_NAME
+	// / RAILGRID_GATEWAY_NAMESPACE env vars. Optional; without it app exposure stays
 	// off (see ApplicationSpec).
 	// +optional
 	Application ApplicationSpec `json:"application,omitempty"`
 
 	// Publishing configures the template-embedded access gate. The provider
-	// substitutes these values into template graphs as ${faros.*} tokens
+	// substitutes these values into template graphs as ${railgrid.*} tokens
 	// (gate image, hub endpoints); tenants cannot override them.
 	// +optional
 	Publishing PublishingSpec `json:"publishing,omitempty"`
 
 	// Development configures the platform-managed development-mode images
-	// (docs/app-studio-template-sandboxes.md): the faros-dev-agent injector
+	// (docs/app-studio-template-sandboxes.md): the railgrid-dev-agent injector
 	// and the per-toolchain dev images substituted for
-	// ${faros.devImage.<toolchain>} tokens. Maps onto the serve container's
-	// FAROS_DEV_AGENT_IMAGE / FAROS_DEV_IMAGE_<TOOLCHAIN> env vars. Optional;
+	// ${railgrid.devImage.<toolchain>} tokens. Maps onto the serve container's
+	// RAILGRID_DEV_AGENT_IMAGE / RAILGRID_DEV_IMAGE_<TOOLCHAIN> env vars. Optional;
 	// the node toolchain and the agent have in-binary defaults. These images
 	// run tenant code — production should pin digests.
 	// +optional
@@ -134,7 +134,7 @@ type InfrastructureProviderSpec struct {
 // RuntimeClass here.
 type SandboxSpec struct {
 	// RuntimeClassName is stamped as spec.runtimeClassName on every
-	// synthesized development pod (FAROS_SANDBOX_RUNTIME_CLASS_NAME). It must
+	// synthesized development pod (RAILGRID_SANDBOX_RUNTIME_CLASS_NAME). It must
 	// name a RuntimeClass that exists on the runtime cluster, typically
 	// "gvisor" or "kata". Empty keeps the cluster default runtime.
 	// +optional
@@ -155,25 +155,25 @@ type CodingSandboxSpec struct {
 }
 
 // PublishingSpec is operator-owned configuration for the template-embedded
-// access gate (faros-access-proxy).
+// access gate (railgrid-access-proxy).
 type PublishingSpec struct {
 	// BaseDomain is the DNS zone allocated to published apps.
 	// +optional
 	BaseDomain string `json:"baseDomain,omitempty"`
 
 	// AccessProxyImage is the complete image reference for
-	// faros-access-proxy, preferably pinned by digest.
+	// railgrid-access-proxy, preferably pinned by digest.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	AccessProxyImage string `json:"accessProxyImage,omitempty"`
 
-	// HubURL is the internal Faros hub URL used only for the app-access
+	// HubURL is the internal Railgrid hub URL used only for the app-access
 	// authorize/callback/check protocol.
 	// +optional
 	// +kubebuilder:validation:MaxLength=2048
 	HubURL string `json:"hubURL,omitempty"`
 
-	// HubPublicURL is the browser-reachable Faros hub origin used for login
+	// HubPublicURL is the browser-reachable Railgrid hub origin used for login
 	// redirects. It may differ from HubURL, which access proxies use for
 	// in-cluster exchange and authorization checks.
 	// +optional
@@ -206,23 +206,23 @@ type PublishingSpec struct {
 
 // DevelopmentSpec configures the dev-mode image set.
 type DevelopmentSpec struct {
-	// AgentImage is the injector image carrying the static faros-dev-agent
-	// binary (FAROS_DEV_AGENT_IMAGE). Empty → the in-binary default.
+	// AgentImage is the injector image carrying the static railgrid-dev-agent
+	// binary (RAILGRID_DEV_AGENT_IMAGE). Empty → the in-binary default.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	AgentImage string `json:"agentImage,omitempty"`
 
 	// Images maps a toolchain name (the <toolchain> in a template's
-	// ${faros.devImage.<toolchain>} token; lowercase, dashes) to its image
-	// (FAROS_DEV_IMAGE_<TOOLCHAIN>). A template referencing an unconfigured
+	// ${railgrid.devImage.<toolchain>} token; lowercase, dashes) to its image
+	// (RAILGRID_DEV_IMAGE_<TOOLCHAIN>). A template referencing an unconfigured
 	// toolchain (other than the defaulted "node") fails setup.
 	// +optional
 	Images map[string]string `json:"images,omitempty"`
 }
 
 // ApplicationSpec configures the `application` template exposure layer. The
-// fields map 1:1 to the serve container's FAROS_APP_BASE_DOMAIN,
-// FAROS_GATEWAY_NAME and FAROS_GATEWAY_NAMESPACE environment variables. See
+// fields map 1:1 to the serve container's RAILGRID_APP_BASE_DOMAIN,
+// RAILGRID_GATEWAY_NAME and RAILGRID_GATEWAY_NAMESPACE environment variables. See
 // docs/application-template-architecture.md.
 type ApplicationSpec struct {
 	// BaseDomain is the DNS zone apps are served under, e.g. "apps.example.com".
@@ -236,7 +236,7 @@ type ApplicationSpec struct {
 	// Gateway identifies the ONE Gateway API parent every template's generated
 	// HTTPRoutes attach to — 3-tier apps and sandbox previews alike (cfgate's
 	// cloudflare-tunnel in prod, an envoy Gateway locally). Its name/namespace
-	// are substituted for the ${faros.gatewayName} / ${faros.gatewayNamespace}
+	// are substituted for the ${railgrid.gatewayName} / ${railgrid.gatewayNamespace}
 	// tokens in a Template's backendConfig before the kro RGD is authored.
 	// Empty fields fall back to the in-binary default ("cloudflare-tunnel" in
 	// "cfgate-system").
@@ -268,7 +268,7 @@ type SecretKeyRef struct {
 
 // HubSpec configures provider → hub heartbeats.
 type HubSpec struct {
-	// URL is the faros hub base URL.
+	// URL is the railgrid hub base URL.
 	// +optional
 	URL string `json:"url,omitempty"`
 	// Insecure skips TLS verification on heartbeats (dev).
@@ -281,7 +281,7 @@ type HubSpec struct {
 
 // ImageSpec is a container image reference split into repository + tag.
 type ImageSpec struct {
-	// Repository is the image repository, e.g. ghcr.io/faroshq/...
+	// Repository is the image repository, e.g. ghcr.io/railgrid/...
 	// +optional
 	Repository string `json:"repository,omitempty"`
 	// Tag is the image tag, e.g. v0.1.0.

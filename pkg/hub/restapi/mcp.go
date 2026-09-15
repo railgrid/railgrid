@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,13 +22,13 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
 )
 
 // mcpClientServerName is the friendly name connect snippets give the server
 // entry in the user's MCP client config.
-const mcpClientServerName = "faros"
+const mcpClientServerName = "railgrid"
 
 // mcpServerBody is the create/update payload for an MCPServer.
 type mcpServerBody struct {

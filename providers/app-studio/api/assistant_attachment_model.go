@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/faroshq/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 const (
@@ -45,11 +45,11 @@ const (
 	projectAssistantAttachmentInlineTextMaxBytes   = 32 << 10
 	projectAssistantAttachmentReadMaxBytes         = 64 << 10
 	projectAssistantAttachmentImageMaxBytes        = store.AttachmentMaxImageBytes
-	projectAssistantAttachmentMessageKindKey       = "faros.app-studio.attachment-message"
-	projectAssistantAttachmentMessageIDKey         = "faros.app-studio.attachment-id"
-	projectAssistantAttachmentMessageFilenameKey   = "faros.app-studio.attachment-filename"
-	projectAssistantAttachmentMessageReceiptsKey   = "faros.app-studio.attachment-receipts"
-	projectAssistantHistoricalAttachmentMessageKey = "faros.app-studio.historical-attachment-message"
+	projectAssistantAttachmentMessageKindKey       = "railgrid.app-studio.attachment-message"
+	projectAssistantAttachmentMessageIDKey         = "railgrid.app-studio.attachment-id"
+	projectAssistantAttachmentMessageFilenameKey   = "railgrid.app-studio.attachment-filename"
+	projectAssistantAttachmentMessageReceiptsKey   = "railgrid.app-studio.attachment-receipts"
+	projectAssistantHistoricalAttachmentMessageKey = "railgrid.app-studio.historical-attachment-message"
 	projectToolReadAttachment                      = "read_attachment"
 	// These bounds apply to one newly submitted model input. Historical images
 	// are retained on their originating messages until normal compaction, so a

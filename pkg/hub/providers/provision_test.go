@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ func newRBACDynamicFake() dynamic.Interface {
 	)
 }
 
-// ===== the generated faros:provider role =====
+// ===== the generated railgrid:provider role =====
 
 // rulesFor collects every rule covering (group, resource). More than one is
 // normal: apiexports carries an ordinary CRUD rule and a separate `bind` rule.
@@ -125,8 +125,8 @@ func TestProviderClusterRoleCoversWhatProvidersActuallyDo(t *testing.T) {
 		{"apis.kcp.io", "apiexports", "bind", "install.ApplyBindGrant writes the tenant bind ClusterRole"},
 		{"cache.kcp.io", "cachedresources", "create", "the infrastructure provider's virtual storage"},
 		{"core.kcp.io", "logicalclusters", "get", "install.workspacePathOf, the org-owned check"},
-		{"providers.faros.sh", "catalogentries", "update", "install.ApplyCatalogEntry self-registration"},
-		{"providers.faros.sh", "catalogentries/status", "patch", "the provider reports its own status"},
+		{"providers.railgrid.ai", "catalogentries", "update", "install.ApplyCatalogEntry self-registration"},
+		{"providers.railgrid.ai", "catalogentries/status", "patch", "the provider reports its own status"},
 		{"rbac.authorization.k8s.io", "clusterrolebindings", "delete", "install.removeBindGrant for org-owned workspaces"},
 		{"apiextensions.k8s.io", "customresourcedefinitions", "create", "per-template CRDs"},
 		{"", "secrets", "create", "runtime identity minting"},

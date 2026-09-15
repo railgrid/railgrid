@@ -8,7 +8,7 @@ import { renderToString } from 'vue/server-renderer'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: '/tmp/faros-vite-new-project-wizard',
+  cacheDir: '/tmp/railgrid-vite-new-project-wizard',
   configFile: false,
   plugins: [vue()],
   server: { middlewareMode: true, hmr: false },
@@ -204,9 +204,9 @@ test('wizard handoff keeps the existing readiness and project/thread start path 
   assert.match(startPath, /startPreProjectAssistantTurn\(projectName, submission, thread\.id(?:, current)?\)/)
 })
 
-test('landing intake uses a compact Faros composer with concrete prompts and a repository popover', () => {
-  assert.match(appSource, /What are we building in Faros today\?/)
-  assert.match(appSource, /Describe what you want to build\. Faros turns your idea into a blueprint[\s\S]*before anything is created/)
+test('landing intake uses a compact Railgrid composer with concrete prompts and a repository popover', () => {
+  assert.match(appSource, /What are we building in Railgrid today\?/)
+  assert.match(appSource, /Describe what you want to build\. Railgrid turns your idea into a blueprint[\s\S]*before anything is created/)
   assert.match(appSource, /<label for="landing-project-prompt" class="sr-only">\s*Describe what you want to build\s*<\/label>/)
   assert.match(appSource, /input-id="landing-project-prompt"/)
   assert.match(preProjectComposerSource, /:id="inputId"[\s\S]*placeholder:text-text-secondary[\s\S]*:placeholder="placeholder"/)

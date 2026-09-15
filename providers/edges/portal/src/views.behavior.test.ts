@@ -203,7 +203,7 @@ const edge = { name: 'edge-a', type: 'kubernetes', connected: true }
 const service = { name: 'svc-a', edgeName: 'edge-a', serviceType: 'generic', phase: 'Ready' }
 const edgeDetail = {
   ...edge,
-  apiVersion: 'edges.faros.sh/v1alpha1',
+  apiVersion: 'edges.railgrid.ai/v1alpha1',
   kind: 'KubernetesCluster',
   conditions: [],
   rawObject: { metadata: { name: 'edge-a' } },
@@ -1291,7 +1291,7 @@ describe('edge detail actions', () => {
         cluster: 'tenant-macos',
         token: null,
       })).replaceAll('&quot;', '"')
-      expect(rendered).toContain('sudo faros agent join')
+      expect(rendered).toContain('sudo railgrid agent join')
       expect(rendered).toContain('--hub-url https://console.dev.kyrosos.com/clusters/tenant-macos')
       expect(rendered).toContain('--edge-name mac-mini')
       expect(rendered).toContain('--type macos')
@@ -1318,7 +1318,7 @@ describe('edge detail actions', () => {
         const state = mounted.instance.setupState
         await state.copy(state.joinCommand, 'join', 'agent join command')
         expect(writeText).toHaveBeenCalledWith(expect.stringContaining('--token join-secret'))
-        expect(writeText.mock.calls[0][0]).toContain('sudo faros agent join')
+        expect(writeText.mock.calls[0][0]).toContain('sudo railgrid agent join')
       } finally {
         mounted.unmount()
         Object.defineProperty(globalThis, 'navigator', {
@@ -1378,7 +1378,7 @@ describe('edge detail actions', () => {
       expect(rendered).toContain('1/2 Ready')
       expect(rendered).not.toContain('Open terminal')
       expect(rendered).not.toContain('SSH access')
-      expect(rendered).not.toContain('faros ssh')
+      expect(rendered).not.toContain('railgrid ssh')
       expect(rendered).not.toContain('kubectl')
     } finally {
       mounted.unmount()
@@ -1504,7 +1504,7 @@ describe('edge onboarding controls', () => {
       ...(successPath.startsWith('deploy/') ? { requiredType: 'kubernetes' as const } : {}),
     })
     const mounted = await mount(App, {
-      ctx: { tenant: 'root:faros:tenant', token: 'token', user: { sub: 'user' }, subPath },
+      ctx: { tenant: 'root:railgrid:tenant', token: 'token', user: { sub: 'user' }, subPath },
     })
     try {
       await flush()
@@ -1554,7 +1554,7 @@ describe('edge onboarding controls', () => {
       const state = mounted.instance.setupState
       state.name = 'mac-mini'
       state.edgeType = 'macos'
-      expect(state.cliSnippet('join-secret')).toBe(`sudo faros agent join \\
+      expect(state.cliSnippet('join-secret')).toBe(`sudo railgrid agent join \\
   --hub-url https://console.dev.kyrosos.com/clusters/tenant-macos \\
   --edge-name mac-mini \\
   --type macos \\
@@ -1612,8 +1612,8 @@ describe('edge onboarding controls', () => {
     try {
       const state = mounted.instance.setupState
       state.joinToken = 'join-secret'
-      await state.copy((token: string) => `faros agent join --token ${token}`, 'cli', 'CLI command')
-      expect(writeText).toHaveBeenCalledWith('faros agent join --token join-secret')
+      await state.copy((token: string) => `railgrid agent join --token ${token}`, 'cli', 'CLI command')
+      expect(writeText).toHaveBeenCalledWith('railgrid agent join --token join-secret')
       expect(state.copied).toBe('cli')
       expect(state.copyFeedback).toBe('CLI command copied to clipboard.')
     } finally {
@@ -1637,7 +1637,7 @@ describe('edge onboarding controls', () => {
     })
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
-      value: { location: { origin: 'https://faros.test' } },
+      value: { location: { origin: 'https://railgrid.test' } },
     })
     const mounted = await mount(Wizard, { cluster: null })
     try {

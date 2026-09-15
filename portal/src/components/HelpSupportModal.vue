@@ -5,9 +5,9 @@ import { useEscapeKey } from '@/composables/useEscapeKey'
 
 const emit = defineEmits<{ close: [] }>()
 
-const docsURL = 'https://faros.sh/docs/'
+const docsURL = 'https://railgrid.ai/docs/'
 const discordURL = 'https://discord.gg/VjUA7zyhC'
-const issuesURL = 'https://github.com/faroshq/faros/issues'
+const issuesURL = 'https://github.com/railgrid/railgrid/issues'
 
 useEscapeKey(() => emit('close'))
 
@@ -118,7 +118,7 @@ onBeforeUnmount(() => {
               <span class="min-w-0">
                 <span class="block text-[12px] font-semibold text-text-primary">Discord community</span>
                 <span class="mt-0.5 block text-[11px] leading-relaxed text-text-secondary">
-                  Ask questions and compare approaches with people building Faros.
+                  Ask questions and compare approaches with people building Railgrid.
                 </span>
               </span>
               <span class="flex items-center gap-1.5 text-[10px] font-semibold text-text-secondary transition-colors group-hover:text-text-primary">

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,8 +32,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/hub/mcpaggregate"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
 )
 
 // proxyRun feeds lines to a proxy aimed at srv and returns what it wrote to
@@ -165,7 +165,7 @@ func TestMCPProxyRetriesOnceAfter401(t *testing.T) {
 	accept.Store(false)
 	resolves.Store(10)
 	got = proxyRun(t, resolve, `{"jsonrpc":"2.0","id":"a","method":"tools/list","params":{}}`)
-	if len(got) != 1 || !strings.Contains(got[0], `"id":"a"`) || !strings.Contains(got[0], "run 'faros login'") {
+	if len(got) != 1 || !strings.Contains(got[0], `"id":"a"`) || !strings.Contains(got[0], "run 'railgrid login'") {
 		t.Fatalf("stdout = %v, want a JSON-RPC error for id \"a\" with a login hint", got)
 	}
 }
@@ -195,13 +195,13 @@ func TestMCPProxyReportsFailuresAsJSONRPCErrors(t *testing.T) {
 	var calls atomic.Int32
 	resolve := func(context.Context) (*mcpProxyTarget, error) {
 		calls.Add(1)
-		return nil, errors.New(`no "faros" context found in kubeconfig — run 'faros login' first`)
+		return nil, errors.New(`no "railgrid" context found in kubeconfig — run 'railgrid login' first`)
 	}
 	got = proxyRun(t, resolve,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
 	)
-	if len(got) != 2 || !strings.Contains(got[0], "faros login") {
+	if len(got) != 2 || !strings.Contains(got[0], "railgrid login") {
 		t.Fatalf("stdout = %v, want two JSON-RPC errors with the login hint", got)
 	}
 	if n := calls.Load(); n != 2 {

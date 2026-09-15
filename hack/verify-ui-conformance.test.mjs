@@ -18,7 +18,7 @@ const BASE_CONFIG = {
 }
 
 function fixtureRepo(entries, config = {}) {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'faros-ui-conformance-'))
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'railgrid-ui-conformance-'))
   fs.mkdirSync(path.join(repoRoot, 'provider-sdk/portalkit'), { recursive: true })
   fs.mkdirSync(path.join(repoRoot, 'docs/design/quality'), { recursive: true })
   fs.writeFileSync(path.join(repoRoot, 'docs/design/quality/exceptions.md'), `---
@@ -83,7 +83,7 @@ function writeDesignEntry(repoRoot, id) {
 
 test('accepts k-* recipes, known tokens, and true circles', () => {
   const fixture = fixtureRepo({
-    'providers/fixture/portal/src/App.vue': `<template><section class="k-card"><span class="k-badge">Ready</span><i class="k-dot" /><button class="h-6 w-0 rounded-full" :class="'group-hover:w-6'" /></section></template>\n<style>\n.faros-provider-fixture .feature { color: var(--color-accent); border-radius: 6px; }\n.faros-provider-fixture .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-success); }\n</style>\n`,
+    'providers/fixture/portal/src/App.vue': `<template><section class="k-card"><span class="k-badge">Ready</span><i class="k-dot" /><button class="h-6 w-0 rounded-full" :class="'group-hover:w-6'" /></section></template>\n<style>\n.railgrid-provider-fixture .feature { color: var(--color-accent); border-radius: 6px; }\n.railgrid-provider-fixture .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-success); }\n</style>\n`,
     'providers/fixture/portal/src/portalkit/legacy.ts': `document.body.className = 'pk-old';\n`,
     'providers/fixture/portal/src/comments.ts': `// pk-old data-pk ⚙ →\n/* old .k-card */\n`,
     'providers/fixture/portal/dist/bundle.js': `window.alert('dist is not application source')\n`,
@@ -150,7 +150,7 @@ test('allows prose arrows and page layout names but catches icon content and res
 
 test('scans canonical CSS and multiline control glyph context', () => {
   const fixture = fixtureRepo({
-    'provider-sdk/portalkit/faros-ui.css': `.k-icon::before {\n  content:\n    "⚙";\n}\n`,
+    'provider-sdk/portalkit/railgrid-ui.css': `.k-icon::before {\n  content:\n    "⚙";\n}\n`,
     'providers/fixture/portal/src/multiline.vue': `<template>
   <p>Move A
     →
@@ -171,7 +171,7 @@ test('scans canonical CSS and multiline control glyph context', () => {
   const result = fixture.run()
   const glyphs = result.diagnostics.filter((diagnostic) => diagnostic.rule === RULES.FORBIDDEN_GLYPH)
   assert.equal(glyphs.length, 3)
-  assert.equal(glyphs.filter((diagnostic) => diagnostic.path.endsWith('faros-ui.css')).length, 1)
+  assert.equal(glyphs.filter((diagnostic) => diagnostic.path.endsWith('railgrid-ui.css')).length, 1)
   assert.equal(glyphs.filter((diagnostic) => diagnostic.path.endsWith('multiline.vue')).length, 2)
   assert.ok(!glyphs.some((diagnostic) => diagnostic.match === '→'))
   assert.ok(glyphs.some((diagnostic) => diagnostic.match === '⚙'))
@@ -180,15 +180,15 @@ test('scans canonical CSS and multiline control glyph context', () => {
 
 test('keeps the canonical stylesheet handoff and native table-row contract', () => {
   const styles = fs.readFileSync(new URL('../provider-sdk/portalkit/styles.ts', import.meta.url), 'utf8')
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const hostCss = fs.readFileSync(new URL('../portal/src/assets/main.css', import.meta.url), 'utf8')
   const table = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceTable.vue', import.meta.url), 'utf8')
 
-  assert.match(styles, /import farosUIStyles from '\.\/faros-ui\.css\?inline'/)
-  assert.match(css, /--faros-ui-canonical:\s*1/)
-  assert.match(hostCss, /@import "\.\/faros-ui\.css" layer\(components\);/)
+  assert.match(styles, /import railgridUIStyles from '\.\/railgrid-ui\.css\?inline'/)
+  assert.match(css, /--railgrid-ui-canonical:\s*1/)
+  assert.match(hostCss, /@import "\.\/railgrid-ui\.css" layer\(components\);/)
   assert.match(styles, /Never mutate an existing style element/)
-  assert.doesNotMatch(styles, /style\.textContent !== farosUIStyles/)
+  assert.doesNotMatch(styles, /style\.textContent !== railgridUIStyles/)
   assert.match(table, /:tabindex="interactive \? 0 : undefined"/)
   assert.match(table, /@keydown="onRowKeydown\(row, \$event\)"/)
   assert.match(table, /isExplicitControlTarget/)
@@ -196,7 +196,7 @@ test('keeps the canonical stylesheet handoff and native table-row contract', () 
 })
 
 test('keeps the responsive ResourcePage title canonical across provider detail views', () => {
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const codeStyle = fs.readFileSync(new URL('../providers/code/portal/src/style.css', import.meta.url), 'utf8')
   const edgesStyle = fs.readFileSync(new URL('../providers/edges/portal/src/style.css', import.meta.url), 'utf8')
   const resourcePage = css.match(/\.k-resource-page\s*\{([^}]*)\}/s)?.[1] ?? ''
@@ -250,7 +250,7 @@ test('keeps the responsive ResourcePage title canonical across provider detail v
 
 test('keeps the ResourcePage title-first metadata and actions contract canonical', () => {
   const page = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourcePage.vue', import.meta.url), 'utf8')
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const title = page.indexOf('<h1 class="k-resource-page__title">')
   const meta = page.indexOf('class="k-resource-page__meta"')
   const subtitle = page.indexOf('class="k-resource-page__subtitle"')
@@ -294,7 +294,7 @@ test('keeps the ResourcePage title-first metadata and actions contract canonical
 
 test('keeps ResourcePage read-state announcements centralized and resilient', () => {
   const page = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourcePage.vue', import.meta.url), 'utf8')
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
 
   assert.match(page, /props\.loaded === false && !props\.error/)
   assert.match(page, /const showInitialLoading = useDelayedLoading\(initialReadPending\)/)
@@ -316,7 +316,7 @@ test('keeps ResourcePage read-state announcements centralized and resilient', ()
 
 test('keeps ResourceBackLink browser affordances and disabled state canonical', () => {
   const back = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceBackLink.vue', import.meta.url), 'utf8')
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
 
   assert.match(back, /if \(props\.disabled\) \{[\s\S]*event\.preventDefault\(\)[\s\S]*return/)
   assert.match(back, /event\.button !== 0/)
@@ -332,7 +332,7 @@ test('keeps ResourceBackLink browser affordances and disabled state canonical', 
 })
 
 test('keeps sidebar divider and child toggles on the borderless text-button recipe', () => {
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const layout = fs.readFileSync(new URL('../portal/src/components/AppLayout.vue', import.meta.url), 'utf8')
 
   assert.match(css, /\.k-btn--text\s*\{[^}]*background:\s*transparent;[^}]*border-color:\s*transparent;/s)
@@ -341,7 +341,7 @@ test('keeps sidebar divider and child toggles on the borderless text-button reci
 })
 
 test('keeps page-level back navigation intrinsic-width on the shared recipe', () => {
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const provision = fs.readFileSync(new URL('../providers/infrastructure/portal/src/views/ProvisionPage.vue', import.meta.url), 'utf8')
 
   assert.match(css, /\.k-back-action\s*\{[^}]*align-self:\s*flex-start;[^}]*inline-size:\s*fit-content;/s)
@@ -349,7 +349,7 @@ test('keeps page-level back navigation intrinsic-width on the shared recipe', ()
 })
 
 test('keeps resource-table controls and wide-table scrolling in the canonical recipe', () => {
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const table = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceTable.vue', import.meta.url), 'utf8')
   const sync = fs.readFileSync(new URL('./sync-portalkit.sh', import.meta.url), 'utf8')
 
@@ -477,7 +477,7 @@ test('keeps ResourceTable quiet color roles above their contrast floors in both 
 
 test('keeps selected and tinted PortalKit controls readable in both themes', () => {
   const host = fs.readFileSync(new URL('../portal/src/assets/main.css', import.meta.url), 'utf8')
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const dark = host.match(/@theme\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
   const light = host.match(/html\.light\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
 
@@ -541,7 +541,7 @@ test('keeps selected and tinted PortalKit controls readable in both themes', () 
 test('keeps PortalKit confirmations scoped, safe, and geometry-compatible', () => {
   const vue = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ConfirmDialog.vue', import.meta.url), 'utf8')
   const vanilla = fs.readFileSync(new URL('../provider-sdk/portalkit/modal.ts', import.meta.url), 'utf8')
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
 
   assert.match(vue, /@keydown="onKeydown"/)
   assert.doesNotMatch(vue, /window\.addEventListener\('keydown'/)
@@ -595,7 +595,7 @@ test('gives every ResourceTable caller a descriptive table and scroll-region nam
 
 test('keeps generic resource-table icon actions accessible, toned, and vendored', () => {
   const action = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceTableActionButton.vue', import.meta.url), 'utf8')
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const sync = fs.readFileSync(new URL('./sync-portalkit.sh', import.meta.url), 'utf8')
 
   assert.match(action, /icon: Component/)
@@ -625,7 +625,7 @@ test('keeps generic resource-table icon actions accessible, toned, and vendored'
 })
 
 test('keeps resource section cards bounded and supports headerless sections', () => {
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const sectionCard = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceSectionCard.vue', import.meta.url), 'utf8')
   const card = css.match(/\.k-resource-section-card\s*\{([^}]*)\}/s)?.[1] ?? ''
 
@@ -671,7 +671,7 @@ test('keeps platform-admin flat lists and navigation on shared host patterns', (
 })
 
 test('keeps dense checkboxes compact without decorative focus glow', () => {
-  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const checkbox = css.match(/\.k-checkbox\s*\{([^}]*)\}/)?.[1] ?? ''
   const focus = css.match(/\.k-checkbox:focus\s*\{([^}]*)\}/)?.[1] ?? ''
   const focusVisible = css.match(/\.k-checkbox:focus-visible\s*\{([^}]*)\}/)?.[1] ?? ''
@@ -688,7 +688,7 @@ test('keeps dense checkboxes compact without decorative focus glow', () => {
 })
 
 test('supports an exact, design-referenced exception and rejects stale locators', () => {
-  const source = 'faros-provider-fixture .bubble {\n  border-radius: 14px;\n}\n'
+  const source = 'railgrid-provider-fixture .bubble {\n  border-radius: 14px;\n}\n'
   const valid = fixtureRepo({ 'providers/fixture/portal/src/style.css': source })
   const validResult = valid.run({
     exceptions: {
@@ -842,16 +842,16 @@ test('canonical roots are replaceable without weakening provider scanning', () =
 
 test('scans host and standalone surfaces while recognizing exact authorities', () => {
   const fixture = fixtureRepo({
-    'portal/src/assets/faros-ui.css': '.k-card { color: var(--color-text-primary); }\n',
+    'portal/src/assets/railgrid-ui.css': '.k-card { color: var(--color-text-primary); }\n',
     'portal/src/assets/main.css': ':root { --color-surface: #0a0b12; }\n.bad { color: #abc; }\n',
     'providers/fixture/portal/public/index.html': '<style>:root { --color-surface: #0a0b12; } body { color: #abc; }</style>\n',
   }, {
     providerRoots: ['portal', 'providers/*/portal'],
-    canonicalConsumerPaths: ['portal/src/assets/faros-ui.css'],
+    canonicalConsumerPaths: ['portal/src/assets/railgrid-ui.css'],
     tokenAuthorityPaths: ['portal/src/assets/main.css', 'providers/fixture/portal/public/index.html'],
   })
   const result = fixture.run()
-  assert.ok(result.files.includes('portal/src/assets/faros-ui.css'))
+  assert.ok(result.files.includes('portal/src/assets/railgrid-ui.css'))
   assert.ok(result.files.includes('providers/fixture/portal/public/index.html'))
   assert.ok(!result.diagnostics.some((diagnostic) => diagnostic.rule === RULES.PROVIDER_K_SELECTOR))
   assert.equal(result.diagnostics.filter((diagnostic) => diagnostic.rule === RULES.RAW_COLOR).length, 2)

@@ -1,4 +1,4 @@
-apiVersion: infrastructure.faros.sh/v1alpha1
+apiVersion: infrastructure.railgrid.ai/v1alpha1
 kind: Template
 metadata:
   name: worker
@@ -55,7 +55,7 @@ spec:
           the first connection instead of exiting, and run schema
           creation/migrations idempotently inside that same retry loop.
 
-      DEVELOPMENT MODE (provision with farosMode: development): the image
+      DEVELOPMENT MODE (provision with railgridMode: development): the image
       input is ignored (and may be omitted) — the platform runs a Node.js dev
       container against the project workspace (workspacePath "."). The dev
       process is `npm run dev` (falling back to `npm start`); push source with
@@ -65,7 +65,7 @@ spec:
       INPUTS you set when provisioning: name (required); image (required in
       production, ignored in development), replicas, env (env-var map; not for
       secrets), connections.database / connections.cache (see CONNECTIONS).
-      All except name and farosMode can be changed later with
+      All except name and railgridMode can be changed later with
       update_instance.
     outputs:
       - "status.ready — ready replica count for the worker Deployment."
@@ -77,7 +77,7 @@ spec:
           - label: Worker
             path: status.ready
   instanceCRD:
-    group: infrastructure.faros.sh
+    group: infrastructure.railgrid.ai
     version: v1alpha1
     resource: workers
     kind: Worker
@@ -89,7 +89,7 @@ spec:
         description: "Logical name; used as the Deployment name in the tenant namespace."
       image:
         type: string
-        description: "Container image running the background process. Required in production mode; ignored (and may be omitted) when farosMode is development — dev mode runs the platform dev image against the project workspace."
+        description: "Container image running the background process. Required in production mode; ignored (and may be omitted) when railgridMode is development — dev mode runs the platform dev image against the project workspace."
       replicas:
         type: integer
         default: 1
@@ -123,9 +123,9 @@ spec:
     required:
       - name
     # The image is only required when the instance actually runs it: production
-    # mode. Enforced on the kcp-side CRD; farosMode defaults to "production".
+    # mode. Enforced on the kcp-side CRD; railgridMode defaults to "production".
     x-kubernetes-validations:
-      - rule: "(has(self.farosMode) && self.farosMode == 'development') || has(self.image)"
+      - rule: "(has(self.railgridMode) && self.railgridMode == 'development') || has(self.image)"
         message: "image is required in production mode"
 
   # ── Development mode (docs/app-studio-template-sandboxes.md) ──────────
@@ -136,7 +136,7 @@ spec:
     components:
       worker:
         workspacePath: .
-        devImage: "${faros.devImage.node}"
+        devImage: "${railgrid.devImage.node}"
         workingDir: /workspace
         startCommand: "npm run dev || npm start"
         reload:

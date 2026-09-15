@@ -7,20 +7,20 @@ their own.
 
 ## What each label / annotation buys you
 
-The faros provider's RGD discovery (in `providers/infrastructure/
+The railgrid provider's RGD discovery (in `providers/infrastructure/
 kro/templates.go`) looks for these keys verbatim:
 
 | Key | Purpose |
 |---|---|
-| `faros.sh/expose=true` (label) | gates visibility — required |
-| `faros.sh/template-name` (label) | catalog slug; defaults to `metadata.name` |
-| `faros.sh/template-version` (label) | required when provisioning, for safety |
-| `faros.sh/category` (label) | filter chip in the catalog grid |
-| `faros.sh/cloud` (label) | filter chip + maps credential schema |
-| `faros.sh/display-name` (annotation) | human-readable name |
-| `faros.sh/description` (annotation) | one-line blurb shown on the card |
-| `faros.sh/icon-url` (annotation) | optional asset URL |
-| `faros.sh/sample-values` (annotation) | JSON-encoded form pre-fill |
+| `railgrid.ai/expose=true` (label) | gates visibility — required |
+| `railgrid.ai/template-name` (label) | catalog slug; defaults to `metadata.name` |
+| `railgrid.ai/template-version` (label) | required when provisioning, for safety |
+| `railgrid.ai/category` (label) | filter chip in the catalog grid |
+| `railgrid.ai/cloud` (label) | filter chip + maps credential schema |
+| `railgrid.ai/display-name` (annotation) | human-readable name |
+| `railgrid.ai/description` (annotation) | one-line blurb shown on the card |
+| `railgrid.ai/icon-url` (annotation) | optional asset URL |
+| `railgrid.ai/sample-values` (annotation) | JSON-encoded form pre-fill |
 
 Add your own RGDs here following the same conventions — `dev-kro-seed`
 applies the whole directory recursively.

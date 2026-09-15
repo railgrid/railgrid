@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createServer } from 'vite'
 
-const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/faros-vite-assistant-message-queue', configFile: false, server: { middlewareMode: true, hmr: false } })
+const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/railgrid-vite-assistant-message-queue', configFile: false, server: { middlewareMode: true, hmr: false } })
 const queue = await vite.ssrLoadModule('/src/assistantMessageQueue.ts')
 test.after(async () => vite.close())
 

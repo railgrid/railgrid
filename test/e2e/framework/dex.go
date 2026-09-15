@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,26 +33,26 @@ const (
 	// DexIssuerURL is the OIDC issuer URL used by both the hub pod (cluster
 	// DNS) and the test runner (/etc/hosts alias to localhost). HTTPS so
 	// embedded kcp's authentication validator (which mandates scheme=https)
-	// accepts it; the cert is signed by the faros-selfsigned ClusterIssuer
+	// accepts it; the cert is signed by the railgrid-selfsigned ClusterIssuer
 	// and clients use InsecureSkipVerify.
-	DexIssuerURL = "https://dex.faros-system.svc.cluster.local:5554/dex"
+	DexIssuerURL = "https://dex.railgrid-system.svc.cluster.local:5554/dex"
 
 	// DexExternalHost is added to the test runner's /etc/hosts as 127.0.0.1
 	// so it can reach the in-cluster Dex via the kind port mapping.
-	DexExternalHost = "dex.faros-system.svc.cluster.local"
+	DexExternalHost = "dex.railgrid-system.svc.cluster.local"
 
 	// DexClientID / DexClientSecret are the OAuth2 credentials for the hub.
-	DexClientID     = "faros"
-	DexClientSecret = "faros-test-secret"
+	DexClientID     = "railgrid"
+	DexClientSecret = "railgrid-test-secret"
 
 	// DexTestUserEmail / DexTestUserPassword are the static-password credentials
 	// seeded in Dex for e2e OIDC tests (primary user / User A).
-	DexTestUserEmail    = "admin@test.faros.local"
+	DexTestUserEmail    = "admin@test.railgrid.local"
 	DexTestUserPassword = "Password1!"
 
 	// DexTestUser2Email / DexTestUser2Password are the credentials for the second
 	// Dex static-password user, used in cross-user isolation tests (issue #79).
-	DexTestUser2Email    = "user2@test.faros.local"
+	DexTestUser2Email    = "user2@test.railgrid.local"
 	DexTestUser2Password = "Password1!"
 )
 

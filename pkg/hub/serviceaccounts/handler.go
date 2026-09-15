@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,8 +24,8 @@ import (
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/hub/tenant"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
 // Handler is the HTTP surface for the ServiceAccount REST endpoints
@@ -40,7 +40,7 @@ import (
 // already returns "admin" for them — no extra check needed here.
 //
 // URL → header consistency: the path UUIDs (org, ws) and the headers
-// (X-Faros-Org, X-Faros-Workspace) must match. The middleware
+// (X-Railgrid-Org, X-Railgrid-Workspace) must match. The middleware
 // authenticates on headers; the handler rejects 400 if the path
 // disagrees.
 type Handler struct {

@@ -2,13 +2,13 @@
 layout: default
 title: Security
 nav_order: 3
-description: "Authentication options for Faros — static tokens and OIDC"
+description: "Authentication options for Railgrid — static tokens and OIDC"
 ---
 
 # Security
 {: .no_toc }
 
-Configure authentication for your Faros hub.
+Configure authentication for your Railgrid hub.
 {: .fs-6 .fw-300 }
 
 ## Table of contents
@@ -21,7 +21,7 @@ Configure authentication for your Faros hub.
 
 ## Overview
 
-Faros supports two authentication methods:
+Railgrid supports two authentication methods:
 
 | Method | Use Case | Complexity |
 |:-------|:---------|:-----------|
@@ -69,7 +69,7 @@ hub:
 Or pass it directly when running the binary:
 
 ```bash
-faros-hub \
+railgrid-hub \
   --static-auth-token=<your-generated-token> \
   --hub-external-url=https://localhost:9443 \
   --dev-mode
@@ -78,18 +78,18 @@ faros-hub \
 #### 3. Log in with the token
 
 ```bash
-faros login \
+railgrid login \
   --hub-url https://hub.example.com \
   --token <your-generated-token> \
   --insecure-skip-tls-verify  # Only if using self-signed certs
 ```
 
-This writes a kubeconfig context named `faros` with the token embedded.
+This writes a kubeconfig context named `railgrid` with the token embedded.
 
 #### 4. Verify
 
 ```bash
-kubectl --context=faros get namespaces
+kubectl --context=railgrid get namespaces
 ```
 
 {: .warning }
@@ -167,11 +167,11 @@ config:
     http: 0.0.0.0:5556
 
   staticClients:
-    - id: faros
-      name: Faros
+    - id: railgrid
+      name: Railgrid
       # The hub is a PKCE public client: no secret. `public: true` is what
       # lets dex exchange the code without one and issue refresh tokens
-      # that `faros get-token` rotates silently.
+      # that `railgrid get-token` rotates silently.
       public: true
       redirectURIs:
         - https://hub.example.com/auth/callback
@@ -235,23 +235,23 @@ hub:
 
 idp:
   issuerURL: "https://idp.example.com"
-  clientID: "faros"
+  clientID: "railgrid"
   clientSecret: "<same-secret-as-in-dex>"
 ```
 
 Deploy or upgrade the hub:
 
 ```bash
-helm upgrade --install faros deploy/charts/faros-hub/ \
+helm upgrade --install railgrid deploy/charts/railgrid-hub/ \
   -f values.yaml \
-  --namespace faros-system \
+  --namespace railgrid-system \
   --create-namespace
 ```
 
 ### 3. Log in
 
 ```bash
-faros login --hub-url https://hub.example.com
+railgrid login --hub-url https://hub.example.com
 ```
 
 This opens a browser for the OIDC flow. After authenticating with your identity provider, you're redirected back and your kubeconfig is configured.

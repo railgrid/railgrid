@@ -5,7 +5,7 @@ import vue from '@vitejs/plugin-vue'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
-const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/faros-vite-git-recovery', configFile: false, plugins: [vue()], server: { middlewareMode: true, hmr: false } })
+const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/railgrid-vite-git-recovery', configFile: false, plugins: [vue()], server: { middlewareMode: true, hmr: false } })
 const { default: Settings } = await vite.ssrLoadModule('/src/GitConnectionSettings.vue')
 test.after(() => vite.close())
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=code.faros.sh
+// +groupName=code.railgrid.ai
 
 // Package v1alpha1 contains the tenant-facing API for the code provider —
 // a backend-neutral way to manage source-code repositories across git

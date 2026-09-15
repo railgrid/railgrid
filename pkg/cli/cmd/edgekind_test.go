@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,18 +27,18 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clienttesting "k8s.io/client-go/testing"
 
-	farosclient "github.com/faroshq/faros/pkg/client"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 func TestGetEdgeByNameFindsMacOSServer(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	dyn.PrependReactor("get", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		get := action.(clienttesting.GetAction)
-		if get.GetResource() != farosclient.MacOSServerGVR {
+		if get.GetResource() != railgridclient.MacOSServerGVR {
 			return true, nil, apierrors.NewNotFound(schema.GroupResource{Group: get.GetResource().Group, Resource: get.GetResource().Resource}, get.GetName())
 		}
 		return true, &unstructured.Unstructured{Object: map[string]interface{}{
-			"apiVersion": farosclient.MacOSServerGVR.GroupVersion().String(),
+			"apiVersion": railgridclient.MacOSServerGVR.GroupVersion().String(),
 			"kind":       "MacOSServer",
 			"metadata":   map[string]interface{}{"name": get.GetName()},
 		}}, nil
@@ -48,8 +48,8 @@ func TestGetEdgeByNameFindsMacOSServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getEdgeByName: %v", err)
 	}
-	if gvr != farosclient.MacOSServerGVR {
-		t.Fatalf("GVR = %v, want %v", gvr, farosclient.MacOSServerGVR)
+	if gvr != railgridclient.MacOSServerGVR {
+		t.Fatalf("GVR = %v, want %v", gvr, railgridclient.MacOSServerGVR)
 	}
 	if edge.GetKind() != "MacOSServer" || edge.GetName() != "macbook-01" {
 		t.Fatalf("edge identity = %s/%s, want MacOSServer/macbook-01", edge.GetKind(), edge.GetName())
@@ -58,13 +58,13 @@ func TestGetEdgeByNameFindsMacOSServer(t *testing.T) {
 
 func TestListAllEdgesDerivesKindFromMacOSServerGVR(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		farosclient.KubernetesClusterGVR: "KubernetesClusterList",
-		farosclient.LinuxServerGVR:       "LinuxServerList",
-		farosclient.MacOSServerGVR:       "MacOSServerList",
+		railgridclient.KubernetesClusterGVR: "KubernetesClusterList",
+		railgridclient.LinuxServerGVR:       "LinuxServerList",
+		railgridclient.MacOSServerGVR:       "MacOSServerList",
 	})
 	dyn.PrependReactor("list", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		list := action.(clienttesting.ListAction)
-		if list.GetResource() != farosclient.MacOSServerGVR {
+		if list.GetResource() != railgridclient.MacOSServerGVR {
 			return true, &unstructured.UnstructuredList{}, nil
 		}
 		// Dynamic responses can omit TypeMeta on list items. The source GVR must
@@ -84,7 +84,7 @@ func TestListAllEdgesDerivesKindFromMacOSServerGVR(t *testing.T) {
 	if got := items[0].GetKind(); got != "MacOSServer" {
 		t.Fatalf("derived kind = %q, want MacOSServer", got)
 	}
-	if got := items[0].GetAPIVersion(); got != farosclient.MacOSServerGVR.GroupVersion().String() {
-		t.Fatalf("derived apiVersion = %q, want %q", got, farosclient.MacOSServerGVR.GroupVersion().String())
+	if got := items[0].GetAPIVersion(); got != railgridclient.MacOSServerGVR.GroupVersion().String() {
+		t.Fatalf("derived apiVersion = %q, want %q", got, railgridclient.MacOSServerGVR.GroupVersion().String())
 	}
 }

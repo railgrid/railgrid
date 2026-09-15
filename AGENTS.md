@@ -1,11 +1,11 @@
 # AGENTS.md
 
-Orientation for AI agents (and humans) working in the **faros** repo. Read this
+Orientation for AI agents (and humans) working in the **railgrid** repo. Read this
 before making changes. It explains the architecture, where hub code ends and
 provider code begins, how APIs are constructed, and the exact commands to build,
 test, format, lint, and regenerate code.
 
-> Module: `github.com/faroshq/faros` · Go workspace (`go.work`) · kcp-based
+> Module: `github.com/railgrid/railgrid` · Go workspace (`go.work`) · kcp-based
 > multi-tenant control plane.
 
 Deeper references live in [`DEVELOPERS.md`](./DEVELOPERS.md) and [`docs/`](./docs)
@@ -14,12 +14,12 @@ those authoritative — this file is the map, not the territory.
 
 ---
 
-## 1. What faros is
+## 1. What railgrid is
 
-faros connects distributed Kubernetes clusters and bare-metal servers through one
+railgrid connects distributed Kubernetes clusters and bare-metal servers through one
 control plane (the **hub**). Edge **agents** dial outbound reverse tunnels to the
 hub, so clusters behind NAT/firewalls become reachable through a single
-authenticated endpoint. On top of that core, faros is also a **multi-tenant
+authenticated endpoint. On top of that core, railgrid is also a **multi-tenant
 platform** built on [kcp](https://kcp.io): each user/team gets isolated kcp
 workspaces, and **providers** extend the platform with their own APIs, UIs, and
 backends.
@@ -35,13 +35,13 @@ Three planes to keep distinct:
 ## 2. Repository layout
 
 ```
-apis/                 First-party API types (faros, tenancy, providers groups)
-  faros/v1alpha1/       Edge, MCPServer, Placement, VirtualWorkload
+apis/                 First-party API types (railgrid, tenancy, providers groups)
+  railgrid/v1alpha1/       Edge, MCPServer, Placement, VirtualWorkload
   tenancy/v1alpha1/     Organization, User, Membership, UserMembershipIndex, Auth
   providers/v1alpha1/   CatalogEntry (the provider manifest type)
 cmd/                  Binaries
-  faros/                CLI (also the agent: `faros agent run`)
-  faros-hub/            Hub control-plane server
+  railgrid/                CLI (also the agent: `railgrid agent run`)
+  railgrid-hub/            Hub control-plane server
   release/              Release-tagging helper
 pkg/                  Hub + agent + shared libraries
   hub/                  Hub server, controllers, provider integration, tenancy
@@ -80,7 +80,7 @@ demand — never `go install` them globally.
 
 | Task | Command | Notes |
 |------|---------|-------|
-| Build all binaries | `make build` | faros CLI + hub |
+| Build all binaries | `make build` | railgrid CLI + hub |
 | Build hub | `make build-hub` | hub binary only; provider portals build per provider (§5.3) |
 | Build hub w/ embedded portal | `make build-hub-portal` | `portal_embed` build tag |
 | Unit tests | `make test` | all packages except `test/e2e` |
@@ -97,7 +97,7 @@ demand — never `go install` them globally.
 - Linters: `govet`, `errcheck`, `staticcheck` (all checks), `unused`,
   `ineffassign`, `misspell`.
 - Formatter: `goimports` with local-prefix
-  `github.com/faroshq/faros` (faros imports group last).
+  `github.com/railgrid/railgrid` (railgrid imports group last).
 - Generated files (`zz_generated*`, `vendor/`) are excluded.
 - Before committing Go changes, run **`make fix-lint`** then **`make lint`**.
 
@@ -140,7 +140,7 @@ Kubernetes API-machinery conventions:
    `pkg/hub/bootstrap/crds/` (embedded into the hub binary).
 3. **apigen** (kcp) → `APIResourceSchema`s + per-group `APIExport`s into
    `config/kcp/`.
-4. Merged `core.faros.sh` APIExport generated from the individual exports.
+4. Merged `core.railgrid.ai` APIExport generated from the individual exports.
 
 Rules of thumb:
 - Change a type in `apis/` → run `make codegen` and commit the generated diff.
@@ -151,8 +151,8 @@ Rules of thumb:
   segment, so regeneration creates a new schema rather than mutating one.
 - CI runs `make verify-codegen` — an uncommitted generated diff fails the build.
 
-API groups: `faros.sh`, `tenancy.faros.sh`,
-`providers.faros.sh`. Provider APIs use `<name>.providers.faros.sh`.
+API groups: `railgrid.ai`, `tenancy.railgrid.ai`,
+`providers.railgrid.ai`. Provider APIs use `<name>.providers.railgrid.ai`.
 
 ---
 
@@ -169,7 +169,7 @@ A **provider** is a pluggable platform extension. It can supply any of:
 ### 5.1 The CatalogEntry manifest
 
 Every provider ships a `manifest.yaml` that is a `CatalogEntry`
-(`providers.faros.sh/v1alpha1`, type at
+(`providers.railgrid.ai/v1alpha1`, type at
 `apis/providers/v1alpha1/types_catalogentry.go`). It declares display metadata,
 the UI/backend/virtual-workspace URLs, a health path, the APIExport name +
 permission claims, and inline `APIResourceSchema` bodies. The hub's catalog
@@ -234,15 +234,15 @@ APIExport, schemas) and registers routing/heartbeat state.
 | `provision.go` | Creates kcp sub-workspace, ServiceAccount, APIExport, applies inline schemas; mints the provider kubeconfig |
 | `proxy.go` | UI reverse-proxy (`/ui/providers/{name}/*`) + backend proxy (`/services/providers/{name}/*`); injects tenant/user headers |
 | registry / controller / heartbeat | In-memory routing table, catalog reconcile, `POST /api/providers/{name}/heartbeat` liveness (TTL ~90s) |
-| `pkg/hub/provider_tenant_resolver.go` + `provider_cluster_resolver.go` | Resolves caller identity → tenant workspace → kcp logical-cluster ID; the proxy injects `X-Faros-User` and the ID as both `X-Faros-Tenant` / `X-Faros-Cluster` (never the path), strips spoofed inbound copies |
+| `pkg/hub/provider_tenant_resolver.go` + `provider_cluster_resolver.go` | Resolves caller identity → tenant workspace → kcp logical-cluster ID; the proxy injects `X-Railgrid-User` and the ID as both `X-Railgrid-Tenant` / `X-Railgrid-Cluster` (never the path), strips spoofed inbound copies |
 
 Heartbeat: standalone providers POST every ~30s through the one shared
 client in `provider-sdk/hubclient` (`ConfigFromEnv` + `RunHeartbeat`), which
-reads `FAROS_HUB_URL`, `FAROS_PROVIDER_NAME`, `FAROS_HUB_INSECURE` and
-`FAROS_PROVIDER_VERSION`. Do not copy the loop into a provider: TLS, token
+reads `RAILGRID_HUB_URL`, `RAILGRID_PROVIDER_NAME`, `RAILGRID_HUB_INSECURE` and
+`RAILGRID_PROVIDER_VERSION`. Do not copy the loop into a provider: TLS, token
 and retry behaviour must change in one place. The beat is authenticated as
-the provider's own service account: the bearer is `FAROS_HUB_TOKEN` if set,
-otherwise the token inside `FAROS_PROVIDER_KUBECONFIG`
+the provider's own service account: the bearer is `RAILGRID_HUB_TOKEN` if set,
+otherwise the token inside `RAILGRID_PROVIDER_KUBECONFIG`
 (`hubclient.ResolveHubToken`), and the hub verifies it by TokenReview in the
 provider's workspace (`heartbeat_auth.go`). `--provider-heartbeat-auth=warn|enforce`
 picks whether a failed check is logged or rejected (default `warn` this
@@ -258,15 +258,15 @@ portal loads each `/ui/providers/{name}/main.js` as a classic script into its
 own document — pinned with the SRI hash the hub computed at registration
 (`CatalogEntry.status.ui.mainJSIntegrity`, exposed as `mainJSIntegrity` on
 `/api/providers`) — and renders the **custom element** it registers
-(`<faros-provider-{name}>`). The host sets `element.farosContext` (user, tenant,
+(`<railgrid-provider-{name}>`). The host sets `element.railgridContext` (user, tenant,
 orgUUID/workspaceUUID, resolved theme, basePath, subPath, and a host-owned
 `fetch`) as a JS property and re-pushes it on every change; there is no iframe
 and no postMessage handshake. **A provider bundle executes as fully trusted code
 in the portal document.** Bundles must reach the hub through
-`farosContext.fetch` (`portalkit/tenant.ts` `providerFetch(ctx)`), which injects
+`railgridContext.fetch` (`portalkit/tenant.ts` `providerFetch(ctx)`), which injects
 `Authorization` + tenant headers and allows only the provider's own
 `/services/providers/{name}/` and `/ui/providers/{name}/`, `/clusters/`,
-`/api/orgs/{org}/`, and GET/HEAD `/api/providers`. `farosContext.token`
+`/api/orgs/{org}/`, and GET/HEAD `/api/providers`. `railgridContext.token`
 is deprecated (one-release fallback) and will be removed. See
 [`docs/providers.md`](docs/providers.md) §"Portal changes" and §"Security
 considerations".
@@ -286,12 +286,12 @@ workspace / symlink — a standalone Docker build context must work). Edit the
 **canonical** source, then `make sync-portalkit`; CI runs `make verify-portalkit`
 (and it's in `make verify`) to fail on drift.
 
-The shared visual authority is `provider-sdk/portalkit/faros-ui.css`. The host
-copy at `portal/src/assets/faros-ui.css` and each vendored
-`src/portalkit/faros-ui.css` are exact sync outputs; the verifier also rejects
+The shared visual authority is `provider-sdk/portalkit/railgrid-ui.css`. The host
+copy at `portal/src/assets/railgrid-ui.css` and each vendored
+`src/portalkit/railgrid-ui.css` are exact sync outputs; the verifier also rejects
 unmanifested canonical files and unexpected copies. Standalone bundles call
-`ensureFarosUIStyles()`, which accepts the host only when its computed
-`--faros-ui-canonical: 1` marker has a compatible `--faros-ui-core-version`. If the
+`ensureRailgridUIStyles()`, which accepts the host only when its computed
+`--railgrid-ui-canonical: 1` marker has a compatible `--railgrid-ui-core-version`. If the
 host is stale, the bundle appends its exact vendored stylesheet under a
 versioned fallback ID. It never overwrites an existing style element.
 
@@ -319,16 +319,16 @@ the manifest; see `provider-sdk/agentkit/README.md` for the import mapping.
 
 **`tenant.ts` is security-critical** and shared by BOTH kinds (plain TS). It owns
 the ONE copy of the hub-proxy contract — `readTenant()` (localStorage
-`faros:portal:tenant`), `tenantHeaders({json})` (`X-Faros-Org` +
-`X-Faros-Workspace`; `token` is a deprecated fallback), `providerFetch(ctx)`
-(the host-owned `farosContext.fetch` that injects `Authorization` + the tenant
+`railgrid:portal:tenant`), `tenantHeaders({json})` (`X-Railgrid-Org` +
+`X-Railgrid-Workspace`; `token` is a deprecated fallback), `providerFetch(ctx)`
+(the host-owned `railgridContext.fetch` that injects `Authorization` + the tenant
 scope, falling back to `fetch` + `ctx.token` on older hosts), and
 `serviceBase()` (`/ui/providers/*` → `/services/providers/*`). The wrong
 header/key means 401/403, so **do not re-inline this** — call the helpers and
 never call the global `fetch` for a hub request. Two auth models coexist;
 `providerFetch` serves both, `tenantHeaders` only the first:
 - **hub-proxy model** (uses `tenant.ts`): `agents`, `app-studio` (migrated);
-  `kuery`/`quickstart` read the tenant off `faros-context` instead, so they only
+  `kuery`/`quickstart` read the tenant off `railgrid-context` instead, so they only
   use `serviceBase`.
 - **cluster-in-path model** (`code`, `edges`, `infrastructure`, `databricks`):
   address kcp by `/clusters/<cluster>` (the `portalkit` kube client over the
@@ -343,7 +343,7 @@ it to the canonical source under `provider-sdk/` and re-sync.
 
 Providers that talk to kcp build a **per-(tenant, caller) dynamic client**: the
 hub forwards the caller's bearer token plus the tenant workspace's kcp
-logical-cluster ID (in both `X-Faros-Tenant` and `X-Faros-Cluster` — the
+logical-cluster ID (in both `X-Railgrid-Tenant` and `X-Railgrid-Cluster` — the
 workspace path is never sent); the provider's `tenant/` package (`client.go`,
 `credentials.go`) constructs a client scoped to `<host>/clusters/<clusterID>`,
 acting as the caller in their workspace. A provider that needs the org /
@@ -364,14 +364,14 @@ lives hub-side in `pkg/hub/mcpaggregate/`; `projects` was folded into
 
 | Provider | APIExport | What it does |
 |----------|-----------|--------------|
-| `quickstart` | `quickstart.providers.faros.sh` | **Reference provider** — minimal HTTP server + embedded Vite portal + sample `Greeting` API. Start here. |
-| `edges` | `edges.providers.faros.sh` | The connectivity core: `KubernetesCluster`/`LinuxServer` edges, revdial tunnel termination, kubectl/SSH/MCP proxying, `Service` connectors (host/LAN apps → MCP tools), `Workload`/`Placement` scheduling + Helm marketplace. Single-replica (process-global dialer map). |
-| `infrastructure` | `infrastructure.providers.faros.sh` | Application Templates via kro: template catalog, instance provisioning, data plane (exec/logs/etc.), app hosting + access gate |
-| `code` | `code.providers.faros.sh` | Git hosting management (repos, deploy keys, collaborators, packages) behind a `GitBackend` seam; GitHub is the only real backend today |
-| `databricks` | `databricks.providers.faros.sh` | Databricks SQL warehouse tables via governed `query_table` action + MCP tools; private source in faroshq/providers; platform installation supported |
-| `agents` | `agents.faros.sh` | Long-running personal AI agents: chat, schedules, triggers, approvals, budgets, memory, multi-channel (Slack/Telegram/Discord/SMTP). Needs hub + Postgres only |
-| `app-studio` | `ai.faros.sh` | Persistent AI project workspace (projects, sessions, dev sandboxes, publishing, skills) |
-| `kuery` | `kuery.providers.faros.sh` | Fleet-wide object query, relationship traversal, impact analysis across connected edges + MCP tools |
+| `quickstart` | `quickstart.providers.railgrid.ai` | **Reference provider** — minimal HTTP server + embedded Vite portal + sample `Greeting` API. Start here. |
+| `edges` | `edges.providers.railgrid.ai` | The connectivity core: `KubernetesCluster`/`LinuxServer` edges, revdial tunnel termination, kubectl/SSH/MCP proxying, `Service` connectors (host/LAN apps → MCP tools), `Workload`/`Placement` scheduling + Helm marketplace. Single-replica (process-global dialer map). |
+| `infrastructure` | `infrastructure.providers.railgrid.ai` | Application Templates via kro: template catalog, instance provisioning, data plane (exec/logs/etc.), app hosting + access gate |
+| `code` | `code.providers.railgrid.ai` | Git hosting management (repos, deploy keys, collaborators, packages) behind a `GitBackend` seam; GitHub is the only real backend today |
+| `databricks` | `databricks.providers.railgrid.ai` | Databricks SQL warehouse tables via governed `query_table` action + MCP tools; private source in railgrid/providers; platform installation supported |
+| `agents` | `agents.railgrid.ai` | Long-running personal AI agents: chat, schedules, triggers, approvals, budgets, memory, multi-channel (Slack/Telegram/Discord/SMTP). Needs hub + Postgres only |
+| `app-studio` | `ai.railgrid.ai` | Persistent AI project workspace (projects, sessions, dev sandboxes, publishing, skills) |
+| `kuery` | `kuery.providers.railgrid.ai` | Fleet-wide object query, relationship traversal, impact analysis across connected edges + MCP tools |
 
 Per-provider deep docs: `docs/code-provider-architecture.md`,
 `docs/infrastructure-architecture.md`, `docs/kuery-provider-architecture.md`,
@@ -380,9 +380,9 @@ Per-provider deep docs: `docs/code-provider-architecture.md`,
 `docs/mcp-architecture.md`, `docs/providers.md`, `docs/provider-publishing.md`,
 `docs/provider-scoping.md`, `docs/byo-providers.md`.
 
-The table above is the **platform** catalog, at `root:faros:providers:<name>`.
+The table above is the **platform** catalog, at `root:railgrid:providers:<name>`.
 An organization can also register its own provider — one it runs itself, usually
-in its own cluster — at `root:faros:tenants:<orgUUID>:providers:<name>`. Those
+in its own cluster — at `root:railgrid:tenants:<orgUUID>:providers:<name>`. Those
 reuse the same `provider` WorkspaceType and the same `provider-sdk/install`
 path, so nothing about writing a provider changes; what differs is who
 provisions the workspace (`POST /api/orgs/{org}/providers` instead of admin
@@ -422,7 +422,7 @@ cannot capture a platform provider's proxy or heartbeat route by name. See
 
 ---
 
-## 6. Hub architecture (`pkg/hub/`, `cmd/faros-hub/`)
+## 6. Hub architecture (`pkg/hub/`, `cmd/railgrid-hub/`)
 
 The hub is the only publicly-reachable component. Key areas:
 
@@ -442,7 +442,7 @@ The hub is the only publicly-reachable component. Key areas:
   (tunnel auth, status, SSH creds) and the multi-cluster MCP server.
 
 The **agent** lives in `pkg/agent/` (tunnel, ssh, reporters) and ships inside the
-`faros` CLI binary (`faros agent run`). The join-token → kubeconfig exchange and
+`railgrid` CLI binary (`railgrid agent run`). The join-token → kubeconfig exchange and
 the SSH/MCP request flows are documented end-to-end in `DEVELOPERS.md`.
 
 ---
@@ -548,7 +548,7 @@ responsive, or interaction behavior.
 - After editing any `apis/` Go type, run `make codegen` and commit the generated
   diff; CI enforces `make verify-codegen`.
 - Run `make fix-lint && make lint` before committing Go changes. Match
-  surrounding style; imports group faros last (goimports local-prefix).
+  surrounding style; imports group railgrid last (goimports local-prefix).
 - Don't hand-edit `zz_generated*` or `config/crds` / `config/kcp` outputs.
 - License boilerplate is required on Go files (generated files exempt);
   `make boilerplate` adds it.
@@ -561,13 +561,13 @@ responsive, or interaction behavior.
   (boilerplate + codegen + vet + lint + build + test).
 - **Infrastructure templates declare configurable inputs (container images,
   versions, sizes) as `spec.schema` fields with sane defaults** — never via
-  `${faros.*}` env-substitution tokens. Fixed sidecar images (e.g. the
-  control-token `kubectl` job) are hardcoded literals. `${faros.*}` tokens are
+  `${railgrid.*}` env-substitution tokens. Fixed sidecar images (e.g. the
+  control-token `kubectl` job) are hardcoded literals. `${railgrid.*}` tokens are
   reserved for the handful of genuinely platform-global values with no universal
-  default: the exposure Gateway parent (`${faros.gatewayName}` /
-  `${faros.gatewayNamespace}`), the dev-overlay images
-  (`${faros.devImage.<toolchain>}` / `${faros.devAgentImage}`), and the
-  exposure-URL port suffix (`${faros.appPublicPort}`). A missing env must never
+  default: the exposure Gateway parent (`${railgrid.gatewayName}` /
+  `${railgrid.gatewayNamespace}`), the dev-overlay images
+  (`${railgrid.devImage.<toolchain>}` / `${railgrid.devAgentImage}`), and the
+  exposure-URL port suffix (`${railgrid.appPublicPort}`). A missing env must never
   be able to produce an empty/invalid field. See
   [`providers/infrastructure/docs/template-conventions.md`](providers/infrastructure/docs/template-conventions.md).
 - **Providers are isolated; never reach into another provider's backend.** A
@@ -587,17 +587,17 @@ responsive, or interaction behavior.
 
 ## 10. Cross-repo boundaries & known gotchas
 
-faros runs on kcp; some symptoms that look like faros bugs are actually upstream:
+railgrid runs on kcp; some symptoms that look like railgrid bugs are actually upstream:
 
-- **OpenAPI proxy misbehaving** — faros serves OpenAPI/discovery through a kcp
+- **OpenAPI proxy misbehaving** — railgrid serves OpenAPI/discovery through a kcp
   virtual workspace. Broken VW OpenAPI serving surfaces as hub-side proxy
-  issues; the fix is usually kcp-side, not faros. Check the kcp VW openapi path
-  before assuming the bug is in the faros proxy.
+  issues; the fix is usually kcp-side, not railgrid. Check the kcp VW openapi path
+  before assuming the bug is in the railgrid proxy.
 - **`kubectl get <resource>` "temporarily unavailable" for one resource in an
   APIBinding (e.g. templates), intermittently** — APIExport *virtual storage*
   (CachedResource) discovery fails when the consumer workspace is on a different
-  kcp shard than the provider. It's a kcp cross-shard discovery bug, not faros
-  config — don't chase the faros install code. Workaround for local dev: run a
+  kcp shard than the provider. It's a kcp cross-shard discovery bug, not railgrid
+  config — don't chase the railgrid install code. Workaround for local dev: run a
   single kcp shard, or co-locate provider + consumer on one shard.
 
 ---
@@ -614,6 +614,6 @@ faros runs on kcp; some symptoms that look like faros bugs are actually upstream
 - `CONTRIBUTING.md` — contribution workflow.
 
 Linear and Databricks implementation, build, codegen, portal copies and release
-automation live in `faroshq/providers`. Do not recreate their source directories
+automation live in `railgrid/providers`. Do not recreate their source directories
 or add private-repository access to public CI. They remain hub-managed provider
 installations; source ownership does not imply self-hosting-only support.

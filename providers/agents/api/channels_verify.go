@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/faroshq/provider-agents/llm"
+	"github.com/railgrid/provider-agents/llm"
 )
 
 // signingSecretKey is the connection Secret key holding the platform-side

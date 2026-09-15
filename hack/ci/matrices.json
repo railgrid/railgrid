@@ -39,46 +39,46 @@
   "images": [
     {
       "name": "quickstart",
-      "image": "faros-quickstart-provider"
+      "image": "railgrid-quickstart-provider"
     },
     {
       "name": "infrastructure",
-      "image": "faros-infrastructure-provider"
+      "image": "railgrid-infrastructure-provider"
     },
     {
       "name": "code",
-      "image": "faros-code-provider"
+      "image": "railgrid-code-provider"
     },
     {
       "name": "kuery",
-      "image": "faros-kuery-provider"
+      "image": "railgrid-kuery-provider"
     },
     {
       "name": "app-studio",
-      "image": "faros/app-studio-provider"
+      "image": "railgrid/app-studio-provider"
     },
     {
       "name": "agents",
-      "image": "faros-agents-provider"
+      "image": "railgrid-agents-provider"
     },
     {
       "name": "edges",
-      "image": "faros-edges-provider"
+      "image": "railgrid-edges-provider"
     },
     {
       "name": "infrastructure/dev-agent",
-      "image": "faros-dev-agent",
+      "image": "railgrid-dev-agent",
       "context": "./providers/infrastructure/dev-agent"
     },
     {
       "name": "infrastructure/universal-dev",
-      "image": "faros-universal-dev",
+      "image": "railgrid-universal-dev",
       "context": "./providers/infrastructure/dev-agent",
       "dockerfile": "./providers/infrastructure/dev-agent/Dockerfile.universal"
     },
     {
       "name": "access-proxy",
-      "image": "faros-access-proxy",
+      "image": "railgrid-access-proxy",
       "context": ".",
       "dockerfile": "./providers/infrastructure/Dockerfile.access-proxy"
     }

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 func TestNewProjectIdentityMCPGrant(t *testing.T) {
@@ -46,10 +46,10 @@ func TestNewProjectIdentityMCPGrant(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Name: name}, role); err != nil {
 		t.Fatal(err)
 	}
-	want := rbacv1.PolicyRule{APIGroups: []string{"faros.sh"}, Resources: []string{"mcpservers"}, ResourceNames: []string{"default"}, Verbs: []string{"use"}}
+	want := rbacv1.PolicyRule{APIGroups: []string{"railgrid.ai"}, Resources: []string{"mcpservers"}, ResourceNames: []string{"default"}, Verbs: []string{"use"}}
 	found := 0
 	for _, rule := range role.Rules {
-		if reflect.DeepEqual(rule.APIGroups, []string{"faros.sh"}) {
+		if reflect.DeepEqual(rule.APIGroups, []string{"railgrid.ai"}) {
 			found++
 			if !reflect.DeepEqual(rule, want) {
 				t.Fatalf("unexpected MCP grant: %#v", rule)

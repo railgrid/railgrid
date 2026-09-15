@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ func newRelayTestServer(t *testing.T, token string) *Server {
 	t.Helper()
 	s, err := New(Config{
 		Kinds: []KindConfig{{
-			GVR:  schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"},
+			GVR:  schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "kubernetesclusters"},
 			Kind: "KubernetesCluster",
 		}},
 		AgentPickupPath: "/services/providers/edges/agent/proxy",

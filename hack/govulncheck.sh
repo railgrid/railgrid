@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2026 The Faros Authors.
+# Copyright 2026 The Railgrid Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@
 #   hack/govulncheck.sh . providers/edges  # only these module directories
 #
 # Each module is scanned standalone (GOWORK=off), matching the CI test matrix:
-# provider modules `replace github.com/faroshq/provider-sdk => ../../provider-sdk`,
+# provider modules `replace github.com/railgrid/provider-sdk => ../../provider-sdk`,
 # so the in-tree SDK is what gets linked either way.
 
 set -euo pipefail

@@ -5,7 +5,7 @@
 #   ${KCP_DOMAIN}              → kcp front-proxy   (TLSRoute, step 6)
 #   root.${KCP_DOMAIN}         → root shard        (TLSRoute, step 6)
 #   ${KCP_SHARD_2}.${KCP_DOMAIN} → second shard    (TLSRoute, step 6)
-#   ${HUB_DOMAIN}              → faros hub         (TLSRoute, step 7/8)
+#   ${HUB_DOMAIN}              → railgrid hub         (TLSRoute, step 7/8)
 #
 # TLS is PASSTHROUGH: Envoy routes on the SNI hostname and the backends
 # terminate TLS themselves (kcp with operator-issued certs, the hub with its

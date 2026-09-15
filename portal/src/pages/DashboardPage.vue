@@ -16,7 +16,7 @@ const { scopePath } = useScopedNavigation()
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
 // ready provider. Each provider may register a
-// <faros-dashboard-tile-{name}> custom element in its main.js — that
+// <railgrid-dashboard-tile-{name}> custom element in its main.js — that
 // element owns its own data fetch, summary rendering, and click-through
 // URLs. Providers without a tile drop out of the grid entirely.
 //
@@ -58,7 +58,7 @@ const gated = computed(() =>
 )
 
 // Candidate tiles are every gated provider, and every one of them gets a
-// card. A provider that ships no <faros-dashboard-tile-*> element renders a
+// card. A provider that ships no <railgrid-dashboard-tile-*> element renders a
 // launcher body instead of being dropped, so the grid never reflows on
 // probe results and is never wrongly empty because a bundle was slow.
 const candidateNames = computed(() => gated.value.map((p) => p.name))
@@ -129,7 +129,7 @@ const initializing = computed(() => providers.loading)
 // entry point — the header keeps a "Getting started" button so the flow is
 // reachable again, which also makes the local-only storage harmless if it is
 // cleared or the user switches browsers.
-const WELCOME_KEY = 'faros:portal:welcome-dismissed'
+const WELCOME_KEY = 'railgrid:portal:welcome-dismissed'
 
 function readDismissed(): string[] {
   try {

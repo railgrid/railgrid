@@ -21,13 +21,13 @@ ARG BUILD_DATE=unknown
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w \
-      -X github.com/faroshq/faros/pkg/version.Version=${VERSION} \
-      -X github.com/faroshq/faros/pkg/version.GitCommit=${GIT_COMMIT} \
-      -X github.com/faroshq/faros/pkg/version.BuildDate=${BUILD_DATE}" \
-    -o /faros ./cmd/faros/
+      -X github.com/railgrid/railgrid/pkg/version.Version=${VERSION} \
+      -X github.com/railgrid/railgrid/pkg/version.GitCommit=${GIT_COMMIT} \
+      -X github.com/railgrid/railgrid/pkg/version.BuildDate=${BUILD_DATE}" \
+    -o /railgrid ./cmd/railgrid/
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
-COPY --from=builder /faros /faros
+COPY --from=builder /railgrid /railgrid
 USER 65534:65534
-ENTRYPOINT ["/faros", "agent", "run"]
+ENTRYPOINT ["/railgrid", "agent", "run"]

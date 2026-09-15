@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,11 +38,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/executor"
-	"github.com/faroshq/provider-agents/llm"
-	"github.com/faroshq/provider-agents/store"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/executor"
+	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-agents/store"
 )
 
 // channelWebhookName namespaces channel webhook tokens away from trigger ones.
@@ -462,7 +462,7 @@ func (s *Server) enableInbound(w http.ResponseWriter, r *http.Request) {
 	}
 	token := s.webhookToken(id.clusterID, channelWebhookName(name))
 	if token == "" {
-		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "webhook signing unavailable — the provider needs FAROS_PROVIDER_KUBECONFIG (or AGENTS_WEBHOOK_KEY)")
+		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "webhook signing unavailable — the provider needs RAILGRID_PROVIDER_KUBECONFIG (or AGENTS_WEBHOOK_KEY)")
 		return
 	}
 	var req enableInboundRequest

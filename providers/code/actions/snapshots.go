@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/faroshq/provider-code/backend"
+	"github.com/railgrid/provider-code/backend"
 )
 
 var snapshotDigest = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -31,7 +31,7 @@ const snapshotTTL = time.Hour
 func (s *Server) snapshotScope(r *http.Request, cluster string, in Input) string {
 	root := s.SnapshotDir
 	if root == "" {
-		root = filepath.Join(os.TempDir(), "faros-code-snapshots")
+		root = filepath.Join(os.TempDir(), "railgrid-code-snapshots")
 	}
 	tenant := sha256.Sum256([]byte(cluster))
 	scope := sha256.Sum256([]byte(in.RepositoryUID + "\x00" + in.ConnectionUID + "\x00" + r.Header.Get("Authorization")))

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
@@ -46,7 +46,7 @@ func VerifyProviderActionServiceAccount(ctx context.Context, cfg *rest.Config, t
 		return "", fmt.Errorf("tenant action ServiceAccount identity changed")
 	}
 	// Managed identities must pass their existing scoped/proof verification.
-	if IsDelegatedUserServiceAccount(sa) || strings.HasPrefix(sa.Name, "faros-du-") || strings.HasPrefix(sa.Name, workloadIdentityNamePrefix) || sa.Labels[LabelWorkloadIdentity] != "" || sa.Annotations[AnnotationWorkloadIdentityTenantPath] != "" {
+	if IsDelegatedUserServiceAccount(sa) || strings.HasPrefix(sa.Name, "railgrid-du-") || strings.HasPrefix(sa.Name, workloadIdentityNamePrefix) || sa.Labels[LabelWorkloadIdentity] != "" || sa.Annotations[AnnotationWorkloadIdentityTenantPath] != "" {
 		return "", fmt.Errorf("managed workload requires scoped identity verification")
 	}
 	return review.Status.User.Username, nil

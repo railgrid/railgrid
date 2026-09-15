@@ -10,7 +10,7 @@ import { resolveConfirm } from './portalkit/confirm'
 import { setBasePath, setHostFetch, setTenant, setToken } from './api'
 import { createResourceTombstones } from './refresh'
 import { legacyInfrastructurePath, parseInfrastructureSubPath } from './routes'
-import type { FarosContext } from './types'
+import type { RailgridContext } from './types'
 import { useDelayedLoading } from './portalkit/useDelayedLoading'
 
 // Two top-level pages: 'templates' and 'instances'. Sub-routes:
@@ -23,14 +23,14 @@ import { useDelayedLoading } from './portalkit/useDelayedLoading'
 //   'missing-credentials'       → onboarding error (provision side-effect)
 //
 // The shell's vue-router parses /providers/infrastructure/<rest>
-// and pushes <rest> to us via farosContext.subPath. Internal nav
-// dispatches a 'faros-navigate' CustomEvent (bubbles up to
+// and pushes <rest> to us via railgridContext.subPath. Internal nav
+// dispatches a 'railgrid-navigate' CustomEvent (bubbles up to
 // ProviderFrame.vue's listener, which calls router.push), so the
 // browser URL stays in sync — refresh, back, forward all land on
 // the same page. Previously navigation was tracked in a local ref
 // and refresh always snapped back to the catalog.
 
-const props = defineProps<{ ctx: FarosContext | null }>()
+const props = defineProps<{ ctx: RailgridContext | null }>()
 
 const route = computed(() => parseInfrastructureSubPath(props.ctx?.subPath))
 const tenantPath = computed(() => props.ctx?.tenant ?? null)
@@ -67,7 +67,7 @@ watch(
   { immediate: true },
 )
 
-// navigate dispatches a faros-navigate CustomEvent (bubbles) so the
+// navigate dispatches a railgrid-navigate CustomEvent (bubbles) so the
 // shell updates the browser URL. Children call this through the
 // emitted 'navigate' event so they don't need to know about the
 // custom-event protocol. Path is RELATIVE to the provider root
@@ -77,7 +77,7 @@ const rootRef = ref<HTMLElement | null>(null)
 function navigate(path: string) {
   const el = rootRef.value
   if (!el) return
-  el.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
+  el.dispatchEvent(new CustomEvent('railgrid-navigate', { detail: { path }, bubbles: true }))
 }
 
 // Bridge legacy navigate('catalog' | 'provision' | 'instances' | 'detail' | 'missing-credentials')

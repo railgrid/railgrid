@@ -5,7 +5,7 @@
 // and string-building portals on the same markup vocabulary without making the
 // kit depend on a renderer.
 
-import { ensureFarosUIStyles } from './styles'
+import { ensureRailgridUIStyles } from './styles'
 
 export interface TabClassOptions {
   active?: boolean
@@ -24,12 +24,12 @@ function appendClass(base: string, className?: string): string {
 }
 
 export function tabsClass(className?: string): string {
-  ensureFarosUIStyles()
+  ensureRailgridUIStyles()
   return appendClass('k-tabs', className)
 }
 
 export function tabClass(options: TabClassOptions = {}): string {
-  ensureFarosUIStyles()
+  ensureRailgridUIStyles()
   let classes = 'k-tab'
   if (options.active) classes += ' k-tab--active'
   if (options.disabled) classes += ' k-tab--disabled'
@@ -37,7 +37,7 @@ export function tabClass(options: TabClassOptions = {}): string {
 }
 
 export function tabCountClass(options: TabCountClassOptions = {}): string {
-  ensureFarosUIStyles()
+  ensureRailgridUIStyles()
   let classes = 'k-tab__count'
   if (options.attention) classes += ' k-tab__count--attention'
   return appendClass(classes, options.className)

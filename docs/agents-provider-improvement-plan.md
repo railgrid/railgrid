@@ -113,7 +113,7 @@ Key facts an implementer needs:
 | Background executor | `api/background.go` | 30s poll over APIExport VW, optimistic status-claim, in-process 4-worker pool (`executor/executor.go`) |
 | Channels | `channels/channels.go`, `api/channels_inbound.go`, `api/discord_gateway.go` | telegram/slack/discord in+out, smtp out, slash commands `/new /status /inbox /approve /deny /answer` (`channels_inbound.go:148-235`) |
 | Store | `store/store.go` (iface), `store/postgres.go`, in-memory impl | Messages, Runs (with unused `Checkpoint` col), Memory, InboxItems, ToolCalls, Usage, Sessions, TenantRefs |
-| Portal | `portal/src/` | Vue 3 SFCs mounted by the `faros-provider-agents` custom-element boundary (`element.ts`), hash router (`router.ts`), component-owned state, and shared Vue PortalKit primitives |
+| Portal | `portal/src/` | Vue 3 SFCs mounted by the `railgrid-provider-agents` custom-element boundary (`element.ts`), hash router (`router.ts`), component-owned state, and shared Vue PortalKit primitives |
 | Host embedding | repo `portal/src/pages/ProviderFrame.vue:92-176` | loads `/ui/providers/agents/main.js`, sets context properties on the element, and mounts the Vue app in light DOM; **no iframe/postMessage** |
 | Build | `make build-agents-provider` (embeds portal), `make build-agents-provider-portal`, `make codegen-agents-provider`, `make agents-db-up/down`, `make run-provider-agents` | portal: `npm run build`, `npm run typecheck`, and `npm test` in `portal/` |
 
@@ -324,7 +324,7 @@ stream chat incrementally, and retire manual HTML-escaping and event-rewiring di
 snapshots on store revisions. Stateful views keep their drafts and request ownership locally.
 
 Also completed in this step:
-- The host context is typed by `FarosContext`, and context rotation fences asynchronous work.
+- The host context is typed by `RailgridContext`, and context rotation fences asynchronous work.
 - Stateful drafts and request ownership live with their Vue components instead of module
   singletons.
 - The write paths use shared typed API and mutation helpers.
@@ -416,7 +416,7 @@ Target:
 ### 2.5 Activity / trace viewer (the LangSmith-class drill-down)
 
 New views on top of 1.1/1.4 — this is the single biggest parity gap with a UI surface
-(LangSmith, OpenAI Traces, n8n execution inspector all have it; faros records the data and
+(LangSmith, OpenAI Traces, n8n execution inspector all have it; railgrid records the data and
 shows none of it):
 
 - **Activity list**: paged run table — agent, trigger class icon, input preview, phase chip,

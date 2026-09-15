@@ -4,42 +4,42 @@
  * Imported as a string by main.ts and injected as one <style> tag
  * in the host document. The element renders in LIGHT DOM (no Shadow
  * DOM) so the portal's :root CSS custom properties cascade in. Every
- * selector is namespaced under faros-provider-infrastructure so
+ * selector is namespaced under railgrid-provider-infrastructure so
  * these styles cannot leak into the portal.
  */
 
-faros-provider-infrastructure {
+railgrid-provider-infrastructure {
   display: block;
   font-family: inherit;
   color: var(--color-text-primary, #e9e9f2);
 }
 
-faros-provider-infrastructure .page {
+railgrid-provider-infrastructure .page {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-faros-provider-infrastructure .page-head {
+railgrid-provider-infrastructure .page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 
-faros-provider-infrastructure .page-title {
+railgrid-provider-infrastructure .page-title {
   margin: 0 0 4px;
   font-size: 14px;
   font-weight: 600;
 }
 
-faros-provider-infrastructure .page-meta {
+railgrid-provider-infrastructure .page-meta {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-muted, #5d5f78);
 }
 
-faros-provider-infrastructure .grid {
+railgrid-provider-infrastructure .grid {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 480px));
@@ -50,18 +50,18 @@ faros-provider-infrastructure .grid {
  * deliberate wide-screen breakpoints, the three-column fallback makes each
  * card grow into an unwieldy desktop panel. */
 @media (min-width: 1440px) {
-  faros-provider-infrastructure .grid {
+  railgrid-provider-infrastructure .grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
 @media (min-width: 1920px) {
-  faros-provider-infrastructure .grid {
+  railgrid-provider-infrastructure .grid {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 
-faros-provider-infrastructure .filters {
+railgrid-provider-infrastructure .filters {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -70,11 +70,11 @@ faros-provider-infrastructure .filters {
 
 
 
-faros-provider-infrastructure .filters select {
+railgrid-provider-infrastructure .filters select {
   width: auto;
 }
 
-faros-provider-infrastructure .template-card {
+railgrid-provider-infrastructure .template-card {
   text-align: left;
   display: flex;
   flex-direction: column;
@@ -86,26 +86,26 @@ faros-provider-infrastructure .template-card {
   transition: border-color 0.12s ease;
 }
 
-faros-provider-infrastructure .template-card:hover {
+railgrid-provider-infrastructure .template-card:hover {
   border-color: var(--color-accent, #8b6bff);
 }
 
 /* Compact inline controls retain the canonical k-* focus/colour contract;
  * their surrounding value/table cell owns the spacing. */
-faros-provider-infrastructure .view-value-code { text-transform: none; }
-faros-provider-infrastructure .instance-name-link {
+railgrid-provider-infrastructure .view-value-code { text-transform: none; }
+railgrid-provider-infrastructure .instance-name-link {
   min-height: 0;
   padding: 0;
 }
 
-faros-provider-infrastructure .template-card-head {
+railgrid-provider-infrastructure .template-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-faros-provider-infrastructure .exposure-note {
+railgrid-provider-infrastructure .exposure-note {
   align-items: center;
   color: var(--color-text-muted, #5d5f78);
   display: inline-flex;
@@ -113,19 +113,19 @@ faros-provider-infrastructure .exposure-note {
   gap: 6px;
 }
 
-faros-provider-infrastructure .template-card-title {
+railgrid-provider-infrastructure .template-card-title {
   font-weight: 600;
   font-size: 13px;
 }
 
-faros-provider-infrastructure .template-card-desc {
+railgrid-provider-infrastructure .template-card-desc {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-secondary, #8a8ca6);
   line-height: 1.5;
 }
 
-faros-provider-infrastructure .template-card-foot {
+railgrid-provider-infrastructure .template-card-foot {
   display: flex;
   justify-content: space-between;
   font-size: 10px;
@@ -136,31 +136,31 @@ faros-provider-infrastructure .template-card-foot {
 
 
 
-faros-provider-infrastructure .form,
-faros-provider-infrastructure .dynform {
+railgrid-provider-infrastructure .form,
+railgrid-provider-infrastructure .dynform {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
 }
 
-faros-provider-infrastructure .provision-identity {
+railgrid-provider-infrastructure .provision-identity {
   width: 100%;
   max-width: 42rem;
 }
 
-faros-provider-infrastructure .provision-generated-fields {
+railgrid-provider-infrastructure .provision-generated-fields {
   width: min(100%, 42rem);
 }
 
-faros-provider-infrastructure .dynform-row {
+railgrid-provider-infrastructure .dynform-row {
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-faros-provider-infrastructure .dynform-group {
+railgrid-provider-infrastructure .dynform-group {
   min-inline-size: 0;
   min-width: 0;
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
@@ -169,35 +169,35 @@ faros-provider-infrastructure .dynform-group {
   padding: 0.5rem 0.8rem 0.2rem;
 }
 
-faros-provider-infrastructure .dynform-group > legend {
+railgrid-provider-infrastructure .dynform-group > legend {
   font-weight: 600;
   padding: 0 0.4rem;
 }
 
-faros-provider-infrastructure .dynform-row label {
+railgrid-provider-infrastructure .dynform-row label {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-faros-provider-infrastructure .dynform-label {
+railgrid-provider-infrastructure .dynform-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--color-text-secondary, #8a8ca6);
 }
 
-faros-provider-infrastructure .dynform-label .required {
+railgrid-provider-infrastructure .dynform-label .required {
   color: var(--color-warning, #f0a63a);
   margin-left: 2px;
 }
 
-faros-provider-infrastructure .dynform-desc {
+railgrid-provider-infrastructure .dynform-desc {
   font-size: 11px;
   color: var(--color-text-muted, #5d5f78);
 }
 
-faros-provider-infrastructure .dynform-json,
-faros-provider-infrastructure .dynform-lines {
+railgrid-provider-infrastructure .dynform-json,
+railgrid-provider-infrastructure .dynform-lines {
   min-height: 7rem;
   resize: vertical;
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -205,39 +205,39 @@ faros-provider-infrastructure .dynform-lines {
   line-height: 1.5;
 }
 
-faros-provider-infrastructure .dynform-map {
+railgrid-provider-infrastructure .dynform-map {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-faros-provider-infrastructure .dynform-map-head,
-faros-provider-infrastructure .dynform-map-row {
+railgrid-provider-infrastructure .dynform-map-head,
+railgrid-provider-infrastructure .dynform-map-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 6px;
   align-items: start;
 }
 
-faros-provider-infrastructure .dynform-map-head {
+railgrid-provider-infrastructure .dynform-map-head {
   color: var(--color-text-muted, #5d5f78);
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
 }
 
-faros-provider-infrastructure .dynform-map-json {
+railgrid-provider-infrastructure .dynform-map-json {
   min-height: 3.5rem;
   resize: vertical;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
 }
 
-faros-provider-infrastructure .dynform-map-add {
+railgrid-provider-infrastructure .dynform-map-add {
   align-self: flex-start;
 }
 
-faros-provider-infrastructure .dynform-sr-only {
+railgrid-provider-infrastructure .dynform-sr-only {
   block-size: 1px;
   clip: rect(0 0 0 0);
   clip-path: inset(50%);
@@ -249,37 +249,37 @@ faros-provider-infrastructure .dynform-sr-only {
   white-space: nowrap;
 }
 
-faros-provider-infrastructure .dynform-error {
+railgrid-provider-infrastructure .dynform-error {
   color: var(--color-danger, #ff5d5d);
   font-size: 11px;
 }
 
 @media (max-width: 640px) {
-  faros-provider-infrastructure .dynform-map-head {
+  railgrid-provider-infrastructure .dynform-map-head {
     display: none;
   }
 
-  faros-provider-infrastructure .dynform-map-row {
+  railgrid-provider-infrastructure .dynform-map-row {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  faros-provider-infrastructure .dynform-map-row > :nth-child(4) {
+  railgrid-provider-infrastructure .dynform-map-row > :nth-child(4) {
     grid-column: 1;
   }
 
-  faros-provider-infrastructure .dynform-map-remove {
+  railgrid-provider-infrastructure .dynform-map-remove {
     grid-column: 2;
     grid-row: 1;
   }
 }
 
-faros-provider-infrastructure .instance-status-label {
+railgrid-provider-infrastructure .instance-status-label {
   color: var(--color-text-muted, #5d5f78);
   font-size: 10px;
   text-transform: uppercase;
 }
 
-faros-provider-infrastructure .actions {
+railgrid-provider-infrastructure .actions {
   display: flex;
   gap: 8px;
   margin-top: 8px;
@@ -287,14 +287,14 @@ faros-provider-infrastructure .actions {
 
 
 
-faros-provider-infrastructure .panel {
+railgrid-provider-infrastructure .panel {
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-faros-provider-infrastructure .panel-title {
+railgrid-provider-infrastructure .panel-title {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -303,7 +303,7 @@ faros-provider-infrastructure .panel-title {
   color: var(--color-text-secondary, #8a8ca6);
 }
 
-faros-provider-infrastructure pre {
+railgrid-provider-infrastructure pre {
   margin: 0;
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, #e9e9f2);
@@ -316,7 +316,7 @@ faros-provider-infrastructure pre {
   white-space: pre-wrap;
 }
 
-faros-provider-infrastructure code {
+railgrid-provider-infrastructure code {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-secondary, #8a8ca6);
   padding: 1px 5px;
@@ -325,7 +325,7 @@ faros-provider-infrastructure code {
   font-size: 11px;
 }
 
-faros-provider-infrastructure .muted {
+railgrid-provider-infrastructure .muted {
   color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
 }
@@ -333,46 +333,46 @@ faros-provider-infrastructure .muted {
 /* Loading/read-state primitives. These are provider-local because the
  * standalone IIFE renders into light DOM and must not depend on host utility
  * CSS for its core lifecycle geometry. */
-faros-provider-infrastructure .page-loading-shell,
-faros-provider-infrastructure .catalog-loading-card {
+railgrid-provider-infrastructure .page-loading-shell,
+railgrid-provider-infrastructure .catalog-loading-card {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-faros-provider-infrastructure .page-loading-shell {
+railgrid-provider-infrastructure .page-loading-shell {
   min-height: 220px;
 }
 
-faros-provider-infrastructure .page-loading-line,
-faros-provider-infrastructure .page-loading-panel {
+railgrid-provider-infrastructure .page-loading-line,
+railgrid-provider-infrastructure .page-loading-panel {
   background: linear-gradient(90deg, var(--color-surface-overlay, #171927), var(--color-surface-hover, #1e2033), var(--color-surface-overlay, #171927));
   background-size: 200% 100%;
   border-radius: 4px;
 }
 
-faros-provider-infrastructure .page-loading-line { height: 12px; width: 100%; }
-faros-provider-infrastructure .page-loading-line-short { width: 34%; }
-faros-provider-infrastructure .page-loading-line-mid { width: 68%; }
-faros-provider-infrastructure .page-loading-panel {
+railgrid-provider-infrastructure .page-loading-line { height: 12px; width: 100%; }
+railgrid-provider-infrastructure .page-loading-line-short { width: 34%; }
+railgrid-provider-infrastructure .page-loading-line-mid { width: 68%; }
+railgrid-provider-infrastructure .page-loading-panel {
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   height: 96px;
 }
 
-faros-provider-infrastructure .catalog-loading-grid {
+railgrid-provider-infrastructure .catalog-loading-grid {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
-faros-provider-infrastructure .catalog-loading-card {
+railgrid-provider-infrastructure .catalog-loading-card {
   min-height: 126px;
   padding: 16px;
 }
 
-faros-provider-infrastructure .read-error,
-faros-provider-infrastructure .mutation-error,
-faros-provider-infrastructure .stale-banner {
+railgrid-provider-infrastructure .read-error,
+railgrid-provider-infrastructure .mutation-error,
+railgrid-provider-infrastructure .stale-banner {
   align-items: center;
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   border: 1px solid color-mix(in srgb, var(--color-danger, #ff5d5d) 35%, transparent);
@@ -385,15 +385,15 @@ faros-provider-infrastructure .stale-banner {
   padding: 10px 12px;
 }
 
-faros-provider-infrastructure .empty-state,
-faros-provider-infrastructure .empty-followup,
-faros-provider-infrastructure .detail-empty {
+railgrid-provider-infrastructure .empty-state,
+railgrid-provider-infrastructure .empty-followup,
+railgrid-provider-infrastructure .detail-empty {
   color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
 }
 
-faros-provider-infrastructure .empty-state,
-faros-provider-infrastructure .empty-followup {
+railgrid-provider-infrastructure .empty-state,
+railgrid-provider-infrastructure .empty-followup {
   align-items: center;
   display: flex;
   gap: 8px;
@@ -405,14 +405,14 @@ faros-provider-infrastructure .empty-followup {
  * shell, matching the other provider resource journeys. ResourcePage owns
  * the header/read-state composition; these selectors only cover provider-local
  * action spacing and stacked body geometry. */
-faros-provider-infrastructure .instance-detail {
+railgrid-provider-infrastructure .instance-detail {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 14px;
 }
 
-faros-provider-infrastructure .instance-detail__actions {
+railgrid-provider-infrastructure .instance-detail__actions {
   display: inline-flex;
   min-width: 0;
   flex-wrap: wrap;
@@ -421,20 +421,20 @@ faros-provider-infrastructure .instance-detail__actions {
   gap: 8px;
 }
 
-faros-provider-infrastructure .instance-detail__actions .icon-text { gap: 7px; }
+railgrid-provider-infrastructure .instance-detail__actions .icon-text { gap: 7px; }
 
-faros-provider-infrastructure .instance-detail__sections {
+railgrid-provider-infrastructure .instance-detail__sections {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 14px;
 }
 
-faros-provider-infrastructure .instance-detail__sections .detail-field {
+railgrid-provider-infrastructure .instance-detail__sections .detail-field {
   padding-inline: 0;
 }
 
-faros-provider-infrastructure .instance-detail .spin {
+railgrid-provider-infrastructure .instance-detail .spin {
   animation: infrastructure-instance-spin .8s linear infinite;
 }
 
@@ -442,27 +442,27 @@ faros-provider-infrastructure .instance-detail .spin {
   to { transform: rotate(360deg); }
 }
 
-faros-provider-infrastructure .instance-list-actions,
-faros-provider-infrastructure .instance-detail-head,
-faros-provider-infrastructure .instance-detail-title {
+railgrid-provider-infrastructure .instance-list-actions,
+railgrid-provider-infrastructure .instance-detail-head,
+railgrid-provider-infrastructure .instance-detail-title {
   align-items: center;
   display: flex;
   gap: 10px;
 }
 
-faros-provider-infrastructure .instance-detail-head { justify-content: space-between; }
-faros-provider-infrastructure .refresh-cadence,
-faros-provider-infrastructure .cell-mono {
+railgrid-provider-infrastructure .instance-detail-head { justify-content: space-between; }
+railgrid-provider-infrastructure .refresh-cadence,
+railgrid-provider-infrastructure .cell-mono {
   color: var(--color-text-muted, #5d5f78);
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 10px;
 }
 
-faros-provider-infrastructure .instance-name-link {
+railgrid-provider-infrastructure .instance-name-link {
   color: var(--color-text-primary, #e9e9f2);
   font-weight: 600;
 }
-faros-provider-infrastructure .instance-name-link {
+railgrid-provider-infrastructure .instance-name-link {
   background: transparent;
   border-color: transparent;
   cursor: pointer;
@@ -470,14 +470,14 @@ faros-provider-infrastructure .instance-name-link {
   padding: 0;
   text-align: left;
 }
-faros-provider-infrastructure .instance-name-link:hover { border-color: transparent; }
-faros-provider-infrastructure .instance-name-link:hover,
-faros-provider-infrastructure .instance-name-link:focus-visible { color: var(--color-accent, #8b6bff); }
-faros-provider-infrastructure .instance-name-link:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
-faros-provider-infrastructure .instance-name-link:disabled { color: var(--color-text-muted, #5d5f78); cursor: default; }
-faros-provider-infrastructure .cell-empty { color: var(--color-text-muted, #5d5f78); }
-faros-provider-infrastructure .row-actions { align-items: center; display: flex; justify-content: flex-end; }
-faros-provider-infrastructure .instance-message {
+railgrid-provider-infrastructure .instance-name-link:hover { border-color: transparent; }
+railgrid-provider-infrastructure .instance-name-link:hover,
+railgrid-provider-infrastructure .instance-name-link:focus-visible { color: var(--color-accent, #8b6bff); }
+railgrid-provider-infrastructure .instance-name-link:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
+railgrid-provider-infrastructure .instance-name-link:disabled { color: var(--color-text-muted, #5d5f78); cursor: default; }
+railgrid-provider-infrastructure .cell-empty { color: var(--color-text-muted, #5d5f78); }
+railgrid-provider-infrastructure .row-actions { align-items: center; display: flex; justify-content: flex-end; }
+railgrid-provider-infrastructure .instance-message {
   background: var(--color-surface-overlay, #171927);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
@@ -486,11 +486,11 @@ faros-provider-infrastructure .instance-message {
   padding: 9px 12px;
 }
 
-faros-provider-infrastructure .detail-group {
+railgrid-provider-infrastructure .detail-group {
   overflow: hidden;
 }
 
-faros-provider-infrastructure .detail-group-title {
+railgrid-provider-infrastructure .detail-group-title {
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   color: var(--color-text-muted, #5d5f78);
   font-size: 10px;
@@ -500,15 +500,15 @@ faros-provider-infrastructure .detail-group-title {
   text-transform: uppercase;
 }
 
-faros-provider-infrastructure .detail-fields { margin: 0; }
-faros-provider-infrastructure .detail-field {
+railgrid-provider-infrastructure .detail-fields { margin: 0; }
+railgrid-provider-infrastructure .detail-field {
   align-items: baseline;
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   display: flex;
   gap: 16px;
   padding: 10px 16px;
 }
-faros-provider-infrastructure .detail-field:last-child { border-bottom: 0; }
-faros-provider-infrastructure .detail-field dt { color: var(--color-text-muted, #5d5f78); flex: 0 0 160px; font-size: 12px; }
-faros-provider-infrastructure .detail-field dd { color: var(--color-text-secondary, #8a8ca6); margin: 0; min-width: 0; overflow-wrap: anywhere; }
-faros-provider-infrastructure .detail-empty { padding: 24px 16px; text-align: center; }
+railgrid-provider-infrastructure .detail-field:last-child { border-bottom: 0; }
+railgrid-provider-infrastructure .detail-field dt { color: var(--color-text-muted, #5d5f78); flex: 0 0 160px; font-size: 12px; }
+railgrid-provider-infrastructure .detail-field dd { color: var(--color-text-secondary, #8a8ca6); margin: 0; min-width: 0; overflow-wrap: anywhere; }
+railgrid-provider-infrastructure .detail-empty { padding: 24px 16px; text-align: center; }

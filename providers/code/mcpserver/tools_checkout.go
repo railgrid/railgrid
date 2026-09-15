@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,8 +24,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/commitbundle"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/commitbundle"
 )
 
 var repositoryCheckoutsGVR = codev1alpha1.SchemeGroupVersion.WithResource("repositorycheckouts")
@@ -65,7 +65,7 @@ type checkoutRepositoryOutput struct {
 // (hence the untyped output): with a typed output the SDK would carry the
 // whole tree twice — once as structuredContent and again as a text copy —
 // and a checkout can hold up to 48 MiB of files. Every consumer reads the
-// text block (App Studio prefers it; the faros CLI falls back to it).
+// text block (App Studio prefers it; the railgrid CLI falls back to it).
 func registerCheckoutTools(srv *mcp.Server, deps Deps, ident identity) {
 	yes := true
 	mcp.AddTool(srv, &mcp.Tool{
@@ -134,7 +134,7 @@ func checkoutRepository(ctx context.Context, dyn dynamic.Interface, bundles comm
 	created, err := dyn.Resource(repositoryCheckoutsGVR).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, checkoutRepositoryOutput{}, fmt.Errorf("create RepositoryCheckout: RepositoryCheckout API is not available in this workspace; re-register the Code provider so repositorycheckouts.code.faros.sh is published: %w", err)
+			return nil, checkoutRepositoryOutput{}, fmt.Errorf("create RepositoryCheckout: RepositoryCheckout API is not available in this workspace; re-register the Code provider so repositorycheckouts.code.railgrid.ai is published: %w", err)
 		}
 		return nil, checkoutRepositoryOutput{}, fmt.Errorf("create RepositoryCheckout: %w", err)
 	}

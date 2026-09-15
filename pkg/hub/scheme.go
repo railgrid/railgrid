@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,21 +25,21 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
-	adminv1alpha1 "github.com/faroshq/faros/apis/admin/v1alpha1"
-	farosv1alpha1 "github.com/faroshq/faros/apis/faros/v1alpha1"
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	adminv1alpha1 "github.com/railgrid/railgrid/apis/admin/v1alpha1"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 // NewScheme builds a runtime.Scheme containing all types needed by the
-// multicluster manager: core k8s types, faros CRDs, tenancy CRDs,
+// multicluster manager: core k8s types, railgrid CRDs, tenancy CRDs,
 // and the kcp SDK types required by multicluster-provider internals.
 func NewScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
 	utilruntime.Must(providersv1alpha1.AddToScheme(s))
 	utilruntime.Must(adminv1alpha1.AddToScheme(s))
-	utilruntime.Must(farosv1alpha1.AddToScheme(s))
+	utilruntime.Must(railgridv1alpha1.AddToScheme(s))
 	utilruntime.Must(tenancyv1alpha1.AddToScheme(s))
 	utilruntime.Must(corev1alpha1.AddToScheme(s))
 	utilruntime.Must(kcptenancyv1alpha1.AddToScheme(s))

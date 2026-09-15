@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package identity builds the cross-workspace ServiceAccount identity faros
+// Package identity builds the cross-workspace ServiceAccount identity railgrid
 // authorizes foreign SAs under.
 //
 // kcp ServiceAccount usernames ("system:serviceaccount:{ns}:{name}") are
@@ -28,13 +28,13 @@ limitations under the License.
 //
 //	system:kcp:serviceaccount:{cluster}:{ns}:{name}
 //
-// Faros emits the same format — after verifying the home cluster via
+// Railgrid emits the same format — after verifying the home cluster via
 // TokenReview — so the grant objects created on tenant Enable use kcp-native
-// subjects: the same binding that satisfies faros's delegated SAR also
+// subjects: the same binding that satisfies railgrid's delegated SAR also
 // authorizes the SA on kcp-native paths.
 //
 // This is a monorepo-independent copy of the hub's pkg/util/identity so the
-// provider-sdk tunnel plane carries no dependency on faros core. The two copies
+// provider-sdk tunnel plane carries no dependency on railgrid core. The two copies
 // MUST agree on the encoding — they are trivial string formatting and cannot be
 // version-skewed at runtime (each module vendors its own).
 package identity
@@ -43,7 +43,7 @@ import "strings"
 
 // globalSAPrefix is kcp's cross-workspace ServiceAccount username prefix.
 // kcp's authenticators never mint usernames under it directly (it is an
-// RBAC-resolution alias), so faros synthesizing it after a successful
+// RBAC-resolution alias), so railgrid synthesizing it after a successful
 // TokenReview cannot collide with or be forged through any token.
 const globalSAPrefix = "system:kcp:serviceaccount:"
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -666,7 +666,7 @@ func (p *Proxy) logf(format string, args ...any) {
 		p.config.Logf(format, args...)
 		return
 	}
-	log.Printf("faros-access-proxy: "+format, args...)
+	log.Printf("railgrid-access-proxy: "+format, args...)
 }
 
 func sessionKey(value string) string {
@@ -790,7 +790,7 @@ func joinTargetPath(base, suffix string) string {
 func stripUpstreamRequestHeaders(headers http.Header) {
 	for key := range headers {
 		lower := strings.ToLower(key)
-		if strings.HasPrefix(lower, "x-faros-") || isProxyReservedHeader(lower) {
+		if strings.HasPrefix(lower, "x-railgrid-") || isProxyReservedHeader(lower) {
 			delete(headers, key)
 		}
 	}
@@ -835,7 +835,7 @@ func filterCookieHeader(headers http.Header) {
 func stripUpstreamResponseHeaders(headers http.Header) {
 	for key := range headers {
 		lower := strings.ToLower(key)
-		if strings.HasPrefix(lower, "x-faros-") || lower == "authorization" || lower == "proxy-authenticate" || lower == "www-authenticate" {
+		if strings.HasPrefix(lower, "x-railgrid-") || lower == "authorization" || lower == "proxy-authenticate" || lower == "www-authenticate" {
 			delete(headers, key)
 		}
 	}

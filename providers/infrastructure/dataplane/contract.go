@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // ContractGetter returns the data-plane contract for a Template (by
@@ -47,7 +47,7 @@ type DevelopmentGetter interface {
 }
 
 var templateGVR = schema.GroupVersionResource{
-	Group:    "infrastructure.faros.sh",
+	Group:    "infrastructure.railgrid.ai",
 	Version:  "v1alpha1",
 	Resource: "templates",
 }

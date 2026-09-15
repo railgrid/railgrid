@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,10 +20,10 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	"github.com/faroshq/provider-agents/engine"
-	"github.com/faroshq/provider-agents/store"
-	"github.com/faroshq/provider-agents/tools"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 func TestWorkerFamilies(t *testing.T) {
@@ -587,7 +587,7 @@ func TestWorkerTurnContextIsFresh(t *testing.T) {
 	s := &Server{store: store.NewMemoryStore()}
 	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "researcher"}
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "researcher"}}
-	agent.Spec.SystemPrompt = "You are Faros's research agent."
+	agent.Spec.SystemPrompt = "You are Railgrid's research agent."
 
 	// A memory note and a prior transcript in the SAME session, both of which a
 	// worker must not inherit.

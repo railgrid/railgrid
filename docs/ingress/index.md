@@ -3,7 +3,7 @@ layout: default
 title: Ingress
 nav_order: 4
 has_children: true
-description: "Expose Faros Hub publicly for remote agents"
+description: "Expose Railgrid Hub publicly for remote agents"
 permalink: /ingress/
 ---
 
@@ -23,7 +23,7 @@ Remote agents need to reach your hub over the internet. This section covers diff
 
 ## The Challenge
 
-For Faros to work with remote clusters, the hub must be reachable from:
+For Railgrid to work with remote clusters, the hub must be reachable from:
 
 - **Agents** — Running on remote clusters that establish reverse tunnels
 - **Users** — Logging in via the CLI from anywhere

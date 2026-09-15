@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ const (
 	persistentExecRetryAttempts  = 3
 )
 
-var executionGroupResource = schema.GroupResource{Group: "infrastructure.faros.sh", Resource: "executions"}
+var executionGroupResource = schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "executions"}
 
 type execCoordinatorRequest struct {
 	Action         ExecAction `json:"action"`

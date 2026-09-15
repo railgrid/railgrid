@@ -5,11 +5,11 @@
      Compact, accessible edit trigger for ResourceTable action cells. -->
 <script setup lang="ts">
 import { Pencil } from 'lucide-vue-next'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 // Standalone provider portals load the exact canonical recipe through the
-// shared helper; the host portal already imports the same faros-ui.css file.
-ensureFarosUIStyles()
+// shared helper; the host portal already imports the same railgrid-ui.css file.
+ensureRailgridUIStyles()
 
 withDefaults(defineProps<{
   /** Accessible resource-specific action, for example "Edit table orders". */

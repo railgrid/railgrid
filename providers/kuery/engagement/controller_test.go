@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,22 +29,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpcore "github.com/kcp-dev/sdk/apis/core"
 
-	kuerygc "github.com/faroshq/kuery/pkg/gc"
-	kuerystore "github.com/faroshq/kuery/pkg/store"
-	kuerysync "github.com/faroshq/kuery/pkg/sync"
+	kuerygc "github.com/railgrid/kuery/pkg/gc"
+	kuerystore "github.com/railgrid/kuery/pkg/store"
+	kuerysync "github.com/railgrid/kuery/pkg/sync"
 )
 
-// TestEdgeProxyURL keeps the inlined URL pattern in lockstep with the faros
+// TestEdgeProxyURL keeps the inlined URL pattern in lockstep with the railgrid
 // monorepo's pkg/apiurl (EdgeProviderCoordinates + the edges provider's
 // edgeproxy mount).
 func TestEdgeProxyURL(t *testing.T) {
 	got := edgeProxyURL("https://hub.example.com/", "2hx82dl9ncmepp5l", "edge-1")
-	want := "https://hub.example.com/services/providers/edges/edgeproxy/clusters/2hx82dl9ncmepp5l/apis/edges.faros.sh/v1alpha1/kubernetesclusters/edge-1/k8s"
+	want := "https://hub.example.com/services/providers/edges/edgeproxy/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/edge-1/k8s"
 	if got != want {
 		t.Fatalf("edgeProxyURL = %q, want %q", got, want)
 	}
@@ -59,7 +59,7 @@ func TestEdgeProxyURL(t *testing.T) {
 func TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity(t *testing.T) {
 	cfg := edgeProxyConfig("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", "ws-sa-token", true)
 
-	if want := "https://hub.example.com/services/providers/edges/edgeproxy/clusters/2hx82dl9ncmepp5l/apis/edges.faros.sh/v1alpha1/kubernetesclusters/edge-1/k8s"; cfg.Host != want {
+	if want := "https://hub.example.com/services/providers/edges/edgeproxy/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/edge-1/k8s"; cfg.Host != want {
 		t.Fatalf("Host = %q, want %q", cfg.Host, want)
 	}
 	if cfg.BearerToken != "ws-sa-token" {
@@ -69,7 +69,7 @@ func TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity(t *testing.T) {
 		t.Fatal("edgeproxy config must not carry provider-kubeconfig auth plumbing")
 	}
 	if !cfg.Insecure {
-		t.Fatal("insecure=true must carry over to the data path (FAROS_HUB_INSECURE)")
+		t.Fatal("insecure=true must carry over to the data path (RAILGRID_HUB_INSECURE)")
 	}
 	if cfg.QPS != 50 || cfg.Burst != 100 {
 		t.Fatalf("QPS/Burst = %v/%v, want 50/100", cfg.QPS, cfg.Burst)
@@ -100,7 +100,7 @@ func TestEngagementIdentityGrantsProxy(t *testing.T) {
 	}
 	cl := ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(tokenSecret).Build()
 
-	c := &Controller{cfg: Config{APIExportName: "kuery.providers.faros.sh"}}
+	c := &Controller{cfg: Config{APIExportName: "kuery.providers.railgrid.ai"}}
 	binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Name: "kuery", UID: "b-1"}}
 	token, err := c.ensureIdentity(context.Background(), cl, binding)
 	if err != nil {
@@ -127,9 +127,9 @@ func TestEngagementIdentityGrantsProxy(t *testing.T) {
 	if err := cl.Get(context.Background(), client.ObjectKey{Name: edgeProxyGrantName}, grant); err != nil {
 		t.Fatalf("get grant ClusterRole: %v", err)
 	}
-	if len(grant.Rules) != 1 || !slices.Equal(grant.Rules[0].APIGroups, []string{"edges.faros.sh"}) ||
+	if len(grant.Rules) != 1 || !slices.Equal(grant.Rules[0].APIGroups, []string{"edges.railgrid.ai"}) ||
 		!slices.Equal(grant.Rules[0].Resources, []string{"kubernetesclusters"}) || !slices.Equal(grant.Rules[0].Verbs, []string{"proxy"}) {
-		t.Fatalf("grant rules = %+v, want exactly proxy on edges.faros.sh/kubernetesclusters", grant.Rules)
+		t.Fatalf("grant rules = %+v, want exactly proxy on edges.railgrid.ai/kubernetesclusters", grant.Rules)
 	}
 	if len(grant.OwnerReferences) != 1 || grant.OwnerReferences[0].UID != "b-1" {
 		t.Fatalf("grant must be owned by the kuery APIBinding, got %+v", grant.OwnerReferences)
@@ -153,7 +153,7 @@ func TestEngagementIdentityGrantsProxy(t *testing.T) {
 
 func TestStripClusterSuffix(t *testing.T) {
 	cases := map[string]string{
-		"https://hub:9443/clusters/root:faros:providers:kuery": "https://hub:9443",
+		"https://hub:9443/clusters/root:railgrid:providers:kuery": "https://hub:9443",
 		"https://hub:9443": "https://hub:9443",
 	}
 	for in, want := range cases {
@@ -182,7 +182,7 @@ func TestTenantClusterFromBindingUsesClusterAnnotation(t *testing.T) {
 	const cluster = "btykuuy2789iyolq"
 	binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
 		"kcp.io/cluster":                        cluster,
-		kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1:workspace-1",
+		kcpcore.LogicalClusterPathAnnotationKey: "root:railgrid:tenants:org-1:workspace-1",
 	}}}
 	got, err := tenantClusterFromBinding(binding, cluster)
 	if err != nil {
@@ -207,9 +207,9 @@ func TestTenantClusterFromBindingFailsClosed(t *testing.T) {
 		wantError   string
 	}{
 		{name: "nil binding", wantError: "APIBinding is required"},
-		{name: "missing cluster", annotations: map[string]string{kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1"}, wantError: "no kcp.io/cluster"},
+		{name: "missing cluster", annotations: map[string]string{kcpcore.LogicalClusterPathAnnotationKey: "root:railgrid:tenants:org-1"}, wantError: "no kcp.io/cluster"},
 		{name: "blank cluster", annotations: map[string]string{"kcp.io/cluster": "  "}, wantError: "no kcp.io/cluster"},
-		{name: "cluster mismatch", annotations: map[string]string{"kcp.io/cluster": "other", kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1"}, wantError: "does not match"},
+		{name: "cluster mismatch", annotations: map[string]string{"kcp.io/cluster": "other", kcpcore.LogicalClusterPathAnnotationKey: "root:railgrid:tenants:org-1"}, wantError: "does not match"},
 	}
 
 	for _, tt := range tests {
@@ -327,7 +327,7 @@ func TestTenantEdgesListsActiveStoreRowsForTenant(t *testing.T) {
 		{tenantA + "/edge-3", tenantA, "stale"}, // disengaged: hidden
 		// A legacy row from before the cluster-ID key: name and label carry the
 		// workspace path. Not this tenant's key, so never listed.
-		{"root:faros:tenants:org:ws/edge-1", "root:faros:tenants:org:ws", "active"},
+		{"root:railgrid:tenants:org:ws/edge-1", "root:railgrid:tenants:org:ws", "active"},
 	}
 	for _, row := range seed {
 		if err := s.UpsertCluster(ctx, &kuerystore.ClusterModel{
@@ -458,7 +458,7 @@ func TestSweepOrphansConvergesLegacyRows(t *testing.T) {
 	const (
 		cluster    = "1ngen6o0so3jwz2h"
 		edge       = "edge-1"
-		legacyName = "root:faros:tenants:org:ws/" + edge
+		legacyName = "root:railgrid:tenants:org:ws/" + edge
 		liveName   = cluster + "/" + edge
 	)
 	now := time.Now()
@@ -466,7 +466,7 @@ func TestSweepOrphansConvergesLegacyRows(t *testing.T) {
 	// its TTL, i.e. the old provider version stopped over an hour ago.
 	legacyLastSeen := now.Add(-clusterTTLSeconds*time.Second - time.Minute)
 	seed := []*kuerystore.ClusterModel{
-		{Name: legacyName, Status: "active", LastSeen: legacyLastSeen, TTL: clusterTTLSeconds, Labels: tenantLabelsJSON("root:faros:tenants:org:ws")},
+		{Name: legacyName, Status: "active", LastSeen: legacyLastSeen, TTL: clusterTTLSeconds, Labels: tenantLabelsJSON("root:railgrid:tenants:org:ws")},
 		{Name: liveName, Status: "active", LastSeen: now, TTL: clusterTTLSeconds, Labels: tenantLabelsJSON(cluster)},
 		// Recently orphaned but within grace (e.g. its owner just died and a
 		// peer is about to take over): must not be touched yet.

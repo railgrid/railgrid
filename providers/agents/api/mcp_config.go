@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,23 +25,23 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/llm"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/llm"
 )
 
 // mcpIdentity reconstructs the caller identity for tools that touch
 // store-scoped data or mint cluster-scoped URLs. The hub identifies the
-// tenant by cluster ID only (X-Faros-Tenant and X-Faros-Cluster carry the
+// tenant by cluster ID only (X-Railgrid-Tenant and X-Railgrid-Cluster carry the
 // same value), so the org/workspace UUIDs come from kcp — the workspace's
 // LogicalCluster read as the caller — with the cluster→tenant mapping the
 // portal records on every REST call (the same mapping background execution
 // uses) as the fallback when that lookup is unavailable.
 func (s *Server) mcpIdentity(ctx context.Context, r *http.Request) identity {
 	id := identity{
-		tenant:    strings.TrimSpace(r.Header.Get("X-Faros-Tenant")),
-		clusterID: strings.TrimSpace(r.Header.Get("X-Faros-Cluster")),
-		user:      strings.TrimSpace(r.Header.Get("X-Faros-User")),
+		tenant:    strings.TrimSpace(r.Header.Get("X-Railgrid-Tenant")),
+		clusterID: strings.TrimSpace(r.Header.Get("X-Railgrid-Cluster")),
+		user:      strings.TrimSpace(r.Header.Get("X-Railgrid-User")),
 		token:     bearerToken(r),
 	}
 	if id.clusterID == "" {
@@ -208,7 +208,7 @@ type toolFamilyInfo struct {
 
 type listToolFamiliesOutput struct {
 	Families []toolFamilyInfo `json:"families"`
-	// Providers are the faros providers reachable through the hub's aggregate
+	// Providers are the railgrid providers reachable through the hub's aggregate
 	// tool endpoint, which every interactive run gets for free.
 	Providers []string `json:"providers,omitempty"`
 	Note      string   `json:"note,omitempty"`
@@ -590,7 +590,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			Families: toolFamilyDocs,
 			Note:     "core is always granted and cannot be removed.",
 		}
-		// Best-effort, cache-only: the aggregate endpoint knows which faros
+		// Best-effort, cache-only: the aggregate endpoint knows which railgrid
 		// providers an interactive run reaches without any grant. Probing it
 		// live would put a network round-trip inside a discovery call, so an
 		// empty list here means "not probed recently", not "nothing enabled".

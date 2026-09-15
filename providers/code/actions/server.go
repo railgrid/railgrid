@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	api "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/backend"
-	"github.com/faroshq/provider-code/tenant"
-	"github.com/faroshq/provider-sdk/actionwire"
+	api "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-code/tenant"
+	"github.com/railgrid/provider-sdk/actionwire"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -77,11 +77,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cluster, name, action := parts[2], parts[4], parts[5]
-	if !segment.MatchString(cluster) || !segment.MatchString(name) || name == "." || name == ".." || cluster != r.Header.Get("X-Faros-Cluster") {
+	if !segment.MatchString(cluster) || !segment.MatchString(name) || name == "." || name == ".." || cluster != r.Header.Get("X-Railgrid-Cluster") {
 		http.Error(w, "invalid repository action scope", http.StatusForbidden)
 		return
 	}
-	envelope := actionwire.New(r, "code", action, actionwire.ResourceRef{APIVersion: "code.faros.sh/v1alpha1", Kind: "Repository", Resource: "repositories", Name: name})
+	envelope := actionwire.New(r, "code", action, actionwire.ResourceRef{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository", Resource: "repositories", Name: name})
 	w.Header().Set("X-Request-ID", envelope.RequestID)
 	fail := func(status int, code string, retryable bool) {
 		envelope.Failure(w, status, code, strings.ReplaceAll(code, "_", " "), retryable)
@@ -213,7 +213,7 @@ func (s *Server) authorize(ctx context.Context, r *http.Request, cluster, name, 
 	if err != nil || visible.GetDeletionTimestamp() != nil {
 		return nil, errors.New("repository action denied")
 	}
-	review, err := caller.Resource(schema.GroupVersionResource{Group: "authorization.k8s.io", Version: "v1", Resource: "selfsubjectaccessreviews"}).Create(ctx, &unstructured.Unstructured{Object: map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview", "spec": map[string]any{"resourceAttributes": map[string]any{"group": "code.faros.sh", "resource": "repositories", "name": name, "verb": "invoke", "subresource": action}}}}, metav1.CreateOptions{})
+	review, err := caller.Resource(schema.GroupVersionResource{Group: "authorization.k8s.io", Version: "v1", Resource: "selfsubjectaccessreviews"}).Create(ctx, &unstructured.Unstructured{Object: map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview", "spec": map[string]any{"resourceAttributes": map[string]any{"group": "code.railgrid.ai", "resource": "repositories", "name": name, "verb": "invoke", "subresource": action}}}}, metav1.CreateOptions{})
 	if err != nil {
 		return nil, errors.New("repository action denied")
 	}

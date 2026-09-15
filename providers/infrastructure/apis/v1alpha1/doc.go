@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=infrastructure.faros.sh
+// +groupName=infrastructure.railgrid.ai
 
 // Package v1alpha1 contains the platform-facing API for the
 // infrastructure provider — a small, backend-neutral catalog system

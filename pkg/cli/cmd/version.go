@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	pkgversion "github.com/faroshq/faros/pkg/version"
+	pkgversion "github.com/railgrid/railgrid/pkg/version"
 )
 
 func newVersionCommand() *cobra.Command {
@@ -30,7 +30,7 @@ func newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("faros version %s\n", pkgversion.Version)
+			fmt.Printf("railgrid version %s\n", pkgversion.Version)
 			fmt.Printf("  git commit: %s\n", pkgversion.GitCommit)
 			fmt.Printf("  build date: %s\n", pkgversion.BuildDate)
 			fmt.Printf("  go version: %s\n", runtime.Version())

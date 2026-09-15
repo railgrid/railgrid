@@ -1,8 +1,8 @@
 {
-  "name": "faros-provider-code-portal",
+  "name": "railgrid-provider-code-portal",
   "version": "0.1.0",
   "private": true,
-  "description": "code provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle the faros hub serves under /ui/providers/code/.",
+  "description": "code provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle the railgrid hub serves under /ui/providers/code/.",
   "type": "module",
   "scripts": {
     "prebuild": "vitest run && vue-tsc --noEmit",

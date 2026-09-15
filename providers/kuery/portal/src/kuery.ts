@@ -1,29 +1,29 @@
 import { computed, type Ref } from 'vue'
 
 import { createKueryApi, type KueryApi, type QuerySpec, type QueryStatus } from './api'
-import type { FarosContext } from './element'
+import type { RailgridContext } from './element'
 import { createKueryRequestContext } from './request-context'
 import type { KueryRequestContext } from './request-context'
 
 export { createKueryRequestContext }
 export type { KueryRequestContext }
 
-export function serviceBase(context: FarosContext | null): string {
+export function serviceBase(context: RailgridContext | null): string {
   return createKueryRequestContext(context).basePath
 }
 
-export function tenantHeaders(context: FarosContext | null): Record<string, string> {
+export function tenantHeaders(context: RailgridContext | null): Record<string, string> {
   return createKueryRequestContext(context).headers
 }
 
-export function useKueryApi(context: Ref<FarosContext | null>): { api: Readonly<Ref<KueryApi | null>>; query: (spec: QuerySpec, signal?: AbortSignal) => Promise<QueryStatus> } {
+export function useKueryApi(context: Ref<RailgridContext | null>): { api: Readonly<Ref<KueryApi | null>>; query: (spec: QuerySpec, signal?: AbortSignal) => Promise<QueryStatus> } {
   const requestContext = computed(() => createKueryRequestContext(context.value))
   const api = computed(() => {
     const request = requestContext.value
     // The host-owned fetch injects Authorization itself, so it is sufficient
     // auth on its own. Requiring the token as well would strand Kuery in
     // "waiting for workspace context" once hosts stop exposing the deprecated
-    // farosContext.token; the token gate applies only to older hosts that
+    // railgridContext.token; the token gate applies only to older hosts that
     // expose no fetch.
     const authenticated = request.hasHostFetch || !!request.token
     return request.basePath && authenticated

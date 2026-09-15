@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
-const scratch = await mkdtemp(join(tmpdir(), 'faros-actions-install-'));
+const scratch = await mkdtemp(join(tmpdir(), 'railgrid-actions-install-'));
 
 try {
   const packed = JSON.parse(execFileSync('npm', [
@@ -21,12 +21,12 @@ try {
     private: true,
     type: 'module',
     dependencies: {
-      '@faros/actions-node': `file:${join(scratch, packed[0].filename)}`,
+      '@railgrid/actions-node': `file:${join(scratch, packed[0].filename)}`,
     },
   }, null, 2));
   await writeFile(join(consumer, 'verify.mjs'), [
     "import assert from 'node:assert/strict';",
-    "import { createActionsClient } from '@faros/actions-node';",
+    "import { createActionsClient } from '@railgrid/actions-node';",
     "assert.equal(typeof createActionsClient, 'function');",
     '',
   ].join('\n'));

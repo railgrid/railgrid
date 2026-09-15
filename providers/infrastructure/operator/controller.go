@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,12 +30,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/install"
+	"github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/install"
 )
 
 // APIExportName is the provider's APIExport (manifest.yaml spec.apiExport.name).
-const APIExportName = "infrastructure.providers.faros.sh"
+const APIExportName = "infrastructure.providers.railgrid.ai"
 
 // requeueInterval re-runs each CR's reconcile periodically so the bootstrap +
 // kro release + serve Deployment self-heal even without a spec change.
@@ -330,7 +330,7 @@ func applyDefaults(cr *v1alpha1.InfrastructureProvider) {
 	if k.Chart == "" {
 		// Upstream kro: kro runs single-cluster against the runtime cluster
 		// (the instance controller bridges kcp → runtime), so the retired
-		// faroshq/kro-multicluster fork is no longer needed. The chart's own
+		// railgrid/kro-multicluster fork is no longer needed. The chart's own
 		// defaults supply the image (registry.k8s.io/kro/kro at appVersion).
 		k.Chart = "oci://registry.k8s.io/kro/charts/kro"
 	}

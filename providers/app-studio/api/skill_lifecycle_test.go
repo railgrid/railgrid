@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,10 +24,10 @@ import (
 
 	"github.com/gorilla/mux"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
-	appskills "github.com/faroshq/provider-app-studio/skills"
-	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
-	"github.com/faroshq/provider-app-studio/workspace"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	appskills "github.com/railgrid/provider-app-studio/skills"
+	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestProjectSkillMutationValidationIsBoundedAndCanonical(t *testing.T) {
@@ -64,7 +64,7 @@ func TestProjectSkillMutationValidationIsBoundedAndCanonical(t *testing.T) {
 func TestProjectSkillImportNormalizesExportFiles(t *testing.T) {
 	request := projectAssistantSkillMutationRequest{
 		PackageName: "imported",
-		Format:      "faros.skill.v1",
+		Format:      "railgrid.skill.v1",
 		Files: []projectAssistantSkillResourceInput{
 			{Path: "SKILL.md", Content: "---\nname: imported\ndescription: Imported skill\n---\nimport body", Size: 64},
 			{Path: "notes.txt", Content: "import resource", Digest: "sha256:ignored", Size: 15},
@@ -83,7 +83,7 @@ func TestProjectSkillImportNormalizesExportFiles(t *testing.T) {
 
 func TestProjectSkillLifecycleHTTPRoutesAndReload(t *testing.T) {
 	proxy := tenanttest.NewServer(t)
-	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: uid-demo\nspec: {}\n"))
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: uid-demo\nspec: {}\n"))
 	files := workspace.NewFileStore(t.TempDir())
 	newRouter := func() *mux.Router {
 		server := NewWithWorkspace(proxy.Client(), nil, files, "", false)
@@ -96,9 +96,9 @@ func TestProjectSkillLifecycleHTTPRoutesAndReload(t *testing.T) {
 		req := httptest.NewRequest(method, target, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer caller-token")
-		req.Header.Set("X-Faros-User", "alice")
-		req.Header.Set("X-Faros-Tenant", "cluster-a")
-		req.Header.Set("X-Faros-Cluster", "cluster-a")
+		req.Header.Set("X-Railgrid-User", "alice")
+		req.Header.Set("X-Railgrid-Tenant", "cluster-a")
+		req.Header.Set("X-Railgrid-Cluster", "cluster-a")
 		return req
 	}
 	serve := func(router *mux.Router, req *http.Request) *httptest.ResponseRecorder {

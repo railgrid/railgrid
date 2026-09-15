@@ -15,7 +15,7 @@
   "canonicalSource": [
     { "path": "docs/design/foundations.md#violet-circuit-system-map", "role": "design" },
     { "path": "portal/src/assets/main.css", "role": "implementation" },
-    { "path": "provider-sdk/portalkit/faros-ui.css", "role": "implementation" }
+    { "path": "provider-sdk/portalkit/railgrid-ui.css", "role": "implementation" }
   ],
   "verification": {
     "state": "verified",

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,13 +32,13 @@ const (
 	DefaultTestSSHPort = 2222
 )
 
-// ServerProcess runs a faros server-mode agent as a local subprocess together
+// ServerProcess runs a railgrid server-mode agent as a local subprocess together
 // with an embedded test SSH server. This replaces the Docker-based
 // ServerContainer and avoids all external SSH daemon configuration issues.
 type ServerProcess struct {
-	// ServerName is the faros Server resource name to register on the hub.
+	// ServerName is the railgrid Server resource name to register on the hub.
 	ServerName string
-	// HubURL is the URL of the faros hub (base URL, no /clusters/ path).
+	// HubURL is the URL of the railgrid hub (base URL, no /clusters/ path).
 	// Used only when HubKubeconfig is empty.
 	HubURL string
 	// HubKubeconfig is the path to a kubeconfig whose server URL contains the
@@ -49,7 +49,7 @@ type ServerProcess struct {
 	HubKubeconfig string
 	// Token is the bearer token for the agent.
 	Token string
-	// AgentBin is the path to the faros binary.
+	// AgentBin is the path to the railgrid binary.
 	AgentBin string
 	// SSHPort is the port for the embedded test SSH server. Defaults to
 	// DefaultTestSSHPort if zero.

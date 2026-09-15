@@ -28,7 +28,7 @@ test('uses host catalog chrome on landing routes and keeps project workbenches f
   assert.doesNotMatch(app, />App Studio<\/h1>/)
   assert.doesNotMatch(app, /max-w-\[1600px\]/)
   assert.match(app, /watch\(\s*isBuilderVisible,[\s\S]*props\.requestFullBleed\?\.\(visible\)[\s\S]*immediate: true, flush: 'sync'/)
-  assert.match(providerFrame, /faros-layout-change/)
+  assert.match(providerFrame, /railgrid-layout-change/)
   assert.match(providerFrame, /providerFullBleedOverride\.value === true/)
 })
 
@@ -112,8 +112,8 @@ test('uses the canonical status badge recipe without a provider-local restatemen
   assert.match(statusBadge, /class="k-badge__dot"/)
   assert.doesNotMatch(statusBadge, /k-badge__dot-wrap|k-badge__pulse/)
   assert.match(statusBadge, /status === 'ready'/)
-  assert.doesNotMatch(styles, /faros-provider-app-studio \.status-badge/)
-  assert.doesNotMatch(styles, /faros-provider-app-studio \.k-badge/)
+  assert.doesNotMatch(styles, /railgrid-provider-app-studio \.status-badge/)
+  assert.doesNotMatch(styles, /railgrid-provider-app-studio \.k-badge/)
 })
 
 test('compiles text-on-accent with a host-token fallback without leaking self-referential tokens', () => {
@@ -129,7 +129,7 @@ test('keeps Tailwind overlays inside the provider scope and preserves their focu
   assert.match(pageElement, /element\.appendChild\(overlayRoot\)/)
   assert.match(pageElement, /element\.removeChild\(overlayRoot\)/)
   assert.match(styles, /\.app-studio-overlay-root\s*\{[\s\S]*display:\s*contents/)
-  assert.match(styleLoader, /const APP_STUDIO_SCOPE = 'faros-provider-app-studio, faros-dashboard-tile-app-studio'/)
+  assert.match(styleLoader, /const APP_STUDIO_SCOPE = 'railgrid-provider-app-studio, railgrid-dashboard-tile-app-studio'/)
   assert.match(styleLoader, /`@scope \(\$\{APP_STUDIO_SCOPE\}\) \{\\n\$\{styles\}\\n\}`/)
   assert.match(shareDialog, /<Teleport to="#app-studio-overlay-root">/)
   assert.match(shareDialog, /dialogCloseButton\.value\?\.focus\(\)/)

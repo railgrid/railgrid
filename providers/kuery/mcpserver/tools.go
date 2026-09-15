@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,12 +17,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/kuery/apis/query/v1alpha1"
-	"github.com/faroshq/kuery/pkg/engine"
+	"github.com/railgrid/kuery/apis/query/v1alpha1"
+	"github.com/railgrid/kuery/pkg/engine"
 
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/faroshq/provider-kuery/queryapi"
+	"github.com/railgrid/provider-kuery/queryapi"
 )
 
 // queryInput is the kuery_query tool input: a raw kuery QuerySpec. Kept as

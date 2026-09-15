@@ -15,8 +15,8 @@ resources:
 
 | Resource | Kind | Role |
 |---|---|---|
-| `templates.infrastructure.faros.sh` | `Template` | read-only catalog (virtual storage, unchanged) |
-| `instances.infrastructure.faros.sh` | `Instance` | ONE kind for every template's instances |
+| `templates.infrastructure.railgrid.ai` | `Template` | read-only catalog (virtual storage, unchanged) |
+| `instances.infrastructure.railgrid.ai` | `Instance` | ONE kind for every template's instances |
 
 Which product an `Instance` is rides in `spec.template` (data), not in its
 GroupVersionKind. Adding a Template to the catalog therefore never changes
@@ -26,12 +26,12 @@ retired: every new product required a claims/binding upgrade across App Studio
 and every chart that enumerated plurals.
 
 ```yaml
-apiVersion: infrastructure.faros.sh/v1alpha1
+apiVersion: infrastructure.railgrid.ai/v1alpha1
 kind: Instance
 metadata:
   name: my-search
   labels:
-    faros.sh/template: searxng        # attribution label (consumers stamp it)
+    railgrid.ai/template: searxng        # attribution label (consumers stamp it)
 spec:
   template: searxng                    # immutable; names the catalog Template
   values:                              # the template-shaped input — exactly the
@@ -49,7 +49,7 @@ status:                                # platform baseline + mirrored backend
 "spec" keeps meaning the same object everywhere: template schemas validate
 `spec.values`, RGD `${schema.spec.*}` expressions read the runtime CR's spec
 (= the values), template `view:` definitions resolve `spec.*` against the
-values, and the platform stamps (`expose.fqdn`, `farosCluster`,
+values, and the platform stamps (`expose.fqdn`, `railgridCluster`,
 `credentialsSecretName`) land inside `spec.values`.
 
 ## Where the per-template machinery went
@@ -57,7 +57,7 @@ values, and the platform stamps (`expose.fqdn`, `farosCluster`,
 | Before (per-template kinds) | After (flattened) |
 |---|---|
 | Template controller synthesizes a CRD + APIResourceSchema per Template and patches `APIExport.spec.resources` | gone; the `instances` CRD is a platform CRD installed at init (`install/crds/`), exported once, forever |
-| apiserver validates/defaults instance specs against the per-template CRD schema (incl. injected `farosMode`/`farosActions*`) | the instance controller runs the same machinery (`instancespec` package: structural schema + defaults + CEL over the effective schema) and reports `Valid=False/InvalidValues` instead of rejecting at admission |
+| apiserver validates/defaults instance specs against the per-template CRD schema (incl. injected `railgridMode`/`railgridActions*`) | the instance controller runs the same machinery (`instancespec` package: structural schema + defaults + CEL over the effective schema) and reports `Valid=False/InvalidValues` instead of rejecting at admission |
 | kro fork watches per-template GVRs across kcp workspaces (`multicluster` + `--deploy-to-local-runtime`) | kro runs SINGLE-CLUSTER on the runtime cluster; the instance controller materializes a per-template kro CR (Namespaced, in `<cluster>-default`) per Instance and mirrors its status back |
 | application controller with a hardcoded per-kind table (`{oidc, optionalExposure, gateRequired}` per GVK) stamps fqdn + bridges secrets | same behavior in `controller/instance`, with the per-kind treatment derived from the Template (exposure class + schema shape) |
 | data plane addressed `/dataplane/clusters/<ws>/<plural>/<name>/<verb>` | only `<plural>` = `instances`; the contract resolves via the fetched instance's `spec.template` |
@@ -69,7 +69,7 @@ Runs over the APIExport virtual workspace (multicluster-runtime), one
 reconciler for all instances:
 
 1. **Validate** `spec.values` against the Template's effective schema
-   (author schema + injected `farosMode`/`farosActions*`), including CEL
+   (author schema + injected `railgridMode`/`railgridActions*`), including CEL
    rules. Invalid → `Valid=False`, runtime untouched (last-good keeps
    running).
 2. **Gate + stamp**: the exposure matrix (NotExposed / GateRequired /
@@ -88,7 +88,7 @@ reconciler for all instances:
    conditions (`Valid`, `OIDCConfigured`) + `runtimeRef` (so deletion works
    even if the Template is retired while instances exist).
 
-Deletion is finalizer-driven (`instances.infrastructure.faros.sh/runtime`):
+Deletion is finalizer-driven (`instances.infrastructure.railgrid.ai/runtime`):
 delete the runtime CR, wait for kro to tear its children down, clean bridged
 secrets, release.
 
@@ -96,11 +96,11 @@ secrets, release.
 
 - **Create**: `Instance{spec: {template: <name>, values: {...}}}` — the
   payload that used to be the whole per-template spec goes under `values`
-  verbatim (including `farosMode`, `farosActions*`, `access`).
+  verbatim (including `railgridMode`, `railgridActions*`, `access`).
 - **Claims**: `instances` + (already unclaimed, caller-RBAC) `templates`.
 - **Data plane**: `/services/providers/infrastructure/dataplane/clusters/<clusterID>/instances/<name>/<verb>`.
 - **Access gate SAR**: `get` on `instances/<name>` subresource `access`
-  (templates' access-proxy env now says `FAROS_ACCESS_PROXY_INSTANCE_RESOURCE=instances`).
+  (templates' access-proxy env now says `RAILGRID_ACCESS_PROXY_INSTANCE_RESOURCE=instances`).
 - **Template names** (`searxng`, `browser`, `application`, …) remain the
   soft contract for picking a product; they are data, not API.
 
@@ -113,7 +113,7 @@ secrets, release.
 - kro is UPSTREAM (`oci://registry.k8s.io/kro/charts/kro`, ≥ 0.9.3 — the
   first release carrying the SSA-finalizer deletion fix and the
   ExternalDocs nil-deref fix the fork used to patch). The
-  faroshq/kro-multicluster fork is retired: the operator no longer seeds a
+  railgrid/kro-multicluster fork is retired: the operator no longer seeds a
   kcp kubeconfig onto the runtime cluster and sets no `multicluster.*` /
   `controller.deployToLocalRuntime` values — the runtime cluster holds no
   kcp credential. Chart CRDs are applied explicitly on every reconcile

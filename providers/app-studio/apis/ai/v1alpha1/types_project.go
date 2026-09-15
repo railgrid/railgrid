@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ const (
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// Project is a persistent AI workspace scoped to a Faros child workspace.
+// Project is a persistent AI workspace scoped to a Railgrid child workspace.
 type Project struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -71,7 +71,7 @@ type ProjectSpec struct {
 	// Template names the infrastructure Template whose instance backs this
 	// Project's development environment (docs/app-studio-template-sandboxes.md).
 	// When set, the development binding is generated from the Template's
-	// instanceCRD with farosMode: development, and file sync routes per the
+	// instanceCRD with railgridMode: development, and file sync routes per the
 	// Template's declared development components. Empty means the project has
 	// no development environment yet — one must be selected before any
 	// development runtime surface (sync, preview, logs) works.

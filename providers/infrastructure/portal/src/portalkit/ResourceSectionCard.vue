@@ -8,9 +8,9 @@
 -->
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 const props = withDefaults(defineProps<{
   id?: string

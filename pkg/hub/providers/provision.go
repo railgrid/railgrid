@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,8 +35,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/kcppaths"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // Provisioner owns the kcp-side side-effects of provisioning a provider:
@@ -48,7 +48,7 @@ type Provisioner struct {
 	kcpConfig *rest.Config
 
 	// workspaceClusterAdmin binds the provider ServiceAccount to cluster-admin
-	// in its own workspace instead of the generated faros:provider role. See
+	// in its own workspace instead of the generated railgrid:provider role. See
 	// WithWorkspaceClusterAdmin.
 	workspaceClusterAdmin bool
 	// credentialGracePeriod is how long a rotated-out token Secret stays valid
@@ -81,7 +81,7 @@ type ProvisionerOption func(*Provisioner)
 
 // WithWorkspaceClusterAdmin selects the role the provider's ServiceAccount is
 // bound to inside its own provider workspace: true keeps the historical
-// cluster-admin binding, false binds the generated, narrower faros:provider
+// cluster-admin binding, false binds the generated, narrower railgrid:provider
 // ClusterRole (see providerClusterRoleRules).
 //
 // It is a Provisioner-level option rather than a per-call argument because
@@ -121,9 +121,9 @@ func NewProvisioner(kcpConfig *rest.Config, opts ...ProvisionerOption) *Provisio
 }
 
 // providersParentWorkspace is the parent of per-provider sub-workspaces
-// (root:faros:providers:<name>). NOTE: APIExports and Provider/CatalogEntry
-// objects no longer live here — they live in root:faros:system:controllers and
-// root:faros:system:providers respectively.
+// (root:railgrid:providers:<name>). NOTE: APIExports and Provider/CatalogEntry
+// objects no longer live here — they live in root:railgrid:system:controllers and
+// root:railgrid:system:providers respectively.
 const providersParentWorkspace = kcppaths.ProvidersParent
 
 var (
@@ -186,13 +186,13 @@ const (
 	// answer, and so a half-finished rotation (new Secret created, pointer not
 	// yet moved) keeps handing out the old, still-valid credential rather than
 	// an unpopulated one.
-	AnnotationActiveTokenSecret = "providers.faros.sh/active-token-secret"
+	AnnotationActiveTokenSecret = "providers.railgrid.ai/active-token-secret"
 
 	// AnnotationTokenSecretExpiry is stamped on a rotated-out token Secret with
 	// the RFC3339 time after which it may be deleted. Until then both tokens
 	// authenticate as the same ServiceAccount, which is what lets a provider be
 	// rolled onto the new credential without a gap.
-	AnnotationTokenSecretExpiry = "providers.faros.sh/delete-after"
+	AnnotationTokenSecretExpiry = "providers.railgrid.ai/delete-after"
 )
 
 // DefaultCredentialGracePeriod is how long a rotated-out provider token stays
@@ -205,12 +205,12 @@ const DefaultCredentialGracePeriod = 24 * time.Hour
 // ProviderClusterRoleName is the generated, narrower role bound to the provider
 // ServiceAccount in its own workspace when the hub runs with
 // --provider-workspace-cluster-admin=false.
-const ProviderClusterRoleName = "faros:provider"
+const ProviderClusterRoleName = "railgrid:provider"
 
 // providerSABindingName is the ClusterRoleBinding tying the provider SA to
 // whichever role the hub selected. The name is historical and stable across the
 // role switch: a rename would leave the old (cluster-admin) binding behind.
-const providerSABindingName = "faros:providers:sa:" + ProviderSAName
+const providerSABindingName = "railgrid:providers:sa:" + ProviderSAName
 
 // providerClusterRoleRules is what a provider actually needs inside its own
 // workspace, derived from what runs against the minted kubeconfig:
@@ -268,7 +268,7 @@ func providerClusterRoleRules() []any {
 		rule([]string{"core.kcp.io"}, []string{"logicalclusters"}, []string{"get", "list", "watch"}),
 		// The provider self-registers its CatalogEntry here and the hub reads
 		// its status back; the provider updates it on every chart upgrade.
-		rule([]string{"providers.faros.sh"},
+		rule([]string{"providers.railgrid.ai"},
 			[]string{"catalogentries", "catalogentries/status"},
 			[]string{"get", "list", "watch", "create", "update", "patch"}),
 		// The bind grant (ClusterRole + ClusterRoleBinding), created and — for
@@ -314,7 +314,7 @@ func toAnySlice(in []string) []any {
 }
 
 // EnsureProviderSA creates the "provider" ServiceAccount in the platform
-// provider's sub-workspace (root:faros:providers/{name}) and grants it
+// provider's sub-workspace (root:railgrid:providers/{name}) and grants it
 // cluster-admin within that workspace. Idempotent.
 func (p *Provisioner) EnsureProviderSA(ctx context.Context, providerName string) error {
 	return p.EnsureProviderSAAtPath(ctx, providersParentWorkspace+":"+providerName)
@@ -322,7 +322,7 @@ func (p *Provisioner) EnsureProviderSA(ctx context.Context, providerName string)
 
 // EnsureProviderSAAtPath is EnsureProviderSA against an arbitrary provider
 // workspace path. Org-owned providers live at
-// root:faros:tenants/{org}/providers/{name} rather than under the platform
+// root:railgrid:tenants/{org}/providers/{name} rather than under the platform
 // parent, but are otherwise identical — same `provider` WorkspaceType, so the
 // same missing `default` namespace and the same workspace-scoped cluster-admin
 // grant apply.
@@ -357,7 +357,7 @@ func (p *Provisioner) EnsureProviderSAAtPath(ctx context.Context, workspacePath 
 }
 
 // ensureProviderRoleBinding binds the provider ServiceAccount to cluster-admin
-// or to the generated faros:provider role, depending on the hub's
+// or to the generated railgrid:provider role, depending on the hub's
 // --provider-workspace-cluster-admin setting, and moves an existing binding
 // when the setting changed.
 //
@@ -437,7 +437,7 @@ func (p *Provisioner) MintProviderKubeconfig(ctx context.Context, providerName, 
 
 // MintProviderKubeconfigAtPath is MintProviderKubeconfig against an arbitrary
 // provider workspace path, for org-owned providers under
-// root:faros:tenants/{org}/providers/{name}.
+// root:railgrid:tenants/{org}/providers/{name}.
 //
 // The resulting kubeconfig is what an Org admin installs their provider's Helm
 // chart with. It is scoped to that one workspace: the SA is cluster-admin
@@ -497,18 +497,18 @@ func (p *Provisioner) renderKubeconfig(ctx context.Context, cfg *rest.Config, hu
 	kc := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
-- name: faros
+- name: railgrid
   cluster:
     server: %s
     insecure-skip-tls-verify: true
 contexts:
-- name: faros
+- name: railgrid
   context:
-    cluster: faros
-    user: faros
-current-context: faros
+    cluster: railgrid
+    user: railgrid
+current-context: railgrid
 users:
-- name: faros
+- name: railgrid
   user:
     token: %s
 `, server, token)
@@ -613,7 +613,7 @@ type RotatedCredential struct {
 }
 
 // RotateProviderCredential rotates the platform provider at
-// root:faros:providers/{name}.
+// root:railgrid:providers/{name}.
 func (p *Provisioner) RotateProviderCredential(ctx context.Context, providerName, hubExternalURL string) (*RotatedCredential, error) {
 	return p.RotateProviderCredentialAtPath(ctx, providersParentWorkspace+":"+providerName, providerName, hubExternalURL)
 }
@@ -823,7 +823,7 @@ func EncodeKubeconfig(kc []byte) string {
 	return base64.StdEncoding.EncodeToString(kc)
 }
 
-// EnsureProviderWorkspace creates root:faros:providers/{name} if it does not
+// EnsureProviderWorkspace creates root:railgrid:providers/{name} if it does not
 // exist and waits for it to reach phase Ready. Idempotent. Returns the
 // workspace's logical cluster ID (Workspace.spec.cluster) — the cluster name
 // kcp embeds in the provider SA's token claims, which the Enable-time
@@ -834,7 +834,7 @@ func (p *Provisioner) EnsureProviderWorkspace(ctx context.Context, name string) 
 		return "", err
 	}
 	// Use the restricted `provider` WorkspaceType (config/kcp/workspacetype-provider.yaml,
-	// defined under root:faros): no universal → the provider cannot create
+	// defined under root:railgrid): no universal → the provider cannot create
 	// Workspaces; a defaultAPIBinding pulls in the CatalogEntry export.
 	ws := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tenancy.kcp.io/v1alpha1",
@@ -890,13 +890,13 @@ func (p *Provisioner) ResolveAPIExportIdentityHash(ctx context.Context, workspac
 }
 
 // ResolveClusterPath returns the canonical kcp workspace path of a logical
-// cluster (e.g. root:faros:tenants:<org>:providers:<name>), read from the
+// cluster (e.g. root:railgrid:tenants:<org>:providers:<name>), read from the
 // kcp.io/path annotation kcp stamps on the cluster's LogicalCluster object when
 // the workspace is created.
 //
 // It deliberately uses the hub's kcp-admin config addressed at /clusters/<id>
 // rather than any APIExport virtual-workspace client: a VW only serves the
-// resources its APIExport declares, and providers.faros.sh claims none, so
+// resources its APIExport declares, and providers.railgrid.ai claims none, so
 // core.kcp.io/LogicalCluster is simply not present there.
 //
 // An empty path with a nil error means the read succeeded but the cluster
@@ -921,7 +921,7 @@ func (p *Provisioner) ResolveClusterPath(ctx context.Context, clusterID string) 
 }
 
 // ResolveWorkspaceCluster returns the logical cluster ID of the provider's
-// sub-workspace (root:faros:providers/{name}), read-only. Returns "" (no error)
+// sub-workspace (root:railgrid:providers/{name}), read-only. Returns "" (no error)
 // when the workspace does not exist yet — i.e. the provider has not been
 // onboarded. The catalog reconciler feeds this into the registry so the Enable
 // endpoint can build the edges-proxy RBAC subject without the hub provisioning
@@ -942,7 +942,7 @@ func (p *Provisioner) ResolveWorkspaceCluster(ctx context.Context, name string) 
 	return cluster, nil
 }
 
-// OnboardedWorkspace is a provider sub-workspace under root:faros:providers
+// OnboardedWorkspace is a provider sub-workspace under root:railgrid:providers
 // created by onboarding (independent of whether a CatalogEntry has registered
 // the provider yet).
 type OnboardedWorkspace struct {
@@ -952,7 +952,7 @@ type OnboardedWorkspace struct {
 }
 
 // ListProviderWorkspaces returns the provider sub-workspaces under
-// root:faros:providers. Used by the admin UI so onboarded providers appear even
+// root:railgrid:providers. Used by the admin UI so onboarded providers appear even
 // before their Helm chart (and CatalogEntry) is installed.
 func (p *Provisioner) ListProviderWorkspaces(ctx context.Context) ([]OnboardedWorkspace, error) {
 	parent, err := p.clientFor(providersParentWorkspace)
@@ -975,14 +975,14 @@ func (p *Provisioner) ListProviderWorkspaces(ctx context.Context) ([]OnboardedWo
 
 // The provider's CatalogEntry APIBinding is no longer created imperatively —
 // the `provider` WorkspaceType declares a defaultAPIBinding to
-// providers.faros.sh (in system:controllers), so kcp's WorkspaceType
+// providers.railgrid.ai (in system:controllers), so kcp's WorkspaceType
 // initializer binds it automatically when the sub-workspace is created.
 
 // ProviderKubeconfigSecretKey is the data key the provider kubeconfig is stored
 // under in the Secret the Provider controller writes into system:providers.
 const ProviderKubeconfigSecretKey = "kubeconfig"
 
-// WriteKubeconfigSecret create-or-updates a Secret in root:faros:system:providers
+// WriteKubeconfigSecret create-or-updates a Secret in root:railgrid:system:providers
 // (where the Provider CR lives, NOT the provider sub-workspace) holding the
 // provider's minted kubeconfig under key. The Secret lives next to the Provider
 // CR so a provider pod (or dev tooling) can read its credentials from one
@@ -1006,8 +1006,8 @@ func (p *Provisioner) WriteKubeconfigSecret(ctx context.Context, namespace, name
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"providers.faros.sh/provider":   providerName,
-				"providers.faros.sh/managed-by": "provider-controller",
+				"providers.railgrid.ai/provider":   providerName,
+				"providers.railgrid.ai/managed-by": "provider-controller",
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -1031,7 +1031,7 @@ func (p *Provisioner) WriteKubeconfigSecret(ctx context.Context, namespace, name
 }
 
 // DeleteKubeconfigSecret removes the kubeconfig Secret from
-// root:faros:system:providers. Idempotent (NotFound tolerated).
+// root:railgrid:system:providers. Idempotent (NotFound tolerated).
 func (p *Provisioner) DeleteKubeconfigSecret(ctx context.Context, namespace, name string) error {
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, kcppaths.SystemProviders)
@@ -1046,7 +1046,7 @@ func (p *Provisioner) DeleteKubeconfigSecret(ctx context.Context, namespace, nam
 }
 
 // DeleteProviderWorkspace deletes the provider sub-workspace
-// root:faros:providers/{name}. kcp cascades the ServiceAccount, its token
+// root:railgrid:providers/{name}. kcp cascades the ServiceAccount, its token
 // Secret, and any APIExport / APIResourceSchemas the provider created there.
 // Idempotent (NotFound tolerated).
 func (p *Provisioner) DeleteProviderWorkspace(ctx context.Context, name string) error {

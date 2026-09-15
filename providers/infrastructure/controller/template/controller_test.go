@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,9 +33,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/backend"
-	"github.com/faroshq/provider-infrastructure/backend/stub"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/backend"
+	"github.com/railgrid/provider-infrastructure/backend/stub"
 )
 
 // newTestReconciler wires up the fake client + a backend registry
@@ -187,7 +187,7 @@ func TestReconcileInvalidSchema(t *testing.T) {
 	schemaRaw, err := json.Marshal(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			infrav1alpha1.FarosModeField: map[string]any{"type": "string"},
+			infrav1alpha1.RailgridModeField: map[string]any{"type": "string"},
 		},
 	})
 	if err != nil {

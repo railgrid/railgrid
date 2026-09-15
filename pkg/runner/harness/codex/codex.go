@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/faroshq/faros/pkg/runner/harness"
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 const (
@@ -467,8 +467,8 @@ func (a *Adapter) model(launch harness.Launch) string {
 func initializeParams() map[string]any {
 	return map[string]any{
 		"clientInfo": map[string]string{
-			"name":    "faros-runner",
-			"title":   "Faros Runner",
+			"name":    "railgrid-runner",
+			"title":   "Railgrid Runner",
 			"version": "0.1.0",
 		},
 	}

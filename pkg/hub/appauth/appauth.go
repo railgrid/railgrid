@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -64,9 +64,9 @@ import (
 	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/provider-sdk/statuspage"
+	"github.com/railgrid/provider-sdk/statuspage"
 
-	"github.com/faroshq/faros/pkg/browsersession"
+	"github.com/railgrid/railgrid/pkg/browsersession"
 )
 
 const (
@@ -85,7 +85,7 @@ const (
 	// CallbackPath is the reserved path on the app host that authorize
 	// redirects back to. It must stay in lockstep with the access proxy's
 	// callback route (providers/infrastructure/accessproxy).
-	CallbackPath = "/__faros/auth/callback"
+	CallbackPath = "/__railgrid/auth/callback"
 
 	// AccessSubresource is the RBAC convention gating private apps: a visitor
 	// needs `get` on `<resource>/<name>` with this subresource in the tenant
@@ -321,7 +321,7 @@ func (h *Handler) RegisterRoutes(router *mux.Router, limit func(http.HandlerFunc
 // retriedParam marks an authorize URL that has already been through the login
 // bounce once. It rides in the `next` URL the portal returns to, so it survives
 // exactly one round trip and needs no server-side state.
-const retriedParam = "faros_retried"
+const retriedParam = "railgrid_retried"
 
 // withRetriedMarker returns the request URI with the retry marker set. The
 // marker is additive: cluster/group/resource/name/state/redirect_uri are
@@ -516,11 +516,11 @@ func (h *Handler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 
 // authorize runs the single SubjectAccessReview backing a private-app login.
 //
-// The SAR subject is the account's kcp RBAC identity ("faros:<email>") —
+// The SAR subject is the account's kcp RBAC identity ("railgrid:<email>") —
 // the username every tenant-workspace binding is written against: the
 // workspace-admin ClusterRoleBinding (which is why workspace members can
 // always open their own apps with no explicit grant) and the per-app
-// faros-app-access grants alike. The User CR name is a platform-internal
+// railgrid-app-access grants alike. The User CR name is a platform-internal
 // key that appears in NO kcp binding; a SAR against it would deny everyone.
 func (h *Handler) authorize(ctx context.Context, identity browsersession.Identity, ref InstanceRef) (bool, error) {
 	user := strings.TrimSpace(identity.RBACIdentity)

@@ -53,9 +53,9 @@ export const useRouteContextStore = defineStore('route-context', () => {
     try {
       const orgURL = `/api/orgs/${encodeURIComponent(scope.orgUUID!)}`
       const responses = await Promise.all([
-        authFetch(orgURL, { headers: { 'X-Faros-Org': scope.orgUUID! } }),
+        authFetch(orgURL, { headers: { 'X-Railgrid-Org': scope.orgUUID! } }),
         scope.workspaceUUID ? authFetch(`${orgURL}/workspaces/${encodeURIComponent(scope.workspaceUUID)}`, {
-          headers: { 'X-Faros-Org': scope.orgUUID!, 'X-Faros-Workspace': scope.workspaceUUID },
+          headers: { 'X-Railgrid-Org': scope.orgUUID!, 'X-Railgrid-Workspace': scope.workspaceUUID },
         }) : Promise.resolve(null),
       ])
       if (!current()) return false

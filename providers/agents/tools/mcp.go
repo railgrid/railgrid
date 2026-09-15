@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	"github.com/faroshq/provider-agents/engine"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/engine"
 )
 
 // githubMCPEndpoint is the hosted GitHub MCP server; a github Connection with
@@ -75,7 +75,7 @@ func ConnectMCP(ctx context.Context, d Deps, conn *agentsv1alpha1.Connection) (*
 
 // browserResource is the flattened infrastructure instance resource — every
 // template's instances (the browser included) are served as
-// instances.infrastructure.faros.sh. config.instanceResource overrides it
+// instances.infrastructure.railgrid.ai. config.instanceResource overrides it
 // for a provider serving a different resource.
 const browserResource = "instances"
 
@@ -94,7 +94,7 @@ func ConnectMCPEndpoint(ctx context.Context, endpoint, bearer, prefix string, in
 	if bearer != "" {
 		httpClient.Transport = &bearerTransport{token: bearer, base: base}
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "faros-agents", Version: "0.1.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "railgrid-agents", Version: "0.1.0"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:             endpoint,
 		HTTPClient:           httpClient,

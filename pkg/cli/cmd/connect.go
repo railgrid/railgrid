@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,17 +32,17 @@ func newConnectCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect [<edge>]",
 		Short: "Point kubectl at a Kubernetes edge",
-		Long: `Add a kubeconfig context named faros-<edge> for the edge's Kubernetes API
+		Long: `Add a kubeconfig context named railgrid-<edge> for the edge's Kubernetes API
 (reached through the hub's edge proxy with your hub credentials) and make it
 the current context, so plain kubectl talks to that cluster:
 
-  faros connect my-cluster
+  railgrid connect my-cluster
   kubectl get nodes
-  faros disconnect            # back to the hub workspace
+  railgrid disconnect            # back to the hub workspace
 
 Without an argument an interactive picker lists the connected clusters.
 The context stays in your kubeconfig; switch between edges with
-'kubectl config use-context faros-<edge>' or connect again.`,
+'kubectl config use-context railgrid-<edge>' or connect again.`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeKubernetesEdgeNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -74,7 +74,7 @@ The context stays in your kubeconfig; switch between edges with
 			if err := clientcmd.WriteToFile(*raw, path); err != nil {
 				return fmt.Errorf("writing kubeconfig to %s: %w", path, err)
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Connected to edge %q: kubectl now uses context %q.\nRun 'faros disconnect' to return to the hub workspace.\n", name, ctxName)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Connected to edge %q: kubectl now uses context %q.\nRun 'railgrid disconnect' to return to the hub workspace.\n", name, ctxName)
 			return err
 		},
 	}
@@ -85,7 +85,7 @@ The context stays in your kubeconfig; switch between edges with
 // interactive picker.
 func pickKubernetesEdge(cmd *cobra.Command) (string, error) {
 	if !stdinIsTerminal() {
-		return "", fmt.Errorf("no interactive terminal; pass the edge name: faros connect <edge>")
+		return "", fmt.Errorf("no interactive terminal; pass the edge name: railgrid connect <edge>")
 	}
 	dynClient, err := loadDynamicClient()
 	if err != nil {
@@ -109,7 +109,7 @@ func pickKubernetesEdge(cmd *cobra.Command) (string, error) {
 		cands = append(cands, candidate{name: items[i].GetName(), connected: connected, phase: getNestedString(items[i], "status", "phase")})
 	}
 	if len(cands) == 0 {
-		return "", fmt.Errorf("no Kubernetes edges in this workspace; create one with 'faros edge create <name>'")
+		return "", fmt.Errorf("no Kubernetes edges in this workspace; create one with 'railgrid edge create <name>'")
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		if cands[i].connected != cands[j].connected {
@@ -136,27 +136,27 @@ func newDisconnectCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "disconnect",
 		Short: "Point kubectl back at the hub workspace",
-		Long: `Make the faros hub context current again after 'faros connect'. The edge
-contexts stay in your kubeconfig for 'kubectl --context faros-<edge>'.`,
+		Long: `Make the railgrid hub context current again after 'railgrid connect'. The edge
+contexts stay in your kubeconfig for 'kubectl --context railgrid-<edge>'.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			raw, path, err := loadRawKubeconfig()
 			if err != nil {
 				return err
 			}
-			if _, ok := raw.Contexts[farosContextName]; !ok {
-				return fmt.Errorf("no %q context in the kubeconfig; run 'faros login'", farosContextName)
+			if _, ok := raw.Contexts[railgridContextName]; !ok {
+				return fmt.Errorf("no %q context in the kubeconfig; run 'railgrid login'", railgridContextName)
 			}
-			if raw.CurrentContext == farosContextName {
-				_, err := fmt.Fprintf(cmd.OutOrStdout(), "kubectl already uses the hub context %q.\n", farosContextName)
+			if raw.CurrentContext == railgridContextName {
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "kubectl already uses the hub context %q.\n", railgridContextName)
 				return err
 			}
 			previous := raw.CurrentContext
-			raw.CurrentContext = farosContextName
+			raw.CurrentContext = railgridContextName
 			if err := clientcmd.WriteToFile(*raw, path); err != nil {
 				return fmt.Errorf("writing kubeconfig to %s: %w", path, err)
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Disconnected from %q: kubectl now uses the hub context %q.\n", previous, farosContextName)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Disconnected from %q: kubectl now uses the hub context %q.\n", previous, railgridContextName)
 			return err
 		},
 	}
@@ -164,8 +164,8 @@ contexts stay in your kubeconfig for 'kubectl --context faros-<edge>'.`,
 
 // newKCPWorkspaceCommand exposes kcp's 'kubectl ws' navigation for hubs that
 // mount edges as kcp workspaces. It rewrites the *current* kubeconfig context
-// (kcp convention), which is why it is hidden: 'faros connect' and
-// 'faros use' are the supported ways to move around.
+// (kcp convention), which is why it is hidden: 'railgrid connect' and
+// 'railgrid use' are the supported ways to move around.
 func newKCPWorkspaceCommand() *cobra.Command {
 	wsCmd, err := workspacecmd.New(genericclioptions.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
 	if err != nil {

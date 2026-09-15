@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -56,7 +56,7 @@ const (
 	browserMCPToolScreenshot  = "browser_take_screenshot"
 	browserSessionHandoffPath = "/auth/session/handoff"
 	privateAppAuthorizePath   = "/auth/apps/authorize"
-	privateAppCallbackPath    = "/__faros/auth/callback"
+	privateAppCallbackPath    = "/__railgrid/auth/callback"
 )
 
 var supportedBrowserMCPProtocolVersions = map[string]struct{}{
@@ -242,7 +242,7 @@ func (s *Server) privatePreviewHubOrigin(ctx context.Context, id identity, targe
 // problem, not a preview or app failure. The wording is what both the model
 // (through the tool result) and the action feed diagnostic report, so it
 // names the chart value an operator must set.
-var errPrivatePreviewHubOriginUnconfigured = errors.New("private preview inspection is unavailable: the app-studio deployment has no usable FAROS_HUB_PUBLIC_URL (chart value hub.publicURL, an absolute HTTPS origin such as https://hub.example.com); ask the platform operator to set it")
+var errPrivatePreviewHubOriginUnconfigured = errors.New("private preview inspection is unavailable: the app-studio deployment has no usable RAILGRID_HUB_PUBLIC_URL (chart value hub.publicURL, an absolute HTTPS origin such as https://hub.example.com); ask the platform operator to set it")
 
 // privatePreviewConfiguredHubOrigin is the only origin App Studio allows the
 // private-preview gate to select for a one-use browser handoff. The provider's
@@ -263,7 +263,7 @@ func (s *Server) browserSessionHandoffURL(ctx context.Context, id identity, hubO
 		return "", err
 	}
 	if hubOrigin == nil || hubOrigin.User != nil || hubOrigin.Path != "" || hubOrigin.RawQuery != "" || hubOrigin.ForceQuery || hubOrigin.Fragment != "" || hubOrigin.Opaque != "" || !strings.EqualFold(hubOrigin.Scheme, configuredOrigin.Scheme) || !strings.EqualFold(hubOrigin.Host, configuredOrigin.Host) {
-		return "", errors.New("public hub origin does not match FAROS_HUB_PUBLIC_URL")
+		return "", errors.New("public hub origin does not match RAILGRID_HUB_PUBLIC_URL")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.hubBase, "/")+browserSessionHandoffPath, nil)
 	if err != nil {

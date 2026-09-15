@@ -7,11 +7,11 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
 import { Loader2 } from 'lucide-vue-next'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 // Standalone provider portals load the exact canonical recipe through the
-// shared helper; the host portal already imports the same faros-ui.css file.
-ensureFarosUIStyles()
+// shared helper; the host portal already imports the same railgrid-ui.css file.
+ensureRailgridUIStyles()
 
 type ResourceTableActionTone = 'neutral' | 'accent' | 'warning' | 'danger'
 

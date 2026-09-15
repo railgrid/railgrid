@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 func TestOpenAPIToSimpleSchema(t *testing.T) {
@@ -109,7 +109,7 @@ func TestBuildRGD(t *testing.T) {
 	tmpl.Name = "redis-cache"
 	tmpl.Spec.Version = "0.1.0"
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
-		Group:    "infrastructure.faros.sh",
+		Group:    "infrastructure.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "rediscaches",
 		Kind:     "RedisCache",
@@ -128,7 +128,7 @@ func TestBuildRGD(t *testing.T) {
 	if rgd.GetName() != "redis-cache" {
 		t.Errorf("name = %q", rgd.GetName())
 	}
-	if lbl := rgd.GetLabels()["faros.sh/template"]; lbl != "redis-cache" {
+	if lbl := rgd.GetLabels()["railgrid.ai/template"]; lbl != "redis-cache" {
 		t.Errorf("template label = %q", lbl)
 	}
 
@@ -143,7 +143,7 @@ func TestBuildRGD(t *testing.T) {
 		}
 	}
 	assertNested("v1alpha1", "spec", "schema", "apiVersion")
-	assertNested("infrastructure.faros.sh", "spec", "schema", "group")
+	assertNested("infrastructure.railgrid.ai", "spec", "schema", "group")
 	assertNested("RedisCache", "spec", "schema", "kind")
 	assertNested("Namespaced", "spec", "schema", "scope")
 
@@ -157,13 +157,13 @@ func TestBuildRGDSubstitutesGatewayRef(t *testing.T) {
 	tmpl := &infrav1alpha1.Template{}
 	tmpl.Name = "application"
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
-		Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "applications", Kind: "Application",
+		Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "applications", Kind: "Application",
 	}
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)}
 	// A graph with an unconditional HTTPRoute is exposure "public"; anything
 	// else is rejected as a marker that contradicts the graph.
 	tmpl.Spec.Exposure = infrav1alpha1.ExposurePublic
-	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"httpRoute","template":{"apiVersion":"gateway.networking.k8s.io/v1","kind":"HTTPRoute","spec":{"parentRefs":[{"name":"${faros.gatewayName}","namespace":"${faros.gatewayNamespace}"}]}}}]}`)}
+	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"httpRoute","template":{"apiVersion":"gateway.networking.k8s.io/v1","kind":"HTTPRoute","spec":{"parentRefs":[{"name":"${railgrid.gatewayName}","namespace":"${railgrid.gatewayNamespace}"}]}}}]}`)}
 
 	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
@@ -188,7 +188,7 @@ func TestBuildRGDSubstitutesGatewayRef(t *testing.T) {
 
 func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 	// kro's own ${...} references must survive substitution untouched.
-	in := []byte(`{"a":"${schema.spec.name}","b":"${faros.gatewayName}","c":"${faros.gatewayNamespace}","d":"${svc.metadata.name}"}`)
+	in := []byte(`{"a":"${schema.spec.name}","b":"${railgrid.gatewayName}","c":"${railgrid.gatewayNamespace}","d":"${svc.metadata.name}"}`)
 	out := string(substituteTokens(in, map[string]string{gatewayNameToken: "my-gw", gatewayNamespaceToken: "my-ns"}))
 	if want := `{"a":"${schema.spec.name}","b":"my-gw","c":"my-ns","d":"${svc.metadata.name}"}`; out != want {
 		t.Errorf("substituteTokens = %s, want %s", out, want)
@@ -198,9 +198,9 @@ func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 func TestSubstituteTokensAppPublicPort(t *testing.T) {
 	// The status.url CEL embeds the token inside a quoted CEL string; both
 	// values must yield a valid expression.
-	in := []byte(`{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \"${faros.appPublicPort}\"}"}`)
+	in := []byte(`{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \"${railgrid.appPublicPort}\"}"}`)
 
-	// Local kind: FAROS_APP_PUBLIC_PORT=10443 → ":10443" suffix.
+	// Local kind: RAILGRID_APP_PUBLIC_PORT=10443 → ":10443" suffix.
 	out := string(substituteTokens(in, map[string]string{appPublicPortToken: ":10443"}))
 	if want := `{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \":10443\"}"}`; out != want {
 		t.Errorf("with port: substituteTokens = %s, want %s", out, want)
@@ -233,13 +233,13 @@ func testTokens() map[string]string {
 }
 
 func TestDevImageTokensIncludeUniversalDefaultAndDigestOverride(t *testing.T) {
-	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64))
+	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64))
 	tokens := devImageTokens()
 	if got, want := tokens[devImageTokenPrefix+"universal}"], "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64); got != want {
 		t.Fatalf("universal dev image token = %q, want digest override %q", got, want)
 	}
 
-	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "")
+	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "")
 	tokens = devImageTokens()
 	if got, want := tokens[devImageTokenPrefix+"universal}"], DefaultUniversalDevImage; got != want {
 		t.Fatalf("universal dev image default = %q, want %q", got, want)
@@ -249,7 +249,7 @@ func TestDevImageTokensIncludeUniversalDefaultAndDigestOverride(t *testing.T) {
 func TestDevAgentImageDefaultFollowsReleaseVersion(t *testing.T) {
 	original := providerVersion
 	t.Cleanup(func() { providerVersion = original })
-	t.Setenv("FAROS_DEV_AGENT_IMAGE", "")
+	t.Setenv("RAILGRID_DEV_AGENT_IMAGE", "")
 
 	for _, tc := range []struct {
 		version string
@@ -280,10 +280,10 @@ func TestDevAgentImageDefaultFollowsReleaseVersion(t *testing.T) {
 		})
 	}
 
-	// An explicit FAROS_DEV_AGENT_IMAGE always wins over the versioned default.
+	// An explicit RAILGRID_DEV_AGENT_IMAGE always wins over the versioned default.
 	SetProviderVersion("v0.1.20")
 	pinned := DevAgentImageRepository + "@sha256:" + strings.Repeat("c", 64)
-	t.Setenv("FAROS_DEV_AGENT_IMAGE", pinned)
+	t.Setenv("RAILGRID_DEV_AGENT_IMAGE", pinned)
 	if got := devImageTokens()[devAgentImageToken]; got != pinned {
 		t.Fatalf("dev agent with explicit override = %q, want %q", got, pinned)
 	}
@@ -292,7 +292,7 @@ func TestDevAgentImageDefaultFollowsReleaseVersion(t *testing.T) {
 func TestBackendRejectsMutableUniversalImageRegardlessOfGate(t *testing.T) {
 	for _, gate := range []string{"", "false", "true"} {
 		t.Run("gate="+gate, func(t *testing.T) {
-			t.Setenv("FAROS_CODING_SANDBOX_ENABLED", gate)
+			t.Setenv("RAILGRID_CODING_SANDBOX_ENABLED", gate)
 			b := New(nil)
 			status, err := b.SetupTemplate(context.Background(), &infrav1alpha1.Template{
 				ObjectMeta: metav1.ObjectMeta{Name: infrav1alpha1.UniversalCodingSandboxTemplateName},
@@ -311,8 +311,8 @@ func TestBackendRejectsMutableUniversalImageRegardlessOfGate(t *testing.T) {
 }
 
 func TestBackendRejectsMutableUniversalDevAgentImage(t *testing.T) {
-	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64))
-	t.Setenv("FAROS_DEV_AGENT_IMAGE", "ghcr.io/example/dev-agent:latest")
+	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64))
+	t.Setenv("RAILGRID_DEV_AGENT_IMAGE", "ghcr.io/example/dev-agent:latest")
 	b := New(nil)
 	status, err := b.SetupTemplate(context.Background(), &infrav1alpha1.Template{
 		ObjectMeta: metav1.ObjectMeta{Name: infrav1alpha1.UniversalCodingSandboxTemplateName},

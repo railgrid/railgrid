@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/provider-code/commitbundle"
-	"github.com/faroshq/provider-code/tenant"
+	"github.com/railgrid/provider-code/commitbundle"
+	"github.com/railgrid/provider-code/tenant"
 )
 
 // Deps is what the MCP transport needs: the per-tenant caller-token client
@@ -46,12 +46,12 @@ func NewHandler(deps Deps) http.Handler {
 
 func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "faros-code",
+		Name:    "railgrid-code",
 		Version: "0.1.0",
-		Title:   "faros code provider",
+		Title:   "railgrid code provider",
 	}, &mcp.ServerOptions{
 		Instructions: "This MCP endpoint manages source-code repositories in " +
-			"your faros tenant workspace across git hosting providers " +
+			"your railgrid tenant workspace across git hosting providers " +
 			"(GitHub today). A Connection holds the credential for one git " +
 			"account; Repositories, DeployKeys, and Collaborators reference a " +
 			"Connection. Use list_connections to see configured accounts and " +

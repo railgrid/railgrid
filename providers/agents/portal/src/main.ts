@@ -1,18 +1,18 @@
-// Entry point loaded by the faros portal as a single <script> tag. Built as
+// Entry point loaded by the railgrid portal as a single <script> tag. Built as
 // IIFE (see vite.config.ts) so the side effects below run immediately —
 // registering the custom element and its stylesheet — without waiting on a
 // module loader. The portal injects this once and waits for the
-// faros-provider-agents custom element to be defined.
+// railgrid-provider-agents custom element to be defined.
 
 import { AgentsDashboardTileElement, AgentsElement } from './element'
-import { ensureFarosUIStyles } from './portalkit/styles'
+import { ensureRailgridUIStyles } from './portalkit/styles'
 import styles from './style.css?raw'
 import activityStyles from './activity.css?raw'
 
-const TAG = 'faros-provider-agents'
-const TILE_TAG = 'faros-dashboard-tile-agents'
+const TAG = 'railgrid-provider-agents'
+const TILE_TAG = 'railgrid-dashboard-tile-agents'
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 // Hot-reload safety: customElements.define throws on a second registration for
 // the same tag. The portal may re-execute this script after a version bump

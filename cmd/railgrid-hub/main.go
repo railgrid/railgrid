@@ -1,0 +1,119 @@
+/*
+Copyright 2026 The Railgrid Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Package main is the entrypoint for the railgrid-hub server.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/spf13/cobra"
+	"k8s.io/klog/v2"
+
+	"github.com/railgrid/railgrid/pkg/hub"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	// First-party provider registrations. Each package's init() calls
+	// providers.RegisterBuiltin, so the catalog controller can find them
+	// without a central data list. Adding a new builtin = new blank import
+	// here + a providers/<name>/manifest.go file.
+)
+
+func main() {
+	opts := hub.NewOptions()
+
+	cmd := &cobra.Command{
+		Use:   "railgrid-hub",
+		Short: "Railgrid hub server - multi-tenant control plane",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+
+			server, err := hub.NewServer(opts)
+			if err != nil {
+				return fmt.Errorf("failed to create hub server: %w", err)
+			}
+
+			return server.Run(ctx)
+		},
+	}
+
+	cmd.Flags().StringVar(&opts.DataDir, "data-dir", opts.DataDir, "Data directory for state")
+	cmd.Flags().StringVar(&opts.ListenAddr, "listen-addr", opts.ListenAddr, "Address to listen on")
+	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Kubeconfig for hub cluster")
+	cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp-kubeconfig", "", "Kubeconfig for external kcp (empty for embedded)")
+	cmd.Flags().StringVar(&opts.IDPIssuerURL, "idp-issuer-url", "", "OIDC identity provider issuer URL")
+	cmd.Flags().StringVar(&opts.IDPBrowserAuthURL, "idp-browser-auth-url", "", "Optional public OIDC authorization endpoint for browser redirects (token exchange and issuer validation still use --idp-issuer-url)")
+	cmd.Flags().StringVar(&opts.PublishedAppsDomain, "published-apps-domain", "", "Deprecated and ignored: published-app sign-in redirects are validated against each instance's own published host, so apps may live under any domain")
+	_ = cmd.Flags().MarkDeprecated("published-apps-domain", "redirects are validated against each instance's own published host; the flag is ignored")
+	cmd.Flags().BoolVar(&opts.DisableTokenLogin, "disable-token-login", false, "Disable the interactive static-token login (endpoint + portal form); static bearer tokens still authenticate API calls")
+	cmd.Flags().StringVar(&opts.IDPClientID, "idp-client-id", "railgrid", "OIDC identity provider client ID")
+	cmd.Flags().StringVar(&opts.IDPCAFile, "idp-ca-file", "", "PEM-encoded CA bundle for verifying the IdP's TLS cert (required for self-signed/private CAs)")
+	cmd.Flags().StringVar(&opts.ServingCertFile, "serving-cert-file", "", "TLS certificate file for HTTPS serving")
+	cmd.Flags().StringVar(&opts.ServingKeyFile, "serving-key-file", "", "TLS key file for HTTPS serving")
+	cmd.Flags().StringVar(&opts.HubExternalURL, "hub-external-url", opts.HubExternalURL, "External URL of this hub (for kubeconfig generation)")
+	cmd.Flags().StringVar(&opts.HubInternalURL, "hub-internal-url", "", "Address in-cluster components use to reach this hub instead of --hub-external-url; baked into minted provider kubeconfigs (default: --hub-external-url). Set to the hub's in-cluster Service so provider→hub traffic never leaves the cluster, e.g. https://railgrid-railgrid-hub.railgrid.svc.cluster.local:9443.")
+	cmd.Flags().BoolVar(&opts.DevMode, "dev-mode", false, "Enable dev mode (skip TLS verification for OIDC)")
+	cmd.Flags().StringSliceVar(&opts.StaticAuthTokens, "static-auth-token", nil, "Static bearer tokens for access (can be specified multiple times)")
+	cmd.Flags().StringSliceVar(&opts.TrustedProxyCIDRs, "trusted-proxy-cidrs", nil, "CIDRs of the reverse proxies fronting this hub (comma-separated or repeated, e.g. 10.0.0.0/8,fd00::/8). Only a connection from inside these ranges has its X-Forwarded-For believed when the hub keys its pre-auth rate limits on the client address; unset, proxy headers are ignored and a hub behind a proxy throttles every client as the proxy's one address. REQUIRED when the hub is behind an ingress, load balancer or CDN; never include ranges clients connect from.")
+	cmd.Flags().StringSliceVar(&opts.AdminUsers, "admin-users", nil, "Platform-admin identities (User name, email, or rbacIdentity) allowed to reach /api/admin/* and the portal /bonkers area. Empty disables the admin surface.")
+	cmd.Flags().StringSliceVar(&opts.Providers, "providers", providers.BuiltinNames(),
+		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
+			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
+	cmd.Flags().StringVar(&opts.ProviderDelegatedTokens, "provider-delegated-tokens", opts.ProviderDelegatedTokens,
+		"Which providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on /services/providers/*: "+
+			"off (platform providers get the caller's bearer; org-owned providers are always delegated), "+
+			"platform (also platform providers, except --provider-delegated-tokens-exclude), or all (every platform provider). "+
+			"Default off for this release; the next release defaults to platform.")
+	cmd.Flags().StringSliceVar(&opts.ProviderDelegatedTokensExclude, "provider-delegated-tokens-exclude", opts.ProviderDelegatedTokensExclude,
+		"Platform providers that keep receiving the caller's bearer under --provider-delegated-tokens=platform (comma-separated or repeat).")
+	cmd.Flags().BoolVar(&opts.ProviderHubAccessPlatformDefault, "provider-hub-access-platform-default", opts.ProviderHubAccessPlatformDefault,
+		"Let platform providers use the hub capabilities they declare (spec.hubAccess) in workspaces where no one has accepted or declined them yet. "+
+			"Org-owned providers always need an explicit acceptance. Set false to require acceptance for every provider.")
+
+	cmd.Flags().StringVar(&opts.ProviderHeartbeatAuth, "provider-heartbeat-auth", opts.ProviderHeartbeatAuth, "What to do with a provider heartbeat whose bearer token does not verify as that provider's own service account: warn (log and accept) or enforce (reject). Default warn for this release; the next release defaults to enforce.")
+	cmd.Flags().BoolVar(&opts.ProviderWorkspaceClusterAdmin, "provider-workspace-cluster-admin", opts.ProviderWorkspaceClusterAdmin,
+		"Bind each provider's ServiceAccount to cluster-admin inside its own provider workspace. "+
+			"False binds the narrower generated railgrid:provider ClusterRole instead. Default true for this release so "+
+			"operators can stage the change; the next release defaults to false. Changing it replaces the existing binding.")
+	cmd.Flags().StringVar(&opts.PortalDevURL, "portal-dev-url", "", "Reverse-proxy /ui/* to this URL (e.g. http://localhost:3000 for Vite dev server); takes precedence over embedded portal dist")
+	cmd.Flags().StringSliceVar(&opts.PortalFrameSources, "portal-frame-source", nil, "Additional CSP frame-src source expressions allowed by the portal, e.g. https://*.preview.example.com")
+
+	// Embedded kcp flags
+	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")
+	cmd.Flags().StringVar(&opts.KCPRootDir, "kcp-root-dir", "", "Root directory for embedded kcp data (default: <data-dir>/kcp)")
+	cmd.Flags().IntVar(&opts.KCPSecurePort, "kcp-secure-port", opts.KCPSecurePort, "Secure port for embedded kcp API server")
+	cmd.Flags().StringVar(&opts.KCPBindAddress, "kcp-bind-address", opts.KCPBindAddress, "Bind address for embedded kcp API server (default: 127.0.0.1, use 0.0.0.0 for all interfaces)")
+	cmd.Flags().StringVar(&opts.KCPShardExternalURL, "kcp-shard-external-url", opts.KCPShardExternalURL, "URL embedded kcp writes to Shard.spec.externalURL for outside consumers to dial. Defaults to kcp's auto-detected address; override for kind-pod consumers (e.g. https://host.docker.internal:6443).")
+	cmd.Flags().StringVar(&opts.KCPShardVirtualWorkspaceURL, "kcp-shard-virtual-workspace-url", opts.KCPShardVirtualWorkspaceURL, "URL embedded kcp writes to Shard.spec.virtualWorkspaceURL, which feeds APIExportEndpointSlice / CachedResourceEndpointSlice endpoint URLs. Usually set to the same value as --kcp-shard-external-url for a single-shard dev setup.")
+	cmd.Flags().StringVar(&opts.KCPBatteriesInclude, "kcp-batteries-include", opts.KCPBatteriesInclude, "Comma-separated list of kcp batteries to include")
+	cmd.Flags().StringVar(&opts.KCPTLSCertFile, "kcp-tls-cert-file", "", "TLS certificate file for embedded kcp API server")
+	cmd.Flags().StringVar(&opts.KCPTLSKeyFile, "kcp-tls-key-file", "", "TLS key file for embedded kcp API server")
+
+	// Add klog flags (provides -v for log verbosity, shared with embedded kcp)
+	goFlags := flag.NewFlagSet("", flag.ContinueOnError)
+	klog.InitFlags(goFlags)
+	cmd.Flags().AddGoFlagSet(goFlags)
+
+	if err := cmd.Execute(); err != nil {
+		klog.Fatal(err)
+		os.Exit(1)
+	}
+}

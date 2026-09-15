@@ -41,9 +41,9 @@ export interface WorkbenchPersistedState {
 }
 
 export const WORKBENCH_PERSISTENCE_VERSION = 1 as const
-export const WORKBENCH_PERSISTENCE_PREFIX = 'faros:app-studio:workbench:v1'
+export const WORKBENCH_PERSISTENCE_PREFIX = 'railgrid:app-studio:workbench:v1'
 /** Visibility is an independent preference, so hiding the pane never mutates a saved tab layout. */
-export const WORKBENCH_VISIBILITY_STORAGE_KEY = 'faros:app-studio:workbench-visible:v1'
+export const WORKBENCH_VISIBILITY_STORAGE_KEY = 'railgrid:app-studio:workbench-visible:v1'
 
 // A workbench is intentionally small. This bound protects the portal from a
 // manually edited or otherwise corrupted localStorage value while leaving

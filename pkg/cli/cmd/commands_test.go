@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	cliauth "github.com/railgrid/railgrid/pkg/cli/auth"
 )
 
 // edgeObject builds a KubernetesCluster or LinuxServer as the hub's kcp proxy
@@ -48,14 +48,14 @@ func edgeObject(kind, name string, connected bool, labels map[string]string) map
 		status["hostname"] = name + ".local"
 		status["lastHeartbeatTime"] = "2026-09-11T10:00:00Z"
 		// An internal host: the CLI must externalize it against the hub.
-		status["URL"] = "https://hub.internal:8443/services/providers/edges/edgeproxy/clusters/cl-b/apis/edges.faros.sh/v1alpha1/" + resource + "/" + name + "/" + sub
+		status["URL"] = "https://hub.internal:8443/services/providers/edges/edgeproxy/clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/" + resource + "/" + name + "/" + sub
 	}
 	meta := map[string]any{"name": name, "creationTimestamp": "2026-09-01T00:00:00Z"}
 	if labels != nil {
 		meta["labels"] = labels
 	}
 	return map[string]any{
-		"apiVersion": "edges.faros.sh/v1alpha1",
+		"apiVersion": "edges.railgrid.ai/v1alpha1",
 		"kind":       kind,
 		"metadata":   meta,
 		"spec":       map[string]any{},
@@ -79,7 +79,7 @@ func serveEdges(h *fakeHub) {
 			for _, o := range objs {
 				items = append(items, o)
 			}
-			writeTestJSON(w, map[string]any{"apiVersion": "edges.faros.sh/v1alpha1", "kind": kind + "List", "items": items})
+			writeTestJSON(w, map[string]any{"apiVersion": "edges.railgrid.ai/v1alpha1", "kind": kind + "List", "items": items})
 		}
 	}
 	get := func(objs map[string]map[string]any) http.HandlerFunc {
@@ -92,17 +92,17 @@ func serveEdges(h *fakeHub) {
 			writeTestJSON(w, o)
 		}
 	}
-	h.handle("GET /clusters/cl-b/apis/edges.faros.sh/v1alpha1/kubernetesclusters", list("KubernetesCluster", clusters))
-	h.handle("GET /clusters/cl-b/apis/edges.faros.sh/v1alpha1/kubernetesclusters/{name}", get(clusters))
-	h.handle("GET /clusters/cl-b/apis/edges.faros.sh/v1alpha1/linuxservers", list("LinuxServer", servers))
-	h.handle("GET /clusters/cl-b/apis/edges.faros.sh/v1alpha1/linuxservers/{name}", get(servers))
+	h.handle("GET /clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters", list("KubernetesCluster", clusters))
+	h.handle("GET /clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}", get(clusters))
+	h.handle("GET /clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/linuxservers", list("LinuxServer", servers))
+	h.handle("GET /clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/linuxservers/{name}", get(servers))
 }
 
 func mustRun(t *testing.T, path string, args ...string) string {
 	t.Helper()
 	out, err := runRoot(t, path, args...)
 	if err != nil {
-		t.Fatalf("faros %s: %v\n%s", strings.Join(args, " "), err, out)
+		t.Fatalf("railgrid %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return out
 }
@@ -111,10 +111,10 @@ func mustFail(t *testing.T, path string, want string, args ...string) {
 	t.Helper()
 	out, err := runRoot(t, path, args...)
 	if err == nil {
-		t.Fatalf("faros %s succeeded, want error containing %q\n%s", strings.Join(args, " "), want, out)
+		t.Fatalf("railgrid %s succeeded, want error containing %q\n%s", strings.Join(args, " "), want, out)
 	}
 	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("faros %s: err = %v, want %q", strings.Join(args, " "), err, want)
+		t.Fatalf("railgrid %s: err = %v, want %q", strings.Join(args, " "), err, want)
 	}
 }
 
@@ -168,7 +168,7 @@ func TestEdgeListOutputs(t *testing.T) {
 
 	// The pre-1.0 shorthand keeps working.
 	if legacy := mustRun(t, path, "ls", "-o", "name"); legacy != names {
-		t.Fatalf("faros ls = %q, want %q", legacy, names)
+		t.Fatalf("railgrid ls = %q, want %q", legacy, names)
 	}
 }
 
@@ -178,13 +178,13 @@ func TestEdgeGet(t *testing.T) {
 	path := hub.useKubeconfig("cl-b")
 
 	out := mustRun(t, path, "edge", "get", "vps")
-	for _, want := range []string{"Type:           server", "Connected:      true", "Hostname:       vps.local", "Next: faros ssh vps"} {
+	for _, want := range []string{"Type:           server", "Connected:      true", "Hostname:       vps.local", "Next: railgrid ssh vps"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("edge get vps missing %q:\n%s", want, out)
 		}
 	}
 	out = mustRun(t, path, "edge", "describe", "prod")
-	if !strings.Contains(out, "Labels:         env=prod,region=eu") || !strings.Contains(out, "Next: faros connect prod") {
+	if !strings.Contains(out, "Labels:         env=prod,region=eu") || !strings.Contains(out, "Next: railgrid connect prod") {
 		t.Fatalf("edge get prod:\n%s", out)
 	}
 	out = mustRun(t, path, "edge", "get", "staging", "-o", "json")
@@ -199,7 +199,7 @@ func TestEdgeKubeconfigConnectDisconnect(t *testing.T) {
 	hub := newFakeHub(t)
 	serveEdges(hub)
 	path := hub.useKubeconfig("cl-b")
-	wantServer := hub.URL + "/services/providers/edges/edgeproxy/clusters/cl-b/apis/edges.faros.sh/v1alpha1/kubernetesclusters/prod/k8s"
+	wantServer := hub.URL + "/services/providers/edges/edgeproxy/clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/prod/k8s"
 
 	// Standalone kubeconfig on stdout: one context, the hub's credentials,
 	// the proxy URL externalized onto the hub host.
@@ -208,14 +208,14 @@ func TestEdgeKubeconfigConnectDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing kubeconfig: %v\n%s", err, out)
 	}
-	if cfg.CurrentContext != "faros-prod" || cfg.Clusters["faros-prod"].Server != wantServer {
+	if cfg.CurrentContext != "railgrid-prod" || cfg.Clusters["railgrid-prod"].Server != wantServer {
 		t.Fatalf("standalone kubeconfig: %+v", cfg)
 	}
-	if cfg.AuthInfos["faros-prod"].Token != fakeUserToken {
+	if cfg.AuthInfos["railgrid-prod"].Token != fakeUserToken {
 		t.Fatalf("credentials not copied: %+v", cfg.AuthInfos)
 	}
-	if !cfg.Clusters["faros-prod"].InsecureSkipTLSVerify {
-		t.Fatalf("hub TLS settings not inherited: %+v", cfg.Clusters["faros-prod"])
+	if !cfg.Clusters["railgrid-prod"].InsecureSkipTLSVerify {
+		t.Fatalf("hub TLS settings not inherited: %+v", cfg.Clusters["railgrid-prod"])
 	}
 
 	// -o writes a file; the legacy spelling still works.
@@ -227,34 +227,34 @@ func TestEdgeKubeconfigConnectDisconnect(t *testing.T) {
 
 	// Not connected / wrong kind / unknown are actionable errors.
 	mustFail(t, path, `edge "staging" is not connected`, "edge", "kubeconfig", "staging")
-	mustFail(t, path, "use: faros ssh vps", "connect", "vps")
+	mustFail(t, path, "use: railgrid ssh vps", "connect", "vps")
 	mustFail(t, path, `edge "nope" not found`, "connect", "nope")
 
 	// connect merges a context and makes it current; use returns to the hub
 	// (as does disconnect).
 	out = mustRun(t, path, "connect", "prod")
-	if !strings.Contains(out, `context "faros-prod"`) {
+	if !strings.Contains(out, `context "railgrid-prod"`) {
 		t.Fatalf("connect: %s", out)
 	}
 	raw := loadTestKubeconfig(t, path)
-	if raw.CurrentContext != "faros-prod" || raw.Contexts["faros-prod"].AuthInfo != "faros" || raw.Clusters["faros-prod"].Server != wantServer {
+	if raw.CurrentContext != "railgrid-prod" || raw.Contexts["railgrid-prod"].AuthInfo != "railgrid" || raw.Clusters["railgrid-prod"].Server != wantServer {
 		t.Fatalf("after connect: current=%s contexts=%v", raw.CurrentContext, raw.Contexts)
 	}
 
 	who := mustRun(t, path, "whoami")
-	if !strings.Contains(who, `context "faros-prod" → edge prod`) {
+	if !strings.Contains(who, `context "railgrid-prod" → edge prod`) {
 		t.Fatalf("whoami after connect:\n%s", who)
 	}
 
 	out = mustRun(t, path, "disconnect")
-	if !strings.Contains(out, `Disconnected from "faros-prod"`) {
+	if !strings.Contains(out, `Disconnected from "railgrid-prod"`) {
 		t.Fatalf("disconnect: %s", out)
 	}
 	raw = loadTestKubeconfig(t, path)
-	if raw.CurrentContext != "faros" {
+	if raw.CurrentContext != "railgrid" {
 		t.Fatalf("after disconnect current = %s", raw.CurrentContext)
 	}
-	if _, ok := raw.Contexts["faros-prod"]; !ok {
+	if _, ok := raw.Contexts["railgrid-prod"]; !ok {
 		t.Fatal("disconnect must keep the edge context for kubectl --context")
 	}
 	out = mustRun(t, path, "disconnect")
@@ -265,13 +265,13 @@ func TestEdgeKubeconfigConnectDisconnect(t *testing.T) {
 	// --merge adds without switching.
 	mustRun(t, path, "connect", "prod")
 	mustRun(t, path, "disconnect")
-	delete(raw.Contexts, "faros-prod")
+	delete(raw.Contexts, "railgrid-prod")
 	mustRun(t, path, "edge", "kubeconfig", "prod", "--merge")
 	raw = loadTestKubeconfig(t, path)
-	if raw.CurrentContext != "faros" {
+	if raw.CurrentContext != "railgrid" {
 		t.Fatalf("--merge switched the context to %s", raw.CurrentContext)
 	}
-	if _, ok := raw.Contexts["faros-prod"]; !ok {
+	if _, ok := raw.Contexts["railgrid-prod"]; !ok {
 		t.Fatal("--merge did not add the context")
 	}
 }
@@ -352,7 +352,7 @@ func (m *membershipStore) install(h *fakeHub, base string) {
 func (m *membershipStore) record(r *http.Request, body string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.writes = append(m.writes, strings.TrimSpace(r.Method+" "+r.URL.RequestURI()+" org="+r.Header.Get("X-Faros-Org")+" ws="+r.Header.Get("X-Faros-Workspace")+" "+body))
+	m.writes = append(m.writes, strings.TrimSpace(r.Method+" "+r.URL.RequestURI()+" org="+r.Header.Get("X-Railgrid-Org")+" ws="+r.Header.Get("X-Railgrid-Workspace")+" "+body))
 }
 
 func (m *membershipStore) last() string {
@@ -373,7 +373,7 @@ func TestOrgAndWorkspaceCommands(t *testing.T) {
 		{"uuid": "org-b", "displayName": "Acme", "role": "admin", "workspaceCreation": "members", "catalogEntryCreation": "admin", "createdAt": "2026-09-01T00:00:00Z"},
 	}
 	orgMembers := &membershipStore{members: []map[string]any{
-		{"user": "user-alice", "email": "alice@example.com", "userDisplayName": "Alice", "role": "admin", "rbacIdentity": "faros:alice@example.com"},
+		{"user": "user-alice", "email": "alice@example.com", "userDisplayName": "Alice", "role": "admin", "rbacIdentity": "railgrid:alice@example.com"},
 		{"user": "user-bob", "email": "bob@example.com", "role": "member"},
 	}}
 	orgMembers.install(hub, "/api/orgs/{org}/memberships")
@@ -390,7 +390,7 @@ func TestOrgAndWorkspaceCommands(t *testing.T) {
 	})
 	hub.handle("POST /api/orgs/{org}/workspaces", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		created = append(created, "ws "+r.Header.Get("X-Faros-Org")+" ws="+r.Header.Get("X-Faros-Workspace")+" "+string(body))
+		created = append(created, "ws "+r.Header.Get("X-Railgrid-Org")+" ws="+r.Header.Get("X-Railgrid-Workspace")+" "+string(body))
 		w.WriteHeader(http.StatusCreated)
 		writeTestJSON(w, map[string]any{"uuid": "ws-new", "orgUUID": r.PathValue("org"), "displayName": "Platform 2"})
 	})
@@ -475,7 +475,7 @@ func TestOrgAndWorkspaceCommands(t *testing.T) {
 
 	// create commands.
 	out = mustRun(t, path, "org", "create", "New Org", "--workspace-creation", "admin")
-	if !strings.Contains(out, "faros use --org org-new") || len(created) != 1 || !strings.Contains(created[0], `"workspaceCreation":"admin"`) {
+	if !strings.Contains(out, "railgrid use --org org-new") || len(created) != 1 || !strings.Contains(created[0], `"workspaceCreation":"admin"`) {
 		t.Fatalf("org create: %s / %v", out, created)
 	}
 	out = mustRun(t, path, "workspace", "create", "Platform 2")
@@ -499,7 +499,7 @@ func TestWhoamiTokenLogout(t *testing.T) {
 		"Auth:       static-token",
 		`Org:        Acme (org-b) — role: member`,
 		`Workspace:  platform (ws-b1)`,
-		`kubectl:    context "faros" → hub workspace`,
+		`kubectl:    context "railgrid" → hub workspace`,
 		"* Acme (member)",
 	} {
 		if !strings.Contains(out, want) {
@@ -524,35 +524,35 @@ func TestWhoamiTokenLogout(t *testing.T) {
 		t.Fatalf("logout: %s", out)
 	}
 	raw := loadTestKubeconfig(t, path)
-	if _, ok := raw.Contexts["faros"]; ok || raw.CurrentContext != "" || len(raw.AuthInfos) != 0 {
+	if _, ok := raw.Contexts["railgrid"]; ok || raw.CurrentContext != "" || len(raw.AuthInfos) != 0 {
 		t.Fatalf("kubeconfig after logout: %+v", raw)
 	}
 	out = mustRun(t, path, "logout")
 	if !strings.Contains(out, "Not logged in") {
 		t.Fatalf("second logout: %s", out)
 	}
-	mustFail(t, path, "run 'faros login'", "whoami")
+	mustFail(t, path, "run 'railgrid login'", "whoami")
 }
 
 func TestLogoutRemovesOIDCCacheAndEdgeContexts(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	issuer, clientID := "https://issuer.test", "faros"
+	issuer, clientID := "https://issuer.test", "railgrid"
 	if err := cliauth.SaveTokenCache(&cliauth.TokenCache{IDToken: "x", RefreshToken: "y", IssuerURL: issuer, ClientID: clientID}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := clientcmdapi.NewConfig()
-	cfg.Clusters["faros"] = &clientcmdapi.Cluster{Server: "https://hub.test/clusters/abc"}
-	cfg.Clusters["faros-prod"] = &clientcmdapi.Cluster{Server: "https://hub.test/services/x"}
+	cfg.Clusters["railgrid"] = &clientcmdapi.Cluster{Server: "https://hub.test/clusters/abc"}
+	cfg.Clusters["railgrid-prod"] = &clientcmdapi.Cluster{Server: "https://hub.test/services/x"}
 	cfg.Clusters["other"] = &clientcmdapi.Cluster{Server: "https://other.test"}
 	cfg.AuthInfos["user-1"] = &clientcmdapi.AuthInfo{Exec: &clientcmdapi.ExecConfig{
-		APIVersion: "client.authentication.k8s.io/v1beta1", Command: "faros",
+		APIVersion: "client.authentication.k8s.io/v1beta1", Command: "railgrid",
 		Args: []string{"get-token", "--oidc-issuer-url=" + issuer, "--oidc-client-id=" + clientID},
 	}}
 	cfg.AuthInfos["other"] = &clientcmdapi.AuthInfo{Token: "t"}
-	cfg.Contexts["faros"] = &clientcmdapi.Context{Cluster: "faros", AuthInfo: "user-1"}
-	cfg.Contexts["faros-prod"] = &clientcmdapi.Context{Cluster: "faros-prod", AuthInfo: "user-1"}
+	cfg.Contexts["railgrid"] = &clientcmdapi.Context{Cluster: "railgrid", AuthInfo: "user-1"}
+	cfg.Contexts["railgrid-prod"] = &clientcmdapi.Context{Cluster: "railgrid-prod", AuthInfo: "user-1"}
 	cfg.Contexts["other"] = &clientcmdapi.Context{Cluster: "other", AuthInfo: "other"}
-	cfg.CurrentContext = "faros-prod"
+	cfg.CurrentContext = "railgrid-prod"
 	path := filepath.Join(t.TempDir(), "kubeconfig")
 	if err := clientcmd.WriteToFile(*cfg, path); err != nil {
 		t.Fatal(err)
@@ -566,7 +566,7 @@ func TestLogoutRemovesOIDCCacheAndEdgeContexts(t *testing.T) {
 		t.Fatal("token cache still present")
 	}
 	raw := loadTestKubeconfig(t, path)
-	if _, ok := raw.Contexts["faros-prod"]; ok {
+	if _, ok := raw.Contexts["railgrid-prod"]; ok {
 		t.Fatal("edge context kept")
 	}
 	if _, ok := raw.Contexts["other"]; !ok || raw.AuthInfos["other"] == nil || raw.Clusters["other"] == nil {
@@ -579,11 +579,11 @@ func TestLogoutRemovesOIDCCacheAndEdgeContexts(t *testing.T) {
 
 func TestResolveMember(t *testing.T) {
 	members := []memberView{
-		{User: "user-1", Email: "Alice@Example.com", UserDisplayName: "Alice", RBACIdentity: "faros:alice@example.com"},
+		{User: "user-1", Email: "Alice@Example.com", UserDisplayName: "Alice", RBACIdentity: "railgrid:alice@example.com"},
 		{User: "user-2", Email: "bob@example.com"},
 		{User: "user-3", UserDisplayName: "Alice"},
 	}
-	for q, want := range map[string]string{"user-2": "user-2", "alice@example.com": "user-1", "faros:alice@example.com": "user-1", "BOB@example.com": "user-2"} {
+	for q, want := range map[string]string{"user-2": "user-2", "alice@example.com": "user-1", "railgrid:alice@example.com": "user-1", "BOB@example.com": "user-2"} {
 		m, err := resolveMember(members, q)
 		if err != nil || m.User != want {
 			t.Errorf("resolveMember(%q) = %v, %v; want %s", q, m.User, err, want)
@@ -597,7 +597,7 @@ func TestResolveMember(t *testing.T) {
 	}
 
 	// A static-token member has no email; a blank query must not pick it.
-	static := []memberView{{User: "static-user-47b9dce0e91570a1", RBACIdentity: "faros:static:47b9dce0e91570a1", UserDisplayName: "faros:static:47b9dce0e91570a1"}}
+	static := []memberView{{User: "static-user-47b9dce0e91570a1", RBACIdentity: "railgrid:static:47b9dce0e91570a1", UserDisplayName: "railgrid:static:47b9dce0e91570a1"}}
 	if m, err := resolveMember(static, "  "); err == nil {
 		t.Errorf("blank query resolved to %s", m.User)
 	}
@@ -676,18 +676,18 @@ func TestGenerateDocs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"[faros login](faros_login.md)", "[faros org members add](faros_org_members_add.md)", "## Edges (clusters and servers)"} {
+	for _, want := range []string{"[railgrid login](railgrid_login.md)", "[railgrid org members add](railgrid_org_members_add.md)", "## Edges (clusters and servers)"} {
 		if !strings.Contains(string(index), want) {
 			t.Errorf("index missing %q", want)
 		}
 	}
-	if strings.Contains(string(index), "faros_get-token.md") || strings.Contains(string(index), "faros apply") {
+	if strings.Contains(string(index), "railgrid_get-token.md") || strings.Contains(string(index), "railgrid apply") {
 		t.Error("hidden commands leaked into the index")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "faros_connect.md")); err != nil {
-		t.Error("faros_connect.md not generated")
+	if _, err := os.Stat(filepath.Join(dir, "railgrid_connect.md")); err != nil {
+		t.Error("railgrid_connect.md not generated")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "faros_get-token.md")); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, "railgrid_get-token.md")); err == nil {
 		t.Error("hidden command page generated")
 	}
 }
@@ -701,10 +701,10 @@ func TestEdgeListMacOSAndMissingKinds(t *testing.T) {
 	serveEdges(hub)
 	mac := edgeObject("KubernetesCluster", "mac", true, nil)
 	mac["kind"] = "MacOSServer"
-	hub.handle("GET /clusters/cl-b/apis/edges.faros.sh/v1alpha1/macosservers", func(w http.ResponseWriter, r *http.Request) {
-		writeTestJSON(w, map[string]any{"apiVersion": "edges.faros.sh/v1alpha1", "kind": "MacOSServerList", "items": []any{mac}})
+	hub.handle("GET /clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/macosservers", func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(w, map[string]any{"apiVersion": "edges.railgrid.ai/v1alpha1", "kind": "MacOSServerList", "items": []any{mac}})
 	})
-	hub.handle("GET /clusters/cl-b/apis/edges.faros.sh/v1alpha1/macosservers/{name}", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("GET /clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/macosservers/{name}", func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("name") != "mac" {
 			writeTestStatus(w, http.StatusNotFound, "NotFound", "not found")
 			return
@@ -722,7 +722,7 @@ func TestEdgeListMacOSAndMissingKinds(t *testing.T) {
 	}
 	mustFail(t, path, "service-only", "connect", "mac")
 	mustFail(t, path, "SSH is only available for Linux server edges", "ssh", "mac", "--", "true")
-	mustFail(t, path, "use: faros connect prod", "ssh", "prod", "--", "true")
+	mustFail(t, path, "use: railgrid connect prod", "ssh", "prod", "--", "true")
 
 	// A hub whose edges provider predates macosservers: the other kinds list.
 	old := newFakeHub(t)
@@ -739,21 +739,21 @@ func TestEdgeListMacOSAndMissingKinds(t *testing.T) {
 }
 
 // An unknown subcommand below the root is an error, not the group's help with
-// exit 0 — which is what an older CLI did for 'faros mcp proxy', so scripts
+// exit 0 — which is what an older CLI did for 'railgrid mcp proxy', so scripts
 // and MCP clients mistook a missing command for success. A bare group still
 // prints its help.
 func TestCommandGroupsRejectUnknownSubcommands(t *testing.T) {
 	kc := filepath.Join(t.TempDir(), "kubeconfig")
 	for _, args := range [][]string{{"mcp", "nosuch"}, {"app", "nosuch"}, {"edge", "nosuch"}, {"org", "members", "nosuch"}} {
 		_, err := runRoot(t, kc, args...)
-		want := `unknown command "nosuch" for "faros ` + strings.Join(args[:len(args)-1], " ") + `"`
+		want := `unknown command "nosuch" for "railgrid ` + strings.Join(args[:len(args)-1], " ") + `"`
 		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("faros %s: err = %v, want %q", strings.Join(args, " "), err, want)
+			t.Errorf("railgrid %s: err = %v, want %q", strings.Join(args, " "), err, want)
 		}
 	}
 	out, err := runRoot(t, kc, "mcp")
 	if err != nil || !strings.Contains(out, "Available Commands") || !strings.Contains(out, "proxy") {
-		t.Errorf("faros mcp: err = %v, output %q; want the group's help listing proxy", err, out)
+		t.Errorf("railgrid mcp: err = %v, output %q; want the group's help listing proxy", err, out)
 	}
 
 	var groups []string

@@ -31,7 +31,7 @@ import { dragCarriesFiles, droppedFiles } from './projectFiles'
 import { useDismissibleAddMenu } from './useDismissibleAddMenu'
 import { useAssistantFilePickerFocus } from './useAssistantFilePickerFocus'
 import type {
-  FarosContext,
+  RailgridContext,
   ProjectAssistantAttachmentReceipt,
   ProjectAssistantContentPart,
   ProjectAssistantContextResource,
@@ -49,7 +49,7 @@ const props = withDefaults(defineProps<{
   skills: ProjectAssistantSkill[]
   selectedSkills?: ProjectAssistantSkill[]
   selectedResources?: ProjectAssistantContextResource[]
-  ctx: FarosContext | null
+  ctx: RailgridContext | null
   providers: ProviderItem[]
   disabled?: boolean
   activeRun?: boolean

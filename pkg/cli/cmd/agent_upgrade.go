@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	farosclient "github.com/faroshq/faros/pkg/client"
-	pkgversion "github.com/faroshq/faros/pkg/version"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	pkgversion "github.com/railgrid/railgrid/pkg/version"
 )
 
 func newAgentUpgradeCommand() *cobra.Command {
@@ -38,9 +38,9 @@ func newAgentUpgradeCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "upgrade <edge-name>",
-		Short: "Upgrade the agent for an edge deployed via 'faros agent join'",
-		Long: `Upgrade the faros agent for a Kubernetes edge that was deployed using
-"faros agent join". This patches the agent Deployment in the faros-agent
+		Short: "Upgrade the agent for an edge deployed via 'railgrid agent join'",
+		Long: `Upgrade the railgrid agent for a Kubernetes edge that was deployed using
+"railgrid agent join". This patches the agent Deployment in the railgrid-agent
 namespace with the new image tag.
 
 For agents installed via Helm, use "helm upgrade" instead.
@@ -60,7 +60,7 @@ the binary.`,
 			// Look up the edge on the hub to determine its type.
 			dynClient, err := loadDynamicClient()
 			if err != nil {
-				return fmt.Errorf("not logged in — run: faros login --hub-url <hub-url>\n(original error: %w)", err)
+				return fmt.Errorf("not logged in — run: railgrid login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
 			edge, gvr, err := getEdgeByName(ctx, dynClient, edgeName)
@@ -68,7 +68,7 @@ the binary.`,
 				return fmt.Errorf("getting edge %q: %w", edgeName, err)
 			}
 
-			edgeType := farosclient.EdgeTypeForGVR(gvr)
+			edgeType := railgridclient.EdgeTypeForGVR(gvr)
 			agentVersion := getNestedString(*edge, "status", "agentVersion")
 
 			if agentVersion == tag {
@@ -95,14 +95,14 @@ the binary.`,
 	return cmd
 }
 
-// agentUpgradeKubernetes patches the faros-agent Deployment to use the new image tag.
+// agentUpgradeKubernetes patches the railgrid-agent Deployment to use the new image tag.
 func agentUpgradeKubernetes(ctx context.Context, edgeName, tag string, wait bool) error {
-	deployName := "faros-agent-" + edgeName
-	namespace := "faros-agent"
+	deployName := "railgrid-agent-" + edgeName
+	namespace := "railgrid-agent"
 
-	agentImage := os.Getenv("FAROS_AGENT_IMAGE")
+	agentImage := os.Getenv("RAILGRID_AGENT_IMAGE")
 	if agentImage == "" {
-		agentImage = "ghcr.io/faroshq/faros-agent"
+		agentImage = "ghcr.io/railgrid/railgrid-agent"
 	}
 	newImage := agentImage + ":" + tag
 
@@ -162,7 +162,7 @@ func agentUpgradeKubernetes(ctx context.Context, edgeName, tag string, wait bool
 		fmt.Printf("Verifying agent version (may take up to 30s)...\n")
 		if err := waitForAgentVersion(ctx, edgeName, tag, 60*time.Second); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
-			fmt.Printf("Run 'faros edge list' to check the agent version.\n")
+			fmt.Printf("Run 'railgrid edge list' to check the agent version.\n")
 		} else {
 			fmt.Printf("Agent %q now reports version %s\n", edgeName, tag)
 		}
@@ -199,12 +199,12 @@ func waitForAgentVersion(ctx context.Context, edgeName, expectedVersion string, 
 func agentUpgradeServer(edgeName string) error {
 	fmt.Printf("Server-type agents must be upgraded by replacing the binary on the host.\n\n")
 	fmt.Printf("  # Download the latest binary:\n")
-	fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_linux_amd64.tar.gz | tar xz\n")
-	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n\n")
+	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_linux_amd64.tar.gz | tar xz\n")
+	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n\n")
 	fmt.Printf("  # Restart the systemd service:\n")
-	fmt.Printf("  sudo systemctl restart faros-agent-%s\n\n", edgeName)
+	fmt.Printf("  sudo systemctl restart railgrid-agent-%s\n\n", edgeName)
 	fmt.Printf("After upgrading, verify with:\n")
-	fmt.Printf("  faros edge list\n")
+	fmt.Printf("  railgrid edge list\n")
 	return nil
 }
 
@@ -213,10 +213,10 @@ func agentUpgradeServer(edgeName string) error {
 // /usr/local/bin binary and the system LaunchDaemon control operation.
 func agentUpgradeMacOS(edgeName string) error {
 	fmt.Printf("macOS agents are upgraded by replacing the binary on the worker host.\n\n")
-	fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
-	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n\n")
-	fmt.Printf("  sudo launchctl kickstart -k system/com.faros.agent.%s\n\n", edgeName)
+	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
+	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n\n")
+	fmt.Printf("  sudo launchctl kickstart -k system/com.railgrid.agent.%s\n\n", edgeName)
 	fmt.Printf("After upgrading, verify with:\n")
-	fmt.Printf("  faros edge list\n")
+	fmt.Printf("  railgrid edge list\n")
 	return nil
 }

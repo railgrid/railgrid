@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -57,7 +57,7 @@ type OIDCLoginResult struct {
 
 // HeadlessOIDCLogin drives the full OIDC authorization-code flow headlessly.
 //
-// The faros hub auth flow (see pkg/server/auth/handler.go):
+// The railgrid hub auth flow (see pkg/server/auth/handler.go):
 //  1. GET  /auth/authorize?p=<port>&s=<session>  →  302 to Dex auth URL
 //  2. GET  Dex auth URL                           →  Dex login page
 //  3. POST Dex login form with credentials        →  302 to hub /auth/callback
@@ -253,11 +253,11 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 	}
 }
 
-// patchKubeconfigExecPath rewrites any AuthInfo.Exec.Command of "faros" to
-// the absolute path of the faros binary under test ($RepoRoot/bin/faros).
+// patchKubeconfigExecPath rewrites any AuthInfo.Exec.Command of "railgrid" to
+// the absolute path of the railgrid binary under test ($RepoRoot/bin/railgrid).
 //
 // The hub generates kubeconfigs whose auth is an exec credential plugin with
-// Command: "faros" (see pkg/server/auth/handler.go). That requires "faros" to
+// Command: "railgrid" (see pkg/server/auth/handler.go). That requires "railgrid" to
 // be on PATH at kubectl-invocation time. In tests (and for users running
 // kubectl manually against these kubeconfigs) it usually is not, so we rewrite
 // the command to the absolute path we already know about.
@@ -272,11 +272,11 @@ func patchKubeconfigExecPath(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading kubeconfig: %w", err)
 	}
-	farosBin := filepath.Join(RepoRoot(), "bin", "faros")
+	railgridBin := filepath.Join(RepoRoot(), "bin", "railgrid")
 	changed := false
 	for _, authInfo := range cfg.AuthInfos {
-		if authInfo.Exec != nil && authInfo.Exec.Command == "faros" {
-			authInfo.Exec.Command = farosBin
+		if authInfo.Exec != nil && authInfo.Exec.Command == "railgrid" {
+			authInfo.Exec.Command = railgridBin
 			changed = true
 		}
 	}

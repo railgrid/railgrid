@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,8 +29,8 @@ import (
 
 	gogithub "github.com/google/go-github/v66/github"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/backend"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/backend"
 )
 
 func TestCleanRepositoryPath(t *testing.T) {
@@ -317,7 +317,7 @@ func TestShouldReuseHeadCommitWhenDesiredTreeAlreadyAtHead(t *testing.T) {
 
 func TestCommitMessageWithIdempotencyKey(t *testing.T) {
 	got := commitMessageWithIdempotencyKey("Initial app", "root:acme/demo")
-	if got != "Initial app\n\nFaros-RepositoryCommit: root:acme/demo" {
+	if got != "Initial app\n\nRailgrid-RepositoryCommit: root:acme/demo" {
 		t.Fatalf("message = %q", got)
 	}
 	if got := commitMessageWithIdempotencyKey("Initial app", ""); got != "Initial app" {
@@ -326,14 +326,14 @@ func TestCommitMessageWithIdempotencyKey(t *testing.T) {
 }
 
 func TestCommitMessageHasIdempotencyKey(t *testing.T) {
-	message := "Initial app\n\nFaros-RepositoryCommit: root:acme/demo"
+	message := "Initial app\n\nRailgrid-RepositoryCommit: root:acme/demo"
 	if !commitMessageHasIdempotencyKey(message, "root:acme/demo") {
 		t.Fatal("commitMessageHasIdempotencyKey returned false for matching trailer")
 	}
 	if commitMessageHasIdempotencyKey(message, "root:acme/other") {
 		t.Fatal("commitMessageHasIdempotencyKey returned true for a different key")
 	}
-	if commitMessageHasIdempotencyKey("Initial app Faros-RepositoryCommit: root:acme/demo", "root:acme/demo") {
+	if commitMessageHasIdempotencyKey("Initial app Railgrid-RepositoryCommit: root:acme/demo", "root:acme/demo") {
 		t.Fatal("commitMessageHasIdempotencyKey returned true for an inline substring")
 	}
 }

@@ -5,7 +5,7 @@
 // workspace by kcp cluster ID. Every call goes through the hub's kcp proxy at
 // /clusters/<cluster>/..., which authorizes the caller's bearer against their
 // workspace membership and forwards the request to kcp as that user. The
-// portal never handles the token: the host-owned transport (farosContext.fetch,
+// portal never handles the token: the host-owned transport (railgridContext.fetch,
 // see providerFetch in ./tenant.ts) injects Authorization.
 //
 // This replaces the former GraphQL gateway data path. It speaks plain
@@ -17,7 +17,7 @@
 // Framework-agnostic plain TS; synced to both the vanilla-TS and Vue kits.
 
 // ProviderFetch mirrors the transport type in ./tenant.ts (the host-owned
-// farosContext.fetch). Declared locally so this file has no cross-file import
+// railgridContext.fetch). Declared locally so this file has no cross-file import
 // and type-checks under both bundler and NodeNext module resolution.
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -203,9 +203,9 @@ export interface KubeClientOptions {
   // The host-owned transport (providerFetch(ctx)). Relative paths resolve
   // against the portal origin.
   fetch: ProviderFetch
-  // kcp logical cluster ID of the tenant workspace (farosContext.tenant).
+  // kcp logical cluster ID of the tenant workspace (railgridContext.tenant).
   cluster: string
-  // Field manager for server-side apply. Defaults to "faros-portal".
+  // Field manager for server-side apply. Defaults to "railgrid-portal".
   fieldManager?: string
   // Optional hook for callers that fence in-flight requests against a
   // context switch; invoked after the response body is read, before parsing.
@@ -280,7 +280,7 @@ function normalizeList<T extends KubeObject>(value: unknown, path: string): Kube
 
 export function createKubeClient(options: KubeClientOptions): KubeClient {
   const { fetch: transport, cluster } = options
-  const defaultManager = options.fieldManager || 'faros-portal'
+  const defaultManager = options.fieldManager || 'railgrid-portal'
   if (typeof transport !== 'function') throw new Error('kube client: fetch transport is required')
   if (!cluster) throw new Error('kube client: cluster is required')
 

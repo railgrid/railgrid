@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 const (
@@ -663,18 +663,18 @@ func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, prov
 		req.Header.Set("Authorization", authorization)
 	}
 	if id.tenant != "" {
-		req.Header.Set("X-Faros-Tenant", id.tenant)
+		req.Header.Set("X-Railgrid-Tenant", id.tenant)
 	}
 	if id.clusterID != "" {
-		req.Header.Set("X-Faros-Cluster", id.clusterID)
+		req.Header.Set("X-Railgrid-Cluster", id.clusterID)
 	}
 	if id.orgUUID != "" {
-		req.Header.Set("X-Faros-Org", id.orgUUID)
+		req.Header.Set("X-Railgrid-Org", id.orgUUID)
 	}
 	if id.workspaceUUID != "" {
-		req.Header.Set("X-Faros-Workspace", id.workspaceUUID)
+		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
 	}
-	for _, header := range []string{"Idempotency-Key", "X-Request-ID", "X-Faros-Action-Deadline-Ms"} {
+	for _, header := range []string{"Idempotency-Key", "X-Request-ID", "X-Railgrid-Action-Deadline-Ms"} {
 		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
 			req.Header.Set(header, value)
 		}

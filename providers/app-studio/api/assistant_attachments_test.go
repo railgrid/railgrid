@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,12 +31,12 @@ import (
 	"github.com/cloudwego/eino/adk"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
-	"github.com/faroshq/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 func TestParseAttachmentDraftRejectsPermanentUpload(t *testing.T) {
 	request := httptest.NewRequest("POST", "/", nil)
-	request.Header.Set("X-Faros-Attachment-Draft", "false")
+	request.Header.Set("X-Railgrid-Attachment-Draft", "false")
 	if _, err := parseAttachmentDraft(request); err == nil || !strings.Contains(err.Error(), "permanent attachment upload is not supported") {
 		t.Fatalf("permanent upload error = %v", err)
 	}

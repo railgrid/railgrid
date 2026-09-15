@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,15 +15,15 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=admin.faros.sh
+// +groupName=admin.railgrid.ai
 
 // Package v1alpha1 contains the platform-owner-only admin API. It holds the
 // Provider type, which declaratively provisions a provider's kcp sub-workspace
 // + ServiceAccount + kubeconfig Secret.
 //
-// The group name carries "admin" deliberately: the admin.faros.sh
-// APIExport is bound ONLY in root:faros:providers (admin/hub). This is distinct
-// from providers.faros.sh, which serves CatalogEntry and IS bound into
+// The group name carries "admin" deliberately: the admin.railgrid.ai
+// APIExport is bound ONLY in root:railgrid:providers (admin/hub). This is distinct
+// from providers.railgrid.ai, which serves CatalogEntry and IS bound into
 // provider sub-workspaces so providers can self-register their catalog entry.
 // Because Provider lives behind the admin-only export, a provider running in
 // its own sub-workspace (with cluster-admin over that workspace) cannot create

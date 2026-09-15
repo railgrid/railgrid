@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,13 +40,13 @@ import (
 )
 
 var (
-	templatesGVR  = schema.GroupVersionResource{Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "templates"}
+	templatesGVR  = schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "templates"}
 	crdGVR        = schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
 	apiExportGVR  = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"}
 	apiBindingGVR = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
 )
 
-const infraAPIExportName = "infrastructure.providers.faros.sh"
+const infraAPIExportName = "infrastructure.providers.railgrid.ai"
 
 // seedTemplateNames is the current seed catalog. Deliberately explicit — a
 // template appearing or vanishing from the seeds should fail this suite until
@@ -74,11 +74,11 @@ func providerWSClient(t *testing.T) dynamic.Interface {
 }
 
 // applyProviderManifests applies provider.yaml (kind Provider) + manifest.yaml
-// (kind CatalogEntry) into root:faros:system:providers, mirroring
+// (kind CatalogEntry) into root:railgrid:system:providers, mirroring
 // `make install-provider-infrastructure`. Called from TestMain.
 func applyProviderManifests() error {
 	cfg := &rest.Config{
-		Host:            kcpServer + "/clusters/root:faros:system:providers",
+		Host:            kcpServer + "/clusters/root:railgrid:system:providers",
 		BearerToken:     adminToken,
 		TLSClientConfig: rest.TLSClientConfig{Insecure: true},
 	}
@@ -87,8 +87,8 @@ func applyProviderManifests() error {
 		return fmt.Errorf("dynamic client: %w", err)
 	}
 	gvrByKind := map[string]schema.GroupVersionResource{
-		"Provider":     {Group: "admin.faros.sh", Version: "v1alpha1", Resource: "providers"},
-		"CatalogEntry": {Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries"},
+		"Provider":     {Group: "admin.railgrid.ai", Version: "v1alpha1", Resource: "providers"},
+		"CatalogEntry": {Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries"},
 	}
 	for _, file := range []string{"provider.yaml", "manifest.yaml"} {
 		raw, err := os.ReadFile(filepath.Join(repoRoot, "providers", "infrastructure", file))
@@ -122,7 +122,7 @@ func applyProviderManifests() error {
 				}
 			}
 			// The hub reports /readyz before the admin/catalog APIs in
-			// root:faros:system:providers are fully servable, so the first
+			// root:railgrid:system:providers are fully servable, so the first
 			// Create on a slow runner can 404 ("could not find the requested
 			// resource"). Retry until the API is up.
 			deadline := time.Now().Add(90 * time.Second)
@@ -229,7 +229,7 @@ func TestBStubTemplateFullReconcile(t *testing.T) {
 	const name = "e2e-stub-widget"
 
 	tmpl := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Template",
 		"metadata":   map[string]any{"name": name},
 		"spec": map[string]any{
@@ -238,7 +238,7 @@ func TestBStubTemplateFullReconcile(t *testing.T) {
 			"version":     "0.0.1",
 			"backend":     "stub",
 			"instanceCRD": map[string]any{
-				"group":    "infrastructure.faros.sh",
+				"group":    "infrastructure.railgrid.ai",
 				"version":  "v1alpha1",
 				"resource": "e2estubwidgets",
 				"kind":     "E2EStubWidget",
@@ -281,7 +281,7 @@ func TestBStubTemplateFullReconcile(t *testing.T) {
 
 	// The flattened API: a new Template must NOT author a per-template CRD
 	// and must NOT touch the APIExport's resource list.
-	crdName := "e2estubwidgets.infrastructure.faros.sh"
+	crdName := "e2estubwidgets.infrastructure.railgrid.ai"
 	if _, err := cl.Resource(crdGVR).Get(ctxWithTimeout(t, 5*time.Second), crdName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("per-template CRD %s was authored (err=%v); Templates must be API-surface-neutral", crdName, err)
 	}
@@ -319,7 +319,7 @@ func TestCRetiredTemplateIsSwept(t *testing.T) {
 	const name = "sandbox-runner"
 
 	tmpl := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Template",
 		"metadata":   map[string]any{"name": name},
 		"spec": map[string]any{
@@ -328,7 +328,7 @@ func TestCRetiredTemplateIsSwept(t *testing.T) {
 			"version":     "0.0.1",
 			"backend":     "stub",
 			"instanceCRD": map[string]any{
-				"group":    "infrastructure.faros.sh",
+				"group":    "infrastructure.railgrid.ai",
 				"version":  "v1alpha1",
 				"resource": "sandboxrunners",
 				"kind":     "SandboxRunner",

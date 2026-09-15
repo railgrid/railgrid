@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/gorilla/mux"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -31,7 +31,7 @@ func recoveryFixture() (*aiv1alpha1.Project, *unstructured.Unstructured) {
 	repo := codeRepositoryObject("failed-repo", "failed-repo", "github", false)
 	repo.SetGeneration(1)
 	repo.SetLabels(map[string]string{projectRepositoryProjectLabel: p.Name})
-	repo.SetAnnotations(map[string]string{projectRepositoryUIDAnnotation: string(p.UID), "code.faros.sh/create-only": "true"})
+	repo.SetAnnotations(map[string]string{projectRepositoryUIDAnnotation: string(p.UID), "code.railgrid.ai/create-only": "true"})
 	repo.Object["status"] = map[string]any{"observedGeneration": int64(1), "conditions": []any{map[string]any{"type": "Ready", "status": "False", "reason": "RepositoryIdentityConflict"}}}
 	return p, repo
 }
@@ -48,7 +48,7 @@ func TestProjectRepositoryRecovery(t *testing.T) {
 		}},
 		{name: "imported", mutate: func(p *aiv1alpha1.Project, _ *unstructured.Unstructured) { p.Spec.Repository.Adopted = true }},
 		{name: "other incarnation", mutate: func(_ *aiv1alpha1.Project, r *unstructured.Unstructured) {
-			r.SetAnnotations(map[string]string{"code.faros.sh/create-only": "true", projectRepositoryUIDAnnotation: "old-uid"})
+			r.SetAnnotations(map[string]string{"code.railgrid.ai/create-only": "true", projectRepositoryUIDAnnotation: "old-uid"})
 		}},
 		{name: "stale status", mutate: func(_ *aiv1alpha1.Project, r *unstructured.Unstructured) { r.SetGeneration(2) }},
 		{name: "ordinary provisioning error", mutate: func(_ *aiv1alpha1.Project, r *unstructured.Unstructured) {
@@ -59,7 +59,7 @@ func TestProjectRepositoryRecovery(t *testing.T) {
 		}},
 		{name: "legacy creation", mutate: func(_ *aiv1alpha1.Project, r *unstructured.Unstructured) {
 			a := r.GetAnnotations()
-			delete(a, "code.faros.sh/create-only")
+			delete(a, "code.railgrid.ai/create-only")
 			r.SetAnnotations(a)
 		}},
 	} {
@@ -103,7 +103,7 @@ func TestProjectRepositoryRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if updated.Spec.Repository.RepositoryRef == "failed-repo" || updated.Annotations["ai.faros.sh/initialize-repository"] != updated.Spec.Repository.RepositoryRef {
+			if updated.Spec.Repository.RepositoryRef == "failed-repo" || updated.Annotations["ai.railgrid.ai/initialize-repository"] != updated.Spec.Repository.RepositoryRef {
 				t.Fatal("did not reserve new source upload")
 			}
 			old, err := c.Resource(codeRepositoryResource, "").Get(context.Background(), "failed-repo", metav1.GetOptions{})

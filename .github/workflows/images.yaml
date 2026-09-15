@@ -20,11 +20,11 @@ permissions:
 env:
   REGISTRY: ghcr.io
   # Spelled out rather than derived from github.repository so the published
-  # names stay pinned to the chart values (ghcr.io/faroshq/faros-{hub,agent})
+  # names stay pinned to the chart values (ghcr.io/railgrid/railgrid-{hub,agent})
   # regardless of what the repository is called. Matches helm-images.yaml and
   # the provider matrix below, which all use repository_owner + a literal name.
-  HUB_IMAGE_NAME: ${{ github.repository_owner }}/faros-hub
-  AGENT_IMAGE_NAME: ${{ github.repository_owner }}/faros-agent
+  HUB_IMAGE_NAME: ${{ github.repository_owner }}/railgrid-hub
+  AGENT_IMAGE_NAME: ${{ github.repository_owner }}/railgrid-agent
 
 # Cancel superseded PR validation only; publishing runs have unique groups.
 concurrency:

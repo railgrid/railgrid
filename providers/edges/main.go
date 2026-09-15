@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -8,7 +8,7 @@
 //
 // edges is the single, privileged provider that owns the whole edge
 // connectivity plane for KubernetesCluster, LinuxServer, and MacOSServer under
-// one group edges.faros.sh. It terminates agent reverse
+// one group edges.railgrid.ai. It terminates agent reverse
 // tunnels (revdial) with one in-process ConnManager, runs the token/RBAC/
 // lifecycle controllers per kind, and serves the k8s/ssh/mcp data-plane
 // subresources. The tunnel Server dispatches by the resource segment in the URL
@@ -17,7 +17,7 @@
 // Routes (all behind the hub backend proxy at /services/providers/edges/*):
 //
 //   - /healthz                                          liveness/readiness gate
-//   - /agent/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy  agent control-tunnel ingress
+//   - /agent/{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy  agent control-tunnel ingress
 //   - /agent/proxy?revdial.dialer=<id>                  agent revdial pickup ingress (single-replica / legacy)
 //   - /agent/proxy/{replica}?revdial.dialer=<id>        replica-addressed pickup ingress
 //   - /edgeproxy/clusters/{cluster}/.../{name}/{k8s|ssh|mcp}  consumer egress
@@ -49,10 +49,10 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
-	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
-	"github.com/faroshq/provider-edges/internal/svccatalog"
-	sdktunnel "github.com/faroshq/provider-edges/internal/tunnel"
-	"github.com/faroshq/provider-sdk/hubclient"
+	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
+	"github.com/railgrid/provider-edges/internal/svccatalog"
+	sdktunnel "github.com/railgrid/provider-edges/internal/tunnel"
+	"github.com/railgrid/provider-sdk/hubclient"
 )
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
@@ -117,7 +117,7 @@ type serveOptions struct {
 
 // allowUnverifiedEnvVar is the env form of --allow-unverified-ssh-host-key
 // (the chart sets it).
-const allowUnverifiedEnvVar = "FAROS_EDGES_ALLOW_UNVERIFIED_SSH_HOST_KEY"
+const allowUnverifiedEnvVar = "RAILGRID_EDGES_ALLOW_UNVERIFIED_SSH_HOST_KEY"
 
 func parseServeOptions(args []string) (serveOptions, error) {
 	var opts serveOptions
@@ -170,22 +170,22 @@ func runServe(opts serveOptions) error {
 	// the tunnel server (token validation + Edge reads) and the edge controller
 	// manager (Edge reconcilers across tenant workspaces).
 	kcpConfig := loadKCPConfig(log)
-	hubExternalURL := os.Getenv("FAROS_HUB_EXTERNAL_URL")
+	hubExternalURL := os.Getenv("RAILGRID_HUB_EXTERNAL_URL")
 
-	// FAROS_STATIC_TOKENS used to let listed bearers skip TokenReview/SAR on
+	// RAILGRID_STATIC_TOKENS used to let listed bearers skip TokenReview/SAR on
 	// every data-plane path. The bypass is gone: kcp validates every token, and
 	// hub static-token users are ordinary kcp identities that pass that check.
 	// A set value with a kcp credential present is a misconfiguration that
 	// would silently expect the old behaviour, so refuse to start rather than
 	// run with a different security posture than the operator assumed.
-	if v := os.Getenv("FAROS_STATIC_TOKENS"); v != "" {
+	if v := os.Getenv("RAILGRID_STATIC_TOKENS"); v != "" {
 		if kcpConfig != nil {
-			err := errors.New("FAROS_STATIC_TOKENS is set but the static-token authorization bypass has been removed; every token is validated by kcp, so unset the variable")
+			err := errors.New("RAILGRID_STATIC_TOKENS is set but the static-token authorization bypass has been removed; every token is validated by kcp, so unset the variable")
 			log.Error(err, "refusing to start")
 			return err
 		}
 		log.Info("static-token authorization bypass has been removed; the environment variable is ignored",
-			"envVar", "FAROS_STATIC_TOKENS", "ignored", true, "severity", "warning")
+			"envVar", "RAILGRID_STATIC_TOKENS", "ignored", true, "severity", "warning")
 	}
 
 	// Tunnel plane. The provider owns the ConnManager and terminates agent
@@ -202,7 +202,7 @@ func runServe(opts serveOptions) error {
 		EdgeProxyPublicPath:       edgeProxyPublicPath,
 		KCPConfig:                 kcpConfig,
 		HubExternalURL:            hubExternalURL,
-		HubInternalURL:            os.Getenv("FAROS_HUB_INTERNAL_URL"),
+		HubInternalURL:            os.Getenv("RAILGRID_HUB_INTERNAL_URL"),
 		AllowUnverifiedSSHHostKey: opts.allowUnverifiedSSHHostKey,
 		Logger:                    log,
 	})
@@ -261,7 +261,7 @@ func runServe(opts serveOptions) error {
 	// APIExportEndpointSlice multicluster manager. Best-effort: a missing
 	// kubeconfig just disables the manager (healthz + tunnel still serve).
 	if cerr := startEdgeControllerManager(ctx, kcpConfig, tsrv,
-		hubExternalURL, hubCAData(log), os.Getenv("FAROS_DEV_MODE") == "true"); cerr != nil {
+		hubExternalURL, hubCAData(log), os.Getenv("RAILGRID_DEV_MODE") == "true"); cerr != nil {
 		if errors.Is(cerr, errControllerDisabled) {
 			log.Info("edge controller manager disabled (no kcp kubeconfig)")
 		} else {
@@ -275,7 +275,7 @@ func runServe(opts serveOptions) error {
 	// Consumer egress: k8s/ssh/mcp subresources on the Edge CR.
 	mux.Handle("/edgeproxy/", http.StripPrefix("/edgeproxy", tsrv.EdgeProxyHandler()))
 	// Provider aggregate MCP: the hub's MCP aggregate federates this endpoint
-	// (POST tools/list with the caller's token + X-Faros-Cluster). Exposes kube
+	// (POST tools/list with the caller's token + X-Railgrid-Cluster). Exposes kube
 	// tools across the tenant's connected KubernetesCluster edges AND the Home
 	// Assistant tools of every Ready home-assistant EdgeService.
 	mux.Handle("/mcp", tsrv.RootMCPHandler())
@@ -299,7 +299,7 @@ func runServe(opts serveOptions) error {
 
 	// Provider portal micro-frontend (embedded Vite bundle). The hub proxies
 	// /ui/providers/edges/* here; ProviderFrame injects <script src=".../main.js">
-	// and mounts <faros-provider-edges>. Serve /main.js, /assets/*, /icon.svg from
+	// and mounts <railgrid-provider-edges>. Serve /main.js, /assets/*, /icon.svg from
 	// portal/dist with an index.html fallback. Best-effort: a missing/empty bundle
 	// just disables the UI (healthz + tunnel still serve).
 	if fileServer, distFS, perr := portalHandler(); perr != nil {
@@ -360,8 +360,8 @@ func runServe(opts serveOptions) error {
 // kubeconfig) for token validation and Edge reads/writes. Best-effort: returns
 // nil (with a warning) when no kubeconfig is available, so the binary still
 // serves /healthz in environments where kcp isn't wired yet. Resolution order:
-// FAROS_PROVIDER_KUBECONFIG, KUBECONFIG, in-cluster; note that a
-// FAROS_PROVIDER_KUBECONFIG that is set but unusable falls through the same
+// RAILGRID_PROVIDER_KUBECONFIG, KUBECONFIG, in-cluster; note that a
+// RAILGRID_PROVIDER_KUBECONFIG that is set but unusable falls through the same
 // chain and can end in nil.
 //
 // A nil result does NOT unmount the data plane: the tunnel handlers are always
@@ -369,11 +369,11 @@ func runServe(opts serveOptions) error {
 // there is no kcp credential to authorize bearers against (see
 // tunnel.Server.denyIfAuthorizationUnavailable).
 func loadKCPConfig(log logr.Logger) *rest.Config {
-	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"); p != "" {
 		if c, err := clientcmd.BuildConfigFromFlags("", p); err == nil {
 			return c
 		} else {
-			log.Error(err, "FAROS_PROVIDER_KUBECONFIG set but unusable")
+			log.Error(err, "RAILGRID_PROVIDER_KUBECONFIG set but unusable")
 		}
 	}
 	if p := os.Getenv("KUBECONFIG"); p != "" {
@@ -390,17 +390,17 @@ func loadKCPConfig(log logr.Logger) *rest.Config {
 
 // hubCAData resolves the hub's CA bundle (PEM), embedded by the RBAC reconciler
 // into the per-edge agent kubeconfig so agents trust the hub's serving cert.
-// Source: FAROS_HUB_CA_FILE (path) or FAROS_HUB_CA_DATA (raw PEM). Best-effort:
+// Source: RAILGRID_HUB_CA_FILE (path) or RAILGRID_HUB_CA_DATA (raw PEM). Best-effort:
 // returns nil when neither is set (dev with insecure/skip-verify agents).
 func hubCAData(log logr.Logger) []byte {
-	if p := os.Getenv("FAROS_HUB_CA_FILE"); p != "" {
+	if p := os.Getenv("RAILGRID_HUB_CA_FILE"); p != "" {
 		if b, err := os.ReadFile(p); err == nil {
 			return b
 		} else {
-			log.Error(err, "FAROS_HUB_CA_FILE set but unreadable")
+			log.Error(err, "RAILGRID_HUB_CA_FILE set but unreadable")
 		}
 	}
-	if d := os.Getenv("FAROS_HUB_CA_DATA"); d != "" {
+	if d := os.Getenv("RAILGRID_HUB_CA_DATA"); d != "" {
 		return []byte(d)
 	}
 	return nil

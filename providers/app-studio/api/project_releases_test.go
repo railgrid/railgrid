@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 func releaseCommitForTest(name, repositoryRef, phase, sha string, created time.Time) *unstructured.Unstructured {
@@ -240,9 +240,9 @@ func TestPromoteProjectHandlerRejectsExplicitCommitWithoutReleaseEvidence(t *tes
 	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/shop/promote", strings.NewReader(`{"commitSHA":"1111111111111111111111111111111111111111"}`))
 	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	response := httptest.NewRecorder()
 	server.promoteProjectHandler(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "releaseID is required") {
@@ -263,9 +263,9 @@ func TestProjectReleaseHandlersReturnAndPromoteExactEvidence(t *testing.T) {
 
 	getRequest := httptest.NewRequest(http.MethodGet, "/api/projects/shop/releases", nil)
 	getRequest = mux.SetURLVars(getRequest, map[string]string{"project": "shop"})
-	getRequest.Header.Set("X-Faros-Tenant", "cluster-a")
+	getRequest.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	getRequest.Header.Set("Authorization", "Bearer test-token")
-	getRequest.Header.Set("X-Faros-Cluster", "cluster-a")
+	getRequest.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	getResponse := httptest.NewRecorder()
 	server.getProjectReleases(getResponse, getRequest)
 	if getResponse.Code != http.StatusOK {
@@ -285,9 +285,9 @@ func TestProjectReleaseHandlersReturnAndPromoteExactEvidence(t *testing.T) {
 	}
 	postRequest := httptest.NewRequest(http.MethodPost, "/api/projects/shop/promote", bytes.NewReader(body))
 	postRequest = mux.SetURLVars(postRequest, map[string]string{"project": "shop"})
-	postRequest.Header.Set("X-Faros-Tenant", "cluster-a")
+	postRequest.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	postRequest.Header.Set("Authorization", "Bearer test-token")
-	postRequest.Header.Set("X-Faros-Cluster", "cluster-a")
+	postRequest.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	postResponse := httptest.NewRecorder()
 	server.promoteProjectHandler(postResponse, postRequest)
 	if postResponse.Code != http.StatusOK {

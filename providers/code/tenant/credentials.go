@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 // resolves to when its Namespace field is empty. Overridable so an admin can
 // push credential Secrets into a namespace tenants cannot write to.
 func DefaultCredentialsNamespace() string {
-	if v := os.Getenv("FAROS_TENANT_CREDENTIALS_NAMESPACE"); v != "" {
+	if v := os.Getenv("RAILGRID_TENANT_CREDENTIALS_NAMESPACE"); v != "" {
 		return v
 	}
 	return "default"

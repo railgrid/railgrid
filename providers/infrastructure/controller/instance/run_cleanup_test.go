@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -79,7 +79,7 @@ func runSandboxTokenSecret(name, namespace, templateName string) *unstructured.U
 func TestCleanupRunSandboxTokenPodsIsExactAndTemplateScoped(t *testing.T) {
 	ctx := context.Background()
 	const (
-		namespace    = "faros-sandbox-tenant-default"
+		namespace    = "railgrid-sandbox-tenant-default"
 		instanceName = "run-123"
 	)
 	matching := runSandboxTokenPod("run-123-dev-token-abc", namespace, instanceName, runSandboxTemplateName)
@@ -115,7 +115,7 @@ func TestCleanupRunSandboxTokenPodsIsExactAndTemplateScoped(t *testing.T) {
 
 func TestCleanupRunSandboxTokenPodsSkipsNonRunTemplates(t *testing.T) {
 	ctx := context.Background()
-	const namespace = "faros-sandbox-tenant-default"
+	const namespace = "railgrid-sandbox-tenant-default"
 	matching := runSandboxTokenPod("run-123-dev-token-abc", namespace, "run-123", runSandboxTemplateName)
 	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), matching)
 
@@ -134,7 +134,7 @@ func TestCleanupRunSandboxTokenPodsSkipsNonRunTemplates(t *testing.T) {
 func TestCleanupRunSandboxTokenResourcesIsExactAndComplete(t *testing.T) {
 	ctx := context.Background()
 	const (
-		namespace    = "faros-sandbox-tenant-default"
+		namespace    = "railgrid-sandbox-tenant-default"
 		instanceName = "run-123"
 	)
 	matchingPod := runSandboxTokenPod("run-123-dev-token-abc", namespace, instanceName, runSandboxTemplateName)

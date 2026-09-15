@@ -2,7 +2,7 @@
 #
 # BUILD CONTEXT = this dir (providers/edges), matching the other providers and
 # the provider-release workflow (`context: ./providers/<name>`). The provider
-# SDK is consumed as a PUBLISHED module (github.com/faroshq/provider-sdk), not a
+# SDK is consumed as a PUBLISHED module (github.com/railgrid/provider-sdk), not a
 # `replace => ../../provider-sdk` sibling, so no repo-root context is needed.
 # Host/Tilt dev builds still resolve the local SDK via go.work.
 
@@ -30,11 +30,11 @@ COPY --from=portal /portal/dist ./portal/dist
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags="-s -w" -o /out/edges-provider .
 
 # 3. Minimal runtime image. The KubernetesCluster + LinuxServer + MacOSServer APIResourceSchemas
-#    the `init` subcommand applies are baked at /etc/faros/schemas
-#    (FAROS_SCHEMAS_DIR), synced there by `make codegen-edges-provider`.
+#    the `init` subcommand applies are baked at /etc/railgrid/schemas
+#    (RAILGRID_SCHEMAS_DIR), synced there by `make codegen-edges-provider`.
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/edges-provider /edges-provider
-COPY providers/edges/deploy/chart/files/schemas /etc/faros/schemas
+COPY providers/edges/deploy/chart/files/schemas /etc/railgrid/schemas
 EXPOSE 8088
 ENV PORT=8088
 USER nonroot:nonroot

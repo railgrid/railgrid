@@ -17,7 +17,7 @@ test('the provider contract is a thin reactive light-DOM Vue mount', () => {
   assert.match(element, /createApp\(App, \{ state: this\.state \}\)/u)
   assert.match(element, /this\.app\.mount\(this\)/u)
   assert.match(element, /this\.app\?\.unmount\(\)/u)
-  assert.match(element, /set farosContext[\s\S]*this\.state\.context = value/u)
+  assert.match(element, /set railgridContext[\s\S]*this\.state\.context = value/u)
 })
 
 test('top-level navigation and inventory use PortalKit contracts', () => {
@@ -106,12 +106,12 @@ test('Kuery requests share one context-derived transport contract', () => {
   // providerFetch), never assembled here from the raw token.
   assert.match(requestContext, /fetch: providerFetch\(context\)/u)
   assert.doesNotMatch(requestContext, /headers\.Authorization/u)
-  assert.match(requestContext, /headers\['X-Faros-Org'\] = orgUUID/u)
-  assert.match(requestContext, /headers\['X-Faros-Workspace'\] = workspaceUUID/u)
+  assert.match(requestContext, /headers\['X-Railgrid-Org'\] = orgUUID/u)
+  assert.match(requestContext, /headers\['X-Railgrid-Workspace'\] = workspaceUUID/u)
   assert.match(requestContext, /identity = JSON\.stringify\(\[basePath, token, orgUUID, workspaceUUID\]\)/u)
   assert.match(kuery, /createKueryRequestContext\(context\)\.basePath/u)
-  assert.doesNotMatch(kuery, /headers\['X-Faros-Org'\]/u)
-  assert.doesNotMatch(tile, /headers\['X-Faros-Org'\]/u)
+  assert.doesNotMatch(kuery, /headers\['X-Railgrid-Org'\]/u)
+  assert.doesNotMatch(tile, /headers\['X-Railgrid-Org'\]/u)
 })
 
 test('dashboard tile fences post-await writes to mounted context and request', () => {
@@ -129,7 +129,7 @@ test('dashboard tile fences post-await writes to mounted context and request', (
   assert.match(tile, /dashboardTileSemanticClass\.root/u)
   assert.match(tile, /dashboardTileSemanticClass\.row/u)
   assert.match(tile, /dashboardTileSemanticClass\.empty/u)
-  assert.match(styles, /faros-dashboard-tile-kuery \{ display: block; font-size: 13px; \}/u)
+  assert.match(styles, /railgrid-dashboard-tile-kuery \{ display: block; font-size: 13px; \}/u)
   assert.match(styles, /\.kuery-tile-dot--success \{ background: var\(--color-success\); \}/u)
   assert.doesNotMatch(styles, /\.kuery-tile-(?:stats|stat|label|rows|name|chev|more|empty|msg|err)\b/u)
   assert.match(tile, /data-edge="\$\{escapeHTML\(name\)\}"/u)

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -51,7 +51,7 @@ var (
 		Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces",
 	}
 	catalogEntryGVR = schema.GroupVersionResource{
-		Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
+		Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries",
 	}
 )
 
@@ -62,9 +62,9 @@ func TestBYOProviderRegistrationLifecycle(t *testing.T) {
 
 	edgeName := "byo-lifecycle"
 	workDir := suiteTempDir(t, "byo-lifecycle")
-	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")
+	kubeconfig := filepath.Join(workDir, "railgrid.kubeconfig")
 
-	runCLI(t, kubeconfig, farosBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
+	runCLI(t, kubeconfig, railgridBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
 	tenantWS := clusterFromKubeconfig(t, kubeconfig)
 	orgUUID, wsUUID := orgAndWorkspaceForCluster(t, tenantWS)
 	t.Logf("org = %s, workspace = %s (cluster %s)", orgUUID, wsUUID, tenantWS)
@@ -100,12 +100,12 @@ func TestBYOProviderRegistrationLifecycle(t *testing.T) {
 	// linuxservers). Hence a kind cluster here, where the transport test could
 	// get away with a host-run LinuxServer agent.
 	kindKubeconfig := filepath.Join(workDir, "kind.kubeconfig")
-	runCLI(t, kubeconfig, farosBin, "edge", "create", edgeName, "--type", "kubernetes")
+	runCLI(t, kubeconfig, railgridBin, "edge", "create", edgeName, "--type", "kubernetes")
 	t.Cleanup(func() {
 		_ = tenantAdmin.Resource(kubernetesClusterGVR).Delete(context.Background(), edgeName, metav1.DeleteOptions{})
 	})
 	joinToken := waitForJoinToken(t, tenantAdmin, kubernetesClusterGVR, edgeName)
-	createKindCluster(t, "faros-byo-lifecycle", kindKubeconfig)
+	createKindCluster(t, "railgrid-byo-lifecycle", kindKubeconfig)
 	startAgent(t, edgeName, joinToken, tenantWS, "--type", "kubernetes", "--kubeconfig", kindKubeconfig)
 	waitForConnected(t, tenantAdmin, kubernetesClusterGVR, edgeName)
 
@@ -146,10 +146,10 @@ func TestBYOProviderRegistrationLifecycle(t *testing.T) {
 			t.Fatal("provider workspace not found after registration")
 		}
 		ann := ws.GetAnnotations()
-		if got := ann["edges.faros.sh/route-edge"]; got != edgeName {
+		if got := ann["edges.railgrid.ai/route-edge"]; got != edgeName {
 			t.Errorf("route-edge annotation = %q, want %q", got, edgeName)
 		}
-		if got := ann["edges.faros.sh/route-workspace"]; got != wsUUID {
+		if got := ann["edges.railgrid.ai/route-workspace"]; got != wsUUID {
 			t.Errorf("route-workspace annotation = %q, want %q", got, wsUUID)
 		}
 	})
@@ -161,7 +161,7 @@ func TestBYOProviderRegistrationLifecycle(t *testing.T) {
 	t.Run("derives the hub-owned Service from the provider's published backend", func(t *testing.T) {
 		providerWS := kcpDynamic(t, reg.Provider.WorkspacePath, adminToken)
 		writeCatalogEntry(t, providerWS, providerName,
-			"http://byo-quickstart.faros-provider-byo-quickstart.svc.cluster.local:8081")
+			"http://byo-quickstart.railgrid-provider-byo-quickstart.svc.cluster.local:8081")
 
 		var svc *unstructured.Unstructured
 		if !waitFor(t, 90*time.Second, func() (bool, string) {
@@ -191,7 +191,7 @@ func TestBYOProviderRegistrationLifecycle(t *testing.T) {
 		if got, _, _ := unstructured.NestedString(svc.Object, "spec", "targetRef", "name"); got != "byo-quickstart" {
 			t.Errorf("spec.targetRef.name = %q, want the published Service name", got)
 		}
-		if got, _, _ := unstructured.NestedString(svc.Object, "spec", "targetRef", "namespace"); got != "faros-provider-byo-quickstart" {
+		if got, _, _ := unstructured.NestedString(svc.Object, "spec", "targetRef", "namespace"); got != "railgrid-provider-byo-quickstart" {
 			t.Errorf("spec.targetRef.namespace = %q, want the published namespace", got)
 		}
 		if got, _, _ := unstructured.NestedInt64(svc.Object, "spec", "port"); got != 8081 {
@@ -213,7 +213,7 @@ func TestBYOProviderRegistrationLifecycle(t *testing.T) {
 		}
 		t.Cleanup(func() { deleteOrgProvider(t, orgUUID, rogue) })
 
-		providerWS := kcpDynamic(t, "root:faros:tenants:"+orgUUID+":providers:"+rogue, adminToken)
+		providerWS := kcpDynamic(t, "root:railgrid:tenants:"+orgUUID+":providers:"+rogue, adminToken)
 		writeCatalogEntry(t, providerWS, rogue, "http://169.254.169.254/latest/meta-data")
 
 		// Give the controller the same window the positive case needed, then
@@ -250,7 +250,7 @@ func orgAndWorkspaceForCluster(t *testing.T, cluster string) (string, string) {
 	}
 
 	for _, org := range out.Items {
-		orgClient := kcpDynamic(t, "root:faros:tenants:"+org.UUID, adminToken)
+		orgClient := kcpDynamic(t, "root:railgrid:tenants:"+org.UUID, adminToken)
 		list, err := orgClient.Resource(orgWorkspaceGVR).List(ctxWithTimeout(t, 20*time.Second), metav1.ListOptions{})
 		if err != nil {
 			continue // an org whose workspace list we cannot read is not this one
@@ -267,7 +267,7 @@ func orgAndWorkspaceForCluster(t *testing.T, cluster string) (string, string) {
 
 func getOrgProviderWorkspace(t *testing.T, orgUUID, name string) *unstructured.Unstructured {
 	t.Helper()
-	parent := kcpDynamic(t, "root:faros:tenants:"+orgUUID+":providers", adminToken)
+	parent := kcpDynamic(t, "root:railgrid:tenants:"+orgUUID+":providers", adminToken)
 	got, err := parent.Resource(orgWorkspaceGVR).Get(ctxWithTimeout(t, 20*time.Second), name, metav1.GetOptions{})
 	if err != nil {
 		return nil
@@ -285,7 +285,7 @@ func orgProviderWorkspaceExists(t *testing.T, orgUUID, name string) bool {
 func writeCatalogEntry(t *testing.T, cl dynamic.Interface, name, backendURL string) {
 	t.Helper()
 	entry := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "providers.faros.sh/v1alpha1",
+		"apiVersion": "providers.railgrid.ai/v1alpha1",
 		"kind":       "CatalogEntry",
 		"metadata":   map[string]any{"name": name},
 		"spec": map[string]any{
@@ -330,7 +330,7 @@ func hubJSON(t *testing.T, method, path, orgUUID string, body []byte) (int, []by
 	req.Header.Set("Authorization", "Bearer "+staticToken)
 	req.Header.Set("Content-Type", "application/json")
 	if orgUUID != "" {
-		req.Header.Set("X-Faros-Org", orgUUID)
+		req.Header.Set("X-Railgrid-Org", orgUUID)
 	}
 	resp, err := insecureClient(120 * time.Second).Do(req)
 	if err != nil {

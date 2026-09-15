@@ -25,7 +25,7 @@ import {
   updateEdgeServiceInstructions,
 } from './api'
 
-const BASE = '/clusters/workspace/apis/edges.faros.sh/v1alpha1'
+const BASE = '/clusters/workspace/apis/edges.railgrid.ai/v1alpha1'
 const SERVICES = `${BASE}/services`
 const WORKLOADS = `${BASE}/namespaces/default/workloads`
 const CLUSTERS = `${BASE}/kubernetesclusters`
@@ -43,7 +43,7 @@ function response(body: unknown, status = 200): Response {
 // pagination tests can hand the client malformed cursors.
 function list(kind: 'Service' | 'Workload' | 'KubernetesCluster' | 'LinuxServer' | 'MacOSServer', items: unknown[], metadata?: Record<string, unknown>): Response {
   return response({
-    apiVersion: 'edges.faros.sh/v1alpha1',
+    apiVersion: 'edges.railgrid.ai/v1alpha1',
     kind: `${kind}List`,
     ...(metadata === undefined ? {} : { metadata }),
     items,
@@ -60,7 +60,7 @@ function failure(status: number, reason: string, message: string, name?: string)
     message,
     reason,
     code: status,
-    ...(name ? { details: { name, group: 'edges.faros.sh' } } : {}),
+    ...(name ? { details: { name, group: 'edges.railgrid.ai' } } : {}),
   }, status)
 }
 
@@ -103,7 +103,7 @@ function route(handler: (call: Call) => Response | Promise<Response>): Call[] {
 
 function service(name: string) {
   return {
-    apiVersion: 'edges.faros.sh/v1alpha1',
+    apiVersion: 'edges.railgrid.ai/v1alpha1',
     kind: 'Service',
     metadata: { name, creationTimestamp: '2026-08-22T00:00:00Z' },
     spec: { edgeRef: { kind: 'LinuxServer', name: 'edge-a' }, type: 'generic', scheme: 'http', port: 80 },
@@ -113,7 +113,7 @@ function service(name: string) {
 
 function workload(name: string) {
   return {
-    apiVersion: 'edges.faros.sh/v1alpha1',
+    apiVersion: 'edges.railgrid.ai/v1alpha1',
     kind: 'Workload',
     metadata: { name, namespace: 'default', creationTimestamp: '2026-08-22T00:00:00Z' },
     spec: { simple: { image: 'nginx:latest' }, replicas: 1, placement: { strategy: 'Spread', edgeSelector: { matchLabels: { env: 'dev' } } } },
@@ -199,7 +199,7 @@ describe('cursor list pages', () => {
 
   it('fails closed for a malformed collection or list item instead of treating it as an empty page', async () => {
     vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce(response({ apiVersion: 'edges.faros.sh/v1alpha1', kind: 'ServiceList' }))
+      .mockResolvedValueOnce(response({ apiVersion: 'edges.railgrid.ai/v1alpha1', kind: 'ServiceList' }))
       .mockResolvedValueOnce(list('Service', [{ metadata: { name: '' } }])))
 
     await expect(listServicesPage({ limit: 1 })).rejects.toMatchObject({ reason: 'ProtocolError' })
@@ -213,9 +213,9 @@ describe('cursor list pages', () => {
   })
 
   it('surfaces a Status failure on a list with the server message', async () => {
-    route(() => failure(403, 'Forbidden', 'services.edges.faros.sh is forbidden: no workspace access'))
+    route(() => failure(403, 'Forbidden', 'services.edges.railgrid.ai is forbidden: no workspace access'))
 
-    await expect(listServicesPage({ limit: 1 })).rejects.toMatchObject({ reason: 'HTTPError', message: 'services.edges.faros.sh is forbidden: no workspace access' })
+    await expect(listServicesPage({ limit: 1 })).rejects.toMatchObject({ reason: 'HTTPError', message: 'services.edges.railgrid.ai is forbidden: no workspace access' })
   })
 
   it('does not read a missing edges API as an empty collection', async () => {
@@ -228,7 +228,7 @@ describe('cursor list pages', () => {
 describe('unchanged edge fleet and CRUD contracts', () => {
   it('maps a Kubernetes edge detail into human status plus a technical snapshot', async () => {
     const calls = route(() => response({
-      apiVersion: 'edges.faros.sh/v1alpha1',
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'KubernetesCluster',
       metadata: {
         name: 'cluster-a', uid: 'uid-a', resourceVersion: 'rv-3', generation: 4,
@@ -247,14 +247,14 @@ describe('unchanged edge fleet and CRUD contracts', () => {
     expect(detail).toMatchObject({
       name: 'cluster-a',
       type: 'kubernetes',
-      apiVersion: 'edges.faros.sh/v1alpha1',
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'KubernetesCluster',
       generation: 4,
       observedGeneration: 4,
       spec: { labels: { region: 'eu' } },
       statusURL: '/edge/a',
       rawObject: {
-        apiVersion: 'edges.faros.sh/v1alpha1',
+        apiVersion: 'edges.railgrid.ai/v1alpha1',
         kind: 'KubernetesCluster',
         metadata: { name: 'cluster-a', uid: 'uid-a', generation: 4 },
       },
@@ -270,17 +270,17 @@ describe('unchanged edge fleet and CRUD contracts', () => {
 
   it('reads Linux edges from their own collection and passes the server-only spec through', async () => {
     const calls = route(() => response({
-      apiVersion: 'edges.faros.sh/v1alpha1',
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'LinuxServer',
       metadata: { name: 'server-a' },
-      spec: { sshPort: 2200, sshUserMapping: 'provided', sshCredentialsRef: { name: 'ssh-creds', namespace: 'faros-system' } },
+      spec: { sshPort: 2200, sshUserMapping: 'provided', sshCredentialsRef: { name: 'ssh-creds', namespace: 'railgrid-system' } },
       status: { connected: false, phase: 'Pending', conditions: [] },
     }))
 
     await expect(getEdge('server-a', 'server')).resolves.toMatchObject({
       name: 'server-a',
       kind: 'LinuxServer',
-      spec: { sshPort: 2200, sshUserMapping: 'provided', sshCredentialsRef: { name: 'ssh-creds', namespace: 'faros-system' } },
+      spec: { sshPort: 2200, sshUserMapping: 'provided', sshCredentialsRef: { name: 'ssh-creds', namespace: 'railgrid-system' } },
     })
     // The two kinds share no spec fields, so a Linux edge must never be read
     // through the KubernetesCluster collection (regression from #567).
@@ -289,7 +289,7 @@ describe('unchanged edge fleet and CRUD contracts', () => {
 
   it('reads macOS edges from the macosservers collection and preserves service-only status', async () => {
     const calls = route(() => response({
-      apiVersion: 'edges.faros.sh/v1alpha1',
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'MacOSServer',
       metadata: { name: 'mac-mini' },
       spec: {},
@@ -306,7 +306,7 @@ describe('unchanged edge fleet and CRUD contracts', () => {
   })
 
   it('reports a confirmed missing edge as NotFound', async () => {
-    route(() => failure(404, 'NotFound', 'kubernetesclusters.edges.faros.sh "gone" not found', 'gone'))
+    route(() => failure(404, 'NotFound', 'kubernetesclusters.edges.railgrid.ai "gone" not found', 'gone'))
 
     await expect(getEdge('gone', 'kubernetes')).rejects.toMatchObject({ reason: 'NotFound' })
   })
@@ -377,20 +377,20 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       ['DELETE', `${MACOS}/mac-mini`],
     ])
     expect(calls[0]?.body).toEqual({
-      apiVersion: 'edges.faros.sh/v1alpha1',
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'KubernetesCluster',
       metadata: { name: 'cluster-a', labels: { region: 'eu' } },
       spec: { labels: { region: 'eu' } },
     })
     // Scheduling labels exist only on KubernetesClusterSpec.
     expect(calls[1]?.body).toEqual({
-      apiVersion: 'edges.faros.sh/v1alpha1',
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'LinuxServer',
       metadata: { name: 'server-a', labels: { region: 'eu' } },
       spec: {},
     })
     expect(calls[2]?.body).toEqual({
-      apiVersion: 'edges.faros.sh/v1alpha1',
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'MacOSServer',
       metadata: { name: 'mac-mini' },
       spec: {},
@@ -401,7 +401,7 @@ describe('unchanged edge fleet and CRUD contracts', () => {
 
   it('probes a freshly created edge and treats a not-yet-visible one as null', async () => {
     const calls = route((call) => call.path.endsWith('/pending')
-      ? failure(404, 'NotFound', 'linuxservers.edges.faros.sh "pending" not found', 'pending')
+      ? failure(404, 'NotFound', 'linuxservers.edges.railgrid.ai "pending" not found', 'pending')
       : response({ metadata: { name: 'server-a' }, status: { joinToken: 'join-me', connected: true, agentVersion: 'v2' } }))
 
     await expect(probeEdge('server-a', 'server')).resolves.toEqual({ joinToken: 'join-me', connected: true, agentVersion: 'v2' })
@@ -454,14 +454,14 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       ['DELETE', `${WORKLOADS}/workload`],
     ])
     expect(calls[0]?.body).toMatchObject({
-      apiVersion: 'edges.faros.sh/v1alpha1',
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'Service',
-      metadata: { name: 'svc', labels: { 'edges.faros.sh/edge': 'edge-a' } },
+      metadata: { name: 'svc', labels: { 'edges.railgrid.ai/edge': 'edge-a' } },
       spec: { edgeRef: { kind: 'KubernetesCluster', name: 'edge-a' }, targetRef: { namespace: 'default', name: 'backend' }, port: 8080, scheme: 'http', instructions: 'help' },
     })
     expect(calls[1]?.body).toMatchObject({ kind: 'DeleteOptions' })
     expect(calls[2]?.body).toMatchObject({
-      apiVersion: 'edges.faros.sh/v1alpha1',
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'Workload',
       metadata: { name: 'workload', namespace: 'default' },
       spec: { simple: { image: 'nginx:latest' }, replicas: 2, placement: { strategy: 'Spread', edgeSelector: { matchLabels: { env: 'dev' } } } },
@@ -527,18 +527,18 @@ describe('unchanged edge fleet and CRUD contracts', () => {
     await connectEdgeService('ha', 'long-lived-token')
 
     expect(calls.map((call) => [call.method, call.path, call.contentType])).toEqual([
-      ['PATCH', '/clusters/workspace/api/v1/namespaces/faros-system/secrets/faros-edges-svc-ha', 'application/apply-patch+yaml'],
+      ['PATCH', '/clusters/workspace/api/v1/namespaces/railgrid-system/secrets/railgrid-edges-svc-ha', 'application/apply-patch+yaml'],
       ['PATCH', `${SERVICES}/ha`, 'application/merge-patch+json'],
     ])
-    expect(calls[0]?.query).toMatchObject({ fieldManager: 'faros-edges-portal', force: 'true' })
+    expect(calls[0]?.query).toMatchObject({ fieldManager: 'railgrid-edges-portal', force: 'true' })
     expect(calls[0]?.body).toEqual({
       apiVersion: 'v1',
       kind: 'Secret',
-      metadata: { name: 'faros-edges-svc-ha', namespace: 'faros-system' },
+      metadata: { name: 'railgrid-edges-svc-ha', namespace: 'railgrid-system' },
       type: 'Opaque',
       stringData: { token: 'long-lived-token' },
     })
-    expect(calls[1]?.body).toEqual({ spec: { authSecretRef: { name: 'faros-edges-svc-ha', namespace: 'faros-system' } } })
+    expect(calls[1]?.body).toEqual({ spec: { authSecretRef: { name: 'railgrid-edges-svc-ha', namespace: 'railgrid-system' } } })
   })
 
   it('reads one service or workload directly and distinguishes an authoritative not-found', async () => {
@@ -579,7 +579,7 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       metadata: { name: 'ha', namespace: 'default' },
       spec: {
         helm: { repoURL: 'https://charts.example', chart: 'home-assistant', version: '1.2.3', values: { persistence: { enabled: true } } },
-        placement: { strategy: 'Singleton', edgeSelector: { matchLabels: { 'edges.faros.sh/name': 'edge-a' } } },
+        placement: { strategy: 'Singleton', edgeSelector: { matchLabels: { 'edges.railgrid.ai/name': 'edge-a' } } },
       },
     })
     expect(calls[1]?.body).toMatchObject({ kind: 'Service', metadata: { name: 'ha' }, spec: { targetRef: { namespace: 'default', name: 'ha' }, port: 8123 } })

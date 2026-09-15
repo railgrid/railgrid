@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@ const (
 	gitResultJSONName   = "git-result.json"
 	gitResultRef        = "refs/heads/runner-result"
 	gitResultMessage    = "Implementation snapshot"
-	gitResultName       = "Faros Runner"
+	gitResultName       = "Railgrid Runner"
 	gitResultEmail      = "runner@localhost"
 	gitResultDate       = "2000-01-01T00:00:00Z"
 )

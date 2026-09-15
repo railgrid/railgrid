@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@ import (
 func TestDataPlaneURL(t *testing.T) {
 	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example/"}
 
-	got := s.dataPlaneURL("root:faros:orgs:acme", dataPlaneRef{Resource: "applications", Name: "shop-dev"}, dataPlaneVerbLog, "")
-	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/root:faros:orgs:acme/applications/shop-dev/log"
+	got := s.dataPlaneURL("root:railgrid:orgs:acme", dataPlaneRef{Resource: "applications", Name: "shop-dev"}, dataPlaneVerbLog, "")
+	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/root:railgrid:orgs:acme/applications/shop-dev/log"
 	if got != want {
 		t.Fatalf("dataPlaneURL = %q, want %q", got, want)
 	}
@@ -63,10 +63,10 @@ func TestNewDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
 	}
 }
 
-// The hub resolves a provider call's scope from X-Faros-Org and
-// X-Faros-Workspace. An org-owned infrastructure provider is reached with a
+// The hub resolves a provider call's scope from X-Railgrid-Org and
+// X-Railgrid-Workspace. An org-owned infrastructure provider is reached with a
 // delegated token minted in that workspace, so a data-plane request without
-// the selection is refused with "a workspace selection (X-Faros-Workspace) is
+// the selection is refused with "a workspace selection (X-Railgrid-Workspace) is
 // required to reach provider: infrastructure" — which is exactly what every
 // sandbox sync, exec and restart returned once the infrastructure provider
 // moved into a tenant cluster.
@@ -82,11 +82,11 @@ func TestNewDataPlaneRequestSelectsTheCallerWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := req.Header.Get("X-Faros-Org"); got != "org-1" {
-		t.Errorf("X-Faros-Org = %q, want org-1", got)
+	if got := req.Header.Get("X-Railgrid-Org"); got != "org-1" {
+		t.Errorf("X-Railgrid-Org = %q, want org-1", got)
 	}
-	if got := req.Header.Get("X-Faros-Workspace"); got != "ws-1" {
-		t.Errorf("X-Faros-Workspace = %q, want ws-1", got)
+	if got := req.Header.Get("X-Railgrid-Workspace"); got != "ws-1" {
+		t.Errorf("X-Railgrid-Workspace = %q, want ws-1", got)
 	}
 
 	// An org-only identity sends no workspace header rather than an empty one:
@@ -97,7 +97,7 @@ func TestNewDataPlaneRequestSelectsTheCallerWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, header := range []string{"X-Faros-Org", "X-Faros-Workspace"} {
+	for _, header := range []string{"X-Railgrid-Org", "X-Railgrid-Workspace"} {
 		if _, present := req.Header[header]; present {
 			t.Errorf("%s set on an identity without a tenant scope", header)
 		}

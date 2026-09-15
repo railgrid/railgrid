@@ -1,22 +1,22 @@
 apiVersion: v2
-name: faros-kuery-provider
+name: railgrid-kuery-provider
 description: |
-  Faros provider for fleet-wide object search, relationship traversal, and
-  impact analysis across connected edge clusters (built on faroshq/kuery).
+  Railgrid provider for fleet-wide object search, relationship traversal, and
+  impact analysis across connected edge clusters (built on railgrid/kuery).
   Ships the provider Deployment, ClusterIP Service, and the CatalogEntry
   that registers the provider (UI + backend + the SavedView APIExport +
-  edgeProxyAccess) with the faros hub. Phase 1 skeleton.
+  edgeProxyAccess) with the railgrid hub. Phase 1 skeleton.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-icon: https://example.com/faros-icon.png
+icon: https://example.com/railgrid-icon.png
 keywords:
-  - faros
+  - railgrid
   - provider
   - kuery
   - observability
-home: https://github.com/faroshq/faros
+home: https://github.com/railgrid/railgrid
 sources:
-  - https://github.com/faroshq/faros/tree/main/providers/kuery
+  - https://github.com/railgrid/railgrid/tree/main/providers/kuery
 maintainers:
-  - name: faros maintainers
+  - name: railgrid maintainers

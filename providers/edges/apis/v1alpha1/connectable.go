@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
+	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 )
 
 // Resource / URL path segments for the group's kinds.
@@ -30,7 +30,7 @@ const (
 	ServiceResource           = "services"
 )
 
-// GVRs of the group's kinds (all in edges.faros.sh). The connectable
+// GVRs of the group's kinds (all in edges.railgrid.ai). The connectable
 // kinds terminate agent tunnels; Workload/Placement drive workload
 // scheduling across KubernetesCluster edges.
 var (
@@ -46,15 +46,15 @@ var (
 // and the edge agent read them back to tie a Placement to its Workload
 // and target edge.
 const (
-	LabelWorkload = "edges.faros.sh/workload"
-	LabelEdge     = "edges.faros.sh/edge"
+	LabelWorkload = "edges.railgrid.ai/workload"
+	LabelEdge     = "edges.railgrid.ai/edge"
 	// LabelName is stamped on each connectable with its own metadata.name so a
 	// Workload's placement can target a single specific edge by label selector
 	// (the marketplace deploys to one chosen edge).
-	LabelName = "edges.faros.sh/name"
+	LabelName = "edges.railgrid.ai/name"
 	// LabelDiscovered marks a Service created/confirmed by the discovery
 	// reconciler (value "true"), distinguishing it from user-declared objects.
-	LabelDiscovered = "edges.faros.sh/discovered"
+	LabelDiscovered = "edges.railgrid.ai/discovered"
 )
 
 // GetConnectionStatus makes KubernetesCluster satisfy edgeapi.Connectable so the

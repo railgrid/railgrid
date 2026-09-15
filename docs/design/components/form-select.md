@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.form-select","title":"FormSelect","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"FormSelect provides the shared single-select combobox/listbox behavior and viewport-aware teleported panel."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/form-select.md#formselect","role":"design"},{"path":"provider-sdk/portalkit-vue/FormSelect.vue","role":"implementation"},{"path":"provider-sdk/portalkit/form-select.ts","role":"implementation"},{"path":"provider-sdk/portalkit/faros-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.patterns.controls","relation":"implements","path":"docs/design/patterns/controls.md"},{"id":"design.components.menu","relation":"see-also","path":"docs/design/components/menu.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.foundations.recipes","relation":"prerequisite","path":"docs/design/foundations/recipes.md"}]}
+{"schema":1,"id":"design.components.form-select","title":"FormSelect","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"FormSelect provides the shared single-select combobox/listbox behavior and viewport-aware teleported panel."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/form-select.md#formselect","role":"design"},{"path":"provider-sdk/portalkit-vue/FormSelect.vue","role":"implementation"},{"path":"provider-sdk/portalkit/form-select.ts","role":"implementation"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.patterns.controls","relation":"implements","path":"docs/design/patterns/controls.md"},{"id":"design.components.menu","relation":"see-also","path":"docs/design/components/menu.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.foundations.recipes","relation":"prerequisite","path":"docs/design/foundations/recipes.md"}]}
 ---
 
 # FormSelect
@@ -14,7 +14,7 @@ what it can.
 ## Use when
 
 Use `FormSelect.vue` in Vue portals or the framework-neutral
-`faros-form-select` from `form-select.ts` in the Quickstart portal when a
+`railgrid-form-select` from `form-select.ts` in the Quickstart portal when a
 product-consistent single-select popup is required. Both provide the shared
 combobox/listbox behavior instead of relying on a browser popup.
 
@@ -62,7 +62,7 @@ contrast, touch, and reduced-motion contract.
 
 The canonical implementations are [`FormSelect.vue`](../../../provider-sdk/portalkit-vue/FormSelect.vue)
 and [`form-select.ts`](../../../provider-sdk/portalkit/form-select.ts), with
-shared styling in [`faros-ui.css`](../../../provider-sdk/portalkit/faros-ui.css).
+shared styling in [`railgrid-ui.css`](../../../provider-sdk/portalkit/railgrid-ui.css).
 Distribution is checked by `make verify-portalkit`.
 
 ## Related guidance

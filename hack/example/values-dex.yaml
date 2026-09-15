@@ -1,5 +1,5 @@
 config:
-  issuer: https://idp.faros.sh
+  issuer: https://idp.railgrid.ai
 
   logger:
     level: "debug"
@@ -21,21 +21,21 @@ config:
   #    config:
   #      clientID: 83181f3e886c3442fd4f
   #      clientSecret: 0fc5a7e734f4cb87e17590bf5f789dcc62634e3b
-  #      redirectURI: https://auth.faros.sh/callback
-  #      org: faroshq
+  #      redirectURI: https://auth.railgrid.ai/callback
+  #      org: railgrid
 
   enablePasswordDB: true
   staticClients:
     # PKCE public client: the hub never sends a client secret, so `public: true`
     # is required for login and for refresh-token rotation.
-    - id: faros
-      name: faros
+    - id: railgrid
+      name: railgrid
       public: true
       redirectURIs:
-        - https://hub.faros.sh/auth/callback
+        - https://hub.railgrid.ai/auth/callback
 
   staticPasswords:
-    - email: "admin@faros.sh"
+    - email: "admin@railgrid.ai"
       # bcrypt hash of the string "password": $(echo password | htpasswd -BinC 10 admin | cut -d: -f2)
       hash: "$2y$10$sGpDSwXTqboKyNMhyKClkeFiHnO09uz7jDsyoHqRxheIwY14qurIK"
       username: "admin"
@@ -60,7 +60,7 @@ ingress:
   enabled: true
   className: "cloudflare-tunnel"
   hosts:
-    - host: idp.faros.sh
+    - host: idp.railgrid.ai
       paths:
         - path: /
           pathType: ImplementationSpecific
@@ -70,4 +70,4 @@ ingress:
    # and automatically populate the 'dex-tls' secret with the new cert.
    - secretName: dex-tls
      hosts:
-       - idp.faros.sh
+       - idp.railgrid.ai

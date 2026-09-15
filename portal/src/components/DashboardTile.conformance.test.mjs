@@ -36,7 +36,7 @@ test('dashboard tile load failures offer recovery without leaking raw transport 
   assert.match(tile, /const bundle = await resolveProviderBundle\(props\.provider, authFetch\)\s*if \(!isCurrentLoad\(generation, name, version\)\) return\s*await loadProviderScript\(name, version, document, undefined, bundle\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\)\) return/)
   assert.match(tile, /await nextTick\(\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\) \|\| !mountRef\.value\) return/)
   assert.match(tile, /function retryLoad\(\)[\s\S]*if \(!canRetryInDocument\.value\)[\s\S]*window\.location\.reload\(\)/)
-  assert.match(tile, /addEventListener\('faros-provider-bootstrap-retry', onProviderBootstrapRetry\)/)
+  assert.match(tile, /addEventListener\('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry\)/)
   assert.match(tile, /function onProviderBootstrapRetry\(event: Event\)[\s\S]*event\.preventDefault\(\)[\s\S]*invalidateProviderScript\(props\.provider\.name, props\.provider\.version\)[\s\S]*retryLoad\(\)/)
   assert.match(tile, /role="alert"/)
   assert.match(tile, />Summary unavailable<\/p>/)

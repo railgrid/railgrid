@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2026 The Faros Authors.
+# Copyright 2026 The Railgrid Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -10,7 +10,7 @@
 
 # Apply one opt-in infrastructure Template to the provider workspace and prove
 # that all publication layers expose the exact offering. Backend-specific
-# wrappers set FAROS_CONTRIB_* so Config Connector, Terraform, and future
+# wrappers set RAILGRID_CONTRIB_* so Config Connector, Terraform, and future
 # integrations share one readiness contract.
 
 set -euo pipefail
@@ -18,13 +18,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 cd "${ROOT_DIR}"
 
-: "${FAROS_E2E_TILT_KUBECONFIG:?FAROS_E2E_TILT_KUBECONFIG is required}"
-: "${FAROS_CONTRIB_NAME:?FAROS_CONTRIB_NAME is required}"
-: "${FAROS_CONTRIB_TEMPLATE_FILE:?FAROS_CONTRIB_TEMPLATE_FILE is required}"
-: "${FAROS_CONTRIB_INSTANCE_RESOURCE:?FAROS_CONTRIB_INSTANCE_RESOURCE is required}"
+: "${RAILGRID_E2E_TILT_KUBECONFIG:?RAILGRID_E2E_TILT_KUBECONFIG is required}"
+: "${RAILGRID_CONTRIB_NAME:?RAILGRID_CONTRIB_NAME is required}"
+: "${RAILGRID_CONTRIB_TEMPLATE_FILE:?RAILGRID_CONTRIB_TEMPLATE_FILE is required}"
+: "${RAILGRID_CONTRIB_INSTANCE_RESOURCE:?RAILGRID_CONTRIB_INSTANCE_RESOURCE is required}"
 
-if [[ ! -f "${FAROS_E2E_TILT_KUBECONFIG}" ]]; then
-  echo "kcp kubeconfig does not exist: ${FAROS_E2E_TILT_KUBECONFIG}" >&2
+if [[ ! -f "${RAILGRID_E2E_TILT_KUBECONFIG}" ]]; then
+  echo "kcp kubeconfig does not exist: ${RAILGRID_E2E_TILT_KUBECONFIG}" >&2
   exit 1
 fi
 
@@ -35,27 +35,27 @@ for command in kubectl grep sed sha256sum; do
   }
 done
 
-TEMPLATE_FILE="${FAROS_CONTRIB_TEMPLATE_FILE}"
-WORKSPACE_PATH="${FAROS_CONTRIB_PROVIDER_WORKSPACE:-root:faros:providers:infrastructure}"
-APIEXPORT_NAME="${FAROS_CONTRIB_APIEXPORT_NAME:-infrastructure.providers.faros.sh}"
-INSTANCE_RESOURCE="${FAROS_CONTRIB_INSTANCE_RESOURCE}"
-INSTANCE_GROUP="${FAROS_CONTRIB_INSTANCE_GROUP:-infrastructure.faros.sh}"
-CACHED_RESOURCE_NAME="${FAROS_CONTRIB_CACHED_RESOURCE_NAME:-publish-templates}"
-RUNTIME_KUBECONFIG="${FAROS_E2E_TILT_RUNTIME_KUBECONFIG:-.faros-cluster.kubeconfig}"
-WAIT="${FAROS_CONTRIB_WAIT:-15m}"
-WAIT_SECONDS="${FAROS_CONTRIB_WAIT_SECONDS:-900}"
-POLL_SECONDS="${FAROS_CONTRIB_POLL_SECONDS:-5}"
+TEMPLATE_FILE="${RAILGRID_CONTRIB_TEMPLATE_FILE}"
+WORKSPACE_PATH="${RAILGRID_CONTRIB_PROVIDER_WORKSPACE:-root:railgrid:providers:infrastructure}"
+APIEXPORT_NAME="${RAILGRID_CONTRIB_APIEXPORT_NAME:-infrastructure.providers.railgrid.ai}"
+INSTANCE_RESOURCE="${RAILGRID_CONTRIB_INSTANCE_RESOURCE}"
+INSTANCE_GROUP="${RAILGRID_CONTRIB_INSTANCE_GROUP:-infrastructure.railgrid.ai}"
+CACHED_RESOURCE_NAME="${RAILGRID_CONTRIB_CACHED_RESOURCE_NAME:-publish-templates}"
+RUNTIME_KUBECONFIG="${RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG:-.railgrid-cluster.kubeconfig}"
+WAIT="${RAILGRID_CONTRIB_WAIT:-15m}"
+WAIT_SECONDS="${RAILGRID_CONTRIB_WAIT_SECONDS:-900}"
+POLL_SECONDS="${RAILGRID_CONTRIB_POLL_SECONDS:-5}"
 
 if ! [[ "${WAIT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "FAROS_CONTRIB_WAIT_SECONDS must be a positive integer" >&2
+  echo "RAILGRID_CONTRIB_WAIT_SECONDS must be a positive integer" >&2
   exit 1
 fi
 if ! [[ "${POLL_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "FAROS_CONTRIB_POLL_SECONDS must be a positive integer" >&2
+  echo "RAILGRID_CONTRIB_POLL_SECONDS must be a positive integer" >&2
   exit 1
 fi
 if [[ ! -f "${TEMPLATE_FILE}" ]]; then
-  echo "${FAROS_CONTRIB_NAME} Template fixture does not exist: ${TEMPLATE_FILE}" >&2
+  echo "${RAILGRID_CONTRIB_NAME} Template fixture does not exist: ${TEMPLATE_FILE}" >&2
   exit 1
 fi
 if [[ ! -f "${RUNTIME_KUBECONFIG}" ]]; then
@@ -63,9 +63,9 @@ if [[ ! -f "${RUNTIME_KUBECONFIG}" ]]; then
   exit 1
 fi
 
-kcp_server="${FAROS_CONTRIB_KCP_SERVER:-}"
+kcp_server="${RAILGRID_CONTRIB_KCP_SERVER:-}"
 if [[ -z "${kcp_server}" ]]; then
-  kcp_server="$({ kubectl --kubeconfig "${FAROS_E2E_TILT_KUBECONFIG}" config view --minify -o jsonpath='{.clusters[0].cluster.server}'; printf '\n'; } | sed -E 's#/clusters/.*$##')"
+  kcp_server="$({ kubectl --kubeconfig "${RAILGRID_E2E_TILT_KUBECONFIG}" config view --minify -o jsonpath='{.clusters[0].cluster.server}'; printf '\n'; } | sed -E 's#/clusters/.*$##')"
 fi
 kcp_server="${kcp_server%/}"
 if [[ -z "${kcp_server}" ]]; then
@@ -73,17 +73,17 @@ if [[ -z "${kcp_server}" ]]; then
   exit 1
 fi
 
-kcp=(kubectl --kubeconfig "${FAROS_E2E_TILT_KUBECONFIG}" \
+kcp=(kubectl --kubeconfig "${RAILGRID_E2E_TILT_KUBECONFIG}" \
   --server="${kcp_server}/clusters/${WORKSPACE_PATH}" --insecure-skip-tls-verify)
 runtime=(kubectl --kubeconfig "${RUNTIME_KUBECONFIG}")
 
 template_name="$("${kcp[@]}" apply --dry-run=client --validate=false -f "${TEMPLATE_FILE}" -o jsonpath='{.metadata.name}')"
 if [[ -z "${template_name}" ]]; then
-  echo "${FAROS_CONTRIB_NAME} Template fixture has no metadata.name" >&2
+  echo "${RAILGRID_CONTRIB_NAME} Template fixture has no metadata.name" >&2
   exit 1
 fi
 
-echo ">>> enabling ${FAROS_CONTRIB_NAME} Template ${template_name} in ${WORKSPACE_PATH}"
+echo ">>> enabling ${RAILGRID_CONTRIB_NAME} Template ${template_name} in ${WORKSPACE_PATH}"
 "${kcp[@]}" apply --validate=false -f "${TEMPLATE_FILE}"
 
 deadline=$((SECONDS + WAIT_SECONDS))
@@ -158,7 +158,7 @@ if [[ -z "${source_cluster}" || -z "${source_generation}" || -z "${source_spec_h
   exit 1
 fi
 
-replication=(kubectl --kubeconfig "${FAROS_E2E_TILT_KUBECONFIG}" \
+replication=(kubectl --kubeconfig "${RAILGRID_E2E_TILT_KUBECONFIG}" \
   --server="${replication_endpoint%/}/clusters/${source_cluster}" --insecure-skip-tls-verify)
 deadline=$((SECONDS + WAIT_SECONDS))
 cached_template_name=""
@@ -206,4 +206,4 @@ if [[ -z "${rgd_generation}" || "${rgd_observed_generation}" != "${rgd_generatio
   exit 1
 fi
 
-echo ">>> ${FAROS_CONTRIB_NAME} Template ${template_name} is enabled, cached, and GraphAccepted"
+echo ">>> ${RAILGRID_CONTRIB_NAME} Template ${template_name} is enabled, cached, and GraphAccepted"

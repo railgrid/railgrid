@@ -1,6 +1,6 @@
 # statuspage
 
-`statuspage` renders the small Faros documents used when a browser flow ends
+`statuspage` renders the small Railgrid documents used when a browser flow ends
 outside the portal shell, such as an OAuth callback or an app-access result.
 The helper owns the complete self-contained HTML presentation. It does not own
 response headers, authentication, redirects, CSP, or callback behavior; the
@@ -29,7 +29,7 @@ rewriting it. Callers must construct that value deliberately with
 escaped fields.
 
 The page is fixed dark and self-contained. Its inline stylesheet owns the
-current Faros surface, border, accent, success, danger, and text tokens and a
+current Railgrid surface, border, accent, success, danger, and text tokens and a
 small inline Hexagon mark. It uses a system-font fallback (`ui-sans-serif`,
 `system-ui`, and monospace fallbacks), contains no external font or other asset
 request, and makes no CSP change. The fixed-dark system-font choice is specific

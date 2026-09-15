@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,13 +35,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/faroshq/provider-sdk/leaderelection"
+	"github.com/railgrid/provider-sdk/leaderelection"
 
-	"github.com/faroshq/provider-infrastructure/backend"
-	krobackend "github.com/faroshq/provider-infrastructure/backend/kro"
-	"github.com/faroshq/provider-infrastructure/backend/stub"
-	"github.com/faroshq/provider-infrastructure/controller/template"
-	"github.com/faroshq/provider-infrastructure/install"
+	"github.com/railgrid/provider-infrastructure/backend"
+	krobackend "github.com/railgrid/provider-infrastructure/backend/kro"
+	"github.com/railgrid/provider-infrastructure/backend/stub"
+	"github.com/railgrid/provider-infrastructure/controller/template"
+	"github.com/railgrid/provider-infrastructure/install"
 )
 
 // Leases gating this binary's singleton write loops, all held in the provider
@@ -195,13 +195,13 @@ func runTemplateControllerManager(ctx context.Context, config *rest.Config) erro
 // loadControllerConfig returns a rest.Config for the workspace the
 // platform controllers target. Looked up in this order:
 //
-//	FAROS_PROVIDER_KUBECONFIG             — standardized across all providers
+//	RAILGRID_PROVIDER_KUBECONFIG             — standardized across all providers
 //	INFRASTRUCTURE_KUBECONFIG             — minted SA kubeconfig from `init`
 //	INFRASTRUCTURE_CONTROLLER_KUBECONFIG  — legacy provider-specific override
 //	KUBECONFIG                            — standard env var
 //	in-cluster service account            — when run as a pod
 //
-// FAROS_PROVIDER_KUBECONFIG is the name every chart sets on the serve
+// RAILGRID_PROVIDER_KUBECONFIG is the name every chart sets on the serve
 // container, and the name the other eight providers read. Until it was
 // honored here, a chart-deployed serve container found none of the
 // provider-specific names — only `init` is given INFRASTRUCTURE_KUBECONFIG —
@@ -230,7 +230,7 @@ func loadControllerConfig() (*rest.Config, error) {
 	if source == sourceInCluster {
 		log.Printf("WARNING: no provider kubeconfig in scope, so controllers will run "+
 			"against the HOST cluster, not kcp. Set %s to the mounted provider kubeconfig.",
-			"FAROS_PROVIDER_KUBECONFIG")
+			"RAILGRID_PROVIDER_KUBECONFIG")
 	}
 	// When INFRASTRUCTURE_WORKSPACE_PATH is set, retarget the config host at
 	// /clusters/<path>. This lets serve run with a root-scoped (admin)
@@ -251,10 +251,10 @@ func loadControllerConfig() (*rest.Config, error) {
 const sourceInCluster = "the in-cluster ServiceAccount"
 
 // controllerKubeconfigEnvs is the resolution order, most-specific first. The
-// standardized FAROS_PROVIDER_KUBECONFIG leads: it is what every chart sets on
+// standardized RAILGRID_PROVIDER_KUBECONFIG leads: it is what every chart sets on
 // the serve container and what the other providers read.
 var controllerKubeconfigEnvs = []string{
-	"FAROS_PROVIDER_KUBECONFIG",
+	"RAILGRID_PROVIDER_KUBECONFIG",
 	"INFRASTRUCTURE_KUBECONFIG",
 	"INFRASTRUCTURE_CONTROLLER_KUBECONFIG",
 	"KUBECONFIG",

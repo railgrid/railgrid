@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,13 +31,13 @@ func TestIsOrgOwnedWorkspace(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"root:faros:tenants:86b7f9e7:providers:infrastructure", true},
-		{"root:faros:tenants:86b7f9e7:providers:code", true},
-		{"root:faros:providers:infrastructure", false},
-		{"root:faros:system:providers", false},
-		{"root:faros", false},
+		{"root:railgrid:tenants:86b7f9e7:providers:infrastructure", true},
+		{"root:railgrid:tenants:86b7f9e7:providers:code", true},
+		{"root:railgrid:providers:infrastructure", false},
+		{"root:railgrid:system:providers", false},
+		{"root:railgrid", false},
 		{"", false},
-		{"root:faros:tenantsandthings:providers:x", false},
+		{"root:railgrid:tenantsandthings:providers:x", false},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			if got := isOrgOwnedWorkspace(tc.path); got != tc.want {
@@ -83,12 +83,12 @@ func grantExists(t *testing.T, cl dynamic.Interface, name string) bool {
 // A platform provider is vetted by an admin at onboard time, so binding stays
 // open to any authenticated user — unchanged behaviour.
 func TestApplyBindGrantKeepsPlatformProvidersOpen(t *testing.T) {
-	cl := bindGrantClient(t, "root:faros:providers:code")
+	cl := bindGrantClient(t, "root:railgrid:providers:code")
 
-	if err := ApplyBindGrant(context.Background(), cl, "code.providers.faros.sh"); err != nil {
+	if err := ApplyBindGrant(context.Background(), cl, "code.providers.railgrid.ai"); err != nil {
 		t.Fatalf("ApplyBindGrant: %v", err)
 	}
-	if !grantExists(t, cl, "faros:providers:bind:code.providers.faros.sh") {
+	if !grantExists(t, cl, "railgrid:providers:bind:code.providers.railgrid.ai") {
 		t.Error("platform provider lost its bind grant; tenants can no longer bind it by hand")
 	}
 }
@@ -97,12 +97,12 @@ func TestApplyBindGrantKeepsPlatformProvidersOpen(t *testing.T) {
 // a grant to system:authenticated would let a member of ANY org bind it just by
 // learning that org's UUID.
 func TestApplyBindGrantSkipsOrgOwnedProviders(t *testing.T) {
-	cl := bindGrantClient(t, "root:faros:tenants:86b7f9e7:providers:code")
+	cl := bindGrantClient(t, "root:railgrid:tenants:86b7f9e7:providers:code")
 
-	if err := ApplyBindGrant(context.Background(), cl, "code.providers.faros.sh"); err != nil {
+	if err := ApplyBindGrant(context.Background(), cl, "code.providers.railgrid.ai"); err != nil {
 		t.Fatalf("ApplyBindGrant: %v", err)
 	}
-	if grantExists(t, cl, "faros:providers:bind:code.providers.faros.sh") {
+	if grantExists(t, cl, "railgrid:providers:bind:code.providers.railgrid.ai") {
 		t.Error("org-owned provider granted bind to system:authenticated — any org can bind it")
 	}
 }
@@ -110,18 +110,18 @@ func TestApplyBindGrantSkipsOrgOwnedProviders(t *testing.T) {
 // Upgrading an org provider installed before this change has to close the hole,
 // not merely stop widening it.
 func TestApplyBindGrantRemovesAnInheritedGrant(t *testing.T) {
-	const roleName = "faros:providers:bind:code.providers.faros.sh"
+	const roleName = "railgrid:providers:bind:code.providers.railgrid.ai"
 	existing := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1",
 		"kind":       "ClusterRoleBinding",
 		"metadata":   map[string]any{"name": roleName},
 	}}
-	cl := bindGrantClient(t, "root:faros:tenants:86b7f9e7:providers:code", existing)
+	cl := bindGrantClient(t, "root:railgrid:tenants:86b7f9e7:providers:code", existing)
 
 	if !grantExists(t, cl, roleName) {
 		t.Fatal("seed failed")
 	}
-	if err := ApplyBindGrant(context.Background(), cl, "code.providers.faros.sh"); err != nil {
+	if err := ApplyBindGrant(context.Background(), cl, "code.providers.railgrid.ai"); err != nil {
 		t.Fatalf("ApplyBindGrant: %v", err)
 	}
 	if grantExists(t, cl, roleName) {
@@ -133,10 +133,10 @@ func TestApplyBindGrantRemovesAnInheritedGrant(t *testing.T) {
 func TestApplyBindGrantFailsClosedWithoutAPath(t *testing.T) {
 	cl := bindGrantClient(t, "" /* no LogicalCluster */)
 
-	if err := ApplyBindGrant(context.Background(), cl, "code.providers.faros.sh"); err == nil {
+	if err := ApplyBindGrant(context.Background(), cl, "code.providers.railgrid.ai"); err == nil {
 		t.Fatal("unresolvable workspace path did not error")
 	}
-	if grantExists(t, cl, "faros:providers:bind:code.providers.faros.sh") {
+	if grantExists(t, cl, "railgrid:providers:bind:code.providers.railgrid.ai") {
 		t.Error("a grant was created despite the workspace being unidentifiable")
 	}
 }

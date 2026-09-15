@@ -1,7 +1,7 @@
 name: Split kuery provider
 
 # Publishes providers/kuery from this monorepo to the standalone, read-only
-# mirror at faroshq/provider-kuery, preserving git history.
+# mirror at railgrid/provider-kuery, preserving git history.
 #
 # Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
 # the same source always splits to the same commit sha1s, so pushes normally
@@ -18,7 +18,7 @@ name: Split kuery provider
 #
 # Required secret: KUERY_DEPLOY_KEY
 #   An SSH private key whose public half is added as a *write* deploy key on
-#   faroshq/provider-kuery. (A deploy key is scoped to one repo, so this is a
+#   railgrid/provider-kuery. (A deploy key is scoped to one repo, so this is a
 #   distinct key from the other provider mirrors.)
 
 on:
@@ -43,7 +43,7 @@ concurrency:
 
 env:
   PREFIX: providers/kuery
-  TARGET_REPO: git@github.com:faroshq/provider-kuery.git
+  TARGET_REPO: git@github.com:railgrid/provider-kuery.git
   TARGET_BRANCH: main
   SPLITSH_VERSION: v1.0.1
 

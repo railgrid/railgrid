@@ -119,8 +119,8 @@ async function remove(name: string) {
     <h2 class="mb-1 text-base font-semibold text-text-primary">Providers</h2>
     <p class="mb-4 text-sm text-text-muted">
       Creating a <code>Provider</code> writes the object into
-      <code>root:faros:system:providers</code>; the hub's Provider controller then provisions its
-      workspace (<code>root:faros:providers:&lt;name&gt;</code>), ServiceAccount, and kubeconfig
+      <code>root:railgrid:system:providers</code>; the hub's Provider controller then provisions its
+      workspace (<code>root:railgrid:providers:&lt;name&gt;</code>), ServiceAccount, and kubeconfig
       Secret. Deleting it triggers full teardown.
     </p>
 

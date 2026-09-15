@@ -8,11 +8,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Loader2, Trash2 } from 'lucide-vue-next'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 // Standalone provider portals load the exact canonical recipe through the
-// shared helper; the host portal already imports the same faros-ui.css file.
-ensureFarosUIStyles()
+// shared helper; the host portal already imports the same railgrid-ui.css file.
+ensureRailgridUIStyles()
 
 const props = withDefaults(defineProps<{
   /** Accessible resource-specific action, for example "Delete connection". */

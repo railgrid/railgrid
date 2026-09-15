@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -6,7 +6,7 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// code is a faros provider that manages source-code repositories across git
+// code is a railgrid provider that manages source-code repositories across git
 // hosting sub-providers (GitHub today). See
 // docs/code-provider-architecture.md for the design.
 //
@@ -18,7 +18,7 @@
 //
 // Connection / Repository / RepositoryCommit / DeployKey / Collaborator are NOT
 // served as REST here: the portal and tenants drive them as CRDs directly
-// against kcp (code.faros.sh), projected to tenant workspaces via the
+// against kcp (code.railgrid.ai), projected to tenant workspaces via the
 // APIExport. The controllers reconcile them across all tenant workspaces
 // (controller_manager.go).
 package main
@@ -35,16 +35,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/faroshq/provider-code/actions"
-	"github.com/faroshq/provider-code/backend"
-	githubbackend "github.com/faroshq/provider-code/backend/github"
-	"github.com/faroshq/provider-code/commitbundle"
-	"github.com/faroshq/provider-code/mcpserver"
-	"github.com/faroshq/provider-code/oauthgithub"
-	"github.com/faroshq/provider-code/server"
-	"github.com/faroshq/provider-code/tenant"
-	"github.com/faroshq/provider-sdk/hubclient"
-	"github.com/faroshq/provider-sdk/vwhealth"
+	"github.com/railgrid/provider-code/actions"
+	"github.com/railgrid/provider-code/backend"
+	githubbackend "github.com/railgrid/provider-code/backend/github"
+	"github.com/railgrid/provider-code/commitbundle"
+	"github.com/railgrid/provider-code/mcpserver"
+	"github.com/railgrid/provider-code/oauthgithub"
+	"github.com/railgrid/provider-code/server"
+	"github.com/railgrid/provider-code/tenant"
+	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.

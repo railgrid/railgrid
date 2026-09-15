@@ -1,10 +1,10 @@
-## faros-infrastructure-provider values
+## railgrid-infrastructure-provider values
 ## See README.md and docs/credentials.md for the credential conventions
 ## the central kro RGD templates expect.
 
 # Container image. Build with: docker build -t IMAGE providers/infrastructure/
 image:
-  repository: ghcr.io/faroshq/faros-infrastructure-provider
+  repository: ghcr.io/railgrid/railgrid-infrastructure-provider
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
@@ -20,7 +20,7 @@ service:
 # Hub the provider POSTs heartbeats to. Must be reachable from the
 # provider pod (in-cluster Service DNS works).
 hub:
-  url: https://faros-hub.faros.svc.cluster.local:9443
+  url: https://railgrid-hub.railgrid.svc.cluster.local:9443
   # Bearer token used in the heartbeat POST. Provided as a Secret
   # because it MUST NOT land in values.yaml in plaintext for prod.
   # Empty (the default) omits the Authorization header entirely — the
@@ -58,8 +58,8 @@ application:
   # TLS for minutes. See docs/application-template-architecture.md.
   baseDomain: ""
   # Gateway API parent the generated Application HTTPRoutes attach to
-  # (substituted into Application RGDs as ${faros.gatewayName} /
-  # ${faros.gatewayNamespace}). Defaults to the cfgate Cloudflare Tunnel
+  # (substituted into Application RGDs as ${railgrid.gatewayName} /
+  # ${railgrid.gatewayNamespace}). Defaults to the cfgate Cloudflare Tunnel
   # Gateway in-binary; override to point apps at a different Gateway without
   # touching the template.
   gateway:
@@ -68,8 +68,8 @@ application:
 
 # Platform-owned access-gate configuration shared by simple-webapp,
 # application, and future publishable templates. Templates render the gate
-# (faros-access-proxy) as a component of their own graph via the
-# ${faros.accessProxyImage}/${faros.hubUrl}/${faros.hubPublicUrl} tokens; all
+# (railgrid-access-proxy) as a component of their own graph via the
+# ${railgrid.accessProxyImage}/${railgrid.hubUrl}/${railgrid.hubPublicUrl} tokens; all
 # app traffic enters through it in every mode. Public apps never contact the
 # hub; private apps use the hub sign-in flow once per visitor session.
 publishing:
@@ -78,7 +78,7 @@ publishing:
   # *.<baseDomain> edge cert (ACM / Total TLS) or new URLs fail TLS for
   # minutes. See docs/application-template-architecture.md.
   baseDomain: ""
-  accessProxyImage: ghcr.io/faroshq/faros-access-proxy:latest
+  accessProxyImage: ghcr.io/railgrid/railgrid-access-proxy:latest
   # Internal hub address used for the app-access protocol. Empty falls back to
   # hub.url. In production, use a trusted cluster CA and keep insecure=false.
   hubURL: ""
@@ -94,14 +94,14 @@ publishing:
     namespace: "cfgate-system"
 
 # Default container resource policy stamped into every tenant namespace as a
-# LimitRange named "faros-defaults" (defaultRequest 50m/128Mi, default limit
+# LimitRange named "railgrid-defaults" (defaultRequest 50m/128Mi, default limit
 # 500m/512Mi, max 2cpu/2Gi per container). Create-only — operators may
 # hand-tune a tenant's copy without it being overwritten. Disable when the
 # runtime cluster manages its own resource policy.
 tenantLimitRange:
   enabled: true
 
-# Ingress NetworkPolicy "faros-tenant-isolation" in every tenant runtime
+# Ingress NetworkPolicy "railgrid-tenant-isolation" in every tenant runtime
 # namespace ("<clusterID>-<namespace>"). Without it the runtime cluster is flat:
 # a pod in one workspace can dial another workspace's Services directly
 # (private apps behind their access gate, Postgres, Redis, browsers). The
@@ -117,7 +117,7 @@ tenantNetworkPolicy:
   # apiserver reaches pods through konnectivity-agent, a monitoring stack.
   allowedNamespaces: []
   # Extra ipBlock sources, in canonical form (10.0.0.0/16, not 10.0.0.1/16).
-  # The development data plane (faros sandbox sync/exec/logs/restart, the
+  # The development data plane (railgrid sandbox sync/exec/logs/restart, the
   # browser template's proxy) reaches pods through the runtime kube-apiserver's
   # services/proxy. When the apiserver is not on the pod's node (managed
   # control planes, dedicated control-plane nodes), add the address range its
@@ -127,12 +127,12 @@ tenantNetworkPolicy:
 # Development-mode images (docs/app-studio-template-sandboxes.md). These run
 # TENANT code, so production deployments should pin them by digest. Empty
 # values fall back to the in-binary defaults (node → docker.io/library/node:22-bookworm,
-# universal → ghcr.io/faroshq/faros-universal-dev:latest,
+# universal → ghcr.io/railgrid/railgrid-universal-dev:latest,
 # agent → see agentImage below). When codingSandbox.enabled
 # is true, both universal and agentImage must be immutable digest references.
 development:
-  # The injector image carrying the static faros-dev-agent binary
-  # (FAROS_DEV_AGENT_IMAGE). Set it to pin a digest. Empty → the dev agent of
+  # The injector image carrying the static railgrid-dev-agent binary
+  # (RAILGRID_DEV_AGENT_IMAGE). Set it to pin a digest. Empty → the dev agent of
   # THIS release: a released chart (appVersion vX.Y.Z) renders
   # <agentImageRepository>:vX.Y.Z (published by the same provider release);
   # the unreleased in-repo chart omits the env var and the binary picks its
@@ -150,7 +150,7 @@ development:
   # since a node with the stale image cached reuses it; change the reference.
   agentImage: ""
   # Repository the release-versioned default above is built from.
-  agentImageRepository: ghcr.io/faroshq/faros-dev-agent
+  agentImageRepository: ghcr.io/railgrid/railgrid-dev-agent
   # Public ES256 JSON Web Key Set used by the injected preview bridge
   # to verify short-lived capabilities issued by App Studio. Configure the
   # current key and, during rotation, the previous key. Never put a private
@@ -158,14 +158,14 @@ development:
   # development applications from starting.
   previewBridge:
     verificationJWKS: ""
-  # Toolchain image per ${faros.devImage.<toolchain>} token — each key K maps
-  # to FAROS_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain
+  # Toolchain image per ${railgrid.devImage.<toolchain>} token — each key K maps
+  # to RAILGRID_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain
   # (other than node) fails setup with a pointer to the missing env var.
   images:
     node: ""
     # Universal coding sandbox image. Set this to an immutable digest in
     # production; the platform-owned universal-coding-sandbox Template uses
-    # ${faros.devImage.universal} and tenants cannot select this image.
+    # ${railgrid.devImage.universal} and tenants cannot select this image.
     universal: ""
     # python: "docker.io/library/python:3.12-slim"
     # go: "docker.io/library/golang:1.26"
@@ -184,7 +184,7 @@ codingSandbox:
 # which is not a complete untrusted-code sandbox.
 sandbox:
   # RuntimeClass name stamped as spec.runtimeClassName on each development
-  # pod (FAROS_SANDBOX_RUNTIME_CLASS_NAME). Expected values are the name of a
+  # pod (RAILGRID_SANDBOX_RUNTIME_CLASS_NAME). Expected values are the name of a
   # RuntimeClass installed on the runtime cluster: "gvisor" (gVisor/runsc) or
   # "kata" (Kata Containers). Empty keeps the cluster default runtime, which
   # is acceptable only for trusted users. Enabling one of these is REQUIRED
@@ -199,7 +199,7 @@ sandbox:
 # template default, to pin a digest.
 
 # Secret the provider mounts read-only at
-# /var/run/secrets/faros/faros-provider-kubeconfig to reach kcp. How it is
+# /var/run/secrets/railgrid/railgrid-provider-kubeconfig to reach kcp. How it is
 # populated depends on bootstrap.enabled:
 #   - bootstrap.enabled=false (hub-provisioned): the hub catalog controller
 #     mints it (pkg/hub/providers/provision.go) when the CatalogEntry is
@@ -208,7 +208,7 @@ sandbox:
 #     reuses the same kcp admin kubeconfig the init container used, so there
 #     is no separately-minted runtime Secret.
 providerKubeconfig:
-  secretName: faros-provider-kubeconfig
+  secretName: railgrid-provider-kubeconfig
 
 # Self-bootstrap via an init container. When enabled, an init container runs
 # `infrastructure init` BEFORE the serve container: it installs the CRDs,
@@ -218,7 +218,7 @@ bootstrap:
   enabled: false
 
   # Where the shared kubeconfig comes from:
-  #   hubMinted  - (default) the hub-delivered faros-provider-kubeconfig
+  #   hubMinted  - (default) the hub-delivered railgrid-provider-kubeconfig
   #                (providerKubeconfig.secretName). A platform admin applies the
   #                CatalogEntry; the hub creates the provider workspace, mints a
   #                cluster-admin-in-workspace kubeconfig, and writes it as that
@@ -234,7 +234,7 @@ bootstrap:
   # Only used when kubeconfigSource=supplied.
   # kcp workspace the provider is installed into (init retargets the supplied
   # kubeconfig at this path; the workspace must already exist).
-  workspacePath: "root:faros:providers:infrastructure"
+  workspacePath: "root:railgrid:providers:infrastructure"
   # Provide exactly ONE of:
   #   kcpKubeconfig          - inline content, rendered into a Secret by the
   #                            chart (convenient for dev; avoid for prod).
@@ -290,7 +290,7 @@ operator:
   # something needs kinds outside that set: a kro chart version or
   # operator.kro.extraValues that renders new kinds (ServiceMonitor, a
   # fullnameOverride that renames kro's ClusterRole), or a Template whose
-  # instance kind lives outside kro.run / infrastructure.faros.sh. A forbidden
+  # instance kind lives outside kro.run / infrastructure.railgrid.ai. A forbidden
   # error in the InfrastructureProvider conditions names the missing rule.
   clusterAdmin: false
 
@@ -331,7 +331,7 @@ operator:
   # kro Helm release the operator lifecycles on the runtime cluster.
   # Upstream kro, single-cluster: the provider's instance controller bridges
   # kcp → runtime, so kro never talks to kcp and the retired
-  # faroshq/kro-multicluster fork is no longer used.
+  # railgrid/kro-multicluster fork is no longer used.
   kro:
     chart: oci://registry.k8s.io/kro/charts/kro
     version: 0.9.3
@@ -353,8 +353,8 @@ operator:
   # Application-template exposure layer (the `application` template's public URL
   # + Gateway API parent). This is the operator-mode equivalent of the top-level
   # `application.*` values: the operator owns the serve Deployment, so these land
-  # on the InfrastructureProvider CR (FAROS_APP_BASE_DOMAIN / FAROS_GATEWAY_NAME /
-  # FAROS_GATEWAY_NAMESPACE) rather than via the chart's deployment.yaml. See
+  # on the InfrastructureProvider CR (RAILGRID_APP_BASE_DOMAIN / RAILGRID_GATEWAY_NAME /
+  # RAILGRID_GATEWAY_NAMESPACE) rather than via the chart's deployment.yaml. See
   # docs/application-template-architecture.md.
   application:
     # DNS zone apps are served under, e.g. "apps.example.com". REQUIRED to enable
@@ -372,7 +372,7 @@ operator:
     # App host zone (wins over operator.application.baseDomain). TLS: below the
     # Cloudflare zone apex, add a *.<baseDomain> edge cert (ACM / Total TLS).
     baseDomain: ""
-    accessProxyImage: ghcr.io/faroshq/faros-access-proxy:latest
+    accessProxyImage: ghcr.io/railgrid/railgrid-access-proxy:latest
     hubURL: ""
     hubPublicURL: ""
     insecure: false

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faroshq/kuery/apis/query/v1alpha1"
+	"github.com/railgrid/kuery/apis/query/v1alpha1"
 
-	"github.com/faroshq/provider-kuery/engagement"
+	"github.com/railgrid/provider-kuery/engagement"
 )
 
 // testCluster is a tenant workspace's kcp logical-cluster ID — the only
@@ -35,9 +35,9 @@ func TestScopeToTenant_ReplacesLabels(t *testing.T) {
 	spec := &v1alpha1.QuerySpec{
 		Cluster: &v1alpha1.ClusterFilter{
 			Labels: map[string]string{
-				"tenant":            "someone-else", // spoof attempt
-				"x') OR 1=1 --":     "boom",         // sqlite json_extract injection attempt
-				"faros.sh/whatever": "v",
+				"tenant":               "someone-else", // spoof attempt
+				"x') OR 1=1 --":        "boom",         // sqlite json_extract injection attempt
+				"railgrid.ai/whatever": "v",
 			},
 		},
 	}
@@ -75,7 +75,7 @@ func TestScopeToTenant_EdgeNameRewrite(t *testing.T) {
 		{"plain edge name", "edge-1", testCluster + "/edge-1"},
 		{"already prefixed with own cluster", testCluster + "/edge-1", testCluster + "/edge-1"},
 		{"prefixed with FOREIGN cluster is re-pinned", "zzzforeign000000/edge-1", testCluster + "/edge-1"},
-		{"legacy workspace-path prefix is re-pinned", "root:faros:tenants:org:ws/edge-1", testCluster + "/edge-1"},
+		{"legacy workspace-path prefix is re-pinned", "root:railgrid:tenants:org:ws/edge-1", testCluster + "/edge-1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -97,19 +97,19 @@ func TestIsClusterID(t *testing.T) {
 			t.Errorf("IsClusterID(%q) = false, want true", ok)
 		}
 	}
-	for _, bad := range []string{"", "root:faros:tenants:org:ws", "root:faros", "Upper", "a b", "-lead", "trail-", "a/b"} {
+	for _, bad := range []string{"", "root:railgrid:tenants:org:ws", "root:railgrid", "Upper", "a b", "-lead", "trail-", "a/b"} {
 		if IsClusterID(bad) {
 			t.Errorf("IsClusterID(%q) = true, want false", bad)
 		}
 	}
 }
 
-// TestIdentityFromRequest_ClusterHeader: the hub sends X-Faros-Cluster on
+// TestIdentityFromRequest_ClusterHeader: the hub sends X-Railgrid-Cluster on
 // every proxied request (REST and MCP); that alone identifies the tenant.
 func TestIdentityFromRequest_ClusterHeader(t *testing.T) {
 	r := httptest.NewRequest("POST", "/api/query?tenant=evil", nil)
-	r.Header.Set("X-Faros-Cluster", testCluster)
-	r.Header.Set("X-Faros-User", "alice")
+	r.Header.Set("X-Railgrid-Cluster", testCluster)
+	r.Header.Set("X-Railgrid-User", "alice")
 	id, err := IdentityFromRequest(r)
 	if err != nil {
 		t.Fatalf("IdentityFromRequest: %v", err)
@@ -118,11 +118,11 @@ func TestIdentityFromRequest_ClusterHeader(t *testing.T) {
 		t.Fatalf("identity = %+v, want cluster %s / user alice", id, testCluster)
 	}
 
-	// X-Faros-Cluster wins over X-Faros-Tenant, whatever the latter holds
+	// X-Railgrid-Cluster wins over X-Railgrid-Tenant, whatever the latter holds
 	// (a transitional hub still sends the workspace path there).
 	r2 := httptest.NewRequest("POST", "/api/query", nil)
-	r2.Header.Set("X-Faros-Cluster", testCluster)
-	r2.Header.Set("X-Faros-Tenant", "root:faros:tenants:org:ws")
+	r2.Header.Set("X-Railgrid-Cluster", testCluster)
+	r2.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:org:ws")
 	if id, err := IdentityFromRequest(r2); err != nil || id.Cluster != testCluster {
 		t.Fatalf("identity with both headers = %+v, %v; want cluster %s", id, err, testCluster)
 	}
@@ -134,23 +134,23 @@ func TestIdentityFromRequest_ClusterHeader(t *testing.T) {
 	}
 }
 
-// TestIdentityFromRequest_TenantHeaderFallback: X-Faros-Tenant stands in for
-// a missing X-Faros-Cluster only when it carries a cluster ID.
+// TestIdentityFromRequest_TenantHeaderFallback: X-Railgrid-Tenant stands in for
+// a missing X-Railgrid-Cluster only when it carries a cluster ID.
 func TestIdentityFromRequest_TenantHeaderFallback(t *testing.T) {
 	r := httptest.NewRequest("POST", "/api/query", nil)
-	r.Header.Set("X-Faros-Tenant", testCluster)
+	r.Header.Set("X-Railgrid-Tenant", testCluster)
 	id, err := IdentityFromRequest(r)
 	if err != nil || id.Cluster != testCluster {
 		t.Fatalf("identity = %+v, %v; want cluster %s", id, err, testCluster)
 	}
 }
 
-// TestIdentityFromRequest_RejectsPath: a workspace path in X-Faros-Tenant is
+// TestIdentityFromRequest_RejectsPath: a workspace path in X-Railgrid-Tenant is
 // an error with a message that names the problem — never scoped by, never
-// translated. Same for a path in X-Faros-Cluster.
+// translated. Same for a path in X-Railgrid-Cluster.
 func TestIdentityFromRequest_RejectsPath(t *testing.T) {
-	const path = "root:faros:tenants:org:ws"
-	for _, header := range []string{"X-Faros-Tenant", "X-Faros-Cluster"} {
+	const path = "root:railgrid:tenants:org:ws"
+	for _, header := range []string{"X-Railgrid-Tenant", "X-Railgrid-Cluster"} {
 		t.Run(header, func(t *testing.T) {
 			r := httptest.NewRequest("POST", "/api/query", nil)
 			r.Header.Set(header, path)
@@ -171,19 +171,19 @@ func TestIdentityFromRequest_RejectsPath(t *testing.T) {
 }
 
 func TestIdentityFromRequest_DevEscapeRequiresClusterID(t *testing.T) {
-	t.Setenv("FAROS_DEV_ALLOW_TENANT_QUERY", "true")
+	t.Setenv("RAILGRID_DEV_ALLOW_TENANT_QUERY", "true")
 
 	r := httptest.NewRequest("POST", "/api/query?tenant="+testCluster, nil)
 	if id, err := IdentityFromRequest(r); err != nil || id.Cluster != testCluster {
 		t.Fatalf("dev escape: identity = %+v, %v", id, err)
 	}
-	r2 := httptest.NewRequest("POST", "/api/query?tenant=root:faros:tenants:org:ws", nil)
+	r2 := httptest.NewRequest("POST", "/api/query?tenant=root:railgrid:tenants:org:ws", nil)
 	if _, err := IdentityFromRequest(r2); !errors.Is(err, ErrInvalidIdentity) {
 		t.Fatalf("dev escape accepted a path: %v", err)
 	}
 	// Headers still take precedence over the escape hatch.
 	r3 := httptest.NewRequest("POST", "/api/query?tenant=zzzforeign000000", nil)
-	r3.Header.Set("X-Faros-Cluster", testCluster)
+	r3.Header.Set("X-Railgrid-Cluster", testCluster)
 	if id, err := IdentityFromRequest(r3); err != nil || id.Cluster != testCluster {
 		t.Fatalf("header not preferred over ?tenant: %+v, %v", id, err)
 	}
@@ -203,13 +203,13 @@ func TestQueryHandlerIdentityStatuses(t *testing.T) {
 	}
 
 	req = httptest.NewRequest("POST", "/api/query", strings.NewReader(`{}`))
-	req.Header.Set("X-Faros-Tenant", "root:faros:tenants:org:ws")
+	req.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:org:ws")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("path identity: status = %d, want 400", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "workspace path") || !strings.Contains(body, "X-Faros-Cluster") {
+	if body := rec.Body.String(); !strings.Contains(body, "workspace path") || !strings.Contains(body, "X-Railgrid-Cluster") {
 		t.Fatalf("path identity: body %q should explain the header contract", body)
 	}
 }
@@ -221,7 +221,7 @@ func (f edgeListerFunc) TenantEdges(ctx context.Context, cluster string) ([]stri
 }
 
 // TestEdgesHandlerScopesByClusterHeader proves a request carrying ONLY
-// X-Faros-Cluster is scoped to that cluster ID and reports its edges under
+// X-Railgrid-Cluster is scoped to that cluster ID and reports its edges under
 // the "{clusterID}/{edge}" keys kuery records them as.
 func TestEdgesHandlerScopesByClusterHeader(t *testing.T) {
 	var asked string
@@ -230,14 +230,14 @@ func TestEdgesHandlerScopesByClusterHeader(t *testing.T) {
 		return []string{"edge-1", "edge-2"}, nil
 	})}
 	req := httptest.NewRequest("GET", "/api/edges", nil)
-	req.Header.Set("X-Faros-Cluster", testCluster)
+	req.Header.Set("X-Railgrid-Cluster", testCluster)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
 	if asked != testCluster {
-		t.Fatalf("lister asked for %q, want the X-Faros-Cluster value %s", asked, testCluster)
+		t.Fatalf("lister asked for %q, want the X-Railgrid-Cluster value %s", asked, testCluster)
 	}
 	var resp edgesResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -253,10 +253,10 @@ func TestEdgesHandlerScopesByClusterHeader(t *testing.T) {
 		t.Fatalf("clusters = %v, want {clusterID}/{edge} keys", resp.Clusters)
 	}
 
-	// A path in X-Faros-Tenant is rejected before the lister runs.
+	// A path in X-Railgrid-Tenant is rejected before the lister runs.
 	asked = ""
 	req = httptest.NewRequest("GET", "/api/edges", nil)
-	req.Header.Set("X-Faros-Tenant", "root:faros:tenants:org:ws")
+	req.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:org:ws")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || asked != "" {

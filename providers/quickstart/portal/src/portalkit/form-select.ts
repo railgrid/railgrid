@@ -6,7 +6,7 @@
 // recipes, while remaining usable by the vanilla/Lit provider portals.
 
 import { ic } from './icons'
-import { ensureFarosUIStyles } from './styles'
+import { ensureRailgridUIStyles } from './styles'
 
 export interface FormSelectOption {
   value: string
@@ -81,7 +81,7 @@ export class FormSelectElement extends HTMLElement {
   set name(value: string) { this.currentName = value || ''; this.syncHiddenInput() }
 
   connectedCallback(): void {
-    ensureFarosUIStyles()
+    ensureRailgridUIStyles()
     if (!this.root) this.renderControl()
     document.addEventListener('pointerdown', this.onDocumentPointerDown)
     document.addEventListener('focusin', this.onDocumentFocusIn)
@@ -389,12 +389,12 @@ export class FormSelectElement extends HTMLElement {
   }
 }
 
-if (typeof customElements !== 'undefined' && !customElements.get('faros-form-select')) {
-  customElements.define('faros-form-select', FormSelectElement)
+if (typeof customElements !== 'undefined' && !customElements.get('railgrid-form-select')) {
+  customElements.define('railgrid-form-select', FormSelectElement)
 }
 
 declare global {
   interface HTMLElementTagNameMap {
-    'faros-form-select': FormSelectElement
+    'railgrid-form-select': FormSelectElement
   }
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ var crdGVR = schema.GroupVersionResource{
 // preserved so the apiserver doesn't reject the update.
 //
 // Callers pass a rest.Config scoped to the provider's own kcp
-// workspace (root:faros:providers:infrastructure). The hub's catalog
+// workspace (root:railgrid:providers:infrastructure). The hub's catalog
 // controller has already created that workspace + the APIExport by
 // the time the provider binary runs; we just need to land our
 // platform CRDs inside it.

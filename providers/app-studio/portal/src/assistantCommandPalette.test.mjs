@@ -163,25 +163,25 @@ test('accepts bounded semantic or rectangle-only targets without visible text', 
 test('builds a kube REST list request from validated Provider Action identifiers', async () => {
   const { buildAssistantResourceRequest, discoverAssistantResources } = await vite.ssrLoadModule('/src/assistantResources.ts')
   const built = buildAssistantResourceRequest({
-    apiVersion: 'infrastructure.faros.sh/v1alpha1',
+    apiVersion: 'infrastructure.railgrid.ai/v1alpha1',
     kind: 'Instance',
     resource: 'instances',
   }, 'root:org:ws')
-  assert.deepEqual(built.ref, { group: 'infrastructure.faros.sh', version: 'v1alpha1', resource: 'instances' })
-  assert.equal(built.path, '/clusters/root%3Aorg%3Aws/apis/infrastructure.faros.sh/v1alpha1/instances')
+  assert.deepEqual(built.ref, { group: 'infrastructure.railgrid.ai', version: 'v1alpha1', resource: 'instances' })
+  assert.equal(built.path, '/clusters/root%3Aorg%3Aws/apis/infrastructure.railgrid.ai/v1alpha1/instances')
 
   const requests = []
   const fetcher = async (url, init) => {
     requests.push({ url, method: init.method, body: init.body })
     return Response.json({
-      apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'InstanceList', metadata: { resourceVersion: '10' },
+      apiVersion: 'infrastructure.railgrid.ai/v1alpha1', kind: 'InstanceList', metadata: { resourceVersion: '10' },
       items: [
-        { apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'Instance', metadata: { name: 'db', uid: 'u1', resourceVersion: '1' } },
-        { apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'Instance', metadata: { name: 'api', uid: 'u2', resourceVersion: '2' } },
+        { apiVersion: 'infrastructure.railgrid.ai/v1alpha1', kind: 'Instance', metadata: { name: 'db', uid: 'u1', resourceVersion: '1' } },
+        { apiVersion: 'infrastructure.railgrid.ai/v1alpha1', kind: 'Instance', metadata: { name: 'api', uid: 'u2', resourceVersion: '2' } },
       ],
     })
   }
-  const type = { provider: 'infrastructure', providerDisplayName: 'Infrastructure', apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'Instance', resource: 'instances' }
+  const type = { provider: 'infrastructure', providerDisplayName: 'Infrastructure', apiVersion: 'infrastructure.railgrid.ai/v1alpha1', kind: 'Instance', resource: 'instances' }
   const result = await discoverAssistantResources({ tenant: 'root:org:ws', token: 'secret' }, [type], fetcher)
   assert.deepEqual(requests, [{ url: built.path, method: 'GET', body: undefined }])
   assert.deepEqual(result.warnings, [])

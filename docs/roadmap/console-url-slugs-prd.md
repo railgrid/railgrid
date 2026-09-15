@@ -6,7 +6,7 @@ current baseline; the slug capabilities described elsewhere are proposed.
 
 ## 1. Summary
 
-Faros console URLs currently expose organization and workspace UUIDs. That is
+Railgrid console URLs currently expose organization and workspace UUIDs. That is
 correct for identity and authorization, but it makes links difficult to read,
 remember, communicate, and recognize in support conversations. This proposal
 adds durable, human-readable URL slugs while preserving UUIDs as the platform's
@@ -15,7 +15,7 @@ authoritative identities.
 The intended URL shape is `/ui/<orgSlug>/<workspaceSlug>/...`. Organization
 settings live at `/ui/<orgSlug>/settings/...`; workspace settings use
 `/ui/<orgSlug>/settings/workspaces/<workspaceSlug>`. A slug is an address for a
-specific object on one Faros hub. It is immutable after allocation, and a
+specific object on one Railgrid hub. It is immutable after allocation, and a
 display name remains editable and may be shared by several organizations or
 workspaces. Organization slugs are unique across a hub. Workspace slugs are
 unique within their organization.
@@ -160,7 +160,7 @@ is rejected, making immutability visible to API clients as well as the UI.
 
 The hub owns slug validation, suggestion, durable allocation, and lookup in a
 new `pkg/hub/slugs` package. Its proposed `NewStore(client.Client) *Store`
-accepts an uncached controller-runtime client scoped to `root:faros:users`.
+accepts an uncached controller-runtime client scoped to `root:railgrid:users`.
 The store exposes `Allocate(ctx, target, displayName, requested)`,
 `Get(ctx, target)`, `Resolve(ctx, kind, orgUUID, slug)`,
 `Suggest(ctx, kind, orgUUID, displayName)`, and

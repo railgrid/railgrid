@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,11 +40,11 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/klog/v2"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/browsersession"
-	farosclient "github.com/faroshq/faros/pkg/client"
-	"github.com/faroshq/faros/pkg/hub/kcp"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/browsersession"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
 )
 
 // defaultRateLimit is the default number of requests allowed per minute per
@@ -61,7 +61,7 @@ type Handler struct {
 	oidcProvider   *oidc.Provider
 	oauth2Config   *oauth2.Config
 	oidcConfig     *OIDCConfig
-	farosClient    *farosclient.Client
+	railgridClient *railgridclient.Client
 	bootstrapper   *kcp.Bootstrapper
 	hubExternalURL string
 	devMode        bool
@@ -77,7 +77,7 @@ type Handler struct {
 }
 
 // NewHandler creates a new OIDC auth handler.
-func NewHandler(ctx context.Context, config *OIDCConfig, farosClient *farosclient.Client, bootstrapper *kcp.Bootstrapper, hubExternalURL string, devMode bool) (*Handler, error) {
+func NewHandler(ctx context.Context, config *OIDCConfig, railgridClient *railgridclient.Client, bootstrapper *kcp.Bootstrapper, hubExternalURL string, devMode bool) (*Handler, error) {
 	if config.IssuerURL == "" {
 		return nil, fmt.Errorf("OIDC issuer URL is required")
 	}
@@ -101,7 +101,7 @@ func NewHandler(ctx context.Context, config *OIDCConfig, farosClient *farosclien
 		return nil, err
 	}
 
-	// No ClientSecret: faros uses PKCE (public client). Dex must be configured
+	// No ClientSecret: railgrid uses PKCE (public client). Dex must be configured
 	// with public: true for this client ID.
 	oauth2Config := &oauth2.Config{
 		ClientID:    config.ClientID,
@@ -114,7 +114,7 @@ func NewHandler(ctx context.Context, config *OIDCConfig, farosClient *farosclien
 		oidcProvider:   provider,
 		oauth2Config:   oauth2Config,
 		oidcConfig:     config,
-		farosClient:    farosClient,
+		railgridClient: railgridClient,
 		bootstrapper:   bootstrapper,
 		hubExternalURL: hubExternalURL,
 		devMode:        devMode,
@@ -342,7 +342,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create or update User CRD. The legacy CreateTenantWorkspace call
-	// (which materialized root:faros:tenants:{userID} and patched
+	// (which materialized root:railgrid:tenants:{userID} and patched
 	// User.spec.DefaultCluster) was removed when the new multi-org
 	// tenancy model took over: the organization bootstrap controller
 	// now creates the personal Org + its default child Workspace and
@@ -394,7 +394,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			UserID: userID, Email: claims.Email, Name: claims.Name,
 			// Matches what seedUser reconciles onto the User CR; workspace
 			// RBAC and app-access authorization key off this string.
-			RBACIdentity: fmt.Sprintf("faros:%s", claims.Email),
+			RBACIdentity: fmt.Sprintf("railgrid:%s", claims.Email),
 			Issuer:       idToken.Issuer, Subject: claims.Sub, AuthType: "oidc",
 		}); sessionErr != nil {
 			h.logger.Error(sessionErr, "failed to issue shared browser session")
@@ -595,7 +595,7 @@ func (h *Handler) RegisterBrowserSessionRoutes(router *mux.Router) {
 // exists. Bound accounts are never matched by email — the sub label is the
 // only credential-grade identity link.
 func (h *Handler) adoptInvitedUser(ctx context.Context, email, subHash, sub string) (*tenancyv1alpha1.User, error) {
-	list, err := h.farosClient.Users().List(ctx, metav1.ListOptions{})
+	list, err := h.railgridClient.Users().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("listing users for invite adoption: %w", err)
 	}
@@ -608,7 +608,7 @@ func (h *Handler) adoptInvitedUser(ctx context.Context, email, subHash, sub stri
 		if strings.ToLower(user.Spec.Email) != want {
 			continue
 		}
-		if user.Labels["tenants.faros.sh/sub"] != "" {
+		if user.Labels["tenants.railgrid.ai/sub"] != "" {
 			// Already bound to an IdP subject; email similarity grants
 			// nothing.
 			continue
@@ -616,14 +616,14 @@ func (h *Handler) adoptInvitedUser(ctx context.Context, email, subHash, sub stri
 		if user.Labels == nil {
 			user.Labels = map[string]string{}
 		}
-		user.Labels["tenants.faros.sh/sub"] = subHash
-		delete(user.Labels, "tenants.faros.sh/invited")
+		user.Labels["tenants.railgrid.ai/sub"] = subHash
+		delete(user.Labels, "tenants.railgrid.ai/invited")
 		user.Spec.OIDCProviders = append(user.Spec.OIDCProviders, tenancyv1alpha1.OIDCProvider{
 			Name:       "dex",
 			ProviderID: sub,
 			Email:      email,
 		})
-		updated, err := h.farosClient.Users().Update(ctx, user, metav1.UpdateOptions{})
+		updated, err := h.railgridClient.Users().Update(ctx, user, metav1.UpdateOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("adopting invited user %s: %w", user.Name, err)
 		}
@@ -637,8 +637,8 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 	hash := sha256.Sum256([]byte(issuer + "/" + sub))
 	subHash := hex.EncodeToString(hash[:])[:63]
 
-	labelSelector := fmt.Sprintf("tenants.faros.sh/sub=%s", subHash)
-	users, err := h.farosClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
+	labelSelector := fmt.Sprintf("tenants.railgrid.ai/sub=%s", subHash)
+	users, err := h.railgridClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return "", fmt.Errorf("listing users: %w", err)
 	}
@@ -664,14 +664,14 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 
 		// Reconcile spec fields that may have drifted on legacy users created
 		// before the sub→email RBAC switch. Without this, an old User CRD keeps
-		// faros:<sub> in RBACIdentity forever, which no longer matches the
+		// railgrid:<sub> in RBACIdentity forever, which no longer matches the
 		// kcp-extracted username (now email-based) and locks the user out.
-		wantRBAC := fmt.Sprintf("faros:%s", email)
+		wantRBAC := fmt.Sprintf("railgrid:%s", email)
 		if user.Spec.RBACIdentity != wantRBAC || user.Spec.Email != email || user.Spec.Name != name {
 			user.Spec.RBACIdentity = wantRBAC
 			user.Spec.Email = email
 			user.Spec.Name = name
-			updatedSpec, err := h.farosClient.Users().Update(ctx, user, metav1.UpdateOptions{})
+			updatedSpec, err := h.railgridClient.Users().Update(ctx, user, metav1.UpdateOptions{})
 			if err != nil {
 				return "", fmt.Errorf("updating user spec: %w", err)
 			}
@@ -681,7 +681,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 		// Update status with last login.
 		user.Status.Active = true
 		user.Status.LastLogin = &now
-		updated, err := h.farosClient.Users().UpdateStatus(ctx, user, metav1.UpdateOptions{})
+		updated, err := h.railgridClient.Users().UpdateStatus(ctx, user, metav1.UpdateOptions{})
 		if err != nil {
 			return "", fmt.Errorf("updating user status: %w", err)
 		}
@@ -693,13 +693,13 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "user-",
 			Labels: map[string]string{
-				"tenants.faros.sh/sub": subHash,
+				"tenants.railgrid.ai/sub": subHash,
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
 			Email:        email,
 			Name:         name,
-			RBACIdentity: fmt.Sprintf("faros:%s", email),
+			RBACIdentity: fmt.Sprintf("railgrid:%s", email),
 			OIDCProviders: []tenancyv1alpha1.OIDCProvider{
 				{
 					Name:       "dex",
@@ -710,10 +710,10 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 		},
 	}
 	// Set apiVersion and kind for dynamic client.
-	user.APIVersion = "tenants.faros.sh/v1alpha1"
+	user.APIVersion = "tenants.railgrid.ai/v1alpha1"
 	user.Kind = "User"
 
-	created, err := h.farosClient.Users().Create(ctx, user, metav1.CreateOptions{})
+	created, err := h.railgridClient.Users().Create(ctx, user, metav1.CreateOptions{})
 	if err != nil {
 		return "", fmt.Errorf("creating user: %w", err)
 	}
@@ -721,7 +721,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 	// Update status.
 	created.Status.Active = true
 	created.Status.LastLogin = &now
-	if _, err := h.farosClient.Users().UpdateStatus(ctx, created, metav1.UpdateOptions{}); err != nil {
+	if _, err := h.railgridClient.Users().UpdateStatus(ctx, created, metav1.UpdateOptions{}); err != nil {
 		h.logger.Error(err, "failed to update new user status", "user", created.Name)
 	}
 
@@ -740,7 +740,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 // controller is now the sole writer of User.spec.DefaultCluster.
 func (h *Handler) lookupDefaultCluster(ctx context.Context, userID string) string {
 	// The bootstrap controller's chain (org workspace + child workspace
-	// + faros APIBinding bind + ClusterRoleBinding + default MCPServer
+	// + railgrid APIBinding bind + ClusterRoleBinding + default MCPServer
 	// + cluster-hash lookup) takes ~10-25s on a cold start; the poll
 	// budget needs to cover that with margin. On subsequent logins the
 	// field is already set and the first iteration returns immediately.
@@ -751,7 +751,7 @@ func (h *Handler) lookupDefaultCluster(ctx context.Context, userID string) strin
 	start := time.Now()
 	deadline := start.Add(pollTimeout)
 	for {
-		user, err := h.farosClient.Users().Get(ctx, userID, metav1.GetOptions{})
+		user, err := h.railgridClient.Users().Get(ctx, userID, metav1.GetOptions{})
 		if err == nil && user.Spec.DefaultCluster != "" {
 			if elapsed := time.Since(start); elapsed > pollInterval {
 				h.logger.Info("Waited for bootstrap controller to populate User.spec.defaultCluster", "userID", userID, "waited", elapsed.String())
@@ -771,7 +771,7 @@ func (h *Handler) lookupDefaultCluster(ctx context.Context, userID string) strin
 }
 
 // generateKubeconfig builds a kubeconfig pointing to the hub using an exec
-// credential plugin (faros get-token) for automatic OIDC token refresh.
+// credential plugin (railgrid get-token) for automatic OIDC token refresh.
 // When clusterName is set, the server URL includes /clusters/{clusterName}
 // for kcp-syntax compatibility.
 func (h *Handler) generateKubeconfig(userID, clusterName, email string) ([]byte, error) {
@@ -782,7 +782,7 @@ func (h *Handler) generateKubeconfig(userID, clusterName, email string) ([]byte,
 		serverURL = apiurl.HubServerURL(h.hubExternalURL, clusterName)
 	}
 
-	config.Clusters["faros"] = &clientcmdapi.Cluster{
+	config.Clusters["railgrid"] = &clientcmdapi.Cluster{
 		Server:                serverURL,
 		InsecureSkipTLSVerify: h.devMode,
 	}
@@ -802,17 +802,17 @@ func (h *Handler) generateKubeconfig(userID, clusterName, email string) ([]byte,
 	config.AuthInfos[userName] = &clientcmdapi.AuthInfo{
 		Exec: &clientcmdapi.ExecConfig{
 			APIVersion: "client.authentication.k8s.io/v1beta1",
-			Command:    "faros",
+			Command:    "railgrid",
 			Args:       execArgs,
 		},
 	}
 
-	config.Contexts["faros"] = &clientcmdapi.Context{
-		Cluster:  "faros",
+	config.Contexts["railgrid"] = &clientcmdapi.Context{
+		Cluster:  "railgrid",
 		AuthInfo: userName,
 	}
 
-	config.CurrentContext = "faros"
+	config.CurrentContext = "railgrid"
 
 	return clientcmd.Write(*config)
 }

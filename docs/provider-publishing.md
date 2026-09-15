@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-14
 
-faros is a monorepo, but each provider under `providers/` is also published to
+railgrid is a monorepo, but each provider under `providers/` is also published to
 its own standalone, **read-only** GitHub repository. This lets external
 consumers depend on (and browse) a single provider without cloning the whole
 monorepo — the same pattern Kubernetes uses with its
@@ -28,11 +28,11 @@ fast-forward.
 
 | Provider directory          | Mirror repository                  | Secret                  | Workflow                                                  |
 | --------------------------- | ---------------------------------- | ----------------------- | -------------------------------------------------------- |
-| `providers/quickstart`      | `faroshq/provider-quickstart`      | `QUICKSTART_DEPLOY_KEY` | [`split-quickstart.yaml`](../.github/workflows/split-quickstart.yaml) |
-| `providers/code`            | `faroshq/provider-code`            | `CODE_DEPLOY_KEY`       | [`split-code.yaml`](../.github/workflows/split-code.yaml) |
-| `providers/infrastructure`  | `faroshq/provider-infrastructure`  | `INFRA_DEPLOY_KEY`      | [`split-infrastructure.yaml`](../.github/workflows/split-infrastructure.yaml) |
-| `providers/app-studio`      | `faroshq/provider-app-studio`      | `APP_STUDIO_DEPLOY_KEY` | [`split-app-studio.yaml`](../.github/workflows/split-app-studio.yaml) |
-| `providers/kuery`           | `faroshq/provider-kuery`           | `KUERY_DEPLOY_KEY`      | [`split-kuery.yaml`](../.github/workflows/split-kuery.yaml) |
+| `providers/quickstart`      | `railgrid/provider-quickstart`      | `QUICKSTART_DEPLOY_KEY` | [`split-quickstart.yaml`](../.github/workflows/split-quickstart.yaml) |
+| `providers/code`            | `railgrid/provider-code`            | `CODE_DEPLOY_KEY`       | [`split-code.yaml`](../.github/workflows/split-code.yaml) |
+| `providers/infrastructure`  | `railgrid/provider-infrastructure`  | `INFRA_DEPLOY_KEY`      | [`split-infrastructure.yaml`](../.github/workflows/split-infrastructure.yaml) |
+| `providers/app-studio`      | `railgrid/provider-app-studio`      | `APP_STUDIO_DEPLOY_KEY` | [`split-app-studio.yaml`](../.github/workflows/split-app-studio.yaml) |
+| `providers/kuery`           | `railgrid/provider-kuery`           | `KUERY_DEPLOY_KEY`      | [`split-kuery.yaml`](../.github/workflows/split-kuery.yaml) |
 
 Each provider has its own workflow (identical except for the provider prefix,
 mirror target, trigger paths, and `secrets.*` reference) and its own deploy key — a GitHub deploy key is
@@ -88,7 +88,7 @@ For each package:
    authoring contract and operational evidence remain reviewable.
 
 The Databricks provider's shipped example is
-[`databricks-app-integration`](https://github.com/faroshq/providers/blob/main/providers/databricks/skills/databricks-app-integration/SKILL.md).
+[`databricks-app-integration`](https://github.com/railgrid/providers/blob/main/providers/databricks/skills/databricks-app-integration/SKILL.md).
 
 ## One-time setup per mirror
 
@@ -105,13 +105,13 @@ provider's values from the [What is published](#what-is-published) table for
 
 ### 1. Create the target repository
 
-Create the mirror repo (e.g. `faroshq/provider-code`). An empty repo is
+Create the mirror repo (e.g. `railgrid/provider-code`). An empty repo is
 fine — the first run creates the `main` branch.
 
 ### 2. Generate an SSH deploy key
 
 ```bash
-ssh-keygen -t ed25519 -C "faros-split-<name>" -f /tmp/<name>_split -N ""
+ssh-keygen -t ed25519 -C "railgrid-split-<name>" -f /tmp/<name>_split -N ""
 ```
 
 This produces a private key (`/tmp/<name>_split`) and a public key
@@ -129,7 +129,7 @@ broad personal access token.
 
 ### 4. Add the private key as a secret on the monorepo
 
-In **`faroshq/faros`** → **Settings → Secrets and variables → Actions → New repository secret**:
+In **`railgrid/railgrid`** → **Settings → Secrets and variables → Actions → New repository secret**:
 
 - Name: the provider's secret from the table (e.g. `CODE_DEPLOY_KEY`).
 - Value: the full contents of `/tmp/<name>_split` (the private key,
@@ -192,7 +192,7 @@ concurrency:
   group: split-<name>-${{ github.ref }}
 env:
   PREFIX: providers/<name>                         # the subtree to split
-  TARGET_REPO: git@github.com:faroshq/provider-<name>.git
+  TARGET_REPO: git@github.com:railgrid/provider-<name>.git
   TARGET_BRANCH: main
   SPLITSH_VERSION: v1.0.1
 # ...and reference a per-mirror secret, e.g. secrets.<NAME>_DEPLOY_KEY
@@ -212,41 +212,41 @@ path rather than a monorepo-nested path:
 
 | Provider                   | `module` declaration in `go.mod`              |
 | -------------------------- | --------------------------------------------- |
-| `providers/quickstart`     | `github.com/faroshq/provider-quickstart`      |
-| `providers/code`           | `github.com/faroshq/provider-code`            |
-| `providers/infrastructure` | `github.com/faroshq/provider-infrastructure`  |
-| `providers/app-studio`     | `github.com/faroshq/provider-app-studio`      |
-| `providers/kuery`          | `github.com/faroshq/provider-kuery`           |
-| `providers/databricks`     | `github.com/faroshq/provider-databricks`     |
+| `providers/quickstart`     | `github.com/railgrid/provider-quickstart`      |
+| `providers/code`           | `github.com/railgrid/provider-code`            |
+| `providers/infrastructure` | `github.com/railgrid/provider-infrastructure`  |
+| `providers/app-studio`     | `github.com/railgrid/provider-app-studio`      |
+| `providers/kuery`          | `github.com/railgrid/provider-kuery`           |
+| `providers/databricks`     | `github.com/railgrid/provider-databricks`     |
 
 This is transparent to the monorepo because `go.work` references providers by
 directory, not by module path, and no other monorepo module imports these
 provider modules. When wiring up a new provider mirror, set its `go.mod` module
-to the mirror URL (e.g. `github.com/faroshq/provider-code`) before the first
+to the mirror URL (e.g. `github.com/railgrid/provider-code`) before the first
 split, and fix up the provider's own in-repo imports of that module path
 accordingly (`code` and `infrastructure` each had ~17 self-imports to rewrite).
 
 ## Private Linear and Databricks providers
 
 Source and release automation moved to
-[faroshq/providers](https://github.com/faroshq/providers). The old Databricks source
-mirror is retired after cutover; no source synchronization remains in Faros.
+[railgrid/providers](https://github.com/railgrid/providers). The old Databricks source
+mirror is retired after cutover; no source synchronization remains in Railgrid.
 Existing public history and previous releases remain available.
 
-Both providers remain platform-installable in Faros hubs, using administrator
+Both providers remain platform-installable in Railgrid hubs, using administrator
 onboarding, chart bootstrap, CatalogEntry registration and workspace Enable.
 Self-hosting is optional. Install the versioned OCI charts
-`oci://ghcr.io/faroshq/charts/faros-linear-provider` and
-`oci://ghcr.io/faroshq/charts/faros-databricks-provider`; their images remain
-`ghcr.io/faroshq/faros-linear-provider` and
-`ghcr.io/faroshq/faros-databricks-provider`. Supply the existing chart kubeconfig
+`oci://ghcr.io/railgrid/charts/railgrid-linear-provider` and
+`oci://ghcr.io/railgrid/charts/railgrid-databricks-provider`; their images remain
+`ghcr.io/railgrid/railgrid-linear-provider` and
+`ghcr.io/railgrid/railgrid-databricks-provider`. Supply the existing chart kubeconfig
 and hub settings. Private source access is not required to install artifacts.
 
 Their `providers/<name>/vX.Y.Z` tags are now created in the private repository,
-which verifies before publishing images/charts. The public Faros release command
+which verifies before publishing images/charts. The public Railgrid release command
 no longer offers those providers. Package Actions access must be granted to the
 private repository before its first release without changing package visibility.
 
 The App Studio–Databricks integration suite and dedicated fixtures moved into the
 private provider's `test/deferred` directory. Cross-repository adaptation and
-execution are deferred; public Faros CI does not execute or claim that coverage.
+execution are deferred; public Railgrid CI does not execute or claim that coverage.

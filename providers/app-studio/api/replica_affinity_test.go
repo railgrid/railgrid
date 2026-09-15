@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func affinityTestServer(t *testing.T, replicaID, addr string) (*Server, store.Store) {
@@ -35,7 +35,7 @@ func affinityTestServer(t *testing.T, replicaID, addr string) (*Server, store.St
 
 func projectRequest(path string, method string) *http.Request {
 	r := httptest.NewRequest(method, path, nil)
-	r.Header.Set("X-Faros-Tenant", "cluster-1")
+	r.Header.Set("X-Railgrid-Tenant", "cluster-1")
 	r.Header.Set("Authorization", "Bearer test-token")
 	return r
 }
