@@ -520,14 +520,14 @@ declare `spec.development` with `components.<name> {workspacePath, imageInput, d
 
 | Template | Components | Scaffold |
 |---|---|---|
-| `application` | `web` → `web/`, `api` → `api/` (+ Postgres, access gate) | `github.com/railgrid/faros-scaffold-application@v0.1.3` |
-| `simple-webapp` | `app` → `.` | `github.com/railgrid/faros-scaffold-simple-webapp@v0.1.3` |
+| `application` | `web` → `web/`, `api` → `api/` (+ Postgres, access gate) | `github.com/railgrid/scaffold-application@v0.1.4` |
+| `simple-webapp` | `app` → `.` | `github.com/railgrid/scaffold-simple-webapp@v0.1.4` |
 | `worker` | one component, no URL | none |
 | `universal-coding-sandbox` | scratch | none |
 
 Scaffold fetch is a tarball download (400 files, 8 MiB total, 1 MiB per file,
 text only) seeded only into an empty workspace and marked uncommitted so the
-reconciler lands it as the first commit. Both shipped scaffolds (v0.1.3)
+reconciler lands it as the first commit. Both shipped scaffolds (v0.1.4)
 include a root `AGENTS.md` stating the runtime contract,
 `.github/workflows/build.yaml` (smoke test, then one Railpack image per
 component pushed as `sha-<commit>` and `latest`, multi-arch), and

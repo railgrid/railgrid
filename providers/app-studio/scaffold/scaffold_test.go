@@ -17,14 +17,14 @@ import (
 )
 
 func TestArchiveURLsGitHub(t *testing.T) {
-	urls, err := ArchiveURLs("github.com/railgrid/faros-scaffold-application", "v0.3.0")
+	urls, err := ArchiveURLs("github.com/railgrid/scaffold-application", "v0.3.0")
 	if err != nil {
 		t.Fatalf("ArchiveURLs: %v", err)
 	}
 	want := []string{
-		"https://codeload.github.com/railgrid/faros-scaffold-application/tar.gz/refs/tags/v0.3.0",
-		"https://codeload.github.com/railgrid/faros-scaffold-application/tar.gz/refs/heads/v0.3.0",
-		"https://codeload.github.com/railgrid/faros-scaffold-application/tar.gz/v0.3.0",
+		"https://codeload.github.com/railgrid/scaffold-application/tar.gz/refs/tags/v0.3.0",
+		"https://codeload.github.com/railgrid/scaffold-application/tar.gz/refs/heads/v0.3.0",
+		"https://codeload.github.com/railgrid/scaffold-application/tar.gz/v0.3.0",
 	}
 	if len(urls) != len(want) {
 		t.Fatalf("urls = %v, want %v", urls, want)

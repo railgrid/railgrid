@@ -210,8 +210,8 @@ spec:
     # scripts). Tag-locked — bump this ref together with the sampleValues
     # image tag. Without this block a new project gets an EMPTY sandbox.
     scaffold:
-      repository: https://github.com/railgrid/faros-scaffold-simple-webapp
-      ref: v0.1.3
+      repository: https://github.com/railgrid/scaffold-simple-webapp
+      ref: v0.1.4
     components:
       app:
         workspacePath: .
