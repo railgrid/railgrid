@@ -85,8 +85,8 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	kuerystore "github.com/faroshq/kuery/pkg/store"
-	kuerysync "github.com/faroshq/kuery/pkg/sync"
+	kuerystore "github.com/railgrid/kuery/pkg/store"
+	kuerysync "github.com/railgrid/kuery/pkg/sync"
 )
 
 // TenantLabel is the cluster label kuery rows are scoped by. Its value is the

@@ -28,7 +28,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/kuery/pkg/engine"
+	"github.com/railgrid/kuery/pkg/engine"
 )
 
 // Deps is what the MCP tools need: the embedded kuery engine. Tenant

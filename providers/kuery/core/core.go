@@ -20,10 +20,10 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/faroshq/kuery/pkg/engine"
-	"github.com/faroshq/kuery/pkg/gc"
-	"github.com/faroshq/kuery/pkg/store"
-	kuerysync "github.com/faroshq/kuery/pkg/sync"
+	"github.com/railgrid/kuery/pkg/engine"
+	"github.com/railgrid/kuery/pkg/gc"
+	"github.com/railgrid/kuery/pkg/store"
+	kuerysync "github.com/railgrid/kuery/pkg/sync"
 )
 
 // Config selects the store backend and the resources excluded from sync.

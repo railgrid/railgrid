@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faroshq/kuery/apis/query/v1alpha1"
+	"github.com/railgrid/kuery/apis/query/v1alpha1"
 
 	"github.com/railgrid/provider-kuery/engagement"
 )

@@ -22,8 +22,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"gorm.io/datatypes"
 
-	"github.com/faroshq/kuery/pkg/engine"
-	"github.com/faroshq/kuery/pkg/store"
+	"github.com/railgrid/kuery/pkg/engine"
+	"github.com/railgrid/kuery/pkg/store"
 
 	"github.com/railgrid/provider-kuery/engagement"
 )

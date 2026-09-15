@@ -29,8 +29,8 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/kuery/apis/query/v1alpha1"
-	"github.com/faroshq/kuery/pkg/engine"
+	"github.com/railgrid/kuery/apis/query/v1alpha1"
+	"github.com/railgrid/kuery/pkg/engine"
 
 	"github.com/railgrid/provider-kuery/engagement"
 )

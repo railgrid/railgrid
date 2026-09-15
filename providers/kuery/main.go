@@ -8,7 +8,7 @@
 //
 // kuery is the railgrid provider for fleet-wide object search, relationship
 // traversal, and impact analysis across connected edge clusters, built on
-// github.com/faroshq/kuery. See docs/kuery-provider-architecture.md in the
+// github.com/railgrid/kuery. See docs/kuery-provider-architecture.md in the
 // railgrid repo for the design and phasing.
 //
 // Phase 1 skeleton: registration surface only (healthz, heartbeat, portal

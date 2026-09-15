@@ -34,9 +34,9 @@ import (
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpcore "github.com/kcp-dev/sdk/apis/core"
 
-	kuerygc "github.com/faroshq/kuery/pkg/gc"
-	kuerystore "github.com/faroshq/kuery/pkg/store"
-	kuerysync "github.com/faroshq/kuery/pkg/sync"
+	kuerygc "github.com/railgrid/kuery/pkg/gc"
+	kuerystore "github.com/railgrid/kuery/pkg/store"
+	kuerysync "github.com/railgrid/kuery/pkg/sync"
 )
 
 // TestEdgeProxyURL keeps the inlined URL pattern in lockstep with the railgrid

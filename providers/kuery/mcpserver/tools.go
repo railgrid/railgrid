@@ -17,8 +17,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/kuery/apis/query/v1alpha1"
-	"github.com/faroshq/kuery/pkg/engine"
+	"github.com/railgrid/kuery/apis/query/v1alpha1"
+	"github.com/railgrid/kuery/pkg/engine"
 
 	"k8s.io/apimachinery/pkg/runtime"
 
