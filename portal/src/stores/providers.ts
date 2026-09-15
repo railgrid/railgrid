@@ -387,9 +387,8 @@ export const useProvidersStore = defineStore('providers', () => {
   )
 
   // enableable is the set of providers the user can actually turn on in the
-  // current workspace: ready, and declaring an APIExport to bind. Everything
-  // else in the catalog is either still starting up or shows up unconditionally
-  // (built-ins), so neither belongs in a "what can I switch on" list.
+  // current workspace: declaring an APIExport to bind. Runtime readiness must
+  // not hide a provider before its first binding creates its KCP endpoints.
   //
   // Ordering matches the catalog page: registry categories by declared order,
   // then ad-hoc categories alphabetically, then uncategorized — which puts the
@@ -405,7 +404,7 @@ export const useProvidersStore = defineStore('providers', () => {
       return c ? (c.order ?? 0) : Number.MAX_SAFE_INTEGER - 1
     }
     return items.value
-      .filter((p) => p.ready && !!p.apiExportName)
+      .filter((p) => !!p.apiExportName)
       .slice()
       .sort((a, b) => {
         const ca = a.category ?? ''

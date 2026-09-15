@@ -2,16 +2,15 @@ export type ProviderBindingAction = 'enable' | 'disable' | null
 
 export interface ProviderBindingState {
   hasAPIExport: boolean
-  ready: boolean
   enabled: boolean
   disabling: boolean
 }
 
-// Binding removal remains available during provider outages, but a provider
-// that was never enabled must not gain a misleading Disable action merely
-// because readiness prevents Enable.
+// Binding creation must work before runtime readiness: KCP publishes virtual
+// workspace endpoints only after the first consumer binds to an export.
+// Readiness gates opening a provider, not creating or removing its binding.
 export function providerBindingAction(state: ProviderBindingState): ProviderBindingAction {
   if (!state.hasAPIExport || state.disabling) return null
   if (state.enabled) return 'disable'
-  return state.ready ? 'enable' : null
+  return 'enable'
 }
