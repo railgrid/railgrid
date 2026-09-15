@@ -24,11 +24,10 @@ Providers publish Kubernetes-style APIs, versioned actions and MCP tools into is
 | [app-studio](providers/app-studio) | Persistent AI project workspaces with a chat assistant, sandboxed development instances and publishing, on the tenant's own model credentials |
 | [agents](providers/agents) | Long-running personal agents with scheduled runs, tool use, approvals, budgets and memory, reachable from Slack, Telegram, Discord and email |
 | [code](providers/code) | Source repositories, deploy keys and collaborators as workspace resources, on GitHub today |
-| [databricks](https://github.com/railgrid/providers/tree/main/providers/databricks) | Databricks connections, warehouses and tables as workspace resources, with a `query_table` action |
 | [kuery](providers/kuery) | Fleet-wide object search and relationship traversal across a workspace's connected clusters |
 | [quickstart](providers/quickstart) | A minimal reference provider that exercises the whole plugin surface |
 
-Provider directories are mirrored read-only to `railgrid/provider-*` repositories. Open changes here.
+The provider directories listed above are mirrored read-only to `railgrid/provider-*` repositories. Open changes here.
 
 ## How it fits together
 
@@ -222,7 +221,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for building, running the local stack, te
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
-
-Linear and Databricks source is maintained in the private `railgrid/providers`
-repository. Both remain installable as hub-managed providers from their existing
-image and Helm-chart coordinates; see [provider publishing](docs/provider-publishing.md).
