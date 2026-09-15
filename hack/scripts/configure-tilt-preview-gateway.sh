@@ -97,7 +97,7 @@ resource_exists() {
 resource_ownership() {
   local resource_namespace="$1" kind="$2" name="$3"
   local output=(
-    -o 'jsonpath={.metadata.labels.railgrid\.sh/managed-by}{"|"}{.metadata.labels.railgrid\.sh/component}'
+    -o 'jsonpath={.metadata.labels.railgrid\.ai/managed-by}{"|"}{.metadata.labels.railgrid\.ai/component}'
   )
   if [[ -n "$resource_namespace" ]]; then
     "${kubectl[@]}" -n "$resource_namespace" get "$kind" "$name" "${output[@]}"

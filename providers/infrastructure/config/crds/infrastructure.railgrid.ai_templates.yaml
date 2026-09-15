@@ -597,7 +597,7 @@ spec:
                       Group MUST be infrastructure.railgrid.ai. Pinned here so
                       every per-template CRD lives under the same namespace and the
                       portal can render them uniformly.
-                    pattern: ^infrastructure\.railgrid\.sh$
+                    pattern: ^infrastructure\.railgrid\.ai$
                     type: string
                   kind:
                     description: Kind is the CamelCase singular tenants use in apiVersion

@@ -690,7 +690,7 @@ type TemplateInstanceCRD struct {
 	// every per-template CRD lives under the same namespace and the
 	// portal can render them uniformly.
 	// +required
-	// +kubebuilder:validation:Pattern=`^infrastructure\.railgrid\.sh$`
+	// +kubebuilder:validation:Pattern=`^infrastructure\.railgrid\.ai$`
 	Group string `json:"group"`
 
 	// Version of the per-template CRD's served + storage schema.

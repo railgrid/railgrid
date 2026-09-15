@@ -293,7 +293,7 @@ test('shell recovery and context status are present without claiming uncondition
 })
 
 test('help modal prioritizes docs and keeps community support accessible', () => {
-  assert.match(helpSupportModal, /const docsURL = 'https:\/\/railgrid\.sh\/docs\/'/)
+  assert.match(helpSupportModal, /const docsURL = 'https:\/\/railgrid\.ai\/docs\/'/)
   assert.match(helpSupportModal, /const discordURL = 'https:\/\/discord\.gg\/VjUA7zyhC'/)
   assert.match(helpSupportModal, /const issuesURL = 'https:\/\/github\.com\/railgrid\/railgrid\/issues'/)
   assert.match(helpSupportModal, /role="dialog"/)
