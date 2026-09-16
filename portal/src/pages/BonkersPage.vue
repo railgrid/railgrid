@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ShieldAlert, AlertCircle, RefreshCw, Puzzle, KeyRound, Building2, Users,
-  Hexagon, ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen,
+  Hexagon, ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, Tag,
 } from 'lucide-vue-next'
 
+import { hubVersionDetails, hubVersionLabel, useHubVersion } from '@/composables/useHubVersion'
 import { useSidebarExpansion } from '@/composables/useSidebarExpansion'
 import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -14,6 +15,9 @@ const admin = useAdminStore()
 const auth = useAuthStore()
 const router = useRouter()
 const { sidebarExpanded, toggleSidebar } = useSidebarExpansion()
+const { hubVersion } = useHubVersion()
+const platformVersion = computed(() => hubVersionLabel(hubVersion.value))
+const platformVersionDetails = computed(() => hubVersionDetails(hubVersion.value))
 
 const sections = [
   { to: '/bonkers/providers', label: 'Providers', icon: Puzzle },
@@ -79,6 +83,19 @@ function handleLogout() {
       </nav>
 
       <div class="mt-auto">
+        <div
+          v-if="platformVersion"
+          class="flex items-center gap-2.5 px-3 py-1.5 text-[10px] text-text-muted"
+          :class="sidebarExpanded ? '' : 'justify-center'"
+          :title="platformVersionDetails"
+          data-testid="platform-version"
+        >
+          <Tag class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" aria-hidden="true" />
+          <span v-if="sidebarExpanded" class="min-w-0 truncate">
+            Platform <span class="font-mono">{{ platformVersion }}</span>
+          </span>
+          <span v-else class="sr-only">Platform {{ platformVersion }}</span>
+        </div>
         <div class="mx-2 my-2 h-px bg-border-default/50" />
         <router-link
           to="/"
