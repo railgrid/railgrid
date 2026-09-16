@@ -922,6 +922,14 @@ TILT_PORT ?= 10350
 # (leader election, tunnel-ownership relay, run claims, session failover):
 #   make tilt-cluster REPLICA_COUNT=2
 REPLICA_COUNT ?= 1
+# Providers from another repository, added to the tilt / tilt-cluster session by that
+# repository's Tilt library (docs/external-providers-tilt.md). An empty
+# EXTERNAL_PROVIDERS_DIR disables them; an unset or empty EXTERNAL_PROVIDERS
+# loads every provider in that repository, or name one to load only it:
+#   make tilt EXTERNAL_PROVIDERS_DIR=../providers
+#   make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=linear
+EXTERNAL_PROVIDERS_DIR ?=
+EXTERNAL_PROVIDERS ?= all
 
 .PHONY: tilt tilt-cluster
 
@@ -949,7 +957,18 @@ tilt: ## Run Tiltfile (embedded binary mode); see tilt-cluster for the in-cluste
 		exit 1; \
 	fi
 	@mkdir -p "$(TILT_TMPDIR)"
+	@# External providers run as pods in railgrid-kro. Create it before
+	@# `tilt up` for the same reason tilt-cluster does: Tilt caches its
+	@# kube client at startup. kro-mgmt-up later finds and reuses it.
+ifneq ($(EXTERNAL_PROVIDERS_DIR),)
+	@kind get clusters 2>/dev/null | grep -qx "$(KRO_KIND_NAME)" || kind create cluster --name "$(KRO_KIND_NAME)" --kubeconfig "$(KRO_KIND_KUBECONFIG)"
+	@kind get kubeconfig --name "$(KRO_KIND_NAME)" > "$(KRO_KIND_KUBECONFIG)"
+	KUBECONFIG="$(KRO_KIND_KUBECONFIG):$${KUBECONFIG:-$$HOME/.kube/config}" TMPDIR="$(TILT_TMPDIR)" \
+		tilt up -f Tiltfile --context "kind-$(KRO_KIND_NAME)" -- \
+		--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)" --external-providers="$(EXTERNAL_PROVIDERS)"
+else
 	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile
+endif
 
 ## Full multi-shard kcp in a kind cluster + railgrid-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)
@@ -962,7 +981,8 @@ tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TI
 	@kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
 	@kind export kubeconfig --name kcp-tilt
 	@mkdir -p "$(TILT_TMPDIR)"
-	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile.cluster -- --kcp-dir="$(TILT_KCP_DIR)" --replicas="$(REPLICA_COUNT)"
+	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile.cluster -- --kcp-dir="$(TILT_KCP_DIR)" --replicas="$(REPLICA_COUNT)" \
+		--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)" --external-providers="$(EXTERNAL_PROVIDERS)"
 
 # --- Provider quickstart (local dev) ---
 # The quickstart provider is a small standalone HTTP server that registers

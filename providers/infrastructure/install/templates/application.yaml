@@ -8,7 +8,7 @@ metadata:
     # and locks them afterwards instead of promising a redeploy that will fail.
     railgrid.ai/immutable-inputs: "database.size,database.version"
 spec:
-  displayName: "Web application"
+  displayName: "3-tier application (web, backend, database)"
   description: "A 3-tier app — frontend + backend + Postgres — served through the platform access gate. spec.access chooses public or invite-only (kcp RBAC) reachability; the backend and database are never separately exposed."
   category: Workloads
   version: 0.1.0

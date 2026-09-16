@@ -56,6 +56,14 @@ tilt down
 - The Tiltfile intentionally skips the slow provider-portal Vite builds (`make build-hub`) because `--portal-dev-url` proxies all UI traffic to the Vite dev server.
 - If port 3000 is already taken, kill the existing Vite process (`pkill -f vite`) before running `tilt up`.
 
+### Providers from other repositories
+
+If you develop an external provider, such as the private providers in
+`../providers`, add it to the `make tilt-cluster` session with
+`make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers`. See
+[External providers with Tilt](docs/external-providers-tilt.md) for the
+settings and for the contract a provider repository implements.
+
 ---
 
 **API group:** `railgrid.ai/v1alpha1`  

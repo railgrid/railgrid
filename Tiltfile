@@ -4,6 +4,19 @@
 
 trigger_mode(TRIGGER_MODE_AUTO)
 
+# Providers developed in another repository join this session when their
+# checkout is given (docs/external-providers-tilt.md). They run as pods in the
+# railgrid-kro kind cluster, so `make tilt` creates it before `tilt up` and
+# selects its context. Without --external-providers every provider in the
+# checkout is loaded:
+#
+#   make tilt EXTERNAL_PROVIDERS_DIR=../providers
+#   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=linear
+config.define_string('external-providers-dir')
+config.define_string('external-providers')
+config.define_bool('external-providers-api-only')
+cfg = config.parse()
+
 # Public URL overrides keep the default sslip.io local loop intact while
 # allowing a developer to put trusted DNS/TLS in front of the same dynamic
 # virtual-host routing. The public app port may be explicitly empty when the
@@ -1222,4 +1235,38 @@ local_resource(
     labels=['replicas'],
 )
 
-# Linear rebuilds automatically; registration and initialization remain opt-in.
+# ---------------------------------------------------------------------------
+# external providers — built, deployed and registered by the provider
+# repository's own Tilt library (docs/external-providers-tilt.md). The pods run
+# in railgrid-kro and reach the host hub through host.docker.internal, which
+# also relays their scoped kcp access: the admin kubeconfig's kcp address is
+# loopback-only.
+# ---------------------------------------------------------------------------
+external_providers_dir = cfg.get('external-providers-dir', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS_DIR', '')
+if external_providers_dir:
+    external_providers_dir = os.path.abspath(external_providers_dir)
+    external_providers_lib = os.path.join(external_providers_dir, 'hack', 'tilt', 'providers.tilt')
+    if not os.path.exists(external_providers_lib):
+        fail('--external-providers-dir %s has no hack/tilt/providers.tilt; see docs/external-providers-tilt.md' % external_providers_dir)
+    # Never deploy provider charts into whatever cluster happens to be current.
+    if k8s_context() != preview_kro_context:
+        fail('External providers run in %s, but Tilt uses context %r; start with `make tilt EXTERNAL_PROVIDERS_DIR=...`' % (preview_kro_context, k8s_context()))
+    allow_k8s_contexts(preview_kro_context)
+    external_providers = load_dynamic(external_providers_lib)['railgrid_providers'](
+        # Empty (e.g. `make tilt EXTERNAL_PROVIDERS=`) means every provider.
+        selection=cfg.get('external-providers', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS', '') or 'all',
+        api_only=cfg.get('external-providers-api-only', False),
+        context=preview_kro_context,
+        hub_url='https://host.docker.internal:9443',
+        hub_insecure=True,
+        lifecycle_env={
+            'RAILGRID_KCP_KUBECONFIG': os.path.abspath('.kcp/admin.kubeconfig'),
+            'RAILGRID_PROVIDER_KCP_SERVER': 'https://host.docker.internal:9443',
+            'RAILGRID_PROVIDER_KCP_INSECURE': 'true',
+        },
+        resource_deps=['hub', 'kro-mgmt-up'],
+        # A provider still missing local setup (e.g. Factory's scheduler values)
+        # is skipped with a warning; naming it explicitly makes it an error.
+        skip_unconfigured=True,
+    )
+    print('  external providers: %s (from %s)' % (', '.join(external_providers), external_providers_dir))
