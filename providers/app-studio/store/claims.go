@@ -212,7 +212,86 @@ func (s *PostgresStore) BumpReplicaClaimRevision(ctx context.Context, claimKey, 
 	return nil
 }
 
+// replicaClaimRelinquishedAt is the heartbeat a relinquished claim carries:
+// stale under any TTL, so the next replica to ask takes it over at once.
+var replicaClaimRelinquishedAt = time.Unix(0, 0).UTC()
+
+// RelinquishReplicaClaims marks every claim of kind held by ownerReplica stale
+// without deleting it, reporting how many it touched. A replica calls it on
+// shutdown so its successor adopts the claims immediately instead of
+// forwarding to a dead address until the TTL lapses; keeping the row keeps the
+// revision floor that TryClaimReplica carries across the takeover.
+func (s *PostgresStore) RelinquishReplicaClaims(ctx context.Context, kind, ownerReplica string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE app_studio_replica_claims SET heartbeat_at = $1 WHERE kind = $2 AND owner_replica = $3`,
+		replicaClaimRelinquishedAt, kind, ownerReplica)
+	if err != nil {
+		return 0, fmt.Errorf("relinquish %s claims of %s: %w", kind, ownerReplica, err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// TakeOverReplicaClaim transfers the claim to claim.OwnerReplica only while
+// expectedOwner still holds it, whatever its heartbeat — for a holder proven
+// unreachable. The revision floor is preserved. When someone else holds the
+// claim by now, it returns that holder and false.
+func (s *PostgresStore) TakeOverReplicaClaim(ctx context.Context, claim ReplicaClaim, expectedOwner string) (ReplicaClaim, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+		UPDATE app_studio_replica_claims SET
+			owner_replica = $1,
+			owner_addr = $2,
+			detail = $3,
+			heartbeat_at = $4
+		WHERE claim_key = $5 AND owner_replica = $6
+		RETURNING owner_replica, owner_addr, detail, revision, heartbeat_at`,
+		claim.OwnerReplica, claim.OwnerAddr, claim.Detail, time.Now().UTC(), claim.Key, expectedOwner)
+	held := claim
+	if err := row.Scan(&held.OwnerReplica, &held.OwnerAddr, &held.Detail, &held.Revision, &held.HeartbeatAt); err == nil {
+		return held, true, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return ReplicaClaim{}, false, fmt.Errorf("take over claim %s: %w", claim.Key, err)
+	}
+	current, ok, err := s.GetReplicaClaim(ctx, claim.Key)
+	if err != nil || !ok {
+		return ReplicaClaim{}, false, err
+	}
+	return current, current.OwnerReplica == claim.OwnerReplica, nil
+}
+
 // ---- Memory ----
+
+func (m *MemoryStore) RelinquishReplicaClaims(_ context.Context, kind, ownerReplica string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for key, c := range m.replicaClaims {
+		if c.Kind == kind && c.OwnerReplica == ownerReplica {
+			c.HeartbeatAt = replicaClaimRelinquishedAt
+			m.replicaClaims[key] = c
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *MemoryStore) TakeOverReplicaClaim(_ context.Context, claim ReplicaClaim, expectedOwner string) (ReplicaClaim, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, exists := m.replicaClaims[claim.Key]
+	if !exists {
+		return ReplicaClaim{}, false, nil
+	}
+	if current.OwnerReplica != expectedOwner {
+		return current, current.OwnerReplica == claim.OwnerReplica, nil
+	}
+	current.OwnerReplica = claim.OwnerReplica
+	current.OwnerAddr = claim.OwnerAddr
+	current.Detail = claim.Detail
+	current.HeartbeatAt = time.Now().UTC()
+	m.replicaClaims[claim.Key] = current
+	return current, true, nil
+}
 
 func (m *MemoryStore) TryClaimReplica(_ context.Context, claim ReplicaClaim, staleAfter time.Duration) (ReplicaClaim, bool, error) {
 	m.mu.Lock()
@@ -302,6 +381,14 @@ func (e *encryptedStore) GetReplicaClaim(ctx context.Context, claimKey string) (
 
 func (e *encryptedStore) LiveReplicaClaims(ctx context.Context, scopeKey string, staleAfter time.Duration) ([]ReplicaClaim, error) {
 	return e.inner.LiveReplicaClaims(ctx, scopeKey, staleAfter)
+}
+
+func (e *encryptedStore) RelinquishReplicaClaims(ctx context.Context, kind, ownerReplica string) (int64, error) {
+	return e.inner.RelinquishReplicaClaims(ctx, kind, ownerReplica)
+}
+
+func (e *encryptedStore) TakeOverReplicaClaim(ctx context.Context, claim ReplicaClaim, expectedOwner string) (ReplicaClaim, bool, error) {
+	return e.inner.TakeOverReplicaClaim(ctx, claim, expectedOwner)
 }
 
 func (e *encryptedStore) BumpReplicaClaimRevision(ctx context.Context, claimKey, ownerReplica string, revision int64) error {

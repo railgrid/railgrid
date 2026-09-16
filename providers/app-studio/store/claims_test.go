@@ -134,3 +134,67 @@ func TestLiveReplicaClaimsFiltersByScopeAndFreshness(t *testing.T) {
 		t.Fatalf("expired claim still live: %v/%v", live, err)
 	}
 }
+
+func TestRelinquishReplicaClaimsMarksOwnKindStale(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemoryStore()
+	ttl := time.Minute
+	project := func(key, owner string) ReplicaClaim {
+		return ReplicaClaim{Key: key, Kind: ReplicaClaimKindProject, ScopeKey: key, OwnerReplica: owner}
+	}
+	for _, c := range []ReplicaClaim{project("project/a", "replica-a"), project("project/b", "replica-b"), testClaim("replica-a", "")} {
+		if _, held, err := m.TryClaimReplica(ctx, c, ttl); err != nil || !held {
+			t.Fatalf("acquire %s: %v/%v", c.Key, held, err)
+		}
+	}
+	if err := m.BumpReplicaClaimRevision(ctx, "project/a", "replica-a", 9); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := m.RelinquishReplicaClaims(ctx, ReplicaClaimKindProject, "replica-a")
+	if err != nil || n != 1 {
+		t.Fatalf("relinquish = %d/%v, want exactly replica-a's project claim", n, err)
+	}
+	now := time.Now().UTC()
+	a, ok, _ := m.GetReplicaClaim(ctx, "project/a")
+	if !ok || a.Live(now, ttl) || a.Revision != 9 {
+		t.Fatalf("relinquished claim = %+v/%v, want kept, stale, revision 9", a, ok)
+	}
+	if b, _, _ := m.GetReplicaClaim(ctx, "project/b"); !b.Live(now, ttl) {
+		t.Fatal("relinquish touched another replica's claim")
+	}
+	if act, _, _ := m.GetReplicaClaim(ctx, testClaim("", "").Key); !act.Live(now, ttl) {
+		t.Fatal("relinquish touched another kind of claim")
+	}
+	// A relinquished claim is taken over at once, revision intact.
+	taken, held, err := m.TryClaimReplica(ctx, project("project/a", "replica-c"), ttl)
+	if err != nil || !held || taken.Revision != 9 {
+		t.Fatalf("takeover after relinquish = %+v/%v/%v, want held with revision 9", taken, held, err)
+	}
+}
+
+func TestTakeOverReplicaClaimRequiresExpectedOwner(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemoryStore()
+	if _, held, err := m.TryClaimReplica(ctx, testClaim("replica-a", "10.0.0.1:8091"), time.Minute); err != nil || !held {
+		t.Fatalf("acquire: %v/%v", held, err)
+	}
+	if err := m.BumpReplicaClaimRevision(ctx, testClaim("", "").Key, "replica-a", 3); err != nil {
+		t.Fatal(err)
+	}
+
+	// Someone else already moved it: the takeover is refused and reports them.
+	current, held, err := m.TakeOverReplicaClaim(ctx, testClaim("replica-c", "10.0.0.3:8091"), "replica-b")
+	if err != nil || held || current.OwnerReplica != "replica-a" {
+		t.Fatalf("takeover with wrong expected owner = %+v/%v/%v, want refused, holder replica-a", current, held, err)
+	}
+	// The expected owner still holds it, fresh or not: taken, revision kept.
+	taken, held, err := m.TakeOverReplicaClaim(ctx, testClaim("replica-c", "10.0.0.3:8091"), "replica-a")
+	if err != nil || !held || taken.OwnerReplica != "replica-c" || taken.OwnerAddr != "10.0.0.3:8091" || taken.Revision != 3 {
+		t.Fatalf("takeover = %+v/%v/%v, want replica-c with revision 3", taken, held, err)
+	}
+	// A missing claim is not conjured up.
+	if _, held, err := m.TakeOverReplicaClaim(ctx, ReplicaClaim{Key: "missing", OwnerReplica: "replica-c"}, "replica-a"); err != nil || held {
+		t.Fatalf("takeover of a missing claim = %v/%v, want refused", held, err)
+	}
+}

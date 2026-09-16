@@ -354,6 +354,11 @@ func runServe() {
 	if err := srv.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
+	// Only once no request can renew them: hand this replica's projects to
+	// whichever replica serves them next (including its own replacement).
+	release, cancelRelease := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelRelease()
+	apiServer.RelinquishProjectClaims(release)
 }
 
 // newHandler builds the combined backend-API + portal handler. apiServer may be
