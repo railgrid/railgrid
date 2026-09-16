@@ -195,6 +195,13 @@ rules:
   - apiGroups: [""]
     resources: ["services/proxy"]
     verbs: ["get", "create", "update", "patch", "delete"]
+  # Provider Actions workload attestation (/workload-identities/review): an
+  # online TokenReview of the dev pod's projected bootstrap token, then a pod
+  # GET (granted above) to match its annotations. Without it every review
+  # fails and the hub answers the sandbox's token exchange with 403.
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
 {{- if .Values.operator.clusterAdmin }}
 ---
 # Opt-in escape hatch: bind the operator ServiceAccount to cluster-admin on top
