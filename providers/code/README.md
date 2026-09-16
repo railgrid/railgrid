@@ -89,6 +89,17 @@ make run-provider-code                # start the provider on :8083
 curl -s localhost:8083/healthz
 ```
 
+With the embedded-dev `Tiltfile`, run `code-register` once before starting
+`code`. Each Code update (source changes or a manual trigger) builds the
+provider, runs `init-provider-code`, then restarts the initialized binary.
+An init failure prevents that update from starting a new process. The input
+admin kubeconfig is watched so credential changes also rerun initialization;
+the generated runtime kubeconfig is not watched, avoiding an update loop.
+Readiness uses `/readyz`. The separate `code-init` action remains available
+for setup/repair, but no longer restarts Code by itself; trigger `code` when
+a process restart is needed. This sequence applies to the embedded-dev
+Tiltfile, not the pod-based `Tiltfile.cluster` flow.
+
 `make run-provider-code` auto-sources `providers/code/.env` (gitignored) so
 GitHub OAuth + other dev env reach the provider — copy `.env.example` to `.env`
 to enable "Connect with GitHub" locally. In dev, `RAILGRID_DEV_ALLOW_TENANT_QUERY=true`

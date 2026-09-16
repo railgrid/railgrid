@@ -253,7 +253,7 @@ const showHelpModal = ref(false)
 
 // --- Collapsible sidebar rail ---
 // The vertical dock defaults to a 56px icon rail so the canvas isn't taxed by
-// a permanent 192px label column; labels expand on click and the choice
+// a permanent 208px label column; labels expand on click and the choice
 // persists per browser. Collapsed rows are icon-only with a native title
 // tooltip (design.patterns.navigation-and-feedback: sidebar rail).
 const { sidebarExpanded, toggleSidebar } = useSidebarExpansion()
@@ -366,7 +366,7 @@ const contextStatus = computed<ContextStatus>(() => {
     return { label: 'Choose organization', live: false, visible: true, dotClass: 'bg-text-secondary', textClass: 'text-text-secondary' }
   }
   if (tenantStore.workspaceMode === 'organization' || !tenantStore.workspaceUUID) {
-    return { label: 'Organization', live: false, visible: true, dotClass: 'bg-accent', textClass: 'text-accent' }
+    return { label: 'Organization', live: false, visible: false, dotClass: 'bg-accent', textClass: 'text-accent' }
   }
   if (tenantStore.workspaceLoadState === 'error') {
     return { label: 'Unavailable', live: false, visible: true, dotClass: 'bg-danger', textClass: 'text-danger' }
@@ -394,10 +394,10 @@ const contextStatus = computed<ContextStatus>(() => {
     <span :id="dockHintId" class="sr-only">{{ dockHintText }}</span>
     <!-- Edge snap hint overlays -->
     <Transition name="fade">
-      <div v-if="nearEdge === 'left'" class="fixed inset-y-0 left-0 z-[60] w-48 rounded-r-xl bg-accent/10 border-r border-accent/40" />
+      <div v-if="nearEdge === 'left'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="fixed inset-y-0 left-0 z-[60] rounded-r-xl bg-accent/10 border-r border-accent/40" />
     </Transition>
     <Transition name="fade">
-      <div v-if="nearEdge === 'right'" class="fixed inset-y-0 right-0 z-[60] w-48 rounded-l-xl bg-accent/10 border-l border-accent/40" />
+      <div v-if="nearEdge === 'right'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="fixed inset-y-0 right-0 z-[60] rounded-l-xl bg-accent/10 border-l border-accent/40" />
     </Transition>
     <Transition name="fade">
       <div v-if="nearEdge === 'top'" class="fixed inset-x-0 top-0 z-[60] h-11 rounded-b-xl bg-accent/10 border-b border-accent/40" />
@@ -411,7 +411,7 @@ const contextStatus = computed<ContextStatus>(() => {
       v-if="isVerticalDock"
       ref="dockedRef"
       class="relative z-50 flex h-full flex-shrink-0 flex-col overflow-hidden border-border-default bg-surface-raised py-3 px-2 transition-[width] duration-200"
-      :class="[dockState.mode === 'left' ? 'order-first border-r' : 'order-last border-l', sidebarExpanded ? 'w-48' : 'w-14']"
+      :class="[dockState.mode === 'left' ? 'order-first border-r' : 'order-last border-l', sidebarExpanded ? 'w-52' : 'w-14']"
     >
       <!-- Expanded rail header: brand identity owns the first row, while
            the dock grip remains its leading control. Exceptional context

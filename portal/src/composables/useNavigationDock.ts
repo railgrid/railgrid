@@ -383,7 +383,7 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
   })
 
   const layoutInsetsStyle = computed<Record<string, string>>(() => {
-    const railWidth = sidebarExpanded.value ? '12rem' : '3.5rem'
+    const railWidth = sidebarExpanded.value ? '13rem' : '3.5rem'
     const left = isVerticalDock.value && dockState.value.mode === 'left' ? railWidth : '0px'
     const right = isVerticalDock.value && dockState.value.mode === 'right' ? railWidth : '0px'
     const bottom = isHorizontalDock.value && dockState.value.mode === 'bottom' ? '44px' : '0px'

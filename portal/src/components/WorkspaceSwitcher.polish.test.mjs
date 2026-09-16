@@ -28,10 +28,8 @@ test('horizontal switcher keeps workspace primary and organization provenance vi
   assert.doesNotMatch(trigger, /variant === 'horizontal'[\s\S]{0,220}py-2/)
 })
 
-test('compact icon-only switcher has a distinct organization cue without replacing readiness state', () => {
+test('compact icon-only switcher retains organization context in its accessible label and readiness state', () => {
   assert.match(source, /class="workspace-switcher-trigger group relative flex/)
-  assert.match(source, /v-if="variant === 'compact' && tenant\.orgUUID"/)
-  assert.match(source, /border border-accent\/80 bg-surface-raised/)
   assert.match(source, /:aria-label="workspaceTriggerLabel"/)
   assert.match(source, /:title="variant === 'compact' \? workspaceTriggerLabel : undefined"/)
   assert.match(source, /Organization provenance:/)

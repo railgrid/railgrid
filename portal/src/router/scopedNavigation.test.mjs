@@ -3,15 +3,18 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { computed, nextTick, shallowReactive, watch } from 'vue'
+import { computed, createSSRApp, nextTick, shallowReactive, watch } from 'vue'
+import { renderToString } from '@vue/server-renderer'
+import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
-import { createPinia, setActivePinia } from 'pinia'
+import { createPinia, getActivePinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 const vite = await createServer({
   appType: 'custom', configFile: false, root: new URL('../../', import.meta.url).pathname,
+  plugins: [vue()],
   cacheDir: join(tmpdir(), 'railgrid-scoped-navigation-test'),
   resolve: { alias: { '@': new URL('../', import.meta.url).pathname } },
   optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, hmr: false, ws: false },
@@ -22,6 +25,7 @@ const { installContextGuard } = await vite.ssrLoadModule('/src/router/contextGua
 const { useTenantStore } = await vite.ssrLoadModule('/src/stores/tenant.ts')
 const { useRouteContextStore } = await vite.ssrLoadModule('/src/stores/routeContext.ts')
 const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
+const { default: RouteContextState } = await vite.ssrLoadModule('/src/components/RouteContextState.vue')
 const { scopedPath, parsePortalScope, portalHref, portalRoutePath } = await vite.ssrLoadModule('/src/portalkit/navigation.ts')
 const { readTenant } = await vite.ssrLoadModule('/src/portalkit/tenant.ts')
 const { validPortalNext, consumePortalNext } = await vite.ssrLoadModule('/src/auth/portalNext.ts')
@@ -118,14 +122,103 @@ test('denied, missing, provisioning and failed destinations never substitute a w
   for (const status of [403, 404, 503, 200]) {
     const { router, tenant, context, auth } = setup()
     const real = globalThis.fetch
-    globalThis.fetch = async (path, init) => path.includes(`/workspaces/${W}`)
-      ? response({ uuid: W, orgUUID: O }, status) : real(path, init)
+    let reads = 0
+    globalThis.fetch = async (path, init) => {
+      if (path.includes(`/workspaces/${W}`)) {
+        reads++
+        return response({ uuid: W, orgUUID: O }, status)
+      }
+      return real(path, init)
+    }
     await router.push(resource)
     assert.equal(router.currentRoute.value.fullPath, resource)
     assert.equal(context.state, status === 200 ? 'pending' : status === 503 ? 'error' : 'unavailable')
     assert.equal(auth.clusterName, null)
     assert.notEqual(tenant.workspaceUUID, status === 200 ? B : W)
+    assert.equal(reads, status === 503 ? 3 : 1, 'only transient failures receive bounded retries')
   }
+})
+
+test('destination gate renders recovery only for settled failures, including the route-commit gap', async () => {
+  const { context, router } = setup()
+  const app = createSSRApp(RouteContextState).use(getActivePinia()).use(router)
+  for (const state of ['idle', 'loading', 'ready', 'unavailable', 'pending', 'error']) {
+    context.state = state
+    context.message = 'Previous failure'
+    const html = await renderToString(app)
+    if (['idle', 'loading', 'ready'].includes(state)) {
+      assert.match(html, /Opening destination/)
+      assert.doesNotMatch(html, /Destination unavailable|Previous failure|Switch account|Retry/)
+      assert.match(html, /aria-busy="true"/)
+    } else {
+      assert.match(html, /Retry/)
+      assert.match(html, new RegExp(state === 'pending' ? 'Workspace is provisioning' : state === 'error' ? 'Unable to verify destination' : 'Destination unavailable'))
+    }
+  }
+  context.invalidate()
+  assert.equal(context.message, '')
+})
+
+test('cold navigation waits for session bootstrap and delayed access reads without publishing failure', async () => {
+  const { router, auth, context, calls } = setup()
+  auth.initialized = false
+  const states = []
+  const stop = watch(() => context.state, value => states.push(value), { flush: 'sync' })
+  const real = globalThis.fetch
+  let releaseSession, releaseWorkspace
+  globalThis.fetch = (path, init) => {
+    if (path === '/healthz') return Promise.resolve(response({}))
+    if (path === '/auth/session/bootstrap') return new Promise(resolve => { releaseSession = () => resolve(response({})) })
+    if (path === `/api/orgs/${O}/workspaces/${W}`) return new Promise(resolve => { releaseWorkspace = () => resolve(response({ uuid: W, orgUUID: O, clusterName: 'ready' })) })
+    return real(path, init)
+  }
+  const navigation = router.push(resource)
+  while (!releaseSession) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(context.state, 'loading')
+  assert.equal(calls.length, 0, 'access checks must wait for browser session initialization')
+  releaseSession()
+  while (!releaseWorkspace) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(context.state, 'loading')
+  releaseWorkspace()
+  await navigation
+  stop()
+  assert.deepEqual(states, ['loading', 'ready'])
+  assert.equal(auth.clusterName, 'ready')
+})
+
+test('temporary destination failures recover while loading, and retries stop after navigation changes', async () => {
+  for (const failure of ['network', 503]) {
+    const { router, context } = setup()
+    const real = globalThis.fetch
+    let attempts = 0
+    const states = []
+    const stop = watch(() => context.state, value => states.push(value), { flush: 'sync' })
+    globalThis.fetch = async (path, init) => {
+      if (path.endsWith(`/workspaces/${W}`) && ++attempts === 1) {
+        if (failure === 'network') throw new TypeError('Network unavailable')
+        return response({}, failure)
+      }
+      return real(path, init)
+    }
+    await router.push(resource)
+    stop()
+    assert.equal(attempts, 2)
+    assert.deepEqual(states, ['loading', 'ready'])
+    assert.equal(context.state, 'ready')
+  }
+  const { router, tenant } = setup()
+  const real = globalThis.fetch
+  let attempts = 0
+  globalThis.fetch = async (path, init) => {
+    if (path.endsWith(`/workspaces/${W}`)) { attempts++; return response({}, 503) }
+    return real(path, init)
+  }
+  const oldNavigation = router.push(resource)
+  while (!attempts) await new Promise(resolve => setImmediate(resolve))
+  await router.push(`/${O}/${B}`)
+  await oldNavigation
+  assert.equal(attempts, 1, 'superseded destinations must not retry')
+  assert.equal(tenant.workspaceUUID, B)
 })
 
 test('new navigation fences a late context response and back restores the original workspace', async () => {

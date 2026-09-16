@@ -8,8 +8,10 @@ import { Loader2 } from 'lucide-vue-next'
 
 const context = useRouteContextStore()
 const router = useRouter()
-const busy = computed(() => context.state === 'loading')
-const title = computed(() => busy.value ? 'Opening destination' : context.state === 'pending' ? 'Workspace is provisioning' : 'Destination unavailable')
+// This gate can remain mounted between invalidation, resolution, and the
+// router committing its destination. Only settled failures are error screens.
+const busy = computed(() => !['unavailable', 'pending', 'error'].includes(context.state))
+const title = computed(() => busy.value ? 'Opening destination' : context.state === 'pending' ? 'Workspace is provisioning' : context.state === 'error' ? 'Unable to verify destination' : 'Destination unavailable')
 function retry() { if (context.target) void context.resolve(context.target, true) }
 function switchAccount() {
   const destination = router.currentRoute.value.fullPath

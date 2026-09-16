@@ -4,6 +4,7 @@ import { authFetch } from '@/auth/session'
 import { useAuthStore } from './auth'
 import { useTenantStore, type OrgRow, type WorkspaceRow } from './tenant'
 import { parsePortalScope, type NavigationScope } from '@/portalkit/navigation'
+import { readDestination } from '@/router/readDestination'
 
 export const useRouteContextStore = defineStore('route-context', () => {
   const state = ref<'idle' | 'loading' | 'ready' | 'unavailable' | 'pending' | 'error'>('idle')
@@ -38,6 +39,7 @@ export const useRouteContextStore = defineStore('route-context', () => {
     identity = ''
     target.value = null
     state.value = 'idle'
+    message.value = ''
   }
 
   async function resolve(scope: NavigationScope, force = false): Promise<boolean> {
@@ -52,11 +54,12 @@ export const useRouteContextStore = defineStore('route-context', () => {
     const current = () => revision === generation.value
     try {
       const orgURL = `/api/orgs/${encodeURIComponent(scope.orgUUID!)}`
+      const workspaceUUID = scope.workspaceUUID
       const responses = await Promise.all([
-        authFetch(orgURL, { headers: { 'X-Railgrid-Org': scope.orgUUID! } }),
-        scope.workspaceUUID ? authFetch(`${orgURL}/workspaces/${encodeURIComponent(scope.workspaceUUID)}`, {
-          headers: { 'X-Railgrid-Org': scope.orgUUID!, 'X-Railgrid-Workspace': scope.workspaceUUID },
-        }) : Promise.resolve(null),
+        readDestination(() => authFetch(orgURL, { headers: { 'X-Railgrid-Org': scope.orgUUID! } }), current),
+        workspaceUUID ? readDestination(() => authFetch(`${orgURL}/workspaces/${encodeURIComponent(workspaceUUID)}`, {
+          headers: { 'X-Railgrid-Org': scope.orgUUID!, 'X-Railgrid-Workspace': workspaceUUID },
+        }), current) : Promise.resolve(null),
       ])
       if (!current()) return false
       const failed = responses.find((response) => response && !response.ok)
