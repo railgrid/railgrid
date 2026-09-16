@@ -125,7 +125,13 @@ type Server struct {
 	developmentSyncLocks         map[string]*sync.Mutex
 	developmentSyncTails         map[string]chan struct{}
 	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string) error
-	projectCreatePreflight       projectCreatePreflightGenerator
+	// developmentSyncReadyTimeout / developmentSyncReadyBackoff override how
+	// long, and how often, a post-mutation sync retries while the development
+	// environment is being provisioned. Zero uses the package defaults; tests
+	// shorten them.
+	developmentSyncReadyTimeout time.Duration
+	developmentSyncReadyBackoff time.Duration
+	projectCreatePreflight      projectCreatePreflightGenerator
 	// developmentSyncFailures records the most recent post-mutation sync
 	// failure per project so verify_development_runtime can report it. A
 	// failed background sync means the assistant's edits never reached the

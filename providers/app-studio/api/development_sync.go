@@ -44,6 +44,13 @@ const (
 	projectSandboxComponentSyncTimeout  = 5 * time.Minute
 	projectSandboxSyncTimeout           = 10 * time.Minute
 	projectDevelopmentSyncErrorMaxBytes = 4096
+
+	// A post-mutation sync keeps retrying for this long while the development
+	// environment is still being provisioned, backing off from the initial to
+	// the max interval. See syncProjectDevelopmentTargetWhenReady.
+	projectDevelopmentSyncReadyTimeout        = 5 * time.Minute
+	projectDevelopmentSyncReadyInitialBackoff = time.Second
+	projectDevelopmentSyncReadyMaxBackoff     = 15 * time.Second
 )
 
 type projectDevelopmentSyncTargetInfo struct {
@@ -1124,18 +1131,18 @@ func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project
 }
 
 func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id identity, p *aiv1alpha1.Project, name string) error {
-	lock := s.developmentSyncLock(id, p)
-	lock.Lock()
-	defer lock.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), projectSandboxSyncTimeout)
 	defer cancel()
+	lock := s.developmentSyncLock(id, p)
+	lock.Lock()
 	target, err := s.projectDevelopmentTarget(ctx, c, p, id)
+	lock.Unlock()
 	if err != nil {
 		s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the workspace sync after %s could not resolve its development target: %v", projectToolBaseName(name), err))
 		klog.V(2).Infof("development sync after %s skipped for project %s: %v", projectToolBaseName(name), p.Name, err)
 		return err
 	}
-	if _, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target); err != nil {
+	if _, err := s.syncProjectDevelopmentTargetWhenReady(ctx, c, id, p, target); err != nil {
 		// A failed post-mutation sync means the user's edit never reached the
 		// development sandbox — warn, don't bury it at debug verbosity, and
 		// record it so the assistant's own verification reports it instead of
@@ -1146,6 +1153,83 @@ func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id i
 	}
 	s.clearDevelopmentSyncFailure(id, p)
 	return nil
+}
+
+// syncProjectDevelopmentTargetWhenReady runs syncProjectDevelopmentTarget and
+// retries it while the development environment is still being provisioned.
+//
+// A post-mutation sync is scheduled the moment the mutating tool returns, but
+// select_project_template only rewrites the Project spec: the Project
+// reconciler creates the template instance afterwards, and the instance's pod
+// then needs time to start. A single attempt therefore routinely lands before
+// the instance exists (NotFound) or before its component accepts traffic. With
+// nothing retrying it, the template's scaffold never reached the sandbox and the
+// preview served an empty workspace until some unrelated edit synced again.
+//
+// Only those provisioning races are retried (projectDevelopmentSyncProvisioning);
+// every other failure returns at once, as before. The sync lock is taken per
+// attempt rather than across the wait, so a manual sync is never stuck behind a
+// sandbox that is still starting. The readiness timeout only bounds when
+// retrying stops — each attempt runs under ctx, so a sync that starts just
+// before the deadline is not cut short.
+func (s *Server) syncProjectDevelopmentTargetWhenReady(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {
+	lock := s.developmentSyncLock(id, p)
+	timeout, backoff, maxBackoff := s.developmentSyncReadiness()
+	deadline := time.Now().Add(timeout)
+	for attempt := 1; ; attempt++ {
+		lock.Lock()
+		result, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target)
+		lock.Unlock()
+		if err == nil {
+			if attempt > 1 {
+				klog.V(2).Infof("development sync for project %s succeeded on attempt %d once its environment was ready", p.Name, attempt)
+			}
+			return result, nil
+		}
+		if !projectDevelopmentSyncProvisioning(err) {
+			return nil, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("development environment was not ready within %s: %w", timeout, err)
+		}
+		wait := min(backoff, remaining)
+		klog.V(2).Infof("development sync for project %s is waiting for its environment (attempt %d, retrying in %s): %v", p.Name, attempt, wait, err)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("development environment was not ready before the sync was cancelled (%v): %w", ctx.Err(), err)
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, maxBackoff)
+	}
+}
+
+// developmentSyncReadiness returns the readiness-retry timeout and backoff
+// bounds, honouring the Server's test overrides.
+func (s *Server) developmentSyncReadiness() (timeout, backoff, maxBackoff time.Duration) {
+	timeout = projectDevelopmentSyncReadyTimeout
+	backoff = projectDevelopmentSyncReadyInitialBackoff
+	maxBackoff = projectDevelopmentSyncReadyMaxBackoff
+	if s.developmentSyncReadyTimeout > 0 {
+		timeout = s.developmentSyncReadyTimeout
+	}
+	if s.developmentSyncReadyBackoff > 0 {
+		backoff = s.developmentSyncReadyBackoff
+		maxBackoff = s.developmentSyncReadyBackoff
+	}
+	return timeout, backoff, maxBackoff
+}
+
+// projectDevelopmentSyncProvisioning reports whether a sync failed only because
+// the development environment is not up yet: the template instance does not
+// exist (the Project reconciler has not created it), or it exists but its
+// component is not accepting traffic yet — the same readiness races the
+// run-sandbox seed retries. Validation, precondition, revision and auth
+// failures are not provisioning and must not be retried.
+func projectDevelopmentSyncProvisioning(err error) bool {
+	return apierrors.IsNotFound(err) || projectAssistantRunSandboxSeedRetryable(err)
 }
 
 // developmentSyncFailureKey scopes a recorded failure to one tenant's project,
