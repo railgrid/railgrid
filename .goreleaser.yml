@@ -47,11 +47,11 @@ release:
 
 blobs:
   - provider: s3
-    endpoint: https://d7fc6dd1a6252d2a0ea1a629770cd3a8.r2.cloudflarestorage.com
+    endpoint: https://f8f725cf687b0377b17bdea3dbee524e.r2.cloudflarestorage.com
     region: auto
     ids:
     - kubectl-railgrid-plugin
-    bucket: railgrid
+    bucket: railgrid-cli
     directory: "cli/railgrid/{{.Tag}}"
 
 krews:
