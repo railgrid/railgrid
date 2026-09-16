@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -141,6 +142,9 @@ func newWorkloadIdentityReviewHandler(reviewer workloadIdentityReviewer) http.Ha
 		}
 		status, err := reviewer.Review(r.Context(), token, []string{workloadIdentityAudience})
 		if err != nil {
+			// The hub turns this into a generic 403 for the workload, so the
+			// cause (typically missing tokenreviews RBAC) is only visible here.
+			log.Printf("workload identity review: token review failed: %v", err)
 			http.Error(w, "token review unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -160,6 +164,7 @@ func newWorkloadIdentityReviewHandler(reviewer workloadIdentityReviewer) http.Ha
 							ServiceAccount: serviceAccount,
 						}
 					} else if podErr != nil && !apierrors.IsNotFound(podErr) {
+						log.Printf("workload identity review: pod %s/%s lookup failed: %v", namespace, podName, podErr)
 						http.Error(w, "workload identity pod lookup unavailable", http.StatusServiceUnavailable)
 						return
 					}
