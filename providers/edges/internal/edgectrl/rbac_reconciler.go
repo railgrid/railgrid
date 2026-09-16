@@ -33,6 +33,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -90,12 +91,10 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 		return ctrl.Result{}, err
 	}
 
-	// Keep the historical name for KubernetesCluster/LinuxServer credentials so
-	// existing agents continue to reconnect. MacOSServer gets a kind-qualified
-	// prefix because all edge kinds share the tenant's railgrid-system namespace;
-	// a Mac edge named "build" must not adopt credentials for a legacy edge with
-	// the same name.
-	saName := edgeCredentialName(r.kind, edge.GetName())
+	// Credentials are kind-qualified: all edge kinds share the tenant's
+	// railgrid-system namespace, and a LinuxServer named "build" must not
+	// adopt the credentials of a KubernetesCluster named "build".
+	saName := edgesv1alpha1.EdgeCredentialName(r.gvr.Resource, edge.GetName())
 	tokenSecretName := saName + "-token"
 	kubeconfigSecretName := saName + "-kubeconfig"
 
@@ -178,15 +177,6 @@ func (r *RBACReconciler) edgeOwnerRef(edge edgeapi.Connectable) metav1.OwnerRefe
 		Controller:         ptr.To(true),
 		BlockOwnerDeletion: ptr.To(true),
 	}
-}
-
-// edgeCredentialName preserves the legacy edge-<name> contract for existing
-// kinds while isolating MacOSServer credentials from those objects.
-func edgeCredentialName(kind, edgeName string) string {
-	if kind == "MacOSServer" {
-		return "macos-edge-" + edgeName
-	}
-	return "edge-" + edgeName
 }
 
 // ensureOwnerRef checks if the object already has the expected OwnerReference

@@ -29,6 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 )
 
 const (
@@ -61,74 +63,75 @@ func newRBACTestClient(t *testing.T, objects ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 }
 
-func TestLinuxAndMacOSCredentialsAreDisjointForTheSameEdgeName(t *testing.T) {
+func TestCredentialsAreDisjointAcrossKindsForTheSameEdgeName(t *testing.T) {
 	ctx := context.Background()
-	linuxOwner := rbacTestOwner("LinuxServer", testEdgeName, "linux-uid")
-	macOwner := rbacTestOwner("MacOSServer", testEdgeName, "mac-uid")
-	linuxName := edgeCredentialName("LinuxServer", testEdgeName)
-	macName := edgeCredentialName("MacOSServer", testEdgeName)
-	if linuxName == macName {
-		t.Fatalf("LinuxServer and MacOSServer credential names collide: %q", linuxName)
-	}
-
-	c := newRBACTestClient(t)
-	if err := ensureServiceAccount(ctx, c, linuxName, linuxOwner); err != nil {
-		t.Fatalf("create Linux ServiceAccount: %v", err)
-	}
-	if err := ensureServiceAccount(ctx, c, macName, macOwner); err != nil {
-		t.Fatalf("create MacOSServer ServiceAccount: %v", err)
-	}
-	if err := ensureClusterRoleBinding(ctx, c, linuxName, linuxOwner); err != nil {
-		t.Fatalf("create Linux ClusterRoleBinding: %v", err)
-	}
-	if err := ensureClusterRoleBinding(ctx, c, macName, macOwner); err != nil {
-		t.Fatalf("create MacOSServer ClusterRoleBinding: %v", err)
-	}
-
-	linux := &RBACReconciler{gvr: schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "linuxservers"}}
-	mac := &RBACReconciler{gvr: schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "macosservers"}}
-	if err := linux.ensureEdgeProxyGrant(ctx, c, linuxName, testEdgeName, linuxOwner); err != nil {
-		t.Fatalf("create Linux proxy grant: %v", err)
-	}
-	if err := mac.ensureEdgeProxyGrant(ctx, c, macName, testEdgeName, macOwner); err != nil {
-		t.Fatalf("create MacOSServer proxy grant: %v", err)
-	}
-
-	for _, tc := range []struct {
-		name     string
+	kinds := []struct {
+		kind     string
 		resource string
+		uid      string
 	}{
-		{name: linuxName, resource: "linuxservers"},
-		{name: macName, resource: "macosservers"},
-	} {
-		var sa corev1.ServiceAccount
-		if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: tc.name}, &sa); err != nil {
-			t.Fatalf("get ServiceAccount %q: %v", tc.name, err)
+		{kind: "KubernetesCluster", resource: edgesv1alpha1.KubernetesClusterResource, uid: "k8s-uid"},
+		{kind: "LinuxServer", resource: edgesv1alpha1.LinuxServerResource, uid: "linux-uid"},
+		{kind: "MacOSServer", resource: edgesv1alpha1.MacOSServerResource, uid: "mac-uid"},
+	}
+
+	seen := map[string]string{}
+	for _, k := range kinds {
+		name := edgesv1alpha1.EdgeCredentialName(k.resource, testEdgeName)
+		if other, ok := seen[name]; ok {
+			t.Fatalf("%s and %s credential names collide: %q", other, k.kind, name)
 		}
-		if len(sa.OwnerReferences) != 1 || sa.OwnerReferences[0].Name != testEdgeName {
-			t.Errorf("ServiceAccount %q owner references = %+v, want the same-named edge", tc.name, sa.OwnerReferences)
+		seen[name] = k.kind
+	}
+
+	// Provision every kind in one workspace, as the reconcilers would for three
+	// same-named edges: each must get its own credentials without conflict.
+	c := newRBACTestClient(t)
+	for _, k := range kinds {
+		name := edgesv1alpha1.EdgeCredentialName(k.resource, testEdgeName)
+		owner := rbacTestOwner(k.kind, testEdgeName, k.uid)
+		if err := ensureServiceAccount(ctx, c, name, owner); err != nil {
+			t.Fatalf("create %s ServiceAccount: %v", k.kind, err)
+		}
+		if err := ensureClusterRoleBinding(ctx, c, name, owner); err != nil {
+			t.Fatalf("create %s ClusterRoleBinding: %v", k.kind, err)
+		}
+		r := &RBACReconciler{gvr: edgesv1alpha1.SchemeGroupVersion.WithResource(k.resource)}
+		if err := r.ensureEdgeProxyGrant(ctx, c, name, testEdgeName, owner); err != nil {
+			t.Fatalf("create %s proxy grant: %v", k.kind, err)
+		}
+	}
+
+	for _, k := range kinds {
+		name := edgesv1alpha1.EdgeCredentialName(k.resource, testEdgeName)
+		var sa corev1.ServiceAccount
+		if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, &sa); err != nil {
+			t.Fatalf("get ServiceAccount %q: %v", name, err)
+		}
+		if len(sa.OwnerReferences) != 1 || sa.OwnerReferences[0].Kind != k.kind || sa.OwnerReferences[0].Name != testEdgeName {
+			t.Errorf("ServiceAccount %q owner references = %+v, want the same-named %s", name, sa.OwnerReferences, k.kind)
 		}
 		var binding rbacv1.ClusterRoleBinding
-		if err := c.Get(ctx, client.ObjectKey{Name: "railgrid-edge-" + tc.name}, &binding); err != nil {
-			t.Fatalf("get agent binding %q: %v", tc.name, err)
+		if err := c.Get(ctx, client.ObjectKey{Name: "railgrid-edge-" + name}, &binding); err != nil {
+			t.Fatalf("get agent binding %q: %v", name, err)
 		}
-		if len(binding.Subjects) != 1 || binding.Subjects[0].Name != tc.name || binding.Subjects[0].Namespace != edgeNamespace {
-			t.Errorf("agent binding %q subjects = %+v, want ServiceAccount %s/%s", tc.name, binding.Subjects, edgeNamespace, tc.name)
+		if len(binding.Subjects) != 1 || binding.Subjects[0].Name != name || binding.Subjects[0].Namespace != edgeNamespace {
+			t.Errorf("agent binding %q subjects = %+v, want ServiceAccount %s/%s", name, binding.Subjects, edgeNamespace, name)
 		}
 		var grant rbacv1.ClusterRole
-		if err := c.Get(ctx, client.ObjectKey{Name: "railgrid-edge-proxy-" + tc.name}, &grant); err != nil {
-			t.Fatalf("get proxy grant %q: %v", tc.name, err)
+		if err := c.Get(ctx, client.ObjectKey{Name: "railgrid-edge-proxy-" + name}, &grant); err != nil {
+			t.Fatalf("get proxy grant %q: %v", name, err)
 		}
-		if len(grant.Rules) != 1 || len(grant.Rules[0].Resources) != 1 || grant.Rules[0].Resources[0] != tc.resource ||
+		if len(grant.Rules) != 1 || len(grant.Rules[0].Resources) != 1 || grant.Rules[0].Resources[0] != k.resource ||
 			len(grant.Rules[0].ResourceNames) != 1 || grant.Rules[0].ResourceNames[0] != testEdgeName {
-			t.Errorf("proxy grant %q rules = %+v, want only %s/%q", tc.name, grant.Rules, tc.resource, testEdgeName)
+			t.Errorf("proxy grant %q rules = %+v, want only %s/%q", name, grant.Rules, k.resource, testEdgeName)
 		}
 		var proxyBinding rbacv1.ClusterRoleBinding
-		if err := c.Get(ctx, client.ObjectKey{Name: "railgrid-edge-proxy-" + tc.name}, &proxyBinding); err != nil {
-			t.Fatalf("get proxy binding %q: %v", tc.name, err)
+		if err := c.Get(ctx, client.ObjectKey{Name: "railgrid-edge-proxy-" + name}, &proxyBinding); err != nil {
+			t.Fatalf("get proxy binding %q: %v", name, err)
 		}
-		if len(proxyBinding.Subjects) != 1 || proxyBinding.Subjects[0].Name != tc.name || proxyBinding.Subjects[0].Namespace != edgeNamespace {
-			t.Errorf("proxy binding %q subjects = %+v, want ServiceAccount %s/%s", tc.name, proxyBinding.Subjects, edgeNamespace, tc.name)
+		if len(proxyBinding.Subjects) != 1 || proxyBinding.Subjects[0].Name != name || proxyBinding.Subjects[0].Namespace != edgeNamespace {
+			t.Errorf("proxy binding %q subjects = %+v, want ServiceAccount %s/%s", name, proxyBinding.Subjects, edgeNamespace, name)
 		}
 	}
 }
@@ -137,7 +140,7 @@ func TestCredentialHelpersRefuseAResourceControlledByAnotherEdge(t *testing.T) {
 	ctx := context.Background()
 	foreignOwner := rbacTestOwner("LinuxServer", testEdgeName, "linux-uid")
 	macOwner := rbacTestOwner("MacOSServer", testEdgeName, "mac-uid")
-	macName := edgeCredentialName("MacOSServer", testEdgeName)
+	macName := edgesv1alpha1.EdgeCredentialName(edgesv1alpha1.MacOSServerResource, testEdgeName)
 	macGrantName := "railgrid-edge-proxy-" + macName
 
 	cases := []struct {

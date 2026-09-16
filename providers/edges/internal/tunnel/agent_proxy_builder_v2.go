@@ -35,6 +35,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
 	"github.com/railgrid/provider-sdk/revdial"
 )
@@ -345,7 +346,7 @@ func (p *Server) buildAgentKubeconfigHeader(cluster, resource, edgeName, _ strin
 		return ""
 	}
 
-	secretName := edgeCredentialName(resource, edgeName) + "-kubeconfig"
+	secretName := edgesv1alpha1.EdgeCredentialName(resource, edgeName) + "-kubeconfig"
 	secret, err := dynClient.Resource(secretGVR).Namespace("railgrid-system").Get(
 		context.Background(), secretName, metav1.GetOptions{})
 	if err != nil {
@@ -377,17 +378,6 @@ func (p *Server) buildAgentKubeconfigHeader(cluster, resource, edgeName, _ strin
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(data)
-}
-
-// edgeCredentialName mirrors the RBAC reconciler's naming policy. Existing
-// KubernetesCluster/LinuxServer credentials retain the legacy edge-<name>
-// names; MacOSServer credentials use a disjoint kind-qualified prefix so a
-// same-named legacy edge cannot be mistaken for the macOS agent's credential.
-func edgeCredentialName(resource, edgeName string) string {
-	if resource == macOSServerResource {
-		return "macos-edge-" + edgeName
-	}
-	return "edge-" + edgeName
 }
 
 // buildAgentKubeconfig constructs a minimal kubeconfig that the agent can use
