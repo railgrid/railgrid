@@ -118,17 +118,13 @@ completion.`,
 		devCmd,
 	)...)
 
-	// Hidden: kubectl's exec credential plugin, doc generation, and the
-	// pre-1.0 spellings kept so existing scripts and muscle memory work.
+	// Hidden: kubectl's exec credential plugin, doc generation, and raw kcp
+	// workspace navigation.
 	cmd.AddCommand(
 		newVersionCommand(),
 		newGetTokenCommand(),
 		newDocsCommand(),
-		newKubeconfigCommand(),
 		newKCPWorkspaceCommand(),
-		newListCommand(),
-		newGetCommand(),
-		newApplyCommand(),
 	)
 
 	rejectUnknownSubcommands(cmd)
@@ -151,15 +147,4 @@ func rejectUnknownSubcommands(parent *cobra.Command) {
 		}
 		c.RunE = func(c *cobra.Command, _ []string) error { return c.Help() }
 	}
-}
-
-// newListCommand keeps 'railgrid list' / 'railgrid ls' as a hidden shorthand for
-// 'railgrid edge list'.
-func newListCommand() *cobra.Command {
-	list := newEdgeListCommand()
-	list.Use = "list"
-	list.Aliases = []string{"ls"}
-	list.Short = "List edges (shorthand for 'railgrid edge list')"
-	list.Hidden = true
-	return list
 }

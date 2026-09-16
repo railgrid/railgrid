@@ -298,10 +298,10 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 			// the wrong one — it addresses kcp, and only ever belongs inside the
 			// Secret step 2 creates. Naming the alternatives is the whole point:
 			// either a cluster-admin credential for the target cluster, or a
-			// `railgrid kubeconfig edge` context, which reaches that cluster
+			// `railgrid edge kubeconfig` context, which reaches that cluster
 			// through the agent.
 			Description: "Where the provider runs in your cluster. Run every command below against that " +
-				"cluster — with your own cluster-admin credentials, or a `railgrid kubeconfig edge` context " +
+				"cluster — with your own cluster-admin credentials, or a `railgrid edge kubeconfig` context " +
 				"for it. Not the kubeconfig shown above: that one addresses railgrid, not your cluster.",
 			Command: fmt.Sprintf("kubectl create namespace %s", namespace),
 		},

@@ -312,7 +312,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HUB/api/providers/code/heartb
 curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer garbage' "$HUB/services/mcp/$ORG/$WS"
 
 # 1.1 ssrf: as a member, expect 403 and no agent dial
-railgrid apply -f - <<EOF
+kubectl apply -f - <<EOF
 apiVersion: edges.railgrid.ai/v1alpha1
 kind: Service
 metadata: {name: probe}

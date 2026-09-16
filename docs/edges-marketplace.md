@@ -116,7 +116,7 @@ Private-image recipe (simple mode):
 
 ```sh
 # 1. On each selected edge (repeat per edge; the Secret never leaves the edge):
-railgrid kubeconfig edge <edge-name> > /tmp/edge.kubeconfig
+railgrid edge kubeconfig <edge-name> > /tmp/edge.kubeconfig
 KUBECONFIG=/tmp/edge.kubeconfig kubectl create namespace kiosk   # optional; the agent creates it too
 KUBECONFIG=/tmp/edge.kubeconfig kubectl -n kiosk create secret docker-registry ghcr-pull \
   --docker-server=ghcr.io --docker-username=<user> --docker-password=<token>

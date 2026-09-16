@@ -59,12 +59,8 @@ const methods: { id: Method; label: string; description: string; icon: typeof Do
 
 const hubURL = computed(() => window.location.origin)
 
-const binarySnippet = `# Download the latest release for your OS/arch
-curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz
-
-# Move to a directory on your PATH
-sudo mv kubectl-railgrid /usr/local/bin/railgrid
-chmod +x /usr/local/bin/railgrid
+const binarySnippet = `# Installs the latest release to ~/.local/bin (Linux, macOS)
+curl -fsSL https://downloads.railgrid.ai/install.sh | sh
 
 railgrid version`
 

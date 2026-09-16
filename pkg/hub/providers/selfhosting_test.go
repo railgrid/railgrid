@@ -425,7 +425,7 @@ func TestRenderInstallInstructionsNamesTheCredentialToUse(t *testing.T) {
 	}
 	// An edge context is a legitimate way to reach the cluster — the agent holds
 	// cluster-admin there — so the steps must offer it rather than warn it off.
-	if !strings.Contains(joined, "railgrid kubeconfig edge") {
+	if !strings.Contains(joined, "railgrid edge kubeconfig") {
 		t.Errorf("steps do not mention an edge context as a way to reach the cluster:\n%s", joined)
 	}
 }

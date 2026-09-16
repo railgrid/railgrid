@@ -167,7 +167,7 @@ type SimpleWorkloadSpec struct {
 	// ImagePullSecrets names docker-registry Secrets in the target namespace
 	// on the edge cluster that pull the image (a private registry). The
 	// Workload never carries the Secret itself — create it on every selected
-	// edge beforehand (e.g. through `railgrid kubeconfig edge`).
+	// edge beforehand (e.g. through `railgrid edge kubeconfig`).
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }

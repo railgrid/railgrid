@@ -38,11 +38,11 @@ func runInitCmd(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("init needs a kubeconfig (set RAILGRID_PROVIDER_KUBECONFIG): %w", err)
 	}
-	// Empty means "the workspace this kubeconfig already points at": kcp
-	// resolves an unset APIExportEndpointSlice export path to the slice's own
-	// logical cluster. Leaving it unset is what lets this one chart bootstrap
-	// both the platform workspace and an org's self-hosted copy. Set the env
-	// var only to reference an export in a different workspace.
+	// Empty means "the workspace this kubeconfig already points at": the SDK
+	// resolves that workspace's canonical path and writes it onto the
+	// APIExportEndpointSlice. Leaving it unset is what lets this one chart
+	// bootstrap both the platform workspace and an org's self-hosted copy. Set
+	// the env var only to reference an export in a different workspace.
 	workspacePath := os.Getenv("KUERY_WORKSPACE_PATH")
 	schemasDir := os.Getenv("RAILGRID_SCHEMAS_DIR")
 	if schemasDir == "" {

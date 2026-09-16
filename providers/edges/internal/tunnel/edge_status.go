@@ -102,7 +102,7 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 			delete(status, "joinToken")
 		}
 
-		// Stamp the public proxy URL so `railgrid kubeconfig edge` / `railgrid ssh`
+		// Stamp the public proxy URL so `railgrid edge kubeconfig` / `railgrid ssh`
 		// have an address to externalize. This was previously set by the hub's
 		// (now-deleted) mount_reconciler; it moved here when the edge plane
 		// became a standalone provider. Idempotent: same value on every

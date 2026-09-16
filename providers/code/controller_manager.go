@@ -86,9 +86,12 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 	// watch. Ensure it here (idempotent) before building the provider. Best
 	// effort: log and continue if it fails — serve still offers MCP/portal, and
 	// the manager simply engages no clusters until the slice lands.
-	// Empty means "the workspace this kubeconfig already points at": kcp resolves
-	// an unset export path to the slice's own logical cluster, so one chart works
-	// for both the platform workspace and an org's self-hosted copy.
+	// This package's ensure requires an explicit path, so with
+	// CODE_WORKSPACE_PATH unset (the chart default) this step is skipped with the
+	// warning below. That is harmless: `init` already created the slice through
+	// the provider SDK, which resolves the workspace's canonical path itself —
+	// the mechanism that lets one chart serve both the platform workspace and an
+	// org's self-hosted copy.
 	workspacePath := os.Getenv("CODE_WORKSPACE_PATH")
 	if err := install.EnsureAPIExportEndpointSlice(ctx, config, workspacePath); err != nil {
 		log.Printf("controller manager: WARNING could not ensure APIExportEndpointSlice: %v", err)

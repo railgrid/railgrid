@@ -52,7 +52,7 @@ railgrid edge create my-cluster --type kubernetes
 railgrid edge join-command my-cluster       # prints the agent invocation
 # run the agent (--type kubernetes), then:
 railgrid edge list                          # my-cluster → Connected/Ready
-railgrid kubeconfig edge my-cluster > /tmp/edge.kubeconfig
+railgrid edge kubeconfig my-cluster > /tmp/edge.kubeconfig
 kubectl --kubeconfig /tmp/edge.kubeconfig get nodes   # streams down the tunnel
 
 # a server edge is the same provider, different resource:

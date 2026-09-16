@@ -73,7 +73,7 @@ call. `fmcp` needs no token: the proxy reads and refreshes your login itself.
    never send `X-Railgrid-Tenant`/`X-Railgrid-Cluster` (the hub owns those).
 3. **No TTY means explicit flags**: `railgrid use --org --workspace`,
    `railgrid login --token`.
-4. **Prefer kubectl over `railgrid apply`/`railgrid get`** for workspace resources.
+4. **Use kubectl** to read and write workspace resources.
 5. **Enumerate, don't trust lists.** Providers, their `scope`, and your MCP
    tools differ per hub and per org: `GET /api/providers` and MCP `tools/list`
    are the only authority. Tool names are `<provider>__<tool>`; an MCP client

@@ -28,6 +28,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -222,4 +223,12 @@ func loadRawKubeconfig() (*clientcmdapi.Config, string, error) {
 		path = kubeconfig
 	}
 	return raw, path, nil
+}
+
+func getNestedString(u unstructured.Unstructured, fields ...string) string {
+	val, found, err := unstructured.NestedString(u.Object, fields...)
+	if err != nil || !found {
+		return ""
+	}
+	return val
 }

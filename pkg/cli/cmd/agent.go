@@ -187,7 +187,7 @@ func runAgentForeground(ctx context.Context, opts *agent.Options) error {
 				opts.UsingSavedKubeconfig = true
 			}
 		} else {
-			// Fallback: legacy token config.
+			// Fallback: the durable token saved after the first join.
 			saved, err := agent.LoadAgentConfig(opts.EdgeName)
 			if err != nil {
 				logger.Info("Could not load saved agent config (will require --token)", "err", err)

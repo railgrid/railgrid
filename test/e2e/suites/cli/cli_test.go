@@ -133,10 +133,8 @@ func TestSessionCommands(t *testing.T) {
 		t.Fatalf("docs not generated: %v", err)
 	}
 
-	// Without the edges provider the edge commands say so, including the
-	// hidden legacy spellings.
+	// Without the edges provider the edge commands say so.
 	s.mustFail("edges provider is not enabled", "edge", "list")
-	s.mustFail("edges provider is not enabled", "ls")
 
 	// logout forgets the context; commands then ask for a login.
 	if out := s.run("logout"); !strings.Contains(out, "Logged out") {
@@ -539,8 +537,6 @@ func TestKubernetesEdgeConnect(t *testing.T) {
 	}) {
 		t.Fatalf("kubectl through the standalone edge kubeconfig never succeeded:\n%s", last)
 	}
-	// The legacy spelling still produces the same file.
-	s.run("kubeconfig", "edge", edgeName, "-o", edgeKubeconfig+".legacy")
 
 	// 2. connect: kubectl's current context is the edge.
 	if out := s.run("connect", edgeName); !strings.Contains(out, `context "railgrid-`+edgeName+`"`) {
