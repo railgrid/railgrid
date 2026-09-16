@@ -1164,6 +1164,31 @@ const contextStatus = computed<ContextStatus>(() => {
   touch-action: none;
 }
 
+/* Provider fallbacks append unlayered button rules after host utilities.
+   Own the compact geometry here so text-button padding cannot crush the SVG. */
+.shell-sidebar-toggle[type="button"] {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  gap: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+.shell-sidebar-toggle[type="button"]:hover {
+  background: var(--color-surface-overlay);
+  color: var(--color-text-primary);
+}
+.shell-sidebar-toggle[type="button"]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.shell-sidebar-toggle[type="button"] > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
 /* Keep the navigation usable for coarse pointers even though the visual
    system is intentionally dense on desktop. */
 @media (pointer: coarse) {
