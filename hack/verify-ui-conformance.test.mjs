@@ -207,7 +207,7 @@ test('keeps the responsive ResourcePage title canonical across provider detail v
 
   assert.match(resourcePage, /container-name:\s*resource-page;/)
   assert.match(resourcePage, /container-type:\s*inline-size;/)
-  assert.match(title, /font-size:\s*clamp\(24px,\s*4vw,\s*32px\)/)
+  assert.match(title, /font-size:\s*18px;/)
   assert.match(title, /letter-spacing:\s*-\.02em/)
   assert.match(title, /line-height:\s*1\.12/)
   assert.match(title, /overflow-wrap:\s*anywhere/)
