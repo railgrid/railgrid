@@ -57,6 +57,25 @@ const (
 	LabelDiscovered = "edges.railgrid.ai/discovered"
 )
 
+// EdgeCredentialName is the name of the agent ServiceAccount minted for the
+// edge identified by resource and name; its token Secret, kubeconfig Secret
+// and RBAC grants derive from it. All connectable kinds share the tenant's
+// railgrid-system namespace, so each kind has its own prefix: a LinuxServer
+// and a KubernetesCluster with the same name are different edges and must
+// never share (or fight over) one credential. KubernetesCluster keeps the
+// historical edge-<name> name. The prefixes are mutually exclusive, so no two
+// (resource, name) pairs map to the same credential.
+func EdgeCredentialName(resource, name string) string {
+	switch resource {
+	case LinuxServerResource:
+		return "linux-edge-" + name
+	case MacOSServerResource:
+		return "macos-edge-" + name
+	default:
+		return "edge-" + name
+	}
+}
+
 // GetConnectionStatus makes KubernetesCluster satisfy edgeapi.Connectable so the
 // SDK's token/rbac/lifecycle reconcilers can manage its connection state.
 func (c *KubernetesCluster) GetConnectionStatus() *edgeapi.ConnectionStatus {
