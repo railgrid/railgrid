@@ -165,11 +165,6 @@ func TestEdgeListOutputs(t *testing.T) {
 	}
 
 	mustFail(t, path, "unsupported output format", "edge", "list", "-o", "xml")
-
-	// The pre-1.0 shorthand keeps working.
-	if legacy := mustRun(t, path, "ls", "-o", "name"); legacy != names {
-		t.Fatalf("railgrid ls = %q, want %q", legacy, names)
-	}
 }
 
 func TestEdgeGet(t *testing.T) {
@@ -218,9 +213,9 @@ func TestEdgeKubeconfigConnectDisconnect(t *testing.T) {
 		t.Fatalf("hub TLS settings not inherited: %+v", cfg.Clusters["railgrid-prod"])
 	}
 
-	// -o writes a file; the legacy spelling still works.
+	// -o writes a file.
 	file := filepath.Join(t.TempDir(), "prod.kubeconfig")
-	mustRun(t, path, "kubeconfig", "edge", "prod", "-o", file)
+	mustRun(t, path, "edge", "kubeconfig", "prod", "-o", file)
 	if _, err := os.Stat(file); err != nil {
 		t.Fatal(err)
 	}
@@ -682,8 +677,8 @@ func TestRootCommandTreeIsGrouped(t *testing.T) {
 			t.Errorf("visible command %q has no help group", c.Name())
 		}
 	}
-	// Legacy spellings stay reachable but hidden.
-	for _, name := range []string{"list", "get", "apply", "kubeconfig", "kcp-workspace", "get-token", "docs"} {
+	// Helper commands stay reachable but hidden.
+	for _, name := range []string{"kcp-workspace", "get-token", "docs"} {
 		c, _, err := root.Find([]string{name})
 		if err != nil || c == nil || c.Name() != name {
 			t.Errorf("command %q not found: %v", name, err)
@@ -709,7 +704,7 @@ func TestGenerateDocs(t *testing.T) {
 			t.Errorf("index missing %q", want)
 		}
 	}
-	if strings.Contains(string(index), "railgrid_get-token.md") || strings.Contains(string(index), "railgrid apply") {
+	if strings.Contains(string(index), "railgrid_get-token.md") || strings.Contains(string(index), "railgrid kcp-workspace") {
 		t.Error("hidden commands leaked into the index")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "railgrid_connect.md")); err != nil {

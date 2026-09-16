@@ -643,12 +643,12 @@ onUnmounted(() => {
                           class="k-icon-action snippet-copy"
                           :aria-label="copyControlLabel('kube', 'kubectl command')"
                           :data-k-tip="copyControlLabel('kube', 'kubectl command')"
-                          @click="copy(`railgrid kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube', 'kubectl command')"
+                          @click="copy(`railgrid edge kubeconfig ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube', 'kubectl command')"
                         >
                           <component :is="copied === 'kube' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                         </button>
                       </div>
-                      <pre>railgrid kubeconfig edge {{ name }} &gt; {{ name }}.kubeconfig
+                      <pre>railgrid edge kubeconfig {{ name }} &gt; {{ name }}.kubeconfig
 kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                     </div>
                   </div>

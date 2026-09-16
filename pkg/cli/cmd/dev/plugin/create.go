@@ -187,8 +187,6 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&o.WithExternalKCP, "with-external-kcp", false, "Deploy kcp via Helm into the hub kind cluster instead of using embedded kcp")
 	cmd.Flags().IntVar(&o.KCPHTTPSPort, "kcp-https-port", 7443, "Host port for the kcp front-proxy NodePort mapping (default 7443)")
 	cmd.Flags().IntVar(&o.AgentCount, "worker-count", o.AgentCount, "Number of worker (agent) kind clusters to create. Default 0 = hub-only (local user). Use 1+ for development/tests; >1 names clusters <agent-cluster-name>-1, -2, …")
-	cmd.Flags().IntVar(&o.AgentCount, "agent-count", o.AgentCount, "Number of agent kind clusters to create (deprecated: use --worker-count)")
-	_ = cmd.Flags().MarkDeprecated("agent-count", "use --worker-count")
 	cmd.Flags().StringSliceVar(&o.Providers, "providers", o.Providers, fmt.Sprintf("Providers to install into the hub kind cluster (supported: %s). Pass an empty value to install none", strings.Join(devProviderNames(), ", ")))
 	cmd.Flags().StringVar(&o.ProviderChartRepo, "provider-chart-repo", o.ProviderChartRepo, "OCI repository the provider charts are pulled from, or the path of a railgrid checkout to use providers/<name>/deploy/chart")
 	cmd.Flags().StringVar(&o.ProviderChartVersion, "provider-chart-version", o.ProviderChartVersion, "Provider chart version for OCI charts (default: latest published version of each chart)")
@@ -331,7 +329,7 @@ func redText(text string) string {
 // agentClusterNames returns the list of agent cluster names derived from
 // AgentClusterName and AgentCount.
 //   - count == 0 → []                       (hub-only setup)
-//   - count == 1 → ["<AgentClusterName>"]   (preserves backwards-compat naming)
+//   - count == 1 → ["<AgentClusterName>"]   (unsuffixed)
 //   - count  > 1 → ["<AgentClusterName>-1", "<AgentClusterName>-2", …]
 func (o *DevOptions) agentClusterNames() []string {
 	if o.AgentCount <= 0 {

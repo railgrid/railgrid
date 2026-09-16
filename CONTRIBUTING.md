@@ -273,7 +273,7 @@ Once an Edge is `Ready`, the hub exposes a virtual workspace endpoint:
 https://<hub>/clusters/<workspace-id>/apis/railgrid.ai/v1alpha1/edges/<name>/proxy/k8s
 ```
 
-`railgrid kubeconfig edge <name>` generates a kubeconfig that points to this URL.
+`railgrid edge kubeconfig <name>` generates a kubeconfig that points to this URL.
 
 ---
 

@@ -193,7 +193,7 @@ This URL is a virtual workspace endpoint served by the hub's agent-proxy virtual
 3. Forwards the raw TCP stream to the agent over the revdial tunnel.
 4. The agent forwards to `localhost:<kubeAPIPort>` on the target cluster.
 
-`railgrid kubeconfig edge <name>` generates a kubeconfig pointing to this URL with the user's hub bearer token embedded.
+`railgrid edge kubeconfig <name>` generates a kubeconfig pointing to this URL with the user's hub bearer token embedded.
 
 ---
 

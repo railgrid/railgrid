@@ -355,9 +355,7 @@ Workloads on edges: `Workload` (namespaced on the hub) with
 `simple`, `template`, `helm` (rendered provider-side), fanned into one
 `Placement` per edge (`<workload>-<edge>`, `spec.manifests[]` is the rendered
 output — read it before trusting the edge) applied by the agent with
-server-side apply and prune. `kubectl get workloads,placements -A` lists them
-(`railgrid get workloads|placements` still works but is deprecated; its READY
-column prints total-ready/per-edge replicas, so `2/1` is healthy for two edges). Verified 2026-09-11, both edges Running in 8 s,
+server-side apply and prune. `kubectl get workloads,placements -A` lists them. Verified 2026-09-11, both edges Running in 8 s,
 pruned within ~5 s of deleting the Workload:
 
 ```yaml

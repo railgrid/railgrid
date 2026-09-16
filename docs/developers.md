@@ -190,8 +190,6 @@ railgrid dev init [flags]
 `--with-dex` disables token login, and with it the provider and edge
 automation (it signs in with `dev-token`); that mode is hub-only.
 
-`--agent-count` is accepted as a deprecated alias for `--worker-count`.
-
 **Examples:**
 
 ```bash
