@@ -89,9 +89,10 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		return fmt.Errorf("dynamic client: %w", err)
 	}
 	// Empty path: the slice lands in whatever workspace `config` addresses,
-	// which is also where the APIExport is, and kcp resolves an unset export
-	// path to the slice's own cluster. Hardcoding the platform path here would
-	// make this provider unable to run as an org's self-hosted copy.
+	// which is also where the APIExport is; the SDK resolves that workspace's
+	// canonical path and writes it explicitly (a path-less slice is missed by
+	// kcp's per-shard endpoint publisher). Hardcoding the platform path here
+	// would make this provider unable to run as an org's self-hosted copy.
 	if err := sdkinstall.EnsureAPIExportEndpointSlice(ctx, dynCl, endpointSliceName, apiExportName, ""); err != nil {
 		log.Printf("edge controller manager: WARNING could not ensure APIExportEndpointSlice: %v", err)
 	}

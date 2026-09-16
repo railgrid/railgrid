@@ -102,10 +102,10 @@ type Options struct {
 	// WorkspacePath is the logical-cluster path the APIExport lives in, e.g.
 	// "root:railgrid:providers:code".
 	//
-	// OPTIONAL, and normally best left empty. The endpoint slice is always
-	// created in the same workspace as the export it references, and kcp
-	// resolves an unset spec.export.path to the slice's own logical cluster —
-	// so the path is information Config already carries.
+	// OPTIONAL, and normally best left empty: empty means "the workspace Config
+	// targets", which is where the endpoint slice and the export both live. It
+	// is resolved at install time from that workspace's LogicalCluster and
+	// written to the slice explicitly (see EnsureAPIExportEndpointSlice).
 	//
 	// Leaving it empty is what makes a provider chart workspace-agnostic: the
 	// same chart bootstraps correctly whether its kubeconfig points at
@@ -357,23 +357,44 @@ func waitForResourceExists(ctx context.Context, cl dynamic.Interface, gvr schema
 }
 
 // EnsureAPIExportEndpointSlice ensures an APIExportEndpointSlice referencing the
-// provider's APIExport exists in the provider workspace. spec.export is
-// immutable, so a pre-existing slice with a stale path is deleted + recreated.
+// provider's APIExport exists in the workspace cl targets.
+//
+// workspacePath is the canonical path of the workspace the APIExport lives in.
+// Empty means "the workspace cl targets": the path is resolved from that
+// workspace's LogicalCluster, so callers stay workspace-agnostic (platform and
+// org-hosted providers alike), and it is always written to spec.export.path.
+//
+// The slice must never be path-less. kcp does resolve an unset path to the
+// slice's own logical cluster when serving, but each shard's endpoint-URL
+// publisher finds the slices affected by an APIBinding through the binding's
+// export reference, which is a canonical path; a path-less slice is indexed only
+// under its logical-cluster name, so the lookup misses it. The first binding of
+// the export on a shard other than the export's own then never makes that shard
+// publish its virtual-workspace URL, and the provider silently reconciles
+// nothing in tenant workspaces there until something else touches the slice.
+// kcp versions that resolve the export in that lookup are not affected; writing
+// the path keeps every version working.
+//
+// spec.export is immutable, so a pre-existing slice with a different path —
+// including a path-less one written by an older SDK — is deleted and recreated.
+// That happens once per slice; recreation makes every shard re-evaluate it, and
+// the multicluster provider re-engages its endpoints when the slice reappears.
 func EnsureAPIExportEndpointSlice(ctx context.Context, cl dynamic.Interface, sliceName, exportName, workspacePath string) error {
-	// An empty workspacePath is deliberately written as an ABSENT spec.export.path
-	// rather than an empty string: kcp resolves an unset path to the slice's own
-	// logical cluster, which is always where the export is. That is what lets one
-	// chart bootstrap correctly in a platform workspace and in an org's own
-	// self-hosted workspace without being told which it is in.
-	export := map[string]any{"name": exportName}
-	if workspacePath != "" {
-		export["path"] = workspacePath
+	if workspacePath == "" {
+		resolved, err := workspacePathOf(ctx, cl)
+		if err != nil {
+			return fmt.Errorf("resolving workspace path for APIExportEndpointSlice %s: %w", sliceName, err)
+		}
+		workspacePath = resolved
 	}
 	want := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apis.kcp.io/v1alpha1",
 		"kind":       "APIExportEndpointSlice",
 		"metadata":   map[string]any{"name": sliceName},
-		"spec":       map[string]any{"export": export},
+		"spec": map[string]any{"export": map[string]any{
+			"name": exportName,
+			"path": workspacePath,
+		}},
 	}}
 
 	existing, err := cl.Resource(apiExportEndpointSliceGVR).Get(ctx, sliceName, metav1.GetOptions{})
@@ -388,16 +409,6 @@ func EnsureAPIExportEndpointSlice(ctx context.Context, cl dynamic.Interface, sli
 	}
 	existingPath, _, _ := unstructured.NestedString(existing.Object, "spec", "export", "path")
 	if existingPath == workspacePath {
-		return nil
-	}
-	// An empty workspacePath means "resolve locally", and a slice carrying an
-	// explicit path to its OWN workspace already does exactly that. Treating
-	// that as a mismatch would delete and recreate every already-deployed
-	// platform slice the first time a provider runs a newer SDK — and since
-	// spec.export is immutable, recreate is the only way to change it, so the
-	// virtual-workspace endpoints would briefly disappear from under the hub's
-	// multicluster managers. Leave those slices alone; they are equivalent.
-	if workspacePath == "" {
 		return nil
 	}
 	if err := cl.Resource(apiExportEndpointSliceGVR).Delete(ctx, sliceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
