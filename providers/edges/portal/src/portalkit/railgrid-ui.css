@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 20;
+  --railgrid-ui-core-version: 22;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -2488,7 +2488,7 @@ railgrid-resource-table-filter { display: contents; }
   color: var(--color-text-primary, #e9e9f2);
   overflow-wrap: anywhere;
   font-weight: 600;
-  font-size: clamp(24px, 4vw, 32px);
+  font-size: 18px;
   letter-spacing: -.02em;
   line-height: 1.12;
   word-break: break-word;
@@ -2860,7 +2860,6 @@ railgrid-resource-table-filter { display: contents; }
   }
 
   @container resource-page (max-width: 520px) {
-    .k-resource-page__title { font-size: 22px; }
     .k-resource-section-card { padding: 16px; }
     .k-resource-section-card__header { flex-direction: column; gap: 10px; }
     .k-resource-section-card__actions {
@@ -2898,7 +2897,6 @@ railgrid-resource-table-filter { display: contents; }
   }
 
   @media (max-width: 520px) {
-    .k-resource-page__title { font-size: 22px; }
     .k-resource-section-card { padding: 16px; }
     .k-resource-section-card__header { flex-direction: column; gap: 10px; }
     .k-resource-section-card__actions {
@@ -3027,3 +3025,20 @@ railgrid-resource-table-filter { display: contents; }
   border-bottom-color: var(--color-accent, #8b6bff);
   color: var(--color-accent, #8b6bff);
 }
+
+/* Shared resource boards: populated lanes plus discoverable empty columns. */
+.k-resource-board { display: flex; gap: 16px; overflow-x: auto; max-width: 100%; min-width: 0; padding: 4px 2px 16px; align-items: flex-start; }
+.k-resource-board__lane { flex: 1 0 300px; min-width: 0; max-width: 380px; padding: 12px; background: var(--color-surface-base); }
+.k-resource-board__header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 20px; }
+.k-resource-board__header h3, .k-resource-board__hidden-heading { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; font-weight: 600; }
+.k-resource-board__count, .k-resource-board__empty { color: var(--color-text-secondary); }
+.k-resource-board__items { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; max-height: 60dvh; overflow-y: auto; scrollbar-gutter: stable; padding: 2px; }
+.k-resource-board__items > * { flex-shrink: 0; }
+.k-resource-board__collapse { padding: 4px; min-height: 24px; }
+.k-resource-board__hidden-heading { margin-bottom: 20px; color: var(--color-text-secondary); }
+.k-resource-board__reveal { display: flex; align-items: center; gap: 8px; width: 100%; padding: 12px; margin-bottom: 10px; border: 1px solid var(--color-border-default); border-radius: 4px; background: var(--color-surface-raised); color: var(--color-text-primary); font: inherit; text-align: start; cursor: pointer; }
+.k-resource-board__reveal .k-resource-board__count { margin-inline-start: auto; }
+.k-resource-board__reveal:hover { border-color: var(--color-accent); }
+.k-resource-board:focus-visible, .k-resource-board__lane:focus-visible, .k-resource-board__items:focus-visible, .k-resource-board__reveal:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+.k-resource-board__hidden-items { max-height: min(60dvh, 320px); overflow-y: auto; padding: 2px; scrollbar-gutter: stable; }

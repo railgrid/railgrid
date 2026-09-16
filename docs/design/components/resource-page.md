@@ -88,8 +88,8 @@ readable.
 
 ## Layout and responsive behavior
 
-The responsive title runs from 24px to 32px (22px on mobile), wraps long
-identifiers safely, and uses tight tracking and leading. Actions remain
+The title uses 18px at every viewport size, matching the dense 14–19px heading
+scale. It wraps long identifiers safely and uses tight tracking and leading. Actions remain
 reachable at 44×44px for coarse and hybrid pointers.
 
 ## Accessibility

@@ -18,7 +18,7 @@ export const RAILGRID_UI_STYLE_ID = 'k-railgrid-ui'
 export const RAILGRID_UI_CANONICAL_MARKER = '--railgrid-ui-canonical'
 export const RAILGRID_UI_CANONICAL_VALUE = '1'
 export const RAILGRID_UI_CORE_VERSION_MARKER = '--railgrid-ui-core-version'
-export const RAILGRID_UI_CORE_VERSION = 20
+export const RAILGRID_UI_CORE_VERSION = 22
 
 // Compatibility aliases for current PortalKit consumers. New code should use
 // the explicit core names when it needs to distinguish the two contracts.
