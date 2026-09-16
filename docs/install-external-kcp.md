@@ -217,15 +217,16 @@ image tag overlaid (the upstream base references an unpublished dev tag):
 ```bash
 kubectl apply --server-side -k <<kustomization>>   # see the script
 # resources:
-#   - https://github.com/kcp-dev/kcp-operator/config/default?ref=main
+#   - https://github.com/kcp-dev/kcp-operator/config/default?ref=v0.10.0
 # images:
 #   - name: ghcr.io/kcp-dev/kcp-operator
-#     newTag: main
+#     newTag: v0.10.0
 kubectl -n kcp-operator-system rollout status deploy/kcp-operator-controller-manager --timeout=5m
 ```
 
-Pin a release by setting `KCP_OPERATOR_REF` (and `KCP_OPERATOR_TAG` if the
-image tag differs from the git ref).
+The operator defaults to release v0.10.0, which deploys kcp v0.33.0. Pick a
+different release (or `main`) with `KCP_OPERATOR_REF`, and set
+`KCP_OPERATOR_TAG` if the image tag differs from the git ref.
 
 ## Step 6 — kcp: two shards + front-proxy
 

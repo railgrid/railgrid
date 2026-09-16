@@ -249,7 +249,7 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 			},
 			{
 				APIGroups: []string{"cache.kcp.io"},
-				Resources: []string{"cachedresources"},
+				Resources: []string{"clustercachedresources"},
 				Verbs:     []string{"get", "list", "watch"},
 			},
 			// CRDs: the controller authors the per-template CRD on

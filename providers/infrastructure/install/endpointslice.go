@@ -57,7 +57,7 @@ const CachedResourceReadyTimeout = 30 * time.Second
 var cachedResourceEndpointSliceGVR = schema.GroupVersionResource{
 	Group:    cachev1alpha1.SchemeGroupVersion.Group,
 	Version:  cachev1alpha1.SchemeGroupVersion.Version,
-	Resource: "cachedresourceendpointslices",
+	Resource: "clustercachedresourceendpointslices",
 }
 
 // APIExportEndpointSliceName is what we pass to the kro chart's
@@ -180,16 +180,16 @@ func PlatformCachedResourceEndpointSlices(ctx context.Context, config *rest.Conf
 		return fmt.Errorf("dynamic client: %w", err)
 	}
 
-	want := &cachev1alpha1.CachedResourceEndpointSlice{
+	want := &cachev1alpha1.ClusterCachedResourceEndpointSlice{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: cachev1alpha1.SchemeGroupVersion.String(),
-			Kind:       "CachedResourceEndpointSlice",
+			Kind:       "ClusterCachedResourceEndpointSlice",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: EndpointSliceTemplatesName,
 		},
-		Spec: cachev1alpha1.CachedResourceEndpointSliceSpec{
-			CachedResource: cachev1alpha1.CachedResourceReference{
+		Spec: cachev1alpha1.ClusterCachedResourceEndpointSliceSpec{
+			ClusterCachedResource: cachev1alpha1.ClusterCachedResourceReference{
 				Name: CachedResourceTemplatesName,
 			},
 			APIExport: cachev1alpha1.ExportBindingReference{
@@ -238,8 +238,9 @@ func PlatformCachedResourceEndpointSlices(ctx context.Context, config *rest.Conf
 // or the timeout expires. Returns the resolved hash on success.
 //
 // Required before flipping APIExport.spec.resources[templates].storage
-// from crd to virtual: the virtual reference carries the hash, and a
-// stale / empty value makes the apiserver reject the update.
+// from crd to virtual: kcp resolves the virtual resource by fingerprint
+// (APIExport identity + endpoint slice), and binding before the cached
+// resource has an identity leaves tenants without Templates.
 func WaitForCachedResourceIdentity(ctx context.Context, config *rest.Config) (string, error) {
 	dyn, err := dynamic.NewForConfig(config)
 	if err != nil {
@@ -269,7 +270,7 @@ func WaitForCachedResourceIdentity(ctx context.Context, config *rest.Config) (st
 	return hash, nil
 }
 
-func endpointSliceToUnstructured(s *cachev1alpha1.CachedResourceEndpointSlice) (*unstructured.Unstructured, error) {
+func endpointSliceToUnstructured(s *cachev1alpha1.ClusterCachedResourceEndpointSlice) (*unstructured.Unstructured, error) {
 	data, err := json.Marshal(s)
 	if err != nil {
 		return nil, err
@@ -279,6 +280,6 @@ func endpointSliceToUnstructured(s *cachev1alpha1.CachedResourceEndpointSlice) (
 		return nil, err
 	}
 	out.SetAPIVersion(cachev1alpha1.SchemeGroupVersion.String())
-	out.SetKind("CachedResourceEndpointSlice")
+	out.SetKind("ClusterCachedResourceEndpointSlice")
 	return out, nil
 }

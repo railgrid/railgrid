@@ -130,7 +130,7 @@ local_count=""
 cached_count=""
 echo ">>> waiting for CachedResource ${CACHED_RESOURCE_NAME} to converge"
 while (( SECONDS < deadline )); do
-  cache_state="$("${kcp[@]}" get cachedresource "${CACHED_RESOURCE_NAME}" \
+  cache_state="$("${kcp[@]}" get clustercachedresource "${CACHED_RESOURCE_NAME}" \
     -o jsonpath='{.status.phase}|{.status.resourceCounts.local}|{.status.resourceCounts.cache}' \
     2>/dev/null || true)"
   IFS='|' read -r cache_phase local_count cached_count <<<"${cache_state}"
@@ -152,7 +152,7 @@ source_state="$("${kcp[@]}" get template "${template_name}" \
 IFS='|' read -r source_cluster source_generation <<<"${source_state}"
 source_spec="$("${kcp[@]}" get template "${template_name}" -o jsonpath='{.spec}')"
 source_spec_hash="$(printf '%s' "${source_spec}" | sha256sum | sed -E 's/[[:space:]].*$//')"
-replication_endpoint="$("${kcp[@]}" get cachedresourceendpointslice "${CACHED_RESOURCE_NAME}" -o jsonpath='{.status.endpoints[0].url}')"
+replication_endpoint="$("${kcp[@]}" get clustercachedresourceendpointslice "${CACHED_RESOURCE_NAME}" -o jsonpath='{.status.endpoints[0].url}')"
 if [[ -z "${source_cluster}" || -z "${source_generation}" || -z "${source_spec_hash}" || -z "${replication_endpoint}" ]]; then
   echo "CachedResource ${CACHED_RESOURCE_NAME} is missing its source identity or replication endpoint" >&2
   exit 1

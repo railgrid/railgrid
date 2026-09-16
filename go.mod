@@ -15,10 +15,10 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/kcp-dev/cli v0.32.0
+	github.com/kcp-dev/cli v0.33.0
 	github.com/kcp-dev/embeddedetcd v1.1.1-0.20260402110232-2cc5c5cce35e
-	github.com/kcp-dev/kcp v0.32.0
-	github.com/kcp-dev/sdk v0.32.3
+	github.com/kcp-dev/kcp v0.33.0
+	github.com/kcp-dev/sdk v0.33.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/railgrid/provider-sdk v0.0.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
@@ -51,9 +51,9 @@ require (
 // Pin to a version where compute/metadata is split out into its own module.
 replace cloud.google.com/go => cloud.google.com/go v0.116.0
 
-// kcp 0.32 (pkg/cache/server) imports apimachinery/v2/pkg/util/crypto, which
-// only exists from v2.32.0. Keep this in lock-step with the kcp release.
-replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.32.0
+// kcp pkg/cache/server imports apimachinery/v2/pkg/util/crypto, which only
+// exists from v2.32.0. Keep this in lock-step with the kcp release.
+replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.33.0
 
 // KCP kubernetes forks - required for cluster-aware API machinery
 replace (
@@ -71,6 +71,7 @@ replace (
 	k8s.io/controller-manager => github.com/kcp-dev/kubernetes/staging/src/k8s.io/controller-manager v0.0.0-20260602065202-e006560fc76a
 	k8s.io/cri-api => github.com/kcp-dev/kubernetes/staging/src/k8s.io/cri-api v0.0.0-20260602065202-e006560fc76a
 	k8s.io/cri-client => github.com/kcp-dev/kubernetes/staging/src/k8s.io/cri-client v0.0.0-20260602065202-e006560fc76a
+	k8s.io/cri-streaming => github.com/kcp-dev/kubernetes/staging/src/k8s.io/cri-streaming v0.0.0-20260602065202-e006560fc76a
 	k8s.io/csi-translation-lib => github.com/kcp-dev/kubernetes/staging/src/k8s.io/csi-translation-lib v0.0.0-20260602065202-e006560fc76a
 	k8s.io/dynamic-resource-allocation => github.com/kcp-dev/kubernetes/staging/src/k8s.io/dynamic-resource-allocation v0.0.0-20260602065202-e006560fc76a
 	k8s.io/endpointslice => github.com/kcp-dev/kubernetes/staging/src/k8s.io/endpointslice v0.0.0-20260602065202-e006560fc76a
@@ -182,11 +183,11 @@ require (
 	github.com/jmoiron/sqlx v1.4.0 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/kcp-dev/apimachinery/v2 v2.32.3 // indirect
-	github.com/kcp-dev/client-go v0.32.0 // indirect
+	github.com/kcp-dev/apimachinery/v2 v2.33.0 // indirect
+	github.com/kcp-dev/client-go v0.33.0 // indirect
 	github.com/kcp-dev/logicalcluster/v3 v3.0.5 // indirect
 	github.com/kcp-dev/multicluster-provider v0.8.0 // indirect
-	github.com/kcp-dev/virtual-workspace-framework v0.32.0 // indirect
+	github.com/kcp-dev/virtual-workspace-framework v0.33.0 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/lann/builder v0.0.0-20180802200727-47ae307949d0 // indirect
@@ -320,12 +321,6 @@ require (
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0
 
-replace github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260719114444-12948e549686
-
-replace github.com/kcp-dev/sdk => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/sdk v0.0.0-20260719114444-12948e549686
-
-replace github.com/kcp-dev/client-go => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/client-go v0.0.0-20260719114444-12948e549686
-
-replace github.com/kcp-dev/code-generator/v3 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/code-generator/v3 v3.0.0-20260719114444-12948e549686
-
-replace github.com/kcp-dev/virtual-workspace-framework => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260719114444-12948e549686
+// kcp v0.33.0 requires code-generator/v3 at a placeholder version (it is a
+// staging module replaced locally upstream); pin the matching release.
+replace github.com/kcp-dev/code-generator/v3 => github.com/kcp-dev/code-generator/v3 v3.33.0

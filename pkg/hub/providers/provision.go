@@ -262,7 +262,7 @@ func providerClusterRoleRules() []any {
 		// grantor holds.
 		rule([]string{"apis.kcp.io"}, []string{"apiexports"}, []string{"bind"}),
 		rule([]string{"cache.kcp.io"},
-			[]string{"cachedresources", "cachedresourceendpointslices"}, readWrite),
+			[]string{"clustercachedresources", "clustercachedresourceendpointslices"}, readWrite),
 		// Resolving the workspace's own path (ApplyBindGrant's org check, the
 		// infrastructure operator's discovery).
 		rule([]string{"core.kcp.io"}, []string{"logicalclusters"}, []string{"get", "list", "watch"}),

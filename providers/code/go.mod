@@ -3,11 +3,10 @@ module github.com/railgrid/provider-code
 go 1.26.8
 
 require (
-	github.com/railgrid/provider-sdk v0.1.0
 	github.com/google/go-github/v66 v66.0.0
-	github.com/kcp-dev/multicluster-provider v0.8.0
-	github.com/kcp-dev/sdk v0.32.3
+	github.com/kcp-dev/sdk v0.33.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/railgrid/provider-sdk v0.1.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/oauth2 v0.36.0
 	k8s.io/api v0.36.2
@@ -16,6 +15,7 @@ require (
 	k8s.io/klog/v2 v2.140.0
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/multicluster-runtime v0.24.2-0.20260817130819-087d80cae466
+	sigs.k8s.io/yaml v1.6.0
 )
 
 require golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597 // indirect
@@ -51,8 +51,9 @@ require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/kcp-dev/apimachinery/v2 v2.32.3 // indirect
+	github.com/kcp-dev/apimachinery/v2 v2.33.0 // indirect
 	github.com/kcp-dev/logicalcluster/v3 v3.0.5 // indirect
+	github.com/kcp-dev/multicluster-provider v0.8.0 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
@@ -92,7 +93,6 @@ require (
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
-	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
 replace (
@@ -107,7 +107,7 @@ replace (
 	k8s.io/kms => github.com/kcp-dev/kubernetes/staging/src/k8s.io/kms v0.0.0-20260602065202-e006560fc76a
 )
 
-replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.32.0
+replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.33.0
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0
 

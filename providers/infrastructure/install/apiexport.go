@@ -138,10 +138,9 @@ func storageForResource(group, plural, templatesIdentityHash string) apisv1alpha
 			Virtual: &apisv1alpha2.ResourceSchemaStorageVirtual{
 				Reference: corev1.TypedLocalObjectReference{
 					APIGroup: ptrTo("cache.kcp.io"),
-					Kind:     "CachedResourceEndpointSlice",
+					Kind:     "ClusterCachedResourceEndpointSlice",
 					Name:     EndpointSliceTemplatesName,
 				},
-				IdentityHash: templatesIdentityHash,
 			},
 		}
 	}
@@ -288,9 +287,6 @@ func storageEqual(a, b apisv1alpha2.ResourceSchemaStorage) bool {
 		return false
 	}
 	if a.Virtual != nil && b.Virtual != nil {
-		if a.Virtual.IdentityHash != b.Virtual.IdentityHash {
-			return false
-		}
 		if a.Virtual.Reference.Name != b.Virtual.Reference.Name ||
 			a.Virtual.Reference.Kind != b.Virtual.Reference.Kind {
 			return false

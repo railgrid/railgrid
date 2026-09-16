@@ -39,7 +39,7 @@ export KCP_SHARD_2="${KCP_SHARD_2:-theseus}"
 export KCP_GATEWAY_IP="${KCP_GATEWAY_IP:-10.96.2.2}"
 
 # kcp-operator git ref to install (kustomize base from GitHub).
-export KCP_OPERATOR_REF="${KCP_OPERATOR_REF:-main}"
+export KCP_OPERATOR_REF="${KCP_OPERATOR_REF:-v0.10.0}"
 
 export KCP_FEATURE_GATES="${KCP_FEATURE_GATES:-CacheAPIs=true,WorkspaceMounts=true}"
 

@@ -154,8 +154,8 @@ github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHm
 github.com/jtolds/gls v4.20.0+incompatible h1:xdiiI2gbIgH/gLH7ADydsJ1uDOEzR8yvV7C0MuV77Wo=
 github.com/jtolds/gls v4.20.0+incompatible/go.mod h1:QJZ7F/aHp+rZTRtaJ1ow/lLfFfVYBRgL+9YlvaHOwJU=
 github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0/go.mod h1:1NbS8ALrpOvjt0rHPNLyCIeMtbizbir8U//inJ+zuB8=
-github.com/kcp-dev/apimachinery/v2 v2.32.0 h1:0Z8zZ5KQgeeVNkATncJZaRvMUAur8WVLX7U744AxPKs=
-github.com/kcp-dev/apimachinery/v2 v2.32.0/go.mod h1:1Rkhiwoq345wlUYtq1/P+3chL2eE1rdoIgBPwb6Y9x8=
+github.com/kcp-dev/apimachinery/v2 v2.33.0 h1:FjHobIOa0jX8mJ/Zc7lPIfqlcc0dARQH2m9tm6jE3Bg=
+github.com/kcp-dev/apimachinery/v2 v2.33.0/go.mod h1:1Rkhiwoq345wlUYtq1/P+3chL2eE1rdoIgBPwb6Y9x8=
 github.com/kcp-dev/kubernetes/staging/src/k8s.io/api v0.0.0-20260602065202-e006560fc76a h1:1k49zqcr+54UquOj46hY0yRurpRuEJI8TSHr8iyNKZg=
 github.com/kcp-dev/kubernetes/staging/src/k8s.io/api v0.0.0-20260602065202-e006560fc76a/go.mod h1:IjHWT2O66SfysG/Ti8VyFHYvzhNftesoXeffmyprgwc=
 github.com/kcp-dev/kubernetes/staging/src/k8s.io/apiextensions-apiserver v0.0.0-20260602065202-e006560fc76a h1:5xvOaxgrPM/QSxnOPpBBVVzYr82YlCkOy5VdM6IeHzo=
@@ -172,8 +172,8 @@ github.com/kcp-dev/logicalcluster/v3 v3.0.5 h1:JbYakokb+5Uinz09oTXomSUJVQsqfxEvU
 github.com/kcp-dev/logicalcluster/v3 v3.0.5/go.mod h1:EWBUBxdr49fUB1cLMO4nOdBWmYifLbP1LfoL20KkXYY=
 github.com/kcp-dev/multicluster-provider v0.8.0 h1:GpifvXjgUUy/V3BDwcPayBhcg85ANN/lI/zWNkEeJpk=
 github.com/kcp-dev/multicluster-provider v0.8.0/go.mod h1:7LkQot2Ljmsv1w5ZjfHpjVEbQwtFQiA6LAWHbiHCGUI=
-github.com/kcp-dev/sdk v0.32.3 h1:aJZYLduj+6Xcnjbw4MjYKCp/WfpX6XGFXCMalKMT0Ek=
-github.com/kcp-dev/sdk v0.32.3/go.mod h1:861Aee5vMdMs1gA6Xg8DPlLhy/pt5ReYzdIcsFVr/b4=
+github.com/kcp-dev/sdk v0.33.0 h1:IqqZ1GtL7g+5jz4DQF9ZzC1tBaOWm0zhy/bQey6FZe0=
+github.com/kcp-dev/sdk v0.33.0/go.mod h1:LMenQETN1Qrt0eq5OOpDq4ZqVhFQoW9+GckmWxDix7U=
 github.com/klauspost/compress v1.18.2 h1:iiPHWW0YrcFgpBYhsA6D1+fqHssJscY/Tm/y2Uqnapk=
 github.com/klauspost/compress v1.18.2/go.mod h1:R0h/fSBs8DE4ENlcrlib3PsXS61voFxhIs2DeRhCvJ4=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=
