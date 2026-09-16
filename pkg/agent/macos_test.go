@@ -138,3 +138,30 @@ func TestAgentCredentialPathsUseWorkerHome(t *testing.T) {
 		t.Fatalf("AgentKubeconfigPathForHome = %q, want %q", got, want)
 	}
 }
+
+func TestMacOSTunnelHeadersCarryHostnameWithoutSSHCredentials(t *testing.T) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{"", "bootstrap-token"} {
+		t.Run("token="+token, func(t *testing.T) {
+			opts := NewOptions()
+			opts.Token = token
+			opts.SSHPassword = "must-not-be-sent"
+			a := &Agent{opts: opts, agentType: AgentTypeMacOS}
+			headers := a.serverTunnelHeaders()
+			if headers == nil {
+				t.Fatal("tunnel headers must be initialized")
+			}
+			if got := headers.Get(agentHostnameHeader); got != hostname {
+				t.Fatalf("hostname = %q, want %q", got, hostname)
+			}
+			for key := range headers {
+				if key != agentHostnameHeader {
+					t.Errorf("unexpected macOS tunnel header %q", key)
+				}
+			}
+		})
+	}
+}

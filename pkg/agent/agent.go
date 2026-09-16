@@ -963,24 +963,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		serverDeliverOnce.Do(func() { close(serverAgentKubeconfigDelivered) })
 	}
 
-	// In join-token mode, pass LinuxServer SSH credentials as WebSocket headers so the hub
-	// can store them server-side (the agent's join token is not a valid kcp
-	// credential for creating secrets). The sshd host key travels on EVERY
-	// connect, whatever the mode: the provider records it write-once (it is
-	// no longer re-asserted via the heartbeat status patch), so an agent that
-	// first connects with a saved kubeconfig must still get to report it.
-	var sshHeaders http.Header
-	if a.agentType == AgentTypeServer && a.opts.Token != "" {
-		sshHeaders = a.buildSSHHeaders()
-	} else if a.agentType == AgentTypeServer {
-		sshHeaders = a.sshHostKeyHeader()
-	}
-	// The host's name rides on every connect too: the provider records it in
-	// status.hostname (shown by `railgrid edge get` / `edge list -o wide`), and
-	// nothing else in the protocol carries it.
-	if hostname, err := os.Hostname(); err == nil && hostname != "" {
-		sshHeaders.Set(agentHostnameHeader, hostname)
-	}
+	sshHeaders := a.serverTunnelHeaders()
 
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
 	a.setTunnelToken(a.hubConfig.BearerToken)
@@ -1171,6 +1154,30 @@ const (
 	// sshCredentialsNamespace is the namespace where SSH credential secrets are stored.
 	sshCredentialsNamespace = "railgrid-system"
 )
+
+// serverTunnelHeaders builds host metadata for both Linux and macOS tunnels.
+func (a *Agent) serverTunnelHeaders() http.Header {
+	// In join-token mode, pass LinuxServer SSH credentials as WebSocket headers so the hub
+	// can store them server-side (the agent's join token is not a valid kcp
+	// credential for creating secrets). The sshd host key travels on EVERY
+	// connect, whatever the mode: the provider records it write-once (it is
+	// no longer re-asserted via the heartbeat status patch), so an agent that
+	// first connects with a saved kubeconfig must still get to report it.
+	sshHeaders := make(http.Header)
+	if a.agentType == AgentTypeServer && a.opts.Token != "" {
+		sshHeaders = a.buildSSHHeaders()
+	} else if a.agentType == AgentTypeServer {
+		sshHeaders = a.sshHostKeyHeader()
+	}
+	// The host's name rides on every connect too: the provider records it in
+	// status.hostname (shown by `railgrid edge get` / `edge list -o wide`), and
+	// nothing else in the protocol carries it.
+	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+		sshHeaders.Set(agentHostnameHeader, hostname)
+	}
+
+	return sshHeaders
+}
 
 // buildSSHHeaders returns HTTP headers carrying SSH credentials for the hub
 // to store server-side during join-token registration.
