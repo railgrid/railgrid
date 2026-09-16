@@ -92,6 +92,6 @@ replace (
 
 // Same pins the providers use, so the multicluster provider fork in
 // apiexportprovider resolves the identical module graph as its importers.
-replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.32.0
+replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.33.0
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0
