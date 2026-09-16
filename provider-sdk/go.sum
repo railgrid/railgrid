@@ -135,8 +135,8 @@ github.com/kcp-dev/logicalcluster/v3 v3.0.5 h1:JbYakokb+5Uinz09oTXomSUJVQsqfxEvU
 github.com/kcp-dev/logicalcluster/v3 v3.0.5/go.mod h1:EWBUBxdr49fUB1cLMO4nOdBWmYifLbP1LfoL20KkXYY=
 github.com/kcp-dev/multicluster-provider v0.8.0 h1:GpifvXjgUUy/V3BDwcPayBhcg85ANN/lI/zWNkEeJpk=
 github.com/kcp-dev/multicluster-provider v0.8.0/go.mod h1:7LkQot2Ljmsv1w5ZjfHpjVEbQwtFQiA6LAWHbiHCGUI=
-github.com/kcp-dev/sdk v0.32.3 h1:aJZYLduj+6Xcnjbw4MjYKCp/WfpX6XGFXCMalKMT0Ek=
-github.com/kcp-dev/sdk v0.32.3/go.mod h1:861Aee5vMdMs1gA6Xg8DPlLhy/pt5ReYzdIcsFVr/b4=
+github.com/kcp-dev/sdk v0.33.0 h1:IqqZ1GtL7g+5jz4DQF9ZzC1tBaOWm0zhy/bQey6FZe0=
+github.com/kcp-dev/sdk v0.33.0/go.mod h1:LMenQETN1Qrt0eq5OOpDq4ZqVhFQoW9+GckmWxDix7U=
 github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=
 github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYWRCY2AiWywWQ=
 github.com/konsorten/go-windows-terminal-sequences v1.0.1/go.mod h1:T0+1ngSBFLxvqU3pZ+m/2kptfBszLMUkC4ZK/EgS/cQ=

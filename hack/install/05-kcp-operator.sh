@@ -7,7 +7,7 @@
 #
 # The upstream config/default kustomization references a development image tag
 # that is not published, so we overlay it with a published tag
-# (KCP_OPERATOR_TAG, defaults to the git ref — main → ghcr.io tag "main").
+# (KCP_OPERATOR_TAG, defaults to the git ref — v0.10.0 → ghcr.io tag "v0.10.0").
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require kubectl

@@ -47,7 +47,7 @@ import (
 var cachedResourceGVR = schema.GroupVersionResource{
 	Group:    cachev1alpha1.SchemeGroupVersion.Group,
 	Version:  cachev1alpha1.SchemeGroupVersion.Version,
-	Resource: "cachedresources",
+	Resource: "clustercachedresources",
 }
 
 // CachedResourceTemplatesName is the well-known name of the
@@ -69,15 +69,15 @@ func PlatformCachedResources(ctx context.Context, config *rest.Config) error {
 		return fmt.Errorf("dynamic client: %w", err)
 	}
 
-	cr := &cachev1alpha1.CachedResource{
+	cr := &cachev1alpha1.ClusterCachedResource{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: cachev1alpha1.SchemeGroupVersion.String(),
-			Kind:       "CachedResource",
+			Kind:       "ClusterCachedResource",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: CachedResourceTemplatesName,
 		},
-		Spec: cachev1alpha1.CachedResourceSpec{
+		Spec: cachev1alpha1.ClusterCachedResourceSpec{
 			GroupVersionResource: cachev1alpha1.GroupVersionResource{
 				Group:    infrav1alpha1.GroupName,
 				Version:  infrav1alpha1.Version,
@@ -123,7 +123,7 @@ func PlatformCachedResources(ctx context.Context, config *rest.Config) error {
 // cachedResourceToUnstructured marshalls a typed CachedResource into
 // the map shape the dynamic client expects. Same approach the
 // install/apiexport.go helpers use.
-func cachedResourceToUnstructured(cr *cachev1alpha1.CachedResource) (*unstructured.Unstructured, error) {
+func cachedResourceToUnstructured(cr *cachev1alpha1.ClusterCachedResource) (*unstructured.Unstructured, error) {
 	data, err := json.Marshal(cr)
 	if err != nil {
 		return nil, err
@@ -133,6 +133,6 @@ func cachedResourceToUnstructured(cr *cachev1alpha1.CachedResource) (*unstructur
 		return nil, err
 	}
 	out.SetAPIVersion(cachev1alpha1.SchemeGroupVersion.String())
-	out.SetKind("CachedResource")
+	out.SetKind("ClusterCachedResource")
 	return out, nil
 }

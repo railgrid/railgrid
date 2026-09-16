@@ -123,7 +123,7 @@ func TestProviderClusterRoleCoversWhatProvidersActuallyDo(t *testing.T) {
 		{"apis.kcp.io", "apibindings", "list", "the apiexport multicluster provider enumerates bound clusters"},
 		{"apis.kcp.io", "apiexports/content", "get", "the APIExport VW authorizer SARs the in-flight verb"},
 		{"apis.kcp.io", "apiexports", "bind", "install.ApplyBindGrant writes the tenant bind ClusterRole"},
-		{"cache.kcp.io", "cachedresources", "create", "the infrastructure provider's virtual storage"},
+		{"cache.kcp.io", "clustercachedresources", "create", "the infrastructure provider's virtual storage"},
 		{"core.kcp.io", "logicalclusters", "get", "install.workspacePathOf, the org-owned check"},
 		{"providers.railgrid.ai", "catalogentries", "update", "install.ApplyCatalogEntry self-registration"},
 		{"providers.railgrid.ai", "catalogentries/status", "patch", "the provider reports its own status"},

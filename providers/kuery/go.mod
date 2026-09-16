@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/kcp-dev/sdk v0.32.3
+	github.com/kcp-dev/sdk v0.33.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/railgrid/kuery v0.0.0-20260915142943-b0668e046680
 	github.com/railgrid/provider-sdk v0.1.0
@@ -55,7 +55,7 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/kcp-dev/apimachinery/v2 v2.32.3 // indirect
+	github.com/kcp-dev/apimachinery/v2 v2.33.0 // indirect
 	github.com/kcp-dev/logicalcluster/v3 v3.0.5 // indirect
 	github.com/kcp-dev/multicluster-provider v0.8.0 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect
@@ -107,7 +107,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.32.0
+replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.33.0
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0
 

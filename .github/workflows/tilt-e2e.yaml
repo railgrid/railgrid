@@ -33,10 +33,10 @@ permissions:
 # kcp source the Tilt setup deploys. Tiltfile.cluster needs a kcp checkout for
 # its contrib/tilt/Tiltfile.static (operator manifests, kubeconfig extract,
 # static-token wiring) — it deploys upstream PREBUILT kcp images, so no kcp `go
-# build` happens here. Pin KCP_REF to a SHA if main's contrib/tilt drifts from
-# the image the operator deploys.
+# build` happens here. Keep KCP_REF on the kcp release the stack deploys
+# (Tiltfile.cluster's default --kcp-image-tag).
 env:
-  KCP_REF: main
+  KCP_REF: v0.33.0
   # Skip the observability stack (grafana/loki/promtail/prometheus) in the
   # kcp Tilt setup — read by contrib/tilt/Tiltfile.static via os.getenv. Those
   # pods are pure overhead on CI and add CPU/memory pressure to the single

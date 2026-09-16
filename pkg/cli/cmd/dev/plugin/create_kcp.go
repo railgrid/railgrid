@@ -76,24 +76,18 @@ const (
 	kcpChartRef     = "kcp-dev/kcp"
 	kcpReleaseName  = "kcp"
 	kcpNamespace    = "kcp"
-	kcpChartVersion = "0.14.0" // matches kcp app version v0.30.0
+	kcpChartVersion = "0.16.6"
 
-	// kcpImageTag pins the kcp container image to a specific build. The chart
-	// default (chart appVersion v0.30.0) panics on startup with:
-	//   "WorkspacesByMountReference … no matches for kind Edge in version
-	//    railgrid.ai/v1alpha1"
-	// when a Workspace with a railgrid mount-reference exists in etcd before the
-	// railgrid APIBinding is wired up. This commit (matches go.mod
-	// github.com/kcp-dev/kcp v0.31.1-0.20260429083913-36c9ef30f3f1) carries the
-	// upstream fix that tolerates a missing REST mapping in the indexer.
-	kcpImageTag = "36c9ef30f"
+	// kcpImageTag pins the kcp container image. Chart 0.16.6 ships appVersion
+	// v0.32.3; override it to match go.mod (github.com/kcp-dev/kcp v0.33.0).
+	// The tag also drives the chart's mounts-proxy wiring (>= v0.32.3).
+	kcpImageTag = "v0.33.0"
 
 	// kcp networking.
 	//
-	// The kcp-dev/kcp chart v0.14.0 hardcodes the front-proxy service on
-	// port 8443 (`port: 8443, targetPort: 8443` in front-proxy-deployment.yaml,
-	// no chart value to override). externalPort is the port kcp stamps into
-	// advertised shard URLs (LogicalCluster.status.URL, APIExportEndpointSlice,
+	// The kcp-dev/kcp chart serves the front-proxy on port 8443 by default
+	// (kcpFrontProxy.service.port; targetPort is fixed at 8443). externalPort
+	// is the port kcp stamps into advertised shard URLs (LogicalCluster.status.URL, APIExportEndpointSlice,
 	// etc.) — it MUST match the actual service port, otherwise kcp's own
 	// workspace controller can't reach its own shard via the advertised URL
 	// and workspaces stay Initializing forever.

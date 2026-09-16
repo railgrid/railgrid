@@ -7,7 +7,7 @@ require (
 	github.com/function61/holepunch-server v0.0.0-20210312073819-8f5e8775e813
 	github.com/go-logr/logr v1.4.3
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/kcp-dev/sdk v0.32.3
+	github.com/kcp-dev/sdk v0.33.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/railgrid/provider-sdk v0.1.0
 	golang.org/x/crypto v0.56.0
@@ -88,7 +88,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jmoiron/sqlx v1.4.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/kcp-dev/apimachinery/v2 v2.32.3 // indirect
+	github.com/kcp-dev/apimachinery/v2 v2.33.0 // indirect
 	github.com/kcp-dev/logicalcluster/v3 v3.0.5 // indirect
 	github.com/kcp-dev/multicluster-provider v0.8.0 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect

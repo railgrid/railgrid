@@ -274,7 +274,7 @@ A one-shot reconcile at startup that ensures the `publish-templates` CachedResou
 
 ```yaml
 apiVersion: cache.kcp.io/v1alpha1
-kind: CachedResource
+kind: ClusterCachedResource
 metadata:
   name: publish-templates
 spec:
