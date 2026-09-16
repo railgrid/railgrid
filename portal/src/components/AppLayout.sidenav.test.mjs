@@ -353,3 +353,16 @@ test('organization chooser marks the complete organizations route family active'
   assert.match(accountMenu, /routePath\.value === '\/organizations' \|\| routePath\.value\.startsWith\('\/organizations\/'\)/)
   assert.match(accountMenu, /:aria-current="organizationsActive \? 'page' : undefined"/)
 })
+
+test('sidebar toggles own compact geometry over late provider button styles', () => {
+  assert.equal((appLayout.match(/class="shell-sidebar-toggle k-btn /g) || []).length, 2)
+  const geometry = appLayout.match(/\.shell-sidebar-toggle\[type="button"\]\s*\{([^}]+)\}/)[1]
+  assert.match(geometry, /width:\s*24px/)
+  assert.match(geometry, /height:\s*24px/)
+  assert.match(geometry, /padding:\s*0;/)
+  assert.match(geometry, /border:\s*0;/)
+  const icon = appLayout.match(/\.shell-sidebar-toggle\[type="button"\] > svg\s*\{([^}]+)\}/)[1]
+  assert.match(icon, /width:\s*14px/)
+  assert.match(icon, /flex:\s*none/)
+  assert.match(appLayout, /\.shell-sidebar-toggle\[type="button"\]:focus-visible/)
+})
