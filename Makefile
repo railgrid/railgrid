@@ -118,7 +118,7 @@ build-portal: ## Build the portal Vue.js SPA
 	cd portal && npm ci && npm run build
 
 dev-portal: ## Run the portal dev server
-	cd portal && npm run dev
+	cd portal && npm run dev -- $(ARGS)
 
 
 build-access-proxy: ## Build the published-app access-proxy binary (infrastructure module)
@@ -286,7 +286,7 @@ build-agents-provider: build-agents-provider-portal ## Build the agents provider
 	cd providers/agents && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/agents-provider .
 
 build-code-provider-portal: ## Build the code provider's micro-frontend (Vite + Vue → portal/dist)
-	cd providers/code/portal && npm install --no-audit --no-fund && npm run build
+	cd providers/code/portal && npm ci --include=dev --no-audit --no-fund && npm run build
 
 build-code-provider: build-code-provider-portal ## Build the code provider binary (portal embedded)
 	cd providers/code && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/code-provider .
@@ -421,6 +421,10 @@ test:
 .PHONY: test-tilt-sandbox-default
 test-tilt-sandbox-default: ## Verify universal sandbox is opt-in in Tilt
 	python3 hack/scripts/verify-tilt-sandbox-default.test.py
+
+.PHONY: test-tilt-code-sequence
+test-tilt-code-sequence: ## Verify Code updates initialize before serving in Tilt
+	python3 hack/scripts/verify-tilt-code-sequence.test.py
 
 test-util:
 	go test ./pkg/util/...
@@ -2066,7 +2070,13 @@ CODE_MANIFEST ?= providers/code/manifest.yaml
 CODE_PROVIDER_MANIFEST ?= providers/code/provider.yaml
 CODE_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/code-runtime.kubeconfig
 
-run-provider-code: build-code-provider ## Run the code provider (requires: make run-hub-embedded-static + make install-provider-code)
+.PHONY: serve-provider-code
+run-provider-code: build-code-provider ## Build and run the code provider
+	@$(MAKE) serve-provider-code
+
+# Tilt already built and initialized the exact binary in its update phase.
+# Keep serving separate so startup cannot rebuild past the initialized version.
+serve-provider-code: ## Run the already-built code provider
 	@echo "Starting code provider on :$(CODE_PORT) (hub $(KROMC_HUB_URL))"
 	@# Auto-source providers/code/.env (gitignored) so GitHub OAuth + other dev
 	@# env reach the provider without a manual export. See .env.example.

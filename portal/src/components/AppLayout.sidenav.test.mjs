@@ -254,6 +254,7 @@ test('shell recovery and context status are present without claiming uncondition
   assert.match(appLayout, /label: 'Loading workspace', live: false, visible: false/)
   assert.match(appLayout, /if \(tenantStore\.activeWorkspace\?\.clusterName\)/)
   assert.match(appLayout, /label: 'Workspace live', live: true, visible: false/)
+  assert.match(appLayout, /label: 'Organization', live: false, visible: false/)
   assert.match(appLayout, /label: 'Provisioning', live: false, visible: true/)
   assert.doesNotMatch(appLayout, /label: 'Pending'/)
 

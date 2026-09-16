@@ -430,11 +430,6 @@ onMounted(() => { void ensureContextLoaded() })
           aria-hidden="true"
         />
       </span>
-      <span
-        v-if="variant === 'compact' && tenant.orgUUID"
-        class="absolute -bottom-0.5 -left-0.5 h-1.5 w-1.5 rounded-[1px] border border-accent/80 bg-surface-raised"
-        aria-hidden="true"
-      />
       <span v-if="variant === 'horizontal'" class="flex min-w-0 flex-1 items-baseline gap-1 overflow-hidden whitespace-nowrap">
         <span class="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-text-primary" :title="workspaceLabel">{{ workspaceLabel }}</span>
         <span

@@ -29,11 +29,14 @@ preview_gateway_service_port = preview_app_public_port or '443'
 # ---------------------------------------------------------------------------
 local_resource(
     'portal',
-    cmd='cd portal && [ -d node_modules ] || npm ci',
-    serve_cmd='cd portal && npx vite --strictPort',
+    # Reconcile the locked dependencies on startup and manifest changes. A
+    # node_modules directory can exist even when an install is incomplete.
+    cmd='cd portal && npm ci --include=dev --no-audit --no-fund',
+    serve_cmd='make dev-portal ARGS=--strictPort',
     deps=[
-        'portal/src',
+        # Vite handles source changes with HMR; do not reinstall on each edit.
         'portal/package.json',
+        'portal/package-lock.json',
         'portal/index.html',
         'portal/vite.config.ts',
     ],
@@ -203,15 +206,14 @@ local_resource(
 )
 
 # --- providers-code (git repository management) ---
-# Long-lived provider: serves the portal + MCP on :8083 and, once a kubeconfig
-# is present, runs the multicluster controller manager. run-provider-code reads
-# CODE_KUBECONFIG from .kcp/code-runtime.kubeconfig (written by code-init), and
-# falls back to portal/MCP-only when it's absent — so this can start before the
-# workspace exists.
+# Each update builds the binary and initializes its APIs/credentials before
+# Tilt replaces the running process. Registration is an explicit prerequisite.
+# Watch the input admin credential, never the runtime kubeconfig written by
+# init: watching our own output would schedule another update.
 local_resource(
     'code',
-    cmd='make build-code-provider',
-    serve_cmd='make run-provider-code',
+    cmd='make init-provider-code',
+    serve_cmd='make serve-provider-code',
     deps=[
         'providers/code/main.go',
         'providers/code/assets.go',
@@ -227,15 +229,22 @@ local_resource(
         'providers/code/oauthgithub',
         'providers/code/portal/src',
         'providers/code/portal/package.json',
+        'providers/code/portal/package-lock.json',
+        'providers/code/portal/vite.config.ts',
+        'providers/code/apis',
+        'providers/code/deploy/chart/files/schemas',
+        'provider-sdk',
+        'go.work',
+        'Makefile',
         'providers/code/go.mod',
         'providers/code/go.sum',
         'providers/code/.env',
-        '.kcp/code-runtime.kubeconfig',
+        '.kcp/admin.kubeconfig',
     ],
-    resource_deps=['hub'],
+    resource_deps=['hub', 'code-register'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8083, path='/healthz'),
+        http_get=http_get_action(port=8083, path='/readyz'),
     ),
     labels=['providers-code'],
 )
@@ -253,7 +262,8 @@ local_resource(
 # APIExportEndpointSlice the controller manager watches. Order:
 #   code-register  → creates root:railgrid:providers:code
 #   code-init      → writes kubeconfig + endpoint slice
-#   code (serve)   → Tilt restarts it when the kubeconfig dep appears
+# The Code update now runs this same init target before each restart. This
+# separate manual action remains useful for setup/repair without restarting.
 local_resource(
     'code-init',
     cmd='make init-provider-code',

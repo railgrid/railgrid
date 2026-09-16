@@ -18,7 +18,7 @@ The sidebar is a 56px icon rail by default. Labels are a click away through a
 persisted browser toggle; collapsed rows are centered icon-only controls with a
 native `title`; category groups collapse to hairline rules. Sub-navigation,
 tenant chip, and theme switch appear only when expanded; expanded width is
-192px.
+208px.
 
 Chat bubbles may use the sanctioned 12–14px soft radius: counterpart bubbles
 use `surface-overlay`, user bubbles `accent-subtle`, and neither glows. Empty
