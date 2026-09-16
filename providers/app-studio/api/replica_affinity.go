@@ -30,11 +30,14 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -211,14 +214,89 @@ func (s *Server) ReplicaAffinity(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		s.forwardToOwner(w, r, routing, claim.OwnerAddr)
+		if s.forwardToOwner(w, r, routing, claim.OwnerAddr) {
+			return
+		}
+		s.takeOverUnreachableProject(w, r, next, routing, id, project, claim)
 	})
 }
 
+// takeOverUnreachableProject handles a request whose owner could not even be
+// dialled. A replica that restarts or crashes leaves its claim fresh for up to
+// projectClaimTTL, and until it lapses every peer — including the replica that
+// replaced it — would forward to a dead address and fail. Nothing listens
+// there, so this replica takes the claim over (only if the unreachable owner
+// still holds it) and serves the request, which was never sent. Should the
+// owner in fact be alive behind a network fault, it finds the claim foreign on
+// its next renewal and starts forwarding here, as for any other takeover.
+func (s *Server) takeOverUnreachableProject(w http.ResponseWriter, r *http.Request, next http.Handler, routing *replicaRouting, id identity, project string, prev store.ReplicaClaim) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	claim, held, err := s.store.TakeOverReplicaClaim(ctx, store.ReplicaClaim{
+		Key:          prev.Key,
+		Kind:         store.ReplicaClaimKindProject,
+		ScopeKey:     prev.Key,
+		OwnerReplica: routing.id,
+		OwnerAddr:    routing.addr,
+	}, prev.OwnerReplica)
+	cancel()
+	if err != nil {
+		klog.Background().Error(err, "taking over project from unreachable owner failed", "project", project, "owner", prev.OwnerReplica)
+		http.Error(w, "project owner unreachable", http.StatusBadGateway)
+		return
+	}
+	if !held {
+		// Another replica moved first; let the client retry against it.
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "project owner changed; retry", http.StatusServiceUnavailable)
+		return
+	}
+	klog.Background().Info("took over project from unreachable owner",
+		"project", project, "previousOwner", prev.OwnerReplica, "previousAddr", prev.OwnerAddr)
+	routing.mu.Lock()
+	routing.owned[prev.Key] = time.Now()
+	routing.mu.Unlock()
+	s.adoptProject(r, id, project, prev, true, claim)
+	next.ServeHTTP(w, r)
+}
+
+// RelinquishProjectClaims marks every project claim this replica holds stale,
+// so whichever replica serves the project next adopts it at once rather than
+// forwarding to this one's soon-dead address until projectClaimTTL lapses.
+// Call it on shutdown after the listeners have drained: a request served
+// afterwards would renew the claim.
+func (s *Server) RelinquishProjectClaims(ctx context.Context) {
+	routing := s.routing()
+	if routing == nil || s.store == nil {
+		return
+	}
+	routing.mu.Lock()
+	clear(routing.owned)
+	routing.mu.Unlock()
+	n, err := s.store.RelinquishReplicaClaims(ctx, store.ReplicaClaimKindProject, routing.id)
+	if err != nil {
+		klog.Background().Error(err, "relinquishing project claims; peers forward to this replica until the claims go stale")
+		return
+	}
+	klog.Background().Info("relinquished project claims", "replica", routing.id, "count", n)
+}
+
 // forwardToOwner proxies the request — path, query, caller Authorization and
-// identity headers untouched — to the owning replica's internal listener.
-func (s *Server) forwardToOwner(w http.ResponseWriter, r *http.Request, routing *replicaRouting, addr string) {
+// identity headers untouched — to the owning replica's internal listener. It
+// returns false, having written nothing, when the owner could not be dialled
+// and none of the request body was consumed, so the caller may still serve the
+// request itself; every other failure is answered with 502.
+func (s *Server) forwardToOwner(w http.ResponseWriter, r *http.Request, routing *replicaRouting, addr string) bool {
 	target := &url.URL{Scheme: "http", Host: addr}
+	out := r
+	var body *forwardBody
+	if r.Body != nil && r.Body != http.NoBody {
+		// The proxy closes the body it sends. Shield the inbound one so it is
+		// still readable if the request ends up served locally.
+		body = &forwardBody{ReadCloser: r.Body}
+		out = r.Clone(r.Context())
+		out.Body = body
+	}
+	unreachable := false
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
@@ -228,13 +306,43 @@ func (s *Server) forwardToOwner(w http.ResponseWriter, r *http.Request, routing 
 		},
 		// SSE and long polls must stream through unbuffered.
 		FlushInterval: -1,
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			klog.Background().Error(err, "forwarding to project owner failed", "owner", addr, "path", r.URL.Path)
+		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			klog.Background().Error(err, "forwarding to project owner failed", "owner", addr, "path", req.URL.Path)
+			if ownerUnreachable(r.Context(), err) && (body == nil || !body.read.Load()) {
+				unreachable = true
+				return
+			}
 			http.Error(w, "project owner unreachable", http.StatusBadGateway)
 		},
 	}
-	proxy.ServeHTTP(w, r)
+	proxy.ServeHTTP(w, out)
+	return !unreachable
 }
+
+// ownerUnreachable reports whether a forward failed while connecting — the
+// owner's address has no listener, so the request never left this replica. A
+// caller that went away is not evidence about the owner.
+func ownerUnreachable(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
+// forwardBody passes the inbound request body to the proxy without letting it
+// be closed, and records whether the proxy started reading it.
+type forwardBody struct {
+	io.ReadCloser
+	read atomic.Bool
+}
+
+func (b *forwardBody) Read(p []byte) (int, error) {
+	b.read.Store(true)
+	return b.ReadCloser.Read(p)
+}
+
+func (b *forwardBody) Close() error { return nil }
 
 // splitProjectPath extracts the {project} segment and the remainder from
 // /api/projects/{project}[/rest]. Literal collection endpoints that happen to

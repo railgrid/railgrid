@@ -250,6 +250,8 @@ type Store interface {
 	GetReplicaClaim(ctx context.Context, claimKey string) (ReplicaClaim, bool, error)
 	LiveReplicaClaims(ctx context.Context, scopeKey string, staleAfter time.Duration) ([]ReplicaClaim, error)
 	BumpReplicaClaimRevision(ctx context.Context, claimKey, ownerReplica string, revision int64) error
+	RelinquishReplicaClaims(ctx context.Context, kind, ownerReplica string) (int64, error)
+	TakeOverReplicaClaim(ctx context.Context, claim ReplicaClaim, expectedOwner string) (ReplicaClaim, bool, error)
 	// Per-organization monthly model spend (spend.go). The assistant checks
 	// the running total before each model call to enforce the USD cap.
 	OrganizationSpendStore

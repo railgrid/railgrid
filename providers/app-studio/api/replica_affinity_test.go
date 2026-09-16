@@ -97,6 +97,11 @@ func TestReplicaAffinityForwardsForeignProjects(t *testing.T) {
 }
 
 func TestReplicaAffinityServesStoreBackedReadsAnywhere(t *testing.T) {
+	// A live owner that answers every forward with a marker status.
+	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer owner.Close()
 	s, msgStore := affinityTestServer(t, "replica-b", "10.0.0.2:8091")
 	// Fresh foreign claim exists, but store-backed reads never consult it.
 	if _, held, err := msgStore.TryClaimReplica(context.Background(), store.ReplicaClaim{
@@ -104,7 +109,7 @@ func TestReplicaAffinityServesStoreBackedReadsAnywhere(t *testing.T) {
 		Kind:         store.ReplicaClaimKindProject,
 		ScopeKey:     projectClaimKey("org-1", "ws-1", "shop"),
 		OwnerReplica: "replica-a",
-		OwnerAddr:    "127.0.0.1:1", // closed loopback port — a forward fails immediately
+		OwnerAddr:    strings.TrimPrefix(owner.URL, "http://"),
 	}, projectClaimTTL); err != nil || !held {
 		t.Fatalf("seeding owner claim: %v/%v", held, err)
 	}
@@ -117,7 +122,7 @@ func TestReplicaAffinityServesStoreBackedReadsAnywhere(t *testing.T) {
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, projectRequest(path, http.MethodGet))
-		if rec.Code == http.StatusBadGateway {
+		if rec.Code == http.StatusTeapot {
 			t.Fatalf("store-backed read %s was forwarded", path)
 		}
 	}
@@ -133,8 +138,8 @@ func TestReplicaAffinityServesStoreBackedReadsAnywhere(t *testing.T) {
 		if served != 2 {
 			t.Fatalf("owner-affine GET %s bypassed affinity", path)
 		}
-		if rec.Code != http.StatusBadGateway {
-			t.Fatalf("owner-affine GET %s for a foreign project = %d, want forwarded (and here, 502 to the unreachable owner)", path, rec.Code)
+		if rec.Code != http.StatusTeapot {
+			t.Fatalf("owner-affine GET %s for a foreign project = %d, want forwarded to the owner", path, rec.Code)
 		}
 	}
 }

@@ -99,6 +99,15 @@ on the owner.
   shared-bearer auth, loop-guard header — no raw relay needed since
   app-studio is HTTP-only). A middleware on project-scoped routes checks the
   claim: owner → serve; foreign owner → forward; no owner → claim and serve.
+- **Owner handover**: a replica relinquishes its project claims on shutdown
+  (after its listeners drain) by marking them stale — the row and its
+  revision floor stay — so its successor adopts them on the next request
+  instead of forwarding to a dead pod IP for the rest of the TTL. A replica
+  that dies without shutting down is covered by the forwarder: when the
+  owner's address cannot even be dialled (the request was never sent and its
+  body is unread), the forwarding replica takes the claim over — only if that
+  owner still holds it — and serves the request itself. Any other forwarding
+  failure stays a 502, because the owner may already have acted on it.
 - **Route split** (from the audit's flow map):
   - *Forwarded (workspace/run-touching)*: turn start, steer, interrupt,
     approvals/resume, hydrate-workspace, template switch, scaffold reseed,
