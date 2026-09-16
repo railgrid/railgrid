@@ -21,7 +21,7 @@
 // tenants drive them as CRDs directly against kcp
 // (templates.infrastructure.railgrid.ai + the per-template instance
 // kinds), projected to tenant workspaces via the CachedResource +
-// APIExport. The MCP surface keeps its own kro.Client.
+// APIExport.
 package main
 
 import (

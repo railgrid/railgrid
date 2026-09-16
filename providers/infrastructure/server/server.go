@@ -71,7 +71,7 @@ func New(d Deps) *Server {
 
 	// Templates + instances are NOT served here: the portal and tenants
 	// read/write them as CRDs directly against kcp (projected via the
-	// CachedResource + APIExport). MCP keeps its own kro.Client.
+	// CachedResource + APIExport).
 	if d.MCP != nil {
 		// One handler covers both /mcp (JSON-RPC POST) and /mcp/sse
 		// (streamable transport server-sent events) — the SDK's
