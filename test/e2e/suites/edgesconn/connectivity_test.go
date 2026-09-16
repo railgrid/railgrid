@@ -104,7 +104,7 @@ func TestKubectlThroughTunnel(t *testing.T) {
 	waitForConnected(t, tenantAdmin, kubernetesClusterGVR, edgeName)
 
 	// 9. THE PROOF: fetch the edge kubeconfig and list nodes through the tunnel.
-	runCLI(t, kubeconfig, railgridBin, "kubeconfig", "edge", edgeName, "--output", edgeKubeconfig)
+	runCLI(t, kubeconfig, railgridBin, "edge", "kubeconfig", edgeName, "--output", edgeKubeconfig)
 	out := kubectlThroughTunnel(t, edgeKubeconfig)
 	if !strings.Contains(out, "control-plane") {
 		t.Fatalf("kubectl get nodes through tunnel did not return a control-plane node:\n%s", out)
