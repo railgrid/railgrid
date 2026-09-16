@@ -33,9 +33,13 @@ import (
 
 // whoamiView is what 'railgrid whoami' resolves. It is also the -o json shape.
 type whoamiView struct {
-	Hub       string `json:"hub"`
-	Context   string `json:"context"`
-	User      string `json:"user,omitempty"`
+	Hub     string `json:"hub"`
+	Context string `json:"context"`
+	User    string `json:"user,omitempty"`
+	// MemberID is what someone types to add this user to an organization
+	// or workspace: the email, or the RBAC identity when there is none
+	// (static-token users).
+	MemberID  string `json:"memberId,omitempty"`
 	Auth      string `json:"auth"` // oidc | static-token | other
 	TokenInfo string `json:"tokenInfo,omitempty"`
 	// TokenExpiresAt is the cached OIDC token expiry, when known.
@@ -115,6 +119,14 @@ func resolveWhoami(ctx context.Context) (*whoamiView, error) {
 		return nil, err
 	}
 	v.Orgs = orgs
+	// Hubs without GET /api/users/me leave MemberID empty.
+	var self selfView
+	if err := doGetJSON(ctx, s.client, s.Hub+"/api/users/me", "", &self); err == nil {
+		v.MemberID = firstNonEmpty(self.Email, self.RBACIdentity)
+		if v.User == "" {
+			v.User = firstNonEmpty(self.Email, self.DisplayName, self.RBACIdentity)
+		}
+	}
 	if v.User == "" {
 		for _, o := range orgs {
 			if o.Personal {
@@ -205,6 +217,13 @@ func execOIDCArgs(exec *clientcmdapi.ExecConfig) (issuer, clientID string) {
 	return issuer, clientID
 }
 
+// selfView is the caller's identity from GET /api/users/me.
+type selfView struct {
+	Email        string `json:"email,omitempty"`
+	DisplayName  string `json:"displayName,omitempty"`
+	RBACIdentity string `json:"rbacIdentity"`
+}
+
 // jwtPayload is the subset of ID token claims whoami shows.
 type jwtPayload struct {
 	Subject           string `json:"sub"`
@@ -245,6 +264,9 @@ func printWhoami(w io.Writer, v *whoamiView) {
 	p := func(label, value string) { _, _ = fmt.Fprintf(w, "%-12s%s\n", label+":", formatStringOrDash(value)) }
 	p("Hub", v.Hub)
 	p("User", v.User)
+	if v.MemberID != "" {
+		p("Member ID", v.MemberID+" (give this to an admin who wants to add you)")
+	}
 	auth := v.Auth
 	if v.TokenExpiresAt != nil {
 		switch {

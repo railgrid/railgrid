@@ -1348,6 +1348,40 @@ func TestEnableProvider_AllowsSatisfiedDependencies(t *testing.T) {
 	}
 }
 
+// ===== User self =====
+
+func TestGetSelfUser(t *testing.T) {
+	// A static-token user: no email, RBAC identity as display name. The
+	// endpoint is how they learn what to tell an admin who wants to add them.
+	u := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "static-user-47b9dce0e91570a1"},
+		Spec: tenancyv1alpha1.UserSpec{
+			Name:         "railgrid:static:47b9dce0e91570a1",
+			RBACIdentity: "railgrid:static:47b9dce0e91570a1",
+		},
+	}
+	mgr, _, _ := newTestManager(t, u)
+	srv := newTestServer(t, mgr, adminTC(u.Name, "", ""))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/users/me")
+	if err != nil {
+		t.Fatalf("GET /api/users/me: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	var got SelfView
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	want := SelfView{User: u.Name, DisplayName: u.Spec.Name, RBACIdentity: u.Spec.RBACIdentity}
+	if got != want {
+		t.Errorf("GET /api/users/me = %+v, want %+v", got, want)
+	}
+}
+
 // ===== User self-delete =====
 
 func TestDeleteSelfUser_StampsTimestamp(t *testing.T) {
