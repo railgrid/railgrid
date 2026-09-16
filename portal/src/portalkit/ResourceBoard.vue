@@ -39,7 +39,9 @@ async function collapse(id: string) {
     </section>
     <section v-if="hidden.length" class="k-resource-board__lane k-resource-board__hidden" aria-label="Hidden columns">
       <h3 class="k-resource-board__hidden-heading"><ChevronDown :size="14" aria-hidden="true" />Hidden columns <span class="k-resource-board__count">{{ hidden.length }}</span></h3>
+      <div class="k-resource-board__hidden-items">
       <button v-for="column in hidden" :key="column.id" type="button" class="k-resource-board__reveal" :data-hidden-column="column.id" :aria-label="`Show ${column.label} column`" @click="reveal(column.id)"><slot name="icon" :column="column" /><span>{{ column.label }}</span><span class="k-resource-board__count">0</span></button>
+      </div>
     </section>
   </div>
 </template>
