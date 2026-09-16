@@ -104,7 +104,7 @@ Run the printed command on the target cluster. Then:
 
 ```bash
 railgrid edge list
-railgrid kubeconfig edge my-cluster > kc.yaml
+railgrid edge kubeconfig my-cluster > kc.yaml
 kubectl --kubeconfig kc.yaml get nodes
 ```
 
@@ -160,9 +160,8 @@ same way; `railgrid completion --help` sets up shell completion.
 | `railgrid agent join\|run\|install\|uninstall\|upgrade`, `railgrid install` | Run or install the agent on a cluster or host |
 | `railgrid dev init\|update\|delete` | Manage a local kind-based environment |
 
-Hidden but still accepted: `railgrid list`/`ls` (edge list), `railgrid kubeconfig edge`,
-`railgrid get`, `railgrid apply`, `railgrid get-token` (the kubectl exec plugin) and
-`railgrid kcp-workspace` (raw kcp workspace navigation).
+Hidden: `railgrid get-token` (the kubectl exec plugin) and `railgrid kcp-workspace`
+(raw kcp workspace navigation).
 
 ### Building an app from a terminal or an AI agent
 

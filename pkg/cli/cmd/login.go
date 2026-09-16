@@ -112,8 +112,6 @@ switches organization and workspace and 'railgrid whoami' shows the session.`,
 
 // checkHubAuthMode queries the hub's /healthz endpoint to determine if OIDC
 // is configured. Returns true if OIDC is enabled, false otherwise.
-// On error (e.g. old server returning plain text), it assumes OIDC is enabled
-// for backwards compatibility.
 func checkHubAuthMode(hubURL string, insecure bool) (bool, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	if insecure {
@@ -131,8 +129,7 @@ func checkHubAuthMode(hubURL string, insecure bool) (bool, error) {
 		OIDC bool `json:"oidc"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		// Old server without JSON healthz — assume OIDC (backwards compat).
-		return true, nil
+		return false, fmt.Errorf("checking hub auth mode: unexpected %s response from %s: %w", resp.Status, apiurl.PathHealthz, err)
 	}
 	return result.OIDC, nil
 }

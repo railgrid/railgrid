@@ -539,8 +539,6 @@ func TestKubernetesEdgeConnect(t *testing.T) {
 	}) {
 		t.Fatalf("kubectl through the standalone edge kubeconfig never succeeded:\n%s", last)
 	}
-	// The legacy spelling still produces the same file.
-	s.run("kubeconfig", "edge", edgeName, "-o", edgeKubeconfig+".legacy")
 
 	// 2. connect: kubectl's current context is the edge.
 	if out := s.run("connect", edgeName); !strings.Contains(out, `context "railgrid-`+edgeName+`"`) {

@@ -220,21 +220,6 @@ Examples:
 	return cmd
 }
 
-// newKubeconfigCommand keeps the pre-1.0 'railgrid kubeconfig edge <name>'
-// spelling working; the command now lives at 'railgrid edge kubeconfig'.
-func newKubeconfigCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:    "kubeconfig",
-		Short:  "Generate kubeconfig files for railgrid resources",
-		Hidden: true,
-	}
-	edge := newEdgeKubeconfigCommand()
-	edge.Use = "edge <name>"
-	edge.Deprecated = "use 'railgrid edge kubeconfig <name>' (or 'railgrid connect <name>')"
-	cmd.AddCommand(edge)
-	return cmd
-}
-
 func completeKubernetesEdgeNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) != 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp

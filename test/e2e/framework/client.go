@@ -574,10 +574,10 @@ func (k *RailgridClient) EdgeJoinCommand(ctx context.Context, edgeName string) (
 	return k.run(ctx, "edge", "join-command", edgeName, "--insecure-skip-tls-verify")
 }
 
-// EdgeKubeconfig runs `railgrid kubeconfig edge <name> --output <path>`.
+// EdgeKubeconfig runs `railgrid edge kubeconfig <name> --output <path>`.
 func (k *RailgridClient) EdgeKubeconfig(ctx context.Context, edgeName, outputPath string) error {
 	_, err := k.run(ctx,
-		"kubeconfig", "edge", edgeName,
+		"edge", "kubeconfig", edgeName,
 		"--output", outputPath,
 		"--insecure-skip-tls-verify",
 	)

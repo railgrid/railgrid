@@ -40,7 +40,7 @@ type cliFlowAgentKey struct{}
 //  3. railgrid edge join-command <name>  → capture output, parse Option C args
 //  4. Start agent using parsed flags (railgrid agent run)
 //  5. Wait for edge to become Ready
-//  6. railgrid kubeconfig edge <name> --output <path>
+//  6. railgrid edge kubeconfig <name> --output <path>
 //  7. kubectl --kubeconfig <path> get nodes → verify cluster access
 //
 // This closes the gap where "join-command" output was never executed in tests:
@@ -107,9 +107,9 @@ func AgentCLIFlow() features.Feature {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			// Step 6: railgrid kubeconfig edge → write kubeconfig.
+			// Step 6: railgrid edge kubeconfig → write kubeconfig.
 			kubeconfigPath := filepath.Join(clusterEnv.WorkDir, "e2e-cli-flow.kubeconfig")
-			t.Log("step 6: railgrid kubeconfig edge")
+			t.Log("step 6: railgrid edge kubeconfig")
 			if err := client.WaitForEdgeKubeconfig(ctx, edgeName, kubeconfigPath, 2*time.Minute); err != nil {
 				t.Fatalf("waiting for edge kubeconfig: %v", err)
 			}
