@@ -704,6 +704,9 @@ func validateProjectSyncToolchains(routed map[string][]projectSandboxSyncFile, c
 		if projectSyncFilesContainManifest(files, manifest.Files) {
 			continue
 		}
+		if projectStartCommandHandlesMissingManifest(comp.StartCommand, manifest.Files) {
+			continue
+		}
 		where := path.Clean(strings.TrimSpace(comp.WorkspacePath))
 		if where == "." {
 			where = "the workspace root"
@@ -717,6 +720,20 @@ func validateProjectSyncToolchains(routed map[string][]projectSandboxSyncFile, c
 			summarizeProjectStartCommand(comp.StartCommand))}
 	}
 	return nil
+}
+
+// projectStartCommandHandlesMissingManifest reports whether the template's own
+// start command tests for the manifest (e.g. `if [ -f package.json ] ...
+// else npx --yes vite ...`). Such a template runs a workspace without the
+// manifest — simple-webapp serves a plain static site — so requiring one
+// would reject a project the sandbox can run.
+func projectStartCommandHandlesMissingManifest(start string, accepted []string) bool {
+	for _, name := range accepted {
+		if strings.Contains(start, "-f "+name) {
+			return true
+		}
+	}
+	return false
 }
 
 // projectSyncFilesContainManifest reports whether any accepted manifest sits at

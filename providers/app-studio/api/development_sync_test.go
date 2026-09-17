@@ -452,3 +452,21 @@ func TestSyncProjectDevelopmentTargetRejectsUnroutedWorkspaceAsPrecondition(t *t
 		t.Fatalf("sync error = %T %v, want the unrouted-workspace precondition", err, err)
 	}
 }
+
+// simple-webapp's start command falls back to `npx vite` when package.json is
+// absent, so a static index.html project must sync; a template that always
+// runs `npm run dev` must still be rejected.
+func TestValidateProjectSyncToolchainsHonorsStartCommandManifestFallback(t *testing.T) {
+	routed := map[string][]projectSandboxSyncFile{
+		"app": {{Path: "index.html", Content: "<html></html>"}, {Path: "game.js", Content: ""}},
+	}
+	fallback := map[string]projectTemplateComponent{"app": {WorkspacePath: ".", Toolchain: "node",
+		StartCommand: "if [ -f package.json ]; then npm run dev; else npx --yes vite --host 0.0.0.0 --port $PORT; fi"}}
+	if err := validateProjectSyncToolchains(routed, fallback); err != nil {
+		t.Fatalf("static project with manifest fallback rejected: %v", err)
+	}
+	strict := map[string]projectTemplateComponent{"app": {WorkspacePath: ".", Toolchain: "node", StartCommand: "npm run dev"}}
+	if err := validateProjectSyncToolchains(routed, strict); err == nil {
+		t.Fatal("static project accepted by a template that requires package.json")
+	}
+}
