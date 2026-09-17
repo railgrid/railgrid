@@ -95,17 +95,22 @@ class ManagerCLITest(unittest.TestCase):
 
 class PackageTest(unittest.TestCase):
     def test_archives_contain_only_runner_manager_and_pinned_installer(self):
+        for goos, label in (('darwin', 'macos'), ('linux', 'linux')):
+            with self.subTest(goos=goos):
+                self.check_archives(goos, label)
+
+    def check_archives(self, goos, label):
         import subprocess
         import sys
         import tarfile
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for arch in ('arm64', 'amd64'):
-                (root / ('railgrid-runner-darwin-' + arch)).write_bytes(arch.encode())
-            subprocess.run([sys.executable, str(Path(__file__).with_name('package.py')), directory],
+                (root / ('railgrid-runner-' + goos + '-' + arch)).write_bytes((goos + arch).encode())
+            subprocess.run([sys.executable, str(Path(__file__).with_name('package.py')), directory, goos],
                            check=True, capture_output=True)
             for arch in ('arm64', 'amd64'):
-                archive = root / ('railgrid-runner-macos-' + arch + '.tar')
+                archive = root / ('railgrid-runner-' + label + '-' + arch + '.tar')
                 checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
                 self.assertEqual(archive.with_suffix('.tar.sha256').read_text(), checksum + '  ' + archive.name + '\n')
                 with tarfile.open(archive, 'r:') as bundle:
@@ -113,7 +118,7 @@ class PackageTest(unittest.TestCase):
                         'railgrid-runner-install/railgrid-runner', 'railgrid-runner-install/manage.py',
                         'railgrid-runner-install/install.sh'})
                     script = bundle.extractfile('railgrid-runner-install/install.sh').read().decode()
-                    self.assertIn(hashlib.sha256(arch.encode()).hexdigest(), script)
+                    self.assertIn(hashlib.sha256((goos + arch).encode()).hexdigest(), script)
 
 
 if __name__ == '__main__':

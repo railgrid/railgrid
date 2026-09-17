@@ -3,10 +3,14 @@
 # Disposable, local-only acceptance fixture. No credentials leave this script.
 set -eu
 
-if [ "$(uname -s)" != Darwin ]; then
-  echo 'This fixture setup is for macOS.' >&2
-  exit 1
-fi
+case "$(uname -s)" in
+  Darwin) host_os=macos ;;
+  Linux) host_os=linux ;;
+  *)
+    echo 'This fixture setup is for MacOS or Linux.' >&2
+    exit 1
+    ;;
+esac
 command -v git >/dev/null
 command -v openssl >/dev/null
 command -v codex >/dev/null
@@ -17,7 +21,7 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 runner_binary="$script_dir/railgrid-runner"
 if [ ! -x "$runner_binary" ]; then
-  echo 'Place setup-macos.sh beside the matching railgrid-runner binary.' >&2
+  echo 'Place setup.sh beside the matching railgrid-runner binary.' >&2
   exit 1
 fi
 
@@ -45,12 +49,12 @@ EOF
     -c commit.gpgSign=false commit --quiet -m 'Add disposable runner fixture'
 fi
 base_commit=$(git -C "$fixture_root/source" rev-parse HEAD)
-python3 - "$fixture_root" "$base_commit" <<'PY'
+python3 - "$fixture_root" "$base_commit" "$host_os" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 config = {
     'protocolVersion': 'runner/v1',
-    'runnerID': 'macos-acceptance-runner',
+    'runnerID': sys.argv[3] + '-acceptance-runner',
     'stateDir': str(root / 'state'),
     'tokenFile': str(root / 'token'),
     'toolchains': ['git', 'sh'],
