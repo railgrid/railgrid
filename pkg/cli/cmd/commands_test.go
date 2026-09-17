@@ -794,3 +794,28 @@ func TestCommandGroupsRejectUnknownSubcommands(t *testing.T) {
 		t.Errorf("command groups that would print help and exit 0 on an unknown subcommand: %v", groups)
 	}
 }
+
+// TestRunnerCommandIsRegistered: the edge add-on manager supervises
+// "<this executable> runner run ...", so the subcommand has to exist on the
+// main CLI — not only on the standalone railgrid-runner binary — and carry the
+// flags the add-on renders. A rename here silently breaks every runner add-on
+// on the next agent upgrade.
+func TestRunnerCommandIsRegistered(t *testing.T) {
+	root := NewRootCommand()
+	cmd, _, err := root.Find([]string{"runner", "run"})
+	if err != nil || cmd == nil || cmd.Name() != "run" {
+		t.Fatalf("railgrid runner run not found: %v", err)
+	}
+	if cmd.Parent() == nil || cmd.Parent().Name() != "runner" {
+		t.Fatalf("runner run is not under the runner group: %v", cmd.Parent())
+	}
+	for _, flag := range []string{"config", "state-dir", "token-file", "codex-home", "codex-binary", "version-pin", "listen"} {
+		if cmd.Flags().Lookup(flag) == nil {
+			t.Errorf("railgrid runner run lacks --%s", flag)
+		}
+	}
+	group, _, err := root.Find([]string{"runner"})
+	if err != nil || group.GroupID == "" {
+		t.Errorf("the runner group has no help group: %v", err)
+	}
+}

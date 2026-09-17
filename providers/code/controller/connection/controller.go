@@ -41,6 +41,12 @@ type Reconciler struct {
 	Backends *backend.Registry
 }
 
+// revalidateInterval re-checks a credential after the last result. The host can
+// revoke a token at any time (user revocation, OAuth token limits, secret
+// scanning) without touching the Connection or its Secret, so a one-time
+// validation would keep reporting Validated while every repository call fails.
+const revalidateInterval = 15 * time.Minute
+
 // SetupWithManager wires the reconciler into the multicluster manager.
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
@@ -111,7 +117,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
 			return r.fail(ctx, c, &conn, codev1alpha1.ReasonRateLimited, msg, wait)
 		}
-		return r.fail(ctx, c, &conn, "ValidationFailed", err.Error(), 0)
+		return r.fail(ctx, c, &conn, "ValidationFailed", err.Error(), revalidateInterval)
 	}
 
 	conn.Status.ObservedGeneration = conn.Generation
@@ -123,12 +129,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 	logger.Info("Connection validated", "login", login)
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: revalidateInterval}, nil
 }
 
 // fail records a not-ready status and swallows the error (the bad state is on
 // the CR). A non-zero requeueAfter re-polls a recoverable cause (a not-yet-
-// visible credential Secret); zero leaves recovery to the next spec change or a
+// visible credential Secret, a rate limit, a credential the host may accept
+// again); zero leaves recovery to the next spec change or a
 // watched-object event, since re-writing an unchanged status won't re-enqueue.
 func (r *Reconciler) fail(ctx context.Context, c client.Client, conn *codev1alpha1.Connection, reason, msg string, requeueAfter time.Duration) (ctrl.Result, error) {
 	conn.Status.ObservedGeneration = conn.Generation

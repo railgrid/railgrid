@@ -1,4 +1,4 @@
-//go:build windows
+//go:build unix
 
 /*
 Copyright 2026 The Railgrid Authors.
@@ -16,15 +16,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package codex
+package supervisor
 
-import "os/exec"
+import "syscall"
 
-func configureProcess(_ *exec.Cmd) {}
-
-func killProcessGroup(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	return cmd.Process.Kill()
+// processAlive reports whether pid still exists. Signal 0 performs the
+// permission and existence checks without delivering anything.
+func processAlive(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
 }

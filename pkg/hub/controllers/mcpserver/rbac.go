@@ -99,6 +99,38 @@ var dataPlaneGrants = map[string]dataPlaneGrant{
 	"infrastructure.railgrid.ai": {resources: []string{"instances"}, subresources: []string{"exec"}},
 }
 
+// privilegedResources are bound resources a generated MCPServer role NEVER
+// grants, in any verb, read or write. The rule above widens itself as a
+// provider's APIExport grows, which is right for ordinary provider objects and
+// wrong for the few whose creation IS the privilege escalation.
+//
+// edges.railgrid.ai/addons is the first such resource: creating an Addon asks a
+// specific machine to become a host for arbitrary code execution. That decision
+// belongs to a human with workspace admin rights (whose wildcard still covers
+// it) and to the machine's owner, who must independently have started the agent
+// with --allow-addon. Handing it to every MCPServer token in the workspace —
+// which is what "the tenant bound this resource" would otherwise mean — would
+// let an AI client turn a developer's laptop into a code-execution host as a
+// side effect of a tool call. See docs/edge-addons.md.
+var privilegedResources = map[string]map[string]bool{
+	"edges.railgrid.ai": {"addons": true},
+}
+
+// dropPrivilegedResources removes the never-granted resources of one group.
+func dropPrivilegedResources(group string, resources []string) []string {
+	denied := privilegedResources[group]
+	if len(denied) == 0 {
+		return resources
+	}
+	out := make([]string, 0, len(resources))
+	for _, r := range resources {
+		if !denied[r] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // ActionGrant is one provider action from the platform catalog, expressed as
 // the RBAC coordinate a provider checks before invoking it: "create" on
 // <Resource>/<Name> in Group (e.g. tables/query_table).
@@ -142,6 +174,11 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 		if _, ok := byGroup[a.Group][a.Resource]; !ok {
 			continue
 		}
+		// A catalog action must not become a back door into a resource the
+		// generated role refuses outright.
+		if privilegedResources[a.Group][a.Resource] {
+			continue
+		}
 		if readOnly && !a.ReadOnly {
 			continue
 		}
@@ -164,7 +201,12 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 
 	var rules []rbacv1.PolicyRule
 	for _, g := range groups {
-		resources := sortedKeys(byGroup[g])
+		// Privileged resources are dropped before anything else keys off the
+		// list, so they cannot come back through a data-plane or action grant.
+		resources := dropPrivilegedResources(g, sortedKeys(byGroup[g]))
+		if len(resources) == 0 {
+			continue
+		}
 		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: resources, Verbs: verbs})
 
 		if dp, ok := dataPlaneGrants[g]; ok {

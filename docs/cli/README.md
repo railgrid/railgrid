@@ -90,6 +90,8 @@ Global flags: `--kubeconfig` (default `$KUBECONFIG`, then `~/.kube/config`) and
   - [railgrid dev update](railgrid_dev_update.md) — Upgrade the railgrid-hub release on an existing local environment
 - [railgrid init](railgrid_init.md) — Run a railgrid hub in-process (server side, not a client command)
 - [railgrid install](railgrid_install.md) — Install the railgrid agent
+- [railgrid runner](railgrid_runner.md) — Run the loopback coding runner on this host
+  - [railgrid runner run](railgrid_runner_run.md) — Serve the runner/v1 protocol on a loopback listener (foreground)
 
 ## Other commands
 

@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Railgrid Authors.
-"""Package already-built Darwin binaries without credentials or enrollment."""
+"""Package already-built runner binaries without credentials or enrollment.
+
+Usage: package.py [BINDIR] [darwin|linux]
+"""
 import hashlib
 import io
 from pathlib import Path
 import sys
 import tarfile
 
+# Archive names use the host label shown in the portal (macos, linux) while
+# binaries keep their GOOS suffix.
+BUNDLE_NAMES = {'darwin': 'macos', 'linux': 'linux'}
+
 bindir = Path(sys.argv[1] if len(sys.argv) > 1 else 'bin')
+goos = sys.argv[2] if len(sys.argv) > 2 else 'darwin'
+if goos not in BUNDLE_NAMES:
+    sys.exit('unsupported runner OS: ' + goos)
 source = Path(__file__).parent
 for arch in ('arm64', 'amd64'):
-    binary = bindir / ('railgrid-runner-darwin-' + arch)
+    binary = bindir / ('railgrid-runner-' + goos + '-' + arch)
     sha = hashlib.sha256(binary.read_bytes()).hexdigest()
-    bundle = bindir / ('railgrid-runner-macos-' + arch + '.tar')
+    bundle = bindir / ('railgrid-runner-' + BUNDLE_NAMES[goos] + '-' + arch + '.tar')
     installer = ('#!/bin/sh\nset -eu\n'
                  'cd "$(dirname "$0")"\n'
                  'exec python3 ./manage.py install --binary ./railgrid-runner --sha256 ' + sha + '\n')

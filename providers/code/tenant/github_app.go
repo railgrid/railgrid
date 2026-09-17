@@ -34,6 +34,27 @@ import (
 type CredentialResolver struct {
 	Client *http.Client
 	Now    func() time.Time
+	// OAuth renews expiring "Connect with GitHub" tokens. Nil leaves stored
+	// OAuth tokens as they are.
+	OAuth *OAuthRefresher
+}
+
+// ResolveStored resolves the credential held in data, first renewing an
+// expiring OAuth token and persisting it through store. secretKey identifies
+// the Secret (cluster/namespace/name) so concurrent refreshes serialize.
+func (r CredentialResolver) ResolveStored(ctx context.Context, conn *api.Connection, secretKey string, data map[string][]byte, store SecretStore) (backend.Credential, error) {
+	if r.OAuth.refreshable(conn) {
+		key := conn.Spec.SecretRef.Key
+		if key == "" {
+			key = DefaultTokenKey
+		}
+		fresh, err := r.OAuth.Fresh(ctx, secretKey, key, data, store)
+		if err != nil {
+			return backend.Credential{}, err
+		}
+		data = fresh
+	}
+	return r.Resolve(ctx, conn, data)
 }
 
 func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, data map[string][]byte) (backend.Credential, error) {

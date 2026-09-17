@@ -18,8 +18,10 @@ package status
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,5 +117,44 @@ func TestSendHeartbeatHonoursParentCancellation(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("sendHeartbeat ignored parent cancellation; agent shutdown would stall")
+	}
+}
+
+// TestHeartbeatPublishesAllowedAddons: a portal needs to know what a machine
+// will accept BEFORE anyone creates an Addon for it, so the agent's local
+// --allow-addon list rides on every heartbeat. The empty case matters just as
+// much: dropping the key would leave a stale advertisement on an edge whose
+// owner has revoked the opt-in.
+func TestHeartbeatPublishesAllowedAddons(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"apiVersion":"edges.railgrid.ai/v1alpha1","kind":"LinuxServer","metadata":{"name":"build-01"}}`))
+	}))
+	defer srv.Close()
+
+	dyn, err := dynamic.NewForConfig(&rest.Config{Host: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporter := NewEdgeReporter("build-01", testGVR, railgridclient.NewFromDynamic(dyn), nil, 0)
+	logger := klog.Background()
+
+	reporter.SetAllowedAddons([]string{"runner"})
+	reporter.sendHeartbeat(context.Background(), logger)
+
+	reporter.SetAllowedAddons(nil)
+	reporter.sendHeartbeat(context.Background(), logger)
+
+	if len(bodies) != 2 {
+		t.Fatalf("expected two heartbeats, got %d", len(bodies))
+	}
+	if !strings.Contains(bodies[0], `"allowedAddons":["runner"]`) {
+		t.Errorf("first heartbeat does not advertise the allowed add-on: %s", bodies[0])
+	}
+	if !strings.Contains(bodies[1], `"allowedAddons":[]`) {
+		t.Errorf("revoking the opt-in must clear the advertisement, got: %s", bodies[1])
 	}
 }

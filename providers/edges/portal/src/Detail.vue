@@ -22,7 +22,7 @@ import {
   type LatestRefreshController,
   type ResourceRefreshMode,
 } from './refresh'
-import type { EdgeDetail, EdgeService, EdgeType, ErrorResponse } from './types'
+import { edgeTypeLabel as edgeTypeName, type EdgeDetail, type EdgeService, type EdgeType, type ErrorResponse } from './types'
 
 const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
 const emit = defineEmits<{ back: []; deleted: []; addService: [] }>()
@@ -146,9 +146,9 @@ const joinCommand = computed(() => props.type === 'macos'
   ? macosJoinCommand.value
   : `railgrid agent join --edge-name ${props.name} --type ${props.type} --token ${edge.value?.joinToken ?? ''}`)
 
-const edgeTypeLabel = computed(() => props.type === 'server' ? 'Linux server' : props.type === 'macos' ? 'macOS host' : 'Kubernetes cluster')
-const edgeDeleteLabel = computed(() => props.type === 'server' ? 'server' : props.type === 'macos' ? 'macOS host' : 'cluster')
-const edgeMutationLabel = computed(() => props.type === 'server' ? 'Server' : props.type === 'macos' ? 'macOS host' : 'Cluster')
+const edgeTypeLabel = computed(() => edgeTypeName(props.type))
+const edgeDeleteLabel = computed(() => `${edgeTypeName(props.type)} edge`)
+const edgeMutationLabel = computed(() => `${edgeTypeName(props.type)} edge`)
 const edgeStatus = computed(() => {
   if (deleting.value) return 'Deleting'
   if (!edge.value) return loading.value ? 'Loading' : 'Unavailable'
@@ -275,9 +275,10 @@ sudo systemctl restart railgrid-agent-${props.name}`,
 )
 
 // ─── Services ────────────────────────────────────────────────────────
-// Linux services are discovered by the agent. Kubernetes and macOS services are
-// declared explicitly; a cluster has far more services than a host, and a
-// macOS host must not be treated as a coding worker just because it connects.
+// Linux hosts report discovered services and also accept declared ones (for
+// example a local runner on loopback). Kubernetes and MacOS services are only
+// declared: a cluster has far more services than a host, and no host is
+// treated as a coding worker just because it connects.
 const services = ref<EdgeService[]>([])
 const servicesLoaded = ref(false)
 const svcError = ref<string | null>(null)
@@ -610,7 +611,7 @@ onUnmounted(() => {
                     <span class="edge-disclosure__hint">Show join command</span>
                   </summary>
                   <div class="edge-disclosure__body">
-                    <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : type === 'macos' ? 'Mac host' : 'cluster' }}:</p>
+                    <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'kubernetes' ? 'cluster' : `${edgeTypeLabel} host` }}:</p>
                     <div class="snippet">
                       <div class="snippet-head"><span>railgrid agent join</span>
                         <button
@@ -681,7 +682,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
               </div>
             </ResourceSectionCard>
 
-            <ResourceSectionCard id="edge-services" eyebrow="Provider services" title="Services" :description="type === 'server' ? 'Services discovered running on this host. Attach a token to let AI agents control them.' : type === 'macos' ? 'Services declared on this host. Host connectivity and Service readiness are reported separately.' : 'Kubernetes Services on this cluster, reached over cluster DNS. Attach a token to let AI agents control them.'">
+            <ResourceSectionCard id="edge-services" eyebrow="Provider services" title="Services" :description="type === 'server' ? 'Services discovered on or declared for this host, such as a local runner. Attach a token to let AI agents control them.' : type === 'macos' ? 'Services declared on this host. Host connectivity and Service readiness are reported separately.' : 'Kubernetes Services on this cluster, reached over cluster DNS. Attach a token to let AI agents control them.'">
               <template #actions>
                 <span class="edge-section-card__count"><strong>{{ servicesLoaded ? services.length : '—' }}</strong> {{ servicesLoaded ? (services.length === 1 ? 'service' : 'services') : 'services' }}</span>
                 <button
@@ -700,7 +701,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
               <div v-if="edge && servicesExpanded" id="edges-services-content" class="edge-services-content">
                 <div v-if="svcError" class="banner error" role="alert">{{ svcError }}</div>
 
-                <div v-if="type === 'kubernetes' || type === 'macos'" class="edge-services-content__actions">
+                <div class="edge-services-content__actions">
                   <button
                     type="button"
                     class="k-btn k-btn--ghost"
@@ -714,7 +715,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                 </div>
                 <div v-else-if="servicesLoaded && services.length === 0" class="muted">
                   {{ type === 'server'
-                    ? 'No services discovered yet. Discovery runs when the agent is connected.'
+                    ? 'No services yet. Discovery runs when the agent is connected, or add one to point at a host-local service such as a runner.'
                     : type === 'macos'
                       ? 'No services declared yet. Add one to point at a host-local service.'
                       : 'No services declared yet. Add one to point at a Kubernetes Service in this cluster.' }}
@@ -730,7 +731,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                       <div class="row">
                         <StatusBadge :status="es.phase || 'Detected'" :tone="serviceTone(es)" />
                         <ResourceTableDeleteButton
-                          v-if="type === 'kubernetes' || type === 'macos'"
+                          v-if="type !== 'server' || !es.discovered"
                           :label="`Delete service ${es.name}`"
                           :busy-label="`Deleting service ${es.name}`"
                           :busy="deletingServiceName === es.name"

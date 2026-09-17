@@ -6,7 +6,7 @@ import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import type { ResourceRefreshMode } from './refresh'
-import type { Edge } from './types'
+import { edgeTypeLabel, type Edge } from './types'
 
 const props = defineProps<{
   edges: Edge[]
@@ -37,7 +37,7 @@ const edgeColumns = [
 const edgeRows = computed(() => props.edges.map(edge => ({
   ...edge,
   rowKey: `${edge.type}/${edge.name}`,
-  typeLabel: edge.type === 'server' ? 'Server' : edge.type === 'macos' ? 'macOS host' : 'Kubernetes',
+  typeLabel: edgeTypeLabel(edge.type),
   status: edge.connected ? 'Connected' : (edge.phase || 'Disconnected'),
   agentVersion: edge.agentVersion || '—',
   lastHeartbeat: relativeTime(edge.lastHeartbeatTime),
@@ -54,7 +54,7 @@ const edgeJourney = [
 ]
 
 function edgeRowAriaLabel(row: Record<string, unknown>): string {
-  const type = row.type === 'server' ? 'Server' : row.type === 'macos' ? 'macOS host' : 'Kubernetes'
+  const type = String(row.typeLabel)
   return `Open ${type} edge ${String(row.name)}`
 }
 
@@ -80,7 +80,7 @@ onActivated(() => emit('activated'))
     <header class="edges-header">
       <div>
         <h1>Edges</h1>
-        <p>Kubernetes clusters, Linux/SSH servers, and macOS hosts connected to this workspace.</p>
+        <p>Kubernetes clusters and Linux and MacOS hosts connected to this workspace.</p>
       </div>
       <div v-if="!showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="props.foregroundLoading" @click="emit('refresh')">
@@ -95,7 +95,7 @@ onActivated(() => emit('activated'))
     <FirstRunGuide
       v-if="showFirstRun"
       title="Connect your first edge"
-      description="Connect a Kubernetes cluster, Linux server, or macOS host. The Railgrid agent dials out, so the target needs no inbound firewall rule, VPN, or public IP."
+      description="Connect a Kubernetes cluster or a Linux or MacOS host. The Railgrid agent dials out, so the target needs no inbound firewall rule, VPN, or public IP."
       primary-label="Connect edge"
       :steps="edgeJourney"
       journey-label="Edge connection path"

@@ -113,6 +113,7 @@ completion.`,
 	)...)
 	cmd.AddCommand(grouped(groupOps,
 		newAgentCommand(),
+		newRunnerCommand(),
 		newInstallCommand(),
 		newInitCommand(),
 		devCmd,

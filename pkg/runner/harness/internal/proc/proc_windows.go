@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build windows
 
 /*
 Copyright 2026 The Railgrid Authors.
@@ -16,24 +16,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package codex
+package proc
 
-import (
-	"errors"
-	"os/exec"
-	"syscall"
-)
+import "os/exec"
 
-func configureProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-}
+// Configure is a no-op: Windows has no POSIX process groups, and the runner is
+// not supported there (see pkg/runner/lock_other.go).
+func Configure(_ *exec.Cmd) {}
 
-func killProcessGroup(cmd *exec.Cmd) error {
+// KillGroup falls back to killing the direct child only.
+func KillGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil {
 		return nil
 	}
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return errors.Join(err, cmd.Process.Kill())
-	}
-	return nil
+	return cmd.Process.Kill()
 }

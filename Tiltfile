@@ -14,7 +14,6 @@ trigger_mode(TRIGGER_MODE_AUTO)
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=linear
 config.define_string('external-providers-dir')
 config.define_string('external-providers')
-config.define_bool('external-providers-api-only')
 cfg = config.parse()
 
 # Public URL overrides keep the default sslip.io local loop intact while
@@ -1255,18 +1254,26 @@ if external_providers_dir:
     external_providers = load_dynamic(external_providers_lib)['railgrid_providers'](
         # Empty (e.g. `make tilt EXTERNAL_PROVIDERS=`) means every provider.
         selection=cfg.get('external-providers', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS', '') or 'all',
-        api_only=cfg.get('external-providers-api-only', False),
         context=preview_kro_context,
         hub_url='https://host.docker.internal:9443',
         hub_insecure=True,
+        # The dev serving cert is self-signed, so it is its own CA. Providers
+        # that refuse an unverified hub (Factory) trust it through this.
+        hub_ca_file=os.path.abspath('certs/apiserver.crt'),
         lifecycle_env={
             'RAILGRID_KCP_KUBECONFIG': os.path.abspath('.kcp/admin.kubeconfig'),
             'RAILGRID_PROVIDER_KCP_SERVER': 'https://host.docker.internal:9443',
             'RAILGRID_PROVIDER_KCP_INSECURE': 'true',
         },
         resource_deps=['hub', 'kro-mgmt-up'],
-        # A provider still missing local setup (e.g. Factory's scheduler values)
+        # A provider still missing local setup
         # is skipped with a warning; naming it explicitly makes it an error.
         skip_unconfigured=True,
+        # The host hub cannot resolve cluster Service DNS: forward each
+        # provider to a local port and point its CatalogEntry there.
+        host_ports=True,
+        # Embedded kcp advertises 127.0.0.1:6443 virtual-workspace URLs;
+        # bridge that port in each pod to the hub, which relays them.
+        kcp_loopback_proxy='host.docker.internal:9443',
     )
     print('  external providers: %s (from %s)' % (', '.join(external_providers), external_providers_dir))

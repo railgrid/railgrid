@@ -20,10 +20,12 @@ func TestRenderResultPreservesOriginPayloadAndCloseTiming(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.renderResult(rec, callbackResult{
-			State:  `state<&`,
-			Token:  `token<&`,
-			Login:  `octo-user`,
-			Scopes: `repo,workflow`,
+			State:        `state<&`,
+			Token:        `token<&`,
+			RefreshToken: `refresh<&`,
+			Expiry:       `2026-09-17T15:00:00Z`,
+			Login:        `octo-user`,
+			Scopes:       `repo,workflow`,
 		})
 
 		body := rec.Body.String()
@@ -38,6 +40,8 @@ func TestRenderResultPreservesOriginPayloadAndCloseTiming(t *testing.T) {
 			`"type":"railgrid-github-oauth"`,
 			`"state":"state\u003c\u0026"`,
 			`"token":"token\u003c\u0026"`,
+			`"refreshToken":"refresh\u003c\u0026"`,
+			`"expiry":"2026-09-17T15:00:00Z"`,
 			`setTimeout(function(){ window.close(); }, payload.error ? 4000 : 600);`,
 		} {
 			if !strings.Contains(body, want) {

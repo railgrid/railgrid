@@ -1175,16 +1175,14 @@ func (s *Server) Run(ctx context.Context) error {
 		// 2. kcp API paths — forwarded unchanged to kcpProxy.
 		//  - /clusters/<cluster>/...          user kubeconfig / kubectl-ws
 		//  - /apis/<group>/... or /api/v1/... agent's bare kcp calls
-		//    (serveServiceAccount prepends /clusters/<name> from SA token claim)
+		//    (serveServiceAccount prepends /clusters/<name> from SA token claim),
+		//    including the bare /api and /apis discovery roots
 		//  - /services/apiexport/...          APIExport virtual workspace, so a
 		//    provider running outside the platform can watch its own export.
 		//    Reached only after the explicit routes above declined it, so the
 		//    hub's own /services/ handlers keep precedence.
 		if kcpProxy != nil {
-			if strings.HasPrefix(r.URL.Path, "/clusters/") ||
-				strings.HasPrefix(r.URL.Path, "/apis/") ||
-				strings.HasPrefix(r.URL.Path, "/api/") ||
-				strings.HasPrefix(r.URL.Path, apiurl.PathPrefixAPIExportVW+"/") {
+			if isKCPAPIPath(r.URL.Path) {
 				kcpProxy.ServeHTTP(w, r)
 				return
 			}
@@ -1296,4 +1294,16 @@ func buildAdminSet(logger klog.Logger, entries []string) map[string]struct{} {
 		adminSet[a] = struct{}{}
 	}
 	return adminSet
+}
+
+// isKCPAPIPath reports whether path is a kcp API request the hub relays
+// unchanged. The bare /api and /apis discovery roots count: client-go's REST
+// mapper lists API groups from them before any resource request, so a provider
+// controller behind the hub cannot start without them.
+func isKCPAPIPath(path string) bool {
+	return path == "/api" || path == "/apis" ||
+		strings.HasPrefix(path, "/clusters/") ||
+		strings.HasPrefix(path, "/apis/") ||
+		strings.HasPrefix(path, "/api/") ||
+		strings.HasPrefix(path, apiurl.PathPrefixAPIExportVW+"/")
 }

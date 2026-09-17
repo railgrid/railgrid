@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -102,23 +103,59 @@ func ResolveRepository(ctx context.Context, c client.Client, ref string) (*codev
 	return &repo, nil
 }
 
+// Credentials resolves Connection credentials for every controller. main
+// installs the OAuth refresher when "Connect with GitHub" is configured.
+var Credentials tenant.CredentialResolver
+
 // ResolveCredential reads the Connection's referenced Secret via the typed
-// tenant-scoped client and returns the backend credential. The secrets read is
-// authorized by the provider's APIExport secrets permission claim.
+// tenant-scoped client and returns the backend credential, renewing an
+// expiring OAuth token in place. The secrets read and write are authorized by
+// the provider's APIExport secrets permission claim.
 func ResolveCredential(ctx context.Context, c client.Client, conn *codev1alpha1.Connection) (backend.Credential, error) {
 	ns := conn.Spec.SecretRef.Namespace
 	if ns == "" {
 		ns = tenant.DefaultCredentialsNamespace()
 	}
-	var secret corev1.Secret
-	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: conn.Spec.SecretRef.Name}, &secret); err != nil {
+	store := &secretStore{c: c, key: types.NamespacedName{Namespace: ns, Name: conn.Spec.SecretRef.Name}}
+	data, _, err := store.Load(ctx)
+	if err != nil {
+		return backend.Credential{}, err
+	}
+	return Credentials.ResolveStored(ctx, conn, tenant.CredentialSecretID(conn, ns), data, store)
+}
+
+// secretStore adapts a typed client to tenant.SecretStore. Save rewrites the
+// object Load returned, so a concurrent change fails with a conflict.
+type secretStore struct {
+	c      client.Client
+	key    types.NamespacedName
+	secret corev1.Secret
+}
+
+func (s *secretStore) Load(ctx context.Context) (map[string][]byte, string, error) {
+	s.secret = corev1.Secret{}
+	if err := s.c.Get(ctx, s.key, &s.secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return backend.Credential{}, tenant.ErrCredentialsMissing
+			return nil, "", tenant.ErrCredentialsMissing
 		}
 		if apierrors.IsForbidden(err) {
-			return backend.Credential{}, tenant.ErrAPIBindingMissing
+			return nil, "", tenant.ErrAPIBindingMissing
 		}
-		return backend.Credential{}, fmt.Errorf("get credential secret %s/%s: %w", ns, conn.Spec.SecretRef.Name, err)
+		return nil, "", fmt.Errorf("get credential secret %s: %w", s.key, err)
 	}
-	return (tenant.CredentialResolver{}).Resolve(ctx, conn, secret.Data)
+	data := make(map[string][]byte, len(s.secret.Data))
+	maps.Copy(data, s.secret.Data)
+	return data, s.secret.ResourceVersion, nil
+}
+
+func (s *secretStore) Save(ctx context.Context, data map[string][]byte, resourceVersion string) error {
+	if s.secret.ResourceVersion != resourceVersion {
+		return fmt.Errorf("credential secret %s changed since it was read", s.key)
+	}
+	updated := s.secret.DeepCopy()
+	if updated.Data == nil {
+		updated.Data = map[string][]byte{}
+	}
+	maps.Copy(updated.Data, data)
+	return s.c.Update(ctx, updated)
 }

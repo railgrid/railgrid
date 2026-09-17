@@ -26,6 +26,8 @@ railgrid agent install [flags]
 ### Options
 
 ```
+      --addon-user string              Existing non-root local account add-on child processes run as. Required with --allow-addon for a systemd install. Env: RAILGRID_AGENT_ADDON_USER
+      --allow-addon strings            Addon type this machine will run, currently only "runner" (repeatable; rendered into the unit). Empty means no add-on is ever materialized. Env: RAILGRID_AGENT_ALLOW_ADDON
       --cluster string                 kcp logical cluster path
       --dry-run                        Print the macOS LaunchDaemon and skip installation (works on Linux)
       --edge-name string               Name of this edge (required)
@@ -40,7 +42,7 @@ railgrid agent install [flags]
       --svc-allow-cidr strings         CIDR the Service proxy may dial besides loopback, e.g. 192.168.1.0/24 (repeatable; rendered into the unit)
       --svc-policy string              Service proxy policy for targets outside the allowed set: enforce, warn or allow-any (rendered into the unit only when not the default) (default "warn")
       --token string                   Bootstrap join token (macOS token bootstrap)
-      --type string                    Edge type: kubernetes, server, or macos (default "server")
+      --type string                    Edge type: kubernetes (Kubernetes), server (Linux), or macos (MacOS) (default "server")
       --unit-name string               Systemd unit name (default: railgrid-agent-<edge-name>)
       --worker-user string             Existing non-root account for a macOS LaunchDaemon
 ```

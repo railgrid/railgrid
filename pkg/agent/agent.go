@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -399,6 +400,20 @@ type Options struct {
 	// logged at startup). Defaults to "warn" in this release; the next release
 	// flips the default to "enforce". Flag: --svc-policy; env: RAILGRID_AGENT_SVC_POLICY.
 	SvcPolicy string
+	// AllowedAddons are the edges.railgrid.ai Addon TYPES this machine's owner
+	// opted into. It is half of the add-on trust model: a tenant declaring an
+	// Addon is not enough, the machine owner must also have started the agent
+	// with the type listed here. Default empty — the agent materializes no
+	// add-on at all. Flag: --allow-addon (repeatable); env:
+	// RAILGRID_AGENT_ALLOW_ADDON (comma-separated). See docs/edge-addons.md.
+	AllowedAddons []string
+	// AddonUser is the existing non-root local account an add-on's child
+	// process runs as. REQUIRED when an add-on is allowed and the agent itself
+	// runs as root (the systemd unit does): an add-on is a code-execution host
+	// and must not inherit the agent's privileges. Ignored for a non-root
+	// agent, which runs add-on children as itself. Flag: --addon-user; env:
+	// RAILGRID_AGENT_ADDON_USER.
+	AddonUser string
 }
 
 // NewOptions returns default agent options.
@@ -506,6 +521,28 @@ func New(opts *Options) (*Agent, error) {
 	case tunnel.SvcPolicyWarn:
 		klog.Infof("--svc-policy=warn: /svc targets outside loopback/--svc-allow-cidr are still dialed but logged; "+
 			"the default becomes enforce in the next release (allowed CIDRs: %v)", svcCIDRs)
+	}
+
+	allowedAddons, err := NormalizeAllowedAddons(opts.AllowedAddons)
+	if err != nil {
+		return nil, fmt.Errorf("--allow-addon: %w", err)
+	}
+	opts.AllowedAddons = allowedAddons
+	if len(allowedAddons) > 0 {
+		if agentType == AgentTypeKubernetes {
+			return nil, fmt.Errorf("--allow-addon is only supported on host edges; use --type server or --type macos")
+		}
+		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+			return nil, fmt.Errorf("--allow-addon is only supported on Linux and macOS hosts, not %s", runtime.GOOS)
+		}
+		// A root agent must be told which non-root account to drop to. Failing
+		// here — rather than at the first Addon — means an operator who typed
+		// --allow-addon without --addon-user finds out at startup instead of
+		// wondering why an Addon never becomes Running.
+		if os.Geteuid() == 0 && strings.TrimSpace(opts.AddonUser) == "" {
+			return nil, fmt.Errorf("--addon-user is required when --allow-addon is set and the agent runs as root: " +
+				"name an existing non-root local account for the add-on's child process")
+		}
 	}
 
 	// Auto-discover or auto-generate an SSH private key for Linux server edges
@@ -989,10 +1026,18 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 			}
 		}()
 	} else {
+		// Add-on plane: the tenant declares Addon objects, this agent
+		// materializes the ones whose type the machine owner allowed with
+		// --allow-addon, and reports what happened on each object's status.
+		// Started before the reporter so the first heartbeat already carries
+		// status.allowedAddons. See docs/edge-addons.md.
+		allowedAddons := a.startAddonManager(ctx, logger)
+
 		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, railgridclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
 		if a.agentType == AgentTypeMacOS {
 			reporter.SetHostFacts(agentStatus.DarwinHostFacts())
 		}
+		reporter.SetAllowedAddons(allowedAddons)
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")

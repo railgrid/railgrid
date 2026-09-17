@@ -1,7 +1,8 @@
 # Local runner runbook
 
 `railgrid-runner` is a single-execution runner for a host that is already enrolled
-by its operator. It exposes the `runner/v1` protocol on a loopback-only HTTP
+by its operator. The host can be a Linux or MacOS edge; the runner binary and
+its protocol are the same on both. It exposes the `runner/v1` protocol on a loopback-only HTTP
 listener and uses a bearer token for every request. The default listener is
 `127.0.0.1:8787`; the listener cannot be configured to a non-loopback address.
 
@@ -9,6 +10,29 @@ The runner is an explicit operations surface. It has no scheduler, automatic
 cross-machine migration, Git publication, or deployment/publishing workflow.
 The caller must provide an approved task envelope and must observe the durable
 receipt and events for its outcome.
+
+## Managed or manual
+
+This runbook describes the **manual** path: an operator installs the binary,
+writes the enrollment JSON, generates the bearer token, prepares the Codex home,
+and starts the process themselves. Use it for a local fixture, an unmanaged
+host, or when debugging.
+
+The **managed** path is an [edge add-on](edge-addons.md). A tenant declares an
+`edges.railgrid.ai` `Addon` of type `runner`, and the agent already on the host
+renders the same enrollment, generates the token, materializes the Codex
+session from a Secret, supervises the process as a dedicated non-root account,
+and publishes the `Service` a Factory Worker enrols. Nothing on this page is
+done by hand. It requires the machine owner to have installed the agent with
+`--allow-addon=runner` (and, on Linux, `--addon-user`), so a tenant cannot turn
+a machine into a code-execution host on their own — see
+[edge-addons.md](edge-addons.md) for the trust model.
+
+Prefer the managed path on any host that already runs a railgrid agent.
+
+The same binary serves both: `railgrid runner run` is byte-for-byte the
+behaviour of `railgrid-runner`, including its refusal to run as root and its
+loopback-only listener. Everything below applies to either spelling.
 
 ## Prepare the host
 
@@ -19,18 +43,22 @@ The command refuses to start as root. Build the runner for the host with:
 make build-runner
 ```
 
-For Darwin hosts, build both supported architectures and install the matching
-binary:
+For Linux and MacOS hosts, build both supported architectures and install the
+binary that matches the host:
 
 ```sh
+make build-runner-linux
+# bin/railgrid-runner-linux-arm64
+# bin/railgrid-runner-linux-amd64
+
 make build-runner-darwin
 # bin/railgrid-runner-darwin-arm64
 # bin/railgrid-runner-darwin-amd64
 ```
 
-For a disposable Mac acceptance check, place the matching binary under the name
-`railgrid-runner` beside [setup-macos.sh](../hack/runner-acceptance/setup-macos.sh)
-and run `sh setup-macos.sh`. It creates a tiny local Git source, token, and
+For a disposable acceptance check on a Linux or MacOS host, place the matching
+binary under the name `railgrid-runner` beside
+[setup.sh](../hack/runner-acceptance/setup.sh) and run `sh setup.sh`. It creates a tiny local Git source, token, and
 configuration below `~/.railgrid-runner-preview`, then prints login and launch
 commands. It requires Git, OpenSSL, Python 3, and Codex. It does not enroll a
 Service, send credentials, or start a coding task. Its setup can be repeated
@@ -66,6 +94,42 @@ The exact Secret retrieval and mounting mechanism belongs to the tenant
 deployment. The local binary only reads the token file and compares the
 presented `Authorization: Bearer` value with it. The local runner has no
 bootstrap endpoint for creating this credential.
+
+## Expose the runner through an edge
+
+The runner listens only on loopback, so the hub reaches it through the host's
+Edges agent tunnel. Connect the host as a **Linux** edge (`--type server`, see
+[the CLI reference](cli/railgrid_edge_create.md)) or a **MacOS** edge
+(`--type macos`, see [MacOS edges](macos-edges.md)), then declare a Service on
+that edge that points at the runner's loopback port:
+
+```yaml
+apiVersion: edges.railgrid.ai/v1alpha1
+kind: Service
+metadata:
+  name: build-box-runner
+  labels:
+    edges.railgrid.ai/edge: build-box
+spec:
+  edgeRef:
+    kind: LinuxServer   # or MacOSServer
+    name: build-box
+  host: 127.0.0.1
+  type: generic
+  scheme: http
+  port: 8787
+```
+
+In the portal, open the edge, choose **Manage services**, then **Add service**.
+On Linux edges, declared Services sit next to the Services the agent discovers
+on its own. The discovery loop never removes a declared Service. Attach the
+runner's bearer token to the Service with the existing credential flow.
+
+On Linux, run the runner as the dedicated account under a user-level systemd
+unit (or an equivalent supervisor), for example with
+`python3 manage.py run -- --config ...` as `ExecStart`. The Edges agent itself
+is installed by `railgrid agent join --type server` and supervises only the
+tunnel, not the runner.
 
 ## Enroll configuration
 
@@ -162,6 +226,19 @@ timed out`, or `git fetch canceled`) instead of remote command output.
   --codex-binary <codex-executable>
 ```
 
+On a host that already has the railgrid CLI, the same thing with the same
+refusals:
+
+```sh
+railgrid runner run \
+  --config <absolute-runner-config.json> \
+  --codex-binary <codex-executable>
+```
+
+One runner process serves one coding harness, selected with `--harness`:
+`codex` (the default, and what every command line that predates the flag keeps
+doing) or `claude`. See "Claude Code harness" below.
+
 The command also accepts `--state-dir`, `--listen`, `--token-file`, and
 `--codex-home`. If `--codex-home` is omitted, it is
 `<stateDir>/codex-home`. The Codex home is created with owner-only permissions
@@ -198,6 +275,130 @@ Authorization: Bearer <runner-token>
 The response reports the protocol version, runner identity, OS and
 architecture, harness readiness and version, configured capabilities, capacity,
 and readiness reasons. A readiness response does not mean a task has completed.
+
+## Claude Code harness
+
+`--harness claude` runs headless Claude Code instead of Codex. Everything else
+on this page — the enrollment file, the bearer token, the protocol, the
+receipts — is unchanged; only the harness differs.
+
+### Credentials
+
+Claude Code headless authenticates through an **environment variable**, not
+through an on-disk session as Codex does. The runner therefore reads the value
+from an owner-only file and injects it into the harness child alone. Two kinds
+are supported:
+
+| `--claude-credential-kind` | Environment variable | Where it comes from |
+| --- | --- | --- |
+| `oauth-token` | `CLAUDE_CODE_OAUTH_TOKEN` | `claude setup-token` (requires a Claude subscription) |
+| `api-key` | `ANTHROPIC_API_KEY` | an Anthropic API key |
+
+Mint a long-lived token on a machine you control, then install it for the
+runner account:
+
+```sh
+claude setup-token                       # prints the token; do not echo it into a shell history
+install -m 600 /path/to/token-file /absolute/path/claude-credential
+```
+
+The runner refuses a credential file that is not absolute, not a regular file,
+readable by other accounts, empty, oversized, or containing a newline. It is
+re-read on every probe and every turn, so rotating the file takes effect on the
+next turn without restarting the runner.
+
+### Start the runner
+
+```sh
+railgrid runner run \
+  --config <absolute-runner-config.json> \
+  --harness claude \
+  --claude-credential-file /absolute/path/claude-credential \
+  --claude-credential-kind oauth-token \
+  --claude-binary <claude-executable> \
+  --claude-model sonnet
+```
+
+`--claude-home` defaults to `<stateDir>/claude-home` and becomes the child's
+`CLAUDE_CONFIG_DIR`. It is created `0700` and must be dedicated to the runner:
+the adapter refuses a home containing `settings.json`, `hooks`, `plugins`,
+`mcp.json`, `skills`, `agents`, `commands`, `output-styles` or any symlink.
+
+`--version-pin` applies to whichever harness is selected. Codex keeps its
+built-in pin of `0.147.0`; Claude Code has **no** default pin, because it
+self-updates on a fast cadence and a stale constant would leave every runner
+unready. Set one explicitly if you want the version checked.
+
+The capabilities response advertises a single harness entry named
+`claude-code`, with the executable's version and its readiness reasons.
+
+### What isolation is, and is not, enforced
+
+Enforced by flags (verified against `claude --help`, 2.1.273):
+
+| Flag | Effect |
+| --- | --- |
+| `--print` | non-interactive; no trust dialog |
+| `--output-format stream-json --verbose` | machine-readable per-turn records |
+| `--permission-mode dontAsk` | never prompts |
+| `--permission-prompts none` | anything that would prompt is **denied**, not parked |
+| `--safe-mode` | disables CLAUDE.md, skills, plugins, hooks, MCP servers, custom commands/agents, output styles and workflows — every project-controlled code path. Auth, model selection, built-in tools and permissions still work. |
+| `--strict-mcp-config` | with no `--mcp-config`, no MCP server loads at all |
+| `--disable-slash-commands` | no skills |
+| `--no-chrome` | no browser integration |
+| `--setting-sources ""` | no user, project or local settings files (see the caveat below) |
+| `--resume` / `--session-id` | the session identity is the runner's, never discovered |
+
+Enforced by environment: `CLAUDE_CONFIG_DIR` pins the config directory;
+`DISABLE_AUTOUPDATER`, `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`,
+`DISABLE_BUG_COMMAND`, `DISABLE_COST_WARNINGS` and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` turn off self-update and
+non-essential traffic. The IDE integration is opt-in (`--ide`), so not passing
+it is the disabled state. The child's environment is built from the runner's
+with an explicit deny list that removes the ENTIRE `ANTHROPIC_*` and `CLAUDE_*`
+space before the one credential variable is injected — an operator's exported
+`ANTHROPIC_API_KEY` can never authenticate a tenant's turn, and an inherited
+`ANTHROPIC_BASE_URL` can never redirect it.
+
+**Caveat on `--setting-sources ""`.** The flag and its three accepted values
+(`user`, `project`, `local`) are documented; that an *empty* list is accepted as
+"none" has not been verified against a running binary. If a release rejects it,
+the harness fails to start on the first turn — loudly, rather than silently
+loading settings. Check this first if a freshly configured Claude Code runner
+never becomes ready.
+
+**Not available, and therefore not enforced:**
+
+- **No turn limit.** This release has no `--max-turns`, so a turn is bounded by
+  the runner's own execution limits and by cancellation, not by the harness.
+- **No network sandbox.** Unlike the Codex adapter's `workspace-write` sandbox
+  with network disabled, Claude Code has no flag that disables network access
+  for a turn. `--restricted` would remove Bash along with it, which makes a
+  coding runner useless, so it is not used.
+- **No filesystem sandbox beyond the working directory.** File tools are
+  confined to the cwd (no `--add-dir` is passed), but Bash can reach anything
+  the runner account can.
+
+The privilege boundary is therefore the dedicated non-root account the runner
+runs as — exactly as stated at the end of "Start the runner" above.
+
+### Clarifications
+
+Headless Claude Code has no structured "ask the user" channel, and with
+`--permission-prompts none` nothing can prompt. The adapter therefore uses a
+convention: it prepends a short preamble telling the model that if it cannot
+proceed without a human decision, its final message must be exactly one block:
+
+```text
+<<<RAILGRID_CLARIFICATION>>>
+the question
+<<<END_RAILGRID_CLARIFICATION>>>
+```
+
+Only a final message that is exactly one such block becomes a
+`needs_input` receipt with a `clarification`. Prose that merely mentions the
+marker is ignored, because a false clarification would park work forever on a
+question nobody asked.
 
 ## Run an operation
 
@@ -411,8 +612,10 @@ interruption, restart, and same-session resume evidence.
 loading enrollment, credentials, or Codex. The running capabilities response
 reports the executable's build version; enrollment cannot override it.
 
-`make package-runner-darwin` builds plain arm64/amd64 tar archives containing the binary,
-manager, and `install.sh`, plus archive SHA-256 files. Verify the archive digest
+`make package-runner-linux` and `make package-runner-darwin` build plain
+arm64/amd64 tar archives (`railgrid-runner-linux-<arch>.tar` and
+`railgrid-runner-macos-<arch>.tar`) containing the binary, manager, and
+`install.sh`, plus archive SHA-256 files. Verify the archive digest
 from your trusted distribution before extracting and running `sh install.sh`.
 This installs locally; it does not start the runner or enroll a worker.
 

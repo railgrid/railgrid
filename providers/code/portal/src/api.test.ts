@@ -637,6 +637,8 @@ describe('connect', () => {
       name: ' GitHub-Prod ',
       owner: 'octocat',
       token: 'replacement-token',
+      refreshToken: 'replacement-refresh',
+      expiry: '2026-09-17T15:00:00Z',
       type: 'oauth',
       baseURL: 'https://github.example.com/api/v3',
     })).resolves.toMatchObject({ name: 'github-prod', uid: 'existing-connection-uid' })
@@ -675,7 +677,7 @@ describe('connect', () => {
           uid: 'existing-connection-uid',
         }],
       },
-      stringData: { token: 'replacement-token' },
+      stringData: { token: 'replacement-token', refreshToken: 'replacement-refresh', expiry: '2026-09-17T15:00:00Z' },
     })
   })
 

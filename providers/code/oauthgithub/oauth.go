@@ -141,6 +141,10 @@ func NewHandler(cfg Config, enabled bool) *Handler {
 	return h
 }
 
+// OAuth2Config returns the OAuth App configuration used to exchange and
+// refresh tokens, or nil when the flow is disabled.
+func (h *Handler) OAuth2Config() *oauth2.Config { return h.oauth }
+
 // Mount registers the routes on mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/oauth/github/config", h.handleConfig)
@@ -209,12 +213,19 @@ func (h *Handler) handleCallback(w http.ResponseWriter, r *http.Request) {
 		// The token is valid even if the /user probe failed; still return it.
 		login = ""
 	}
-	h.renderResult(w, callbackResult{
-		State:  state,
-		Token:  tok.AccessToken,
-		Login:  login,
-		Scopes: scopes,
-	})
+	res := callbackResult{
+		State:        state,
+		Token:        tok.AccessToken,
+		RefreshToken: tok.RefreshToken,
+		Login:        login,
+		Scopes:       scopes,
+	}
+	// An OAuth App with expiring user tokens returns an 8h access token plus a
+	// refresh token; the portal stores both so the provider can renew it.
+	if tok.RefreshToken != "" && !tok.Expiry.IsZero() {
+		res.Expiry = tok.Expiry.UTC().Format(time.RFC3339)
+	}
+	h.renderResult(w, res)
 }
 
 // fetchUser reads the authenticated login and granted scopes (X-OAuth-Scopes).
@@ -244,11 +255,13 @@ func fetchUser(ctx context.Context, token string) (login, scopes string, err err
 }
 
 type callbackResult struct {
-	State  string
-	Token  string
-	Login  string
-	Scopes string
-	Error  string
+	State        string
+	Token        string
+	RefreshToken string
+	Expiry       string // RFC 3339; empty when the token does not expire
+	Login        string
+	Scopes       string
+	Error        string
 }
 
 // renderResult returns an HTML page that posts the result to the opener and
@@ -258,12 +271,14 @@ func (h *Handler) renderResult(w http.ResponseWriter, res callbackResult) {
 	data := map[string]any{
 		"Origin": h.cfg.PortalOrigin,
 		"Payload": template.JS(mustJSON(map[string]string{
-			"type":   "railgrid-github-oauth",
-			"state":  res.State,
-			"token":  res.Token,
-			"login":  res.Login,
-			"scopes": res.Scopes,
-			"error":  res.Error,
+			"type":         "railgrid-github-oauth",
+			"state":        res.State,
+			"token":        res.Token,
+			"refreshToken": res.RefreshToken,
+			"expiry":       res.Expiry,
+			"login":        res.Login,
+			"scopes":       res.Scopes,
+			"error":        res.Error,
 		})),
 	}
 	var script bytes.Buffer

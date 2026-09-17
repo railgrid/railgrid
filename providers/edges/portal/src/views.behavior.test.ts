@@ -1359,14 +1359,14 @@ describe('edge detail actions', () => {
       await flush()
       await flush()
       const state = mounted.instance.setupState
-      expect(state.edgeTypeLabel).toBe('macOS host')
+      expect(state.edgeTypeLabel).toBe('MacOS')
       expect(state.edgeStatus).toBe('Connected')
       expect(state.configurationRows).toEqual([
         { label: 'Host access', value: 'Tunnel available', mono: false },
         { label: 'Service readiness', value: '1/2 Ready', mono: false },
         { label: 'Execution', value: 'Service-only host', mono: false },
       ])
-      expect(state.actionItems).toEqual([{ id: 'delete', label: 'Delete macOS host', tone: 'danger', disabled: false, busy: false }])
+      expect(state.actionItems).toEqual([{ id: 'delete', label: 'Delete MacOS edge', tone: 'danger', disabled: false, busy: false }])
 
       const rendered = await renderDetailMarkup({
         name: macDetail.name,
@@ -1380,6 +1380,45 @@ describe('edge detail actions', () => {
       expect(rendered).not.toContain('SSH access')
       expect(rendered).not.toContain('railgrid ssh')
       expect(rendered).not.toContain('kubectl')
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('lets a Linux edge declare a runner service while keeping discovered services agent-owned', async () => {
+    const linuxDetail = {
+      ...edgeDetail,
+      name: 'build-box',
+      type: 'server',
+      kind: 'LinuxServer',
+      connected: true,
+      phase: 'Ready',
+      spec: { sshPort: 22 },
+    }
+    api.getEdge.mockResolvedValue(linuxDetail)
+    api.listEdgeServices.mockResolvedValue([
+      { name: 'runner', edgeName: 'build-box', edgeKind: 'LinuxServer', serviceType: 'generic', port: 8787, phase: 'Ready', discovered: false },
+      { name: 'build-box-home-assistant', edgeName: 'build-box', edgeKind: 'LinuxServer', serviceType: 'home-assistant', port: 8123, phase: 'Detected', discovered: true },
+    ])
+    const mounted = await mount(Detail, {
+      name: linuxDetail.name,
+      type: linuxDetail.type,
+      cluster: null,
+      token: null,
+    })
+    try {
+      await flush()
+      await flush()
+      expect(mounted.instance.setupState.edgeTypeLabel).toBe('Linux')
+      const rendered = await renderDetailMarkup({
+        name: linuxDetail.name,
+        type: linuxDetail.type,
+        cluster: null,
+        token: null,
+      })
+      expect(rendered).toContain('Add service')
+      expect(rendered).toContain('Delete service runner')
+      expect(rendered).not.toContain('Delete service build-box-home-assistant')
     } finally {
       mounted.unmount()
     }
@@ -1399,12 +1438,12 @@ describe('edge detail actions', () => {
       await flush()
       const state = mounted.instance.setupState
       expect(state.edge).toEqual(edgeDetail)
-      expect(state.actionItems).toEqual([{ id: 'delete', label: 'Delete cluster', tone: 'danger', disabled: false, busy: false }])
+      expect(state.actionItems).toEqual([{ id: 'delete', label: 'Delete Kubernetes edge', tone: 'danger', disabled: false, busy: false }])
 
       confirm.confirmDialog.mockResolvedValueOnce(false)
       await state.onDelete()
       expect(confirm.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({
-        title: 'Delete cluster "edge-a"?',
+        title: 'Delete Kubernetes edge "edge-a"?',
         danger: true,
         confirmLabel: 'Delete',
       }))
@@ -1420,7 +1459,7 @@ describe('edge detail actions', () => {
       expect(api.deleteEdge).toHaveBeenCalledWith(edgeDetail)
       expect(state.deleting).toBe(true)
       expect(state.edgeStatus).toBe('Deleting')
-      expect(state.actionItems).toEqual([{ id: 'delete', label: 'Deleting cluster…', tone: 'danger', disabled: true, busy: true }])
+      expect(state.actionItems).toEqual([{ id: 'delete', label: 'Deleting Kubernetes edge…', tone: 'danger', disabled: true, busy: true }])
 
       pendingDelete.reject({ reason: 'HTTPError', message: 'delete failed' })
       await flush()
@@ -1452,7 +1491,7 @@ describe('edge detail actions', () => {
       await mounted.instance.setupState.onDelete()
 
       expect(toastMock).toHaveBeenCalledTimes(1)
-      expect(toastMock).toHaveBeenCalledWith('info', 'Cluster deletion requested for edge-a.')
+      expect(toastMock).toHaveBeenCalledWith('info', 'Kubernetes edge deletion requested for edge-a.')
       expect(deleted).toHaveBeenCalledTimes(1)
     } finally {
       mounted.unmount()

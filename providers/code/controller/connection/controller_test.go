@@ -12,6 +12,7 @@ package connection
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -112,4 +113,52 @@ func (b *fakeBackend) ValidateConnection(context.Context, *codev1alpha1.Connecti
 		return "", nil, b.err
 	}
 	return "octocat", []string{"repo"}, nil
+}
+
+// A token the host revokes later (no Connection or Secret change) must flip the
+// Connection to not-validated on a periodic re-check, and recover the same way.
+func TestReconcileRevalidatesPeriodically(t *testing.T) {
+	ctx := context.Background()
+	c := fake.NewClientBuilder().
+		WithScheme(codescheme.NewScheme()).
+		WithStatusSubresource(&codev1alpha1.Connection{}).
+		WithObjects(
+			&codev1alpha1.Connection{
+				ObjectMeta: metav1.ObjectMeta{Name: "conn", Finalizers: []string{codev1alpha1.FinalizerConnection}},
+				Spec:       codev1alpha1.ConnectionSpec{Provider: codev1alpha1.ProviderGitHub, SecretRef: codev1alpha1.LocalSecretReference{Name: "credential", Namespace: "default", Key: "token"}},
+			},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credential", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}},
+		).
+		Build()
+	b := &fakeBackend{}
+	registry := backend.NewRegistry()
+	if err := registry.Register(b); err != nil {
+		t.Fatal(err)
+	}
+	r := &Reconciler{Manager: fakeManager{c: c}, Backends: registry}
+	req := mcreconcile.Request{ClusterName: "tenant-a", Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: "conn"}}}
+	var got codev1alpha1.Connection
+	for _, step := range []struct {
+		err       error
+		validated bool
+	}{
+		{nil, true},
+		{errors.New("github: credential rejected (401): Bad credentials"), false},
+		{nil, true},
+	} {
+		b.err = step.err
+		result, err := r.Reconcile(ctx, req)
+		if err != nil {
+			t.Fatalf("Reconcile returned error: %v", err)
+		}
+		if result.RequeueAfter != revalidateInterval {
+			t.Fatalf("RequeueAfter = %s, want %s (err %v)", result.RequeueAfter, revalidateInterval, step.err)
+		}
+		if err := c.Get(ctx, client.ObjectKey{Name: "conn"}, &got); err != nil {
+			t.Fatal(err)
+		}
+		if apimeta.IsStatusConditionTrue(got.Status.Conditions, codev1alpha1.ConditionValidated) != step.validated {
+			t.Fatalf("Validated = %v after err %v, want %v", !step.validated, step.err, step.validated)
+		}
+	}
 }

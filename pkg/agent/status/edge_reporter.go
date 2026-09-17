@@ -111,6 +111,11 @@ type EdgeReporter struct {
 	// connectable status. Keep this separate from metadata labels, which are
 	// operator-owned scheduling inputs.
 	labels map[string]string
+	// allowedAddons are the add-on types the machine owner opted this edge into
+	// with --allow-addon. Reported on every heartbeat, including as an empty
+	// list, so revoking the opt-in clears the edge's advertisement instead of
+	// leaving a stale one for a portal to offer.
+	allowedAddons []string
 }
 
 // NewEdgeReporter creates a new EdgeReporter.
@@ -140,6 +145,14 @@ func (r *EdgeReporter) SetHostFacts(labels map[string]string) {
 	for k, v := range labels {
 		r.labels[k] = v
 	}
+}
+
+// SetAllowedAddons records the add-on types this edge will materialize. The
+// value is copied, and an empty list is meaningful: it tells the hub (and any
+// portal reading the edge) that this machine accepts no add-on, so a tenant is
+// never offered one that would sit Blocked forever.
+func (r *EdgeReporter) SetAllowedAddons(types []string) {
+	r.allowedAddons = append([]string(nil), types...)
 }
 
 // DarwinHostFacts returns the runtime facts that identify a macOS worker. It
@@ -196,6 +209,13 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 	if len(r.labels) > 0 {
 		statusPatch["labels"] = r.labels
 	}
+	// Always sent, even empty: a merge patch that omits the key would leave a
+	// stale advertisement behind after the machine owner dropped --allow-addon.
+	allowed := r.allowedAddons
+	if allowed == nil {
+		allowed = []string{}
+	}
+	statusPatch["allowedAddons"] = allowed
 
 	// The sshd host public key is NOT patched here. It is reported once, on
 	// tunnel connect (X-Railgrid-SSH-HostKey, see agent.go), and the provider

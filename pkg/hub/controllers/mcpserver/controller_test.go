@@ -604,3 +604,40 @@ func TestListBoundResources(t *testing.T) {
 		t.Fatalf("bound = %v, want %s", names, want)
 	}
 }
+
+// TestBuildRules_AddonsAreNeverGranted: the generated role widens itself as a
+// provider's APIExport grows, which is right for ordinary provider objects and
+// wrong for edges.railgrid.ai/addons. Creating an Addon asks a specific machine
+// to become a host for arbitrary code execution; an MCPServer token must not
+// hold that, in any verb, even when the tenant has bound the resource. Nor may
+// it arrive through a data-plane "proxy" grant or a catalog action.
+func TestBuildRules_AddonsAreNeverGranted(t *testing.T) {
+	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+		bound("edges.railgrid.ai", "addons"),
+		bound("edges.railgrid.ai", "linuxservers"),
+	}, []ActionGrant{
+		{Group: "edges.railgrid.ai", Resource: "addons", Name: "install"},
+	}, false)
+	assertNoWildcards(t, rules)
+
+	for _, r := range rules {
+		for _, resource := range r.Resources {
+			if resource == "addons" || strings.HasPrefix(resource, "addons/") {
+				t.Fatalf("a generated MCPServer role granted %q: %+v", resource, r)
+			}
+		}
+	}
+	// The rest of the group is unaffected.
+	if r := findRule(t, rules, "edges.railgrid.ai", "linuxservers"); r == nil {
+		t.Fatal("dropping addons also dropped the other bound edges resources")
+	}
+
+	// A workspace that bound ONLY addons gets no rule for the group at all —
+	// not an empty-resource rule, which the API server rejects.
+	only := buildRules([]apisv1alpha2.BoundAPIResource{bound("edges.railgrid.ai", "addons")}, nil, false)
+	for _, r := range only {
+		if slices.Contains(r.APIGroups, "edges.railgrid.ai") {
+			t.Fatalf("expected no edges rule at all, got %+v", r)
+		}
+	}
+}

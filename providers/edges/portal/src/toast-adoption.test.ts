@@ -11,9 +11,8 @@ const sources = [app, detail, serviceCreate, serviceEdit, services, workloads]
 
 describe('Edges toast adoption', () => {
   it('covers every silent-success mutation entry point', () => {
-    expect(sources.join('\n').match(/\btoast\(/g)).toHaveLength(11)
-    expect(app).toContain("toast('info', `${edge.type === 'server' ? 'Server' : 'Cluster'} deletion requested for ${edge.name}.`)")
-    expect(app).toContain("toast('info', `macOS host deletion requested for ${edge.name}.`)")
+    expect(sources.join('\n').match(/\btoast\(/g)).toHaveLength(10)
+    expect(app).toContain("toast('info', `${label} edge deletion requested for ${edge.name}.`)")
     expect(detail).toContain("toast('ok', `Service credentials saved for ${name}.`)")
     expect(serviceCreate).toContain("toast('info', `Service creation requested for ${name}.`)")
     expect(serviceEdit).toContain("toast('ok', `Service configuration saved for ${name}.`)")

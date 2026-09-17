@@ -5,18 +5,23 @@ metadata:
 spec:
   resources:
   - group: edges.railgrid.ai
+    name: addons
+    schema: v260917-ed2d6c6a.addons.edges.railgrid.ai
+    storage:
+      crd: {}
+  - group: edges.railgrid.ai
     name: kubernetesclusters
-    schema: v260715-d4e8aa2.kubernetesclusters.edges.railgrid.ai
+    schema: v260917-d002fd91.kubernetesclusters.edges.railgrid.ai
     storage:
       crd: {}
   - group: edges.railgrid.ai
     name: linuxservers
-    schema: v260904-9ab06b67.linuxservers.edges.railgrid.ai
+    schema: v260917-d002fd91.linuxservers.edges.railgrid.ai
     storage:
       crd: {}
   - group: edges.railgrid.ai
     name: macosservers
-    schema: v260911-5c089fd5.macosservers.edges.railgrid.ai
+    schema: v260917-d002fd91.macosservers.edges.railgrid.ai
     storage:
       crd: {}
   - group: edges.railgrid.ai

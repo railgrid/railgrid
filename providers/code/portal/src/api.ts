@@ -37,6 +37,11 @@ const GROUP = 'code.railgrid.ai'
 const VERSION = 'v1alpha1'
 const CRED_NAMESPACE = 'default'
 const TOKEN_KEY = 'token'
+// Written next to the token for an expiring OAuth token (see the provider's
+// tenant.OAuthRefresher); always written, empty when the token does not expire,
+// so a reconnect never leaves a previous token's refresh data behind.
+const REFRESH_TOKEN_KEY = 'refreshToken'
+const EXPIRY_KEY = 'expiry'
 // FIELD_MANAGER names this portal as the server-side-apply owner of the fields
 // it writes, so a later apply from the same portal can change them without
 // force-taking ownership from another manager.
@@ -793,7 +798,7 @@ export const api = {
   // the GitHub connect flow — same storage, only the credential's origin differs.
   // Idempotent: an existing Connection is adopted and its Secret overwritten,
   // so reconnecting never trips over leftovers from a prior connection.
-  async connect(input: { name: string; owner: string; token: string; baseURL?: string; type?: 'pat' | 'oauth' }): Promise<Connection> {
+  async connect(input: { name: string; owner: string; token: string; refreshToken?: string; expiry?: string; baseURL?: string; type?: 'pat' | 'oauth' }): Promise<Connection> {
     const context = captureRequestContext()
     const name = normalizeResourceName(input.name)
     const secretName = name + '-token'
@@ -822,7 +827,11 @@ export const api = {
         ownerReferences: [{ apiVersion: `${GROUP}/${VERSION}`, kind: 'Connection', name, uid: conn.metadata.uid }],
       },
       type: 'Opaque',
-      stringData: { [TOKEN_KEY]: input.token },
+      stringData: {
+        [TOKEN_KEY]: input.token,
+        [REFRESH_TOKEN_KEY]: input.refreshToken ?? '',
+        [EXPIRY_KEY]: input.expiry ?? '',
+      },
     }, context)
     return connFromCR(conn)
   },

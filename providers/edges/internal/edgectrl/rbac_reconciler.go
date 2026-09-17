@@ -271,6 +271,22 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 			Resources: []string{"workloads", "workloads/status"},
 			Verbs:     []string{"get", "list", "watch"},
 		},
+		// Add-on plane (host edges): the agent's add-on manager watches the
+		// tenant's Addons and reports what it did on each one's status. READ
+		// ONLY on the objects themselves — an agent must never be able to
+		// create or delete an Addon, because creating one is the privileged act
+		// that turns a machine into a code-execution host. See
+		// docs/edge-addons.md.
+		{
+			APIGroups: []string{"edges.railgrid.ai"},
+			Resources: []string{"addons"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{"edges.railgrid.ai"},
+			Resources: []string{"addons/status"},
+			Verbs:     []string{"get", "update", "patch"},
+		},
 		// Namespaces and secrets are needed for SSH credential setup (server-type edges).
 		{
 			APIGroups: []string{""},

@@ -22,6 +22,19 @@ export interface RailgridContext {
 // provider-neutral in the UI while each API call maps it to the concrete CR kind.
 export type EdgeType = 'kubernetes' | 'server' | 'macos'
 
+// EDGE_TYPE_LABELS are the user-facing names of each edge type. The API value
+// 'server' predates Linux being the only host OS it covers, so the UI always
+// renders the operating-system name rather than the wire value.
+export const EDGE_TYPE_LABELS: Record<EdgeType, string> = {
+  kubernetes: 'Kubernetes',
+  server: 'Linux',
+  macos: 'MacOS',
+}
+
+export function edgeTypeLabel(type: EdgeType): string {
+  return EDGE_TYPE_LABELS[type]
+}
+
 // Edge is the unified UI row, merged from the connectable edge kinds. All kinds
 // embed the SDK's ConnectionStatus; service/harness readiness is rendered by
 // the separate EdgeService status and is never inferred from connected.
@@ -120,6 +133,9 @@ export interface EdgeService {
   scheme?: string
   port?: number
   hasCredentials: boolean
+  // discovered is true for Services the host agent created; the discovery
+  // loop owns their lifecycle, so the UI does not offer to delete them.
+  discovered?: boolean
   instructions?: string
   phase?: string
   version?: string

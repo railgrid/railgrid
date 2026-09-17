@@ -82,6 +82,14 @@ type ConnectionStatus struct {
 	// AgentVersion is the version of the railgrid binary on the agent.
 	// +optional
 	AgentVersion string `json:"agentVersion,omitempty"`
+	// AllowedAddons are the Addon types the machine owner opted this edge into
+	// with the agent's --allow-addon flag, reported on every heartbeat. It is
+	// what a portal shows BEFORE anyone creates an Addon: an edge missing the
+	// type here will report Allowed=False on any Addon that names it, and
+	// nothing will be materialized. Empty (the default) means the edge hosts no
+	// add-ons.
+	// +optional
+	AllowedAddons []string `json:"allowedAddons,omitempty"`
 	// LastHeartbeatTime is the most recent agent heartbeat.
 	// +optional
 	LastHeartbeatTime *metav1.Time `json:"lastHeartbeatTime,omitempty"`
