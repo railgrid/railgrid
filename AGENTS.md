@@ -341,7 +341,7 @@ it to the canonical source under `provider-sdk/` and re-sync.
 
 ### 5.4 Tenant isolation in providers
 
-Providers that talk to kcp build a **per-(tenant, caller) dynamic client**: the
+Provider request handlers that talk to kcp build a **per-(tenant, caller) dynamic client**: the
 hub forwards the caller's bearer token plus the tenant workspace's kcp
 logical-cluster ID (in both `X-Railgrid-Tenant` and `X-Railgrid-Cluster` — the
 workspace path is never sent); the provider's `tenant/` package (`client.go`,
@@ -352,6 +352,55 @@ workspace UUIDs or the path resolves them from kcp with
 `kcp.io/path` annotation, read as the caller), never by parsing a header. See
 `providers/code/tenant/` and `providers/infrastructure/tenant/` for the
 canonical pattern, and `docs/provider-scoping.md`.
+
+#### Provider controllers and tenancy
+
+- Controllers for tenant-owned resources must reconcile across the workspaces
+  that have bound the provider's APIExport, within its platform or organization scope.
+  Organization-owned or privately hosted does not imply single-workspace execution.
+  Controllers for provider-owned or hosting-cluster resources may have a different
+  scope; keep those clients and responsibilities explicit.
+- Start from [Code's controller manager](providers/code/controller_manager.go)
+  and [scoped client helper](providers/code/controller/shared/shared.go).
+  Use `provider-sdk/apiexportprovider` with `multicluster-runtime`: it watches
+  `APIExportEndpointSlice` endpoints and engages consuming workspaces. Resolve
+  the client for each reconciliation from `req.ClusterName`; do not invent a
+  separate tenant inventory or manually enumerate workspaces.
+- Background controllers have no active caller. Unlike the request handlers
+  above, they use the provider's ServiceAccount identity through its APIExport
+  virtual workspace, with accepted permission claims for additional resources.
+  Where cross-provider access requires a workspace-local identity, follow
+  [the SDK tenantaccess pattern](provider-sdk/tenantaccess/tenantaccess.go) to
+  provision scoped identity/RBAC and use the workspace's own bindings. Do not
+  substitute admin credentials or retained interactive-user tokens.
+- Keep tenant-owned desired state and durable reconciliation status in KRM
+  resources in the owning workspace. Reconciliation must be idempotent and recover
+  from persisted state; process memory must not be the sole authority for work
+  ownership or completion. Use `provider-sdk/leaderelection` where singleton
+  controller execution is required.
+- Tenant scope belongs to each reconciliation. Do not restrict a shared controller
+  to a fixed tenant cluster/namespace or require manually supplied per-tenant
+  kubeconfigs as its normal installation contract. A fixed namespace for a
+  provider-scoped leader Lease or an explicitly scoped runtime client is valid.
+  Include tenant identity in shared cache, artifact, and external-operation keys.
+- A single-tenant development fixture is acceptable; it must not silently become
+  the production architecture. Any intentional per-tenant deployment model must
+  be explicitly proposed and approved as an architectural exception.
+- Connect controller watch health to readiness using `provider-sdk/vwhealth` and
+  the APIExport provider's checker, as Code does. A responding HTTP server alone
+  does not prove tenant resources are being reconciled.
+
+Before claiming tenant-controller integration complete, verify:
+
+- One provider installation reconciles identically named resources in two enabled
+  workspaces with independent state, credentials, and outputs; tenant identities
+  cannot read or mutate the other workspace's resources.
+- A workspace enabled after controller startup is discovered and reconciled
+  without manual configuration or controller deployment.
+- Reconciliation recovers after a controller restart and a temporary watch failure
+  without duplicate external operations.
+- Failed controller watches appear in readiness, with recovery reflected when
+  watching resumes. Record which checks used real kcp versus test doubles.
 
 ### 5.5 Provider inventory
 
