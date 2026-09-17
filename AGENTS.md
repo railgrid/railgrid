@@ -353,6 +353,28 @@ workspace UUIDs or the path resolves them from kcp with
 `providers/code/tenant/` and `providers/infrastructure/tenant/` for the
 canonical pattern, and `docs/provider-scoping.md`.
 
+#### Provider controllers and tenancy
+
+- Provider controllers must reconcile resources across the tenant workspaces
+  that have enabled the provider, within its platform or organization scope.
+  Organization-owned or privately hosted does not imply single-workspace execution.
+- Follow an existing provider's controller discovery, watch, client-scoping, and
+  authorization patterns. Identify the reference implementation before introducing
+  a new controller architecture.
+- Use KRM resources in the owning tenant workspace for desired state and durable
+  reconciliation status. Use standard Kubernetes coordination primitives where
+  appropriate.
+- Tenant scope belongs to each reconciliation. Do not make a fixed tenant cluster,
+  namespace, or manually supplied tenant kubeconfig the normal installation
+  contract for a shared provider controller.
+- A single-tenant development fixture is acceptable; it must not silently become
+  the production architecture. Any intentional per-tenant deployment model must
+  be explicitly proposed and approved as an architectural exception.
+- Before claiming provider integration complete, verify one provider installation
+  reconciling two enabled tenant workspaces, with isolated state and permissions.
+  Verify how newly enabled workspaces become discoverable without manual
+  controller deployment.
+
 ### 5.5 Provider inventory
 
 All providers are **standalone**: own `go.mod` under `providers/{name}/`, own
