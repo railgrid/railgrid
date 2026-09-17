@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260904-9ab06b67.linuxservers.edges.railgrid.ai
+  name: v260917-d002fd91.linuxservers.edges.railgrid.ai
 spec:
   group: edges.railgrid.ai
   names:
@@ -130,6 +130,17 @@ spec:
               description: AgentVersion is the version of the railgrid binary on the
                 agent.
               type: string
+            allowedAddons:
+              description: |-
+                AllowedAddons are the Addon types the machine owner opted this edge into
+                with the agent's --allow-addon flag, reported on every heartbeat. It is
+                what a portal shows BEFORE anyone creates an Addon: an edge missing the
+                type here will report Allowed=False on any Addon that names it, and
+                nothing will be materialized. Empty (the default) means the edge hosts no
+                add-ons.
+              items:
+                type: string
+              type: array
             conditions:
               description: Conditions represent the latest observations of state.
               items:

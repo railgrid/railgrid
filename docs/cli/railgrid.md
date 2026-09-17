@@ -46,6 +46,7 @@ completion.
 * [railgrid logout](railgrid_logout.md)	 - Forget the hub credentials on this machine
 * [railgrid mcp](railgrid_mcp.md)	 - MCP endpoints for AI clients (Claude Code, Cursor, Codex)
 * [railgrid org](railgrid_org.md)	 - Organizations you belong to, and who is in them
+* [railgrid runner](railgrid_runner.md)	 - Run the loopback coding runner on this host
 * [railgrid sandbox](railgrid_sandbox.md)	 - Drive a development-mode instance: sync, exec, logs, restart, status
 * [railgrid skills](railgrid_skills.md)	 - Install agent skills from the railgrid repository into Claude Code and Codex
 * [railgrid ssh](railgrid_ssh.md)	 - Open an SSH session to a Linux server edge via the hub

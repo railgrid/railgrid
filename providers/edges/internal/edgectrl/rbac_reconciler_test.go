@@ -212,3 +212,50 @@ func TestCredentialHelpersRefuseAResourceControlledByAnotherEdge(t *testing.T) {
 		})
 	}
 }
+
+// TestAgentRulesGrantAddonsReadOnly: the agent watches Addons and reports on
+// them, and that is ALL. Creating an Addon is the privileged act that turns a
+// machine into a code-execution host; an agent that could create one could
+// enrol itself, which would make the tenant's half of the trust model
+// meaningless.
+func TestAgentRulesGrantAddonsReadOnly(t *testing.T) {
+	var objects, statuses *rbacv1.PolicyRule
+	for i, rule := range desiredAgentRules() {
+		if len(rule.APIGroups) != 1 || rule.APIGroups[0] != "edges.railgrid.ai" {
+			continue
+		}
+		for _, resource := range rule.Resources {
+			switch resource {
+			case "addons":
+				objects = &desiredAgentRules()[i]
+			case "addons/status":
+				statuses = &desiredAgentRules()[i]
+			}
+		}
+	}
+
+	if objects == nil {
+		t.Fatal("the agent ClusterRole does not grant addons at all; the add-on manager cannot watch")
+	}
+	if len(objects.Resources) != 1 || objects.Resources[0] != "addons" {
+		t.Fatalf("the addons rule covers more than addons: %v", objects.Resources)
+	}
+	for _, verb := range objects.Verbs {
+		switch verb {
+		case "get", "list", "watch":
+		default:
+			t.Errorf("the agent is granted %q on addons; it must be read-only", verb)
+		}
+	}
+
+	if statuses == nil {
+		t.Fatal("the agent cannot report addon status")
+	}
+	for _, verb := range statuses.Verbs {
+		switch verb {
+		case "get", "update", "patch":
+		default:
+			t.Errorf("the agent is granted %q on addons/status", verb)
+		}
+	}
+}

@@ -1,0 +1,444 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: addons.edges.railgrid.ai
+spec:
+  group: edges.railgrid.ai
+  names:
+    kind: Addon
+    listKind: AddonList
+    plural: addons
+    shortNames:
+    - edgeaddon
+    singular: addon
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.runner.harness
+      name: Harness
+      type: string
+    - jsonPath: .spec.edgeRef.name
+      name: Edge
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.serviceRef.name
+      name: Service
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.version
+      name: Version
+      priority: 1
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Addon declares a managed service that the agent on one edge runs next to
+          itself — today only the coding runner. It follows the same loop as
+          Workload/Placement: the hub declares, the agent materializes, the agent
+          reports. There is no imperative channel to the host.
+
+          Creating an Addon is privileged: it turns the referenced machine into a host
+          for that add-on. It takes TWO keys — this object, and the machine owner
+          having started the agent with --allow-addon for this type. Neither alone
+          runs anything; see docs/edge-addons.md.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AddonSpec is the desired state of an Addon.
+            properties:
+              edgeRef:
+                description: EdgeRef points at the connectable that hosts this add-on.
+                properties:
+                  kind:
+                    default: LinuxServer
+                    description: |-
+                      Kind is the connectable kind hosting this add-on. Only the host kinds
+                      (LinuxServer, MacOSServer) are served today; KubernetesCluster is
+                      accepted by the schema and rejected by validation so the field does not
+                      have to change when cluster-hosted add-ons land.
+                    enum:
+                    - LinuxServer
+                    - MacOSServer
+                    - KubernetesCluster
+                    type: string
+                  name:
+                    description: Name is the connectable's metadata.name.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              paused:
+                description: |-
+                  Paused stops the supervised process without deleting the Addon. The
+                  add-on's state directory and enrolled repositories are kept, so
+                  unpausing resumes with the same identity and token.
+                type: boolean
+              runner:
+                description: Runner configures the runner add-on. Required when type
+                  is "runner".
+                properties:
+                  claude:
+                    description: |-
+                      Claude configures the Claude Code harness. Required when harness is
+                      "claude", rejected otherwise.
+                    properties:
+                      authSecretRef:
+                        description: |-
+                          AuthSecretRef names a Secret holding EXACTLY ONE of the keys
+                          "oauthToken" or "apiKey". Without it the agent starts nothing and reports
+                          Configured=False/ClaudeAuthMissing; with both keys, ClaudeAuthInvalid.
+                        properties:
+                          name:
+                            description: name is unique within a namespace to reference
+                              a secret resource.
+                            type: string
+                          namespace:
+                            description: namespace defines the space within which
+                              the secret name must be unique.
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      binary:
+                        default: claude
+                        description: Binary is the Claude Code executable, looked
+                          up on the child's PATH.
+                        maxLength: 512
+                        type: string
+                      model:
+                        description: |-
+                          Model for the turn, e.g. "sonnet" or a full model name. Empty uses the
+                          account default.
+                        maxLength: 128
+                        type: string
+                      versionPin:
+                        description: |-
+                          VersionPin is the Claude Code version the adapter probes for. Empty means
+                          unpinned: Claude Code self-updates on a fast cadence, so there is no
+                          useful built-in default.
+                        maxLength: 64
+                        type: string
+                    type: object
+                  codex:
+                    description: |-
+                      Codex configures the Codex harness. Required when harness is "codex",
+                      rejected otherwise so the intent is never ambiguous.
+                    properties:
+                      authSecretRef:
+                        description: |-
+                          AuthSecretRef names a Secret whose "auth.json" key holds the Codex login
+                          session file. The agent materializes it into the add-on's Codex home with
+                          owner-only permissions. Without it the agent starts nothing and reports
+                          Configured=False/CodexAuthMissing.
+                        properties:
+                          name:
+                            description: name is unique within a namespace to reference
+                              a secret resource.
+                            type: string
+                          namespace:
+                            description: namespace defines the space within which
+                              the secret name must be unique.
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      binary:
+                        default: codex
+                        description: Binary is the Codex executable, looked up on
+                          the child's PATH.
+                        maxLength: 512
+                        type: string
+                      versionPin:
+                        description: |-
+                          VersionPin is the Codex version the adapter probes for. Empty keeps the
+                          runner's built-in pin.
+                        maxLength: 64
+                        type: string
+                    type: object
+                  harness:
+                    default: codex
+                    description: Harness selects the coding harness this runner drives.
+                    enum:
+                    - codex
+                    - claude
+                    type: string
+                  maximumCapacity:
+                    default: 1
+                    description: |-
+                      MaximumCapacity is the number of simultaneous executions. The runner is
+                      single-execution today and rejects anything other than 1; the field
+                      exists so raising it later is a value change, not a schema change.
+                    format: int32
+                    type: integer
+                    x-kubernetes-validations:
+                    - message: maximumCapacity must be 1 for the single-execution
+                        runner
+                      rule: self == 1
+                  port:
+                    default: 8787
+                    description: |-
+                      Port is the loopback port the runner listens on. The listener is always
+                      bound to 127.0.0.1; only the port is configurable.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  repositories:
+                    additionalProperties:
+                      description: |-
+                        AddonRepository enrolls one local Git source for the runner add-on. The
+                        source is read-only from the runner's point of view; attempts are cloned
+                        into task-owned worktrees. Mirrors runner.RepositoryConfig — the agent
+                        re-validates every field with the runner's own rules before writing
+                        runner.json, so these markers are an admission guard, not the authority.
+                      properties:
+                        fetchRemoteURL:
+                          description: |-
+                            FetchRemoteURL optionally permits the runner to fetch a missing approved
+                            commit into the isolated task clone. Operator-only enrollment data: a
+                            start request can neither supply nor change it. Allowed forms are an
+                            absolute path, file://, https://, ssh://, or an scp-style user@host:path.
+                          maxLength: 2048
+                          type: string
+                          x-kubernetes-validations:
+                          - message: fetchRemoteURL must be an absolute path, a file://,
+                              https:// or ssh:// URL, or an scp-style user@host:path
+                            rule: self.startsWith('/') || self.startsWith('file://')
+                              || self.startsWith('https://') || self.startsWith('ssh://')
+                              || self.matches('^[A-Za-z0-9._~-]+@[A-Za-z0-9._-]+:')
+                          - message: fetchRemoteURL must not carry query or fragment
+                              options
+                            rule: '!self.contains(''?'') && !self.contains(''#'')'
+                        source:
+                          description: Source is an absolute path to a local Git checkout
+                            on the edge host.
+                          maxLength: 4096
+                          minLength: 1
+                          type: string
+                          x-kubernetes-validations:
+                          - message: source must be an absolute path on the edge host
+                            rule: self.startsWith('/')
+                      required:
+                      - source
+                      type: object
+                    description: |-
+                      Repositories enrolls the local Git sources this runner may clone from,
+                      keyed by repository ID. A start request may only name an enrolled ID.
+                    maxProperties: 64
+                    type: object
+                  toolchains:
+                    description: |-
+                      Toolchains advertised in the runner's capabilities response. Names only;
+                      declaring one does not install it.
+                    items:
+                      type: string
+                    maxItems: 64
+                    type: array
+                  verificationCapabilities:
+                    description: VerificationCapabilities advertised in the capabilities
+                      response.
+                    items:
+                      type: string
+                    maxItems: 64
+                    type: array
+                type: object
+                x-kubernetes-validations:
+                - message: repository IDs must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+                  rule: '!has(self.repositories) || self.repositories.all(k, k.matches(''^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$''))'
+                - message: spec.runner.codex is required when spec.runner.harness
+                    is 'codex'
+                  rule: '!has(self.harness) || self.harness != ''codex'' || has(self.codex)'
+                - message: spec.runner.claude is required when spec.runner.harness
+                    is 'claude'
+                  rule: '!has(self.harness) || self.harness != ''claude'' || has(self.claude)'
+                - message: spec.runner.claude must not be set when spec.runner.harness
+                    is 'codex'
+                  rule: '!has(self.harness) || self.harness != ''codex'' || !has(self.claude)'
+                - message: spec.runner.codex must not be set when spec.runner.harness
+                    is 'claude'
+                  rule: '!has(self.harness) || self.harness != ''claude'' || !has(self.codex)'
+              type:
+                default: runner
+                description: Type selects the add-on implementation.
+                enum:
+                - runner
+                type: string
+            required:
+            - edgeRef
+            - type
+            type: object
+            x-kubernetes-validations:
+            - message: spec.runner is required when spec.type is 'runner'
+              rule: self.type != 'runner' || has(self.runner)
+            - message: KubernetesCluster edges cannot host add-ons yet; use a LinuxServer
+                or MacOSServer edge
+              rule: '!has(self.edgeRef.kind) || self.edgeRef.kind != ''KubernetesCluster'''
+          status:
+            description: |-
+              AddonStatus is the observed state of an Addon, written by the edge agent
+              (Allowed/Configured/Running, phase, version) and the provider (Published,
+              serviceRef, and the Blocked phase for references it will not serve).
+            properties:
+              conditions:
+                description: |-
+                  Conditions: Allowed, Configured, Running (agent-owned) and Published
+                  (provider-owned).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              harness:
+                description: |-
+                  Harness is the coding harness the runner reported, copied from its
+                  capabilities response.
+                properties:
+                  name:
+                    description: 'Name is the harness the runner advertises: "codex"
+                      or "claude-code".'
+                    maxLength: 64
+                    type: string
+                  ready:
+                    description: |-
+                      Ready is the harness's own readiness. A runner can be Running while its
+                      harness is not ready — it answers the protocol and refuses every attempt.
+                    type: boolean
+                  reasons:
+                    description: |-
+                      Reasons are why the harness is not ready: a version-pin mismatch, or a
+                      missing credential. Never the credential itself.
+                    items:
+                      type: string
+                    maxItems: 16
+                    type: array
+                  version:
+                    description: Version is the harness executable's version, as probed
+                      on the host.
+                    maxLength: 64
+                    type: string
+                type: object
+              lastTransitionTime:
+                description: LastTransitionTime is when the phase last changed.
+                format: date-time
+                type: string
+              message:
+                description: Message is a short human-readable summary of the current
+                  phase.
+                maxLength: 2048
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the metadata.generation the reporting agent last
+                  reconciled. A status older than metadata.generation has not been acted on.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the coarse rollup of the conditions below.
+                enum:
+                - Pending
+                - Installing
+                - Running
+                - Degraded
+                - Blocked
+                - Paused
+                type: string
+              serviceRef:
+                description: ServiceRef names the edges Service the provider derived
+                  from this Addon.
+                properties:
+                  name:
+                    description: Name of the cluster-scoped Service object.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              version:
+                description: |-
+                  Version is the build version the supervised process reports — for the
+                  runner add-on, the "version" field of its capabilities response. This is
+                  the RUNNER build (which is the agent build); the harness version is in
+                  status.harness.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

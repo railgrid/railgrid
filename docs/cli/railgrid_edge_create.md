@@ -11,7 +11,7 @@ railgrid edge create <name> [flags]
 ```
   -h, --help                    help for create
       --labels stringToString   Labels for this edge (key=value pairs) (default [])
-      --type string             Edge type: kubernetes, server (Linux host with SSH) or macos (macOS service host) (default "kubernetes")
+      --type string             Edge type: kubernetes (Kubernetes), server (Linux host: SSH, host services, runner) or macos (MacOS host: host services, runner) (default "kubernetes")
 ```
 
 ### Options inherited from parent commands

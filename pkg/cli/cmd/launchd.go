@@ -18,19 +18,19 @@ package cmd
 
 import (
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"text/template"
 
 	"github.com/railgrid/railgrid/pkg/agent"
 	"github.com/railgrid/railgrid/pkg/agent/tunnel"
+	"github.com/railgrid/railgrid/pkg/util/localuser"
+	"github.com/railgrid/railgrid/pkg/util/safeio"
 )
 
 // launchdInstallOptions describes a system LaunchDaemon. The daemon runs the
@@ -47,11 +47,15 @@ type launchdInstallOptions struct {
 	InsecureSkipTLS bool
 	SvcAllowCIDRs   []string
 	SvcPolicy       string
-	WorkerUser      string
-	WorkerHome      string
-	WorkerGroup     string
-	PlistPath       string
-	DryRun          bool
+	// AllowAddons renders --allow-addon into the daemon's program arguments.
+	// There is deliberately no --addon-user here: the LaunchDaemon already runs
+	// as the non-root worker account, so an add-on child runs as that account.
+	AllowAddons []string
+	WorkerUser  string
+	WorkerHome  string
+	WorkerGroup string
+	PlistPath   string
+	DryRun      bool
 }
 
 type launchdWorker struct {
@@ -153,49 +157,20 @@ func resolveLaunchdWorker(opts launchdInstallOptions) (launchdWorker, error) {
 		}
 		username = current.Username
 	}
-
-	u, err := user.Lookup(username)
+	// The lookup, the uid-0 refusal, the absolute non-root home requirement and
+	// the canonical group NAME all live in pkg/util/localuser: the add-on
+	// supervisor drops privileges to an account resolved exactly the same way.
+	account, err := localuser.Resolve(username, opts.WorkerHome, opts.WorkerGroup)
 	if err != nil {
-		return launchdWorker{}, fmt.Errorf("looking up worker account %q: %w", username, err)
+		return launchdWorker{}, err
 	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return launchdWorker{}, fmt.Errorf("invalid uid for worker account %q: %w", username, err)
-	}
-	if uid == 0 || username == "root" {
-		return launchdWorker{}, fmt.Errorf("worker account %q must be non-root", username)
-	}
-	home := u.HomeDir
-	if opts.WorkerHome != "" {
-		home = opts.WorkerHome
-	}
-	if !filepath.IsAbs(home) || home == "/" {
-		return launchdWorker{}, fmt.Errorf("worker home must be an absolute non-root path, got %q", home)
-	}
-	group := strings.TrimSpace(opts.WorkerGroup)
-	if group == "" {
-		group = u.Gid
-	}
-	gid, err := strconv.Atoi(group)
-	if err != nil {
-		// Allow a group name for callers that construct launchdInstallOptions
-		// directly, while emitting the canonical name launchd expects in its
-		// GroupName key.
-		groupEntry, lookupErr := user.LookupGroup(group)
-		if lookupErr != nil {
-			return launchdWorker{}, fmt.Errorf("invalid worker group %q for account %q: %w", group, username, lookupErr)
-		}
-		gid, err = strconv.Atoi(groupEntry.Gid)
-		if err != nil {
-			return launchdWorker{}, fmt.Errorf("invalid gid %q for worker group %q: %w", groupEntry.Gid, group, err)
-		}
-		group = groupEntry.Name
-	} else if groupEntry, lookupErr := user.LookupGroupId(strconv.Itoa(gid)); lookupErr == nil {
-		// launchd's GroupName is a name field. Numeric values happen to work on
-		// some releases but are not portable across macOS versions.
-		group = groupEntry.Name
-	}
-	return launchdWorker{username: username, group: group, home: filepath.Clean(home), uid: uid, gid: gid}, nil
+	return launchdWorker{
+		username: account.Username,
+		group:    account.Group,
+		home:     account.Home,
+		uid:      account.UID,
+		gid:      account.GID,
+	}, nil
 }
 
 func validateLaunchdEdgeName(name string) error {
@@ -240,6 +215,9 @@ func launchdProgramArgs(opts launchdInstallOptions) []string {
 	}
 	if opts.SvcPolicy != "" && opts.SvcPolicy != string(tunnel.DefaultSvcPolicy) {
 		args = append(args, "--svc-policy", opts.SvcPolicy)
+	}
+	for _, addonType := range opts.AllowAddons {
+		args = append(args, "--allow-addon", addonType)
 	}
 	return args
 }
@@ -399,6 +377,12 @@ func agentJoinMacOS(opts *agent.Options, workerUser, plistPath string, dryRun bo
 	if err != nil {
 		return fmt.Errorf("resolving binary symlinks: %w", err)
 	}
+	// A macOS daemon runs as the non-root worker account, so the type allow
+	// list is all that has to be carried; --addon-user has no meaning here.
+	allowedAddons, err := agent.NormalizeAllowedAddons(opts.AllowedAddons)
+	if err != nil {
+		return fmt.Errorf("--allow-addon: %w", err)
+	}
 	return installLaunchdAgent(launchdInstallOptions{
 		BinaryPath:      binaryPath,
 		HubKubeconfig:   opts.HubKubeconfig,
@@ -410,97 +394,24 @@ func agentJoinMacOS(opts *agent.Options, workerUser, plistPath string, dryRun bo
 		InsecureSkipTLS: opts.InsecureSkipTLSVerify,
 		SvcAllowCIDRs:   opts.SvcAllowedCIDRs,
 		SvcPolicy:       opts.SvcPolicy,
+		AllowAddons:     allowedAddons,
 		WorkerUser:      workerUser,
 		PlistPath:       plistPath,
 		DryRun:          dryRun,
 	})
 }
 
+// ensureLaunchdDir, rejectSymlink and writeLaunchdFile are
+// thin names over pkg/util/safeio so this installer and the edge add-on
+// manager share one symlink-hardened write path.
 func ensureLaunchdDir(path string, mode os.FileMode, uid, gid int) error {
-	if err := rejectSymlinkPath(path); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(path, mode); err != nil {
-		return err
-	}
-	if err := os.Chmod(path, mode); err != nil {
-		return err
-	}
-	if err := os.Chown(path, uid, gid); err != nil {
-		return err
-	}
-	return nil
+	return safeio.EnsureDir(path, mode, uid, gid)
 }
 
-func rejectSymlink(path string) error {
-	info, err := os.Lstat(path)
-	if err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to overwrite symlink at %s", path)
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("checking %s: %w", path, err)
-	}
-	return nil
-}
-
-// rejectSymlinkPath checks every existing component of a path before an
-// installer creates or changes anything below it. This prevents a worker-owned
-// symlink such as ~/.railgrid -> another directory from redirecting root's write.
-func rejectSymlinkPath(path string) error {
-	path = filepath.Clean(path)
-	for current := path; ; current = filepath.Dir(current) {
-		info, err := os.Lstat(current)
-		if err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("refusing to use symlink directory %s", current)
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("path component %s is not a directory", current)
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("checking path component %s: %w", current, err)
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return nil
-		}
-	}
-}
+func rejectSymlink(path string) error { return safeio.RejectSymlink(path) }
 
 func writeLaunchdFile(path string, data []byte, mode os.FileMode, uid, gid int) error {
-	if err := rejectSymlink(path); err != nil {
-		return err
-	}
-	if err := rejectSymlinkPath(filepath.Dir(path)); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".railgrid-launchd-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) //nolint:errcheck
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if uid != 0 || gid != 0 {
-		if err := tmp.Chown(uid, gid); err != nil {
-			_ = tmp.Close()
-			return err
-		}
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
+	return safeio.WriteFile(path, data, mode, uid, gid)
 }
 
 func copyLaunchdSecret(src, dst string, uid, gid int) error {

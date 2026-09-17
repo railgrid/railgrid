@@ -80,6 +80,57 @@ func agentRunFlags(cmd *cobra.Command, opts *agent.Options) {
 		"CIDR the Service proxy may dial besides loopback (and cluster DNS in kubernetes mode), e.g. 192.168.1.0/24. Repeatable. Link-local, unspecified and multicast addresses are never allowed. Env: "+svcAllowCIDREnv)
 	cmd.Flags().StringVar(&opts.SvcPolicy, "svc-policy", svcPolicyDefault(),
 		"What the Service proxy does with a target outside loopback/--svc-allow-cidr: enforce (403, never dialed), warn (dialed but logged; response carries X-Railgrid-Svc-Policy: warn) or allow-any (allow list disabled; logged at startup). The default flips to enforce in the next release. Env: "+svcPolicyEnv)
+	addonFlags(cmd, opts)
+}
+
+// addonFlags attaches the machine owner's half of the edge add-on trust model.
+// Both flags are local-only: nothing the hub says can set them, and without
+// --allow-addon an Addon declared for this edge is reported Allowed=False and
+// never materialized. See docs/edge-addons.md.
+func addonFlags(cmd *cobra.Command, opts *agent.Options) {
+	cmd.Flags().StringSliceVar(&opts.AllowedAddons, "allow-addon", allowAddonDefault(),
+		"Addon type this machine will run (currently only \"runner\"). Repeatable. Empty (the default) means this edge materializes no add-on at all. Env: "+allowAddonEnv)
+	cmd.Flags().StringVar(&opts.AddonUser, "addon-user", addonUserDefault(),
+		"Existing non-root local account that add-on child processes run as. Required with --allow-addon when the agent runs as root. Env: "+addonUserEnv)
+}
+
+// Environment fallbacks for the add-on flags, so a systemd unit or an
+// in-cluster Deployment can set them without editing args.
+const (
+	allowAddonEnv = "RAILGRID_AGENT_ALLOW_ADDON"
+	addonUserEnv  = "RAILGRID_AGENT_ADDON_USER"
+)
+
+// allowAddonDefault reads RAILGRID_AGENT_ALLOW_ADDON (comma-separated).
+func allowAddonDefault() []string {
+	var out []string
+	for _, s := range strings.Split(os.Getenv(allowAddonEnv), ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// addonUserDefault reads RAILGRID_AGENT_ADDON_USER.
+func addonUserDefault() string {
+	return strings.TrimSpace(os.Getenv(addonUserEnv))
+}
+
+// validateAddonInstall is the install-time half of the --addon-user rule. The
+// systemd unit runs the agent as root (there is no User=), so an install that
+// allows an add-on without naming an account would produce a unit that refuses
+// to start — better to refuse here, where the operator is still watching.
+func validateAddonInstall(allowAddons []string, addonUser string) ([]string, error) {
+	normalized, err := agent.NormalizeAllowedAddons(allowAddons)
+	if err != nil {
+		return nil, fmt.Errorf("--allow-addon: %w", err)
+	}
+	if len(normalized) > 0 && strings.TrimSpace(addonUser) == "" {
+		return nil, fmt.Errorf("--addon-user is required with --allow-addon: the systemd unit runs the agent as root, "+
+			"and an add-on child must run as a separate non-root account (allowed types: %s)", strings.Join(normalized, ", "))
+	}
+	return normalized, nil
 }
 
 // Environment fallbacks for the Service proxy policy flags, so systemd units
@@ -392,6 +443,14 @@ func joinServerUnitData(opts *agent.Options, binaryPath, absKubeconfig string) (
 	}
 	if _, err := tunnel.ParseSvcAllowedCIDRs(opts.SvcAllowedCIDRs); err != nil {
 		return systemdUnitData{}, err
+	}
+	allowAddons, err := validateAddonInstall(opts.AllowedAddons, opts.AddonUser)
+	if err != nil {
+		return systemdUnitData{}, err
+	}
+	data.AllowAddons = allowAddons
+	if len(allowAddons) > 0 {
+		data.AddonUser = strings.TrimSpace(opts.AddonUser)
 	}
 	return data, nil
 }
@@ -785,7 +844,9 @@ ExecStart={{.BinaryPath}} agent run \
   --cluster {{.Cluster}}{{end}}{{if .InsecureSkipTLS}} \
   --hub-insecure-skip-tls-verify{{end}}{{range .SvcAllowCIDRs}} \
   --svc-allow-cidr {{.}}{{end}}{{if .SvcPolicy}} \
-  --svc-policy {{.SvcPolicy}}{{end}}
+  --svc-policy {{.SvcPolicy}}{{end}}{{range .AllowAddons}} \
+  --allow-addon {{.}}{{end}}{{if .AddonUser}} \
+  --addon-user {{.AddonUser}}{{end}}
 Restart=always
 RestartSec=10
 Environment=HOME=/root
@@ -810,6 +871,12 @@ type systemdUnitData struct {
 	// is left empty when it equals the built-in default (see svcPolicyArgs).
 	SvcAllowCIDRs []string
 	SvcPolicy     string
+	// AllowAddons / AddonUser render --allow-addon / --addon-user. Both are
+	// only present when the operator asked for an add-on: an install that did
+	// not mention add-ons must produce a unit that runs none. The unit runs as
+	// root, so AllowAddons without AddonUser is rejected before rendering.
+	AllowAddons []string
+	AddonUser   string
 }
 
 func newAgentInstallCommand() *cobra.Command {
@@ -830,6 +897,8 @@ func newAgentInstallCommand() *cobra.Command {
 		dryRun          bool
 		svcAllowCIDRs   []string
 		svcPolicy       string
+		allowAddons     []string
+		addonUser       string
 	)
 
 	cmd := &cobra.Command{
@@ -867,6 +936,13 @@ Example:
 				return fmt.Errorf("resolving symlinks: %w", err)
 			}
 			if edgeType == "macos" {
+				// The LaunchDaemon already runs as a non-root worker account, so
+				// --addon-user is not required there: add-on children run as that
+				// same worker. Only the type allow list is carried over.
+				normalizedAddons, err := agent.NormalizeAllowedAddons(allowAddons)
+				if err != nil {
+					return fmt.Errorf("--allow-addon: %w", err)
+				}
 				return installLaunchdAgent(launchdInstallOptions{
 					BinaryPath:      binaryPath,
 					HubKubeconfig:   hubKubeconfig,
@@ -878,6 +954,7 @@ Example:
 					InsecureSkipTLS: insecureSkipTLS,
 					SvcAllowCIDRs:   svcAllowCIDRs,
 					SvcPolicy:       svcPolicy,
+					AllowAddons:     normalizedAddons,
 					WorkerUser:      workerUser,
 					PlistPath:       plistPath,
 					DryRun:          dryRun,
@@ -914,6 +991,14 @@ Example:
 			}
 			if _, err := tunnel.ParseSvcAllowedCIDRs(svcAllowCIDRs); err != nil {
 				return err
+			}
+			normalizedAddons, err := validateAddonInstall(allowAddons, addonUser)
+			if err != nil {
+				return err
+			}
+			data.AllowAddons = normalizedAddons
+			if len(normalizedAddons) > 0 {
+				data.AddonUser = strings.TrimSpace(addonUser)
 			}
 
 			// Render systemd unit.
@@ -958,7 +1043,7 @@ Example:
 	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (required with --token for macOS)")
 	cmd.Flags().StringVar(&token, "token", "", "Bootstrap join token (macOS token bootstrap)")
 	cmd.Flags().StringVar(&edgeName, "edge-name", "", "Name of this edge (required)")
-	cmd.Flags().StringVar(&edgeType, "type", "server", "Edge type: kubernetes, server, or macos")
+	cmd.Flags().StringVar(&edgeType, "type", "server", "Edge type: kubernetes (Kubernetes), server (Linux), or macos (MacOS)")
 	cmd.Flags().IntVar(&sshProxyPort, "ssh-proxy-port", 22, "Local SSH daemon port")
 	cmd.Flags().StringVar(&sshUser, "ssh-user", "", "SSH username")
 	cmd.Flags().StringVar(&sshPrivateKey, "ssh-private-key", "", "Path to SSH private key file")
@@ -970,6 +1055,8 @@ Example:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the macOS LaunchDaemon and skip installation (works on Linux)")
 	cmd.Flags().StringSliceVar(&svcAllowCIDRs, "svc-allow-cidr", svcAllowCIDRDefault(), "CIDR the Service proxy may dial besides loopback, e.g. 192.168.1.0/24 (repeatable; rendered into the unit)")
 	cmd.Flags().StringVar(&svcPolicy, "svc-policy", svcPolicyDefault(), "Service proxy policy for targets outside the allowed set: enforce, warn or allow-any (rendered into the unit only when not the default)")
+	cmd.Flags().StringSliceVar(&allowAddons, "allow-addon", allowAddonDefault(), "Addon type this machine will run, currently only \"runner\" (repeatable; rendered into the unit). Empty means no add-on is ever materialized. Env: "+allowAddonEnv)
+	cmd.Flags().StringVar(&addonUser, "addon-user", addonUserDefault(), "Existing non-root local account add-on child processes run as. Required with --allow-addon for a systemd install. Env: "+addonUserEnv)
 
 	return cmd
 }

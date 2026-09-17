@@ -31,6 +31,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcmulticluster "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
+	addonctrl "github.com/railgrid/provider-edges/internal/addonctrl"
 	edgectrl "github.com/railgrid/provider-edges/internal/edgectrl"
 	"github.com/railgrid/provider-edges/internal/events"
 	"github.com/railgrid/provider-edges/internal/scheduler"
@@ -190,6 +191,15 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		Events:              eventsMgr,
 	}); err != nil {
 		return fmt.Errorf("EdgeService controllers: %w", err)
+	}
+
+	// Add-on publisher (host edges): for a runner Addon whose AGENT has
+	// reported Allowed=True and published the add-on's token Secret, derive the
+	// Service through which the add-on is reachable. It deliberately publishes
+	// nothing from hub-side intent alone — see internal/addonctrl and
+	// docs/edge-addons.md.
+	if err := addonctrl.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("Addon controller: %w", err)
 	}
 
 	go func() {

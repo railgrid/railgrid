@@ -15,34 +15,24 @@ limitations under the License.
 */
 
 // Command railgrid-runner serves the loopback-only generic runner protocol.
+//
+// The launch logic lives in pkg/runner/runnercli so this binary and the
+// `railgrid runner run` subcommand of the main CLI stay byte-for-byte the same
+// behaviour; only flag parsing differs.
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"runtime"
+	"strings"
 	"syscall"
 
-	"github.com/railgrid/railgrid/pkg/runner"
-	"github.com/railgrid/railgrid/pkg/runner/harness/codex"
-	"github.com/railgrid/railgrid/pkg/version"
+	"github.com/railgrid/railgrid/pkg/runner/harness/claude"
+	"github.com/railgrid/railgrid/pkg/runner/runnercli"
 )
-
-type options struct {
-	config      string
-	stateDir    string
-	listen      string
-	tokenFile   string
-	codexHome   string
-	codexBinary string
-	versionPin  string
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -51,76 +41,36 @@ func main() {
 	}
 }
 
-func run() (runErr error) {
-	var opts options
+func run() error {
+	opts := runnercli.DefaultOptions()
 	var showVersion bool
 	flags := flag.NewFlagSet("railgrid-runner", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	flags.BoolVar(&showVersion, "version", false, "print build and protocol metadata as JSON, then exit")
-	flags.StringVar(&opts.config, "config", "", "path to the JSON runner enrollment/configuration file")
-	flags.StringVar(&opts.stateDir, "state-dir", "", "durable runner state directory")
-	flags.StringVar(&opts.listen, "listen", "", "loopback listen address (default 127.0.0.1:8787)")
-	flags.StringVar(&opts.tokenFile, "token-file", "", "file containing the runner bearer token")
-	flags.StringVar(&opts.codexHome, "codex-home", "", "runner-owned CODEX_HOME directory")
-	flags.StringVar(&opts.codexBinary, "codex-binary", "codex", "Codex executable")
-	flags.StringVar(&opts.versionPin, "version-pin", "0.147.0", "expected Codex version")
+	flags.StringVar(&opts.Config, "config", "", "path to the JSON runner enrollment/configuration file")
+	flags.StringVar(&opts.StateDir, "state-dir", "", "durable runner state directory")
+	flags.StringVar(&opts.Listen, "listen", "", "loopback listen address (default 127.0.0.1:8787)")
+	flags.StringVar(&opts.TokenFile, "token-file", "", "file containing the runner bearer token")
+	flags.StringVar(&opts.Harness, "harness", runnercli.HarnessCodex,
+		"coding harness to serve: "+strings.Join(runnercli.Harnesses, " or ")+" (one per runner process)")
+	flags.StringVar(&opts.VersionPin, "version-pin", "",
+		"expected harness version; empty uses the selected harness default (Codex "+runnercli.DefaultCodexVersionPin+"; Claude Code unpinned)")
+	flags.StringVar(&opts.CodexHome, "codex-home", "", "runner-owned CODEX_HOME directory")
+	flags.StringVar(&opts.CodexBinary, "codex-binary", runnercli.DefaultCodexBinary, "Codex executable")
+	flags.StringVar(&opts.ClaudeHome, "claude-home", "", "runner-owned CLAUDE_CONFIG_DIR directory")
+	flags.StringVar(&opts.ClaudeBinary, "claude-binary", runnercli.DefaultClaudeBinary, "Claude Code executable")
+	flags.StringVar(&opts.ClaudeCredentialFile, "claude-credential-file", "",
+		"absolute owner-only file holding the Claude Code credential (required with -harness=claude)")
+	flags.StringVar(&opts.ClaudeCredentialKind, "claude-credential-kind", "",
+		"how to inject the Claude Code credential: "+strings.Join(claude.CredentialKinds, " or "))
+	flags.StringVar(&opts.ClaudeModel, "claude-model", "", "model for Claude Code turns (empty uses the account default)")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
 	if showVersion {
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{
-			"version": version.Get(), "commit": version.GitCommit, "buildDate": version.BuildDate,
-			"protocolVersion": runner.ProtocolVersion, "os": runtime.GOOS, "arch": runtime.GOARCH,
-		})
+		return runnercli.WriteVersion(os.Stdout)
 	}
-	if os.Geteuid() == 0 {
-		return errors.New("railgrid-runner must run as a non-root user")
-	}
-	cfg, err := runner.LoadConfig(opts.config)
-	if err != nil {
-		return err
-	}
-	// Build identity is executable-owned, not enrollment configuration.
-	cfg.Version = version.Get()
-	if opts.stateDir != "" {
-		cfg.StateDir = opts.stateDir
-	}
-	if opts.listen != "" {
-		cfg.Listen = opts.listen
-	}
-	if opts.tokenFile != "" {
-		cfg.TokenFile = opts.tokenFile
-		cfg.Token = ""
-	}
-	if cfg.StateDir == "" {
-		base, resolveErr := os.UserConfigDir()
-		if resolveErr != nil {
-			return resolveErr
-		}
-		cfg.StateDir = filepath.Join(base, "railgrid-runner")
-	}
-	if opts.codexHome == "" {
-		opts.codexHome = filepath.Join(cfg.StateDir, "codex-home")
-	}
-	stateRoot, err := filepath.Abs(cfg.StateDir)
-	if err != nil {
-		return fmt.Errorf("resolve runner state directory: %w", err)
-	}
-	adapter := codex.New(codex.Config{
-		Binary:          opts.codexBinary,
-		Home:            opts.codexHome,
-		WorktreeRoot:    filepath.Join(stateRoot, "worktrees"),
-		ExpectedVersion: opts.versionPin,
-	})
-	r, err := runner.New(cfg, adapter)
-	if err != nil {
-		return err
-	}
-	defer func() { runErr = errors.Join(runErr, r.Close()) }()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := r.ListenAndServe(ctx); err != nil {
-		return fmt.Errorf("serve runner version %s: %w", version.Get(), err)
-	}
-	return nil
+	return runnercli.Run(ctx, opts)
 }

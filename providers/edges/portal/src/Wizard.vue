@@ -4,7 +4,7 @@ import { ArrowLeft, Boxes, Laptop, Server, ArrowRight, Copy, Check, Loader2, Par
 import { createEdge, probeEdge } from './api'
 import { MACOS_MASKED_JOIN_TOKEN, hubURLForCluster, macosJoinSnippet } from './macos'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
-import type { EdgeType, ErrorResponse } from './types'
+import { edgeTypeLabel, type EdgeType, type ErrorResponse } from './types'
 
 const props = withDefaults(defineProps<{
   cluster: string | null
@@ -88,7 +88,7 @@ const edgeGuidanceValues = computed<CreateGuidanceValue[]>(() => [
   { label: 'Scheduling labels', value: labels.value.trim() || 'None', technical: true },
 ])
 const edgePrerequisites = [
-  'Access to the target cluster with Helm, or to the Linux/macOS host with the Railgrid CLI.',
+  'Access to the target cluster with Helm, or to the Linux or MacOS host with the Railgrid CLI.',
   'A unique Kubernetes-compatible name in this workspace.',
   'Optional key=value labels if Workloads will target this edge.',
 ]
@@ -226,7 +226,7 @@ function fmt(s: number) {
   <div class="wiz">
     <div class="wiz-hero">
       <h1>Connect an edge</h1>
-      <p>A Kubernetes cluster, Linux/SSH server, or macOS host you want to manage from this workspace.</p>
+      <p>A Kubernetes cluster, or a Linux or MacOS host, that you want to manage from this workspace.</p>
     </div>
 
     <ol class="wiz-steps k-wizard-steps" aria-label="Edge connection progress">
@@ -254,11 +254,11 @@ function fmt(s: number) {
             </label>
             <label class="type" :class="{ sel: edgeType === 'server' }" for="edge-type-server">
               <input id="edge-type-server" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="server" :disabled="edgeTypeLocked && props.requiredType !== 'server'" />
-              <Server :size="15" aria-hidden="true" /> <span><b>Server</b><small>Bare-metal or VM (SSH)</small></span>
+              <Server :size="15" aria-hidden="true" /> <span><b>Linux</b><small>Bare-metal or VM: SSH, host services, local runner</small></span>
             </label>
             <label class="type" :class="{ sel: edgeType === 'macos' }" for="edge-type-macos">
               <input id="edge-type-macos" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="macos" :disabled="edgeTypeLocked && props.requiredType !== 'macos'" />
-              <Laptop :size="15" aria-hidden="true" /> <span><b>macOS host</b><small>Host services and local runner</small></span>
+              <Laptop :size="15" aria-hidden="true" /> <span><b>MacOS</b><small>Host services and local runner</small></span>
             </label>
           </fieldset>
           <p v-if="edgeTypeLocked" class="muted">This edge type is required to continue the originating {{ props.requiredType === 'kubernetes' ? 'workload' : 'resource' }} flow.</p>
@@ -289,7 +289,7 @@ function fmt(s: number) {
 
     <!-- Step 2 -->
     <div v-else-if="step === 2" class="wiz-card k-card">
-      <h3 id="edge-wizard-step-heading" tabindex="-1">Install the agent on your {{ edgeType === 'kubernetes' ? 'cluster' : edgeType === 'macos' ? 'macOS host' : 'server' }}</h3>
+      <h3 id="edge-wizard-step-heading" tabindex="-1">Install the agent on your {{ edgeType === 'kubernetes' ? 'Kubernetes cluster' : `${edgeTypeLabel(edgeType)} host` }}</h3>
       <p class="muted">Run one of the commands below from the target. This updates automatically when
         <b>{{ trimmed }}</b> connects.</p>
 

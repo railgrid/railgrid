@@ -148,7 +148,7 @@ func newEdgeCreateCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringToStringVar(&labels, "labels", nil, "Labels for this edge (key=value pairs)")
-	cmd.Flags().StringVar(&edgeType, "type", edgeTypeKubernetes, "Edge type: kubernetes, server (Linux host with SSH) or macos (macOS service host)")
+	cmd.Flags().StringVar(&edgeType, "type", edgeTypeKubernetes, "Edge type: kubernetes (Kubernetes), server (Linux host: SSH, host services, runner) or macos (MacOS host: host services, runner)")
 	_ = cmd.RegisterFlagCompletionFunc("type", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{edgeTypeKubernetes, edgeTypeServer, edgeTypeMacOS}, cobra.ShellCompDirectiveNoFileComp
 	})

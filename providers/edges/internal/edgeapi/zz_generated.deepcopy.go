@@ -19,6 +19,11 @@ func (in *ConnectionStatus) DeepCopyInto(out *ConnectionStatus) {
 			(*out)[key] = val
 		}
 	}
+	if in.AllowedAddons != nil {
+		in, out := &in.AllowedAddons, &out.AllowedAddons
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.LastHeartbeatTime != nil {
 		in, out := &in.LastHeartbeatTime, &out.LastHeartbeatTime
 		*out = (*in).DeepCopy()

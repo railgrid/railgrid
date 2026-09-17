@@ -28,6 +28,7 @@ const (
 	WorkloadResource          = "workloads"
 	PlacementResource         = "placements"
 	ServiceResource           = "services"
+	AddonResource             = "addons"
 )
 
 // GVRs of the group's kinds (all in edges.railgrid.ai). The connectable
@@ -40,6 +41,7 @@ var (
 	WorkloadGVR          = SchemeGroupVersion.WithResource(WorkloadResource)
 	PlacementGVR         = SchemeGroupVersion.WithResource(PlacementResource)
 	ServiceGVR           = SchemeGroupVersion.WithResource(ServiceResource)
+	AddonGVR             = SchemeGroupVersion.WithResource(AddonResource)
 )
 
 // Correlation labels the scheduler stamps on Placements; the status aggregator

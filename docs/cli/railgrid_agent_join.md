@@ -29,6 +29,8 @@ railgrid agent join [flags]
 ### Options
 
 ```
+      --addon-user string              Existing non-root local account that add-on child processes run as. Required with --allow-addon when the agent runs as root. Env: RAILGRID_AGENT_ADDON_USER
+      --allow-addon strings            Addon type this machine will run (currently only "runner"). Repeatable. Empty (the default) means this edge materializes no add-on at all. Env: RAILGRID_AGENT_ALLOW_ADDON
       --cluster string                 kcp logical cluster name (e.g. '1tww43gelbj45g0k'); required when using static token auth without a cluster-scoped hub kubeconfig
       --context string                 Kubeconfig context to use
       --debug-addr string              Bind address for the debug HTTP server exposing /healthz and /debug/pprof/* (e.g. "127.0.0.1:6060"). Empty disables the server.

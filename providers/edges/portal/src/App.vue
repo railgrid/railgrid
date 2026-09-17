@@ -20,7 +20,7 @@ import {
   createLatestRefreshController,
   type ResourceRefreshMode,
 } from './refresh'
-import type { Edge, EdgeType, RailgridContext, ErrorResponse } from './types'
+import { edgeTypeLabel, type Edge, type EdgeType, type RailgridContext, type ErrorResponse } from './types'
 import {
   edgeConnectPath,
   edgeConnectionCancelPath,
@@ -168,17 +168,13 @@ function onEdgeCollectionActivated(): void {
 }
 
 async function onDelete(edge: Edge) {
-  const label = edge.type === 'macos' ? 'macOS host' : edge.type === 'server' ? 'server' : 'cluster'
-  if (!(await confirmDialog({ title: `Delete ${label} "${edge.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
+  const label = edgeTypeLabel(edge.type)
+  if (!(await confirmDialog({ title: `Delete ${label} edge "${edge.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
   const expectedContextGeneration = contextGeneration.value
   try {
     await deleteEdge(edge)
     if (contextGeneration.value !== expectedContextGeneration) return
-    if (edge.type === 'macos') {
-      toast('info', `macOS host deletion requested for ${edge.name}.`)
-    } else {
-      toast('info', `${edge.type === 'server' ? 'Server' : 'Cluster'} deletion requested for ${edge.name}.`)
-    }
+    toast('info', `${label} edge deletion requested for ${edge.name}.`)
     await refresh()
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Delete failed'

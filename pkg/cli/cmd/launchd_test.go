@@ -203,3 +203,29 @@ func TestWriteLaunchdFileRefusesSymlinkDestination(t *testing.T) {
 		t.Fatalf("symlink target changed to %q", data)
 	}
 }
+
+// TestLaunchdProgramArgsCarryAllowedAddons: the LaunchDaemon already runs as
+// the non-root worker account, so an add-on child runs as that account and only
+// the type allow list has to be rendered. Nothing appears when the operator did
+// not ask for an add-on.
+func TestLaunchdProgramArgsCarryAllowedAddons(t *testing.T) {
+	base := launchdInstallOptions{
+		BinaryPath: "/usr/local/bin/railgrid",
+		EdgeName:   "macbook-01",
+	}
+
+	if args := strings.Join(launchdProgramArgs(base), " "); strings.Contains(args, "--allow-addon") {
+		t.Errorf("program args carry an add-on flag that was never requested: %s", args)
+	}
+
+	withAddon := base
+	withAddon.AllowAddons = []string{"runner"}
+	args := strings.Join(launchdProgramArgs(withAddon), " ")
+	if !strings.Contains(args, "--allow-addon runner") {
+		t.Errorf("program args lack the allowed add-on: %s", args)
+	}
+	// --addon-user is meaningless for a LaunchDaemon and must not be rendered.
+	if strings.Contains(args, "--addon-user") {
+		t.Errorf("program args carry a flag the daemon does not take: %s", args)
+	}
+}

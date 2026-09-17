@@ -489,6 +489,7 @@ function toEdgeService(it: RawEdgeService): EdgeService {
     port: it.spec?.port,
     instructions: it.spec?.instructions,
     hasCredentials: !!it.spec?.authSecretRef?.name,
+    discovered: it.metadata.labels?.['edges.railgrid.ai/discovered'] === 'true',
     phase: s.phase,
     version: s.version,
     installType: s.installType,
