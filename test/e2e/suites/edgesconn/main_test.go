@@ -358,7 +358,7 @@ users:
 // --- shared helpers ---
 
 func build(root string) error {
-	cmd := exec.Command("make", "-C", root, "build-hub", "build-edges-provider", "build-railgrid", "certs")
+	cmd := exec.Command("make", "-C", root, "build-hub", "build-edges-provider", "build-kuery-provider", "build-railgrid", "certs")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

@@ -1,7 +1,7 @@
 .PHONY: sync-portalkit verify-portalkit verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
 .PHONY: build-access-proxy docker-build-access-proxy
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -1096,6 +1096,22 @@ e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructur
 	}
 	go test ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
+## Kuery provider e2e (embedded kcp + kuery-provider init/serve subprocesses).
+## Covers the provider-plumbing half of kuery: provisioning, init bootstrap
+## (APIExport + SavedView schema + bind grant), the /api/providers DTO, the
+## hub backend proxy, tenant Enable/Disable with SavedView round-trip, and the
+## query surfaces that answer without a connected edge (/api/query-schema,
+## /api/edges, /api/status). Fleet queries over real objects need the
+## kind-based harness and are out of scope here. Shares the embedded-kcp etcd
+## port 2380 with the other subprocess suites — do not run them concurrently.
+E2E_KUERY_PROVIDER_TIMEOUT ?= 15m
+e2e-kuery-provider: build-hub build-kuery-provider ## Run kuery provider e2e suite
+	@test -z "$$(lsof -ti :19493 :16493 :18118 :2380 2>/dev/null)" || { \
+		echo "ports 19493/16493/18118/2380 are in use; stop any running railgrid-hub/kuery-provider first"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/kueryprovider/... -v -timeout $(E2E_KUERY_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
 ## Provider-actions E2E: embedded hub plus host-process App Studio and
 ## Databricks providers, a local TLS fake upstream, and a generated Node app
 ## invoking the action through the hub. RAILGRID_E2E_KEEP_DATA=true preserves
@@ -1129,12 +1145,14 @@ e2e-edges: build-hub build-edges-provider ## Run edges provider e2e suite
 ## registers a KubernetesCluster, enables edges + the edge-proxy grant, runs the
 ## agent, and streams `kubectl get nodes` down the tunnel (agent -> hub backend
 ## proxy -> out-of-process edges provider -> agent -> kind API server). Needs
-## kind + docker + kubectl on PATH. Shares embedded-kcp etcd port 2380 — do not
-## run concurrently with the other subprocess suites.
+## kind + docker + kubectl on PATH. Also runs kuery-provider against the same
+## engaged edge to prove fleet aggregation (TestKueryAggregatesEdgeObjects).
+## Shares embedded-kcp etcd port 2380 — do not run concurrently with the other
+## subprocess suites.
 E2E_EDGES_CONN_TIMEOUT ?= 15m
-e2e-edges-connectivity: build-hub build-edges-provider build-railgrid certs ## Run edges data-plane connectivity e2e (needs kind)
-	@test -z "$$(lsof -ti :19473 :16473 :18098 :2380 2>/dev/null)" || { \
-		echo "ports 19473/16473/18098/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
+e2e-edges-connectivity: build-hub build-edges-provider build-kuery-provider build-railgrid certs ## Run edges data-plane connectivity e2e (needs kind)
+	@test -z "$$(lsof -ti :19473 :16473 :18098 :18099 :2380 2>/dev/null)" || { \
+		echo "ports 19473/16473/18098/18099/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))

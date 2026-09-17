@@ -91,6 +91,9 @@ jobs:
       - name: Run quickstart provider e2e
         run: make e2e-provider
 
+      - name: Run kuery provider e2e
+        run: make e2e-kuery-provider
+
       - name: Run edges provider e2e
         run: make e2e-edges
 
