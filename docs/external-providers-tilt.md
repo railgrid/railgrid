@@ -13,8 +13,7 @@ make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=linear
 # Equivalent flags for a direct `tilt up`:
 tilt up -f Tiltfile.cluster -- \
   --external-providers-dir=../providers \
-  --external-providers=all \
-  --external-providers-api-only
+  --external-providers=all
 ```
 
 The external providers get their own `providers-<name>` groups in the Tilt
@@ -39,14 +38,12 @@ loopback. A direct `tilt up -f Tiltfile` with these flags must use
 | --- | --- | --- | --- |
 | `EXTERNAL_PROVIDERS_DIR` | `--external-providers-dir` | `RAILGRID_EXTERNAL_PROVIDERS_DIR` | empty: disabled |
 | `EXTERNAL_PROVIDERS` | `--external-providers` | `RAILGRID_EXTERNAL_PROVIDERS` | `all` (unset or empty loads every provider) |
-| — | `--external-providers-api-only` | — | `false` |
 
-The feature is opt-in because each provider has its own prerequisites. For
-example, Factory needs scheduler values unless you pass
-`--external-providers-api-only`. When `EXTERNAL_PROVIDERS` is `all`, a provider
-that is missing such prerequisites is skipped, and a warning appears in the
-Tiltfile log. The rest of the session still starts. Naming the provider
-explicitly (`EXTERNAL_PROVIDERS=factory`) turns the missing prerequisite into
+The feature is opt-in because a provider can have its own local
+prerequisites. When `EXTERNAL_PROVIDERS` is `all`, a provider whose library
+reports a missing prerequisite is skipped, and a warning appears in the
+Tiltfile log. The rest of the session still starts. Naming that provider
+explicitly (`EXTERNAL_PROVIDERS=<name>`) turns the missing prerequisite into
 an error.
 
 Relative directories are resolved from the Railgrid checkout.
@@ -57,7 +54,7 @@ A provider repository takes part by shipping a Tilt library at
 `hack/tilt/providers.tilt`. The library exports one function:
 
 ```python
-def railgrid_providers(selection='all', api_only=False, context='', hub_url='',
+def railgrid_providers(selection='all', context='', hub_url='',
                        hub_insecure=False, lifecycle_env=None, resource_deps=None,
                        skip_unconfigured=False):
     ...
@@ -70,13 +67,14 @@ with these arguments:
 | Argument | Value from `Tiltfile.cluster` |
 | --- | --- |
 | `selection` | `--external-providers` (`all` or one provider name) |
-| `api_only` | `--external-providers-api-only` |
 | `context` | `k8s_context()`, the `kind-kcp-tilt` cluster, already allowed |
 | `hub_url` | `https://railgrid-hub.railgrid-system.svc.cluster.local:9443` |
 | `hub_insecure` | `True`, because the local hub serves a self-signed certificate |
 | `lifecycle_env` | `{'RAILGRID_KCP_KUBECONFIG': '<railgrid>/tilt-frontproxy.kubeconfig'}` |
 | `resource_deps` | `['railgrid-hub', 'kcp-dns']` |
 | `skip_unconfigured` | `True`: with `all`, skip providers that are missing local setup, with a warning |
+| `host_ports` | `False` here. `make tilt` passes `True`: its hub runs on the host, so each provider is forwarded to a local port and its CatalogEntry points at `http://127.0.0.1:<port>` |
+| `kcp_loopback_proxy` | `''` here. `make tilt` passes `host.docker.internal:9443`: embedded kcp publishes `https://127.0.0.1:6443` virtual-workspace URLs, so a sidecar bridges each pod's `127.0.0.1:6443` to the hub, which relays them |
 
 Pods can reach the kcp endpoint in the admin kubeconfig
 (`https://kcp.localhost:8443`) because the `kcp-dns` resource points

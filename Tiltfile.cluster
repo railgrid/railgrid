@@ -49,7 +49,7 @@ config.define_string('replicas')
 # Providers developed in another repository
 # join this session when their checkout is given. See
 # docs/external-providers-tilt.md; opt-in because each provider has its own
-# prerequisites (e.g. Factory's scheduler values). Without
+# prerequisites. Without
 # EXTERNAL_PROVIDERS every provider in the checkout is loaded:
 #
 #   make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers
@@ -57,7 +57,6 @@ config.define_string('replicas')
 #   tilt up -f Tiltfile.cluster -- --external-providers-dir=../providers
 config.define_string('external-providers-dir')
 config.define_string('external-providers')
-config.define_bool('external-providers-api-only')
 cfg = config.parse()
 sso_enabled = cfg.get('sso', False)
 replica_count = cfg.get('replicas', os.getenv('REPLICA_COUNT', '1'))
@@ -2234,13 +2233,12 @@ if external_providers_dir:
     external_providers = load_dynamic(external_providers_lib)['railgrid_providers'](
         # Empty (e.g. `make tilt-cluster EXTERNAL_PROVIDERS=`) means every provider.
         selection=cfg.get('external-providers', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS', '') or 'all',
-        api_only=cfg.get('external-providers-api-only', False),
         context=k8s_context(),
         hub_url='https://railgrid-hub.%s.svc.cluster.local:9443' % hub_namespace,
         hub_insecure=True,
         lifecycle_env={'RAILGRID_KCP_KUBECONFIG': KCP_ADMIN_KUBECONFIG},
         resource_deps=['railgrid-hub', 'kcp-dns'],
-        # A provider still missing local setup (e.g. Factory's scheduler values)
+        # A provider still missing local setup
         # is skipped with a warning; naming it explicitly makes it an error.
         skip_unconfigured=True,
     )
