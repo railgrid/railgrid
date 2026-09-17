@@ -105,3 +105,45 @@ func decodeSecretData(obj *unstructured.Unstructured) (map[string][]byte, error)
 	}
 	return out, nil
 }
+
+// DynamicSecretStore adapts a dynamic client to SecretStore. Save rewrites the
+// object Load returned, so a concurrent change fails with a conflict.
+type DynamicSecretStore struct {
+	Client          dynamic.Interface
+	Namespace, Name string
+
+	object *unstructured.Unstructured
+}
+
+func (s *DynamicSecretStore) Load(ctx context.Context) (map[string][]byte, string, error) {
+	obj, err := s.Client.Resource(secretGVR).Namespace(s.Namespace).Get(ctx, s.Name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, "", ErrCredentialsMissing
+		}
+		if apierrors.IsForbidden(err) {
+			return nil, "", ErrAPIBindingMissing
+		}
+		return nil, "", fmt.Errorf("get secret %s/%s: %w", s.Namespace, s.Name, err)
+	}
+	data, err := decodeSecretData(obj)
+	if err != nil {
+		return nil, "", err
+	}
+	s.object = obj
+	return data, obj.GetResourceVersion(), nil
+}
+
+func (s *DynamicSecretStore) Save(ctx context.Context, data map[string][]byte, resourceVersion string) error {
+	if s.object == nil || s.object.GetResourceVersion() != resourceVersion {
+		return fmt.Errorf("secret %s/%s changed since it was read", s.Namespace, s.Name)
+	}
+	updated := s.object.DeepCopy()
+	for k, v := range data {
+		if err := unstructured.SetNestedField(updated.Object, base64.StdEncoding.EncodeToString(v), "data", k); err != nil {
+			return err
+		}
+	}
+	_, err := s.Client.Resource(secretGVR).Namespace(s.Namespace).Update(ctx, updated, metav1.UpdateOptions{})
+	return err
+}

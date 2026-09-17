@@ -8,7 +8,6 @@ package actions
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"net/http"
 	"reflect"
@@ -262,20 +261,12 @@ func (s *Server) resolve(ctx context.Context, cluster, name string, visible *uns
 	if ns == "" {
 		ns = tenant.DefaultCredentialsNamespace()
 	}
-	secret, err := provider.Resource(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}).Namespace(ns).Get(ctx, conn.Spec.SecretRef.Name, metav1.GetOptions{})
+	store := &tenant.DynamicSecretStore{Client: provider, Namespace: ns, Name: conn.Spec.SecretRef.Name}
+	data, _, err := store.Load(ctx)
 	if err != nil {
 		return fail()
 	}
-	values, _, _ := unstructured.NestedStringMap(secret.Object, "data")
-	data := map[string][]byte{}
-	for key, value := range values {
-		decoded, err := base64.StdEncoding.DecodeString(value)
-		if err != nil {
-			return fail()
-		}
-		data[key] = decoded
-	}
-	credential, err := s.Credentials.Resolve(ctx, &conn, data)
+	credential, err := s.Credentials.ResolveStored(ctx, &conn, tenant.CredentialSecretID(&conn, ns), data, store)
 	if err != nil {
 		return fail()
 	}

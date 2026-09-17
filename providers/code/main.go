@@ -39,6 +39,7 @@ import (
 	"github.com/railgrid/provider-code/backend"
 	githubbackend "github.com/railgrid/provider-code/backend/github"
 	"github.com/railgrid/provider-code/commitbundle"
+	"github.com/railgrid/provider-code/controller/shared"
 	"github.com/railgrid/provider-code/mcpserver"
 	"github.com/railgrid/provider-code/oauthgithub"
 	"github.com/railgrid/provider-code/server"
@@ -152,7 +153,16 @@ func runServe() {
 	}
 	oauthHandler := oauthgithub.NewHandler(oauthCfg, oauthEnabled && oauthErr == nil)
 
+	// An OAuth App with expiring user tokens issues 8h access tokens; every
+	// credential read renews them with the app's refresh grant.
+	credentials := tenant.CredentialResolver{}
+	if cfg := oauthHandler.OAuth2Config(); cfg != nil {
+		credentials.OAuth = &tenant.OAuthRefresher{Config: cfg}
+	}
+	shared.Credentials = credentials
+
 	codeActions := actions.New(tenantFactory, actions.ExportClient(kcpConfig), backends)
+	codeActions.Credentials = credentials
 	codeActions.SnapshotDir = filepath.Join(bundles.Dir(), "git-snapshots")
 	srv := server.New(server.Deps{
 		Actions:          codeActions,

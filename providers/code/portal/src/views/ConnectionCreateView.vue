@@ -45,6 +45,9 @@ const oauthStartURL = ref('')
 const oauthConfigError = ref<string | null>(null)
 const oauthBusy = ref(false)
 const oauthAuthorized = ref(false)
+// Set when the OAuth App issues expiring tokens; the provider renews with it.
+const oauthRefreshToken = ref('')
+const oauthExpiry = ref('')
 let oauthState = ''
 let oauthOrigin = ''
 let oauthPopup: Window | null = null
@@ -236,7 +239,7 @@ function onMessage(ev: MessageEvent): void {
     return
   }
   if (!oauthPopup || ev.source !== oauthPopup || ev.origin !== oauthOrigin) return
-  const data = ev.data as { type?: string; state?: string; token?: string; login?: string; error?: string }
+  const data = ev.data as { type?: string; state?: string; token?: string; refreshToken?: string; expiry?: string; login?: string; error?: string }
   if (!data || data.type !== 'railgrid-github-oauth') return
   if (data.state !== oauthState) {
     clearOAuthWait('oauth state mismatch — please retry')
@@ -248,6 +251,8 @@ function onMessage(ev: MessageEvent): void {
   }
   clearOAuthWait()
   token.value = data.token
+  oauthRefreshToken.value = typeof data.refreshToken === 'string' ? data.refreshToken : ''
+  oauthExpiry.value = typeof data.expiry === 'string' ? data.expiry : ''
   owner.value = data.login || ''
   name.value = data.login ? 'github-' + data.login : 'github'
   fieldErrors.value = {}
@@ -268,6 +273,8 @@ async function submit(): Promise<void> {
     name: name.value,
     owner: owner.value,
     token: token.value,
+    refreshToken: oauthAuthorized.value ? oauthRefreshToken.value : '',
+    expiry: oauthAuthorized.value ? oauthExpiry.value : '',
     baseURL: baseURL.value || undefined,
     type: isGitHub.value ? 'oauth' as const : 'pat' as const,
   }
