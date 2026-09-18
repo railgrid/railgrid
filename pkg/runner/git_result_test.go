@@ -22,6 +22,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ import (
 )
 
 func TestGitResultExportTracksCommittedAndUncommittedWorktree(t *testing.T) {
+	started := time.Now().Truncate(time.Second)
 	source, commit := testGitSource(t)
 	harnessHead := make(chan string, 1)
 	adapter := &fakeAdapter{run: func(_ context.Context, launch harness.Launch, _ harness.Emit) (harness.Result, error) {
@@ -100,8 +102,15 @@ func TestGitResultExportTracksCommittedAndUncommittedWorktree(t *testing.T) {
 		t.Fatalf("bundle heads = %q", heads)
 	}
 	show := string(runGit(t, got.Workdir, "show", "-s", "--format=%P%n%an%n%ae%n%cn%n%ce%n%at%n%ct%n%B", document.Commit))
-	if !strings.Contains(show, commit+"\nRailgrid Runner\nrunner@localhost\nRailgrid Runner\nrunner@localhost\n946684800\n946684800\nImplementation snapshot\n") {
+	fields := strings.SplitN(show, "\n", 8)
+	if len(fields) != 8 || strings.Join(fields[:5], "\n") != commit+"\nRailgrid Runner\nrunner@localhost\nRailgrid Runner\nrunner@localhost" || strings.TrimRight(fields[7], "\n") != "Implementation snapshot" {
 		t.Fatalf("result commit metadata = %q", show)
+	}
+	// The identity and message are canonical; the time is when the snapshot
+	// was actually taken, the same for author and committer.
+	taken, err := strconv.ParseInt(fields[5], 10, 64)
+	if err != nil || fields[6] != fields[5] || taken < started.Unix() || taken > time.Now().Unix() {
+		t.Fatalf("result commit time = %q/%q, want the snapshot time between %d and now", fields[5], fields[6], started.Unix())
 	}
 	expectedHead := <-harnessHead
 	if head := strings.TrimSpace(string(runGit(t, got.Workdir, "rev-parse", "HEAD"))); head != expectedHead {

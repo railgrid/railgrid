@@ -145,6 +145,49 @@ func TestPrepareWorkspaceRefetchesSourceObjectOmittedByClone(t *testing.T) {
 	}
 }
 
+// The enrolled checkout is the operator's clone; when the approved base has
+// moved past it, the runner refreshes it from its own origin the way the
+// operator would, then serves the task clone from it. No fetch remote is
+// needed, and the checkout's branch and working tree do not move.
+func TestPrepareWorkspaceRefreshesEnrolledSourceFromItsOrigin(t *testing.T) {
+	upstream, _ := testGitSource(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, t.TempDir(), "clone", "--bare", upstream, remote)
+	source := filepath.Join(t.TempDir(), "checkout")
+	runGit(t, t.TempDir(), "clone", remote, source)
+	sourceCommit := strings.TrimSpace(string(runGit(t, source, "rev-parse", "HEAD")))
+
+	publisher := filepath.Join(t.TempDir(), "publisher")
+	runGit(t, t.TempDir(), "clone", remote, publisher)
+	if err := os.WriteFile(filepath.Join(publisher, "merged.txt"), []byte("merged upstream\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, publisher, "add", "merged.txt")
+	runGit(t, publisher, "-c", "user.name=Runner Test", "-c", "user.email=runner-test@example.invalid", "commit", "-m", "merged upstream")
+	targetCommit := strings.TrimSpace(string(runGit(t, publisher, "rev-parse", "HEAD")))
+	runGit(t, publisher, "push", "origin", "HEAD:refs/heads/main")
+
+	workdir, err := prepareWorkspace(context.Background(), Config{
+		StateDir:     t.TempDir(),
+		Repositories: map[string]RepositoryConfig{"repo": {Source: source}},
+	}, StartRequest{TaskID: "task-refresh", AttemptID: "attempt-refresh", RepositoryID: "repo", BaseCommit: targetCommit})
+	if err != nil {
+		t.Fatalf("prepareWorkspace: %v", err)
+	}
+	if head := strings.TrimSpace(string(runGit(t, workdir, "rev-parse", "HEAD"))); head != targetCommit {
+		t.Fatalf("task worktree HEAD = %s, want the refreshed base %s", head, targetCommit)
+	}
+	if head := strings.TrimSpace(string(runGit(t, source, "rev-parse", "HEAD"))); head != sourceCommit {
+		t.Fatalf("enrolled source HEAD moved to %s", head)
+	}
+	if status := string(runGit(t, source, "status", "--porcelain=v1", "--untracked-files=all")); status != "" {
+		t.Fatalf("enrolled source working tree changed: %q", status)
+	}
+	if tracking := strings.TrimSpace(string(runGit(t, source, "rev-parse", "refs/remotes/origin/main"))); tracking != targetCommit {
+		t.Fatalf("enrolled source origin/main = %s, want %s", tracking, targetCommit)
+	}
+}
+
 func TestPrepareWorkspaceDoesNotFetchWhenDisabledOrBaseCommitIsNotEnrolled(t *testing.T) {
 	source, sourceCommit := testGitSource(t)
 	missingCommit := strings.Repeat("f", 40)

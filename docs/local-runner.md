@@ -136,8 +136,14 @@ tunnel, not the runner.
 Use an absolute, private state directory and an absolute token-file path. A
 configuration can enroll several named local Git sources, but each source must
 be explicitly allowlisted. `baseCommit`, when set, further restricts that
-source to one commit. An optional operator-only `fetchRemoteURL` permits the
-runner to fetch a missing approved commit into the isolated task clone.
+source to one commit. When an approved commit is missing from a source (its
+base branch moved on after a merge), the runner first refreshes the source
+from its own `origin` — with the operator's Git configuration and
+credentials for that checkout, hooks disabled and prompts off; only
+remote-tracking refs move — and serves the task clone from it. An optional
+operator-only `fetchRemoteURL` is the alternative for a source without a
+usable origin: the runner fetches the missing commit from it, anonymously
+over HTTPS or with the SSH agent, into the isolated task clone only.
 
 ```json
 {

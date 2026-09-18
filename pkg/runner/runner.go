@@ -572,7 +572,19 @@ func (r *Runner) checkStartRequirementsLocked(request StartRequest) error {
 			}
 		}
 		if !found {
-			return protocolError(ErrorUnsupportedCapability, false, "required harness is unavailable", nil)
+			offered := make([]string, 0, len(r.capabilities.Harnesses))
+			for _, h := range r.capabilities.Harnesses {
+				state := "ready"
+				if !h.Ready {
+					state = "not ready"
+				}
+				offered = append(offered, h.Name+" "+h.Version+" ("+state+")")
+			}
+			want := request.RequiredHarness
+			if request.RequiredHarnessVersion != "" {
+				want += " " + request.RequiredHarnessVersion
+			}
+			return protocolError(ErrorUnsupportedCapability, false, "required harness "+want+" is unavailable; this runner offers "+strings.Join(offered, ", "), nil)
 		}
 	}
 	for _, resource := range request.Resources {

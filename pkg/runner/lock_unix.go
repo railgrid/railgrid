@@ -21,6 +21,8 @@ package runner
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -36,9 +38,32 @@ func acquireProcessLock(path string) (*processLock, error) {
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("runner state directory is already locked: %w", err)
+		holder := ""
+		if pid := lockHolder(path); pid > 0 {
+			holder = fmt.Sprintf(" by pid %d", pid)
+		}
+		return nil, fmt.Errorf("runner state directory is already locked%s: %w", holder, err)
+	}
+	// The holder's pid is recorded (best effort; the flock is the lock) so the
+	// agent that owns this state directory can tell a runner it is supervising
+	// from one a previous agent left behind, and reclaim the latter.
+	if err := f.Truncate(0); err == nil {
+		_, _ = f.WriteAt([]byte(strconv.Itoa(os.Getpid())+"\n"), 0)
 	}
 	return &processLock{file: f}, nil
+}
+
+// lockHolder reads the pid recorded in a lock file, or 0.
+func lockHolder(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
 }
 
 func (l *processLock) Close() error {

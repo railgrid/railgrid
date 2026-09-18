@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,14 +97,66 @@ func (g *snapshotGit) verify(ctx context.Context, input backend.Snapshot) error 
 	if err != nil {
 		return errors.New("snapshot commit unavailable")
 	}
-	// This is the public Railgrid Runner snapshot format, independently verified.
-	expected := "tree " + input.Tree + "\nparent " + input.BaseCommit + "\nauthor Railgrid Runner <runner@localhost> 946684800 +0000\ncommitter Railgrid Runner <runner@localhost> 946684800 +0000\n\nImplementation snapshot\n"
-	if raw != expected {
-		return errors.New("snapshot must contain one parent and canonical public metadata")
+	if err := verifySnapshotCommit(raw, input.Tree, input.BaseCommit, time.Now()); err != nil {
+		return err
 	}
 	tree, err := g.run(ctx, "rev-parse", input.Commit+"^{tree}")
 	if err != nil || strings.TrimSpace(tree) != input.Tree {
 		return errors.New("snapshot tree mismatch")
+	}
+	return nil
+}
+
+// The public Railgrid Runner snapshot format. A snapshot commit is verified
+// header by header: exactly one parent (the approved base), the tree the
+// runner reported, a fixed public identity, no other headers (nothing signed,
+// merged or re-encoded can ride along) and a fixed message. The one value the
+// runner chooses is the time it took the snapshot, which must be the same for
+// author and committer and fall in a window that rules out a fabricated past
+// or future without failing an honest clock.
+const (
+	snapshotIdentity = "Railgrid Runner <runner@localhost>"
+	snapshotMessage  = "Implementation snapshot\n"
+	// snapshotClockSkew is how far ahead of this host a worker's clock may be.
+	snapshotClockSkew = time.Hour
+)
+
+// snapshotNotBefore is the earliest a snapshot can honestly have been taken.
+var snapshotNotBefore = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+func verifySnapshotCommit(raw, tree, base string, now time.Time) error {
+	invalid := errors.New("snapshot must contain one parent and canonical public metadata")
+	headers, message, ok := strings.Cut(raw, "\n\n")
+	if !ok || message != snapshotMessage {
+		return invalid
+	}
+	lines := strings.Split(headers, "\n")
+	if len(lines) != 4 || lines[0] != "tree "+tree || lines[1] != "parent "+base {
+		return invalid
+	}
+	author, ok := strings.CutPrefix(lines[2], "author ")
+	if !ok {
+		return invalid
+	}
+	committer, ok := strings.CutPrefix(lines[3], "committer ")
+	if !ok || committer != author {
+		return invalid
+	}
+	stamp, ok := strings.CutPrefix(author, snapshotIdentity+" ")
+	if !ok {
+		return invalid
+	}
+	seconds, zone, ok := strings.Cut(stamp, " ")
+	if !ok || zone != "+0000" {
+		return invalid
+	}
+	unix, err := strconv.ParseInt(seconds, 10, 64)
+	if err != nil || strconv.FormatInt(unix, 10) != seconds {
+		return invalid
+	}
+	taken := time.Unix(unix, 0).UTC()
+	if taken.Before(snapshotNotBefore) || taken.After(now.Add(snapshotClockSkew)) {
+		return errors.New("snapshot time is outside the accepted window")
 	}
 	return nil
 }

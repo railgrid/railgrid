@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	gh "github.com/google/go-github/v66/github"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -281,5 +282,19 @@ func TestBranchListingPinsIdentityAndBoundsPages(t *testing.T) {
 				t.Fatal("invalid identity or page reached branch listing")
 			}
 		})
+	}
+}
+
+// GitHub reports a merge_commit_sha for an OPEN pull request (its trial-merge
+// commit). It must not surface as merge proof: consumers treat a merge commit
+// on an unmerged pull request as a malformed observation.
+func TestOpenPullRequestCarriesNoMergeProof(t *testing.T) {
+	open := &gh.PullRequest{Number: gh.Int(1), State: gh.String("open"), Merged: gh.Bool(false), MergeCommitSHA: gh.String(strings.Repeat("d", 40)), MergedBy: &gh.User{Login: gh.String("nobody")}}
+	if got := pullResult(open); got.MergeCommit != "" || got.Merger != "" || got.Merged {
+		t.Fatalf("open pull request observation = %+v, want no merge proof", got)
+	}
+	merged := &gh.PullRequest{Number: gh.Int(1), State: gh.String("closed"), Merged: gh.Bool(true), MergeCommitSHA: gh.String(strings.Repeat("c", 40)), MergedBy: &gh.User{Login: gh.String("human"), Type: gh.String("User")}}
+	if got := pullResult(merged); got.MergeCommit != strings.Repeat("c", 40) || got.Merger != "human" {
+		t.Fatalf("merged pull request observation = %+v, want merge proof", got)
 	}
 }

@@ -6,7 +6,7 @@ spec:
   resources:
   - group: edges.railgrid.ai
     name: addons
-    schema: v260917-ed2d6c6a.addons.edges.railgrid.ai
+    schema: v260918-e56cbbc8.addons.edges.railgrid.ai
     storage:
       crd: {}
   - group: edges.railgrid.ai
