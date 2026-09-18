@@ -301,8 +301,18 @@ func (b *Backend) SetupTemplate(ctx context.Context, tmpl *infrav1alpha1.Templat
 	if err != nil {
 		return backend.TemplateStatus{Ready: false, Message: err.Error()}, err
 	}
-	if err := b.applyRGD(ctx, rgd); err != nil {
+	live, err := b.applyRGD(ctx, rgd)
+	if err != nil {
 		return backend.TemplateStatus{Ready: false, Message: "applying RGD: " + err.Error()}, err
+	}
+	// kro's verdict is asynchronous; the Template controller watches the RGD
+	// so a later Inactive/Active flip re-enters here promptly. Only a verdict
+	// already on the object is reported now — "not observed yet" stays Ready
+	// as it always has.
+	if msg, rejected := rgdRejected(live); rejected {
+		klog.FromContext(ctx).WithName("backend.kro").Info("kro rejected ResourceGraphDefinition",
+			"template", tmpl.Name, "rgd", tmpl.Name, "message", msg)
+		return backend.TemplateStatus{Ready: false, Message: msg}, nil
 	}
 	klog.FromContext(ctx).WithName("backend.kro").Info("applied ResourceGraphDefinition to runtime cluster",
 		"template", tmpl.Name, "rgd", tmpl.Name)
@@ -350,16 +360,24 @@ func (b *Backend) Run(ctx context.Context, _ *rest.Config) error {
 // an unconditional update bumps the RGD's generation, which makes kro
 // re-reconcile every instance of the template (recreating includeWhen-gated
 // Jobs and the like) on every Template reconcile pass.
-func (b *Backend) applyRGD(ctx context.Context, rgd *unstructured.Unstructured) error {
+//
+// Returns the live RGD as last seen (the existing object when nothing had to
+// change, else the server's response), so the caller can read kro's verdict
+// off its status; nil when the object was racing another creator.
+func (b *Backend) applyRGD(ctx context.Context, rgd *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	existing, err := b.runtime.Resource(rgdGVR).Get(ctx, rgd.GetName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		if _, err := b.runtime.Resource(rgdGVR).Create(ctx, rgd, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("create: %w", err)
+		created, err := b.runtime.Resource(rgdGVR).Create(ctx, rgd, metav1.CreateOptions{})
+		if err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("create: %w", err)
 		}
-		return nil
+		return created, nil
 	}
 	if err != nil {
-		return fmt.Errorf("get: %w", err)
+		return nil, fmt.Errorf("get: %w", err)
 	}
 
 	existingSpec, _, _ := unstructured.NestedMap(existing.Object, "spec")
@@ -372,12 +390,51 @@ func (b *Backend) applyRGD(ctx context.Context, rgd *unstructured.Unstructured) 
 		}
 	}
 	if labelsCurrent && equality.Semantic.DeepEqual(existingSpec, desiredSpec) {
-		return nil
+		return existing, nil
 	}
 
 	rgd.SetResourceVersion(existing.GetResourceVersion())
-	if _, err := b.runtime.Resource(rgdGVR).Update(ctx, rgd, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update: %w", err)
+	updated, err := b.runtime.Resource(rgdGVR).Update(ctx, rgd, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("update: %w", err)
 	}
-	return nil
+	return updated, nil
+}
+
+// rgdRejected reads kro's verdict off an RGD: kro marks status.state
+// Inactive when the graph is not accepted (invalid schema/resources), the
+// generated CRD did not establish, or its instance controller failed to
+// start. The message gathers the False conditions so the Template's
+// BackendReady says why. A missing status (kro has not observed the object
+// yet) is not a rejection. A verdict on an older generation is ignored when
+// the conditions say which generation they observed.
+func rgdRejected(rgd *unstructured.Unstructured) (string, bool) {
+	if rgd == nil {
+		return "", false
+	}
+	state, _, _ := unstructured.NestedString(rgd.Object, "status", "state")
+	if state != "Inactive" {
+		return "", false
+	}
+	conditions, _, _ := unstructured.NestedSlice(rgd.Object, "status", "conditions")
+	var reasons []string
+	for _, raw := range conditions {
+		cond, ok := raw.(map[string]any)
+		if !ok || cond["status"] != "False" {
+			continue
+		}
+		if observed, ok := cond["observedGeneration"].(int64); ok && observed != rgd.GetGeneration() {
+			continue
+		}
+		condType, _ := cond["type"].(string)
+		msg, _ := cond["message"].(string)
+		if condType == "Ready" && msg == "" {
+			continue
+		}
+		reasons = append(reasons, condType+": "+msg)
+	}
+	if len(reasons) == 0 {
+		return "kro reports the ResourceGraphDefinition Inactive", true
+	}
+	return "kro reports the ResourceGraphDefinition Inactive (" + strings.Join(reasons, "; ") + ")", true
 }

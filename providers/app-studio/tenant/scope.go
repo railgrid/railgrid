@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/railgrid/provider-sdk/tenantaccess"
@@ -112,6 +113,14 @@ func (s *Scope) Get(ctx context.Context, res Resource, namespace, name string) (
 // use ListWithOptions.
 func (s *Scope) List(ctx context.Context, res Resource, namespace string) ([]unstructured.Unstructured, error) {
 	return s.ListWithOptions(ctx, res, namespace, metav1.ListOptions{})
+}
+
+// Watch streams changes with the given list options (field selectors,
+// resourceVersion, bookmarks are applied server-side). The hub's kcp proxy
+// forwards the chunked response unbuffered, so a watch stays live for as
+// long as the caller reads it.
+func (s *Scope) Watch(ctx context.Context, res Resource, namespace string, opts metav1.ListOptions) (watch.Interface, error) {
+	return s.resource(res, namespace).Watch(ctx, opts)
 }
 
 // ListWithOptions fetches objects with the given list options; label and

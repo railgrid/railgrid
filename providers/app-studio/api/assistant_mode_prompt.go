@@ -45,6 +45,7 @@ func appendProjectAssistantV2ModePrompt(b *strings.Builder, mode projectAssistan
 	}
 	if repositoryCommitReady {
 		b.WriteString("Never call commit_project_files unless the user explicitly requested repository persistence. When they did, commit only durable dirty source/config paths to repositoryRef \"" + repoRef + "\" with a concise message. ")
+		b.WriteString("hydrate_workspace loads the repository tree into the workspace, overwriting tracked files; call it only when the user explicitly asks to load, refresh, or reset the workspace from git, never to recover from a localized failure. It always pauses for approval, and any file read before it must be read again before editing. ")
 	} else {
 		b.WriteString("Repository state prevents commit_project_files only. Continue authorized Project workspace mutations and coding-environment execution; successful workspace checkpointing remains durable in App Studio, but do not imply the changes were persisted to git. ")
 	}

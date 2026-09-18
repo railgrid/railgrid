@@ -70,16 +70,22 @@ and tools are edited inside the agent, next to a live chat playground.
 - **Approvals inbox** — list + approve/deny API, surfaced in Activity and
   pushed to the agent's channel. Resolving an approval **resumes the paused
   run** (see Durable approvals below).
-- **Background executor** — schedules fire **autonomously**. The provider reads
-  its APIExportEndpointSlice (via `RAILGRID_PROVIDER_KUBECONFIG`) to discover the
-  APIExport virtual workspace, polls `AgentSchedule` CRs across all bound tenant
-  workspaces (~30s, `AGENTS_SCHEDULER_INTERVAL`), claims each fire with an
-  optimistic status update (multi-replica safe), and executes through an
-  **interface-based executor** (`executor` package: serializable `Job` +
-  `Handler`; in-process worker pool today, deliberately swappable for a durable
-  engine like Temporal later). Includes timezone-aware cron, one-shot wakeups,
-  quiet heartbeats (notify only when actionable), disable-after-5-failures, and
-  per-job watchdog timeouts.
+- **Background executor + reconcilers** — schedules fire **autonomously**. The
+  provider reads its APIExportEndpointSlice (via `RAILGRID_PROVIDER_KUBECONFIG`)
+  to discover the APIExport virtual workspace. A leader-elected
+  multicluster-runtime manager (`controller_manager.go`, one reconciler per CR
+  under `controller/`) watches `Schedule`, `Connection` and `Agent` CRs across
+  all bound tenant workspaces: a Schedule reconcile decides whether it is due,
+  claims the fire with an optimistic status update (multi-replica safe), and
+  sleeps on `RequeueAfter` until the next planned time — no periodic list of
+  every tenant. Fires execute through an **interface-based executor**
+  (`executor` package: serializable `Job` + `Handler`; in-process worker pool
+  today, deliberately swappable for a durable engine like Temporal later),
+  with a Pending run row recorded before the job is queued. Includes
+  timezone-aware cron, one-shot wakeups, quiet heartbeats (notify only when
+  actionable), disable-after-5-failures, and per-job watchdog timeouts. The
+  only timer left (`AGENTS_SCHEDULER_INTERVAL`, ~30s) re-reads the endpoint
+  slice and runs the stranded-run recovery sweep over Postgres.
 - **Background notify** — output/failure of background runs is delivered to the
   agent channel named by the schedule/trigger's `channelRef`, else the agent's
   primary channel (`spec.channels[]`).
@@ -151,8 +157,9 @@ and tools are edited inside the agent, next to a live chat playground.
 - **OAuth connections** — `auth: oauth` with GitHub/Google/Slack presets:
   bring your OAuth app (client id/secret), click **Connect**, authorize, and
   the callback stores access+refresh tokens in the connection Secret under
-  the same `token` key the tool families read. The background loop refreshes
-  tokens ~15min before expiry. State is HMAC-signed (no server-side session).
+  the same `token` key the tool families read. The Connection reconciler
+  refreshes tokens ~15min before expiry (requeued for each expiry, not
+  polled). State is HMAC-signed (no server-side session).
 - **Edges family** — the hub's aggregate MCP endpoint (kube clusters + SSH
   servers, MCPServer "default") exposed as `edges__*` tools, dialed as the
   calling user. Interactive runs only (background runs have no user token).
@@ -371,27 +378,48 @@ plaintext; at-rest encryption is the database's responsibility today
   cost, window).
 
 The APIExport resources are the source of truth for *spec*; Postgres owns
-*state* (transcripts, checkpoints, fire times, usage). A thin reconciler
-keeps `AgentSchedule.status` updated from the store.
+*state* (transcripts, checkpoints, usage, run cancellation). Fire times are
+the one piece of state that lives on the CR (`Schedule.status.nextRun` /
+`lastRun` / `observedGeneration`), because that is what the reconciler claims
+against. Runs are Postgres rows and deliberately **not** a CR.
 
-## Scheduler (in-process, no k8s)
+## Scheduler (multicluster-runtime reconcilers)
 
-The repo's first Go scheduler, deliberately boring:
+Reconcilers, not a ticker. `controller_manager.go` builds a
+multicluster-runtime manager over the provider's APIExport virtual workspace
+(`provider-sdk/apiexportprovider`, one endpoint per kcp shard), gated by a
+Lease in the provider workspace (`provider-sdk/leaderelection`) so a scaled
+deployment keeps every CR single-writer. Readiness (`/readyz`) reports whether
+the virtual workspace is reachable *and* being watched.
 
-- Ticker loop (~15s). Due rows claimed with
-  `UPDATE agents_schedules SET claimed_by=$pod, claimed_at=now() WHERE
-  next_fire_at <= now() AND claimed_by IS NULL ... RETURNING` — safe with
-  multiple replicas, no leader-election component; a stale-claim sweeper
-  releases claims older than the watchdog.
-- `next_fire_at` computed in the schedule's IANA `timeZone` ("every morning
-  at 8" means the user's 8am, DST included), stored as UTC.
-- OpenClaw-grade reliability: up to 3 retries at 30s/60s/5m for transient
-  errors; extended backoff (to 60m) for consecutively failing recurring
-  schedules; immediate disable with `disabledReason` on permanent errors
-  (revoked credentials, deleted agent); 60-minute default watchdog per run.
-- Each fire creates a run record and hands it to the executor. Concurrency per
-  schedule is `Forbid`: a schedule whose previous run is still active skips
-  the tick and records it.
+- `controller/schedule` — one reconcile per Schedule event or requeue.
+  `internal/schedulepolicy` decides from spec + status whether it is due; a
+  spec edit (generation bump) drops the stale `nextRun` and re-arms from the
+  new cron/timezone/runAt. A due schedule is claimed by updating `status`
+  against the resourceVersion read (a conflict means another replica or a
+  newer event won — drop out, the watch re-delivers), then submitted to the
+  executor, which records a Pending run row before queueing. The reconciler
+  then returns `RequeueAfter` until the next planned fire (clamped to
+  [1s, 1h]). A restart or leadership change re-derives the same answer from
+  the same CR state, so a fire missed while nobody was watching fires on the
+  first reconcile after, and a claimed fire is never claimed twice.
+- `controller/connection` — the per-tick Connection housekeeping, now
+  event-driven: Slack/Telegram inbound verification material (park a Slack
+  connection without a signing secret in `Error`; generate a Telegram
+  secret_token and re-register the webhook), OAuth refresh requeued at
+  `expiry − 15m`, and the Discord gateway desired state (the socket map stays
+  in-process; the reconciler adds and removes sessions). Credential Secrets
+  are watched too, so an OAuth callback or a pasted secret re-triggers at
+  once. Status `Ready`/`Error` for these concerns is written only here.
+- `controller/agent` — stamps `phase: Ready` on agents that have none.
+- Timezone-aware cron (`timeZone`, DST included), one-shot wakeups, quiet
+  heartbeats; immediate disable with `disabledReason` on permanent errors (bad
+  cron, missing runAt) and after 5 consecutive failed runs; per-job watchdog
+  timeout in the executor.
+- Cancellation is durable: `POST /api/runs/{id}/cancel` sets
+  `cancel_requested` on the run row, which the engine checks between tool
+  rounds on whichever replica is executing, a queued job checks before
+  starting, and the recovery sweep honours instead of resuming.
 
 Three schedule types, one table:
 
@@ -607,9 +635,10 @@ reflect the 2026-07-12 state (see [Implementation status](#implementation-status
    (needs the tool loop), at-rest encryption. Model creds became *named
    credentials* (own Secret each), not the single `railgrid-agents-llm`.
 3. ✅ **Scheduler** — CRUD + tab + Run now, and **autonomous firing** via the
-   background executor: timezone-aware cron/wakeup/heartbeat, optimistic status
-   claims, watchdog timeout, disable-after-5-failures. (Exponential retry
-   backoff between failures is simplified to fail-and-count.)
+   Schedule reconciler + background executor: timezone-aware
+   cron/wakeup/heartbeat, optimistic status claims, watchdog timeout,
+   disable-after-5-failures, durable cancel. (Exponential retry backoff between
+   failures is simplified to fail-and-count.)
 4. ✅ **Tools + policy** — the tool loop executes `core`/`web`/`github`/`mcp`
    families with per-trigger policy defaults, `requireApproval` gating through
    the inbox, and audit logging; tool calls render live in chat. (`autonomy`

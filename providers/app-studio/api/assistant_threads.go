@@ -1396,6 +1396,8 @@ func (s *Server) reconcileProjectAssistantThreadTurn(ctx context.Context, scope 
 		current.Error = run.Error
 		terminalType = assistantThreadEventTurnFailed
 	}
+	// Either way the turn transitions; the Session projection follows.
+	defer s.signalSession(scope, turn.ThreadID)
 	if state.terminalEvent {
 		return s.store.SaveAssistantTurn(ctx, scope, current)
 	}

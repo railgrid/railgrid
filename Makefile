@@ -941,7 +941,7 @@ REPLICA_COUNT ?= 1
 # EXTERNAL_PROVIDERS_DIR disables them; an unset or empty EXTERNAL_PROVIDERS
 # loads every provider in that repository, or name one to load only it:
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers
-#   make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=linear
+#   make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 EXTERNAL_PROVIDERS_DIR ?=
 EXTERNAL_PROVIDERS ?= all
 

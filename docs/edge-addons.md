@@ -345,8 +345,10 @@ spec:
     repositories:
       app:
         source: /srv/repos/app
-        # Optional: let the runner fetch an approved commit the local source
-        # lacks, into the isolated task clone only.
+        # A commit the local source lacks is first fetched into the source
+        # from its own origin, with the account's Git credentials. Optional:
+        # where the source has no usable origin, fetch the commit from here
+        # instead, into the isolated task clone only.
         fetchRemoteURL: ssh://git@github.com/acme/app.git
     codex:
       binary: codex
@@ -424,8 +426,8 @@ $ kubectl get addon code -o jsonpath='{.status.harness}'
 | `spec.runner.maximumCapacity` | `1` | Must be `1`; the runner is single-execution. |
 | `spec.runner.toolchains` | — | Advertised names. Declaring one does not install it. |
 | `spec.runner.verificationCapabilities` | — | Advertised names. |
-| `spec.runner.repositories[id].source` | — | Absolute path on the edge host. |
-| `spec.runner.repositories[id].fetchRemoteURL` | — | Absolute path, `file://`, `https://`, `ssh://`, or `user@host:path`. Operator-only; a start request cannot supply it. |
+| `spec.runner.repositories[id].source` | — | Absolute path on the edge host. A missing approved commit is fetched into it from its own `origin` with the add-on account's Git credentials; its branch and working tree never move. |
+| `spec.runner.repositories[id].fetchRemoteURL` | — | Absolute path, `file://`, `https://`, `ssh://`, or `user@host:path`. Used when the source has no usable origin. Operator-only; a start request cannot supply it. |
 | `spec.runner.harness` | `codex` | `codex` or `claude`. The other harness's block is rejected. |
 | `spec.runner.codex.binary` | `codex` | Looked up on the child's `PATH`. |
 | `spec.runner.codex.versionPin` | `0.147.0` | Probed at startup. |

@@ -44,8 +44,13 @@ limitations under the License.
 //	--print                       non-interactive; the workspace trust dialog is skipped
 //	--output-format stream-json   machine-readable events instead of prose
 //	--verbose                     required for stream-json to emit per-turn records
-//	--permission-mode dontAsk     no interactive permission prompts
-//	--permission-prompts none     anything that would prompt is DENIED, not asked
+//	--permission-mode <mode>      Config.PermissionMode: acceptEdits (default) lets the
+//	                              model edit files inside the worktree without asking;
+//	                              bypassPermissions additionally allows every tool,
+//	                              including arbitrary shell, and is for sandboxed hosts
+//	--permission-prompts none     anything that would still prompt is DENIED, not asked
+//	--allowedTools <list>         Config.AllowedTools: tool patterns granted up front
+//	                              (e.g. "Bash(git *)") so acceptEdits can run tests
 //	--safe-mode                   disables CLAUDE.md, skills, plugins, hooks, MCP servers,
 //	                              custom commands/agents, output styles, workflows — i.e.
 //	                              every project-controlled code and config path. Auth,
@@ -185,6 +190,39 @@ type Config struct {
 	CredentialFile string
 	// CredentialKind selects the environment variable the value is injected as.
 	CredentialKind CredentialKind
+	// PermissionMode is what the model may do without asking. Empty means
+	// PermissionAcceptEdits. A coding runner cannot work under "dontAsk": with
+	// prompts denied, every file edit is refused and each turn ends with no
+	// changes.
+	PermissionMode PermissionMode
+	// AllowedTools are Claude Code tool patterns granted for the session, e.g.
+	// "Bash(git *)" or "Bash(npm test)". They matter under PermissionAcceptEdits,
+	// where shell commands are otherwise denied.
+	AllowedTools []string
+}
+
+// PermissionMode names a Claude Code --permission-mode value the runner supports.
+type PermissionMode string
+
+const (
+	// PermissionAcceptEdits auto-approves file edits within the working
+	// directory; anything else that would prompt is denied.
+	PermissionAcceptEdits PermissionMode = "acceptEdits"
+	// PermissionBypass approves every tool call. The dedicated runner account
+	// and the worktree are then the only isolation; Claude Code documents it
+	// as suitable only for sandboxes.
+	PermissionBypass PermissionMode = "bypassPermissions"
+)
+
+// permissionMode resolves the configured mode, validating it.
+func (a *Adapter) permissionMode() (PermissionMode, error) {
+	switch a.cfg.PermissionMode {
+	case "", PermissionAcceptEdits:
+		return PermissionAcceptEdits, nil
+	case PermissionBypass:
+		return PermissionBypass, nil
+	}
+	return "", fmt.Errorf("unsupported Claude Code permission mode %q (use %s or %s)", a.cfg.PermissionMode, PermissionAcceptEdits, PermissionBypass)
 }
 
 // Adapter is the Claude Code implementation of harness.Adapter.
@@ -218,6 +256,9 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 	info.Version = version
 	if a.cfg.ExpectedVersion != "" && version != a.cfg.ExpectedVersion {
 		info.Reasons = append(info.Reasons, fmt.Sprintf("expected Claude Code %s, found %s", a.cfg.ExpectedVersion, version))
+	}
+	if _, err := a.permissionMode(); err != nil {
+		info.Reasons = append(info.Reasons, err.Error())
 	}
 	if _, err := a.readCredential(); err != nil {
 		// The reason is the CLASS of failure, never the path's contents.
@@ -257,6 +298,9 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 	if err := a.validateWorkdir(launch.Workdir); err != nil {
 		return result, err
 	}
+	if _, err := a.permissionMode(); err != nil {
+		return result, err
+	}
 	credential, err := a.readCredential()
 	if err != nil {
 		if emit != nil {
@@ -294,12 +338,14 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 	// not be able to become part of a command line.
 	writeErr := writePrompt(stdin, promptPreamble+launch.Instructions)
 
+	state := &runState{emit: emit, sessionID: launch.SessionID, credential: credential}
+	parseErr := a.consume(ctx, stdout, state, cmd)
+
+	// Wait only after the stream has been drained: cmd.Wait closes the stdout
+	// pipe as soon as the process exits, and a reader still draining buffered
+	// records would then fail with "file already closed".
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
-
-	state := &runState{emit: emit, sessionID: launch.SessionID, credential: credential}
-	parseErr := a.consume(ctx, stdout, state, cmd, waited)
-
 	stopErr := stopProcess(cmd, waited)
 	if ctx.Err() != nil {
 		return harness.Result{Phase: "cancelled", SessionID: state.sessionID}, nil
@@ -324,13 +370,15 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 // flag is protecting against; the ordering is stable so contract tests can pin
 // it.
 func (a *Adapter) args(launch harness.Launch) []string {
+	mode, _ := a.permissionMode()
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
-		// Nothing may prompt: dontAsk is the mode, and "none" means a request
-		// that would have prompted is denied outright rather than parked.
-		"--permission-mode", "dontAsk",
+		// Nothing may prompt: the mode decides what is pre-approved, and "none"
+		// means a request that would still have prompted is denied outright
+		// rather than parked.
+		"--permission-mode", string(mode),
 		"--permission-prompts", "none",
 		// Every project-controlled execution path off.
 		"--safe-mode",
@@ -357,6 +405,13 @@ func (a *Adapter) args(launch harness.Launch) []string {
 	if model := a.model(launch); model != "" {
 		args = append(args, "--model", model)
 	}
+	// One flag per pattern: a pattern may contain spaces ("Bash(git *)"), and
+	// each argv element is passed through unchanged.
+	for _, tool := range a.cfg.AllowedTools {
+		if tool = strings.TrimSpace(tool); tool != "" {
+			args = append(args, "--allowedTools", tool)
+		}
+	}
 	return args
 }
 
@@ -370,7 +425,7 @@ func (a *Adapter) model(launch harness.Launch) string {
 // consume reads the stream-json output until the process ends, the stream is
 // exhausted, or the context is cancelled. Cancellation kills the whole process
 // group: Claude Code starts compilers, test runners and git.
-func (a *Adapter) consume(ctx context.Context, stdout io.Reader, state *runState, cmd *exec.Cmd, waited <-chan error) error {
+func (a *Adapter) consume(ctx context.Context, stdout io.Reader, state *runState, cmd *exec.Cmd) error {
 	done := make(chan error, 1)
 	go func() { done <- state.consume(stdout) }()
 
@@ -378,13 +433,11 @@ func (a *Adapter) consume(ctx context.Context, stdout io.Reader, state *runState
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+		// Killing the group ends the stream; the reader then reaches EOF and
+		// the caller's Wait reaps the process.
 		_ = proc.KillGroup(cmd)
 		select {
 		case <-done:
-		case <-time.After(processStopTimeout):
-		}
-		select {
-		case <-waited:
 		case <-time.After(processStopTimeout):
 		}
 		return nil

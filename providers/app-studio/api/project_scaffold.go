@@ -77,6 +77,7 @@ func (s *Server) seedProjectScaffold(ctx context.Context, id identity, p *aiv1al
 	if _, err := s.workspaces.AddUncommittedPaths(ctx, scope, paths); err != nil {
 		return 0, fmt.Errorf("tracking seeded files: %w", err)
 	}
+	s.signalProject(id.workspaceUUID, p.Name)
 	return len(files), nil
 }
 

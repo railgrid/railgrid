@@ -289,7 +289,14 @@ func (r *runnerAddon) Reconcile(ctx context.Context, spec Spec) (Status, error) 
 
 	port := runnerPort(spec.Runner)
 	probed, probeErr := r.probe(ctx, port, token)
-	if probeErr == nil {
+	r.mu.Lock()
+	sup := r.sup
+	r.mu.Unlock()
+	// The child is this agent's when it is running, or when the supervisor
+	// has not yet had its first chance to start it. A child that started and
+	// exited (a crash loop on the state lock, say) is neither.
+	alive := sup != nil && (sup.Alive() || (sup.Starts() == 0 && sup.LastError() == nil))
+	if probeErr == nil && alive {
 		return Status{
 			Phase:   PhaseRunning,
 			Version: probed.Version,
@@ -301,11 +308,28 @@ func (r *runnerAddon) Reconcile(ctx context.Context, spec Spec) (Status, error) 
 			},
 		}, nil
 	}
+	if probeErr == nil {
+		// Something answers the probe, but it is not this agent's child: a
+		// runner outliving a previous agent, or one started by hand. Reporting
+		// Running here would advertise a process this agent neither built nor
+		// configures.
+		msg := fmt.Sprintf("a runner answers on 127.0.0.1:%d but it is not the one this agent supervises", port)
+		if sup != nil {
+			if last := sup.LastError(); last != nil {
+				msg += ": " + last.Error()
+			}
+		}
+		return Status{
+			Phase:   PhaseDegraded,
+			Message: msg,
+			Conditions: []Condition{
+				configured,
+				{Type: ConditionRunning, Status: metav1.ConditionFalse, Reason: ReasonProbeFailed, Message: msg},
+			},
+		}, nil
+	}
 
-	r.mu.Lock()
-	sup := r.sup
-	r.mu.Unlock()
-	if sup != nil && sup.Alive() {
+	if alive {
 		logger.V(2).Info("runner not answering yet", "err", probeErr.Error())
 		return Status{
 			Phase:   PhaseInstalling,
@@ -722,6 +746,14 @@ func (r *runnerAddon) childArgs(spec *RunnerSpec) []string {
 			if pin := strings.TrimSpace(spec.Claude.VersionPin); pin != "" {
 				args = append(args, "--version-pin", pin)
 			}
+			if mode := strings.TrimSpace(spec.Claude.PermissionMode); mode != "" {
+				args = append(args, "--claude-permission-mode", mode)
+			}
+			for _, tool := range spec.Claude.AllowedTools {
+				if tool = strings.TrimSpace(tool); tool != "" {
+					args = append(args, "--claude-allowed-tool", tool)
+				}
+			}
 		}
 	default:
 		args = append(args, "--codex-home", r.codexHome())
@@ -760,6 +792,17 @@ func (r *runnerAddon) ensureSupervisor(ctx context.Context, args []string, confi
 	if current != nil {
 		if err := current.Stop(ctx); err != nil {
 			klog.FromContext(ctx).Error(err, "stopping runner before restart", "addon", r.name)
+		}
+	} else {
+		// First child of this agent process: whatever holds the runner's state
+		// lock now is a runner a previous agent left behind, and it would keep
+		// the port with a stale build and configuration while this agent's own
+		// child crash-loops on the lock.
+		lockPath := filepath.Join(r.runnerState(), "runner.lock")
+		if pid, err := supervisor.ReclaimStaleHolder(lockPath, supervisor.DefaultStopGrace); err != nil {
+			klog.FromContext(ctx).Error(err, "reclaiming the runner state lock", "addon", r.name)
+		} else if pid != 0 {
+			klog.FromContext(ctx).Info("terminated a runner left behind by a previous agent", "addon", r.name, "pid", pid)
 		}
 	}
 

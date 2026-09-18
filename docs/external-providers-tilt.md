@@ -8,7 +8,7 @@ your checkout:
 ```sh
 make tilt EXTERNAL_PROVIDERS_DIR=../providers
 make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers
-make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=linear
+make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 
 # Equivalent flags for a direct `tilt up`:
 tilt up -f Tiltfile.cluster -- \

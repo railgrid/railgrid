@@ -97,6 +97,7 @@ func (s *Server) startAssistantThreadTitleGeneration(c *asclient.Client, scope s
 		// The store commits this event atomically with the compare-and-set. Its
 		// payload is intentionally added after the CAS so a manual rename cannot
 		// be overwritten by a stale model response.
+		s.signalSession(scope, thread.ID)
 	}()
 }
 

@@ -110,6 +110,16 @@ spec:
                       Claude configures the Claude Code harness. Required when harness is
                       "claude", rejected otherwise.
                     properties:
+                      allowedTools:
+                        description: |-
+                          AllowedTools are Claude Code tool patterns granted for every turn, for
+                          example "Bash(git *)" or "Bash(npm test)". Under acceptEdits these are
+                          the only shell commands the model may run.
+                        items:
+                          type: string
+                        maxItems: 32
+                        type: array
+                        x-kubernetes-list-type: set
                       authSecretRef:
                         description: |-
                           AuthSecretRef names a Secret holding EXACTLY ONE of the keys
@@ -137,6 +147,17 @@ spec:
                           Model for the turn, e.g. "sonnet" or a full model name. Empty uses the
                           account default.
                         maxLength: 128
+                        type: string
+                      permissionMode:
+                        description: |-
+                          PermissionMode is what Claude Code may do without asking. acceptEdits
+                          (the default) approves file edits inside the task worktree and denies
+                          anything else that would prompt; bypassPermissions approves every tool,
+                          including arbitrary shell, and is meant for a dedicated, sandboxed host.
+                          A coding runner cannot use "dontAsk": every edit is refused.
+                        enum:
+                        - acceptEdits
+                        - bypassPermissions
                         type: string
                       versionPin:
                         description: |-

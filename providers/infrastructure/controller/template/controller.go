@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -55,19 +56,29 @@ type Reconciler struct {
 	// Template. It defaults false so a manually submitted copy cannot bypass
 	// the bootstrap seed gate.
 	CodingSandboxEnabled bool
+	// RuntimeCache is a cache over the kro runtime cluster (the cluster the
+	// kro backend authors RGDs on). When set, the RGDs there are watched and
+	// mapped back to their Template (rgdwatch.go) so kro's accept/reject
+	// verdict surfaces in BackendReady promptly. Nil when no runtime cluster
+	// is configured (stub-only).
+	RuntimeCache cache.Cache
 }
 
 // SetupWithManager wires the reconciler into a controller-runtime
 // Manager. Watches Template CRs in the workspace the manager is
-// configured against (the provider's own workspace at startup).
+// configured against (the provider's own workspace at startup), plus the
+// backend's RGDs on the runtime cluster when one is configured.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := infrav1alpha1.AddToScheme(mgr.GetScheme()); err != nil {
 		return fmt.Errorf("template controller: adding scheme: %w", err)
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		Named("template").
-		For(&infrav1alpha1.Template{}, builder.WithPredicates()).
-		Complete(r)
+		For(&infrav1alpha1.Template{}, builder.WithPredicates())
+	if r.RuntimeCache != nil {
+		b = b.WatchesRawSource(rgdSource(r.RuntimeCache))
+	}
+	return b.Complete(r)
 }
 
 // Reconcile drives the Template through validation and backend setup;

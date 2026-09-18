@@ -217,30 +217,14 @@ func checkoutObjectName(repositoryRef string, now time.Time) string {
 	return base + "-checkout-" + suffix
 }
 
-// waitRepositoryCheckout polls until the checkout reaches a terminal phase.
+// waitRepositoryCheckout watches until the checkout reaches a terminal phase.
 // A timeout returns (nil, nil) — never a non-terminal object — so the caller
 // surfaces "did not complete in time" rather than a misleading failure.
 func waitRepositoryCheckout(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (*unstructured.Unstructured, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		obj, err := dyn.Resource(repositoryCheckoutsGVR).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("get RepositoryCheckout %q: %w", name, err)
-		}
-		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
-		if phase == string(codev1alpha1.RepositoryCheckoutPhaseSucceeded) || phase == string(codev1alpha1.RepositoryCheckoutPhaseFailed) {
-			return obj, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, nil
-		case <-ticker.C:
-		}
+	obj, done, err := waitForPhase(ctx, dyn, repositoryCheckoutsGVR, "RepositoryCheckout", name, timeout,
+		phaseIn(string(codev1alpha1.RepositoryCheckoutPhaseSucceeded), string(codev1alpha1.RepositoryCheckoutPhaseFailed)))
+	if err != nil || !done {
+		return nil, err
 	}
+	return obj, nil
 }

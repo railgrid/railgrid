@@ -562,31 +562,6 @@ func (s *Server) deleteProjectAssistantRunSandboxCache(ctx context.Context, c *a
 	return nil
 }
 
-func waitForProjectAssistantRunSandboxInstanceDeleted(ctx context.Context, c *asclient.Client, name string) error {
-	if c == nil {
-		return errors.New("project client is not configured")
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, projectAssistantRunSandboxReadyTimeout)
-	defer cancel()
-	ticker := time.NewTicker(projectAssistantRunSandboxReadyPoll)
-	defer ticker.Stop()
-	resource := c.Resource(runSandboxInstancesResource, "")
-	for {
-		_, err := resource.Get(waitCtx, name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("get deleting run sandbox instance %q: %w", name, err)
-		}
-		select {
-		case <-waitCtx.Done():
-			return fmt.Errorf("wait for expired run sandbox instance %q deletion: %w", name, waitCtx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
 func (s *Server) enforceProjectAssistantRunSandboxQuota(ctx context.Context, c *asclient.Client, currentName string) error {
 	if c == nil {
 		return errors.New("project client is not configured")

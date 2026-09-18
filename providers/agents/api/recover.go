@@ -31,7 +31,8 @@ import (
 //     resumable snapshot every few tool-call rounds while the phase stays
 //     Running. The mechanism is the one approval gates already used; this just
 //     takes it on a timer instead of only when a human is asked.
-//   - A sweep (sweepStaleRuns, run at startup and on the scheduler tick) finds
+//   - A sweep (sweepStaleRuns, run at startup and on the background executor's
+//     discovery/recovery tick) finds
 //     runs that are Running or Pending, are not executing on THIS replica, and
 //     have not been touched for a while. With a checkpoint they are re-queued for
 //     resume; without one they are failed honestly.
@@ -123,6 +124,48 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID 
 	}
 }
 
+// cancelCheckInterval throttles the durable-cancel read: the engine asks before
+// every model round and every tool call, and a burst of quick tool calls
+// should not turn into a burst of row reads.
+const cancelCheckInterval = time.Second
+
+// cancelRequestedError is what a run ends with when a cancel arrived through
+// the store rather than through its context (see Server.cancelRun). It reads
+// as context.Canceled to errors.Is so every existing terminal path — Aborted
+// phase, "Stopped before it finished" in the chat — treats it as the person's
+// decision it is, not as a crash.
+type cancelRequestedError struct{}
+
+func (cancelRequestedError) Error() string        { return "cancelled by user" }
+func (cancelRequestedError) Is(target error) bool { return target == context.Canceled }
+
+// cancelCheck returns the engine.Callbacks.CheckAbort hook for one run: it
+// reads the run row's CancelRequested flag (throttled) and, when set, cancels
+// the run's own context — so the terminal bookkeeping in executeTask/resumeRun
+// records Aborted exactly as a local cancel does — and ends the turn.
+//
+// Best-effort on the read: a store hiccup must not fail a working run, so an
+// unreadable row means "not cancelled" until the next check.
+func (s *Server) cancelCheck(scope store.Scope, runID string) func(context.Context) error {
+	var last time.Time
+	return func(ctx context.Context) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if now := time.Now(); now.Sub(last) < cancelCheckInterval {
+			return nil
+		} else {
+			last = now
+		}
+		stored, err := s.store.GetRun(ctx, scope, runID)
+		if err != nil || !stored.CancelRequested {
+			return nil
+		}
+		s.liveRuns.cancel(runID)
+		return cancelRequestedError{}
+	}
+}
+
 // recoveryRunner resumes a recovered run. The sweep cannot build tenant access on
 // its own — that lives in the background executor, which owns the virtual
 // workspace — so StartBackground installs this and the sweep calls it. Nil means
@@ -171,7 +214,7 @@ func (s *Server) sweepStaleRuns(ctx context.Context, resume recoveryRunner, noti
 // Reports whether it was resumed.
 func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume recoveryRunner, notify recoveryNotifier) bool {
 	run, scope := sr.Run, sr.Scope
-	fail := func(reason string) bool {
+	close := func(phase store.RunPhase, reason string, tell bool) bool {
 		now := time.Now().UTC()
 		startedAt := run.CreatedAt
 		if run.StartedAt != nil {
@@ -183,14 +226,23 @@ func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume reco
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
 		defer cancelPersist()
 		tracker := trackerForStored(run)
-		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(store.RunPhaseFailed), "", reason)
-		s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: store.RunPhaseFailed, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now)
-		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
-		s.reportStrandedRun(ctx, sr, notify, reason)
+		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(phase), "", reason)
+		s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now)
+		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
+		if tell {
+			s.reportStrandedRun(ctx, sr, notify, reason)
+		}
 		return false
 	}
+	fail := func(reason string) bool { return close(store.RunPhaseFailed, reason, true) }
 
 	switch {
+	case run.CancelRequested:
+		// Someone asked for this run to stop while no replica could act on it
+		// (queued on a process that died, or the flag landed after the crash).
+		// Honour the request rather than resuming work nobody wants; the person
+		// who cancelled is not told twice.
+		return close(store.RunPhaseAborted, "cancelled by user", false)
 	case scope.OrgUUID == "" || scope.WorkspaceUUID == "":
 		// A run whose scope was never recorded cannot be addressed again.
 		return fail("the provider restarted while this run was in progress, and its workspace could not be resolved to resume it")

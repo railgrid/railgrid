@@ -24,6 +24,12 @@ You may obtain a copy of the License at
 // unknowable once the spec forgot it (kinds are per-template and dynamic).
 // The template-switch handler deletes replaced instances while it still holds
 // the old spec, and the ownerReference covers Project deletion.
+//
+// Convergence is event-driven: the dependency kinds (instances, the backing
+// Repository, an in-flight RepositoryCommit) are watched per tenant
+// workspace through package tenantwatch, and the HTTP/assistant layer
+// signals the reconciler through package reconcilesignal when a turn ends or
+// files change. A slow safety resync covers whatever an event missed.
 package project
 
 import (
@@ -40,6 +46,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -53,7 +60,9 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/bindings"
+	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
 	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
@@ -61,14 +70,19 @@ import (
 const (
 	// finalizer guards instance teardown on Project deletion.
 	finalizer = "ai.railgrid.ai/instances"
-	// requeueInterval polls instance status while not Ready. Instances are
-	// not watched (their kinds are per-template and dynamic); polling keeps
-	// the controller simple and deterministic.
-	requeueInterval = 15 * time.Second
+	// resyncInterval is the safety net under the watches and signals: drift
+	// nothing announced (an event dropped while a watcher reconnected, a
+	// signal published before the controller subscribed) is noticed within
+	// this long.
+	resyncInterval = 10 * time.Minute
+	// identityRequeueInterval waits for the project ServiceAccount's token
+	// Secret to be populated by kcp's token controller — the one dependency
+	// that is neither watched nor signalled, and never takes long.
+	identityRequeueInterval = 5 * time.Second
 	// instanceConvergenceMaxAttempts bounds optimistic-concurrency recovery.
 	// A fresh GET/recompute is enough to absorb the provider's usual computed
-	// field update; persistent contention is surfaced to the normal reconcile
-	// poll instead of spinning in one request.
+	// field update; persistent contention is surfaced to a rate-limited
+	// requeue instead of spinning in one request.
 	instanceConvergenceMaxAttempts = 2
 
 	projectDevelopmentEnvironmentName = "development"
@@ -111,18 +125,20 @@ type Reconciler struct {
 	// OnCommitted is told about every commit convergence settles, so the
 	// project's assistant thread can show it. Nil disables the notification.
 	OnCommitted func(context.Context, workspace.Scope, CommitResult)
-	// pendingCommits remembers, per project, a RepositoryCommit that
-	// commit_files left running (see resolvePendingCommit).
-	pendingMu      sync.Mutex
-	pendingCommits map[string]pendingCommit
+	// Watches delivers instance, Repository, and RepositoryCommit events from
+	// every tenant workspace (see package tenantwatch). Nil means no watches:
+	// convergence then rides the safety resync alone.
+	Watches *tenantwatch.Hub
+	// Signals carries "this project changed" events from the HTTP/assistant
+	// layer: a turn ended, files were written. Nil means no signals.
+	Signals *reconcilesignal.Bus
 	// binaryCommits caches, per workspace cluster, whether the Code
 	// provider's code__commit_files accepts base64 file items.
 	binaryCommits hubmcp.CapabilityCache
 	// skipNotices remembers the last skipped-path notice per project so an
 	// unchanged skip is logged once rather than on every reconcile.
+	noticeMu    sync.Mutex
 	skipNotices map[string]string
-	// now is a test seam for pending-commit follow-up timing.
-	now func() time.Time
 	// HubBase / HubInsecure address the hub for MCP commit calls and for the
 	// tenant-path client below.
 	HubBase     string
@@ -155,10 +171,76 @@ func (r *Reconciler) tenantClient(clusterName, token string, vw client.Client) (
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
-	return mcbuilder.ControllerManagedBy(mgr).
+	b := mcbuilder.ControllerManagedBy(mgr).
 		Named("app-studio-project").
-		For(&aiv1alpha1.Project{}).
-		Complete(r)
+		For(&aiv1alpha1.Project{})
+	if r.Signals != nil {
+		b = b.WatchesRawSource(r.Signals.Source())
+	}
+	c, err := b.Build(r)
+	if err != nil {
+		return err
+	}
+	if r.Watches != nil {
+		// Engaged per tenant cluster alongside the Project watch; the
+		// watchers themselves start once a reconcile holds an identity token.
+		return c.MultiClusterWatch(r.Watches.Source(r.mapDependencyEvent,
+			tenantwatch.InstancesGVR, tenantwatch.RepositoriesGVR, tenantwatch.RepositoryCommitsGVR))
+	}
+	return nil
+}
+
+// dependencyKinds are the watched kinds the project identity may list and
+// watch (its ClusterRole covers infrastructure.railgrid.ai and
+// code.railgrid.ai).
+var dependencyKinds = []schema.GroupVersionResource{tenantwatch.InstancesGVR, tenantwatch.RepositoriesGVR, tenantwatch.RepositoryCommitsGVR}
+
+// mapDependencyEvent names the Project a watched object belongs to. Instances
+// carry the project label the reconciler stamps; a Repository carries the
+// claim label; a RepositoryCommit names only its Repository, so its owner is
+// found by listing the cluster's Projects for that repositoryRef (as is a
+// Repository without the label, e.g. one adopted by hand).
+func (r *Reconciler) mapDependencyEvent(ctx context.Context, c client.Client, evt tenantwatch.Event) []types.NamespacedName {
+	if evt.Object == nil {
+		return nil
+	}
+	switch evt.GVR {
+	case tenantwatch.InstancesGVR:
+		if owner := evt.Object.GetLabels()[bindings.ProjectLabel]; owner != "" {
+			return []types.NamespacedName{{Name: owner}}
+		}
+		return nil
+	case tenantwatch.RepositoriesGVR:
+		if owner := evt.Object.GetLabels()[projectRepositoryLabel]; owner != "" {
+			return []types.NamespacedName{{Name: owner}}
+		}
+		return projectsForRepository(ctx, c, evt.Object.GetName())
+	case tenantwatch.RepositoryCommitsGVR:
+		repositoryRef, _, _ := unstructured.NestedString(evt.Object.Object, "spec", "repositoryRef")
+		return projectsForRepository(ctx, c, repositoryRef)
+	}
+	return nil
+}
+
+// projectsForRepository lists the cluster's Projects bound to repositoryRef.
+func projectsForRepository(ctx context.Context, c client.Client, repositoryRef string) []types.NamespacedName {
+	repositoryRef = strings.TrimSpace(repositoryRef)
+	if c == nil || repositoryRef == "" {
+		return nil
+	}
+	var projects aiv1alpha1.ProjectList
+	if err := c.List(ctx, &projects); err != nil {
+		log.Printf("app-studio project reconciler: list projects for repository %q: %v", repositoryRef, err)
+		return nil
+	}
+	var out []types.NamespacedName
+	for i := range projects.Items {
+		p := &projects.Items[i]
+		if p.Spec.Repository != nil && strings.TrimSpace(p.Spec.Repository.RepositoryRef) == repositoryRef {
+			out = append(out, types.NamespacedName{Name: p.Name})
+		}
+	}
+	return out
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -235,15 +317,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	if token == "" {
 		// Token controller not done; nothing else can proceed safely.
-		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+		return ctrl.Result{RequeueAfter: identityRequeueInterval}, nil
 	}
 	tc, err := r.tenantClient(clusterName, token, c)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("tenant client: %w", err)
 	}
+	// The same identity that writes instances and repositories watches them
+	// for this workspace (once per cluster; later calls are no-ops).
+	r.Watches.Ensure(clusterName, token, dependencyKinds...)
 
 	// Converge each bound instance, folding observed state per environment.
-	allReady := true
 	instancesNeedRetry := false
 	liveStatuses := make([]aiv1alpha1.ProjectEnvironmentStatus, 0, len(bound))
 	for _, env := range bound {
@@ -262,7 +346,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 					effectiveBinding, err = bindings.ApplyPreviewAccessToBinding(effectiveBinding, bindings.PreviewAccess(&p))
 				}
 				if err != nil {
-					allReady = false
 					st := bindings.InvalidStatus(binding)
 					st.Outputs = map[string]string{"error": err.Error()}
 					bindingStatuses = append(bindingStatuses, st)
@@ -290,15 +373,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 				// remember to retry soon, and keep going.
 				log.Printf("app-studio project %s: instance for binding %q not converged (will retry): %v", p.Name, binding.Name, err)
 				instancesNeedRetry = true
-				allReady = false
 				bindingStatuses = append(bindingStatuses, bindings.StatusFromObject(binding, nil))
 				continue
 			}
-			st := bindings.StatusFromObject(binding, obj)
-			if st.Phase != "Ready" {
-				allReady = false
-			}
-			bindingStatuses = append(bindingStatuses, st)
+			bindingStatuses = append(bindingStatuses, bindings.StatusFromObject(binding, obj))
 		}
 		liveStatuses = append(liveStatuses, bindings.FoldEnvironment(env.spec, bindingStatuses))
 	}
@@ -316,25 +394,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	// Converge the git backing repository from the spec binding (autoInit
 	// creates the repo on the git host), then keep git in step with the
-	// workspace. A commit failure is retried on the poll, not escalated —
+	// workspace. A commit failure is retried with backoff, not escalated —
 	// instances must keep converging regardless.
 	repo, err := r.ensureRepository(ctx, tc, &p)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("repository: %w", err)
 	}
-	dirty, err := r.commitWorkspace(ctx, token, tc, &p, repo)
+	commit, err := r.commitWorkspace(ctx, c, token, tc, &p, repo)
 	if err != nil {
 		log.Printf("app-studio project %s: commit convergence: %v", p.Name, err)
-		dirty = true
+		commit.retry = true
 	}
-	repositoryPending := p.Spec.Repository != nil && p.Spec.Repository.RepositoryRef != "" && !repositoryReady(repo)
 
-	if !allReady || dirty || repositoryPending || instancesNeedRetry {
-		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	// Everything still pending is waited for by event, not by polling: an
+	// instance not yet Ready and a Repository still provisioning arrive on
+	// the dependency watch, an in-flight RepositoryCommit on the same watch,
+	// a busy assistant turn on the Signals bus when it ends. Only work this
+	// pass could not finish itself (a conflict, a failed call, files beyond
+	// one commit's bounds) is requeued, with the controller's backoff.
+	if instancesNeedRetry || commit.retry {
+		return ctrl.Result{Requeue: true}, nil
 	}
-	// Ready: keep a slow poll so drift (instance deleted out-of-band, status
-	// regressions, new dirty files) is noticed without watching dynamic kinds.
-	return ctrl.Result{RequeueAfter: 4 * requeueInterval}, nil
+	return ctrl.Result{RequeueAfter: resyncInterval}, nil
 }
 
 func isProjectDevelopmentBinding(environment string, binding aiv1alpha1.ProjectProviderBindingSpec) bool {
@@ -632,7 +713,7 @@ func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha
 				return ctrl.Result{}, fmt.Errorf("project identity for teardown: %w", err)
 			}
 			if token == "" {
-				return ctrl.Result{RequeueAfter: requeueInterval}, nil
+				return ctrl.Result{RequeueAfter: identityRequeueInterval}, nil
 			}
 			tc, err := r.tenantClient(clusterName, token, c)
 			if err != nil {

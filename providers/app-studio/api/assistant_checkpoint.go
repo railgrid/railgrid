@@ -777,7 +777,10 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	turn.RequestID = run.RequestID
 	turn.AssistantMessageID = strings.TrimSpace(resumeReq.AssistantMessageID)
 	ctx, finishTurn := s.projectAssistantRunManager().Begin(ctx, turn)
-	defer finishTurn()
+	defer func() {
+		finishTurn()
+		s.signalProject(id.workspaceUUID, p.Name)
+	}()
 	if cause := context.Cause(ctx); cause != nil {
 		return s.completeClaimedProjectAssistantRunAfterResumeError(
 			ctx,

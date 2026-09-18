@@ -210,31 +210,46 @@ func runServe(opts serveOptions) error {
 		return fmt.Errorf("build tunnel server: %w", err)
 	}
 
-	// Multi-replica tunnel routing. Each agent dials ONE replica; the replica
-	// terminating the tunnel claims it in a workspace Lease registry, and
-	// every other replica relays pickups and data-plane requests to the owner
-	// over the internal listener (pod-to-pod only — its port is not on the
-	// Service). Requires POD_IP (downward API) and a bearer-token provider
-	// credential; without them the provider runs in the historical
-	// single-replica mode.
+	// Tunnel Lease registry + multi-replica routing. The registry is always on
+	// when a kcp credential exists: the replica terminating a tunnel claims it
+	// as a Lease in the provider workspace and renews it while the socket
+	// lives, and the edge lifecycle reconciler derives status.connected /
+	// phase / lastHeartbeatTime from those Leases — the tunnel handler never
+	// writes connectivity to Edge status itself. Routing on top of it (each
+	// agent dials ONE replica; every other replica relays pickups and
+	// data-plane requests to the owner over the internal listener — pod-to-pod
+	// only, its port is not on the Service) additionally requires POD_IP
+	// (downward API) and a bearer-token provider credential; without them the
+	// provider runs single-replica with the registry as bookkeeping only.
 	if kcpConfig != nil {
+		replicaID := sdktunnel.SanitizeReplicaID(envOrHostname("POD_NAME"))
 		podIP := os.Getenv("POD_IP")
 		internalPort := os.Getenv("EDGES_INTERNAL_PORT")
 		if internalPort == "" {
 			internalPort = "8090"
 		}
+		routing := true
 		switch {
 		case podIP == "":
 			log.Info("replica tunnel routing disabled (POD_IP unset); single-replica mode")
+			routing = false
 		case kcpConfig.BearerToken == "":
 			log.Info("replica tunnel routing disabled (provider credential has no bearer token to authenticate the relay); single-replica mode")
+			routing = false
+		}
+		// The lease holder identity is the relay address when routing, else a
+		// non-routable placeholder that still identifies the replica.
+		selfAddr := "local/" + replicaID
+		if routing {
+			selfAddr = podIP + ":" + internalPort
+		}
+		reg, rerr := sdktunnel.NewRegistry(kcpConfig, replicaID, selfAddr)
+		switch {
+		case rerr != nil:
+			log.Error(rerr, "tunnel lease registry unavailable; edges will not report Connected", "replica", replicaID)
+		case !routing:
+			tsrv.EnableRegistry(reg)
 		default:
-			replicaID := sdktunnel.SanitizeReplicaID(envOrHostname("POD_NAME"))
-			reg, rerr := sdktunnel.NewRegistry(kcpConfig, replicaID, podIP+":"+internalPort)
-			if rerr != nil {
-				log.Error(rerr, "replica tunnel routing disabled (registry unavailable); single-replica mode")
-				break
-			}
 			tsrv.EnableReplicaRouting(reg, kcpConfig.BearerToken)
 			internalSrv := &http.Server{
 				Addr:              ":" + internalPort,

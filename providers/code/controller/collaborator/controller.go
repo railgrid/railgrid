@@ -34,6 +34,11 @@ import (
 	"github.com/railgrid/provider-code/controller/shared"
 )
 
+// invitationPollInterval is how often a Collaborator whose invitation is
+// still pending is re-checked. Acceptance is external GitHub state with no
+// event to watch, so the controller polls, slowly.
+const invitationPollInterval = 2 * time.Minute
+
 // Reconciler manages Collaborator CRs.
 type Reconciler struct {
 	Manager  mcmanager.Manager
@@ -121,6 +126,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 	logger.Info("Collaborator ensured", "user", collab.Spec.Username, "pending", res.Pending)
+	if res.Pending {
+		// Acceptance happens on GitHub, which nothing here watches; poll so
+		// InvitationPending converges once the invitee accepts.
+		return ctrl.Result{RequeueAfter: invitationPollInterval}, nil
+	}
 	return ctrl.Result{}, nil
 }
 

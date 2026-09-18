@@ -73,9 +73,11 @@ func claudeRunnerSpec() Spec {
 	spec.Runner.Codex = nil
 	spec.Runner.Harness = HarnessClaude
 	spec.Runner.Claude = &Claude{
-		Binary:        "claude",
-		Model:         "sonnet",
-		AuthSecretRef: &SecretRef{Name: "claude-auth", Namespace: "default"},
+		Binary:         "claude",
+		Model:          "sonnet",
+		AuthSecretRef:  &SecretRef{Name: "claude-auth", Namespace: "default"},
+		PermissionMode: "bypassPermissions",
+		AllowedTools:   []string{"Bash(git *)", " "},
 	}
 	return spec
 }
@@ -129,6 +131,8 @@ func TestClaudeCredentialIsMaterializedOwnerOnly(t *testing.T) {
 				"--claude-credential-kind " + tc.kind,
 				"--claude-home " + addon.claudeHome(),
 				"--claude-model sonnet",
+				"--claude-permission-mode bypassPermissions",
+				"--claude-allowed-tool Bash(git *)",
 			} {
 				if !strings.Contains(args, want) {
 					t.Errorf("child args %q lack %q", args, want)

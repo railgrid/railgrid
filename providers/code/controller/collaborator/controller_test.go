@@ -12,6 +12,7 @@ package collaborator
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -82,6 +83,54 @@ func TestReconcileRequeuesRateLimitedHostCalls(t *testing.T) {
 	}
 }
 
+// A pending invitation is accepted on GitHub, which nothing watches, so the
+// reconciler polls until it converges; an applied grant needs no requeue.
+func TestReconcileRequeuesWhilePendingInvitation(t *testing.T) {
+	for _, pending := range []bool{true, false} {
+		t.Run(fmt.Sprintf("pending=%t", pending), func(t *testing.T) {
+			ctx := context.Background()
+			c := fake.NewClientBuilder().
+				WithScheme(codescheme.NewScheme()).
+				WithStatusSubresource(&codev1alpha1.Collaborator{}).
+				WithObjects(
+					&codev1alpha1.Collaborator{
+						ObjectMeta: metav1.ObjectMeta{Name: "alice", Finalizers: []string{codev1alpha1.FinalizerCollaborator}},
+						Spec:       codev1alpha1.CollaboratorSpec{RepositoryRef: "demo", Username: "alice"},
+					},
+					&codev1alpha1.Repository{ObjectMeta: metav1.ObjectMeta{Name: "demo"}, Spec: codev1alpha1.RepositorySpec{ConnectionRef: "conn", Name: "demo"}},
+					&codev1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: "conn"}, Spec: codev1alpha1.ConnectionSpec{Provider: codev1alpha1.ProviderGitHub, SecretRef: codev1alpha1.LocalSecretReference{Name: "credential", Namespace: "default", Key: "token"}}},
+					&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credential", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}},
+				).
+				Build()
+			registry := backend.NewRegistry()
+			if err := registry.Register(&fakeBackend{res: backend.CollaboratorResult{Pending: pending, InvitationID: "inv-1"}}); err != nil {
+				t.Fatal(err)
+			}
+			r := &Reconciler{Manager: fakeManager{c: c}, Backends: registry}
+
+			result, err := r.Reconcile(ctx, mcreconcile.Request{ClusterName: "tenant-a", Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: "alice"}}})
+			if err != nil {
+				t.Fatalf("Reconcile returned error: %v", err)
+			}
+			want := time.Duration(0)
+			if pending {
+				want = invitationPollInterval
+			}
+			if result.RequeueAfter != want {
+				t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, want)
+			}
+			var got codev1alpha1.Collaborator
+			if err := c.Get(ctx, client.ObjectKey{Name: "alice"}, &got); err != nil {
+				t.Fatal(err)
+			}
+			cond := apimeta.FindStatusCondition(got.Status.Conditions, codev1alpha1.ConditionInvitationPending)
+			if cond == nil || (cond.Status == metav1.ConditionTrue) != pending {
+				t.Fatalf("InvitationPending = %+v, want pending=%t", cond, pending)
+			}
+		})
+	}
+}
+
 type fakeManager struct {
 	mcmanager.Manager
 	c client.Client
@@ -100,12 +149,13 @@ func (c fakeCluster) GetClient() client.Client { return c.c }
 
 type fakeBackend struct {
 	backend.GitBackend
+	res backend.CollaboratorResult
 	err error
 }
 
 func (b *fakeBackend) Name() string { return "github" }
 func (b *fakeBackend) EnsureCollaborator(context.Context, *codev1alpha1.Connection, backend.Credential, *codev1alpha1.Repository, *codev1alpha1.Collaborator) (backend.CollaboratorResult, error) {
-	return backend.CollaboratorResult{}, b.err
+	return b.res, b.err
 }
 func (b *fakeBackend) RemoveCollaborator(context.Context, *codev1alpha1.Connection, backend.Credential, *codev1alpha1.Repository, *codev1alpha1.Collaborator) error {
 	return b.err

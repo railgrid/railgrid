@@ -11,7 +11,7 @@ trigger_mode(TRIGGER_MODE_AUTO)
 # checkout is loaded:
 #
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers
-#   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=linear
+#   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 config.define_string('external-providers-dir')
 config.define_string('external-providers')
 cfg = config.parse()

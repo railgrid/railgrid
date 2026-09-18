@@ -433,6 +433,15 @@ upsert/delete commit to the Code provider's `code__commit_files` tool. A
 workspace move is persisted as an upsert of the destination and deletion of the
 source in the same repository commit.
 
+The reverse direction is `hydrate_workspace`: it reads the repository tree
+through the Code provider's `code__checkout_repository` tool and writes it into
+the workspace (tracked files are overwritten, workspace-only files stay), then
+schedules a development sync. Because it discards uncommitted edits to tracked
+files, the tool always pauses for the user's approval, in every approval mode
+except Never, and is offered only in Default mode on implementation turns. The
+same operation is reachable without the assistant through
+`POST /api/projects/{project}/hydrate-workspace` and `railgrid app sync`.
+
 ## Development runtime
 
 App Studio owns the project-facing development API and workspace. A project

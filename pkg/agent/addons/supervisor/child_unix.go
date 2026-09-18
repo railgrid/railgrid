@@ -35,6 +35,7 @@ func configureChild(cmd *exec.Cmd, uid, gid int) error {
 		attr = &syscall.SysProcAttr{}
 	}
 	attr.Setpgid = true
+	bindToParent(attr)
 	if uid >= 0 && gid >= 0 {
 		if uid == 0 || gid == 0 {
 			return fmt.Errorf("refusing to run a child as uid %d gid %d", uid, gid)

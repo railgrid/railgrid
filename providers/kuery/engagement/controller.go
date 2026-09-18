@@ -22,9 +22,9 @@
 //     visible without any claim.
 //   - Per workspace, a "railgrid-kuery" ServiceAccount (provisioned through the
 //     claimed built-in types, owned by the binding so it GCs with Disable) is
-//     granted read on kubernetesclusters, and edges are polled through the
-//     workspace's OWN edges binding — whichever copy of the edges provider
-//     that is (see provider-sdk/tenantaccess).
+//     granted read on kubernetesclusters, and edges are listed and watched
+//     through the workspace's OWN edges binding — whichever copy of the
+//     edges provider that is (see provider-sdk/tenantaccess, edgewatch.go).
 //
 // Per edge, the data path is the edges provider's consumer proxy: a
 // rest.Config pointing at
@@ -67,11 +67,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -159,18 +161,27 @@ type Controller struct {
 
 	mgr mcmanager.Manager
 
-	// tenantClientFor is a test seam for the per-workspace edge-poll client.
+	// tenantClientFor is a test seam for the per-workspace edge-list client.
 	// Production leaves it nil and dials {hubBase}/clusters/{cluster} as the
-	// engagement ServiceAccount.
-	tenantClientFor func(clusterName, token string) (client.Client, error)
+	// engagement ServiceAccount. tenantDynamicFor is the same seam for the
+	// per-workspace edge watch.
+	tenantClientFor  func(clusterName, token string) (client.Client, error)
+	tenantDynamicFor func(clusterName, token string) (dynamic.Interface, error)
+
+	// edgeEvents carries per-workspace edge changes into the controller
+	// (see edgewatch.go); New wires it as a raw source, tests may leave it
+	// nil. watchCtx, set by Start, parents every edge watch.
+	edgeEvents chan event.TypedGenericEvent[edgeEvent]
+	watchCtx   context.Context
 
 	// started is when Start ran; the orphan sweep holds off for orphanGrace
 	// after it so every enabled workspace has been reconciled (and its live
 	// edges re-asserted) before any row is judged orphaned.
 	started time.Time
 
-	mu      sync.Mutex
-	engaged map[string]engagedEdge // "{tenantCluster}/{edgeName}" → engagement handle
+	mu          sync.Mutex
+	engaged     map[string]engagedEdge // "{tenantCluster}/{edgeName}" → engagement handle
+	edgeWatches map[string]edgeWatch   // tenantCluster → running edge watch
 }
 
 // engagedEdge tracks one locally engaged edge. The map key
@@ -206,10 +217,12 @@ func New(cfg Config) (*Controller, error) {
 	}
 
 	c := &Controller{
-		cfg:     cfg,
-		hubBase: hubBase,
-		claims:  claims,
-		engaged: map[string]engagedEdge{},
+		cfg:         cfg,
+		hubBase:     hubBase,
+		claims:      claims,
+		engaged:     map[string]engagedEdge{},
+		edgeWatches: map[string]edgeWatch{},
+		edgeEvents:  make(chan event.TypedGenericEvent[edgeEvent], 64),
 	}
 
 	// Edge objects are read unstructured, but the apiexport multicluster
@@ -238,13 +251,16 @@ func New(cfg Config) (*Controller, error) {
 
 	// Drive reconciles off the consumer's APIBinding to kuery's own export —
 	// the one object every enabled workspace is guaranteed to expose through
-	// the VW without any claim. Edges themselves are polled per workspace on
-	// the requeue interval, not watched: after the claim removal the VW does
-	// not serve them, and the engagement cadence (claim renewal) already
-	// polls.
+	// the VW without any claim. Edges are not served through the VW (no
+	// claim, see the package comment), so they cannot be a Watches on this
+	// manager; instead each reconciled workspace runs its own edge watch as
+	// the engagement identity, and its events re-enqueue the workspace's
+	// binding through this raw source. The requeue on renewInterval remains
+	// for lease renewal — it is the claim heartbeat — not for noticing edges.
 	if err := mcbuilder.ControllerManagedBy(mgr).
 		Named("kuery-edge-engagement").
 		For(&apiskcpv1alpha2.APIBinding{}).
+		WatchesRawSource(c.edgeEventSource()).
 		Complete(c); err != nil {
 		return nil, fmt.Errorf("registering engagement reconciler: %w", err)
 	}
@@ -254,9 +270,13 @@ func New(cfg Config) (*Controller, error) {
 }
 
 // Start runs the multicluster manager (blocking) and, alongside it, the
-// periodic orphan sweep.
+// periodic orphan sweep. The per-workspace edge watches Reconcile opens live
+// under ctx too.
 func (c *Controller) Start(ctx context.Context) error {
 	c.started = time.Now()
+	c.mu.Lock()
+	c.watchCtx = ctx
+	c.mu.Unlock()
 	go c.runOrphanSweep(ctx)
 	return c.mgr.Start(ctx)
 }
@@ -345,10 +365,12 @@ func (c *Controller) TenantEdges(ctx context.Context, tenant string) ([]string, 
 
 // Reconcile drives one enabled workspace: it resolves the workspace's
 // engagement identity, lists KubernetesCluster edges through the workspace's
-// own bindings, and maps each edge's state to an Engage/Disengage of the
-// corresponding kuery cluster, gated by this replica's claim on the edge.
-// Requeueing on renewInterval doubles as the claim heartbeat and the edge
-// poll.
+// own bindings (and keeps a watch on them open, which re-enqueues this
+// binding on every edge change), and maps each edge's state to an
+// Engage/Disengage of the corresponding kuery cluster, gated by this
+// replica's claim on the edge. Requeueing on renewInterval is the lease
+// renewal: it doubles as the claim heartbeat and the owner heartbeat on the
+// cluster rows.
 func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	tenantCluster := string(req.ClusterName)
 
@@ -393,6 +415,9 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("tenant client for %s: %w", tenantCluster, err)
 	}
+	if err := c.ensureEdgeWatch(tenantCluster, req.NamespacedName, token); err != nil {
+		return ctrl.Result{}, fmt.Errorf("edge watch for %s: %w", tenantCluster, err)
+	}
 
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(edgeGVK.GroupVersion().WithKind(edgeGVK.Kind + "List"))
@@ -409,8 +434,8 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			requeueAfter = d
 		}
 	}
-	// Edges that disappeared between polls never produce a NotFound read on
-	// this path — reconcile against the full list instead.
+	// A deleted edge arrives as a plain re-enqueue of the binding, never as
+	// a NotFound read on this path — reconcile against the full list instead.
 	c.dropAbsent(ctx, tenantCluster, seen)
 
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -502,8 +527,8 @@ func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, token str
 	return 0
 }
 
-// engagementIdentityName is the per-workspace ServiceAccount the edge poll
-// runs as. One per workspace, owned by the kuery APIBinding so Disable
+// engagementIdentityName is the per-workspace ServiceAccount the edge list
+// and watch run as. One per workspace, owned by the kuery APIBinding so Disable
 // garbage-collects it.
 const engagementIdentityName = "railgrid-kuery"
 
@@ -554,7 +579,7 @@ func (c *Controller) ensureIdentity(ctx context.Context, cl client.Client, bindi
 	return tenantaccess.EnsureIdentity(ctx, cl, engagementIdentityName, []metav1.OwnerReference{owner}, rules)
 }
 
-// tenantClient builds the client the edge poll uses: the workspace's own API
+// tenantClient builds the client the edge list uses: the workspace's own API
 // surface, as the engagement ServiceAccount. tenantClientFor is a test seam.
 func (c *Controller) tenantClient(clusterName, token string) (client.Client, error) {
 	if c.tenantClientFor != nil {
@@ -581,8 +606,10 @@ func (c *Controller) dropAbsent(ctx context.Context, tenantCluster string, seen 
 }
 
 // dropCluster disengages every edge this replica syncs for one workspace —
-// the workspace disabled kuery (or its binding is going away).
+// the workspace disabled kuery (or its binding is going away) — and ends
+// the workspace's edge watch.
 func (c *Controller) dropCluster(ctx context.Context, tenantCluster string) {
+	c.stopEdgeWatch(tenantCluster)
 	c.dropAbsent(ctx, tenantCluster, nil)
 }
 

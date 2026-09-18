@@ -18,7 +18,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -93,8 +92,9 @@ func TestCommitMessageStaysUnderRepositoryCommitLimit(t *testing.T) {
 	}
 }
 
-// commitTestEnv drives commitWorkspace against a fake hub MCP endpoint and a
-// fake tenant client holding RepositoryCommits.
+// commitTestEnv drives commitWorkspace against a fake hub MCP endpoint, a
+// fake tenant client holding RepositoryCommits, and a fake control-plane
+// client holding the Project (the pending-commit pointer is written there).
 type commitTestEnv struct {
 	t        *testing.T
 	ctx      context.Context
@@ -103,8 +103,8 @@ type commitTestEnv struct {
 	scope    workspace.Scope
 	files    *workspace.FileStore
 	tenant   client.Client
+	control  client.Client
 	repo     *unstructured.Unstructured
-	now      time.Time
 	calls    int
 	respond  func(call int) (text string, isError bool)
 	notified []CommitResult
@@ -112,7 +112,7 @@ type commitTestEnv struct {
 
 func newCommitTestEnv(t *testing.T, respond func(call int) (string, bool), objects ...runtime.Object) *commitTestEnv {
 	t.Helper()
-	env := &commitTestEnv{t: t, ctx: context.Background(), respond: respond, now: time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)}
+	env := &commitTestEnv{t: t, ctx: context.Background(), respond: respond}
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID     int    `json:"id"`
@@ -151,10 +151,17 @@ func newCommitTestEnv(t *testing.T, respond func(call int) (string, bool), objec
 		"status": map[string]any{"conditions": []any{map[string]any{"type": "Ready", "status": "True"}}},
 	}}
 	env.tenant = fake.NewClientBuilder().WithRuntimeObjects(objects...).Build()
+	scheme := runtime.NewScheme()
+	if err := aiv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	env.control = fake.NewClientBuilder().WithScheme(scheme).WithObjects(env.project).Build()
+	if err := env.control.Get(env.ctx, types.NamespacedName{Name: env.project.Name}, env.project); err != nil {
+		t.Fatal(err)
+	}
 	env.r = &Reconciler{
 		Workspace: env.files,
 		HubBase:   hub.URL,
-		now:       func() time.Time { return env.now },
 		OnCommitted: func(_ context.Context, got workspace.Scope, commit CommitResult) {
 			if got != env.scope {
 				t.Errorf("OnCommitted scope = %+v, want %+v", got, env.scope)
@@ -175,8 +182,11 @@ func (env *commitTestEnv) write(path, content string) {
 	}
 }
 
+// commit runs one convergence pass and reports whether uncommitted work
+// remains (commitOutcome.dirty).
 func (env *commitTestEnv) commit() (bool, error) {
-	return env.r.commitWorkspace(env.ctx, "token", env.tenant, env.project, env.repo)
+	outcome, err := env.r.commitWorkspace(env.ctx, env.control, "token", env.tenant, env.project, env.repo)
+	return outcome.dirty, err
 }
 
 func (env *commitTestEnv) pending() []string {
@@ -186,6 +196,41 @@ func (env *commitTestEnv) pending() []string {
 		env.t.Fatal(err)
 	}
 	return paths
+}
+
+// pendingCommit reports the durable pending-commit record and the pointer
+// the Project carries for it; both must agree.
+func (env *commitTestEnv) pendingCommit() (string, bool) {
+	env.t.Helper()
+	record, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil {
+		env.t.Fatal(err)
+	}
+	stored := &aiv1alpha1.Project{}
+	if err := env.control.Get(env.ctx, types.NamespacedName{Name: env.project.Name}, stored); err != nil {
+		env.t.Fatal(err)
+	}
+	pointer := stored.Annotations[pendingCommitAnnotation]
+	if ok && pointer != record.Name {
+		env.t.Fatalf("Project pending-commit pointer = %q, want %q (the ledger record)", pointer, record.Name)
+	}
+	if !ok && pointer != "" {
+		env.t.Fatalf("Project pending-commit pointer = %q without a ledger record", pointer)
+	}
+	return record.Name, ok
+}
+
+func (env *commitTestEnv) setRepositoryCommit(name, phase, sha string) {
+	env.t.Helper()
+	landed := repositoryCommitObject(name, phase, sha)
+	current := repositoryCommitObject(name, "", "")
+	if err := env.tenant.Get(env.ctx, types.NamespacedName{Name: name}, current); err != nil {
+		env.t.Fatal(err)
+	}
+	landed.SetResourceVersion(current.GetResourceVersion())
+	if err := env.tenant.Update(env.ctx, landed); err != nil {
+		env.t.Fatal(err)
+	}
 }
 
 func commitToolText(fields map[string]any) string {
@@ -227,8 +272,8 @@ func TestCommitWorkspaceSettlesOnlySucceededCommits(t *testing.T) {
 			if got := env.pending(); len(got) != tt.wantDirty {
 				t.Fatalf("uncommitted paths = %v, want %d", got, tt.wantDirty)
 			}
-			if _, ok := env.r.pendingCommitFor(env.scope); ok != tt.wantPending {
-				t.Fatalf("pending commit recorded = %t, want %t", ok, tt.wantPending)
+			if name, ok := env.pendingCommit(); ok != tt.wantPending || (ok && name != "commit-1") {
+				t.Fatalf("pending commit recorded = %t (%q), want %t", ok, name, tt.wantPending)
 			}
 			if !tt.wantNotify {
 				if len(env.notified) != 0 {
@@ -251,44 +296,35 @@ func TestCommitWorkspaceFollowsUpRateLimitedCommitInsteadOfResending(t *testing.
 	if dirty, err := env.commit(); err != nil || !dirty {
 		t.Fatalf("first commit = dirty %t, err %v; want pending", dirty, err)
 	}
-	// Polls before the recheck interval neither resend nor re-read.
-	env.now = env.now.Add(15 * time.Second)
-	if dirty, err := env.commit(); err != nil || !dirty {
-		t.Fatalf("early poll = dirty %t, err %v", dirty, err)
+	if name, ok := env.pendingCommit(); !ok || name != "commit-1" {
+		t.Fatalf("pending commit = %q, %t; want commit-1 recorded and pointed at", name, ok)
 	}
-	// Still running after the interval: re-read, still no resend. Newer edits
-	// wait for the pending commit.
+	// Every later pass (a watch event, a signal, the resync) re-reads the
+	// RepositoryCommit by name and never resends while it runs. Newer edits
+	// wait for it.
 	env.write("later.txt", "later\n")
-	env.now = env.now.Add(pendingCommitRecheckInterval)
-	if dirty, err := env.commit(); err != nil || !dirty {
-		t.Fatalf("running poll = dirty %t, err %v", dirty, err)
+	for pass := 0; pass < 2; pass++ {
+		if dirty, err := env.commit(); err != nil || !dirty {
+			t.Fatalf("running pass %d = dirty %t, err %v", pass, dirty, err)
+		}
 	}
 	if env.calls != 1 {
 		t.Fatalf("commit_files calls = %d, want 1 while the RepositoryCommit is pending", env.calls)
 	}
 
 	// It lands: the pending paths settle with its SHA, the later edit is
-	// committed by a fresh call on the same pass.
-	landed := repositoryCommitObject("commit-1", "Succeeded", "feedface00")
-	current := repositoryCommitObject("commit-1", "", "")
-	if err := env.tenant.Get(env.ctx, types.NamespacedName{Name: "commit-1"}, current); err != nil {
-		t.Fatal(err)
-	}
-	landed.SetResourceVersion(current.GetResourceVersion())
-	if err := env.tenant.Update(env.ctx, landed); err != nil {
-		t.Fatal(err)
-	}
+	// committed by a fresh call on the same pass, and both records clear.
+	env.setRepositoryCommit("commit-1", "Succeeded", "feedface00")
 	env.respond = func(int) (string, bool) {
 		return commitToolText(map[string]any{"repositoryRef": "demo-repo", "name": "commit-2", "phase": "Succeeded", "commitSHA": "abcdef1234"}), false
 	}
-	env.now = env.now.Add(pendingCommitRecheckInterval)
 	if dirty, err := env.commit(); err != nil || dirty {
-		t.Fatalf("settling poll = dirty %t, err %v; want clean", dirty, err)
+		t.Fatalf("settling pass = dirty %t, err %v; want clean", dirty, err)
 	}
 	if got := env.pending(); len(got) != 0 {
 		t.Fatalf("uncommitted paths = %v, want none", got)
 	}
-	if _, ok := env.r.pendingCommitFor(env.scope); ok {
+	if _, ok := env.pendingCommit(); ok {
 		t.Fatal("pending commit not cleared after it landed")
 	}
 	if env.calls != 2 || len(env.notified) != 2 || env.notified[0].CommitSHA != "feedface00" ||
@@ -309,7 +345,6 @@ func TestCommitWorkspaceResendsAfterPendingCommitFails(t *testing.T) {
 	if dirty, err := env.commit(); err != nil || !dirty {
 		t.Fatalf("first commit = dirty %t, err %v; want pending", dirty, err)
 	}
-	env.now = env.now.Add(pendingCommitRecheckInterval)
 	if dirty, err := env.commit(); err != nil || dirty {
 		t.Fatalf("after failed pending commit = dirty %t, err %v; want a fresh successful commit", dirty, err)
 	}
@@ -318,5 +353,49 @@ func TestCommitWorkspaceResendsAfterPendingCommitFails(t *testing.T) {
 	}
 	if got := env.pending(); len(got) != 0 {
 		t.Fatalf("uncommitted paths = %v, want none", got)
+	}
+	if _, ok := env.pendingCommit(); ok {
+		t.Fatal("failed pending commit was not cleared")
+	}
+}
+
+func TestCommitWorkspaceResendsWhenPendingCommitIsGone(t *testing.T) {
+	unfinished := `RepositoryCommit "commit-1" did not finish within the 1m15s wait (phase Running); the files may not be committed yet: watch RepositoryCommit "commit-1" for phase Succeeded or Failed`
+	env := newCommitTestEnv(t, func(call int) (string, bool) {
+		if call == 1 {
+			return unfinished, true
+		}
+		return commitToolText(map[string]any{"repositoryRef": "demo-repo", "name": "commit-2", "phase": "Succeeded", "commitSHA": "abcdef1234"}), false
+	}) // no RepositoryCommit object at all: the provider never persisted it
+
+	if dirty, err := env.commit(); err != nil || !dirty {
+		t.Fatalf("first commit = dirty %t, err %v; want pending", dirty, err)
+	}
+	if dirty, err := env.commit(); err != nil || dirty {
+		t.Fatalf("after the pending commit vanished = dirty %t, err %v; want a fresh successful commit", dirty, err)
+	}
+	if env.calls != 2 || len(env.notified) != 1 {
+		t.Fatalf("calls = %d, notified = %+v; want one fresh commit", env.calls, env.notified)
+	}
+}
+
+func TestCommitWorkspaceClearsPointerWithoutLedgerRecord(t *testing.T) {
+	env := newCommitTestEnv(t, func(int) (string, bool) {
+		return commitToolText(map[string]any{"repositoryRef": "demo-repo", "name": "commit-2", "phase": "Succeeded", "commitSHA": "abcdef1234"}), false
+	})
+	// The Project points at a commit the (replaced) workspace volume never
+	// heard of: the pointer is dropped and the commit is simply resent.
+	env.project.Annotations[pendingCommitAnnotation] = "commit-lost"
+	if err := env.control.Update(env.ctx, env.project); err != nil {
+		t.Fatal(err)
+	}
+	if dirty, err := env.commit(); err != nil || dirty {
+		t.Fatalf("commit = dirty %t, err %v; want a fresh commit", dirty, err)
+	}
+	if _, ok := env.pendingCommit(); ok {
+		t.Fatal("stale pointer survived")
+	}
+	if env.calls != 1 || len(env.notified) != 1 {
+		t.Fatalf("calls = %d, notified = %+v", env.calls, env.notified)
 	}
 }

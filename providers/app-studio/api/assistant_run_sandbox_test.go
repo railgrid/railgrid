@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -887,37 +888,173 @@ func TestProjectAssistantRunSandboxQuotaDoesNotEvictLocallyClaimedCache(t *testi
 	}
 }
 
+// runSandboxWatchInstance builds a named instance with the given status for
+// the watch-based readiness waits; generation 1 matches readyRunSandboxStatus.
+func runSandboxWatchInstance(name string, status map[string]any) *unstructured.Unstructured {
+	instance := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": projectAssistantRunSandboxAPIVersion,
+		"kind":       projectAssistantRunSandboxKind,
+		"metadata":   map[string]any{"name": name, "generation": int64(1)},
+	}}
+	if status != nil {
+		_ = unstructured.SetNestedField(instance.Object, status, "status")
+	}
+	return instance
+}
+
+// updateRunSandboxWatchInstance replaces the instance's status through the
+// fake client, which is what the readiness watch observes.
+func updateRunSandboxWatchInstance(t *testing.T, client *asclient.Client, name string, status map[string]any) {
+	t.Helper()
+	resource := client.Resource(runSandboxInstancesResource, "")
+	current, err := resource.Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedField(current.Object, status, "status"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resource.Update(context.Background(), current, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProjectAssistantRunSandboxInstanceReadyWaitsForPendingStatus(t *testing.T) {
 	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
-	pending := &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{}}}
-	ready := &unstructured.Unstructured{Object: map[string]any{"metadata": map[string]any{"generation": int64(1)}}}
-	_ = unstructured.SetNestedField(ready.Object, readyRunSandboxStatus(1), "status")
-	objects := []*unstructured.Unstructured{pending, ready}
-	calls := 0
-	err := waitForProjectAssistantRunSandboxInstanceReady(context.Background(), 100*time.Millisecond, time.Millisecond, components, func(context.Context) (*unstructured.Unstructured, error) {
-		object := objects[calls]
-		calls++
-		return object, nil
-	})
-	if err != nil {
-		t.Fatalf("readiness wait = %v", err)
+	client := newRunSandboxTestClient(runSandboxWatchInstance("sandbox", map[string]any{}))
+	done := make(chan error, 1)
+	go func() {
+		done <- waitForProjectAssistantRunSandboxInstanceReady(context.Background(), 2*time.Second, components, "sandbox", client.Resource(runSandboxInstancesResource, ""))
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("readiness wait returned %v before the instance became ready", err)
+	case <-time.After(50 * time.Millisecond):
 	}
-	if calls != 2 {
-		t.Fatalf("readiness polls = %d, want pending then ready", calls)
+	// An unrelated instance turning ready must not satisfy the wait.
+	if _, err := client.Resource(runSandboxInstancesResource, "").Create(context.Background(), runSandboxWatchInstance("other", readyRunSandboxStatus(1)), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("readiness wait returned %v on another instance's readiness", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	updateRunSandboxWatchInstance(t, client, "sandbox", readyRunSandboxStatus(1))
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("readiness wait = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("readiness wait did not observe the ready status")
+	}
+}
+
+func TestProjectAssistantRunSandboxInstanceReadyReturnsImmediatelyWhenAlreadyReady(t *testing.T) {
+	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
+	client := newRunSandboxTestClient(runSandboxWatchInstance("sandbox", readyRunSandboxStatus(1)))
+	if err := waitForProjectAssistantRunSandboxInstanceReady(context.Background(), time.Second, components, "sandbox", client.Resource(runSandboxInstancesResource, "")); err != nil {
+		t.Fatalf("readiness wait = %v", err)
 	}
 }
 
 func TestProjectAssistantRunSandboxInstanceReadyTimeoutIncludesStatus(t *testing.T) {
 	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
-	pending := &unstructured.Unstructured{Object: map[string]any{"metadata": map[string]any{"generation": int64(1)}}}
 	status := readyRunSandboxStatus(1)
 	delete(status["components"].(map[string]any)["workspace"].(map[string]any), "controlServiceRef")
-	_ = unstructured.SetNestedField(pending.Object, status, "status")
-	err := waitForProjectAssistantRunSandboxInstanceReady(context.Background(), 10*time.Millisecond, time.Millisecond, components, func(context.Context) (*unstructured.Unstructured, error) {
-		return pending, nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "did not become ready") || !strings.Contains(err.Error(), "controlServiceRef") {
+	client := newRunSandboxTestClient(runSandboxWatchInstance("sandbox", status))
+	err := waitForProjectAssistantRunSandboxInstanceReady(context.Background(), 30*time.Millisecond, components, "sandbox", client.Resource(runSandboxInstancesResource, ""))
+	if err == nil || !strings.Contains(err.Error(), "did not become ready within 30ms") || !strings.Contains(err.Error(), "controlServiceRef") {
 		t.Fatalf("timeout error = %v", err)
+	}
+}
+
+func TestProjectAssistantRunSandboxInstanceReadyTimeoutReportsUnobservedInstance(t *testing.T) {
+	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
+	client := newRunSandboxTestClient()
+	err := waitForProjectAssistantRunSandboxInstanceReady(context.Background(), 30*time.Millisecond, components, "sandbox", client.Resource(runSandboxInstancesResource, ""))
+	if err == nil || !strings.Contains(err.Error(), "did not become ready within 30ms: instance has not been observed") {
+		t.Fatalf("timeout error = %v", err)
+	}
+}
+
+func TestProjectAssistantRunSandboxInstanceReadyReportsCallerCancellation(t *testing.T) {
+	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
+	client := newRunSandboxTestClient(runSandboxWatchInstance("sandbox", map[string]any{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- waitForProjectAssistantRunSandboxInstanceReady(ctx, time.Minute, components, "sandbox", client.Resource(runSandboxInstancesResource, ""))
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "wait for run sandbox instance: context canceled") {
+			t.Fatalf("cancellation error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("readiness wait ignored the caller's cancellation")
+	}
+}
+
+func TestProjectAssistantRunSandboxInstanceReadyFailsOnTerminalValidation(t *testing.T) {
+	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
+	client := newRunSandboxTestClient(runSandboxWatchInstance("sandbox", map[string]any{
+		"phase":   "Failed",
+		"message": "values failed validation",
+		"conditions": []any{map[string]any{
+			"type":    "Valid",
+			"status":  "False",
+			"reason":  "InvalidValues",
+			"message": "name is required",
+		}},
+	}))
+	err := waitForProjectAssistantRunSandboxInstanceReady(context.Background(), time.Second, components, "sandbox", client.Resource(runSandboxInstancesResource, ""))
+	if err == nil || !strings.HasPrefix(err.Error(), "instance is not ready: ") || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("terminal error = %v", err)
+	}
+}
+
+func TestProjectAssistantRunSandboxInstanceReadyReportsReadFailure(t *testing.T) {
+	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
+	scheme := runtime.NewScheme()
+	dynamicClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{runSandboxInstancesResource.GVR: "InstanceList"})
+	dynamicClient.PrependReactor("get", "instances", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("proxy unavailable")
+	})
+	client := asclient.NewFromDynamic(dynamicClient)
+	err := waitForProjectAssistantRunSandboxInstanceReady(context.Background(), time.Second, components, "sandbox", client.Resource(runSandboxInstancesResource, ""))
+	if err == nil || err.Error() != "get run sandbox instance status: proxy unavailable" {
+		t.Fatalf("read failure = %v", err)
+	}
+}
+
+func TestProjectAssistantRunSandboxInstanceDeletedWaitsForTheWatch(t *testing.T) {
+	client := newRunSandboxTestClient(runSandboxWatchInstance("sandbox", map[string]any{}))
+	done := make(chan error, 1)
+	go func() {
+		done <- waitForProjectAssistantRunSandboxInstanceDeleted(context.Background(), client, "sandbox")
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("deletion wait returned %v while the instance still exists", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := client.Resource(runSandboxInstancesResource, "").Delete(context.Background(), "sandbox", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("deletion wait = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("deletion wait did not observe the delete")
+	}
+	// Already gone: no watch is needed at all.
+	if err := waitForProjectAssistantRunSandboxInstanceDeleted(context.Background(), client, "sandbox"); err != nil {
+		t.Fatalf("deletion wait for an absent instance = %v", err)
 	}
 }
 
@@ -970,27 +1107,27 @@ func TestProjectAssistantRunSandboxInstanceReadinessFailedValidationIsTerminal(t
 
 func TestProjectAssistantRunSandboxInstanceReadyWaitOutlivesTransientFailedPhase(t *testing.T) {
 	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
-	failed := &unstructured.Unstructured{Object: map[string]any{
-		"metadata": map[string]any{"generation": int64(1)},
-		"status": map[string]any{
-			"phase":   "Failed",
-			"message": "resource reconciliation failed: cluster mutated",
-		},
-	}}
-	ready := &unstructured.Unstructured{Object: map[string]any{"metadata": map[string]any{"generation": int64(1)}}}
-	_ = unstructured.SetNestedField(ready.Object, readyRunSandboxStatus(1), "status")
-	objects := []*unstructured.Unstructured{failed, ready}
-	calls := 0
-	err := waitForProjectAssistantRunSandboxInstanceReady(context.Background(), 100*time.Millisecond, time.Millisecond, components, func(context.Context) (*unstructured.Unstructured, error) {
-		object := objects[calls]
-		calls++
-		return object, nil
-	})
-	if err != nil {
-		t.Fatalf("readiness wait = %v", err)
+	client := newRunSandboxTestClient(runSandboxWatchInstance("sandbox", map[string]any{
+		"phase":   "Failed",
+		"message": "resource reconciliation failed: cluster mutated",
+	}))
+	done := make(chan error, 1)
+	go func() {
+		done <- waitForProjectAssistantRunSandboxInstanceReady(context.Background(), 2*time.Second, components, "sandbox", client.Resource(runSandboxInstancesResource, ""))
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("readiness wait returned %v on a transient failed phase", err)
+	case <-time.After(50 * time.Millisecond):
 	}
-	if calls != 2 {
-		t.Fatalf("readiness polls = %d, want failed then ready", calls)
+	updateRunSandboxWatchInstance(t, client, "sandbox", readyRunSandboxStatus(1))
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("readiness wait = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("readiness wait did not recover from the transient failed phase")
 	}
 }
 

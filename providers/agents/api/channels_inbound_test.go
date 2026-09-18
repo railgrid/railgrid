@@ -265,25 +265,6 @@ func TestInboundSecretReadFailureIsRetryableNotUnauthorized(t *testing.T) {
 	}
 }
 
-// The reconcile loop must not park a healthy Slack connection in Error because
-// it could not read the Secret this pass.
-func TestReconcileLeavesStatusAloneWhenTheSecretCannotBeRead(t *testing.T) {
-	b, dyn := reconcileBackground(t,
-		withCluster(inboundConnection("slack", testSlackChan)),
-		inboundSecret(map[string]string{"token": "xoxb-1", signingSecretKey: testSlackSecret}),
-	)
-	dyn.PrependReactor("get", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewServiceUnavailable("virtual workspace is unavailable")
-	})
-
-	b.reconcileChannelSecrets(context.Background())
-
-	phase, msg := connectionStatus(t, dyn)
-	if phase == "Error" || msg == connectionSigningSecretMissingMessage {
-		t.Fatalf("an unreadable Secret must not flag the connection as missing one, got %q/%q", phase, msg)
-	}
-}
-
 // A body that is not the Bot API's JSON envelope — an HTML error page from a
 // proxy, a truncated response — used to fall through as ok=false with no
 // description and surface as a bare "HTTP 200", which names neither the problem

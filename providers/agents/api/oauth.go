@@ -12,7 +12,8 @@ package api
 // (client id/secret), clicks Connect, authorizes at the provider, and the
 // callback stores access + refresh tokens in the connection Secret — under
 // the same "token" key the tool families already read, so GitHub/MCP tools
-// work unchanged. The background loop refreshes tokens before expiry.
+// work unchanged. The Connection reconciler (controller/connection) refreshes
+// tokens before expiry through OAuthRefresher.
 
 import (
 	"context"
@@ -23,7 +24,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -415,64 +415,42 @@ func updateSecretKeys(ctx context.Context, dyn dynamic.Interface, name string, u
 	return err
 }
 
-// refreshOAuthTokens renews expiring OAuth connection tokens (called from the
-// background tick). Only connections with a refresh_token and an expiry within
-// the horizon are touched.
-func (b *background) refreshOAuthTokens(ctx context.Context) {
-	items, err := b.listAll(ctx, agentsclient.ConnectionGVR)
+// OAuthRefresher renews an expiring OAuth connection token for the Connection
+// reconciler (controller/connection), which decides WHEN — this knows the
+// provider presets and the platform OAuth app credentials.
+type OAuthRefresher struct{ s *Server }
+
+// OAuthRefresher returns the refresher bound to this server's OAuth apps.
+func (s *Server) OAuthRefresher() *OAuthRefresher { return &OAuthRefresher{s: s} }
+
+// Refresh exchanges the connection's refresh token and returns the Secret
+// keys to store: the new access token, the new refresh token when the
+// provider rotated it, and the new expiry (RFC3339) when it reported one.
+func (o *OAuthRefresher) Refresh(ctx context.Context, conn *agentsv1alpha1.Connection, secret map[string][]byte) (map[string]string, error) {
+	refresh := string(secret["refresh_token"])
+	if refresh == "" {
+		return nil, fmt.Errorf("connection has no refresh token")
+	}
+	preset, err := resolvePreset(conn)
 	if err != nil {
-		return
+		return nil, err
 	}
-	for i := range items {
-		item := &items[i]
-		conn, err := fromU[agentsv1alpha1.Connection](item)
-		if err != nil || conn.Spec.Auth != "oauth" || conn.Spec.OAuth == nil {
-			continue
-		}
-		cluster := item.GetAnnotations()["kcp.io/cluster"]
-		dyn, err := b.scoped(ctx, cluster)
-		if err != nil {
-			continue
-		}
-		sec, err := (vwSecrets{dyn}).GetSecret(ctx, llm.SecretNamespace, connectionSecretName(conn.Name))
-		if err != nil {
-			continue
-		}
-		refresh := string(sec.Data["refresh_token"])
-		expiryRaw := string(sec.Data["expiry"])
-		if refresh == "" || expiryRaw == "" {
-			continue // nothing to refresh (e.g. Slack bot tokens don't expire)
-		}
-		expiry, err := time.Parse(time.RFC3339, expiryRaw)
-		if err != nil || time.Until(expiry) > 15*time.Minute {
-			continue
-		}
-		preset, err := resolvePreset(conn)
-		if err != nil {
-			continue
-		}
-		cid, csec, credsOK := b.server.oauthClientCreds(conn.Spec.OAuth.Provider, string(sec.Data["client_id"]), string(sec.Data["client_secret"]))
-		if !credsOK {
-			continue
-		}
-		tok, err := refreshOAuthToken(ctx, preset.TokenURL, cid, csec, refresh)
-		if err != nil {
-			log.Printf("background: oauth refresh for %s/%s failed: %v", cluster, conn.Name, err)
-			continue
-		}
-		updates := map[string]string{"token": tok.AccessToken}
-		if tok.RefreshToken != "" {
-			updates["refresh_token"] = tok.RefreshToken
-		}
-		if tok.ExpiresIn > 0 {
-			updates["expiry"] = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
-		}
-		if err := updateSecretKeys(ctx, dyn, connectionSecretName(conn.Name), updates); err != nil {
-			log.Printf("background: storing refreshed token for %s/%s: %v", cluster, conn.Name, err)
-			continue
-		}
-		log.Printf("background: refreshed oauth token for %s/%s", cluster, conn.Name)
+	cid, csec, ok := o.s.oauthClientCreds(conn.Spec.OAuth.Provider, string(secret["client_id"]), string(secret["client_secret"]))
+	if !ok {
+		return nil, fmt.Errorf("no oauth client credentials for provider %q (neither on the connection nor configured platform-wide)", conn.Spec.OAuth.Provider)
 	}
+	tok, err := refreshOAuthToken(ctx, preset.TokenURL, cid, csec, refresh)
+	if err != nil {
+		return nil, err
+	}
+	updates := map[string]string{"token": tok.AccessToken}
+	if tok.RefreshToken != "" {
+		updates["refresh_token"] = tok.RefreshToken
+	}
+	if tok.ExpiresIn > 0 {
+		updates["expiry"] = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+	}
+	return updates, nil
 }
 
 // listOAuthProviders reports which providers have a platform-wide OAuth app

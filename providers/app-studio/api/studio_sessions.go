@@ -64,6 +64,7 @@ func (s *Server) ensureSessionCR(ctx context.Context, c *asclient.Client, id ide
 	if owner := bindings.OwnerRef(p); owner != nil {
 		sess.SetOwnerReferences([]metav1.OwnerReference{*owner})
 	}
+	s.noteWorkspaceCluster(id)
 	if _, err := c.Resource(sessionResource, "").Create(ctx, sess, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		log.Printf("session CR for thread %s: %v", threadID, err)
 	}

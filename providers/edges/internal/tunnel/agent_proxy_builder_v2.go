@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/function61/holepunch-server/pkg/wsconnadapter"
 	"github.com/gorilla/websocket"
@@ -39,10 +38,6 @@ import (
 	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
 	"github.com/railgrid/provider-sdk/revdial"
 )
-
-// edgeHeartbeatInterval is how often the hub stamps status.lastHeartbeatTime
-// for a connected Edge using the revdial Dialer's LastPong timestamp.
-const edgeHeartbeatInterval = 30 * time.Second
 
 var secretGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 
@@ -205,15 +200,13 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		p.edgeConnManager.Store(key, dialer)
 		p.logger.Info("Edge agent tunnel established", "key", key)
 
-		// The hub is authoritative for edge connectivity state regardless of how
-		// the agent authenticated.  In the join-token flow the agent's
-		// edge_reporter cannot reach the kcp API directly (the join token is not
-		// a valid kcp credential).  In the kubeconfig flow (e.g. after an
-		// in-cluster pod restart where the agent loads its saved kubeconfig from
-		// a Secret) the edge_reporter may fail due to RBAC propagation lag.
-		// Marking the edge Ready here on every tunnel open is safe and ensures
-		// the hub view is always up-to-date.
-		// SSH credentials are passed via headers for server-type edges.
+		// Connectivity state (status.connected / phase / lastHeartbeatTime /
+		// Registered) is NOT written here. Store above claimed the edge's
+		// registry Lease, which the sweeper renews while the tunnel lives; the
+		// edge lifecycle reconciler (internal/edgectrl) is the single writer
+		// that derives those fields from the Lease, on every replica. The
+		// handler only records what it alone observes on tunnel open: joinToken
+		// clearing, hostname, SSH credentials / host key (server kinds), URL.
 		//
 		// clearJoinToken: only clear the bootstrap join token if we successfully
 		// delivered a kubeconfig to the agent. If the RBAC controller hasn't
@@ -229,18 +222,13 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		hostname := agentHostnameFromHeader(r)
 		go p.markEdgeConnected(context.Background(), gvr, cluster, name, sshCreds, hostname, clearJoinToken)
 
-		// Stamp status.lastHeartbeatTime from the dialer's LastPong while the
-		// tunnel is alive. revdial's keep-alive/pong loop already detects dead
-		// tunnels within ~60s; LastPong gives us a positive liveness signal
-		// that we can surface on the Edge resource so the LifecycleReconciler
-		// (and CLI/UI) can spot a stalled connection.
-		heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
-		go p.runEdgeHeartbeatLoop(heartbeatCtx, gvr, cluster, name, dialer)
-
 		// Block until the tunnel closes, then clean up the entry so stale
-		// look-ups don't succeed.
+		// look-ups don't succeed. revdial's keep-alive/pong loop detects a dead
+		// tunnel within ~60s; DeleteIf then releases the Lease and the lifecycle
+		// reconciler flips the edge to Disconnected. If this process dies
+		// instead, the Lease simply stops being renewed and expires after
+		// RegistryLeaseTTL — no hub-side status write is needed either way.
 		<-dialer.Done()
-		cancelHeartbeat()
 
 		// Identity-checked: the key is stable across reconnects, so if the agent
 		// has already dialled a replacement tunnel it — not us — owns this entry
@@ -251,22 +239,6 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 			return
 		}
 		p.logger.Info("Edge agent tunnel closed", "key", key)
-
-		// Proactively mark the Edge as Disconnected in the hub.  Agents may die
-		// without sending a clean disconnect heartbeat (e.g. SIGKILL), so the
-		// hub must be the authoritative source for connectivity state.
-		//
-		// Re-check for a live tunnel first: a disconnect immediately followed by
-		// a reconnect can otherwise land this write after the new tunnel's
-		// markEdgeConnected and flap the edge to Disconnected. The
-		// LifecycleReconciler would repair it on its next pass, but not before
-		// the UI and CLI have shown a connected edge as down.
-		go func() {
-			if p.edgeConnManager.HasLocalConnection(key) {
-				return
-			}
-			p.markEdgeDisconnected(context.Background(), gvr, cluster, name)
-		}()
 	})
 
 	return mux

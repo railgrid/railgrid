@@ -457,6 +457,11 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 		if component := projectToolString(args["component"]); component != "" {
 			item.Target = projectAssistantActionSafeTarget(component)
 		}
+	case projectToolHydrateWorkspace:
+		item.Title = projectAssistantActionLifecycleTitle(status, "Loading workspace from git", "Loaded workspace from git", "Workspace load failed")
+		if ref := projectToolString(args["ref"]); ref != "" {
+			item.Target = projectAssistantActionSafeTarget(ref)
+		}
 	case projectToolCommitFiles, projectToolCommitProjectFiles:
 		item.Title = projectAssistantActionLifecycleTitle(status, "Committing changes", "Committed changes", "Commit failed")
 		paths := projectToolFilePaths(args["files"])

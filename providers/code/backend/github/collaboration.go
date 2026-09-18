@@ -74,7 +74,15 @@ func pullResult(pr *gh.PullRequest) *backend.PullRequest {
 	if pr == nil {
 		return nil
 	}
-	result := &backend.PullRequest{Number: pr.GetNumber(), URL: pr.GetHTMLURL(), Repository: pr.GetBase().GetRepo().GetFullName(), HeadRepository: pr.GetHead().GetRepo().GetFullName(), Head: pr.GetHead().GetRef(), Base: pr.GetBase().GetRef(), Commit: pr.GetHead().GetSHA(), State: pr.GetState(), Merged: pr.GetMerged(), MergeCommit: pr.GetMergeCommitSHA(), Merger: pr.GetMergedBy().GetLogin(), MergerType: pr.GetMergedBy().GetType()}
+	result := &backend.PullRequest{Number: pr.GetNumber(), URL: pr.GetHTMLURL(), Repository: pr.GetBase().GetRepo().GetFullName(), HeadRepository: pr.GetHead().GetRepo().GetFullName(), Head: pr.GetHead().GetRef(), Base: pr.GetBase().GetRef(), Commit: pr.GetHead().GetSHA(), State: pr.GetState(), Merged: pr.GetMerged()}
+	// GitHub fills merge_commit_sha for OPEN pull requests too: it is the sha
+	// of a trial merge it computes for mergeability, not evidence of a merge.
+	// Only a merged pull request carries merge proof.
+	if pr.GetMerged() {
+		result.MergeCommit = pr.GetMergeCommitSHA()
+		result.Merger = pr.GetMergedBy().GetLogin()
+		result.MergerType = pr.GetMergedBy().GetType()
+	}
 	if !pr.GetMergedAt().IsZero() {
 		value := pr.GetMergedAt().Time
 		result.MergedAt = &value

@@ -172,7 +172,7 @@ func (s *Server) webhookChannel(w http.ResponseWriter, r *http.Request) {
 	// message. The same budget is fine for Telegram.
 	sctx, cancel := context.WithTimeout(r.Context(), channelSubmitWait)
 	defer cancel()
-	if err := s.bg.exec.Submit(sctx, executor.Job{
+	if err := s.bg.Submit(sctx, executor.Job{
 		ID:         fmt.Sprintf("%s/%s/%s", cluster, name, orNano(ev.ID)),
 		Kind:       executor.KindChannel,
 		ClusterID:  cluster,

@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -214,9 +215,14 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	return detail, nil
 }
 
-// cancelRun serves POST /api/runs/{id}/cancel: aborts a live run's context, or
-// force-stamps Aborted on a stale Running/PendingApproval record (e.g. the
-// provider restarted mid-run).
+// cancelRun serves POST /api/runs/{id}/cancel. The request is recorded on the
+// run row first (store.RequestCancel) so it reaches the run wherever it is:
+// executing on this replica (its context is cancelled right away), executing
+// on another replica or still queued (the engine loop reads the flag between
+// tool rounds; a queued job checks it before starting), or resumed later by
+// the recovery sweep (which closes a flagged run instead of resuming it).
+// A run not live here is also stamped Aborted immediately, as before, so the
+// caller sees it end without waiting for the executor to notice.
 func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {
@@ -234,11 +240,14 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusConflict, "Conflict", "run is already "+string(run.Phase))
 		return
 	}
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
+	if err := s.store.RequestCancel(r.Context(), scope, runID, now); err != nil {
+		log.Printf("runs: recording cancel for run %s: %v", runID, err)
+	}
 	live := s.liveRuns.cancel(runID)
 	if !live {
 		// Not executing on this replica: stamp the terminal phase directly.
-		now := time.Now().UTC()
-		scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
 		startedAt := run.CreatedAt
 		if run.StartedAt != nil {
 			startedAt = *run.StartedAt

@@ -215,6 +215,7 @@ const (
 	projectActionRestoreWorkspace             = "restore_workspace"
 	projectActionWorkspaceFileWrite           = "workspace_file_write"
 	projectToolCommitProjectFiles             = "commit_project_files"
+	projectToolHydrateWorkspace               = "hydrate_workspace"
 	projectToolCommitFiles                    = "commit_files"
 	projectToolWebSearch                      = "web_search"
 	projectToolWebFetch                       = "web_fetch"
@@ -535,7 +536,12 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, p.Name)
 	turn.ProjectUID = string(p.UID)
 	ctx, finishTurn := s.projectAssistantRunManager().Begin(ctx, turn)
-	defer finishTurn()
+	defer func() {
+		// The workspace is idle once the turn's claim is released: let
+		// commit convergence run now rather than on its resync.
+		finishTurn()
+		s.signalProject(id.workspaceUUID, p.Name)
+	}()
 	if cause := context.Cause(ctx); cause != nil {
 		return projectAssistantRunResult{}, cause
 	}

@@ -51,7 +51,7 @@ import (
 //     peer to forward to.
 //
 // Owned leases are renewed by the ConnManager sweeper (30s); a lease not
-// renewed within registryLeaseTTL is dead and its edge unreachable until the
+// renewed within RegistryLeaseTTL is dead and its edge unreachable until the
 // agent reconnects (to any replica).
 type Registry struct {
 	leases    coordinationv1client.LeaseInterface
@@ -70,21 +70,26 @@ type registryCacheEntry struct {
 }
 
 const (
-	// registryNamespace is where the Leases live. kcp creates the "default"
+	// RegistryNamespace is where the Leases live. kcp creates the "default"
 	// namespace in every logical cluster.
-	registryNamespace = "default"
-	// registryLeaseTTL is how stale a lease may be and still count as held.
+	RegistryNamespace = "default"
+	// RegistryLeaseTTL is how stale a lease may be and still count as held.
 	// Must comfortably exceed the sweeper's 30s renew cadence.
-	registryLeaseTTL = 90 * time.Second
+	RegistryLeaseTTL = 90 * time.Second
 	// registryCacheTTL bounds data-path lease reads: edgeproxy/MCP lookups
 	// answer from this cache, so a burst of kubectl traffic costs one lease
 	// GET per key per interval, not one per request.
 	registryCacheTTL = 3 * time.Second
 
-	tunnelLeaseLabel    = "edges.railgrid.ai/tunnel-registry"
-	tunnelLeaseKeyAnno  = "edges.railgrid.ai/conn-key"
-	tunnelLeasePrefix   = "edge-tunnel-"
-	presenceLeasePrefix = "edge-replica-"
+	// TunnelLeaseLabel marks tunnel leases ("true") so a label-selected
+	// informer (the edge lifecycle reconciler's Lease watch) sees only them.
+	TunnelLeaseLabel = "edges.railgrid.ai/tunnel-registry"
+	// TunnelLeaseKeyAnnotation carries the edge conn key
+	// ("{resource}/{cluster}/{name}", see EdgeConnKey) on a tunnel lease, since
+	// the lease name is a hash of it.
+	TunnelLeaseKeyAnnotation = "edges.railgrid.ai/conn-key"
+	tunnelLeasePrefix        = "edge-tunnel-"
+	presenceLeasePrefix      = "edge-replica-"
 )
 
 // NewRegistry builds the registry from the provider's workspace-scoped kcp
@@ -96,7 +101,7 @@ func NewRegistry(cfg *rest.Config, replicaID, selfAddr string) (*Registry, error
 		return nil, fmt.Errorf("registry client: %w", err)
 	}
 	return &Registry{
-		leases:    cs.CoordinationV1().Leases(registryNamespace),
+		leases:    cs.CoordinationV1().Leases(RegistryNamespace),
 		replicaID: replicaID,
 		selfAddr:  selfAddr,
 		now:       time.Now,
@@ -130,7 +135,11 @@ func SanitizeReplicaID(id string) string {
 	return out
 }
 
-func tunnelLeaseName(key string) string {
+// TunnelLeaseName is the Lease name under which the tunnel for an edge conn
+// key ("{resource}/{cluster}/{name}") is claimed: a fixed prefix plus a hash of
+// the key, so any component (the lifecycle reconciler included) can address
+// the lease for an edge without listing.
+func TunnelLeaseName(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return tunnelLeasePrefix + hex.EncodeToString(sum[:])[:16]
 }
@@ -139,15 +148,15 @@ func tunnelLeaseName(key string) string {
 // a live agent socket on this replica is ground truth, so an existing claim
 // (a previous owner whose agent reconnected here) is overwritten.
 func (r *Registry) ClaimTunnel(ctx context.Context, key string) error {
-	err := r.upsertLease(ctx, tunnelLeaseName(key), func(lease *coordinationv1.Lease) {
+	err := r.upsertLease(ctx, TunnelLeaseName(key), func(lease *coordinationv1.Lease) {
 		if lease.Labels == nil {
 			lease.Labels = map[string]string{}
 		}
-		lease.Labels[tunnelLeaseLabel] = "true"
+		lease.Labels[TunnelLeaseLabel] = "true"
 		if lease.Annotations == nil {
 			lease.Annotations = map[string]string{}
 		}
-		lease.Annotations[tunnelLeaseKeyAnno] = key
+		lease.Annotations[TunnelLeaseKeyAnnotation] = key
 	})
 	r.invalidate(key)
 	return err
@@ -157,7 +166,7 @@ func (r *Registry) ClaimTunnel(ctx context.Context, key string) error {
 // check keeps a slow disconnect cleanup from erasing a newer claim written by
 // the replica the agent reconnected to.
 func (r *Registry) ReleaseTunnel(ctx context.Context, key string) {
-	name := tunnelLeaseName(key)
+	name := TunnelLeaseName(key)
 	lease, err := r.leases.Get(ctx, name, metav1.GetOptions{})
 	if err != nil || ptr.Deref(lease.Spec.HolderIdentity, "") != r.selfAddr {
 		return
@@ -173,7 +182,7 @@ func (r *Registry) ReleaseTunnel(ctx context.Context, key string) {
 func (r *Registry) RenewOwned(ctx context.Context, localKeys []string) {
 	_ = r.upsertLease(ctx, presenceLeasePrefix+r.replicaID, nil)
 	for _, key := range localKeys {
-		name := tunnelLeaseName(key)
+		name := TunnelLeaseName(key)
 		lease, err := r.leases.Get(ctx, name, metav1.GetOptions{})
 		if err != nil || ptr.Deref(lease.Spec.HolderIdentity, "") != r.selfAddr {
 			// Missing or foreign (agent reconnected elsewhere while our socket
@@ -204,7 +213,7 @@ func (r *Registry) LookupTunnel(ctx context.Context, key string) (string, bool) 
 }
 
 func (r *Registry) lookupLive(ctx context.Context, key string) (string, bool) {
-	lease, err := r.leases.Get(ctx, tunnelLeaseName(key), metav1.GetOptions{})
+	lease, err := r.leases.Get(ctx, TunnelLeaseName(key), metav1.GetOptions{})
 	if err != nil {
 		return "", false
 	}
@@ -218,14 +227,14 @@ func (r *Registry) lookupLive(ctx context.Context, key string) (string, bool) {
 // ListTunnels returns the fleet-wide key→relay-address map of fresh tunnel
 // claims — the cluster-aware Keys() backing MCP tool enumeration.
 func (r *Registry) ListTunnels(ctx context.Context) map[string]string {
-	list, err := r.leases.List(ctx, metav1.ListOptions{LabelSelector: tunnelLeaseLabel + "=true"})
+	list, err := r.leases.List(ctx, metav1.ListOptions{LabelSelector: TunnelLeaseLabel + "=true"})
 	if err != nil {
 		return nil
 	}
 	out := make(map[string]string, len(list.Items))
 	for i := range list.Items {
 		lease := &list.Items[i]
-		key := lease.Annotations[tunnelLeaseKeyAnno]
+		key := lease.Annotations[TunnelLeaseKeyAnnotation]
 		addr := ptr.Deref(lease.Spec.HolderIdentity, "")
 		if key == "" || addr == "" || !r.leaseFresh(lease) {
 			continue
@@ -250,7 +259,14 @@ func (r *Registry) ReplicaAddr(ctx context.Context, replicaID string) (string, b
 }
 
 func (r *Registry) leaseFresh(lease *coordinationv1.Lease) bool {
-	return lease.Spec.RenewTime != nil && r.now().Sub(lease.Spec.RenewTime.Time) <= registryLeaseTTL
+	return leaseFreshAt(lease, r.now())
+}
+
+// leaseFreshAt is the single freshness rule for registry leases: renewed
+// within RegistryLeaseTTL of now. The data path (Registry) and the status
+// path (LeaseObserver) share it so they never disagree about liveness.
+func leaseFreshAt(lease *coordinationv1.Lease, now time.Time) bool {
+	return lease.Spec.RenewTime != nil && now.Sub(lease.Spec.RenewTime.Time) <= RegistryLeaseTTL
 }
 
 func (r *Registry) invalidate(key string) {
@@ -271,7 +287,7 @@ func (r *Registry) upsertLease(ctx context.Context, name string, decorate func(*
 				ObjectMeta: metav1.ObjectMeta{Name: name},
 				Spec: coordinationv1.LeaseSpec{
 					HolderIdentity:       ptr.To(r.selfAddr),
-					LeaseDurationSeconds: ptr.To(int32(registryLeaseTTL.Seconds())),
+					LeaseDurationSeconds: ptr.To(int32(RegistryLeaseTTL.Seconds())),
 					AcquireTime:          &now,
 					RenewTime:            &now,
 				},
@@ -295,7 +311,7 @@ func (r *Registry) upsertLease(ctx context.Context, name string, decorate func(*
 			lease.Spec.LeaseTransitions = ptr.To(ptr.Deref(lease.Spec.LeaseTransitions, 0) + 1)
 		}
 		lease.Spec.HolderIdentity = ptr.To(r.selfAddr)
-		lease.Spec.LeaseDurationSeconds = ptr.To(int32(registryLeaseTTL.Seconds()))
+		lease.Spec.LeaseDurationSeconds = ptr.To(int32(RegistryLeaseTTL.Seconds()))
 		lease.Spec.RenewTime = &now
 		if decorate != nil {
 			decorate(lease)

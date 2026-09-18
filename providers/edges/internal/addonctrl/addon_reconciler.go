@@ -30,18 +30,21 @@ package addonctrl
 import (
 	"context"
 	"fmt"
-	"time"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -49,11 +52,6 @@ import (
 )
 
 const controllerName = "addon-publisher"
-
-// resyncInterval re-checks an Addon that is waiting for its agent. The agent
-// patches status when it acts, which requeues this controller, so the resync
-// only covers the token Secret appearing without an Addon status change.
-const resyncInterval = time.Minute
 
 // Connectable kinds that can host an add-on. KubernetesCluster is refused; the
 // API's CEL rule refuses it too, and this is the defence for objects that
@@ -79,13 +77,32 @@ type Reconciler struct {
 }
 
 // SetupWithManager registers the add-on publisher on the multicluster manager.
+// Everything that can unblock an Addon arrives as an event: the agent patches
+// Addon status when it acts (For), the derived Service is owned (Owns), and
+// the token Secret the agent publishes is watched and mapped back to its Addon
+// — so no periodic resync is needed.
 func SetupWithManager(mgr mcmanager.Manager) error {
 	r := &Reconciler{mgr: mgr}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named(controllerName).
 		For(&edgesv1alpha1.Addon{}).
 		Owns(&edgesv1alpha1.Service{}).
+		Watches(&corev1.Secret{}, mchandler.EnqueueRequestsFromMapFunc(mapTokenSecretToAddon)).
 		Complete(r)
+}
+
+// mapTokenSecretToAddon maps a published add-on token Secret
+// (default/<addon>-runner-token) to its Addon; every other Secret maps to
+// nothing. The cluster is injected by the multicluster handler.
+func mapTokenSecretToAddon(_ context.Context, obj client.Object) []crreconcile.Request {
+	if obj.GetNamespace() != tokenSecretNamespace || !strings.HasSuffix(obj.GetName(), tokenSecretSuffix) {
+		return nil
+	}
+	addon := strings.TrimSuffix(obj.GetName(), tokenSecretSuffix)
+	if addon == "" {
+		return nil
+	}
+	return []crreconcile.Request{{NamespacedName: types.NamespacedName{Name: addon}}}
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -169,7 +186,7 @@ func (r *Reconciler) reconcileAddon(ctx context.Context, c client.Client, addon 
 	if err := c.Status().Update(ctx, addon); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating addon status: %w", err)
 	}
-	return ctrl.Result{RequeueAfter: resyncInterval}, nil
+	return ctrl.Result{}, nil
 }
 
 // edgeExists checks that spec.edgeRef names a real connectable. A Service
@@ -284,14 +301,16 @@ func (r *Reconciler) blocked(ctx context.Context, c client.Client, addon *edgesv
 
 // waiting reports that the agent has not (yet) done its half. Published stays
 // False and no Service exists. The PHASE is deliberately left alone: it belongs
-// to the agent, which knows more about why than this controller does.
+// to the agent, which knows more about why than this controller does. No
+// requeue: the agent's Allowed report is an Addon status event and the token
+// Secret is watched, so whichever gate opens next re-enqueues this Addon.
 func (r *Reconciler) waiting(ctx context.Context, c client.Client, addon *edgesv1alpha1.Addon, reason, message string) (ctrl.Result, error) {
 	addon.Status.ServiceRef = nil
 	setCondition(&addon.Status.Conditions, edgesv1alpha1.AddonConditionPublished, metav1.ConditionFalse, reason, message)
 	if err := c.Status().Update(ctx, addon); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating addon status: %w", err)
 	}
-	return ctrl.Result{RequeueAfter: resyncInterval}, nil
+	return ctrl.Result{}, nil
 }
 
 // setCondition upserts a status condition, bumping LastTransitionTime only when

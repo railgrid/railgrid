@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
@@ -65,6 +66,7 @@ type ResourceClient interface {
 	UpdateStatus(ctx context.Context, obj *unstructured.Unstructured, opts metav1.UpdateOptions) (*unstructured.Unstructured, error)
 	Delete(ctx context.Context, name string, opts metav1.DeleteOptions, subresources ...string) error
 	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*unstructured.Unstructured, error)
+	Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error)
 }
 
 // Client provides typed access to App Studio resources. It is backed by either
@@ -256,6 +258,10 @@ type scopeResource struct {
 
 func (g *scopeResource) Get(ctx context.Context, name string, _ metav1.GetOptions, _ ...string) (*unstructured.Unstructured, error) {
 	return g.scope.Get(ctx, g.res, g.namespace, name)
+}
+
+func (g *scopeResource) Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
+	return g.scope.Watch(ctx, g.res, g.namespace, opts)
 }
 
 func (g *scopeResource) List(ctx context.Context, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {

@@ -36,6 +36,7 @@ import (
 
 	"github.com/railgrid/provider-agents/api"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
@@ -46,7 +47,9 @@ const heartbeatVersion = "0.1.0"
 //	agents-provider init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
 //	    RAILGRID_PROVIDER_KUBECONFIG. See init_cmd.go.
-//	agents-provider serve  — runtime (default).
+//	agents-provider serve  — runtime (default): HTTP API + portal + MCP, the
+//	    background executor, and (leader-elected) the CR reconcilers. See
+//	    controller_manager.go.
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -91,19 +94,41 @@ func runServe() {
 		log.Fatalf("build server: %v", err)
 	}
 
-	// Background executor: autonomous schedule firing + trigger webhooks via
-	// the APIExport virtual workspace. Interface-based (see the executor
-	// package) so the in-process pool can later swap for a durable engine.
+	// Background executor: tenant access through the APIExport virtual
+	// workspace, the in-process job pool that runs schedule fires, webhook
+	// events and channel messages, and the run recovery sweep. Interface-based
+	// (see the executor package) so the pool can later swap for a durable
+	// engine.
 	srv.StartBackground(ctx)
+
+	// Reachability of the APIExport virtual workspace, reported as readiness
+	// on /readyz. A provider that cannot reach it keeps serving and silently
+	// does nothing in tenant workspaces — see provider-sdk/vwhealth. While
+	// this replica leads, the controller manager also attaches its
+	// multicluster provider here, so readiness covers "reachable" AND
+	// "actually being watched".
+	vwState := &vwhealth.Readiness{}
+
+	// Reconcilers over the tenant CRs (Schedule / Connection / Agent),
+	// leader-elected, acting through the background executor's plumbing.
+	if deps, ok := srv.ControllerDeps(); ok {
+		startControllerManager(ctx, deps, vwState)
+		go vwhealth.Watch(ctx, deps.Config, endpointSliceName, vwState, vwhealth.DefaultInterval)
+	} else {
+		log.Printf("controller manager disabled (no provider kubeconfig); schedules, connection repair and Discord bots are off")
+	}
 
 	handler, err := withPortal(srv.Routes())
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
+	mux := http.NewServeMux()
+	mux.Handle("/readyz", vwhealth.Handler(vwState))
+	mux.Handle("/", handler)
 
 	httpSrv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           logMiddleware(handler),
+		Handler:           logMiddleware(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

@@ -34,18 +34,26 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
-	"github.com/railgrid/provider-sdk/revdial"
 )
 
-// markEdgeConnected updates an Edge's status to Connected=true, Phase=Ready,
-// and sets the Registered condition to True.
-// When clearJoinToken is true, the bootstrap JoinToken is also cleared from status.
-// clearJoinToken should only be true when the agent has received a durable credential
-// (kubeconfig) — otherwise the agent would be unable to reconnect after a restart.
-// hostname, when non-empty, is the agent-reported machine hostname
-// (X-Railgrid-Agent-Hostname) and is recorded in status.hostname.
-// It is called by the agent-proxy handler when a tunnel is established.
-// Best-effort: errors are logged but not propagated.
+// markEdgeConnected records, on tunnel open, the observations only the
+// agent-ingress handler has and that must be durable at once: it clears the
+// bootstrap joinToken (when the agent got a durable credential), stores the
+// agent-reported hostname, SSH credentials (as a Secret + status ref) and sshd
+// host key, and stamps the public proxy URL.
+//
+// It deliberately does NOT write status.connected, status.phase,
+// status.lastHeartbeatTime or the Registered condition. Tunnel liveness is
+// recorded only in the registry Lease (ConnManager.Store → Registry.ClaimTunnel,
+// renewed by the sweeper) and the edge lifecycle reconciler
+// (internal/edgectrl) is the single writer that derives those fields from it —
+// so there is one owner per field and no hub-vs-reconciler write race.
+//
+// clearJoinToken should only be true when the agent has received a durable
+// credential (kubeconfig) — otherwise the agent would be unable to reconnect
+// after a restart. hostname, when non-empty, is the agent-reported machine
+// hostname (X-Railgrid-Agent-Hostname). Best-effort: errors are logged but
+// not propagated.
 func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionResource, cluster, name string, sshCreds *sshCredsFromAgent, hostname string, clearJoinToken bool) {
 	cfg, err := p.tenantConfigFor(ctx, cluster)
 	if err != nil {
@@ -63,10 +71,10 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 
 	// Clear joinToken with a dedicated MergePatch BEFORE the read-modify-write
 	// loop below. MergePatch has no resourceVersion check, so it can't conflict
-	// with the agent-side edge_reporter and hub-side stampEdgeHeartbeat
-	// patchers that race us. The retry loop's UpdateStatus, by contrast, can
-	// lose every attempt under contention and silently leave joinToken set —
-	// which broke TestJoinTokenClearedAfterRegistration once the agent's
+	// with the agent-side edge_reporter heartbeat patches or the lifecycle
+	// reconciler's status writes. The retry loop's UpdateStatus, by contrast,
+	// can lose every attempt under contention and silently leave joinToken
+	// set — which broke TestJoinTokenClearedAfterRegistration once the agent's
 	// edge_reporter started heartbeating in join-token mode.
 	if clearJoinToken {
 		patch := []byte(`{"status":{"joinToken":null}}`)
@@ -78,26 +86,22 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 		}
 	}
 
-	// Read-modify-write of status races against the hub-side
-	// stampEdgeHeartbeat patcher (started from the same handler) and the
-	// agent-side edge_reporter that runs as soon as out-of-cluster join-token
-	// agents refresh their hub client. Retry on conflict until UpdateStatus
-	// wins; joinToken clearing above is already durable independent of this.
+	// Read-modify-write of the handler-owned fields. It races the agent-side
+	// edge_reporter (merge patches) and the edge reconcilers (RV-checked
+	// updates), so retry on conflict until UpdateStatus wins; joinToken
+	// clearing above is already durable independent of this.
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		edge, err := dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
 
-		// Build the updated status: set connected/phase, set Registered condition,
-		// and re-clear joinToken in case the targeted MergePatch above raced and
+		// Re-clear joinToken in case the targeted MergePatch above raced and
 		// lost to the TokenReconciler (extra safety, normally a no-op).
 		status, _, _ := unstructured.NestedMap(edge.Object, "status")
 		if status == nil {
 			status = map[string]interface{}{}
 		}
-		status["connected"] = true
-		status["phase"] = string(edgeapi.ConnectionPhaseReady)
 		if clearJoinToken {
 			delete(status, "joinToken")
 		}
@@ -123,16 +127,7 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 			status["hostname"] = hostname
 		}
 
-		// Set the Registered condition to True.
 		now := metav1.NewTime(time.Now())
-		registeredCondition := metav1.Condition{
-			Type:               edgeapi.ConnectionConditionRegistered,
-			Status:             metav1.ConditionTrue,
-			Reason:             "AgentRegistered",
-			Message:            "Agent has registered and received a durable ServiceAccount credential.",
-			LastTransitionTime: now,
-		}
-		setStatusCondition(status, registeredCondition)
 
 		// If the agent sent SSH credentials, create a secret and set sshCredentials in status.
 		if sshCreds != nil && sshCreds.User != "" {
@@ -164,8 +159,8 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 		return
 	}
 
-	p.logger.Info("Edge marked Ready and registered on join-token tunnel open",
-		"cluster", cluster, "edge", name)
+	p.logger.Info("Recorded agent-reported edge facts on tunnel open",
+		"cluster", cluster, "edge", name, "hostname", hostname, "joinTokenCleared", clearJoinToken)
 }
 
 // applyReportedSSHHostKey records the agent-reported sshd host key into
@@ -325,94 +320,4 @@ func (p *Server) storeSSHCredentials(ctx context.Context, cfg *rest.Config, clus
 
 	p.logger.Info("SSH credentials stored for edge", "cluster", cluster, "edge", edgeName, "user", creds.User)
 	return nil
-}
-
-// runEdgeHeartbeatLoop ticks until ctx is cancelled, stamping the Edge's
-// status.lastHeartbeatTime from dialer.LastPong on each tick. Cancellation
-// happens when the agent-proxy handler observes dialer.Done(), so the loop
-// terminates within one tick of the tunnel dying.
-func (p *Server) runEdgeHeartbeatLoop(ctx context.Context, gvr schema.GroupVersionResource, cluster, name string, dialer *revdial.Dialer) {
-	// First stamp immediately so the LAST HEARTBEAT column becomes non-empty
-	// without waiting for the first tick.
-	p.stampEdgeHeartbeat(ctx, gvr, cluster, name, dialer.LastPong())
-
-	ticker := time.NewTicker(edgeHeartbeatInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			p.stampEdgeHeartbeat(ctx, gvr, cluster, name, dialer.LastPong())
-		}
-	}
-}
-
-// stampEdgeHeartbeat patches an Edge's status.lastHeartbeatTime to t.  It is
-// used by the agent-proxy-v2 handler to surface revdial-level liveness (the
-// last successful "pong" from the agent) on the Edge resource.  Agents
-// connected via join token can't write their own kcp status, so the hub does
-// it for them.
-//
-// Best-effort: errors are logged at V(4) only — heartbeat staleness is a soft
-// signal, and the LifecycleReconciler will eventually reconcile state.
-func (p *Server) stampEdgeHeartbeat(ctx context.Context, gvr schema.GroupVersionResource, cluster, name string, t time.Time) {
-	cfg, err := p.tenantConfigFor(ctx, cluster)
-	if err != nil {
-		p.logger.V(4).Info("stampEdgeHeartbeat: failed to resolve tenant config",
-			"cluster", cluster, "edge", name, "err", err)
-		return
-	}
-
-	dynClient, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		p.logger.V(4).Info("stampEdgeHeartbeat: failed to create dynamic client",
-			"cluster", cluster, "edge", name, "err", err)
-		return
-	}
-
-	// MergePatch with RFC3339-formatted timestamp; the field is typed as
-	// metav1.Time (date-time) in the APIResourceSchema.
-	patch := []byte(`{"status":{"lastHeartbeatTime":"` + t.UTC().Format(time.RFC3339) + `"}}`)
-	_, err = dynClient.Resource(gvr).Patch(ctx, name,
-		types.MergePatchType, patch, metav1.PatchOptions{}, "status")
-	if err != nil {
-		p.logger.V(4).Info("stampEdgeHeartbeat: patch failed",
-			"cluster", cluster, "edge", name, "err", err)
-	}
-}
-
-// markEdgeDisconnected patches an Edge's status to Connected=false,
-// Phase=Disconnected on the hub.  It is called by the agent-proxy-v2 handler
-// when the agent's revdial tunnel closes so that the hub's view of edge
-// connectivity is accurate even when the agent process dies without sending a
-// clean disconnect heartbeat.
-//
-// It is best-effort: errors are logged but not propagated.
-func (p *Server) markEdgeDisconnected(ctx context.Context, gvr schema.GroupVersionResource, cluster, name string) {
-	cfg, err := p.tenantConfigFor(ctx, cluster)
-	if err != nil {
-		p.logger.Error(err, "markEdgeDisconnected: failed to resolve tenant config",
-			"cluster", cluster, "edge", name)
-		return
-	}
-
-	dynClient, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		p.logger.Error(err, "markEdgeDisconnected: failed to create dynamic client",
-			"cluster", cluster, "edge", name)
-		return
-	}
-
-	patch := []byte(`{"status":{"connected":false,"phase":"Disconnected"}}`)
-	_, err = dynClient.Resource(gvr).Patch(ctx, name,
-		types.MergePatchType, patch, metav1.PatchOptions{}, "status")
-	if err != nil {
-		p.logger.Error(err, "markEdgeDisconnected: failed to patch edge status",
-			"cluster", cluster, "edge", name)
-		return
-	}
-
-	p.logger.Info("Edge marked Disconnected on tunnel close",
-		"cluster", cluster, "edge", name)
 }

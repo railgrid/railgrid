@@ -32,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,6 +40,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/railgrid/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"github.com/railgrid/provider-app-studio/api"
@@ -46,6 +48,8 @@ import (
 	"github.com/railgrid/provider-app-studio/controller/project"
 	"github.com/railgrid/provider-app-studio/controller/session"
 	"github.com/railgrid/provider-app-studio/controller/studio"
+	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
+	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
 	appscheme "github.com/railgrid/provider-app-studio/scheme"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
@@ -206,8 +210,9 @@ func (h *controllerHealth) heartbeatStatus() string {
 
 // controllerDeps carries the runtime collaborators the Project reconciler
 // shares with the HTTP layer: the on-disk workspace store (commit
-// convergence reads it), the assistant-busy gate, and the hub address for
-// MCP commit calls.
+// convergence reads it), the assistant-busy gate, the hub address for
+// MCP commit calls, and the signal buses the HTTP layer publishes thread,
+// turn, and workspace transitions on.
 type controllerDeps struct {
 	Actions     bindings.ActionsRuntimeConfig
 	Workspace   *workspace.FileStore
@@ -217,6 +222,24 @@ type controllerDeps struct {
 	Store       store.Store
 	HubBase     string
 	HubInsecure bool
+	// SessionSignals / ProjectSignals wake the Session and Project
+	// reconcilers on assistant and workspace transitions (nil: resync only).
+	SessionSignals *reconcilesignal.Bus
+	ProjectSignals *reconcilesignal.Bus
+}
+
+// dependencyWatches builds the per-workspace watch hub the Project and
+// Studio reconcilers share. Watches ride the tenant-path identity exactly as
+// the reconcilers' writes do, so they need the hub address; without one
+// (REST-only dev) there are no watches and the reconcilers resync only.
+func dependencyWatches(deps controllerDeps) *tenantwatch.Hub {
+	if deps.HubBase == "" {
+		return nil
+	}
+	hubBase, insecure := deps.HubBase, deps.HubInsecure
+	return tenantwatch.NewHub(func(cluster, token string) (dynamic.Interface, error) {
+		return tenantaccess.NewDynamicClient(hubBase, cluster, token, insecure)
+	})
 }
 
 // projectCommitNotifier adapts the API server's commit notification to the
@@ -277,6 +300,7 @@ func startControllerManager(ctx context.Context, config *rest.Config, deps contr
 		return fmt.Errorf("project controller: message store does not support attachment lifecycle cleanup")
 	}
 
+	watches := dependencyWatches(deps)
 	if err := (&project.Reconciler{
 		Actions:     deps.Actions,
 		Workspace:   deps.Workspace,
@@ -286,15 +310,18 @@ func startControllerManager(ctx context.Context, config *rest.Config, deps contr
 		Attachments: attachments,
 		HubBase:     deps.HubBase,
 		HubInsecure: deps.HubInsecure,
+		Watches:     watches,
+		Signals:     deps.ProjectSignals,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("project controller: %w", err)
 	}
-	if err := (&session.Reconciler{Store: deps.Store}).SetupWithManager(mgr); err != nil {
+	if err := (&session.Reconciler{Store: deps.Store, Signals: deps.SessionSignals}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("session controller: %w", err)
 	}
 	if err := (&studio.Reconciler{
 		HubBase:     deps.HubBase,
 		HubInsecure: deps.HubInsecure,
+		Watches:     watches,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("studio controller: %w", err)
 	}

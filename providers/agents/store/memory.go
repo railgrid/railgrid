@@ -296,8 +296,37 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(scope) + "|" + run.ID
+	// Mirror the Postgres upsert: the cancel columns are RequestCancel's alone,
+	// so a save from a copy read before the cancel keeps the flag.
+	if old, ok := m.runs[key]; ok && old.CancelRequested {
+		run.CancelRequested, run.CancelRequestedAt = true, old.CancelRequestedAt
+	}
 	m.runs[key] = run
 	m.runScopes[key] = scope
+	return nil
+}
+
+func (m *MemoryStore) RequestCancel(_ context.Context, scope Scope, id string, now time.Time) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := tenantKey(scope) + "|" + id
+	run, ok := m.runs[k]
+	if !ok {
+		return fmt.Errorf("run %q not found", id)
+	}
+	switch run.Phase {
+	case RunPhasePending, RunPhaseRunning, RunPhasePendingApproval:
+	default:
+		return nil
+	}
+	if !run.CancelRequested {
+		t := now.UTC()
+		run.CancelRequested, run.CancelRequestedAt = true, &t
+		m.runs[k] = run
+	}
 	return nil
 }
 

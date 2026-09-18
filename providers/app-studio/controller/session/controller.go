@@ -21,6 +21,12 @@ You may obtain a copy of the License at
 // The store is authoritative for conversation data; the CR is its
 // projection. The identity annotations bridge the two keyspaces (the store
 // is keyed by org/workspace UUIDs; the reconciler only knows the cluster).
+//
+// Store changes are invisible to the watch, so the assistant layer signals
+// them (package reconcilesignal): every thread or turn transition publishes
+// the Session's (cluster, name) — the Session is named after its thread —
+// and the reconciler re-projects on arrival. A slow safety resync covers a
+// signal published before the controller subscribed.
 package session
 
 import (
@@ -42,26 +48,34 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/bindings"
+	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
 	"github.com/railgrid/provider-app-studio/store"
 )
 
-// mirrorInterval is how often the projection refreshes when nothing else
-// triggers a reconcile (store changes are invisible to the watch).
-const mirrorInterval = 30 * time.Second
+// resyncInterval is the safety net under the signals: a transition whose
+// signal was published before this controller subscribed (or lost with the
+// process) is mirrored within this long.
+const resyncInterval = 10 * time.Minute
 
 // Reconciler projects store threads into Session CRs and purges the store
 // when a Session is deleted.
 type Reconciler struct {
 	Manager mcmanager.Manager
 	Store   store.Store
+	// Signals carries thread/turn transitions from the assistant layer as
+	// (cluster, session name) keys. Nil means no signals.
+	Signals *reconcilesignal.Bus
 }
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
-	return mcbuilder.ControllerManagedBy(mgr).
+	b := mcbuilder.ControllerManagedBy(mgr).
 		Named("app-studio-session").
-		For(&aiv1alpha1.Session{}).
-		Complete(r)
+		For(&aiv1alpha1.Session{})
+	if r.Signals != nil {
+		b = b.WatchesRawSource(r.Signals.Source())
+	}
+	return b.Complete(r)
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -119,7 +133,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			return ctrl.Result{}, err
 		}
 	}
-	return ctrl.Result{RequeueAfter: mirrorInterval}, nil
+	return ctrl.Result{RequeueAfter: resyncInterval}, nil
 }
 
 // projectStatus folds the store's thread + active turn into a status.

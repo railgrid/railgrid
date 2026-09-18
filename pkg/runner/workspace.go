@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,8 +63,20 @@ func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest) (st
 		}
 		return "", fmt.Errorf("repository source unavailable: %w", err)
 	}
-	resolved, sourceErr := gitOutput(ctx, source, "rev-parse", "--verify", baseCommit+"^{commit}")
-	sourceHasCommit := sourceErr == nil && strings.TrimSpace(resolved) == baseCommit
+	sourceHasCommit := sourceHas(ctx, source, baseCommit)
+	if !sourceHasCommit {
+		// The approved base moved past the enrolled checkout — a merged pull
+		// request, most often. The checkout is the operator's own clone, so it
+		// is brought current from its own origin exactly as the operator would,
+		// with the operator's Git configuration and credentials for it. Only
+		// the runner runs this, never the harness, and only remote-tracking
+		// refs move: the checkout's branch and working tree are left alone.
+		if err := refreshEnrolledSource(ctx, source); err != nil {
+			log.Printf("enrolled source %s could not be refreshed from its origin: %v", source, err)
+		} else {
+			sourceHasCommit = sourceHas(ctx, source, baseCommit)
+		}
+	}
 	if !sourceHasCommit && fetchRemote == "" {
 		return "", errors.New("base commit is not available in the enrolled source")
 	}
@@ -98,14 +112,27 @@ func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest) (st
 		_ = os.RemoveAll(workdir)
 		return "", fmt.Errorf("clone task worktree: %w", err)
 	}
-	resolved, cloneErr := gitOutput(ctx, workdir, "rev-parse", "--verify", baseCommit+"^{commit}")
-	cloneHasCommit := cloneErr == nil && strings.TrimSpace(resolved) == baseCommit
+	cloneHasCommit := sourceHas(ctx, workdir, baseCommit)
 	if !cloneHasCommit {
-		if fetchRemote == "" {
-			_ = os.RemoveAll(workdir)
-			return "", errors.New("base commit is not available in the cloned source")
+		// A clone copies branches and tags, not the remote-tracking refs a
+		// refreshed checkout holds the base under, so the commit is fetched
+		// from the checkout over local transport first; the opted-in remote
+		// remains the fallback for a commit the checkout only has unreachably.
+		var err error
+		if sourceHasCommit {
+			err = fetchExactCommit(ctx, workdir, source, baseCommit)
 		}
-		if err := fetchExactCommit(ctx, workdir, fetchRemote, baseCommit); err != nil {
+		if !sourceHasCommit || err != nil {
+			if fetchRemote == "" {
+				_ = os.RemoveAll(workdir)
+				if err != nil {
+					return "", err
+				}
+				return "", errors.New("base commit is not available in the cloned source")
+			}
+			err = fetchExactCommit(ctx, workdir, fetchRemote, baseCommit)
+		}
+		if err != nil {
 			_ = os.RemoveAll(workdir)
 			return "", err
 		}
@@ -156,6 +183,52 @@ func verifyWorkspace(ctx context.Context, cfg Config, request StartRequest, work
 		return errors.New("repository enrollment no longer permits the approved base commit")
 	}
 	return nil
+}
+
+// sourceHas reports whether dir holds commit as an object. Presence is not
+// reachability: an object fetched into FETCH_HEAD alone counts here and is
+// then refused by a reachability-checking local fetch, which is what the
+// opted-in remote fallback is for.
+func sourceHas(ctx context.Context, dir, commit string) bool {
+	resolved, err := gitOutput(ctx, dir, "rev-parse", "--verify", commit+"^{commit}")
+	return err == nil && strings.TrimSpace(resolved) == commit
+}
+
+// refreshEnrolledSource fetches the enrolled checkout's own origin. Unlike
+// every other Git invocation here it runs with the operator's own Git
+// configuration — that is where the credentials for the operator's clone
+// live — but with hooks disabled and prompts off, and it moves nothing but
+// remote-tracking refs.
+func refreshEnrolledSource(ctx context.Context, source string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, "git", "-c", "core.hooksPath=/dev/null", "-c", "fetch.recurseSubmodules=false", "fetch", "--no-tags", "--no-write-fetch-head", "--no-prune", "origin")
+	cmd.Dir = source
+	cmd.Env = operatorGitEnvironment()
+	var stderr boundedGitBuffer
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if cmdCtx.Err() != nil {
+			return errors.New("git fetch timed out")
+		}
+		return fmt.Errorf("git fetch origin failed: %s", logLine(stderr.String()))
+	}
+	return nil
+}
+
+// operatorGitEnvironment is the process environment with git's own overrides
+// removed, so the operator's global configuration applies, and prompts off.
+func operatorGitEnvironment() []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, value := range os.Environ() {
+		key, _, ok := strings.Cut(value, "=")
+		if ok && strings.HasPrefix(key, "GIT_") {
+			continue
+		}
+		env = append(env, value)
+	}
+	return append(env, "GIT_TERMINAL_PROMPT=0")
 }
 
 func verifyTaskPath(stateDir, workdir string) error {

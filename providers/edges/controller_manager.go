@@ -20,10 +20,14 @@ import (
 	"log"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -59,19 +63,29 @@ const endpointSliceName = apiExportName
 const eventsMaxAge = 6 * time.Hour
 
 // startEdgeControllerManager builds the multicluster manager and starts the
-// edge token / RBAC / lifecycle reconcilers. connManager wires the lifecycle
-// reconciler's tunnel-liveness cross-check to the provider's ConnManager —
-// cluster-aware with replica routing enabled, so liveness reflects the whole
-// fleet, not this replica. A nil config means "skip the manager"
-// (healthz-only / dev).
+// edge token / RBAC / lifecycle reconcilers. A nil config means "skip the
+// manager" (healthz-only / dev).
 //
-// Still NOT leader-elected: this manager doubles as the tunnel plane's
-// tenant-config resolver (SetTenantConfigGetter below goes through
-// mgr.GetCluster), so it must run on every replica. With cluster-aware
-// liveness and relayed dials the reconcilers are CORRECT active-active (no
-// status flapping), just duplicated; leader-electing them requires first
-// giving the serving path a slice-backed tenant resolver (see the databricks
-// SliceAuthority pattern) — tracked in docs/provider-horizontal-scaling.md.
+// Edge connectivity status has ONE writer. The tunnel plane records liveness
+// only in the registry Leases (provider workspace, label
+// edges.railgrid.ai/tunnel-registry: claimed on tunnel open, renewed every 30s
+// by the ConnManager sweeper, released on close, expired after
+// tunnel.RegistryLeaseTTL otherwise). The lifecycle reconciler watches those
+// Leases through this manager's LOCAL cache (the manager's own config
+// addresses the provider workspace; the multicluster provider engages only
+// tenant clusters, so Leases need this second, single-cluster source) and is
+// the sole writer of status.connected / status.phase / status.lastHeartbeatTime
+// / Registered=True. connManager only nudges it on local connect/disconnect.
+//
+// Still NOT leader-elected (chart replicaCount is 1 today): this manager
+// doubles as the tunnel plane's tenant-config resolver (SetTenantConfigGetter
+// below goes through mgr.GetCluster), so it must run on every replica. Because
+// the lifecycle reconciler derives status from the shared Leases and writes
+// only on a diff, running it active-active on N replicas is correct — the
+// writes are duplicated, never contradictory. Leader-electing the reconcilers
+// requires first giving the serving path a slice-backed tenant resolver (see
+// the databricks SliceAuthority pattern) — tracked in
+// docs/provider-horizontal-scaling.md.
 func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *sdktunnel.Server, hubExternalURL string, hubCAData []byte, devMode bool) error {
 	if config == nil {
 		return errControllerDisabled
@@ -106,6 +120,16 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 	mgr, err := mcmanager.New(config, provider, manager.Options{
 		Scheme:  s,
 		Metrics: metricsserver.Options{BindAddress: "0"}, // provider serves its own HTTP
+		Cache: cache.Options{
+			// The local cache is only used for the tunnel registry Leases the
+			// lifecycle reconcilers watch; restrict the Lease informer to them
+			// so presence leases and any leader-election lease stay out of it.
+			ByObject: map[client.Object]cache.ByObject{
+				&coordinationv1.Lease{}: {
+					Label: labels.SelectorFromSet(labels.Set{sdktunnel.TunnelLeaseLabel: "true"}),
+				},
+			},
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("creating multicluster manager: %w", err)
@@ -134,9 +158,10 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		opts.LatestAgentVersion = edgectrl.NewHubVersionCache(hubExternalURL, hubCAData, 10*time.Minute).Get
 	}
 	// One set of token/RBAC/lifecycle controllers per kind, on the shared
-	// multicluster manager. All kinds share the single tunnel ConnManager (keyed
-	// by resource/cluster/name), so the lifecycle reconciler's tunnel-liveness
-	// cross-check works for each kind.
+	// multicluster manager. All kinds share the single tunnel ConnManager and
+	// Lease registry (keyed by resource/cluster/name); each kind's lifecycle
+	// reconciler filters the shared Lease/notification streams to its own
+	// resource.
 	if err := edgectrl.SetupControllers(mgr,
 		edgesv1alpha1.KubernetesClusterGVR, "KubernetesCluster", edgesv1alpha1.NewKubernetesCluster,
 		connManager, opts,

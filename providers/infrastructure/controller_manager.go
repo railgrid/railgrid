@@ -26,11 +26,14 @@ import (
 	"log"
 	"os"
 
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -167,6 +170,7 @@ func runTemplateControllerManager(ctx context.Context, config *rest.Config) erro
 	} else if c, err := rest.InClusterConfig(); err == nil {
 		kroCfg, kroSrc = c, "in-cluster"
 	}
+	var runtimeCache cache.Cache
 	if kroCfg != nil {
 		kroDyn, err := dynamic.NewForConfig(kroCfg)
 		if err != nil {
@@ -175,6 +179,19 @@ func runTemplateControllerManager(ctx context.Context, config *rest.Config) erro
 		if err := registry.Register(krobackend.New(kroDyn)); err != nil {
 			return fmt.Errorf("register kro backend: %w", err)
 		}
+		// A cache over the runtime cluster, started with the manager, so the
+		// Template controller can watch the RGDs the backend authors (kro's
+		// accept/reject verdict lands on their status).
+		runtimeCluster, err := cluster.New(kroCfg, func(o *cluster.Options) {
+			o.Scheme = runtime.NewScheme()
+		})
+		if err != nil {
+			return fmt.Errorf("kro runtime cluster: %w", err)
+		}
+		if err := mgr.Add(runtimeCluster); err != nil {
+			return fmt.Errorf("add kro runtime cluster to manager: %w", err)
+		}
+		runtimeCache = runtimeCluster.GetCache()
 		log.Printf("controller manager: kro backend registered (RGD runtime cluster: %s)", kroSrc)
 	} else {
 		log.Printf("controller manager: no kro runtime config (KRO_KUBECONFIG unset, not in a pod) — kro backend not registered (stub-only)")
@@ -184,6 +201,7 @@ func runTemplateControllerManager(ctx context.Context, config *rest.Config) erro
 		Client:               mgr.GetClient(),
 		Backends:             registry,
 		CodingSandboxEnabled: codingSandboxEnabled(),
+		RuntimeCache:         runtimeCache,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("template controller: %w", err)
 	}

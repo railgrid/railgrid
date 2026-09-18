@@ -332,8 +332,6 @@ func (s *Server) attachProjectAssistantRunSandbox(
 	return sandbox, release, nil
 }
 
-type projectAssistantRunSandboxInstanceStatusGetter func(context.Context) (*unstructured.Unstructured, error)
-
 // projectAssistantRunSandboxInstanceReadiness mirrors the fields consumed by
 // Infrastructure's data-plane resolver. An ordinary Instance may exist before
 // its development overlay publishes these references, so refs are a readiness
@@ -505,63 +503,11 @@ func projectAssistantRunSandboxObservedGenerationValue(value any) (int64, bool) 
 	}
 }
 
-func waitForProjectAssistantRunSandboxInstanceReady(ctx context.Context, timeout, poll time.Duration, components map[string]projectTemplateComponent, get projectAssistantRunSandboxInstanceStatusGetter) error {
-	if get == nil {
-		return errors.New("run sandbox readiness getter is not configured")
-	}
-	if timeout <= 0 {
-		timeout = projectAssistantRunSandboxReadyTimeout
-	}
-	if poll <= 0 {
-		poll = projectAssistantRunSandboxReadyPoll
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	ticker := time.NewTicker(poll)
-	defer ticker.Stop()
-	lastReason := "instance is not ready"
-	for {
-		obj, err := get(waitCtx)
-		if err == nil {
-			ready, terminal, reason := projectAssistantRunSandboxInstanceReadiness(obj, components)
-			if ready {
-				return nil
-			}
-			if terminal {
-				return fmt.Errorf("instance is not ready: %s", reason)
-			}
-			if strings.TrimSpace(reason) != "" {
-				lastReason = reason
-			}
-		} else if apierrors.IsNotFound(err) {
-			lastReason = "instance has not been observed"
-		} else {
-			if ctx.Err() != nil {
-				return fmt.Errorf("wait for run sandbox instance: %w", ctx.Err())
-			}
-			if waitCtx.Err() != nil {
-				return fmt.Errorf("instance did not become ready within %s: %s", timeout, lastReason)
-			}
-			return fmt.Errorf("get run sandbox instance status: %w", err)
-		}
-		select {
-		case <-waitCtx.Done():
-			if ctx.Err() != nil {
-				return fmt.Errorf("wait for run sandbox instance: %w", ctx.Err())
-			}
-			return fmt.Errorf("instance did not become ready within %s: %s", timeout, lastReason)
-		case <-ticker.C:
-		}
-	}
-}
-
 func (s *Server) waitForProjectAssistantRunSandboxInstanceReady(ctx context.Context, c *asclient.Client, target projectDevelopmentSyncTargetInfo) error {
 	if c == nil {
 		return errors.New("project client is not configured")
 	}
-	return waitForProjectAssistantRunSandboxInstanceReady(ctx, projectAssistantRunSandboxReadyTimeout, projectAssistantRunSandboxReadyPoll, target.Components, func(getCtx context.Context) (*unstructured.Unstructured, error) {
-		return c.Resource(runSandboxInstancesResource, "").Get(getCtx, target.ResourceName, metav1.GetOptions{})
-	})
+	return waitForProjectAssistantRunSandboxInstanceReady(ctx, projectAssistantRunSandboxReadyTimeout, target.Components, target.ResourceName, c.Resource(runSandboxInstancesResource, ""))
 }
 
 // reconcileProjectAssistantRunSandboxSource keeps the FileStore revision and

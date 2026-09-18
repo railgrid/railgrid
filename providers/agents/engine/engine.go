@@ -134,6 +134,19 @@ type Callbacks struct {
 	// which costs one model call and keeps resume free of any assumption that
 	// tools are safe to repeat.
 	OnCheckpoint func(Checkpoint)
+	// CheckAbort is consulted before every model round and before every tool
+	// call — the two points where no call is half-executed. A non-nil error
+	// ends the turn with that error, which is how a cancellation that did not
+	// arrive through ctx (a durable cancel flag written by another replica)
+	// stops a run cleanly instead of after the whole loop.
+	CheckAbort func(ctx context.Context) error
+}
+
+func (c Callbacks) abort(ctx context.Context) error {
+	if c.CheckAbort == nil {
+		return nil
+	}
+	return c.CheckAbort(ctx)
 }
 
 func (c Callbacks) delta(s string) {
@@ -339,6 +352,9 @@ func (e *Engine) loop(
 ) (Result, error) {
 	for iter := startIter; iter < cfg.MaxIters; iter++ {
 		if len(pending) == 0 {
+			if err := cb.abort(ctx); err != nil {
+				return Result{}, err
+			}
 			// Keep the conversation inside its budget before asking the model —
 			// this is where a turn carrying large tool results gets trimmed.
 			trimConversation(in, cfg.ContextBudgetTokens)
@@ -396,6 +412,9 @@ func (e *Engine) loop(
 				dec.used = true // approved: execute normally (the wrapper grants it)
 			}
 
+			if err := cb.abort(ctx); err != nil {
+				return Result{}, err
+			}
 			started := time.Now()
 			cb.toolStart(pc.ID, pc.Name, pc.Args)
 			result, images, execErr := execute(ctx, byName, pc)

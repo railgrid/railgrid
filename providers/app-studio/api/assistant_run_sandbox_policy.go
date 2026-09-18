@@ -97,8 +97,9 @@ const (
 	projectAssistantRunSandboxNameMaxBase               = projectAssistantRunSandboxNameMaxLength - len(projectAssistantRunSandboxNamePrefix) - 1 - projectAssistantRunSandboxHashLength
 	// Instance creation is asynchronous: the ordinary Instance first becomes
 	// visible, then its development overlay publishes the routing references
-	// consumed by the data-plane resolver. Keep setup bounded while polling
-	// the API rather than racing the first /sync request with a fixed sleep.
+	// consumed by the data-plane resolver. The Instance is watched until it
+	// is ready (assistant_run_sandbox_watch.go), bounded by the timeout; the
+	// poll spaces the HTTP seed retries that follow readiness.
 	projectAssistantRunSandboxReadyTimeout = 2 * time.Minute
 	projectAssistantRunSandboxReadyPoll    = 250 * time.Millisecond
 )

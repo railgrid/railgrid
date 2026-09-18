@@ -132,3 +132,36 @@ func TestDeleteIfRemovesOwnEntry(t *testing.T) {
 		t.Fatal("second DeleteIf reported a delete for an already-removed key")
 	}
 }
+
+// TestOnChangeFiresForStoreAndDelete covers the hook the edge lifecycle
+// reconciler feeds into its controller source: a local connect and a local
+// disconnect must each surface the edge key exactly once, and a superseded
+// handler's no-op DeleteIf must stay silent.
+func TestOnChangeFiresForStoreAndDelete(t *testing.T) {
+	c := NewConnManager()
+	key := EdgeConnKey("linuxservers", "cl-1", "edge-1")
+	var seen []string
+	c.OnChange(func(k string) { seen = append(seen, k) })
+
+	old := newTestDialer(t)
+	c.Store(key, old)
+	if len(seen) != 1 || seen[0] != key {
+		t.Fatalf("after Store: notified %v, want [%s]", seen, key)
+	}
+
+	replacement := newTestDialer(t)
+	c.Store(key, replacement)
+	if c.DeleteIf(key, old) {
+		t.Fatal("superseded DeleteIf should not delete")
+	}
+	if len(seen) != 2 {
+		t.Fatalf("superseded DeleteIf notified: %v", seen)
+	}
+
+	if !c.DeleteIf(key, replacement) {
+		t.Fatal("owner DeleteIf should delete")
+	}
+	if len(seen) != 3 || seen[2] != key {
+		t.Fatalf("after DeleteIf: notified %v, want a third %s", seen, key)
+	}
+}

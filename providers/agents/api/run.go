@@ -315,6 +315,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 	// Periodic checkpoints make a long run recoverable: if this replica dies, the
 	// sweep (api/sweep.go) resumes from the last one instead of losing the work.
 	cb.OnCheckpoint = s.checkpointRecorder(ctx, run, sessionID, func() int64 { return tracker.durationMS() })
+	cb.CheckAbort = s.cancelCheck(scope, runID)
 	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, engine.TurnConfig{
 		MaxIters:            maxIters,
 		ContextBudgetTokens: turnContextBudget(modelName),

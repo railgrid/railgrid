@@ -402,6 +402,43 @@ Before claiming tenant-controller integration complete, verify:
 - Failed controller watches appear in readiness, with recovery reflected when
   watching resumes. Record which checks used real kcp versus test doubles.
 
+### 5.8 Reconcilers, not loops
+
+The tenancy rules above say how a tenant controller is wired; this section says
+what a provider may not build instead. **Every state transition a provider owns
+is a watch-driven reconciler; the only thing that runs on a clock is a call to a
+system outside kcp.** No `--interval` passes, list-and-sweep functions,
+in-process work queues or goroutines that own state. A timer loop scales with
+tenant count instead of change rate, hides its scope in process memory, and
+cannot be leader-elected or replayed. The reference rewrite is
+`railgrid/providers/docs/reconciler-architecture-review.md` (planner and
+factory went from four timed passes to reconcilers); read it before adding a
+loop, and extend it when a controller's shape changes.
+
+- **Every durable fact is a KRM field.** Assignment, retry deadline, last
+  error, external IDs: `status` on the tenant object, or a private kind in the
+  provider's own workspace (planner's `ActionReceipt`). Never a deployment
+  ConfigMap, a policy file or a map in memory.
+- **`RequeueAfter` has exactly two uses:** pacing a poll of a system that
+  cannot be watched (a git host, a ticket source, a runner's HTTP API) and
+  backing off a failed call. One kcp object learning that another changed is a
+  `Watches` with a mapping func (`mchandler.ForCluster`), never a requeue and
+  never a second list inside the reconcile. Provider-private kinds that are not
+  exported are reconciled on `mgr.GetLocalManager()`.
+- **Write loops are leader-elected; the HTTP surface is not.** The manager runs
+  under `provider-sdk/leaderelection.Run` and is rebuilt per term (a stopped
+  controller-runtime manager cannot restart); actions, MCP and the portal keep
+  serving on every replica with per-request tenant clients (5.4). Informer
+  configs get `Timeout = 0` — a client timeout severs a streaming watch — and
+  per-request clients are bounded separately.
+- **Cross-provider data is watched, not polled.** Mirror what another export
+  publishes into your own kind and reconcile from that (factory's intake reads
+  planner's `Issue` mirror, not the ticket source's actions); a loop over
+  another provider's actions is how the Linear rate-limit incident happened.
+
+Worked examples beyond Code: `providers/planner/internal/controllers/` and
+`providers/factory/internal/global/` in railgrid/providers.
+
 ### 5.5 Provider inventory
 
 All providers are **standalone**: own `go.mod` under `providers/{name}/`, own
@@ -451,7 +488,8 @@ cannot capture a platform provider's proxy or heartbeat route by name. See
 5. Wire the heartbeat with `provider-sdk/hubclient` (`ConfigFromEnv` +
    `go RunHeartbeat`; set `CanSend` if a required controller gates
    liveness) — never a local copy — plus a tenant-scoped client if it talks
-   to kcp.
+   to kcp. Anything that reacts to tenant objects is a multicluster-runtime
+   reconciler under leader election, not a loop (§5.8).
 6. Add Makefile `build-{name}-provider[-portal]` + `run/install/uninstall`
    targets if standalone; add the module to `go.work`.
 7. Add an e2e suite under `test/e2e/suites/` if it has tenant-isolation or
@@ -631,6 +669,13 @@ responsive, or interaction behavior.
   radius. See [`docs/providers.md` §"Provider isolation"](docs/providers.md#provider-isolation-the-cross-provider-boundary)
   and contract 3 in
   [`docs/provider-connectivity-contract.md`](docs/provider-connectivity-contract.md).
+- **Reconcilers, multicluster-runtime and KRM — always, where at all possible.**
+  A provider never owns a timer loop, a sweep or an in-memory queue over kcp
+  objects: it watches them through its APIExport virtual workspace with
+  multicluster-runtime and keeps every piece of durable state in `status` or a
+  private kind. `RequeueAfter` is reserved for pacing an external system that
+  cannot be watched and for backoff. See §5.8 and
+  [`docs/providers.md` §"Minimal provider backend contract"](docs/providers.md#minimal-provider-backend-contract).
 
 ---
 

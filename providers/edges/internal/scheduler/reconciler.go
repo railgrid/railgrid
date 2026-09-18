@@ -42,6 +42,12 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
+// schedulerResync is the safety re-evaluation of a Workload's placements. Edge
+// changes (connect, relabel, status) already reach the scheduler through the
+// KubernetesCluster watch mapped in SetupWithManager, so this only guards
+// against a missed watch event; the manager has no SyncPeriod configured.
+const schedulerResync = 10 * time.Minute
+
 // Reconciler fans a Workload out into Placements across the tenant's
 // matching KubernetesCluster edges.
 type Reconciler struct {
@@ -194,9 +200,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 	}
 
-	// Requeue periodically so edge reconnects are picked up even if a watch
-	// event was missed (status-only changes may not always fire the mapper).
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: schedulerResync}, nil
 }
 
 func equalReplicas(a, b *int32) bool {

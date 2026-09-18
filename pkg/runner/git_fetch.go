@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -242,8 +243,13 @@ func fetchExactCommit(ctx context.Context, workdir, remote, commit string) error
 		"-c", "credential.helper=",
 		"-c", "fetch.recurseSubmodules=false",
 	}
-	if fetchRemoteKindOf(remote) == fetchRemoteSSH {
+	switch fetchRemoteKindOf(remote) {
+	case fetchRemoteSSH:
 		args = append(args, "-c", "core.sshCommand="+secureSSHCommand)
+	case fetchRemoteLocal:
+		// A local upload-pack inherits this and serves a commit named by ID
+		// when a ref reaches it — the refreshed checkout's remote-tracking ref.
+		args = append(args, "-c", "uploadpack.allowReachableSHA1InWant=true")
 	}
 	args = append(args, "fetch", "--no-tags", "--no-prune", "--no-write-fetch-head", remote, strings.ToLower(commit))
 	cmd := exec.CommandContext(cmdCtx, "git", args...)
@@ -253,9 +259,30 @@ func fetchExactCommit(ctx context.Context, workdir, remote, commit string) error
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &stderr
 	if runErr := cmd.Run(); runErr != nil {
+		// The protocol error stays generic (it is relayed to the coordinator);
+		// git's own words go to the runner log, where the operator of this
+		// host — the only one who can fix a remote's access — reads them.
+		log.Printf("git fetch of %s from %s failed: %s", strings.ToLower(commit), remote, logLine(stderr.String()))
 		return boundedGitFetchError(remote, stderr.String(), runErr, cmdCtx.Err())
 	}
 	return nil
+}
+
+// logLine folds git's multi-line stderr into one bounded log line.
+func logLine(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return '|'
+		}
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, strings.TrimSpace(value))
+	if len(value) > maxGitFetchErrorBytes {
+		return value[:maxGitFetchErrorBytes]
+	}
+	return value
 }
 
 func boundedGitFetchError(_ string, _ string, _ error, ctxErr error) error {

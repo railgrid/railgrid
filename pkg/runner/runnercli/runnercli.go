@@ -88,6 +88,10 @@ type Options struct {
 	ClaudeCredentialFile string
 	ClaudeCredentialKind string
 	ClaudeModel          string
+	// ClaudePermissionMode is acceptEdits (default) or bypassPermissions.
+	ClaudePermissionMode string
+	// ClaudeAllowedTools are tool patterns granted up front, e.g. "Bash(git *)".
+	ClaudeAllowedTools []string
 }
 
 // DefaultOptions returns the defaults both front ends advertise.
@@ -149,6 +153,12 @@ func (o *Options) Validate() error {
 			return fmt.Errorf("--claude-credential-kind must be one of %s", strings.Join(claude.CredentialKinds, ", "))
 		}
 		o.ClaudeCredentialKind = string(kind)
+		switch mode := claude.PermissionMode(strings.TrimSpace(o.ClaudePermissionMode)); mode {
+		case "", claude.PermissionAcceptEdits, claude.PermissionBypass:
+			o.ClaudePermissionMode = string(mode)
+		default:
+			return fmt.Errorf("--claude-permission-mode must be %s or %s", claude.PermissionAcceptEdits, claude.PermissionBypass)
+		}
 	}
 	return nil
 }
@@ -224,6 +234,8 @@ func (o Options) adapter(stateRoot string) (harness.Adapter, error) {
 			ExpectedVersion: o.VersionPin,
 			CredentialFile:  o.ClaudeCredentialFile,
 			CredentialKind:  claude.CredentialKind(o.ClaudeCredentialKind),
+			PermissionMode:  claude.PermissionMode(o.ClaudePermissionMode),
+			AllowedTools:    o.ClaudeAllowedTools,
 		}), nil
 	case HarnessCodex:
 		home := o.CodexHome

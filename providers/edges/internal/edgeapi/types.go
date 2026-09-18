@@ -90,7 +90,10 @@ type ConnectionStatus struct {
 	// add-ons.
 	// +optional
 	AllowedAddons []string `json:"allowedAddons,omitempty"`
-	// LastHeartbeatTime is the most recent agent heartbeat.
+	// LastHeartbeatTime is when the agent's tunnel was last known alive: the
+	// hub's lifecycle reconciler copies the tunnel registry Lease's renewTime
+	// here while the edge is connected (the agent's own heartbeat also stamps
+	// it when it can reach the API).
 	// +optional
 	LastHeartbeatTime *metav1.Time `json:"lastHeartbeatTime,omitempty"`
 	// Conditions represent the latest observations of state.

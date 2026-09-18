@@ -70,6 +70,7 @@ func TestProjectAssistantOnRequestRuntimePermission(t *testing.T) {
 		{tool: projectToolRestartRuntime, want: projectAssistantPermissionAllow},
 		{tool: projectToolRebuildProject, want: projectAssistantPermissionAllow},
 		{tool: projectToolPromoteProject, want: projectAssistantPermissionAsk},
+		{tool: projectToolHydrateWorkspace, want: projectAssistantPermissionAsk},
 		{tool: projectToolInfrastructureProvision, want: projectAssistantPermissionAsk},
 	}
 	for _, tt := range tests {

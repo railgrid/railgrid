@@ -622,9 +622,14 @@ func TestDefaultPromptKeepsApprovalPolicyIndependentOfRetiredTools(t *testing.T)
 	if !strings.Contains(prompt, "create_file") || !strings.Contains(prompt, "replace_file") || !strings.Contains(prompt, "edit_file") {
 		t.Fatalf("default prompt missing ordinary mutation guidance:\n%s", prompt)
 	}
-	for _, retired := range []string{"apply_patch", "mkdir", "hydrate_workspace"} {
+	for _, retired := range []string{"apply_patch", "mkdir"} {
 		if strings.Contains(prompt, retired) {
 			t.Fatalf("default prompt retained retired tool %q:\n%s", retired, prompt)
+		}
+	}
+	for _, want := range []string{"hydrate_workspace", "only when the user explicitly asks to load, refresh, or reset the workspace from git", "always pauses for approval"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("default prompt missing hydrate_workspace guidance %q:\n%s", want, prompt)
 		}
 	}
 }

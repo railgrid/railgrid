@@ -126,6 +126,10 @@ type Claude struct {
 	VersionPin    string     `json:"versionPin,omitempty"`
 	Model         string     `json:"model,omitempty"`
 	AuthSecretRef *SecretRef `json:"authSecretRef,omitempty"`
+	// PermissionMode and AllowedTools are passed through to the runner; the
+	// harness validates the mode and the API restricts it to two values.
+	PermissionMode string   `json:"permissionMode,omitempty"`
+	AllowedTools   []string `json:"allowedTools,omitempty"`
 }
 
 // Codex mirrors AddonCodex. There is no API-key field on purpose: the Codex
