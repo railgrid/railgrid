@@ -22,6 +22,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/channels"
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/internal/connsecret"
 	"github.com/railgrid/provider-agents/llm"
 )
 
@@ -62,7 +63,7 @@ type createConnectionRequest struct {
 	ClientSecret  string   `json:"clientSecret,omitempty"`
 }
 
-func connectionSecretName(conn string) string { return "railgrid-agents-conn-" + conn }
+func connectionSecretName(conn string) string { return connsecret.Name(conn) }
 
 func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 	c, _, ok := s.requireClient(w, r)

@@ -21,17 +21,21 @@ limitations under the License.
 //
 // Multi-replica: revdial dialers are still process-local (the dialer IS the
 // accepted socket), but with a Registry wired (SetRegistry) the ConnManager
-// becomes cluster-aware — Load resolves peer-held tunnels to relayed
-// remoteDialers, HasConnection/Keys answer fleet-wide, and revdial pickups
-// are forwarded to the owning replica by the replica-addressed pickup path.
-// Each agent keeps exactly one control connection, to whichever replica the
-// Service handed it. Without a Registry the historical single-replica
-// behavior is unchanged.
+// claims, renews and releases a Lease per tunnel in the provider workspace.
+// Those Leases are the only place tunnel liveness is recorded: the edge
+// lifecycle reconciler derives Edge status.connected/phase/lastHeartbeatTime
+// from them, and the tunnel plane never writes those fields itself. With a
+// relay token as well, the ConnManager becomes cluster-aware — Load resolves
+// peer-held tunnels to relayed remoteDialers, HasConnection/Keys answer
+// fleet-wide, and revdial pickups are forwarded to the owning replica by the
+// replica-addressed pickup path. Each agent keeps exactly one control
+// connection, to whichever replica the Service handed it.
 package tunnel
 
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,8 +72,14 @@ type ConnManager struct {
 	mu    sync.RWMutex
 	dials map[string]Dialer
 
-	registry   *Registry // nil = single-replica mode
-	relayToken string
+	registry   *Registry // nil = no lease registry (tests / no kcp credential)
+	relayToken string    // "" = registry without peer relay (single-replica)
+
+	// hooks are invoked, outside the lock, with the edge key after a tunnel is
+	// stored or removed on THIS replica. The edge lifecycle reconciler feeds
+	// them into a controller source so connect/disconnect reconcile at once
+	// rather than on the next Lease watch event.
+	hooks []func(key string)
 }
 
 // NewConnManager creates a new, empty ConnManager.
@@ -79,9 +89,13 @@ func NewConnManager() *ConnManager {
 	}
 }
 
-// SetRegistry enables cluster-aware mode: Store/Delete claim and release
-// registry leases, Load resolves peer-held tunnels to relayed dialers
-// authenticated with relayToken. Call once before serving.
+// SetRegistry wires the lease registry: Store/Delete claim and release
+// registry leases and the sweeper renews them, which is how tunnel liveness
+// reaches the edge lifecycle reconciler on every replica. With a non-empty
+// relayToken, Load additionally resolves peer-held tunnels to relayed dialers
+// authenticated with it (multi-replica routing); with an empty token the
+// registry is bookkeeping only and a tunnel held elsewhere reports as absent.
+// Call once before serving.
 func (c *ConnManager) SetRegistry(reg *Registry, relayToken string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -93,6 +107,24 @@ func (c *ConnManager) getRegistry() (*Registry, string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.registry, c.relayToken
+}
+
+// OnChange registers fn to be called with the edge key whenever a tunnel is
+// stored on, or removed from, this replica. Hooks must not block: they run on
+// the agent-ingress and sweeper goroutines.
+func (c *ConnManager) OnChange(fn func(key string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hooks = append(c.hooks, fn)
+}
+
+func (c *ConnManager) notify(key string) {
+	c.mu.RLock()
+	hooks := append([]func(string){}, c.hooks...)
+	c.mu.RUnlock()
+	for _, fn := range hooks {
+		fn(key)
+	}
 }
 
 // StartSweeper starts a background goroutine that periodically evicts closed
@@ -123,13 +155,18 @@ func (c *ConnManager) StartSweeper(stop <-chan struct{}) {
 // sweepClosed removes entries whose Dialer has been closed but whose cleanup
 // goroutine (waiting on <-dialer.Done()) may not have run yet.
 func (c *ConnManager) sweepClosed(logger klog.Logger) {
+	var evicted []string
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	for key, d := range c.dials {
 		if cl, ok := d.(closable); ok && cl.IsClosed() {
 			logger.Info("Evicting stale tunnel entry", "key", key)
 			delete(c.dials, key)
+			evicted = append(evicted, key)
 		}
+	}
+	c.mu.Unlock()
+	for _, key := range evicted {
+		c.notify(key)
 	}
 }
 
@@ -158,9 +195,11 @@ func (c *ConnManager) Store(key string, d *revdial.Dialer) {
 		ctx, cancel := context.WithTimeout(context.Background(), registryWriteTimeout)
 		defer cancel()
 		if err := reg.ClaimTunnel(ctx, key); err != nil {
-			klog.Background().Error(err, "claiming tunnel lease; peers cannot route to this edge until the sweeper retries", "key", key)
+			klog.Background().Error(err, "claiming tunnel lease; the edge stays Disconnected and peers cannot route to it until the sweeper retries", "key", key)
 		}
 	}
+	// After the claim, so a hook-driven reconcile that reads the lease sees it.
+	c.notify(key)
 }
 
 // Load returns a Dialer for key: the local revdial dialer when this replica
@@ -171,7 +210,9 @@ func (c *ConnManager) Load(key string) (Dialer, bool) {
 		return d, true
 	}
 	reg, token := c.getRegistry()
-	if reg == nil {
+	if reg == nil || token == "" {
+		// No registry, or a registry without peer relay: only local tunnels
+		// are dialable from this replica.
 		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -237,6 +278,7 @@ func (c *ConnManager) DeleteIf(key string, d Dialer) bool {
 		defer cancel()
 		reg.ReleaseTunnel(ctx, key)
 	}
+	c.notify(key)
 	return true
 }
 
@@ -289,3 +331,13 @@ func (c *ConnManager) LocalKeys() []string {
 // agent_proxy_builder_v2.go), used by consumers (controllers, edgeproxy) to
 // check whether an edge has a live tunnel.
 func EdgeConnKey(resource, cluster, name string) string { return edgeConnKey(resource, cluster, name) }
+
+// ParseEdgeConnKey splits a conn key back into (resource, cluster, name). ok is
+// false for anything that is not exactly three non-empty "/"-separated parts.
+func ParseEdgeConnKey(key string) (resource, cluster, name string, ok bool) {
+	parts := strings.Split(key, "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", "", false
+	}
+	return parts[0], parts[1], parts[2], true
+}

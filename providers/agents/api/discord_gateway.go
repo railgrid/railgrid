@@ -10,14 +10,18 @@ package api
 
 // Discord gateway bot: unlike Telegram/Slack (which POST inbound messages to a
 // webhook), Discord delivers normal messages only over a persistent gateway
-// WebSocket. This manager holds one discordgo session per discord Connection
+// WebSocket. This gateway holds one discordgo session per discord Connection
 // that carries a bot token, reads MESSAGE_CREATE events, and submits them as
 // channel jobs — the same executor path Telegram/Slack chat uses. Replies go
 // back to the exact channel the user typed in (Job.ReplyTarget). Requires the
 // privileged MESSAGE CONTENT intent to be enabled on the Discord application.
 //
-// Runs inside the (single-replica) background executor, so there is exactly one
-// gateway connection per bot — no duplicate handling.
+// Which sessions should exist is decided by the Connection reconciler
+// (controller/connection), which calls Ensure/Remove as connections and their
+// bot tokens come and go; only the socket map lives here. The reconciler runs
+// on the leader replica, so there is exactly one gateway connection per bot —
+// no duplicate handling — and the manager closes every session when the
+// leadership term ends.
 
 import (
 	"context"
@@ -35,11 +39,11 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/executor"
-	"github.com/railgrid/provider-agents/llm"
 )
 
-// discordManager owns the live gateway sessions, keyed by "<cluster>/<conn>".
-type discordManager struct {
+// DiscordGateway owns the live gateway sessions, keyed by "<cluster>/<conn>".
+// It satisfies controller/connection.Gateway.
+type DiscordGateway struct {
 	bg       *background
 	mu       sync.Mutex
 	sessions map[string]*discordSession
@@ -50,8 +54,8 @@ type discordSession struct {
 	fp   string // token fingerprint, to detect rotation
 }
 
-func newDiscordManager(bg *background) *discordManager {
-	return &discordManager{bg: bg, sessions: map[string]*discordSession{}}
+func newDiscordGateway(bg *background) *DiscordGateway {
+	return &DiscordGateway{bg: bg, sessions: map[string]*discordSession{}}
 }
 
 func tokenFingerprint(tok string) string {
@@ -59,89 +63,65 @@ func tokenFingerprint(tok string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// reconcile brings the live gateway sessions in line with the discord
-// connections that currently carry a bot token. Called from the background
-// tick, so bots connect within one poll interval of being created and
-// disconnect when their connection (or token) is removed.
-func (m *discordManager) reconcile(ctx context.Context) {
-	// Across every shard: a connection on a shard we did not list is a bot that
-	// never comes online, with no error anywhere to say so.
-	items, err := m.bg.listAll(ctx, agentsclient.ConnectionGVR)
-	if err != nil {
-		log.Printf("discord: listing connections: %v", err)
-		return
-	}
-	desired := map[string]string{} // key -> bot token
-	for i := range items {
-		conn, err := fromU[agentsv1alpha1.Connection](&items[i])
-		if err != nil || conn.Spec.Type != agentsv1alpha1.ConnectionTypeDiscord {
-			continue
-		}
-		cluster := items[i].GetAnnotations()["kcp.io/cluster"]
-		if cluster == "" {
-			continue
-		}
-		dyn, err := m.bg.scoped(ctx, cluster)
-		if err != nil {
-			log.Printf("discord: connection %s/%s: addressing its workspace: %v", cluster, conn.Name, err)
-			continue
-		}
-		// Report rather than swallow: without this a connection whose Secret is
-		// missing or unreadable through the permission claim looks identical to
-		// a healthy webhook-only one — the bot simply never appears.
-		sec, err := (vwSecrets{dyn}).GetSecret(ctx, llm.SecretNamespace, connectionSecretName(conn.Name))
-		if err != nil {
-			log.Printf("discord: connection %s/%s: reading its credential Secret: %v", cluster, conn.Name, err)
-			continue
-		}
-		token := strings.TrimSpace(string(sec.Data["token"]))
-		if token == "" {
-			continue // webhook-only discord connection (outbound notify)
-		}
-		desired[cluster+"/"+conn.Name] = token
-	}
-
+// Ensure brings the session for one connection in line with its bot token:
+// none → opened, same token → kept, rotated token → replaced. Idempotent, so
+// the reconciler can call it on every pass.
+func (m *DiscordGateway) Ensure(_ context.Context, cluster, name, token string) error {
+	key := cluster + "/" + name
+	fp := tokenFingerprint(token)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// Close sessions whose connection disappeared or whose token rotated.
-	for key, s := range m.sessions {
-		if fp := desired[key]; fp == "" || tokenFingerprint(fp) != s.fp {
-			_ = s.sess.Close()
-			delete(m.sessions, key)
+	if s, ok := m.sessions[key]; ok {
+		if s.fp == fp {
+			return nil
 		}
+		_ = s.sess.Close()
+		delete(m.sessions, key)
 	}
-	// Open sessions for newly-eligible connections.
-	for key, token := range desired {
-		if _, ok := m.sessions[key]; ok {
-			continue
-		}
-		cluster, name, found := strings.Cut(key, "/")
-		if !found {
-			continue
-		}
-		dg, err := discordgo.New("Bot " + token)
-		if err != nil {
-			log.Printf("discord: session for %s: %v", key, err)
-			continue
-		}
-		dg.Identify.Intents = discordgo.IntentGuilds | discordgo.IntentGuildMessages |
-			discordgo.IntentDirectMessages | discordgo.IntentMessageContent
-		dg.AddHandler(m.makeHandler(cluster, name))
-		if err := dg.Open(); err != nil {
-			// The most common failure is the MESSAGE CONTENT privileged intent
-			// not being enabled on the application — surface it plainly.
-			log.Printf("discord: gateway open for %s failed: %v (enable the MESSAGE CONTENT intent on the bot in the Discord developer portal)", key, err)
-			continue
-		}
-		m.sessions[key] = &discordSession{sess: dg, fp: tokenFingerprint(token)}
-		log.Printf("discord: gateway connected for %s", key)
+	dg, err := discordgo.New("Bot " + token)
+	if err != nil {
+		return fmt.Errorf("session for %s: %w", key, err)
 	}
+	dg.Identify.Intents = discordgo.IntentGuilds | discordgo.IntentGuildMessages |
+		discordgo.IntentDirectMessages | discordgo.IntentMessageContent
+	dg.AddHandler(m.makeHandler(cluster, name))
+	if err := dg.Open(); err != nil {
+		// The most common failure is the MESSAGE CONTENT privileged intent
+		// not being enabled on the application — surface it plainly.
+		return fmt.Errorf("gateway open for %s failed: %w (enable the MESSAGE CONTENT intent on the bot in the Discord developer portal)", key, err)
+	}
+	m.sessions[key] = &discordSession{sess: dg, fp: fp}
+	log.Printf("discord: gateway connected for %s", key)
+	return nil
+}
+
+// Remove closes the session for one connection, if any.
+func (m *DiscordGateway) Remove(cluster, name string) {
+	key := cluster + "/" + name
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.sessions[key]; ok {
+		_ = s.sess.Close()
+		delete(m.sessions, key)
+		log.Printf("discord: gateway closed for %s", key)
+	}
+}
+
+// Sessions reports the connections with a live session, for tests and health.
+func (m *DiscordGateway) Sessions() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.sessions))
+	for k := range m.sessions {
+		out = append(out, k)
+	}
+	return out
 }
 
 // makeHandler returns the MESSAGE_CREATE handler bound to one connection. It
 // responds in DMs, when the bot is @-mentioned, or in the connection's
 // configured channel — so the bot stays quiet in busy servers.
-func (m *discordManager) makeHandler(cluster, connName string) func(*discordgo.Session, *discordgo.MessageCreate) {
+func (m *DiscordGateway) makeHandler(cluster, connName string) func(*discordgo.Session, *discordgo.MessageCreate) {
 	return func(sess *discordgo.Session, mc *discordgo.MessageCreate) {
 		if mc.Author == nil || mc.Author.Bot {
 			return
@@ -225,8 +205,9 @@ func (m *discordManager) makeHandler(cluster, connName string) func(*discordgo.S
 	}
 }
 
-// closeAll disconnects every live gateway session (provider shutdown).
-func (m *discordManager) closeAll() {
+// CloseAll disconnects every live gateway session (provider shutdown, or the
+// end of a leadership term — the next leader opens its own).
+func (m *DiscordGateway) CloseAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for key, s := range m.sessions {

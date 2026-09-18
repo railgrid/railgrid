@@ -505,6 +505,7 @@ func (s *Server) recordProjectFileWrites(ctx context.Context, id identity, proje
 		klog.Warningf("app-studio project %s: record uncommitted paths after file write: %v", project.Name, err)
 	}
 	s.scheduleDevelopmentSyncAfterMutation(id, project, projectActionWorkspaceFileWrite)
+	s.signalProject(id.workspaceUUID, project.Name)
 }
 
 func projectFilePathParam(w http.ResponseWriter, r *http.Request) (string, bool) {

@@ -80,16 +80,24 @@ func (c *Controller) syncRuntime(ctx context.Context, tenant string, tmpl *infra
 		kro.LabelTenant:    kro.LabelTenantValue(tenant),
 		kro.LabelManagedBy: kro.ManagedByValue,
 	}
+	// The annotations point the runtime-cluster watch back at this Instance
+	// (mapRuntimeObject); the tenant label above is a hash and can't.
+	annotations := instanceAnnotations(tenant, inst)
 
 	existing, err := c.cfg.Runtime.Resource(gvr).Namespace(ns).Get(ctx, inst.GetName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
+		annotationsAny := make(map[string]any, len(annotations))
+		for k, v := range annotations {
+			annotationsAny[k] = v
+		}
 		desired := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": gvr.GroupVersion().String(),
 			"kind":       tmpl.Spec.InstanceCRD.Kind,
 			"metadata": map[string]any{
-				"name":      inst.GetName(),
-				"namespace": ns,
-				"labels":    labels,
+				"name":        inst.GetName(),
+				"namespace":   ns,
+				"labels":      labels,
+				"annotations": annotationsAny,
 			},
 			"spec": runtime.DeepCopyJSON(values),
 		}}
@@ -106,17 +114,27 @@ func (c *Controller) syncRuntime(ctx context.Context, tenant string, tmpl *infra
 		return nil, fmt.Errorf("get runtime instance: %w", err)
 	}
 
-	// Converge spec + labels. The runtime apiserver applies the RGD schema's
-	// defaults on write, so compare the desired values against the stored
-	// spec field-by-field: a stored spec that only ADDS defaulted fields is
-	// current. (Writing our sparse values over it would churn defaults every
-	// pass; instead only fields we set are compared and written.)
+	// Converge spec + labels + mapping annotations. The runtime apiserver
+	// applies the RGD schema's defaults on write, so compare the desired
+	// values against the stored spec field-by-field: a stored spec that only
+	// ADDS defaulted fields is current. (Writing our sparse values over it
+	// would churn defaults every pass; instead only fields we set are
+	// compared and written.) Annotations are merged the same way: the data
+	// plane keeps its own (last-activity) on this object.
 	curSpec, _, _ := unstructured.NestedMap(existing.Object, "spec")
 	curLabels := existing.GetLabels()
 	labelsCurrent := curLabels[kro.LabelTemplate] == tmpl.Name &&
 		curLabels[kro.LabelTenant] == kro.LabelTenantValue(tenant) &&
 		curLabels[kro.LabelManagedBy] == kro.ManagedByValue
-	if specSubset(values, curSpec) && labelsCurrent {
+	curAnnotations := existing.GetAnnotations()
+	annotationsCurrent := true
+	for k, v := range annotations {
+		if curAnnotations[k] != v {
+			annotationsCurrent = false
+			break
+		}
+	}
+	if specSubset(values, curSpec) && labelsCurrent && annotationsCurrent {
 		return existing, nil
 	}
 
@@ -133,6 +151,14 @@ func (c *Controller) syncRuntime(ctx context.Context, tenant string, tmpl *infra
 	newLabels[kro.LabelTenant] = kro.LabelTenantValue(tenant)
 	newLabels[kro.LabelManagedBy] = kro.ManagedByValue
 	existing.SetLabels(newLabels)
+	newAnnotations := map[string]string{}
+	for k, v := range curAnnotations {
+		newAnnotations[k] = v
+	}
+	for k, v := range annotations {
+		newAnnotations[k] = v
+	}
+	existing.SetAnnotations(newAnnotations)
 
 	updated, err := c.cfg.Runtime.Resource(gvr).Namespace(ns).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
@@ -452,16 +478,25 @@ func (c *Controller) finalize(ctx context.Context, tenantClient client.Client, t
 		return ctrl.Result{}, nil
 	}
 
-	gvr, ns, name, found := c.runtimeTarget(ctx, tenant, inst)
+	target, found := c.runtimeTarget(ctx, tenant, inst)
+	ns := target.namespace
 	if found {
-		err := c.cfg.Runtime.Resource(gvr).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		err := c.cfg.Runtime.Resource(target.gvr).Namespace(ns).Delete(ctx, target.name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("delete runtime instance: %w", err)
 		}
 		// kro finalizes the runtime CR after tearing down its children; hold
 		// the Instance until it is actually gone so "deleted" means deleted.
-		if _, err := c.cfg.Runtime.Resource(gvr).Namespace(ns).Get(ctx, name, metav1.GetOptions{}); err == nil {
-			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+		// The runtime CR's delete event re-enters this path; the watch is
+		// (re)registered from the ref here because the Template may already
+		// be retired, in which case no reconcile of a live Instance did it.
+		if _, err := c.cfg.Runtime.Resource(target.gvr).Namespace(ns).Get(ctx, target.name, metav1.GetOptions{}); err == nil {
+			if c.runtimeWatches != nil {
+				if _, werr := c.runtimeWatches.ensure(ctx, target.gvr, target.kind); werr != nil {
+					return ctrl.Result{}, werr
+				}
+			}
+			return ctrl.Result{RequeueAfter: resyncPeriod}, nil
 		} else if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("check runtime instance gone: %w", err)
 		}
@@ -523,25 +558,39 @@ func removeInstanceFinalizer(ctx context.Context, tenantClient client.Client, ke
 	})
 }
 
+// runtimeRef addresses an Instance's runtime CR on the runtime cluster.
+type runtimeRef struct {
+	gvr       schema.GroupVersionResource
+	kind      string
+	namespace string
+	name      string
+}
+
 // runtimeTarget resolves where the Instance's runtime CR lives: preferably
 // from status.runtimeRef (recorded at sync time, survives Template
 // retirement), else derived from the still-existing Template. found=false
 // means there is nothing addressable to delete — either the instance never
 // synced, or both the ref and the Template are gone.
-func (c *Controller) runtimeTarget(ctx context.Context, tenant string, inst *unstructured.Unstructured) (schema.GroupVersionResource, string, string, bool) {
+func (c *Controller) runtimeTarget(ctx context.Context, tenant string, inst *unstructured.Unstructured) (runtimeRef, bool) {
 	if ref, found, _ := unstructured.NestedMap(inst.Object, "status", runtimeRefKey); found {
 		apiVersion, _ := ref["apiVersion"].(string)
 		resource, _ := ref["resource"].(string)
+		kind, _ := ref["kind"].(string)
 		ns, _ := ref["namespace"].(string)
 		name, _ := ref["name"].(string)
 		if gv, err := schema.ParseGroupVersion(apiVersion); err == nil && resource != "" && ns != "" && name != "" {
-			return gv.WithResource(resource), ns, name, true
+			return runtimeRef{gvr: gv.WithResource(resource), kind: kind, namespace: ns, name: name}, true
 		}
 	}
 	templateName, _, _ := unstructured.NestedString(inst.Object, "spec", "template")
 	tmpl, _, err := c.resolveTemplate(ctx, templateName)
 	if err != nil || tmpl == nil {
-		return schema.GroupVersionResource{}, "", "", false
+		return runtimeRef{}, false
 	}
-	return runtimeGVRFor(tmpl), kro.RuntimeNamespace(tenant, inst.GetNamespace()), inst.GetName(), true
+	return runtimeRef{
+		gvr:       runtimeGVRFor(tmpl),
+		kind:      tmpl.Spec.InstanceCRD.Kind,
+		namespace: kro.RuntimeNamespace(tenant, inst.GetNamespace()),
+		name:      inst.GetName(),
+	}, true
 }

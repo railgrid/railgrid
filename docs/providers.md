@@ -1079,6 +1079,21 @@ A provider's controller (the kcp-talking part) MUST:
   the provider's own workspace; cross-workspace access is via the
   `APIExport`'s VirtualWorkspace endpoint (kcp serves this natively
   using the APIExport's identity).
+- Be a set of **watch-driven reconcilers on multicluster-runtime**, not a
+  polling loop. Tenant kinds are watched through the virtual workspace
+  (`provider-sdk/apiexportprovider` → `mcmanager` → `mcbuilder`), one
+  workqueue per tenant workspace; provider-private kinds go on the manager's
+  local cluster. Every piece of durable state is a `status` field or a
+  private kind in the provider's workspace, so a reconcile can be rebuilt
+  from the objects after a restart. `RequeueAfter` is used only to pace an
+  external system that cannot be watched (a git host, a ticket source, a
+  runner's HTTP API) or to back off a failure — never to notice that another
+  kcp object changed. Write loops run under `provider-sdk/leaderelection`;
+  the HTTP surface (actions, MCP, portal) serves on every replica. The
+  canonical wiring is `providers/code/controller_manager.go`; the rationale
+  and a full before/after is in
+  `railgrid/providers/docs/reconciler-architecture-review.md`. See
+  [AGENTS.md §5.8](../AGENTS.md#58-controllers-reconcilers-on-multicluster-runtime-state-in-krm).
 
 A provider's UI MUST:
 

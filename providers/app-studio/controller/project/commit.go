@@ -20,7 +20,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -73,73 +72,99 @@ func scopeOf(p *aiv1alpha1.Project) (workspace.Scope, bool) {
 	}, true
 }
 
+// commitOutcome reports what commitWorkspace left behind.
+type commitOutcome struct {
+	// dirty means uncommitted work remains — waiting on something an event
+	// announces (an idle turn, a Ready repository, a landing commit).
+	dirty bool
+	// retry means work remains that nothing will announce (files beyond one
+	// commit's bounds, a failed call): the caller requeues with backoff.
+	retry bool
+}
+
+// pendingCommitAnnotation on the Project points at the RepositoryCommit the
+// reconciler is following up (the durable record with the commit's content
+// digest and paths lives in the workspace ledger; see resolvePendingCommit).
+// It is what `kubectl get project -o yaml` shows while a commit is queued
+// behind a GitHub rate limit, and what the RepositoryCommit watch converges.
+const pendingCommitAnnotation = "ai.railgrid.ai/pending-commit"
+
 // commitWorkspace pushes dirty workspace files to git when the project is
-// idle. Returns (dirty, err): dirty=true means uncommitted work remains (not
-// committed this pass, or partially skipped) so the caller keeps polling.
-func (r *Reconciler) commitWorkspace(ctx context.Context, token string, tc client.Client, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (bool, error) {
+// idle. c is the claimed-VW client the Project itself is written through
+// (the pending-commit pointer); tc the tenant-path client the Code provider
+// is read through.
+func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, token string, tc client.Client, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
 	if r.Workspace == nil || r.HubBase == "" {
-		return false, nil // commit convergence not wired (REST-only dev)
+		return commitOutcome{}, nil // commit convergence not wired (REST-only dev)
 	}
 	b := p.Spec.Repository
 	if b == nil || strings.TrimSpace(b.RepositoryRef) == "" {
-		return false, nil
+		return commitOutcome{}, nil
 	}
 	scope, ok := scopeOf(p)
 	if !ok {
-		return false, nil // legacy project without identity annotations
+		return commitOutcome{}, nil // legacy project without identity annotations
 	}
 
 	if p.Annotations["ai.railgrid.ai/initialize-repository"] == b.RepositoryRef {
 		if err := r.Workspace.InitializeRepositorySource(ctx, scope, b.RepositoryRef); err != nil {
-			return true, fmt.Errorf("initialize repository source: %w", err)
+			return commitOutcome{dirty: true}, fmt.Errorf("initialize repository source: %w", err)
 		}
 	}
 
 	// Heal a settlement another writer recorded but could not reconcile
 	// (e.g. the assistant crashed between commit and ledger settle).
 	if _, err := r.Workspace.ReconcileCommitSettlement(ctx, scope); err != nil {
-		return true, fmt.Errorf("reconcile commit settlement: %w", err)
+		return commitOutcome{dirty: true}, fmt.Errorf("reconcile commit settlement: %w", err)
 	}
 
-	paths, err := r.Workspace.UncommittedPaths(ctx, scope)
-	if err != nil {
-		return true, fmt.Errorf("list uncommitted paths: %w", err)
-	}
-	if len(paths) == 0 {
-		return false, nil
-	}
-	if !repositoryReady(repo) {
-		return true, nil // repository still provisioning; poll
-	}
 	if r.Owns != nil && !r.Owns(scope) {
 		// Another replica owns this project's workspace; whatever this
 		// replica's tree holds is a leftover from a previous ownership term
 		// and must not be committed over the live owner's work.
-		return false, nil
+		return commitOutcome{}, nil
 	}
-	if r.Busy != nil && r.Busy(scope) {
-		return true, nil // an assistant turn owns the workspace; poll
-	}
+
 	// A commit the Code provider accepted but had not finished (rate limit,
 	// wait timeout) is followed up by name; resending would only queue
 	// another RepositoryCommit behind the same limit. Newer workspace edits
-	// wait for it to settle.
-	if pending, ok := r.pendingCommitFor(scope); ok {
-		resolved, err := r.resolvePendingCommit(ctx, tc, scope, pending)
+	// wait for it to settle. This runs before the idle gate so a commit that
+	// lands mid-turn settles as soon as its watch event arrives.
+	pending, hasPending, err := r.Workspace.PendingCommit(ctx, scope)
+	if err != nil {
+		return commitOutcome{dirty: true}, fmt.Errorf("read pending commit: %w", err)
+	}
+	if hasPending {
+		resolved, err := r.resolvePendingCommit(ctx, c, tc, p, scope, pending)
 		if err != nil || !resolved {
-			return true, err
+			return commitOutcome{dirty: true}, err
 		}
-		if paths, err = r.Workspace.UncommittedPaths(ctx, scope); err != nil {
-			return true, fmt.Errorf("list uncommitted paths: %w", err)
+	} else if p.Annotations[pendingCommitAnnotation] != "" {
+		// The pointer outlived its ledger record (the workspace volume was
+		// replaced): there is nothing to follow up, so the next commit is a
+		// fresh one — at worst one resend, the same as before the record.
+		if err := r.setPendingCommitPointer(ctx, c, p, ""); err != nil {
+			return commitOutcome{dirty: true}, err
 		}
-		if len(paths) == 0 {
-			return false, nil
-		}
+	}
+
+	paths, err := r.Workspace.UncommittedPaths(ctx, scope)
+	if err != nil {
+		return commitOutcome{dirty: true}, fmt.Errorf("list uncommitted paths: %w", err)
+	}
+	if len(paths) == 0 {
+		return commitOutcome{}, nil
+	}
+	if !repositoryReady(repo) {
+		return commitOutcome{dirty: true}, nil // repository still provisioning; its watch wakes us
+	}
+	if r.Busy != nil && r.Busy(scope) {
+		return commitOutcome{dirty: true}, nil // an assistant turn owns the workspace; its end is signalled
 	}
 
 	mcp := hubmcp.NewClient(r.HubBase, clusterOf(p), token, r.HubInsecure)
 	if !mcp.Ready() {
-		return true, nil
+		return commitOutcome{dirty: true, retry: true}, nil
 	}
 
 	// Build the payload the same way the assistant's commit tool does:
@@ -148,16 +173,16 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, token string, tc clien
 	// older provider, or over the per-file bound) is skipped and stays dirty
 	// without forcing a requeue, so it neither blocks text commits nor spins
 	// the reconciler; the next commit pass after a provider upgrade picks it
-	// up. Files past the bundle bound wait for the next pass.
+	// up. Files past the bundle bound are committed on an immediate requeue.
 	sort.Strings(paths)
 	bundle, err := r.buildCommitBundle(ctx, mcp, clusterOf(p), scope, paths)
 	if err != nil {
-		return true, err
+		return commitOutcome{dirty: true}, err
 	}
 	files, deletePaths, committed := bundle.files, bundle.deletePaths, bundle.committed
 	r.noteSkippedPaths(p.Name, scope, bundle.skipped)
 	if len(files) == 0 && len(deletePaths) == 0 {
-		return bundle.deferred, nil
+		return commitOutcome{dirty: bundle.deferred, retry: bundle.deferred}, nil
 	}
 
 	writtenPaths := make([]string, 0, len(files))
@@ -176,41 +201,45 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, token string, tc clien
 	var commit commitToolResult
 	if callErr == nil {
 		if err := json.Unmarshal(result, &commit); err != nil {
-			return true, fmt.Errorf("commit workspace: decode commit_files result: %w", err)
+			return commitOutcome{dirty: true}, fmt.Errorf("commit workspace: decode commit_files result: %w", err)
 		}
 	}
 	// Only a Succeeded commit with a SHA has landed. An accepted but
-	// unfinished one is remembered and followed up by name; anything else
+	// unfinished one is recorded and followed up by name; anything else
 	// leaves the paths dirty so the next idle reconcile retries.
 	if callErr != nil || !commit.settled() {
 		name := unfinishedCommitName(callErr, commit)
 		if name == "" {
 			if callErr != nil {
-				return true, fmt.Errorf("commit workspace: %w", callErr)
+				return commitOutcome{dirty: true}, fmt.Errorf("commit workspace: %w", callErr)
 			}
-			return true, fmt.Errorf("commit workspace: RepositoryCommit %q is not settled (phase %q); retrying on the next idle reconcile", commit.Name, commit.Phase)
+			return commitOutcome{dirty: true}, fmt.Errorf("commit workspace: RepositoryCommit %q is not settled (phase %q); retrying on the next idle reconcile", commit.Name, commit.Phase)
 		}
 		digest, err := r.Workspace.WorkspaceDigest(ctx, scope, committed)
 		if err != nil {
-			return true, fmt.Errorf("workspace digest for pending commit: %w", err)
+			return commitOutcome{dirty: true}, fmt.Errorf("workspace digest for pending commit: %w", err)
 		}
-		r.setPendingCommit(scope, pendingCommit{
-			Name:          name,
-			RepositoryRef: b.RepositoryRef,
-			Digest:        digest,
-			Paths:         committed,
-			NextCheck:     r.clock().Add(pendingCommitRecheckInterval),
-		})
+		if err := r.Workspace.RecordPendingCommit(ctx, scope, workspace.PendingCommit{
+			Name:            name,
+			RepositoryRef:   b.RepositoryRef,
+			WorkspaceDigest: digest,
+			Paths:           committed,
+		}); err != nil {
+			return commitOutcome{dirty: true}, fmt.Errorf("record pending commit: %w", err)
+		}
+		if err := r.setPendingCommitPointer(ctx, c, p, name); err != nil {
+			return commitOutcome{dirty: true}, err
+		}
 		log.Printf("app-studio project %s: RepositoryCommit %s accepted but not finished; following it up instead of resending", p.Name, name)
-		return true, nil
+		return commitOutcome{dirty: true}, nil
 	}
 
 	digest, err := r.Workspace.WorkspaceDigest(ctx, scope, committed)
 	if err != nil {
-		return true, fmt.Errorf("workspace digest after commit: %w", err)
+		return commitOutcome{dirty: true}, fmt.Errorf("workspace digest after commit: %w", err)
 	}
 	if err := r.settleCommit(ctx, scope, digest, committed); err != nil {
-		return true, err
+		return commitOutcome{dirty: true}, err
 	}
 	log.Printf("app-studio project %s: committed %d files (%d deletions) @ %s", p.Name, len(files), len(deletePaths), shortSHA(commit.CommitSHA))
 	if bundle.deferred {
@@ -227,7 +256,7 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, token string, tc clien
 		Branch:        commit.Branch,
 		Files:         committed,
 	})
-	return bundle.deferred, nil
+	return commitOutcome{dirty: bundle.deferred, retry: bundle.deferred}, nil
 }
 
 // commitBundle is one bounded commit_files payload.
@@ -315,15 +344,15 @@ func (r *Reconciler) commitFilesSupportsBinary(ctx context.Context, mcp *hubmcp.
 
 // noteSkippedPaths logs files that stay uncommitted, once per distinct set.
 func (r *Reconciler) noteSkippedPaths(project string, scope workspace.Scope, skipped map[string]string) {
-	key := pendingCommitKey(scope)
+	key := strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID}, "/")
 	lines := make([]string, 0, len(skipped))
 	for path, reason := range skipped {
 		lines = append(lines, path+" ("+reason+")")
 	}
 	sort.Strings(lines)
 	notice := strings.Join(lines, ", ")
-	r.pendingMu.Lock()
-	defer r.pendingMu.Unlock()
+	r.noticeMu.Lock()
+	defer r.noticeMu.Unlock()
 	if r.skipNotices == nil {
 		r.skipNotices = map[string]string{}
 	}
@@ -367,28 +396,21 @@ func shortSHA(sha string) string {
 // commit_files waits a bounded time for the RepositoryCommit it creates. When
 // GitHub rate-limits the provider (or the wait simply ends first) the tool
 // fails with the RepositoryCommit's name while the provider keeps retrying it.
-// Resending on every poll would queue yet another RepositoryCommit behind the
-// same limit, so the reconciler remembers the pending one per project and
-// reads it by name through the tenant client (the project identity's own
-// binding to the Code provider) until it settles. The map is in memory: the
-// provider is single-replica (the chart rejects replicaCount > 1), and after a
-// restart the worst case is one resend.
-
-// pendingCommitRecheckInterval spaces follow-up reads of a pending
-// RepositoryCommit; the provider's own rate-limit retries are far slower.
-const pendingCommitRecheckInterval = 60 * time.Second
+// Resending would queue yet another RepositoryCommit behind the same limit,
+// so the reconciler records the pending one durably — its name, and the
+// workspace digest and paths it carried, in the project's workspace ledger
+// (next to the settlement receipt), with the name mirrored onto the Project
+// as pendingCommitAnnotation — and reads it by name through the tenant
+// client whenever the RepositoryCommit watch reports a change, until it
+// settles. Nothing is polled: the watch drives every follow-up.
+//
+// The RepositoryCommit is created by the Code provider's commit_files tool,
+// not by this reconciler, because its spec references a provider-owned
+// source bundle that only that tool can store; the object it names is still
+// the one pointer everything converges on.
 
 // repositoryCommitGVK is the Code provider's RepositoryCommit resource.
 var repositoryCommitGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: "v1alpha1", Kind: "RepositoryCommit"}
-
-type pendingCommit struct {
-	Name          string
-	RepositoryRef string
-	// Digest and Paths are the workspace content the commit carried.
-	Digest    string
-	Paths     []string
-	NextCheck time.Time
-}
 
 // unfinishedCommitPattern extracts the RepositoryCommit name from the Code
 // provider's "queued behind a GitHub rate limit" / "did not finish within the
@@ -412,67 +434,62 @@ func unfinishedCommitName(callErr error, result commitToolResult) string {
 	return strings.TrimSpace(result.Name)
 }
 
-func (r *Reconciler) clock() time.Time {
-	if r.now != nil {
-		return r.now()
+// setPendingCommitPointer writes (or, with an empty name, clears) the
+// Project's pending-commit annotation. A nil client (tests without a
+// control-plane fake) leaves the object untouched.
+func (r *Reconciler) setPendingCommitPointer(ctx context.Context, c client.Client, p *aiv1alpha1.Project, name string) error {
+	if p.Annotations[pendingCommitAnnotation] == name || c == nil {
+		return nil
 	}
-	return time.Now()
-}
-
-func (r *Reconciler) pendingCommitFor(scope workspace.Scope) (pendingCommit, bool) {
-	r.pendingMu.Lock()
-	defer r.pendingMu.Unlock()
-	pending, ok := r.pendingCommits[pendingCommitKey(scope)]
-	return pending, ok
-}
-
-func (r *Reconciler) setPendingCommit(scope workspace.Scope, pending pendingCommit) {
-	r.pendingMu.Lock()
-	defer r.pendingMu.Unlock()
-	if r.pendingCommits == nil {
-		r.pendingCommits = map[string]pendingCommit{}
+	if p.Annotations == nil {
+		p.Annotations = map[string]string{}
 	}
-	r.pendingCommits[pendingCommitKey(scope)] = pending
+	if name == "" {
+		delete(p.Annotations, pendingCommitAnnotation)
+	} else {
+		p.Annotations[pendingCommitAnnotation] = name
+	}
+	if err := c.Update(ctx, p); err != nil {
+		return fmt.Errorf("record pending RepositoryCommit %q on project: %w", name, err)
+	}
+	return nil
 }
 
-func (r *Reconciler) clearPendingCommit(scope workspace.Scope) {
-	r.pendingMu.Lock()
-	defer r.pendingMu.Unlock()
-	delete(r.pendingCommits, pendingCommitKey(scope))
-}
-
-func pendingCommitKey(scope workspace.Scope) string {
-	return strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID}, "/")
+// clearPendingCommit forgets a pending commit in both places.
+func (r *Reconciler) clearPendingCommit(ctx context.Context, c client.Client, p *aiv1alpha1.Project, scope workspace.Scope) error {
+	if err := r.Workspace.ClearPendingCommit(ctx, scope); err != nil {
+		return err
+	}
+	return r.setPendingCommitPointer(ctx, c, p, "")
 }
 
 // resolvePendingCommit reads a pending RepositoryCommit and reports whether
 // it is resolved: Succeeded (settled and announced) or Failed/gone (cleared,
-// so a fresh commit may be sent). A still-running commit is re-read no sooner
-// than pendingCommitRecheckInterval.
-func (r *Reconciler) resolvePendingCommit(ctx context.Context, tc client.Client, scope workspace.Scope, pending pendingCommit) (bool, error) {
-	now := r.clock()
-	if tc == nil || now.Before(pending.NextCheck) {
+// so a fresh commit may be sent). A still-running commit stays recorded and
+// is re-read when its watch event arrives.
+func (r *Reconciler) resolvePendingCommit(ctx context.Context, c, tc client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (bool, error) {
+	if tc == nil {
 		return false, nil
 	}
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(repositoryCommitGVK)
 	if err := tc.Get(ctx, types.NamespacedName{Name: pending.Name}, obj); err != nil {
 		if apierrors.IsNotFound(err) {
-			r.clearPendingCommit(scope)
-			return true, nil
+			log.Printf("app-studio project %s: pending RepositoryCommit %s is gone; a fresh commit will be sent", scope.ProjectName, pending.Name)
+			return true, r.clearPendingCommit(ctx, c, p, scope)
 		}
-		pending.NextCheck = now.Add(pendingCommitRecheckInterval)
-		r.setPendingCommit(scope, pending)
 		return false, fmt.Errorf("read pending RepositoryCommit %q: %w", pending.Name, err)
 	}
 	phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
 	sha, _, _ := unstructured.NestedString(obj.Object, "status", "commitSHA")
 	switch {
 	case phase == commitPhaseSucceeded && strings.TrimSpace(sha) != "":
-		if err := r.settleCommit(ctx, scope, pending.Digest, pending.Paths); err != nil {
+		if err := r.settleCommit(ctx, scope, pending.WorkspaceDigest, pending.Paths); err != nil {
 			return false, err
 		}
-		r.clearPendingCommit(scope)
+		if err := r.clearPendingCommit(ctx, c, p, scope); err != nil {
+			return false, err
+		}
 		commitURL, _, _ := unstructured.NestedString(obj.Object, "status", "commitURL")
 		branch, _, _ := unstructured.NestedString(obj.Object, "status", "branch")
 		log.Printf("app-studio project %s: pending RepositoryCommit %s landed @ %s", scope.ProjectName, pending.Name, shortSHA(sha))
@@ -486,12 +503,11 @@ func (r *Reconciler) resolvePendingCommit(ctx context.Context, tc client.Client,
 		return true, nil
 	case phase == commitPhaseFailed:
 		log.Printf("app-studio project %s: pending RepositoryCommit %s failed; a fresh commit will be sent", scope.ProjectName, pending.Name)
-		r.clearPendingCommit(scope)
-		return true, nil
+		return true, r.clearPendingCommit(ctx, c, p, scope)
 	default:
-		pending.NextCheck = now.Add(pendingCommitRecheckInterval)
-		r.setPendingCommit(scope, pending)
-		return false, nil
+		// Still running. Make sure the pointer is visible (an earlier
+		// annotation write may have conflicted) and wait for the watch.
+		return false, r.setPendingCommitPointer(ctx, c, p, pending.Name)
 	}
 }
 

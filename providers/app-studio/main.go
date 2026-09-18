@@ -339,6 +339,10 @@ func runServe() {
 			Store:       msgStore,
 			HubBase:     strings.TrimRight(os.Getenv("RAILGRID_HUB_URL"), "/"),
 			HubInsecure: os.Getenv("RAILGRID_HUB_INSECURE") == "true",
+			// Event-driven reconciles: the API publishes thread/turn and
+			// workspace transitions, the controllers subscribe.
+			SessionSignals: apiServer.SessionSignals(),
+			ProjectSignals: apiServer.ProjectSignals(),
 		}
 		start := func(startCtx context.Context, config *rest.Config, startDeps controllerDeps) error {
 			return startControllerManager(startCtx, config, startDeps, controllerHealth)

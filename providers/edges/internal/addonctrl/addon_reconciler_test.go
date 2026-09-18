@@ -299,3 +299,22 @@ func TestForeignServiceIsNotHijacked(t *testing.T) {
 		t.Errorf("the foreign Service was modified: %+v", svc.Spec)
 	}
 }
+
+// The token Secret is the one input to this controller that is not an Addon
+// status change, so its watch must map back to the Addon that owns it — and
+// to nothing for every other Secret in the workspace.
+func TestTokenSecretMapsToItsAddon(t *testing.T) {
+	ctx := context.Background()
+	if reqs := mapTokenSecretToAddon(ctx, tokenSecret()); len(reqs) != 1 || reqs[0].Name != addonName || reqs[0].Namespace != "" {
+		t.Fatalf("token secret mapped to %+v, want Addon %q", reqs, addonName)
+	}
+	for _, s := range []*corev1.Secret{
+		{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: tokenSecretNamespace}},
+		{ObjectMeta: metav1.ObjectMeta{Name: addonName + tokenSecretSuffix, Namespace: "railgrid-system"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: tokenSecretSuffix[1:], Namespace: tokenSecretNamespace}},
+	} {
+		if reqs := mapTokenSecretToAddon(ctx, s); len(reqs) != 0 {
+			t.Fatalf("secret %s/%s mapped to %+v, want nothing", s.Namespace, s.Name, reqs)
+		}
+	}
+}

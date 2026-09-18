@@ -132,18 +132,38 @@ func TestDesiredNetworkPhaseDoesNotOscillateDuringRuntimeRollout(t *testing.T) {
 	}
 }
 
-func TestInstanceRequeueAfterWaitsForCurrentRuntimeNetwork(t *testing.T) {
+// The runtime CR is watched, so neither readiness nor the setup -> runtime
+// network transition is polled: with no lifecycle deadline pending only the
+// safety resync remains, regardless of the runtime generation's state.
+func TestInstanceRequeueAfterIsSafetyResyncWithoutLifecycleDeadline(t *testing.T) {
 	tmpl := developmentTemplate()
 	created := metav1.Time{}
 	now := time.Time{}
 
 	if got := instanceRequeueAfter(now, created, tmpl,
-		runtimeForNetwork(3, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True"), true); got != requeueNotReady {
-		t.Fatalf("stale runtime requeue = %s, want convergence interval %s", got, requeueNotReady)
+		runtimeForNetwork(3, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != resyncPeriod {
+		t.Fatalf("stale runtime requeue = %s, want safety resync %s", got, resyncPeriod)
 	}
 	if got := instanceRequeueAfter(now, created, tmpl,
-		runtimeForNetwork(3, 3, infrav1alpha1.RailgridNetworkPhaseRuntime, "True"), true); got != requeueReady {
-		t.Fatalf("current runtime requeue = %s, want ready interval %s", got, requeueReady)
+		runtimeForNetwork(3, 3, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != resyncPeriod {
+		t.Fatalf("current runtime requeue = %s, want safety resync %s", got, resyncPeriod)
+	}
+	if got := instanceRequeueAfter(now, created, nil, nil); got != resyncPeriod {
+		t.Fatalf("no-template requeue = %s, want safety resync %s", got, resyncPeriod)
+	}
+}
+
+// A development Instance's idle/max-lifetime deadline is still scheduled
+// exactly when it falls inside the resync window.
+func TestInstanceRequeueAfterHonorsLifecycleDeadline(t *testing.T) {
+	now := time.Now()
+	tmpl := developmentTemplate()
+	tmpl.Spec.Development.MaxLifetimeSeconds = 90
+	created := metav1.NewTime(now.Add(-30 * time.Second))
+
+	got := instanceRequeueAfter(now, created, tmpl, nil)
+	if got <= 0 || got > 60*time.Second {
+		t.Fatalf("lifecycle requeue = %s, want about 60s (the remaining lifetime)", got)
 	}
 }
 

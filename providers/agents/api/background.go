@@ -8,27 +8,36 @@
 
 package api
 
-// Background execution: the piece that makes schedules fire on their own
-// clock and webhooks start runs without a user request.
+// Background execution: the tenant access and job plumbing behind everything
+// the provider does without a user request — schedule fires, trigger
+// webhooks, channel messages, Discord gateway bots, run recovery.
 //
 // The provider's own service-account kubeconfig (from init) targets its kcp
 // workspace. From there we read the agents APIExportEndpointSlice to discover
 // the APIExport virtual-workspace URLs, which serve every bound tenant
-// workspace (wildcard /clusters/* for lists, /clusters/<id> for writes) plus
-// the claimed core resources (Secrets — the model credentials). A small
-// polling loop derives due schedules from CR state, claims each fire with an
-// optimistic status update (conflict = another replica won), and submits a
-// serializable Job to the executor (in-process pool today; swappable for a
-// durable engine — see the executor package).
+// workspace (/clusters/<id> for per-tenant reads and writes) plus the claimed
+// core resources (Secrets — the model credentials). The inbound HTTP paths
+// (trigger webhooks, channel webhooks, OAuth callbacks, service-to-service
+// invoke) address a tenant workspace through these; the executor handler runs
+// each job through the same clients.
+//
+// What DECIDES to act — which schedule is due, which connection needs its
+// webhook secret repaired or its OAuth token refreshed, which Discord bot
+// should be online, which agent lacks a phase — is not here any more. Those
+// are the multicluster-runtime reconcilers under controller/, driven by
+// watches on the CRs rather than by a timer over every tenant; see
+// controller_manager.go. What remains on a slow tick is only what has no
+// watch to hang off: re-reading the endpoint slice (a shard added to the
+// platform, an endpoint URL that changed) and the run recovery sweep, which
+// walks Postgres rows, not CRs.
 //
 // The slice advertises ONE ENDPOINT PER KCP SHARD, and each endpoint only
-// serves the tenant workspaces bound on that shard. Binding to a single URL
-// therefore makes every tenant on the other shards invisible: no schedules, no
-// heartbeats, no trigger webhooks, no Discord gateway, no OAuth refresh — all
-// silently, since a wildcard list against the wrong shard returns an empty list
-// rather than an error. So we hold one wildcard client per shard, merge across
-// them on every list, and remember which shard serves each tenant cluster for
-// the single-cluster (write) path.
+// serves the tenant workspaces bound on that shard. Addressing a single URL
+// therefore makes every tenant on the other shards unreachable — silently,
+// since the wrong shard answers a cluster-scoped read with an error the HTTP
+// path would report as "not found". So we hold every shard's URL, remember
+// which shard serves each tenant cluster, and probe the shards for a cluster
+// we have not seen.
 
 import (
 	"context"
@@ -46,7 +55,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robfig/cron/v3"
+	"github.com/google/uuid"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -84,9 +93,9 @@ type background struct {
 	base   *rest.Config
 	exec   executor.Executor
 
-	// mu guards shards + clusterShard: the poll loop rebuilds them while HTTP
-	// handlers (webhooks, OAuth callbacks) and Discord gateway callbacks read
-	// them.
+	// mu guards shards + clusterShard: the discovery tick rebuilds them while
+	// HTTP handlers (webhooks, OAuth callbacks) and Discord gateway callbacks
+	// read them.
 	mu     sync.RWMutex
 	shards []*vwShard
 	// clusterShard maps a tenant logical cluster to the URL of the shard that
@@ -100,7 +109,7 @@ type background struct {
 	// scheduler does not re-provision on every run. See agentidentity.go.
 	identities *identityCache
 
-	discord *discordManager // Discord gateway bots (inbound chat)
+	discord *DiscordGateway // Discord gateway bots (inbound chat)
 
 	// seen de-duplicates inbound channel deliveries (Slack event_id, Telegram
 	// update_id, Discord message id) so a platform retry does not run twice.
@@ -111,9 +120,11 @@ type background struct {
 	scopedFn func(ctx context.Context, clusterID string) (dynamic.Interface, error)
 }
 
-// StartBackground wires and starts the background executor + scheduler loop.
-// No-op (with a log line) when no provider kubeconfig is configured — the
-// provider then serves per-request traffic only.
+// StartBackground wires and starts the background executor and the slow
+// discovery/recovery tick. The reconcilers that decide what to run are started
+// separately by the controller manager (see ControllerDeps). No-op (with a log
+// line) when no provider kubeconfig is configured — the provider then serves
+// per-request traffic only.
 func (s *Server) StartBackground(ctx context.Context) {
 	if s.cfg.ProviderKubeconfig == "" {
 		log.Printf("background executor disabled (set RAILGRID_PROVIDER_KUBECONFIG to enable autonomous schedules/webhooks)")
@@ -131,11 +142,11 @@ func (s *Server) StartBackground(ctx context.Context) {
 	bg := &background{server: s, base: base, interval: interval, key: s.webhookKeyBytes(), identities: newIdentityCache(),
 		seen: newInboundDedup(inboundDedupTTL, inboundDedupMax)}
 	bg.exec = executor.NewInProcess(bg.handle, 4, 10*time.Minute)
-	bg.discord = newDiscordManager(bg)
+	bg.discord = newDiscordGateway(bg)
 	_ = bg.exec.Start(ctx)
 	s.bg = bg
-	go bg.loop(ctx)
-	log.Printf("background executor started (interval %s)", interval)
+	go bg.run(ctx)
+	log.Printf("background executor started (discovery/recovery interval %s)", interval)
 }
 
 // webhookKeyBytes resolves the webhook signing key: explicit env key, else
@@ -274,41 +285,6 @@ func (b *background) rememberCluster(clusterID, shardURL string) {
 	b.clusterShard[clusterID] = shardURL
 }
 
-// listAll lists a resource across EVERY shard's wildcard endpoint and merges
-// the results, recording each item's owning shard on the way. Listing a single
-// endpoint would silently return only the tenants bound on that one shard.
-//
-// A shard that errors is logged and skipped so its outage cannot stall the
-// tenants on the healthy shards; the call fails only when every shard failed.
-func (b *background) listAll(ctx context.Context, gvr schema.GroupVersionResource) ([]unstructured.Unstructured, error) {
-	shards := b.snapshotShards()
-	if len(shards) == 0 {
-		return nil, fmt.Errorf("no APIExport virtual workspace endpoint discovered yet")
-	}
-	var out []unstructured.Unstructured
-	var failures []string
-	for _, s := range shards {
-		l, err := s.wildcard.Resource(gvr).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", s.url, err))
-			continue
-		}
-		for i := range l.Items {
-			if c := l.Items[i].GetAnnotations()["kcp.io/cluster"]; c != "" {
-				b.rememberCluster(c, s.url)
-			}
-			out = append(out, l.Items[i])
-		}
-	}
-	if len(failures) == len(shards) {
-		return nil, errors.New(strings.Join(failures, "; "))
-	}
-	for _, f := range failures {
-		log.Printf("background: listing %s: %s", gvr.Resource, f)
-	}
-	return out, nil
-}
-
 // shardFor resolves which shard's VW serves a tenant cluster. It answers from
 // cache once any list has seen the cluster; otherwise it probes each endpoint,
 // because the inbound paths (trigger webhooks, channel webhooks, OAuth
@@ -403,25 +379,18 @@ func fromU[T any](u *unstructured.Unstructured) (*T, error) {
 	return &out, nil
 }
 
-// ---- scheduler policy -------------------------------------------------------
+// ---- discovery + recovery tick ------------------------------------------------
 
-func (b *background) loop(ctx context.Context) {
+// run is the slow tick that remains after the reconcilers took over: it keeps
+// the shard set current and sweeps runs a dead replica left in flight. Both are
+// things no CR watch can trigger.
+func (b *background) run(ctx context.Context) {
 	t := time.NewTicker(b.interval)
 	defer t.Stop()
 	// Discover the VW immediately so OAuth callbacks and inbound webhooks work
-	// right after startup instead of failing for a full interval (they depend
-	// on the shard set, which is otherwise only built on the first tick).
+	// right after startup instead of failing for a full interval.
 	if err := b.ensureVW(ctx); err != nil {
 		log.Printf("background: virtual workspace not ready at startup: %v", err)
-	}
-	if b.ready() && b.discord != nil {
-		b.discord.reconcile(ctx)
-	}
-	// Inbound webhooks reject unverifiable deliveries, so before anything else
-	// make every messaging connection verifiable (or say why it is not).
-	if b.ready() {
-		b.reconcileChannelSecrets(ctx)
-		b.reconcileAgentPhases(ctx)
 	}
 	// Recover runs a previous process left in flight before doing anything else:
 	// a restarted deploy should pick its work back up, not sit on rows stuck in
@@ -433,7 +402,7 @@ func (b *background) loop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			if b.discord != nil {
-				b.discord.closeAll()
+				b.discord.CloseAll()
 			}
 			return
 		case <-t.C:
@@ -441,16 +410,9 @@ func (b *background) loop(ctx context.Context) {
 				log.Printf("background: virtual workspace not ready: %v", err)
 				continue
 			}
-			b.tick(ctx)
-			b.refreshOAuthTokens(ctx)
 			// Catches runs stranded by a crash of ANOTHER replica, and any this
 			// process could not recover at startup.
 			b.server.sweepStaleRuns(ctx, b.resumeRecoveredRun, b.notifyStrandedRun)
-			if b.discord != nil {
-				b.discord.reconcile(ctx)
-			}
-			b.reconcileChannelSecrets(ctx)
-			b.reconcileAgentPhases(ctx)
 		}
 	}
 }
@@ -516,195 +478,55 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 	return nil
 }
 
-func (b *background) tick(ctx context.Context) {
-	items, err := b.listAll(ctx, agentsclient.ScheduleGVR)
-	if err != nil {
-		log.Printf("background: listing schedules: %v", err)
-		return
-	}
-	now := time.Now().UTC()
-	for i := range items {
-		item := &items[i]
-		if err := b.process(ctx, item, now); err != nil {
-			log.Printf("background: schedule %s/%s: %v", item.GetAnnotations()["kcp.io/cluster"], item.GetName(), err)
-		}
-	}
-}
+// ---- job submission ------------------------------------------------------------
 
-func (b *background) process(ctx context.Context, u *unstructured.Unstructured, now time.Time) error {
-	clusterID := u.GetAnnotations()["kcp.io/cluster"]
-	if clusterID == "" {
-		return fmt.Errorf("no kcp.io/cluster annotation")
-	}
-	sched, err := fromU[agentsv1alpha1.Schedule](u)
-	if err != nil {
-		return err
-	}
-	if sched.Spec.Suspend || sched.Status.DisabledReason != "" {
-		return nil
-	}
-
-	// A spec edit bumps metadata.generation. The stored nextRun was computed
-	// from the previous cron/timezone/runAt, so it is stale — drop it and let
-	// scheduleDue re-derive the next fire time from the new spec. Without this
-	// an edited schedule keeps firing (or waiting) on its old clock until it
-	// happens to fire once and recomputes.
-	genChanged := u.GetGeneration() != sched.Status.ObservedGeneration
-	if genChanged {
-		sched.Status.NextRun = nil
-	}
-
-	fire, next, permErr := scheduleDue(sched, now)
-	if permErr != nil {
-		return b.updateStatus(ctx, clusterID, agentsclient.ScheduleGVR, u, map[string]any{
-			"disabledReason":     permErr.Error(),
-			"observedGeneration": u.GetGeneration(),
+// Submit is the one door for background work (schedule fires from the
+// reconciler, trigger webhooks, channel messages, Discord gateway messages).
+// It records a Pending run row BEFORE the job enters the in-process queue and
+// pins the job to that row, so the executor handler executes the run the
+// producer already made visible instead of creating a second record.
+//
+// What this makes durable, and what it does not:
+//
+//   - Durable: the fact that a run was requested. A crash between Submit and
+//     execution leaves a Pending row that the recovery sweep (recover.go)
+//     finds once it is older than staleRunGrace, closes honestly, and reports
+//     to the chat or channel the answer was headed for. Nobody waits forever
+//     on a message the process lost. A cancel requested while the job is
+//     still queued is honoured too: handle() checks the row before starting.
+//   - Not durable: the queue itself. A restart drops queued jobs; the Pending
+//     row is closed by the sweep, not re-executed, because re-executing a
+//     schedule fire or a webhook without the producer's context is guesswork.
+//     Schedules limit the damage on their own: fire times live on the CR, so
+//     a fire that was never CLAIMED (the reconciler died before the status
+//     update) fires on the first reconcile after restart. A fire that was
+//     claimed but whose job was lost is the case the sweep reports.
+//
+// A persistent queue (a durable-execution engine registering handle as its
+// activity — the executor package was shaped for that) is the follow-up that
+// would close the second gap.
+func (b *background) Submit(ctx context.Context, job executor.Job) error {
+	if job.RunID == "" {
+		now := time.Now().UTC()
+		runID := uuid.NewString()
+		scope := b.scopeFor(ctx, job.ClusterID, job.AgentRef)
+		err := b.server.store.SaveRun(ctx, scope, store.Run{
+			ID: runID, AgentName: job.AgentRef, SessionID: job.SessionID, Trigger: job.Trigger,
+			Phase: store.RunPhasePending, Input: job.Task, CreatedAt: now, UpdatedAt: now,
+			Delivery: &store.RunDelivery{
+				SourceName: job.SourceName, ReplyTarget: job.ReplyTarget,
+				NotifyChannel: job.NotifyChannel, Kind: string(job.Kind),
+			},
 		})
-	}
-	if !fire {
-		// Persist a freshly-armed nextRun on first sight or after a spec edit,
-		// and record the observed generation so the re-arm happens exactly once.
-		fields := map[string]any{}
-		if genChanged {
-			fields["observedGeneration"] = u.GetGeneration()
-		}
-		if sched.Status.NextRun == nil && !next.IsZero() {
-			fields["nextRun"] = next.Format(time.RFC3339)
-		}
-		if len(fields) > 0 {
-			return b.updateStatus(ctx, clusterID, agentsclient.ScheduleGVR, u, fields)
-		}
-		return nil
-	}
-
-	// Claim: advance lastRun/nextRun with the listed resourceVersion. A
-	// conflict means another replica claimed this fire — skip silently.
-	claim := map[string]any{"lastRun": now.Format(time.RFC3339)}
-	if genChanged {
-		claim["observedGeneration"] = u.GetGeneration()
-	}
-	if !next.IsZero() {
-		claim["nextRun"] = next.Format(time.RFC3339)
-	}
-	if err := b.updateStatus(ctx, clusterID, agentsclient.ScheduleGVR, u, claim); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "conflict") {
-			return nil
-		}
-		return fmt.Errorf("claiming: %w", err)
-	}
-
-	trigger := agentsv1alpha1.RunTriggerSchedule
-	task := sched.Spec.Task
-	switch sched.Spec.Type {
-	case agentsv1alpha1.ScheduleTypeHeartbeat:
-		trigger = agentsv1alpha1.RunTriggerHeartbeat
-		task = heartbeatPrompt(sched.Spec.Checklist)
-	case agentsv1alpha1.ScheduleTypeWakeup:
-		trigger = agentsv1alpha1.RunTriggerWakeup
-	}
-	if strings.TrimSpace(task) == "" {
-		return b.updateStatus(ctx, clusterID, agentsclient.ScheduleGVR, u, map[string]any{"disabledReason": "schedule has no task/checklist"})
-	}
-
-	return b.exec.Submit(ctx, executor.Job{
-		ID:            fmt.Sprintf("%s/%s/%d", clusterID, sched.Name, now.Unix()),
-		Kind:          executor.KindSchedule,
-		ClusterID:     clusterID,
-		SourceName:    sched.Name,
-		AgentRef:      sched.Spec.AgentRef,
-		Task:          task,
-		Trigger:       trigger,
-		SessionID:     "schedule:" + sched.Name,
-		NotifyChannel: sched.Spec.ChannelRef,
-	})
-}
-
-// heartbeatPrompt wraps a standing checklist so quiet heartbeats stay quiet.
-func heartbeatPrompt(checklist string) string {
-	return "Review this standing checklist. If nothing needs attention, reply with exactly OK and nothing else. " +
-		"If something is actionable, report it concisely:\n\n" + checklist
-}
-
-// scheduleDue decides whether a schedule fires now and what its next fire time
-// is. permErr marks unrecoverable spec problems (bad cron, wakeup w/o runAt).
-func scheduleDue(sched *agentsv1alpha1.Schedule, now time.Time) (fire bool, next time.Time, permErr error) {
-	switch sched.Spec.Type {
-	case agentsv1alpha1.ScheduleTypeCron, agentsv1alpha1.ScheduleTypeHeartbeat:
-		loc := time.UTC
-		if tz := strings.TrimSpace(sched.Spec.TimeZone); tz != "" {
-			l, err := time.LoadLocation(tz)
-			if err != nil {
-				return false, time.Time{}, fmt.Errorf("invalid timeZone %q: %v", tz, err)
-			}
-			loc = l
-		}
-		expr, err := cron.ParseStandard(sched.Spec.Schedule)
 		if err != nil {
-			return false, time.Time{}, fmt.Errorf("invalid cron %q: %v", sched.Spec.Schedule, err)
-		}
-		nextFromNow := expr.Next(now.In(loc)).UTC()
-		if sched.Status.NextRun == nil {
-			return false, nextFromNow, nil
-		}
-		if !now.Before(sched.Status.NextRun.Time) {
-			return true, nextFromNow, nil
-		}
-		return false, time.Time{}, nil
-	case agentsv1alpha1.ScheduleTypeWakeup:
-		if sched.Status.LastRun != nil {
-			return false, time.Time{}, nil // one-shot already fired
-		}
-		if sched.Spec.RunAt == nil {
-			return false, time.Time{}, fmt.Errorf("wakeup schedule has no runAt")
-		}
-		if !now.Before(sched.Spec.RunAt.Time) {
-			return true, time.Time{}, nil
-		}
-		return false, sched.Spec.RunAt.Time.UTC(), nil
-	default:
-		return false, time.Time{}, fmt.Errorf("unknown schedule type %q", sched.Spec.Type)
-	}
-}
-
-// updateStatus merges fields into .status and PUTs the status subresource in
-// the object's cluster, using the object's resourceVersion (optimistic claim).
-func (b *background) updateStatus(ctx context.Context, clusterID string, gvr schema.GroupVersionResource, u *unstructured.Unstructured, fields map[string]any) error {
-	dyn, err := b.scoped(ctx, clusterID)
-	if err != nil {
-		return err
-	}
-	obj := u.DeepCopy()
-	if err := mergeStatusFields(obj, fields); err != nil {
-		return err
-	}
-	_, err = dyn.Resource(gvr).UpdateStatus(ctx, obj, metav1.UpdateOptions{})
-	return err
-}
-
-// reconcileAgentPhases stamps phase Ready on every agent that has no phase.
-// An Agent has no controller of its own: the create handler stamps Ready, but
-// agents created before that existed (or whose stamp failed) stayed at
-// status {} forever, which reads as "not ready" to anyone polling. Suspended
-// (or any other non-empty phase) is left alone.
-func (b *background) reconcileAgentPhases(ctx context.Context) {
-	items, err := b.listAll(ctx, agentsclient.AgentGVR)
-	if err != nil {
-		log.Printf("agents: listing agents: %v", err)
-		return
-	}
-	for i := range items {
-		u := &items[i]
-		if phase, _, _ := unstructured.NestedString(u.Object, "status", "phase"); phase != "" {
-			continue
-		}
-		cluster := u.GetAnnotations()["kcp.io/cluster"]
-		if cluster == "" {
-			continue
-		}
-		if err := b.updateStatus(ctx, cluster, agentsclient.AgentGVR, u, map[string]any{"phase": agentsv1alpha1.AgentPhaseReady}); err != nil {
-			log.Printf("agents: agent %s/%s: stamping phase Ready: %v", cluster, u.GetName(), err)
+			// The store being down must not lose the job as well: run it without
+			// the pre-record, exactly as before this existed.
+			log.Printf("background: recording pending run for job %s/%s: %v (running without a pre-record)", job.Kind, job.SourceName, err)
+		} else {
+			job.RunID = runID
 		}
 	}
+	return b.exec.Submit(ctx, job)
 }
 
 // ---- job handler ------------------------------------------------------------
@@ -745,8 +567,19 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	}
 
 	scope := b.scopeFor(ctx, job.ClusterID, agent.Name)
+	// A job Submit pre-recorded may have been cancelled (or closed by the
+	// recovery sweep) while it sat in the queue; starting it now would
+	// resurrect a run the user already saw end.
+	if job.RunID != "" {
+		if stored, gerr := b.server.store.GetRun(ctx, scope, job.RunID); gerr == nil {
+			if stored.CancelRequested || stored.Phase != store.RunPhasePending {
+				log.Printf("background: job %s/%s: run %s is %s (cancelRequested=%t); not starting it", job.Kind, job.SourceName, job.RunID, stored.Phase, stored.CancelRequested)
+				return nil
+			}
+		}
+	}
 	res, runErr := b.server.executeTask(ctx, taskRun{
-		Creds: vwSecrets{dyn}, CR: vwCR{dyn}, Scope: scope, Agent: agent,
+		Creds: vwSecrets{dyn}, CR: vwCR{dyn}, Scope: scope, Agent: agent, RunID: job.RunID,
 		SessionID: job.SessionID, Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
 		NotifyChannel: job.NotifyChannel,
 		// Recorded on the run so a crash mid-flight can still be reported to
@@ -1026,7 +859,7 @@ func (s *Server) webhookTrigger(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "trigger has no task")
 		return
 	}
-	if err := s.bg.exec.Submit(r.Context(), executor.Job{
+	if err := s.bg.Submit(r.Context(), executor.Job{
 		ID:            fmt.Sprintf("%s/%s/%d", cluster, name, time.Now().UnixNano()),
 		Kind:          executor.KindTrigger,
 		ClusterID:     cluster,

@@ -278,11 +278,17 @@ func (s *Server) startAssistantThreadMirror(scope store.Scope, threadID string, 
 	s.assistantThreadMirrors[key] = struct{}{}
 	s.mu.Unlock()
 
+	// A turn starting and a turn ending are the two transitions the Session
+	// projection mirrors (active turn, thread status); the workspace is idle
+	// again when the mirror stops, which is when commit convergence may run.
+	s.signalSession(scope, threadID)
 	go func() {
 		defer func() {
 			s.mu.Lock()
 			delete(s.assistantThreadMirrors, key)
 			s.mu.Unlock()
+			s.signalSession(scope, threadID)
+			s.signalProject(scope.WorkspaceUUID, scope.ProjectName)
 		}()
 		s.mirrorAssistantRunIntoThread(scope, threadID, turn, run)
 	}()
