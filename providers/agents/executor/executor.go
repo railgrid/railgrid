@@ -64,6 +64,18 @@ type Job struct {
 	SessionID string `json:"sessionID"`
 	// Timeout bounds the run; zero means the executor default.
 	Timeout time.Duration `json:"timeout,omitempty"`
+	// RunID is the durable run record this job executes, when the submitter
+	// persisted one before enqueueing (see the Submitter contract). Empty → the
+	// handler creates the record when it starts.
+	RunID string `json:"runID,omitempty"`
+}
+
+// Submitter is the narrow half of Executor that producers (the Schedule
+// reconciler, inbound webhooks, the Discord gateway) depend on. Keeping them
+// off Start/Stop lets the provider wrap Submit with bookkeeping — persisting a
+// Pending run row before the job is queued — without the producers knowing.
+type Submitter interface {
+	Submit(ctx context.Context, job Job) error
 }
 
 // Handler executes one job. Implementations must be safe for concurrent calls.

@@ -119,6 +119,14 @@ type Run struct {
 	// nil when the run has no authoritative timing measurement; a non-nil zero
 	// is a measured zero and remains distinct from unknown.
 	WorkedDurationMS *int64 `json:"workedDurationMS,omitempty"`
+	// CancelRequested is the durable half of POST /api/runs/{id}/cancel. The
+	// in-memory registry only reaches a run executing on the replica that took
+	// the request; the flag reaches a run executing anywhere (or queued, or
+	// resumed later), because the engine loop reads it between tool rounds and
+	// the recovery sweep refuses to resume a run that carries it. Set once by
+	// RequestCancel; SaveRun never clears it.
+	CancelRequested   bool       `json:"cancelRequested,omitempty"`
+	CancelRequestedAt *time.Time `json:"cancelRequestedAt,omitempty"`
 }
 
 // RunDelivery is where a run's output goes: the connection to answer on, the
@@ -327,6 +335,12 @@ type Store interface {
 	// ClaimRun atomically marks a resumable run as owned by requestID so only
 	// one replica resumes it.
 	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time) (Run, error)
+	// RequestCancel durably asks a run to stop: it sets CancelRequested (and
+	// the time of the first request) on the row without touching anything
+	// else, so it cannot race a concurrent checkpoint SaveRun. Idempotent; a
+	// terminal run is left alone. Whoever executes the run — this replica,
+	// another one, or a later resume — observes it through GetRun.
+	RequestCancel(ctx context.Context, scope Scope, id string, now time.Time) error
 	ListRuns(ctx context.Context, scope Scope, limit int) ([]Run, error)
 	// QueryRuns lists runs newest-first with filters and cursor pagination.
 	QueryRuns(ctx context.Context, scope Scope, q RunQuery) (RunPage, error)

@@ -185,9 +185,13 @@ func (r *EdgeReporter) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case connected, ok := <-r.tunnelState:
+			// Drain the tunnel-state channel so the tunnel never blocks on
+			// it. Connectivity is no longer reported from here: the hub's
+			// tunnel Lease is the liveness record and the edges provider's
+			// lifecycle reconciler is the sole writer of connected/phase/
+			// lastHeartbeatTime, so a second writer here only raced it.
 			if ok {
 				r.tunnelConnected = connected
-				r.sendHeartbeat(ctx, logger)
 			}
 		case <-ticker.C:
 			r.sendHeartbeat(ctx, logger)
@@ -196,15 +200,15 @@ func (r *EdgeReporter) Run(ctx context.Context) error {
 }
 
 func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
-	// The hub may set Hostname/WorkspaceURL; we only patch the fields we own.
-	// "Ready" mirrors the provider's EdgePhaseReady; the Edge type now lives in
-	// the edges-connectivity provider so we build the patch as a plain map and
-	// apply it via the dynamic client (edges.railgrid.ai).
+	// Only the facts the agent alone knows are patched here: version, labels
+	// and the add-on advertisement. Connectivity (connected / phase /
+	// lastHeartbeatTime) is owned by the edges provider's lifecycle
+	// reconciler, derived from the tunnel-registry Lease; writing it from
+	// here as well made two writers race on the same status fields. The Edge
+	// type lives in the edges provider, so the patch is a plain map applied
+	// via the dynamic client (edges.railgrid.ai).
 	statusPatch := map[string]interface{}{
-		"phase":             "Ready",
-		"connected":         r.tunnelConnected,
-		"agentVersion":      pkgversion.Get(),
-		"lastHeartbeatTime": metav1.Now(),
+		"agentVersion": pkgversion.Get(),
 	}
 	if len(r.labels) > 0 {
 		statusPatch["labels"] = r.labels
@@ -245,6 +249,6 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 		return
 	}
 
-	logger.V(4).Info("Edge heartbeat sent", "edge", r.edgeName,
-		"phase", "Ready", "connected", r.tunnelConnected)
+	logger.V(4).Info("Edge facts reported", "edge", r.edgeName,
+		"tunnelConnected", r.tunnelConnected)
 }

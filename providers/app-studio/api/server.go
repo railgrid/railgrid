@@ -39,6 +39,7 @@ import (
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/tenant"
 	"github.com/railgrid/provider-app-studio/workspace"
@@ -192,7 +193,14 @@ type Server struct {
 	// and returns the pending User's stable name.
 	publishingMemberInviter func(context.Context, identity, string) (publishingMember, error)
 	publishingHTTPClient    *http.Client
-	mu                      sync.Mutex
+	// sessionSignals / projectSignals wake the Session and Project
+	// reconcilers on store and workspace transitions (reconcile_signals.go);
+	// workspaceClusters maps a workspace UUID to the kcp cluster the signals
+	// are addressed to.
+	sessionSignals    *reconcilesignal.Bus
+	projectSignals    *reconcilesignal.Bus
+	workspaceClusters sync.Map
+	mu                sync.Mutex
 }
 
 // New constructs a Server.
@@ -515,6 +523,7 @@ func (s *Server) requireProjectWithClient(w http.ResponseWriter, r *http.Request
 		writeProjectError(w, err)
 		return nil, identity{}, nil, false
 	}
+	s.noteWorkspaceCluster(id)
 	return c, id, p, true
 }
 

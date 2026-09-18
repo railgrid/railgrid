@@ -41,6 +41,7 @@ import (
 	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
 )
 
 const (
@@ -60,9 +61,13 @@ const (
 	// like SearchInstanceName — one instance every project's preview
 	// inspection addresses.
 	BrowserInstanceName = "app-studio-browser"
-	// requeueInterval polls instance readiness. Instance kinds are dynamic
-	// (per template), so they are polled rather than watched.
-	requeueInterval = 15 * time.Second
+	// resyncInterval is the safety net under the instance watch: an instance
+	// deleted out of band while the watcher reconnected comes back within
+	// this long.
+	resyncInterval = 10 * time.Minute
+	// identityRequeueInterval waits for the Studio ServiceAccount's token
+	// Secret, the one dependency that is not watched and never takes long.
+	identityRequeueInterval = 5 * time.Second
 )
 
 // Reconciler converges the workspace's shared services.
@@ -71,6 +76,10 @@ type Reconciler struct {
 	// HubBase / HubInsecure address the hub for the tenant-path client.
 	HubBase     string
 	HubInsecure bool
+	// Watches delivers instance events from every tenant workspace (see
+	// package tenantwatch). Nil means no watches: readiness then rides the
+	// safety resync alone.
+	Watches *tenantwatch.Hub
 	// TenantClientFor is a test seam for the tenant-path client: a client on
 	// the workspace cluster authenticated as the Studio's ServiceAccount.
 	// Production leaves it nil and dials {HubBase}/clusters/{cluster} with the
@@ -118,10 +127,29 @@ func (r *Reconciler) tenantClient(clusterName, token string, vw client.Client) (
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
-	return mcbuilder.ControllerManagedBy(mgr).
+	c, err := mcbuilder.ControllerManagedBy(mgr).
 		Named("app-studio-studio").
 		For(&aiv1alpha1.Studio{}).
-		Complete(r)
+		Build(r)
+	if err != nil {
+		return err
+	}
+	if r.Watches != nil {
+		return c.MultiClusterWatch(r.Watches.Source(mapInstanceEvent, tenantwatch.InstancesGVR))
+	}
+	return nil
+}
+
+// mapInstanceEvent names the Studio a shared instance belongs to, from the
+// attribution label ensureInstance stamps.
+func mapInstanceEvent(_ context.Context, _ client.Client, evt tenantwatch.Event) []types.NamespacedName {
+	if evt.Object == nil {
+		return nil
+	}
+	if owner := evt.Object.GetLabels()[studioLabel]; owner != "" {
+		return []types.NamespacedName{{Name: owner}}
+	}
+	return nil
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -158,12 +186,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("studio identity: %w", err)
 	}
 	if token == "" {
-		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+		return ctrl.Result{RequeueAfter: identityRequeueInterval}, nil
 	}
 	tc, err := r.tenantClient(string(req.ClusterName), token, c)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("tenant client: %w", err)
 	}
+	// The Studio identity may only list infrastructure kinds; the watcher
+	// starts once per cluster and is shared with the Project reconciler.
+	r.Watches.Ensure(string(req.ClusterName), token, tenantwatch.InstancesGVR)
 
 	search, err := r.converge(ctx, tc, &st, searchService(&st))
 	if err != nil {
@@ -189,11 +220,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			return ctrl.Result{}, err
 		}
 	}
-	if next.Phase != aiv1alpha1.StudioServiceReady {
-		return ctrl.Result{RequeueAfter: requeueInterval}, nil
-	}
-	// Ready: keep a slow poll so an instance deleted out of band comes back.
-	return ctrl.Result{RequeueAfter: 4 * requeueInterval}, nil
+	// Readiness arrives on the instance watch; the slow resync only covers
+	// what the watch missed (an instance deleted out of band comes back).
+	return ctrl.Result{RequeueAfter: resyncInterval}, nil
 }
 
 // service describes one shared backend the Studio owns (search or browser).
@@ -346,7 +375,7 @@ func (r *Reconciler) finalize(ctx context.Context, c client.Client, st *aiv1alph
 			return ctrl.Result{}, fmt.Errorf("studio identity for teardown: %w", err)
 		}
 		if token == "" {
-			return ctrl.Result{RequeueAfter: requeueInterval}, nil
+			return ctrl.Result{RequeueAfter: identityRequeueInterval}, nil
 		}
 		tc, err := r.tenantClient(clusterName, token, c)
 		if err != nil {

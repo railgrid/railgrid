@@ -101,6 +101,11 @@ var agentsSchema = []string{
 	// Worked duration is nullable so historical runs without measured model/tool
 	// timing remain distinguishable from a measured zero.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS worked_duration_ms BIGINT`,
+	// Durable cancellation (see Run.CancelRequested): written only by
+	// RequestCancel, never by SaveRun's upsert, so a checkpoint written from a
+	// stale in-memory copy cannot un-cancel a run.
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMPTZ`,
 	// Partial unique index: at most one run per (tenant, agent, key), while the
 	// overwhelming majority of runs carry no key at all and are unconstrained.
 	`CREATE UNIQUE INDEX IF NOT EXISTS agents_runs_idempotency_idx
@@ -461,7 +466,8 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 // runColumns is the run SELECT list, shared by every read path so a schema
 // change cannot drift one query out of step with scanRun.
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
-		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms`
+		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
+		       cancel_requested, cancel_requested_at`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	if err := scope.validate(); err != nil {
@@ -476,6 +482,29 @@ func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run
 		return Run{}, fmt.Errorf("run %q not found", id)
 	}
 	return run, err
+}
+
+func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id string, now time.Time) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	// Only the cancel columns move: phase, checkpoint and the rest belong to
+	// whoever is executing the run, and this must not race their writes.
+	res, err := p.db.ExecContext(ctx, `
+		UPDATE agents_runs SET cancel_requested=TRUE, cancel_requested_at=COALESCE(cancel_requested_at, $4)
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($5,$6,$7)`,
+		scope.OrgUUID, scope.WorkspaceUUID, id, now.UTC(),
+		string(RunPhasePending), string(RunPhaseRunning), string(RunPhasePendingApproval))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Either unknown or already terminal; both mean there is nothing to stop.
+		if _, gerr := p.GetRun(ctx, scope, id); gerr != nil {
+			return gerr
+		}
+	}
+	return nil
 }
 
 func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string, now time.Time) (Run, error) {
@@ -601,7 +630,7 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	var run Run
 	var phase string
 	var checkpoint, sources, delivery []byte
-	var started, finished sql.NullTime
+	var started, finished, cancelAt sql.NullTime
 	var worked sql.NullInt64
 	dest := []any{}
 	if sc != nil {
@@ -609,9 +638,13 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	}
 	dest = append(dest, &run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
-		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked)
+		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
+	}
+	if cancelAt.Valid {
+		t := cancelAt.Time.UTC()
+		run.CancelRequestedAt = &t
 	}
 	run.Phase = RunPhase(phase)
 	run.Checkpoint = checkpoint

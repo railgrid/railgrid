@@ -295,6 +295,18 @@ const (
 	// provider data plane after caller authorization. It is deliberately not
 	// stored in tenant-visible Instance status.
 	RailgridLastActivityAnnotation = "railgrid.ai/last-activity"
+
+	// RailgridInstanceClusterAnnotation, RailgridInstanceNamespaceAnnotation
+	// and RailgridInstanceNameAnnotation are stamped on every runtime CR by
+	// the Instance controller and record the tenant Instance that owns it:
+	// the logical cluster (kcp workspace) name, the Instance's namespace
+	// (empty for the cluster-scoped kind) and its name. The tenant label on
+	// the same object (railgrid.ai/tenant) is a hash and cannot be inverted,
+	// so the runtime-cluster watch maps events back to the Instance through
+	// these annotations instead.
+	RailgridInstanceClusterAnnotation   = "railgrid.ai/instance-cluster"
+	RailgridInstanceNamespaceAnnotation = "railgrid.ai/instance-namespace"
+	RailgridInstanceNameAnnotation      = "railgrid.ai/instance-name"
 )
 
 // TemplateDevelopment is the development-mode contract for a template's

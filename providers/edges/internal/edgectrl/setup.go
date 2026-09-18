@@ -40,7 +40,9 @@ type Options struct {
 // connectable kind on the multicluster manager. An edge-type provider calls this
 // once with its kind's GVR + Kind + a factory that yields its concrete type
 // (which must implement edgeapi.Connectable), plus the tunnel's ConnManager so
-// the lifecycle reconciler can cross-check tunnel liveness.
+// the lifecycle reconciler is nudged on local connect/disconnect (liveness
+// itself comes from the tunnel registry Leases in the provider workspace, read
+// through the manager's local cache).
 func SetupControllers(
 	mgr mcmanager.Manager,
 	gvr schema.GroupVersionResource,

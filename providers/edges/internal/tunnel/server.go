@@ -154,12 +154,22 @@ type Server struct {
 	logger klog.Logger
 }
 
-// EnableReplicaRouting turns on multi-replica tunnel routing: new dialers
-// advertise a replica-addressed pickup path, the ConnManager becomes
-// cluster-aware through the registry, and the internal listener (see
-// InternalHandler) serves the relay + forwarded pickups. relayToken is the
-// shared provider bearer peers authenticate relays with. Call once before
-// serving.
+// EnableRegistry wires the tunnel Lease registry without peer relay: tunnels
+// terminated here are claimed and renewed as Leases in the provider workspace
+// (the edge lifecycle reconciler's only liveness input), pickup paths stay
+// un-addressed and a tunnel held by another replica reports as absent. This
+// is the single-replica / no-POD_IP mode. Call once before serving.
+func (s *Server) EnableRegistry(reg *Registry) {
+	s.registry = reg
+	s.edgeConnManager.SetRegistry(reg, "")
+}
+
+// EnableReplicaRouting turns on multi-replica tunnel routing on top of the
+// registry: new dialers advertise a replica-addressed pickup path, the
+// ConnManager resolves peer-held tunnels through the registry, and the
+// internal listener (see InternalHandler) serves the relay + forwarded
+// pickups. relayToken is the shared provider bearer peers authenticate relays
+// with. Call once before serving.
 func (s *Server) EnableReplicaRouting(reg *Registry, relayToken string) {
 	s.registry = reg
 	s.replicaID = reg.ReplicaID()

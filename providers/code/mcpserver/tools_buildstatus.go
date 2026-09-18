@@ -224,27 +224,14 @@ func runBuildStatusRequest(ctx context.Context, dyn dynamic.Interface, repositor
 	return waited, nil
 }
 
+// waitRepositoryBuildStatus watches until the request reaches a terminal
+// phase. A timeout returns (nil, nil) — never a non-terminal object — so the
+// caller surfaces "did not complete in time" rather than a misleading failure.
 func waitRepositoryBuildStatus(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (*unstructured.Unstructured, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		obj, err := dyn.Resource(repositoryBuildStatusesGVR).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("get RepositoryBuildStatus %q: %w", name, err)
-		}
-		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
-		if phase == string(codev1alpha1.RepositoryBuildStatusPhaseSucceeded) || phase == string(codev1alpha1.RepositoryBuildStatusPhaseFailed) {
-			return obj, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, nil
-		case <-ticker.C:
-		}
+	obj, done, err := waitForPhase(ctx, dyn, repositoryBuildStatusesGVR, "RepositoryBuildStatus", name, timeout,
+		phaseIn(string(codev1alpha1.RepositoryBuildStatusPhaseSucceeded), string(codev1alpha1.RepositoryBuildStatusPhaseFailed)))
+	if err != nil || !done {
+		return nil, err
 	}
+	return obj, nil
 }

@@ -103,6 +103,10 @@ func (s *Server) patchAssistantThreadWithEvent(ctx context.Context, scope store.
 			Payload:  payload,
 		}, expected)
 		if !errors.Is(err, store.ErrAssistantThreadEventConflict) {
+			if err == nil {
+				// Title and archive state are mirrored into the Session CR.
+				s.signalSession(scope, latest.ID)
+			}
 			return updated, created, err
 		}
 	}

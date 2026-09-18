@@ -483,29 +483,17 @@ func repositorySpec(in createRepositoryInput, repoName string) map[string]any {
 	return spec
 }
 
+// waitRepositoryCommit watches until the commit reaches a terminal phase.
+// Unlike the checkout and build-status waits, a timeout returns the last
+// state seen (nil when none was), so the caller can report the phase the
+// commit was still in and its rate-limit condition.
 func waitRepositoryCommit(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (*unstructured.Unstructured, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		obj, err := dyn.Resource(repositoryCommitsGVR).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("get RepositoryCommit %q: %w", name, err)
-		}
-		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
-		if phase == string(codev1alpha1.RepositoryCommitPhaseSucceeded) || phase == string(codev1alpha1.RepositoryCommitPhaseFailed) {
-			return obj, nil
-		}
-		select {
-		case <-ctx.Done():
-			return obj, nil
-		case <-ticker.C:
-		}
+	obj, _, err := waitForPhase(ctx, dyn, repositoryCommitsGVR, "RepositoryCommit", name, timeout,
+		phaseIn(string(codev1alpha1.RepositoryCommitPhaseSucceeded), string(codev1alpha1.RepositoryCommitPhaseFailed)))
+	if err != nil {
+		return nil, err
 	}
+	return obj, nil
 }
 
 func repositoryCommitOutput(obj *unstructured.Unstructured, fallback commitFilesOutput) commitFilesOutput {

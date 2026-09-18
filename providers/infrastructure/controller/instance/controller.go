@@ -30,6 +30,11 @@
 //     statusMapping) back onto the Instance, merged with the
 //     provider-owned conditions.
 //
+// Everything on the far side of the seam is watched, not polled: the
+// runtime CRs (one watch per template GVR, registered as templates become
+// Ready), the Templates in the provider workspace, and the tenant Secrets
+// the bridge reads (see watch.go). A long safety resync backs the watches.
+//
 // Cleanup is finalizer-driven: the runtime CR and the bridged Secrets live
 // on a different cluster than the Instance, so cross-cluster ownerRefs
 // don't apply. status.runtimeRef records where the runtime CR was written
@@ -38,7 +43,6 @@ package instance
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -54,8 +58,10 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -64,6 +70,7 @@ import (
 	"github.com/railgrid/provider-sdk/apiexportprovider"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
@@ -80,13 +87,6 @@ var instanceGVK = schema.GroupVersionKind{
 	Kind:    "Instance",
 }
 
-// templatesGVR is the catalog resource in the provider's own workspace.
-var templatesGVR = schema.GroupVersionResource{
-	Group:    infrav1alpha1.GroupName,
-	Version:  infrav1alpha1.Version,
-	Resource: "templates",
-}
-
 const (
 	// finalizer guards the cross-cluster state an Instance owns: the runtime
 	// kro CR and any bridged Secrets. Added on first reconcile of every
@@ -94,18 +94,19 @@ const (
 	// now owns runtime state.
 	finalizer = infrav1alpha1.FinalizerInstanceRuntime
 
-	// requeueNotReady / requeueReady drive the status-mirror poll. The
-	// runtime cluster isn't watched (kro's own reconcile latency dominates
-	// anyway), so status freshness comes from these requeues.
-	requeueNotReady = 10 * time.Second
-	requeueReady    = 60 * time.Second
+	// resyncPeriod is the safety net behind the watches: every Instance is
+	// re-reconciled at least this often, so a missed event (an informer
+	// restart, a runtime CR written before the mapping annotations existed)
+	// converges within the period. Status freshness itself comes from the
+	// runtime-cluster watch, not from this.
+	resyncPeriod = 10 * time.Minute
 )
 
 // Config wires the Instance controller.
 type Config struct {
 	// ProviderConfig is the provider kubeconfig's rest.Config (host =
 	// provider workspace). Drives the APIExport VW discovery, the per-tenant
-	// clients, and the Template catalog reads.
+	// clients, and the Template catalog watch.
 	ProviderConfig *rest.Config
 	// APIExportName is the provider's APIExport
 	// ("infrastructure.providers.railgrid.ai").
@@ -118,6 +119,9 @@ type Config struct {
 	// Runtime is a dynamic client for the kro runtime cluster, where the
 	// per-template CRs, their namespaces, and the bridged Secrets live.
 	Runtime dynamic.Interface
+	// RuntimeConfig is the rest.Config Runtime was built from. The
+	// controller runs a cache over it to watch the per-template runtime CRs.
+	RuntimeConfig *rest.Config
 	// CredentialsNamespace is the namespace in the tenant workspace the
 	// cloud-credentials Secret lives in (default "default").
 	CredentialsNamespace string
@@ -132,9 +136,17 @@ type Config struct {
 
 // Controller reconciles Instances across tenant workspaces.
 type Controller struct {
-	cfg       Config
-	mgr       mcmanager.Manager
-	templates dynamic.Interface
+	cfg Config
+	mgr mcmanager.Manager
+	// templates reads Templates from the provider-workspace informer cache
+	// (the same cache the Template watch feeds).
+	templates client.Reader
+
+	// index is the cluster → Instance → Template index the Template and
+	// Secret mappers query (watch.go).
+	index *instanceIndex
+	// runtimeWatches registers the per-GVR runtime-cluster watches.
+	runtimeWatches *runtimeWatchRegistrar
 
 	// networkPolicySynced records, per runtime namespace name, which namespace
 	// UID its isolation policy was last converged in and when
@@ -143,8 +155,9 @@ type Controller struct {
 	networkPolicySynced sync.Map
 
 	// contracts caches the compiled values contract per Template, keyed by
-	// name and invalidated by resourceVersion. Compilation (structural
-	// schema + CEL programs) is expensive relative to a reconcile.
+	// name and invalidated by resourceVersion (and dropped outright on a
+	// Template event, see mapTemplate). Compilation (structural schema + CEL
+	// programs) is expensive relative to a reconcile.
 	mu        sync.Mutex
 	contracts map[string]*cachedContract
 }
@@ -157,7 +170,7 @@ type cachedContract struct {
 }
 
 // New builds the multicluster manager (APIExport VW) and registers the
-// Instance reconciler. Call Start to run it.
+// Instance reconciler with its event sources. Call Start to run it.
 func New(cfg Config) (*Controller, error) {
 	if cfg.ProviderConfig == nil {
 		return nil, fmt.Errorf("instance: ProviderConfig is required")
@@ -168,6 +181,9 @@ func New(cfg Config) (*Controller, error) {
 	if cfg.Runtime == nil {
 		return nil, fmt.Errorf("instance: Runtime client is required")
 	}
+	if cfg.RuntimeConfig == nil {
+		return nil, fmt.Errorf("instance: RuntimeConfig is required")
+	}
 	if cfg.CredentialsNamespace == "" {
 		cfg.CredentialsNamespace = "default"
 	}
@@ -175,21 +191,18 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("instance: %w", err)
 	}
 
-	templates, err := dynamic.NewForConfig(cfg.ProviderConfig)
-	if err != nil {
-		return nil, fmt.Errorf("instance: templates client: %w", err)
-	}
-
-	c := &Controller{cfg: cfg, templates: templates, contracts: map[string]*cachedContract{}}
+	c := &Controller{cfg: cfg, index: newInstanceIndex(), contracts: map[string]*cachedContract{}}
 
 	// Instances + Secrets are read unstructured, but the apiexport
 	// multicluster provider builds a TYPED cache over APIExportEndpointSlice
 	// to discover the virtual-workspace URL — so the kcp apis scheme must be
 	// registered or the manager fails with "no kind is registered for the
-	// type v1alpha1.APIExportEndpointSlice".
+	// type v1alpha1.APIExportEndpointSlice". Templates are watched typed on
+	// the local (provider workspace) cluster, so the infra scheme joins it.
 	scheme := runtime.NewScheme()
 	utilruntime.Must(apiskcpv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(apiskcpv1alpha2.AddToScheme(scheme))
+	utilruntime.Must(infrav1alpha1.AddToScheme(scheme))
 
 	provider, err := apiexportprovider.New(cfg.ProviderConfig, cfg.APIExportName, apiexportprovider.Options{Scheme: scheme})
 	if err != nil {
@@ -207,17 +220,58 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("creating multicluster manager: %w", err)
 	}
 
+	// The runtime cluster is a second cache, started with the manager. Its
+	// informers are per-template GVRs registered on demand (runtimeWatches),
+	// all unstructured, so it needs no scheme of its own.
+	runtimeCluster, err := cluster.New(cfg.RuntimeConfig, func(o *cluster.Options) {
+		o.Scheme = runtime.NewScheme()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating runtime cluster: %w", err)
+	}
+	if err := mgr.GetLocalManager().Add(runtimeCluster); err != nil {
+		return nil, fmt.Errorf("adding runtime cluster to manager: %w", err)
+	}
+
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(instanceGVK)
-	if err := mcbuilder.ControllerManagedBy(mgr).
+	secret := &unstructured.Unstructured{}
+	secret.SetGroupVersionKind(secretGVK)
+	instanceController, err := mcbuilder.ControllerManagedBy(mgr).
 		Named("infra-instance").
 		For(obj).
-		Complete(&reconciler{c: c}); err != nil {
+		// Templates live in the provider workspace — the manager's local
+		// cluster — not in the tenant clusters the provider engages.
+		Watches(&infrav1alpha1.Template{}, c.templateHandler,
+			mcbuilder.WithEngageWithLocalCluster(true),
+			mcbuilder.WithEngageWithProviderClusters(false)).
+		// Tenant Secrets come through the virtual workspace (the APIExport
+		// claims get/list/watch on secrets), one watch per engaged cluster.
+		Watches(secret, c.secretHandler, mcbuilder.WithPredicates(c.secretPredicate())).
+		Build(&reconciler{c: c})
+	if err != nil {
 		return nil, fmt.Errorf("registering instance reconciler: %w", err)
 	}
 
 	c.mgr = mgr
+	c.templates = mgr.GetLocalManager().GetClient()
+	c.runtimeWatches = newRuntimeWatchRegistrar(instanceController, runtimeCluster.GetCache())
 	return c, nil
+}
+
+// templateHandler enqueues every Instance of the Template that changed. The
+// cluster argument is the local cluster and irrelevant: the mapper spans all
+// engaged tenant clusters through the index.
+func (c *Controller) templateHandler(_ multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](c.mapTemplate)
+}
+
+// secretHandler enqueues the Instance(s) of the engaged tenant cluster that
+// bridge the Secret that changed.
+func (c *Controller) secretHandler(clusterName multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](func(_ context.Context, obj client.Object) []mcreconcile.Request {
+		return c.mapSecret(clusterName, obj)
+	})
 }
 
 // Start runs the multicluster manager (blocking).
@@ -244,10 +298,14 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	inst.SetGroupVersionKind(instanceGVK)
 	if err := tenantClient.Get(ctx, req.NamespacedName, inst); err != nil {
 		if apierrors.IsNotFound(err) {
+			c.index.remove(req.ClusterName, req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
+
+	templateName, _, _ := unstructured.NestedString(inst.Object, "spec", "template")
+	c.index.set(req.ClusterName, req.NamespacedName, templateName)
 
 	if !inst.GetDeletionTimestamp().IsZero() {
 		return c.finalize(ctx, tenantClient, tenant, inst)
@@ -263,7 +321,6 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil // our own update re-queues
 	}
 
-	templateName, _, _ := unstructured.NestedString(inst.Object, "spec", "template")
 	tmpl, contract, err := c.resolveTemplate(ctx, templateName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -347,7 +404,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	log.V(2).Info("instance reconciled", "template", templateName, "ready", ready)
-	return ctrl.Result{RequeueAfter: instanceRequeueAfter(time.Now(), inst.GetCreationTimestamp(), tmpl, runtimeObj, ready)}, nil
+	return ctrl.Result{RequeueAfter: instanceRequeueAfter(time.Now(), inst.GetCreationTimestamp(), tmpl, runtimeObj)}, nil
 }
 
 // desiredNetworkPhase chooses the next controller-owned network phase for a
@@ -378,74 +435,63 @@ func desiredNetworkPhase(runtimeObj *unstructured.Unstructured) string {
 	return infrav1alpha1.RailgridNetworkPhaseSetup
 }
 
-// instanceRequeueAfter keeps development Instances on the short convergence
-// poll until the runtime generation that selected the runtime network phase
-// is actually Ready. mirrorStatus intentionally reports the coarse backend
-// Ready condition separately, so it can be true while the network gate is
-// still setup during the setup -> runtime rollout.
-func instanceRequeueAfter(now time.Time, created metav1.Time, tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured, ready bool) time.Duration {
+// instanceRequeueAfter schedules the next timer-driven pass: the exact
+// lifecycle deadline of a development Instance (idle timeout, max lifetime)
+// when one is due before the safety resync, else the resync. Readiness and
+// the setup -> runtime network transition are not polled: the runtime CR's
+// status changes arrive through the runtime-cluster watch.
+func instanceRequeueAfter(now time.Time, created metav1.Time, tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured) time.Duration {
 	var development *infrav1alpha1.TemplateDevelopment
 	if tmpl != nil {
 		development = tmpl.Spec.Development
 	}
-	if development != nil {
-		phase, ok := runtimeNetworkPhase(tmpl, runtimeObj)
-		if !ok || phase != infrav1alpha1.RailgridNetworkPhaseRuntime {
-			return requeueNotReady
-		}
-	}
-	if !ready {
-		return requeueNotReady
-	}
-	return lifecycleRequeueAfter(now, created, development, runtimeObj, requeueReady)
+	return lifecycleRequeueAfter(now, created, development, runtimeObj, resyncPeriod)
 }
 
-// failValidation reports a terminal validation outcome on the Instance and
-// schedules a slow retry (a Template fix must be picked up without a spec
-// edit). The runtime CR — if one exists from a previously valid spec — is
-// deliberately left alone: last-good keeps running.
+// failValidation reports a terminal validation outcome on the Instance. A
+// Template fix is picked up through the Template watch (mapTemplate), so
+// only the safety resync backs it. The runtime CR — if one exists from a
+// previously valid spec — is deliberately left alone: last-good keeps
+// running.
 func (c *Controller) failValidation(ctx context.Context, tenantClient client.Client, inst *unstructured.Unstructured, reason, message string) (ctrl.Result, error) {
 	if _, err := c.mirrorStatus(ctx, tenantClient, inst, nil, nil, validCondition(metav1.ConditionFalse, reason, message), nil); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: requeueReady}, nil
+	return ctrl.Result{RequeueAfter: resyncPeriod}, nil
 }
 
-// resolveTemplate fetches the Template and its compiled values contract,
-// cached by resourceVersion. A nil contract with nil error means the
-// Template exists but its schema does not compile.
+// resolveTemplate reads the Template from the provider-workspace cache and
+// returns it with its compiled values contract, cached by resourceVersion.
+// A nil contract with nil error means the Template exists but its schema
+// does not compile. A Ready Template also gets its runtime GVR watched.
 func (c *Controller) resolveTemplate(ctx context.Context, name string) (*infrav1alpha1.Template, *instancespec.Contract, error) {
 	if name == "" {
 		return nil, nil, apierrors.NewNotFound(infrav1alpha1.Resource("templates"), name)
 	}
-	obj, err := c.templates.Resource(templatesGVR).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
+	tmpl := &infrav1alpha1.Template{}
+	if err := c.templates.Get(ctx, client.ObjectKey{Name: name}, tmpl); err != nil {
 		return nil, nil, err
+	}
+	if c.runtimeWatches != nil && templateReady(tmpl) {
+		if _, err := c.runtimeWatches.ensure(ctx, runtimeGVRFor(tmpl), tmpl.Spec.InstanceCRD.Kind); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	c.mu.Lock()
 	cached, ok := c.contracts[name]
 	c.mu.Unlock()
-	if ok && cached.resourceVersion == obj.GetResourceVersion() {
+	if ok && cached.resourceVersion == tmpl.GetResourceVersion() {
 		if cached.err != nil {
 			return cached.template, nil, nil
 		}
 		return cached.template, cached.contract, nil
 	}
 
-	tmpl := &infrav1alpha1.Template{}
-	raw, err := obj.MarshalJSON()
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshal template: %w", err)
-	}
-	if err := json.Unmarshal(raw, tmpl); err != nil {
-		return nil, nil, fmt.Errorf("decode template: %w", err)
-	}
-
 	contract, cerr := instancespec.NewContract(tmpl)
 	c.mu.Lock()
 	c.contracts[name] = &cachedContract{
-		resourceVersion: obj.GetResourceVersion(),
+		resourceVersion: tmpl.GetResourceVersion(),
 		template:        tmpl,
 		contract:        contract,
 		err:             cerr,

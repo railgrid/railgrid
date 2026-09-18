@@ -49,7 +49,10 @@ type Config struct {
 	// WebhookKey signs trigger webhook URLs. Empty → derived from the provider
 	// kubeconfig contents.
 	WebhookKey string
-	// SchedulerInterval is the background poll cadence (default 30s).
+	// SchedulerInterval is the cadence of the background executor's slow tick:
+	// virtual-workspace endpoint re-discovery and the stranded-run recovery
+	// sweep (default 30s). Schedules themselves fire from the Schedule
+	// reconciler's watch + requeue, not from this timer.
 	SchedulerInterval time.Duration
 	// OAuthApps holds platform-wide OAuth app credentials by provider
 	// (github/google/slack), configured once by the operator via env. When a

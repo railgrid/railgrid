@@ -21,7 +21,6 @@ package api
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -35,29 +34,23 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/dynamic"
 
+	"github.com/railgrid/provider-agents/internal/connsecret"
 	"github.com/railgrid/provider-agents/llm"
 )
 
 // signingSecretKey is the connection Secret key holding the platform-side
 // verification secret: the Slack app signing secret, or the Telegram webhook
 // secret_token the provider generated.
-const signingSecretKey = "signing_secret"
+const signingSecretKey = connsecret.SigningSecretKey
 
 // slackSignatureMaxSkew bounds how old a signed Slack request may be. Slack
 // documents five minutes; anything older is a replay of a captured request.
 const slackSignatureMaxSkew = 5 * time.Minute
 
-// connectionSigningSecretMissingMessage is the one wording for "this connection
-// has no verification secret stored". It is both the errSigningSecretMissing
-// text returned when a delivery cannot be verified and the
-// Connection.Status.Message the reconcile loop writes, so the API response and
-// what the portal shows cannot drift apart.
-//
-// The wording is platform-neutral on purpose: this path also serves Telegram,
-// whose secret is a webhook secret_token rather than a signing secret, and a
-// Telegram 401 that talks about a "signing secret" sends the reader looking for
-// a Slack setting that does not exist on their connection.
-const connectionSigningSecretMissingMessage = "webhook verification secret required; update the connection"
+// connectionSigningSecretMissingMessage is shared with the Connection
+// reconciler (see connsecret) so the 401 text and the status the portal shows
+// cannot drift apart.
+const connectionSigningSecretMissingMessage = connsecret.SigningSecretMissingMessage
 
 var (
 	errSigningSecretMissing = errors.New(connectionSigningSecretMissingMessage)
@@ -68,13 +61,7 @@ var (
 // newSigningSecret returns a fresh random secret (32 bytes, hex). Used for
 // Telegram, whose secret_token is chosen by the webhook owner — us — and must
 // match ^[A-Za-z0-9_-]{1,256}$.
-func newSigningSecret() (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
-}
+func newSigningSecret() (string, error) { return connsecret.NewSigningSecret() }
 
 // slackSignature computes Slack's v0 request signature over the raw body:
 // "v0=" + hex(HMAC-SHA256(secret, "v0:" + timestamp + ":" + body)).

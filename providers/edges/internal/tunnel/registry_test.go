@@ -26,7 +26,7 @@ import (
 
 func testRegistry(replicaID, addr string, cs *kubefake.Clientset, now func() time.Time) *Registry {
 	return &Registry{
-		leases:    cs.CoordinationV1().Leases(registryNamespace),
+		leases:    cs.CoordinationV1().Leases(RegistryNamespace),
 		replicaID: replicaID,
 		selfAddr:  addr,
 		now:       now,
@@ -87,7 +87,7 @@ func TestRegistryExpiredLeasesDoNotResolve(t *testing.T) {
 	if err := a.ClaimTunnel(ctx, key); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	current = current.Add(registryLeaseTTL + time.Second)
+	current = current.Add(RegistryLeaseTTL + time.Second)
 	if _, ok := b.LookupTunnel(ctx, key); ok {
 		t.Fatal("expired tunnel lease still resolves")
 	}

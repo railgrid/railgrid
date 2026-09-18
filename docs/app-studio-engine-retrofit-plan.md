@@ -180,7 +180,9 @@ and "studio search — do that too". Both are straight vibe ports.
       turn). Name = thread ID; ownerRef → Project (project deletion GCs the
       conversations); identity annotations (org/workspace UUID +
       `project-uid`) bridge to the store keyspace.
-- [x] 4.2 `controller/session`: 30s status mirror + purge finalizer
+- [x] 4.2 `controller/session`: event-driven status mirror (the assistant
+      supervisor signals the reconciler on turn transitions; 10m safety
+      resync) + purge finalizer
       (deleting the Session CR deletes the thread from Postgres, reading the
       thread's own actor for the store's owner check); a projection whose
       store row is gone deletes itself. Sessions without identity

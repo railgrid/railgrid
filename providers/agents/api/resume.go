@@ -152,6 +152,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	// A resumed run keeps checkpointing, so a replica that dies again picks up
 	// from where the resume got to rather than from the original snapshot.
 	cb.OnCheckpoint = s.checkpointRecorder(ctx, tr, run.SessionID, func() int64 { return tracker.durationMS() })
+	cb.CheckAbort = s.cancelCheck(agentScope, run.ID)
 	res, err := s.engine.ResumeTurnWithTools(ctx, model, ck.Engine, toolset, engine.TurnConfig{
 		MaxIters:            maxIters,
 		ContextBudgetTokens: turnContextBudget(modelName),

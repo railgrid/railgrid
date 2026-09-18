@@ -353,6 +353,56 @@ workspace UUIDs or the path resolves them from kcp with
 `providers/code/tenant/` and `providers/infrastructure/tenant/` for the
 canonical pattern, and `docs/provider-scoping.md`.
 
+### 5.8 Controllers: reconcilers on multicluster-runtime, state in KRM
+
+**Every state transition a provider owns is a watch-driven reconciler; the only
+thing that runs on a clock is a call to a system outside kcp.** Do not write
+`--interval` loops, list-and-sweep passes, in-process queues or goroutines that
+own state. This is the rule, not a preference: a timer loop scales with tenant
+count instead of change rate, hides its scope in process memory, and cannot be
+leader-elected or replayed. The reference rewrite is
+`railgrid/providers/docs/reconciler-architecture-review.md` (planner + factory
+went from four timed passes to reconcilers; read it before adding a loop).
+
+- **State lives in KRM objects.** Anything a controller needs across two
+  reconciles — assignment, retry deadline, observed generation, last error,
+  external IDs — is a field on the resource's `status` (or a private kind in
+  the provider's own workspace, e.g. planner's `ActionReceipt`). No
+  deployment ConfigMap, no in-memory map, no policy file. A reconcile must be
+  reconstructable from the objects alone after a restart.
+- **Tenant kinds are reconciled through the APIExport virtual workspace with
+  multicluster-runtime.** The wiring is always the same:
+  `provider-sdk/apiexportprovider.New(cfg, exportName, …)` →
+  `mcmanager.New(cfg, provider, …)` →
+  `mcbuilder.ControllerManagedBy(mgr).For(&Kind{}).Watches(…)`; reconcilers take
+  `mcreconcile.Request` and resolve the workspace client with
+  `mgr.GetCluster(ctx, req.ClusterName)`. Cross-kind dependencies are
+  `Watches` + a mapping func (`mchandler.ForCluster`), never a second list in
+  the reconcile. Provider-private kinds (not exported) go on
+  `mgr.GetLocalManager()`. Canonical: `providers/code/controller_manager.go`
+  and `providers/code/controller/connection/controller.go`; in
+  railgrid/providers: `providers/planner/internal/controllers/` and
+  `providers/factory/internal/global/`.
+- **`RequeueAfter` has exactly two uses:** pacing a poll of an external system
+  (GitHub, Linear, a runner's HTTP API — things that cannot be watched) and
+  backing off a failed call. It is never how one kcp object learns that another
+  changed; that is a watch. If you find yourself requeueing to "check again", a
+  watch or a status field is missing.
+- **Write loops are leader-elected; the HTTP surface is not.** Run the manager
+  under `provider-sdk/leaderelection.Run` (a Lease in the provider's own
+  workspace) and rebuild the whole manager per term — a stopped
+  controller-runtime manager cannot restart. Actions, MCP and the portal keep
+  serving on every replica with per-request tenant clients (5.4).
+- **Readiness tracks the watches.** Attach the apiexport provider to
+  `provider-sdk/vwhealth.Readiness` so `/readyz` cannot be green while no
+  tenant workspace is being watched. Give informer configs `Timeout = 0`
+  (a client timeout severs a streaming watch) and bound per-request clients
+  separately.
+- **Cross-provider reads are watches on the other export's objects, as the
+  tenant.** Mirror what you need into your own kind (planner's `Issue` mirror
+  is what factory's intake reads) rather than calling the other provider's
+  actions from a loop — that is how the Linear rate-limit incident happened.
+
 ### 5.5 Provider inventory
 
 All providers are **standalone**: own `go.mod` under `providers/{name}/`, own
@@ -402,7 +452,8 @@ cannot capture a platform provider's proxy or heartbeat route by name. See
 5. Wire the heartbeat with `provider-sdk/hubclient` (`ConfigFromEnv` +
    `go RunHeartbeat`; set `CanSend` if a required controller gates
    liveness) — never a local copy — plus a tenant-scoped client if it talks
-   to kcp.
+   to kcp. Anything that reacts to tenant objects is a multicluster-runtime
+   reconciler under leader election, not a loop (§5.8).
 6. Add Makefile `build-{name}-provider[-portal]` + `run/install/uninstall`
    targets if standalone; add the module to `go.work`.
 7. Add an e2e suite under `test/e2e/suites/` if it has tenant-isolation or
@@ -582,6 +633,13 @@ responsive, or interaction behavior.
   radius. See [`docs/providers.md` §"Provider isolation"](docs/providers.md#provider-isolation-the-cross-provider-boundary)
   and contract 3 in
   [`docs/provider-connectivity-contract.md`](docs/provider-connectivity-contract.md).
+- **Reconcilers, multicluster-runtime and KRM — always, where at all possible.**
+  A provider never owns a timer loop, a sweep or an in-memory queue over kcp
+  objects: it watches them through its APIExport virtual workspace with
+  multicluster-runtime and keeps every piece of durable state in `status` or a
+  private kind. `RequeueAfter` is reserved for pacing an external system that
+  cannot be watched and for backoff. See §5.8 and
+  [`docs/providers.md` §"Minimal provider backend contract"](docs/providers.md#minimal-provider-backend-contract).
 
 ---
 
