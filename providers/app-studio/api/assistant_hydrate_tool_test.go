@@ -22,7 +22,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/store"
@@ -95,9 +97,20 @@ func TestAssistantHydrateWorkspaceToolLoadsRepositoryAndInvalidatesReads(t *test
 	upstream := hub.serve(t)
 	f := newProjectFilesFixture(t)
 	f.server.hubBase = upstream.URL
+	// The sync hook runs on the goroutine hydrate schedules after the
+	// mutation, so the record is guarded and the test waits for the first
+	// call before reading it.
+	var syncMu sync.Mutex
 	var syncActions []string
+	synced := make(chan struct{}, 1)
 	f.server.developmentSyncAfterMutation = func(_ identity, _ *aiv1alpha1.Project, action string) error {
+		syncMu.Lock()
 		syncActions = append(syncActions, action)
+		syncMu.Unlock()
+		select {
+		case synced <- struct{}{}:
+		default:
+		}
 		return nil
 	}
 	ctx := context.Background()
@@ -162,8 +175,16 @@ func TestAssistantHydrateWorkspaceToolLoadsRepositoryAndInvalidatesReads(t *test
 	if v := state.ReadFileVersion("notes.md"); v != "v-read-2" {
 		t.Fatalf("untouched file lost read version: %q", v)
 	}
-	if strings.Join(syncActions, ",") != projectActionWorkspaceSync {
-		t.Fatalf("sync actions = %v, want one workspace sync", syncActions)
+	select {
+	case <-synced:
+	case <-time.After(5 * time.Second):
+		t.Fatal("workspace sync was not scheduled after hydrate")
+	}
+	syncMu.Lock()
+	got := strings.Join(syncActions, ",")
+	syncMu.Unlock()
+	if got != projectActionWorkspaceSync {
+		t.Fatalf("sync actions = %v, want one workspace sync", got)
 	}
 }
 

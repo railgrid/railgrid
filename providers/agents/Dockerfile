@@ -17,17 +17,9 @@ COPY providers/agents/go.mod providers/agents/go.sum ./
 # REPO ROOT: docker build -f providers/agents/Dockerfile .
 COPY provider-sdk/ /provider-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY providers/agents/main.go providers/agents/assets.go providers/agents/init_cmd.go ./
-COPY providers/agents/apis ./apis
-COPY providers/agents/api ./api
-COPY providers/agents/channels ./channels
-COPY providers/agents/client ./client
-COPY providers/agents/engine ./engine
-COPY providers/agents/executor ./executor
-COPY providers/agents/llm ./llm
-COPY providers/agents/store ./store
-COPY providers/agents/tenant ./tenant
-COPY providers/agents/tools ./tools
+# The whole module: controllers, scheme and internal packages ship with
+# the binary, so an explicit directory list here rots the moment one is added.
+COPY providers/agents/ ./
 COPY --from=portal /portal/dist ./portal/dist
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agents-provider .
 
