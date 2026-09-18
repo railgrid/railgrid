@@ -1093,7 +1093,7 @@ A provider's controller (the kcp-talking part) MUST:
   canonical wiring is `providers/code/controller_manager.go`; the rationale
   and a full before/after is in
   `railgrid/providers/docs/reconciler-architecture-review.md`. See
-  [AGENTS.md §5.8](../AGENTS.md#58-controllers-reconcilers-on-multicluster-runtime-state-in-krm).
+  [AGENTS.md §5.8](../AGENTS.md#58-reconcilers-not-loops).
 
 A provider's UI MUST:
 
