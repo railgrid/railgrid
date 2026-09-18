@@ -39,8 +39,15 @@ const (
 	gitResultMessage    = "Implementation snapshot"
 	gitResultName       = "Railgrid Runner"
 	gitResultEmail      = "runner@localhost"
-	gitResultDate       = "2000-01-01T00:00:00Z"
 )
+
+// gitResultDate stamps the snapshot with the moment it was taken. The identity
+// and the message are fixed and verified as canonical by Code; the time is the
+// one header that must be true rather than constant, or every implementation
+// PR reads as committed decades ago.
+func gitResultDate(now time.Time) string {
+	return now.UTC().Truncate(time.Second).Format(time.RFC3339)
+}
 
 type gitResultExport struct {
 	artifacts []gitResultArtifact
@@ -427,13 +434,14 @@ func inspectGitResultPath(workdir, path string) (string, os.FileInfo, error) {
 }
 
 func createGitResultCommit(ctx context.Context, workdir, tree, baseCommit string) (string, error) {
+	date := gitResultDate(time.Now())
 	env := map[string]string{
 		"GIT_AUTHOR_NAME":     gitResultName,
 		"GIT_AUTHOR_EMAIL":    gitResultEmail,
-		"GIT_AUTHOR_DATE":     gitResultDate,
+		"GIT_AUTHOR_DATE":     date,
 		"GIT_COMMITTER_NAME":  gitResultName,
 		"GIT_COMMITTER_EMAIL": gitResultEmail,
-		"GIT_COMMITTER_DATE":  gitResultDate,
+		"GIT_COMMITTER_DATE":  date,
 	}
 	commit, err := gitResultCommand(ctx, workdir, env, strings.NewReader(gitResultMessage+"\n"), "commit-tree", tree, "-p", baseCommit)
 	if err != nil {

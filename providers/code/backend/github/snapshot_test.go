@@ -12,24 +12,47 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/railgrid/provider-code/backend"
 )
+
+// snapshotDate is when the fixture runner took its snapshot: now, as a real
+// runner stamps it.
+var snapshotDate = time.Now().UTC().Format(time.RFC3339)
 
 func snapshotCommand(t *testing.T, dir, stdin string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = dir
 	command.Stdin = strings.NewReader(stdin)
-	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Railgrid Runner", "GIT_AUTHOR_EMAIL=runner@localhost", "GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_NAME=Railgrid Runner", "GIT_COMMITTER_EMAIL=runner@localhost", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z"}
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Railgrid Runner", "GIT_AUTHOR_EMAIL=runner@localhost", "GIT_AUTHOR_DATE=" + snapshotDate, "GIT_COMMITTER_NAME=Railgrid Runner", "GIT_COMMITTER_EMAIL=runner@localhost", "GIT_COMMITTER_DATE=" + snapshotDate}
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v %s", args, err, output)
 	}
 	return strings.TrimSpace(string(output))
 }
+
+// rawCommit writes a commit object verbatim, for shapes git's porcelain would
+// never produce, and bundles it as the runner would.
+func rawCommit(t *testing.T, source, object string) (string, []byte) {
+	t.Helper()
+	commit := snapshotCommand(t, source, object, "hash-object", "-t", "commit", "-w", "--stdin")
+	snapshotCommand(t, source, "", "update-ref", "refs/heads/runner-result", commit)
+	path := filepath.Join(source, commit+".bundle")
+	parent := strings.TrimPrefix(strings.Split(object, "\n")[1], "parent ")
+	snapshotCommand(t, source, "", "bundle", "create", "--version=2", path, "refs/heads/runner-result", "^"+parent)
+	bundle, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return commit, bundle
+}
+
 func TestSnapshotVerifiesActualGitBundleAndCanonicalMetadata(t *testing.T) {
 	source := t.TempDir()
 	snapshotCommand(t, source, "", "init", "--bare", ".")
@@ -43,7 +66,14 @@ func TestSnapshotVerifiesActualGitBundleAndCanonicalMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"valid", "wrong tree", "wrong base", "wrong commit", "private metadata", "truncated bundle"} {
+	identity := func(unix int64) string {
+		return "Railgrid Runner <runner@localhost> " + strconv.FormatInt(unix, 10) + " +0000"
+	}
+	canonical := func(author, committer string) string {
+		return "tree " + tree + "\nparent " + base + "\nauthor " + author + "\ncommitter " + committer + "\n\nImplementation snapshot\n"
+	}
+	now := time.Now().Unix()
+	for _, kind := range []string{"valid", "wrong tree", "wrong base", "wrong commit", "private metadata", "truncated bundle", "epoch date", "future date", "author and committer differ", "extra header"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
 			snapshotCommand(t, dir, "", "init", "--bare", ".")
@@ -67,6 +97,16 @@ func TestSnapshotVerifiesActualGitBundleAndCanonicalMetadata(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+			case "epoch date":
+				// The pre-2026 fixed stamp: a commit "from 2000" is a fabrication now.
+				input.Commit, input.Bundle = rawCommit(t, source, canonical(identity(946684800), identity(946684800)))
+			case "future date":
+				input.Commit, input.Bundle = rawCommit(t, source, canonical(identity(now+2*int64(snapshotClockSkew/time.Second)), identity(now+2*int64(snapshotClockSkew/time.Second))))
+			case "author and committer differ":
+				input.Commit, input.Bundle = rawCommit(t, source, canonical(identity(now), identity(now-60)))
+			case "extra header":
+				object := "tree " + tree + "\nparent " + base + "\nauthor " + identity(now) + "\ncommitter " + identity(now) + "\nencoding utf-8\n\nImplementation snapshot\n"
+				input.Commit, input.Bundle = rawCommit(t, source, object)
 			}
 			err := (&snapshotGit{dir: dir}).verify(context.Background(), input)
 			if kind == "valid" && err != nil {

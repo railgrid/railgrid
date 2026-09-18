@@ -320,7 +320,7 @@ func TestRunEmitsBoundedEventsAndCompletes(t *testing.T) {
 	argv := readLines(t, filepath.Join(dir, "argv"))
 	for _, want := range []string{
 		"--print", "--output-format", "stream-json", "--verbose",
-		"--permission-mode", "dontAsk", "--permission-prompts", "none",
+		"--permission-mode", "acceptEdits", "--permission-prompts", "none",
 		"--safe-mode", "--strict-mcp-config", "--disable-slash-commands",
 		"--no-chrome", "--setting-sources",
 	} {
@@ -332,6 +332,11 @@ func TestRunEmitsBoundedEventsAndCompletes(t *testing.T) {
 		if contains(argv, never) {
 			t.Errorf("argv must never contain %q: %v", never, argv)
 		}
+	}
+	// The default mode must let the model edit files: "dontAsk" with prompts
+	// denied refuses every Edit/Write and turns each run into "no changes".
+	if contains(argv, "dontAsk") {
+		t.Errorf("argv uses dontAsk, which denies file edits: %v", argv)
 	}
 
 	// The prompt goes over stdin, never as an argv element.
@@ -668,4 +673,27 @@ func indexOf(values []string, want string) int {
 		}
 	}
 	return -1
+}
+
+// The permission mode and the granted tool patterns are operator choices that
+// reach the command line unchanged; an unknown mode is refused before launch.
+func TestPermissionModeAndAllowedToolsReachArgv(t *testing.T) {
+	a := &Adapter{cfg: Config{PermissionMode: PermissionBypass, AllowedTools: []string{"Bash(git *)", " Bash(npm test) ", ""}}}
+	argv := a.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"})
+	if !contains(argv, "bypassPermissions") || contains(argv, "acceptEdits") {
+		t.Fatalf("argv = %v, want the configured bypassPermissions mode", argv)
+	}
+	if n := strings.Count(strings.Join(argv, "\x00"), "--allowedTools"); n != 2 {
+		t.Fatalf("argv = %v, want exactly two --allowedTools entries (blank ones dropped)", argv)
+	}
+	if !contains(argv, "Bash(git *)") || !contains(argv, "Bash(npm test)") {
+		t.Fatalf("argv = %v, want trimmed tool patterns as single elements", argv)
+	}
+	bad := &Adapter{cfg: Config{PermissionMode: "plan"}}
+	if _, err := bad.permissionMode(); err == nil {
+		t.Fatal("unsupported permission mode accepted")
+	}
+	if args := bad.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"}); contains(args, "plan") {
+		t.Fatalf("argv = %v, an unsupported mode must not reach the command line", args)
+	}
 }

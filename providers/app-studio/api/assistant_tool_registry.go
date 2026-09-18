@@ -561,6 +561,33 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
+				Name:        projectToolHydrateWorkspace,
+				Description: "Load the project workspace from the project's git repository (the durable source of truth): every file in the repository's tree overwrites the workspace copy, workspace-only files stay. Use only when the user explicitly asks to load, refresh, or reset the workspace from the repository (for example after changes were pushed to git outside App Studio), after a template switch, or to recover a lost workspace. Uncommitted workspace changes to tracked files are lost, so this always pauses for the user's approval. The result lists the written and skipped paths; re-read any file before editing it afterwards because earlier read versions are stale.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string","description":"Branch, tag, or commit SHA to load from; defaults to the repository default branch."}},"additionalProperties":false}`),
+				Risk:        projectAssistantToolRiskRuntime,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				if req.Project == nil {
+					return "", errors.New("no project on this run")
+				}
+				resp, err := s.hydrateWorkspaceFromRepository(ctx, req.Identity, req.Project, req.HTTPRequest, projectToolString(req.Arguments["ref"]))
+				if err != nil {
+					return "", err
+				}
+				// The repository tree replaced files the model may have read
+				// this turn; those versions no longer authorize a mutation.
+				for _, path := range resp.Written {
+					req.RunState.InvalidateObservedReadFile(path)
+				}
+				return projectAssistantToolJSONResult(resp, nil)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
 				Name:        projectToolCommitProjectFiles,
 				Description: "Commit the complete server-owned App Studio dirty workspace bundle to the managed git source through the Code provider. The model supplies commit prose; App Studio computes authoritative file scope.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"repositoryRef":{"type":"string","description":"Managed Code provider Repository resource name."},"message":{"type":"string","description":"Commit message."},"branch":{"type":"string","description":"Optional branch override."}},"required":["repositoryRef"]}`),

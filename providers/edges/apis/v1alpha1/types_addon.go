@@ -206,6 +206,21 @@ type AddonClaude struct {
 	// Configured=False/ClaudeAuthMissing; with both keys, ClaudeAuthInvalid.
 	// +optional
 	AuthSecretRef *corev1.SecretReference `json:"authSecretRef,omitempty"`
+	// PermissionMode is what Claude Code may do without asking. acceptEdits
+	// (the default) approves file edits inside the task worktree and denies
+	// anything else that would prompt; bypassPermissions approves every tool,
+	// including arbitrary shell, and is meant for a dedicated, sandboxed host.
+	// A coding runner cannot use "dontAsk": every edit is refused.
+	// +kubebuilder:validation:Enum=acceptEdits;bypassPermissions
+	// +optional
+	PermissionMode string `json:"permissionMode,omitempty"`
+	// AllowedTools are Claude Code tool patterns granted for every turn, for
+	// example "Bash(git *)" or "Bash(npm test)". Under acceptEdits these are
+	// the only shell commands the model may run.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=set
+	AllowedTools []string `json:"allowedTools,omitempty"`
 }
 
 // AddonCodex configures the Codex harness the runner drives.

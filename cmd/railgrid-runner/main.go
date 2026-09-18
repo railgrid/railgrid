@@ -64,6 +64,8 @@ func run() error {
 	flags.StringVar(&opts.ClaudeCredentialKind, "claude-credential-kind", "",
 		"how to inject the Claude Code credential: "+strings.Join(claude.CredentialKinds, " or "))
 	flags.StringVar(&opts.ClaudeModel, "claude-model", "", "model for Claude Code turns (empty uses the account default)")
+	flags.StringVar(&opts.ClaudePermissionMode, "claude-permission-mode", "", "acceptEdits (default) or bypassPermissions")
+	flags.Func("claude-allowed-tool", "Claude Code tool pattern granted for every turn (repeatable)", func(v string) error { opts.ClaudeAllowedTools = append(opts.ClaudeAllowedTools, v); return nil })
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}

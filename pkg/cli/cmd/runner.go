@@ -97,5 +97,7 @@ as described in docs/local-runner.md.`,
 	cmd.Flags().StringVar(&opts.ClaudeCredentialKind, "claude-credential-kind", "",
 		"How to inject the Claude Code credential: "+strings.Join(claude.CredentialKinds, " or "))
 	cmd.Flags().StringVar(&opts.ClaudeModel, "claude-model", "", "Model for Claude Code turns (empty uses the account default)")
+	cmd.Flags().StringVar(&opts.ClaudePermissionMode, "claude-permission-mode", "", "What Claude Code may do without asking: acceptEdits (default; file edits in the worktree) or bypassPermissions (every tool, for sandboxed hosts)")
+	cmd.Flags().StringSliceVar(&opts.ClaudeAllowedTools, "claude-allowed-tool", nil, "Claude Code tool pattern granted for every turn, e.g. 'Bash(git *)' (repeatable)")
 	return cmd
 }

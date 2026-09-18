@@ -226,19 +226,23 @@ to the mirror URL (e.g. `github.com/railgrid/provider-code`) before the first
 split, and fix up the provider's own in-repo imports of that module path
 accordingly (`code` and `infrastructure` each had ~17 self-imports to rewrite).
 
-## Private Linear and Databricks providers
+## Private Planner and Databricks providers
 
 Source and release automation moved to
 [railgrid/providers](https://github.com/railgrid/providers). The old Databricks source
 mirror is retired after cutover; no source synchronization remains in Railgrid.
-Existing public history and previous releases remain available.
+Existing public history and previous releases remain available. The Linear
+provider that also moved there has since been removed; Planner (one board over
+Linear, Jira and GitHub Projects) is its replacement, and the previously
+published `railgrid-linear-provider` image and chart versions stay available
+but receive no further releases.
 
 Both providers remain platform-installable in Railgrid hubs, using administrator
 onboarding, chart bootstrap, CatalogEntry registration and workspace Enable.
 Self-hosting is optional. Install the versioned OCI charts
-`oci://ghcr.io/railgrid/charts/railgrid-linear-provider` and
-`oci://ghcr.io/railgrid/charts/railgrid-databricks-provider`; their images remain
-`ghcr.io/railgrid/railgrid-linear-provider` and
+`oci://ghcr.io/railgrid/charts/railgrid-planner-provider` and
+`oci://ghcr.io/railgrid/charts/railgrid-databricks-provider`; their images are
+`ghcr.io/railgrid/railgrid-planner-provider` and
 `ghcr.io/railgrid/railgrid-databricks-provider`. Supply the existing chart kubeconfig
 and hub settings. Private source access is not required to install artifacts.
 
