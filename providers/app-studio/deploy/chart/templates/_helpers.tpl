@@ -55,3 +55,20 @@ fractional values keep their decimal form, and strings such as "1Gi",
 {{- toString . -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Render apiExport.identityHashes as the "group=hash,group=hash" list
+RAILGRID_IDENTITY_HASHES takes. Blank entries are skipped so the default
+values.yaml (which lists the groups with empty hashes as documentation) does
+not produce a malformed pair; init then fails with the SDK's own message
+naming the group that is missing.
+*/}}
+{{- define "appstudio.identityHashes" -}}
+{{- $pairs := list -}}
+{{- range $group, $hash := .Values.apiExport.identityHashes -}}
+{{- if $hash -}}
+{{- $pairs = append $pairs (printf "%s=%s" $group $hash) -}}
+{{- end -}}
+{{- end -}}
+{{- join "," $pairs -}}
+{{- end -}}

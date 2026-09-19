@@ -27,12 +27,14 @@
 //     through the workspace's OWN edges binding — whichever copy of the
 //     edges provider that is (see provider-sdk/tenantaccess, edgewatch.go).
 //
-// Per edge, the data path is the edges provider's consumer proxy: a
-// rest.Config pointing at
-// /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}/k8s
-// authenticating as that same per-workspace "railgrid-kuery" ServiceAccount,
-// which a separate grant (edgeProxyGrantName) authorizes for verb "proxy" on
-// kubernetesclusters. The credential is deliberately NOT the provider SA: the
+// Per edge, the data path is the edges provider's consumer data plane, class
+// (a): a rest.Config pointing at the coordinate the EDGE PUBLISHES in
+// status.url — /services/providers/{edges}/dataplane/clusters/{cluster}/
+// kubernetesclusters/{name}/k8s — authenticating as that same per-workspace
+// "railgrid-kuery" ServiceAccount, which a separate grant (edgeProxyGrantName)
+// authorizes for "create" on kubernetesclusters/k8s. Neither the provider
+// name nor the path shape is a literal here: both come from the binding and
+// from what the owning provider published (contract 3, rule 5). The credential is deliberately NOT the provider SA: the
 // edges proxy TokenReviews a foreign (provider-workspace) SA in the SA's home
 // cluster with its own credential, and the hub's kcp proxy pins every SA
 // caller to the caller's own workspace, so that review lands on a doubled
@@ -186,6 +188,11 @@ type Controller struct {
 type engagedEdge struct {
 	cancel   context.CancelFunc
 	edgeName string
+	// statusURL is the data-plane coordinate the edges provider published for
+	// this edge when it was engaged. Kept so the renewal pass can re-engage a
+	// dropped edge without re-listing: the watch, not this map, is the
+	// authority on the current value, and the next event corrects it.
+	statusURL string
 }
 
 // New builds the controller. It does NOT build a manager: Run does, once per
@@ -469,12 +476,17 @@ func (c *Controller) ensureIdentity(ctx context.Context, cl client.Client, bindi
 	// token controller is slow still ends up authorized by the time the
 	// token arrives.
 	proxyRules := []rbacv1.PolicyRule{{
-		// Read-only on the Kubernetes side: the proxied API is whatever the
-		// edge agent's credential allows, and kuery only lists and watches
-		// through it.
+		// The data-plane coordinate, as the contract spells it: "create" on
+		// the virtual subresource {resource}/{verb}. The wildcard "proxy"
+		// verb the edges provider used to gate k8s, ssh, service proxy and
+		// MCP alike is gone, and so is this consumer's grant for it.
+		//
+		// Read-only on the Kubernetes side regardless: the proxied API is
+		// whatever the edge agent's credential allows, and kuery only lists
+		// and watches through it.
 		APIGroups: []string{"edges.railgrid.ai"},
-		Resources: []string{"kubernetesclusters"},
-		Verbs:     []string{"proxy"},
+		Resources: []string{"kubernetesclusters/k8s"},
+		Verbs:     []string{"create"},
 	}}
 	if err := tenantaccess.EnsureGrant(ctx, cl, edgeProxyGrantName, engagementIdentityName, []metav1.OwnerReference{owner}, proxyRules); err != nil {
 		return "", fmt.Errorf("edge-proxy grant: %w", err)
@@ -529,7 +541,7 @@ func (c *Controller) dropCluster(ctx context.Context, tenantCluster string) {
 // for an already-engaged edge. tenantCluster is the workspace's kcp
 // logical-cluster ID; token is the workspace's engagement ServiceAccount
 // token the proxy authenticates.
-func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, token string) error {
+func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, statusURL, token string) error {
 	storeName := StoreName(tenantCluster, edgeName)
 	c.mu.Lock()
 	if _, ok := c.engaged[storeName]; ok {
@@ -545,7 +557,10 @@ func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, token 
 	logger := klog.FromContext(ctx).WithValues("edge", storeName)
 	logger.Info("engaging edge into kuery")
 
-	cfg := edgeProxyConfig(c.hubBase, tenantCluster, edgeName, token, c.cfg.ProviderConfig.Insecure)
+	cfg, err := edgeProxyConfig(c.hubBase, tenantCluster, edgeName, statusURL, token, c.cfg.ProviderConfig.Insecure)
+	if err != nil {
+		return fmt.Errorf("resolving the edge data-plane endpoint: %w", err)
+	}
 
 	cl, err := cluster.New(cfg)
 	if err != nil {
@@ -579,7 +594,7 @@ func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, token 
 	}
 
 	c.mu.Lock()
-	c.engaged[storeName] = engagedEdge{cancel: cancel, edgeName: edgeName}
+	c.engaged[storeName] = engagedEdge{cancel: cancel, edgeName: edgeName, statusURL: statusURL}
 	c.mu.Unlock()
 	logger.Info("edge engaged", "tenant", tenantCluster)
 	return nil
@@ -631,15 +646,16 @@ func (c *Controller) dropLocal(ctx context.Context, storeName string, releaseCla
 	klog.FromContext(ctx).Info("edge disengaged", "edge", storeName)
 }
 
-// edgeProxyConfig is the rest.Config for one edge's Kubernetes API through
-// the edges consumer proxy, authenticating as the workspace's engagement
-// ServiceAccount. Built from scratch rather than copied from ProviderConfig
-// so the provider SA's bearer (and any exec/auth-provider plumbing on the
-// minted kubeconfig) cannot leak onto the data path; only the TLS
-// verification knob carries over, as the hub cert is the same either way.
-func edgeProxyConfig(hubBase, cluster, edgeName, token string, insecure bool) *rest.Config {
+// edgeProxyConfig is the rest.Config for one edge's Kubernetes API through the
+// edges provider's consumer data plane, authenticated as the workspace's
+// engagement ServiceAccount.
+func edgeProxyConfig(hubBase, cluster, edgeName, statusURL, token string, insecure bool) (*rest.Config, error) {
+	host, err := edgeProxyURL(hubBase, cluster, edgeName, statusURL)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &rest.Config{
-		Host:        edgeProxyURL(hubBase, cluster, edgeName),
+		Host:        host,
 		BearerToken: token,
 		QPS:         50,
 		Burst:       100,
@@ -647,17 +663,36 @@ func edgeProxyConfig(hubBase, cluster, edgeName, token string, insecure bool) *r
 	if insecure {
 		cfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
 	}
-	return cfg
+	return cfg, nil
 }
 
-// edgeProxyURL is the edges provider's consumer-proxy endpoint for a
-// KubernetesCluster edge's Kubernetes API — pkg/apiurl.EdgeProviderCoordinates
-// + the edgeproxy mount in the railgrid monorepo, inlined so this module doesn't
-// depend on it. Keep the pattern in lockstep:
-// {hub}/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}/k8s
-func edgeProxyURL(hubBase, cluster, edgeName string) string {
-	return fmt.Sprintf("%s/services/providers/edges/edgeproxy/clusters/%s/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/%s/k8s",
-		strings.TrimRight(hubBase, "/"), cluster, edgeName)
+// edgeProxyURL resolves where to reach one edge's Kubernetes API.
+//
+// The authority is the edge's own status.url: the edges provider stamps the
+// exact hub-relative path it serves that edge on, so a consumer that reads it
+// follows the owning provider wherever it moved — a renamed root, a
+// self-hosted copy under a different provider name — without knowing anything
+// about its grammar. That is contract 3, rule 5: resolve the target from what
+// the provider publishes, not from a format string.
+//
+// An edge with no published URL yet (a brand-new one whose lifecycle
+// reconciler has not stamped it) is an error, not a guess. Guessing is how
+// the inlined "/services/providers/edges/edgeproxy/clusters/{c}/apis/
+// edges.railgrid.ai/v1alpha1/kubernetesclusters/{n}/k8s" string survived a
+// grammar change in the provider it was copied from; the caller requeues and
+// picks the URL up on the next event.
+func edgeProxyURL(hubBase, cluster, edgeName, statusURL string) (string, error) {
+	statusURL = strings.TrimSpace(statusURL)
+	if statusURL == "" {
+		return "", fmt.Errorf("edge %s/%s publishes no status.url yet", cluster, edgeName)
+	}
+	if strings.HasPrefix(statusURL, "http://") || strings.HasPrefix(statusURL, "https://") {
+		return strings.TrimRight(statusURL, "/"), nil
+	}
+	if !strings.HasPrefix(statusURL, "/") {
+		return "", fmt.Errorf("edge %s/%s published an unusable status.url %q", cluster, edgeName, statusURL)
+	}
+	return strings.TrimRight(hubBase, "/") + statusURL, nil
 }
 
 // tenantLabelsJSON renders the cluster labels blob for the store. The map

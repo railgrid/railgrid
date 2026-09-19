@@ -10,14 +10,8 @@ package main
 
 import (
 	"embed"
-	"errors"
-	"io"
 	"io/fs"
-	"log"
-	"mime"
 	"net/http"
-	"path"
-	"strings"
 )
 
 // portalFS embeds the App Studio portal bundle. The checked-in .gitkeep keeps
@@ -27,40 +21,15 @@ import (
 //go:embed all:portal/dist
 var portalFS embed.FS
 
+// portalHandler returns the bundle as a handler and as the FS
+// provider-sdk/serve mounts. serve.New owns the serving rules — a real file
+// for an asset path, a 404 when the bundle has no such file (a retired lazy
+// chunk must never come back as an HTML 200), and index.html for anything
+// else so a direct visit to a client-side route shows the app.
 func portalHandler() (http.Handler, fs.FS, error) {
 	distFS, err := fs.Sub(portalFS, "portal/dist")
 	if err != nil {
 		return nil, nil, err
 	}
 	return http.FileServer(http.FS(distFS)), distFS, nil
-}
-
-func servePortalAsset(w http.ResponseWriter, _ *http.Request, distFS fs.FS, name string) bool {
-	name = strings.TrimPrefix(name, "/")
-	if name == "" {
-		return false
-	}
-	f, err := distFS.Open(name)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("portal asset %s: %v", name, err)
-		}
-		return false
-	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			log.Printf("portal asset %s close: %v", name, err)
-		}
-	}()
-
-	ct := mime.TypeByExtension(path.Ext(name))
-	if ct == "" {
-		ct = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "no-cache")
-	if _, err := io.Copy(w, f); err != nil {
-		log.Printf("portal asset %s write: %v", name, err)
-	}
-	return true
 }

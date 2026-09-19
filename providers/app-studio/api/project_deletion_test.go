@@ -83,7 +83,7 @@ func TestDeleteProjectRequiresAndForwardsExpectedUID(t *testing.T) {
 	dyn := publishingTestDynamic(publishingTestProject("demo", "project-current", ""))
 	client := asclient.NewFromDynamic(dyn)
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store: store.NewMemoryStore(),
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return client, nil
@@ -143,7 +143,7 @@ func TestDeleteProjectRetriesCleanupForTerminatingProject(t *testing.T) {
 	})
 	client := asclient.NewFromDynamic(dyn)
 	backend := &failOnceProjectDeleteStore{Store: store.NewMemoryStore(), fail: true}
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, store: backend, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: backend, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	router := mux.NewRouter()
 	server.Register(router)
 
@@ -228,7 +228,7 @@ func TestDeleteProjectRepositoryDeletionIsOptInAndRefusesAdopted(t *testing.T) {
 				})
 			}
 			client := asclient.NewFromDynamic(dyn)
-			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, store: store.NewMemoryStore(), projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: store.NewMemoryStore(), projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 			router := mux.NewRouter()
 			server.Register(router)
 

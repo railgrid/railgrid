@@ -56,6 +56,12 @@ const (
 	// which makes a schedule's or trigger's channelRef ambiguous.
 	ReasonDuplicateChannel = "DuplicateChannel"
 
+	// ReasonRunDeadlineExceeded is a Run that used more than its agent's
+	// spec.limits.timeoutSeconds. It is on the Run rather than a phase of its
+	// own because the phase is the executor's to write — the reconciler saw
+	// the deadline pass, the executor is what stops the work.
+	ReasonRunDeadlineExceeded = "DeadlineExceeded"
+
 	// ReasonChannelConflict is a Connection bound as a channel by more than
 	// one Agent. Inbound routing maps a Connection to exactly one agent, so
 	// the second binding would silently steal — or lose — the messages.

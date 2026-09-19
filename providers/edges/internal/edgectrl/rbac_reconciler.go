@@ -18,62 +18,71 @@ package edgectrl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/tools/clientcmd"
-	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
+	"github.com/railgrid/provider-edges/internal/agentidentity"
 	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
+	"github.com/railgrid/provider-sdk/identityclient"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
-// RBACReconciler provisions per-edge credentials via native ServiceAccount tokens.
+// identityFinalizer keeps the edge object around long enough to revoke its
+// identity. The hub's sweep would collect an orphaned identity anyway, but
+// only within one token TTL of the last refresh; a deleted edge should lose
+// its credential now, not within a day.
+const identityFinalizer = "edges.railgrid.ai/scoped-identity"
+
+// RBACReconciler keeps each edge's agent identity in existence and its rules
+// current, by asking the hub for it.
+//
+// It writes NOTHING into the tenant workspace any more. The ServiceAccount,
+// the shared ClusterRole, the per-edge binding, the legacy token Secret and
+// the kubeconfig Secret are all gone: they were this provider minting
+// identities for itself, which is review finding M7 and which the scoped
+// identity service exists to end. What is left is a request and a finalizer.
+//
+// The token itself is deliberately not stored anywhere. It is handed to the
+// agent over the tunnel at join time and re-minted through the agent-token
+// verb; a token at rest in a tenant Secret is exactly what this change
+// removes.
 type RBACReconciler struct {
-	mgr            mcmanager.Manager
-	hubExternalURL string
-	hubCAData      []byte
-	devMode        bool
-	newObj         func() edgeapi.Connectable
-	kind           string
-	gvr            schema.GroupVersionResource
+	mgr        mcmanager.Manager
+	identities *identityclient.Client
+	newObj     func() edgeapi.Connectable
+	kind       string
+	gvr        schema.GroupVersionResource
 }
 
-// SetupRBACWithManager registers the RBAC controller for every connectable kind
-// on the multicluster manager.
-func SetupRBACWithManager(mgr mcmanager.Manager, gvr schema.GroupVersionResource, kind string, newObj func() edgeapi.Connectable, hubExternalURL string, hubCAData []byte, devMode bool) error {
-	r := &RBACReconciler{
-		mgr:            mgr,
-		hubExternalURL: hubExternalURL,
-		hubCAData:      hubCAData,
-		devMode:        devMode,
-		newObj:         newObj,
-		kind:           kind,
-		gvr:            gvr,
-	}
+// SetupRBACWithManager registers the identity controller for every connectable
+// kind on the multicluster manager. A nil identities client disables it: a dev
+// run without a hub still serves the tunnel, and an edge simply never gets a
+// credential rather than getting a forged one.
+func SetupRBACWithManager(mgr mcmanager.Manager, gvr schema.GroupVersionResource, kind string, newObj func() edgeapi.Connectable, identities *identityclient.Client) error {
+	r := &RBACReconciler{mgr: mgr, identities: identities, newObj: newObj, kind: kind, gvr: gvr}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named(rbacControllerName + "-" + gvr.Resource).
 		For(newObj()).
-		Owns(&corev1.Secret{}).
-		Owns(&corev1.ServiceAccount{}).
-		Owns(&rbacv1.ClusterRoleBinding{}).
 		Complete(r)
 }
 
-// Reconcile provisions a ServiceAccount, RBAC, and token Secret for an Edge.
+// Reconcile ensures the edge has a scoped identity with current rules, and
+// revokes it on delete.
+//
+// The identity is re-asserted on every reconcile rather than created once: the
+// hub RECONCILES a record's rules, so a rule this provider stops asking for is
+// actually removed from the ClusterRole the hub owns. That was the other half
+// of M7 — the old create-if-absent grant could only ever widen.
 func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := klog.FromContext(ctx).WithValues("edge", req.Name, "cluster", req.ClusterName)
 
@@ -91,494 +100,69 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 		return ctrl.Result{}, err
 	}
 
-	// Credentials are kind-qualified: all edge kinds share the tenant's
-	// railgrid-system namespace, and a LinuxServer named "build" must not
-	// adopt the credentials of a KubernetesCluster named "build".
-	saName := edgesv1alpha1.EdgeCredentialName(r.gvr.Resource, edge.GetName())
-	tokenSecretName := saName + "-token"
-	kubeconfigSecretName := saName + "-kubeconfig"
+	owner := agentidentity.Owner(r.gvr, r.kind, edge)
+	owner.ClusterID = string(req.ClusterName)
 
-	// Always run through ensure* steps (idempotent). Owns() watches trigger
-	// re-reconciliation when child objects are deleted.
-
-	logger.Info("Provisioning credentials for edge")
-
-	ownerRef := r.edgeOwnerRef(edge)
-
-	// 1. Ensure namespace.
-	if err := ensureNamespace(ctx, c); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring namespace %s: %w", edgeNamespace, err)
+	if !edge.GetDeletionTimestamp().IsZero() {
+		if !controllerutil.ContainsFinalizer(edge, identityFinalizer) {
+			return ctrl.Result{}, nil
+		}
+		if r.identities != nil {
+			if err := r.identities.Release(ctx, string(req.ClusterName), owner); err != nil {
+				// A permanent refusal must not wedge the delete: the hub's own
+				// sweep collects the record when it re-probes the owner and
+				// finds it gone. Anything retryable is worth retrying, because
+				// revoking now is the whole point.
+				var hubErr *identityclient.Error
+				if !errors.As(err, &hubErr) || !hubErr.Permanent() {
+					return ctrl.Result{}, fmt.Errorf("releasing the edge identity: %w", err)
+				}
+				logger.Error(err, "the hub refused to release this edge's identity; its sweep will collect it within one token TTL")
+			}
+		}
+		controllerutil.RemoveFinalizer(edge, identityFinalizer)
+		if err := c.Update(ctx, edge); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clearing the identity finalizer: %w", err)
+		}
+		logger.Info("Edge identity revoked")
+		return ctrl.Result{}, nil
 	}
 
-	// 2. Ensure ServiceAccount.
-	if err := ensureServiceAccount(ctx, c, saName, ownerRef); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring service account: %w", err)
+	if r.identities == nil {
+		logger.V(4).Info("no hub identity client; skipping edge credential provisioning")
+		return ctrl.Result{}, nil
 	}
 
-	// 3. Ensure ClusterRole for edge agents.
-	// NOTE: the ClusterRole is a shared cluster-wide resource, not owned by
-	// individual edges.  Attaching per-edge ownerRefs would cause GC races.
-	if err := ensureClusterRole(ctx, c); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring cluster role: %w", err)
+	// The finalizer goes on BEFORE the identity exists. The other order leaks:
+	// a delete landing between the mint and the finalizer write leaves a live
+	// credential with nothing left to revoke it from.
+	if !controllerutil.ContainsFinalizer(edge, identityFinalizer) {
+		controllerutil.AddFinalizer(edge, identityFinalizer)
+		if err := c.Update(ctx, edge); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding the identity finalizer: %w", err)
+		}
 	}
 
-	// 4. Ensure ClusterRoleBinding for this edge's SA (shared operational role:
-	// get/list/watch/update on edges, placements, workloads).
-	if err := ensureClusterRoleBinding(ctx, c, saName, ownerRef); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring cluster role binding: %w", err)
+	// Ensure is idempotent on the owner tuple, so this re-asserts the rules and
+	// discards the token it returns: the agent gets its token over the tunnel,
+	// and a token this reconciler held would only be a token at rest.
+	if _, err := r.identities.Ensure(ctx, identityclient.Request{
+		Owner:     owner,
+		ClusterID: string(req.ClusterName),
+		Rules:     agentidentity.Rules(r.gvr, edge.GetName()),
+		TTL:       agentidentity.TokenTTL * time.Second,
+	}); err != nil {
+		var hubErr *identityclient.Error
+		if errors.As(err, &hubErr) && hubErr.Permanent() {
+			// The rules are wrong, not the weather. Retrying the identical
+			// request cannot help, and hot-looping on it would bury the hub's
+			// reason in noise.
+			logger.Error(err, "the hub refused this edge's identity; fix the requested rules")
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("ensuring the edge identity: %w", err)
 	}
 
-	// 4b. Ensure the per-edge "proxy" grant: a ClusterRole + Binding scoped to
-	// THIS edge via resourceNames, authorizing the agent SA for verb "proxy" on
-	// its own edge object. The agent-ingress handler gates SA-token reconnects on
-	// a delegated SubjectAccessReview for that verb (authorizeByIssuedToken), so
-	// only the SA bound here — this exact edge's agent — passes; a different
-	// edge's SA in the same workspace does not. Owned by the edge, so deleting the
-	// edge revokes it (the revocation model the issued-token byte-compare had).
-	if err := r.ensureEdgeProxyGrant(ctx, c, saName, edge.GetName(), ownerRef); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring edge proxy grant: %w", err)
-	}
-
-	// 5. Ensure token Secret (type kubernetes.io/service-account-token).
-	if err := ensureTokenSecret(ctx, c, tokenSecretName, saName, ownerRef); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring token secret: %w", err)
-	}
-
-	// 6. Read the SA token. If not yet populated by kcp, requeue.
-	tokenSecret := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: tokenSecretName}, tokenSecret); err != nil {
-		return ctrl.Result{}, fmt.Errorf("getting token secret: %w", err)
-	}
-	token := string(tokenSecret.Data["token"])
-	if token == "" {
-		logger.Info("Token not yet populated, requeuing")
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-	}
-
-	// 7. Create kubeconfig Secret with the SA token for the agent.
-	if err := r.ensureKubeconfigSecret(ctx, c, kubeconfigSecretName, edge.GetName(), token, ownerRef); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring kubeconfig secret: %w", err)
-	}
-
-	logger.Info("Edge credentials provisioned", "secret", edgeNamespace+"/"+kubeconfigSecretName)
+	logger.V(4).Info("Edge identity ensured")
 	return ctrl.Result{}, nil
-}
-
-// edgeOwnerRef returns an OwnerReference for the given connectable object,
-// using the reconciler's kind (KubernetesCluster | LinuxServer | MacOSServer). Controller is
-// set to true so that Owns() watches (which default to OnlyControllerOwner) can
-// map child object changes back to the parent.
-func (r *RBACReconciler) edgeOwnerRef(edge edgeapi.Connectable) metav1.OwnerReference {
-	return metav1.OwnerReference{
-		APIVersion:         r.gvr.GroupVersion().String(),
-		Kind:               r.kind,
-		Name:               edge.GetName(),
-		UID:                edge.GetUID(),
-		Controller:         ptr.To(true),
-		BlockOwnerDeletion: ptr.To(true),
-	}
-}
-
-// ensureOwnerRef checks if the object already has the expected OwnerReference
-// and patches it in if missing. This adopts pre-existing objects so that Owns()
-// watches can map child deletions back to the parent Edge.
-func ensureOwnerRef(ctx context.Context, c client.Client, obj client.Object, ownerRef metav1.OwnerReference) error {
-	for _, ref := range obj.GetOwnerReferences() {
-		if ref.UID == ownerRef.UID {
-			return nil
-		}
-		if ref.Controller != nil && *ref.Controller {
-			return fmt.Errorf("%s %q is already controlled by %s/%s", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), ref.APIVersion, ref.Name)
-		}
-	}
-	obj.SetOwnerReferences(append(obj.GetOwnerReferences(), ownerRef))
-	return c.Update(ctx, obj)
-}
-
-func ensureNamespace(ctx context.Context, c client.Client) error {
-	ns := &corev1.Namespace{}
-	if err := c.Get(ctx, client.ObjectKey{Name: edgeNamespace}, ns); err == nil {
-		return nil
-	} else if !apierrors.IsNotFound(err) {
-		return err
-	}
-	if err := c.Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: edgeNamespace},
-	}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	return nil
-}
-
-func ensureServiceAccount(ctx context.Context, c client.Client, name string, ownerRef metav1.OwnerReference) error {
-	sa := &corev1.ServiceAccount{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, sa); err == nil {
-		return ensureOwnerRef(ctx, c, sa, ownerRef)
-	} else if !apierrors.IsNotFound(err) {
-		return err
-	}
-	if err := c.Create(ctx, &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            name,
-			Namespace:       edgeNamespace,
-			OwnerReferences: []metav1.OwnerReference{ownerRef},
-		},
-	}); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return err
-		}
-		existing := &corev1.ServiceAccount{}
-		if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, existing); err != nil {
-			return err
-		}
-		return ensureOwnerRef(ctx, c, existing, ownerRef)
-	}
-	return nil
-}
-
-// desiredAgentRules returns the PolicyRules that the edge agent ClusterRole
-// should have. This ClusterRole is shared by every agent SA (one per edge), so
-// it covers every connectable kind in the edges provider's group edges.railgrid.ai:
-// KubernetesCluster, LinuxServer, and MacOSServer. The agent reads its own edge and patches
-// its status (edge_reporter heartbeats status.connected/agentVersion/…), so it
-// needs get/list/watch + update/patch on the kinds AND their /status
-// subresource — otherwise the agent's status reporter is "forbidden ... cannot
-// patch resource kubernetesclusters/status".
-func desiredAgentRules() []rbacv1.PolicyRule {
-	return []rbacv1.PolicyRule{
-		{
-			APIGroups: []string{"edges.railgrid.ai"},
-			Resources: []string{
-				"kubernetesclusters", "kubernetesclusters/status",
-				"linuxservers", "linuxservers/status",
-				"macosservers", "macosservers/status",
-			},
-			Verbs: []string{"get", "list", "watch", "update", "patch"},
-		},
-		// Workload plane (kubernetes edges): the agent's workload reconciler
-		// watches its Placements and reads the referenced Workload; the placement
-		// reporter patches Placement status from the local Deployment. So it needs
-		// list/watch/get on placements + read on workloads, and update/patch on
-		// placements/status — otherwise the reporter is "forbidden ... cannot list
-		// resource placements".
-		{
-			APIGroups: []string{"edges.railgrid.ai"},
-			Resources: []string{"placements", "placements/status"},
-			Verbs:     []string{"get", "list", "watch", "update", "patch"},
-		},
-		{
-			APIGroups: []string{"edges.railgrid.ai"},
-			Resources: []string{"workloads", "workloads/status"},
-			Verbs:     []string{"get", "list", "watch"},
-		},
-		// Add-on plane (host edges): the agent's add-on manager watches the
-		// tenant's Addons and reports what it did on each one's status. READ
-		// ONLY on the objects themselves — an agent must never be able to
-		// create or delete an Addon, because creating one is the privileged act
-		// that turns a machine into a code-execution host. See
-		// docs/edge-addons.md.
-		{
-			APIGroups: []string{"edges.railgrid.ai"},
-			Resources: []string{"addons"},
-			Verbs:     []string{"get", "list", "watch"},
-		},
-		{
-			APIGroups: []string{"edges.railgrid.ai"},
-			Resources: []string{"addons/status"},
-			Verbs:     []string{"get", "update", "patch"},
-		},
-		// Namespaces and secrets are needed for SSH credential setup (server-type edges).
-		{
-			APIGroups: []string{""},
-			Resources: []string{"namespaces"},
-			Verbs:     []string{"get", "create"},
-		},
-		{
-			APIGroups: []string{""},
-			Resources: []string{"secrets"},
-			Verbs:     []string{"get", "create", "update"},
-		},
-	}
-}
-
-// ensureClusterRole creates or updates the shared railgrid-edge-agent ClusterRole.
-// It intentionally carries no owner reference so that it is never garbage-collected
-// when an individual edge is deleted; the role is a cluster-wide shared resource.
-func ensureClusterRole(ctx context.Context, c client.Client) error {
-	desired := desiredAgentRules()
-	cr := &rbacv1.ClusterRole{}
-	if err := c.Get(ctx, client.ObjectKey{Name: edgeAgentClusterRole}, cr); err == nil {
-		if !rulesEqual(cr.Rules, desired) {
-			cr.Rules = desired
-			return c.Update(ctx, cr)
-		}
-		return nil
-	} else if !apierrors.IsNotFound(err) {
-		return err
-	}
-	if err := c.Create(ctx, &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: edgeAgentClusterRole,
-		},
-		Rules: desired,
-	}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	return nil
-}
-
-// rulesEqual compares two PolicyRule slices for equality.
-func rulesEqual(a, b []rbacv1.PolicyRule) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if !ruleEqual(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func ruleEqual(a, b rbacv1.PolicyRule) bool {
-	return slicesEqual(a.APIGroups, b.APIGroups) &&
-		slicesEqual(a.Resources, b.Resources) &&
-		slicesEqual(a.Verbs, b.Verbs) &&
-		slicesEqual(a.ResourceNames, b.ResourceNames) &&
-		slicesEqual(a.NonResourceURLs, b.NonResourceURLs)
-}
-
-func slicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName string, ownerRef metav1.OwnerReference) error {
-	crbName := "railgrid-edge-" + saName
-	crb := &rbacv1.ClusterRoleBinding{}
-	if err := c.Get(ctx, client.ObjectKey{Name: crbName}, crb); err == nil {
-		return ensureOwnerRef(ctx, c, crb, ownerRef)
-	} else if !apierrors.IsNotFound(err) {
-		return err
-	}
-	if err := c.Create(ctx, &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            crbName,
-			OwnerReferences: []metav1.OwnerReference{ownerRef},
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
-			Name:     edgeAgentClusterRole,
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      saName,
-				Namespace: edgeNamespace,
-			},
-		},
-	}); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return err
-		}
-		existing := &rbacv1.ClusterRoleBinding{}
-		if err := c.Get(ctx, client.ObjectKey{Name: crbName}, existing); err != nil {
-			return err
-		}
-		return ensureOwnerRef(ctx, c, existing, ownerRef)
-	}
-	return nil
-}
-
-// ensureEdgeProxyGrant creates a per-edge ClusterRole + ClusterRoleBinding that
-// authorizes this edge's agent ServiceAccount for the "proxy" verb on its OWN
-// edge object (resourceNames-scoped). This is the RBAC the agent-ingress
-// handler's delegated SubjectAccessReview checks on SA-token reconnect, so the
-// gate is per-edge: a same-workspace SA for a different edge is not granted
-// "proxy" on this name and fails the review. Both objects are owned by the edge
-// so deletion revokes the grant.
-func (r *RBACReconciler) ensureEdgeProxyGrant(ctx context.Context, c client.Client, saName, edgeName string, ownerRef metav1.OwnerReference) error {
-	name := "railgrid-edge-proxy-" + saName
-	desiredRules := []rbacv1.PolicyRule{{
-		APIGroups:     []string{r.gvr.Group},
-		Resources:     []string{r.gvr.Resource},
-		ResourceNames: []string{edgeName},
-		Verbs:         []string{"proxy"},
-	}}
-
-	cr := &rbacv1.ClusterRole{}
-	if err := c.Get(ctx, client.ObjectKey{Name: name}, cr); err == nil {
-		// Verify ownership before changing the policy. A same-named ClusterRole
-		// controlled by another edge must remain byte-for-byte untouched when
-		// this reconciler refuses to adopt it.
-		if err := ensureOwnerRef(ctx, c, cr, ownerRef); err != nil {
-			return err
-		}
-		if !rulesEqual(cr.Rules, desiredRules) {
-			cr.Rules = desiredRules
-			if err := c.Update(ctx, cr); err != nil {
-				return err
-			}
-		}
-	} else if apierrors.IsNotFound(err) {
-		if err := c.Create(ctx, &rbacv1.ClusterRole{
-			ObjectMeta: metav1.ObjectMeta{Name: name, OwnerReferences: []metav1.OwnerReference{ownerRef}},
-			Rules:      desiredRules,
-		}); err != nil {
-			if !apierrors.IsAlreadyExists(err) {
-				return err
-			}
-			existing := &rbacv1.ClusterRole{}
-			if err := c.Get(ctx, client.ObjectKey{Name: name}, existing); err != nil {
-				return err
-			}
-			if err := ensureOwnerRef(ctx, c, existing, ownerRef); err != nil {
-				return err
-			}
-		}
-	} else {
-		return err
-	}
-
-	crb := &rbacv1.ClusterRoleBinding{}
-	if err := c.Get(ctx, client.ObjectKey{Name: name}, crb); err == nil {
-		return ensureOwnerRef(ctx, c, crb, ownerRef)
-	} else if !apierrors.IsNotFound(err) {
-		return err
-	}
-	if err := c.Create(ctx, &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            name,
-			OwnerReferences: []metav1.OwnerReference{ownerRef},
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
-			Name:     name,
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      saName,
-				Namespace: edgeNamespace,
-			},
-		},
-	}); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return err
-		}
-		existing := &rbacv1.ClusterRoleBinding{}
-		if err := c.Get(ctx, client.ObjectKey{Name: name}, existing); err != nil {
-			return err
-		}
-		return ensureOwnerRef(ctx, c, existing, ownerRef)
-	}
-	return nil
-}
-
-func ensureTokenSecret(ctx context.Context, c client.Client, secretName, saName string, ownerRef metav1.OwnerReference) error {
-	existing := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: secretName}, existing); err == nil {
-		return ensureOwnerRef(ctx, c, existing, ownerRef)
-	} else if !apierrors.IsNotFound(err) {
-		return err
-	}
-	if err := c.Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: edgeNamespace,
-			Annotations: map[string]string{
-				"kubernetes.io/service-account.name": saName,
-			},
-			OwnerReferences: []metav1.OwnerReference{ownerRef},
-		},
-		Type: corev1.SecretTypeServiceAccountToken,
-	}); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return err
-		}
-		existing := &corev1.Secret{}
-		if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: secretName}, existing); err != nil {
-			return err
-		}
-		return ensureOwnerRef(ctx, c, existing, ownerRef)
-	}
-	return nil
-}
-
-func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Client, name, edgeName, token string, ownerRef metav1.OwnerReference) error {
-	existing := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, existing); err == nil {
-		return ensureOwnerRef(ctx, c, existing, ownerRef)
-	} else if !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	clusterDef := &clientcmdapi.Cluster{
-		Server: r.hubExternalURL,
-	}
-	if len(r.hubCAData) > 0 {
-		clusterDef.CertificateAuthorityData = r.hubCAData
-	} else if r.devMode {
-		clusterDef.InsecureSkipTLSVerify = true
-	}
-
-	kubeconfig := clientcmdapi.Config{
-		Clusters: map[string]*clientcmdapi.Cluster{
-			"railgrid": clusterDef,
-		},
-		AuthInfos: map[string]*clientcmdapi.AuthInfo{
-			"edge-agent": {
-				Token: token,
-			},
-		},
-		Contexts: map[string]*clientcmdapi.Context{
-			"railgrid": {
-				Cluster:  "railgrid",
-				AuthInfo: "edge-agent",
-			},
-		},
-		CurrentContext: "railgrid",
-	}
-
-	kubeconfigBytes, err := clientcmd.Write(kubeconfig)
-	if err != nil {
-		return fmt.Errorf("marshaling kubeconfig: %w", err)
-	}
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: edgeNamespace,
-			Labels: map[string]string{
-				"railgrid.ai/edge": edgeName,
-			},
-			OwnerReferences: []metav1.OwnerReference{ownerRef},
-		},
-		Data: map[string][]byte{
-			"kubeconfig": kubeconfigBytes,
-			"token":      []byte(token),
-			"server":     []byte(r.hubExternalURL),
-		},
-	}
-
-	if err := c.Create(ctx, secret); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return err
-		}
-		existing := &corev1.Secret{}
-		if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, existing); err != nil {
-			return err
-		}
-		return ensureOwnerRef(ctx, c, existing, ownerRef)
-	}
-	return nil
 }

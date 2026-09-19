@@ -10,212 +10,222 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
+	"slices"
+	"strings"
 	"testing"
-	"time"
 
-	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
-	k8stesting "k8s.io/client-go/testing"
+
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/tools"
 )
 
-func identityScheme() *runtime.Scheme {
-	s := runtime.NewScheme()
-	_ = corev1.AddToScheme(s)
-	return s
+// identityWorkspace is a tenant workspace with a connection wired to a browser
+// instance, a toolset that carries a second one, and a connection that reaches
+// a public endpoint with its own credential and needs no platform identity.
+func identityWorkspace() *dynamicfake.FakeDynamicClient {
+	object := func(gvr schema.GroupVersionResource, kind, name string, spec map[string]any) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": gvr.GroupVersion().String(),
+			"kind":       kind,
+			"metadata":   map[string]any{"name": name},
+			"spec":       spec,
+		}}
+	}
+	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		agentsclient.ConnectionGVR: "ConnectionList",
+		agentsclient.ToolsetGVR:    "ToolsetList",
+	},
+		object(agentsclient.ConnectionGVR, "Connection", "browser", map[string]any{
+			"type":   "mcp",
+			"config": map[string]any{"instance": "chrome-1", "instanceResource": "browsers"},
+		}),
+		object(agentsclient.ConnectionGVR, "Connection", "search", map[string]any{
+			"type":   "websearch",
+			"config": map[string]any{"instance": "searx-1"},
+		}),
+		object(agentsclient.ConnectionGVR, "Connection", "github", map[string]any{
+			"type":   "github",
+			"config": map[string]any{},
+		}),
+		object(agentsclient.ToolsetGVR, "Toolset", "research", map[string]any{
+			"connections": []any{"search"},
+		}),
+	)
 }
 
-// newIdentityFake returns a dynamic fake plus a hook that simulates kcp's token
-// controller: it fills the token in on the Nth Get of the Secret, so the poll
-// in ensureAgentToken is exercised rather than short-circuited.
-func newIdentityFake(t *testing.T, fillAfterGets int) *dynamicfake.FakeDynamicClient {
-	t.Helper()
-	dyn := dynamicfake.NewSimpleDynamicClient(identityScheme())
-	gets := 0
-	dyn.PrependReactor("get", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		ga, ok := action.(k8stesting.GetAction)
-		if !ok || ga.GetName() != agentTokenSecretName("scout") {
-			return false, nil, nil
-		}
-		gets++
-		if gets < fillAfterGets {
-			return true, &unstructured.Unstructured{Object: map[string]any{
-				"apiVersion": "v1", "kind": "Secret",
-				"metadata": map[string]any{"name": ga.GetName(), "namespace": identityNamespace},
-			}}, nil
-		}
-		return true, &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "v1", "kind": "Secret",
-			"metadata": map[string]any{"name": ga.GetName(), "namespace": identityNamespace},
-			"data": map[string]any{
-				corev1.ServiceAccountTokenKey: base64.StdEncoding.EncodeToString([]byte("sa-token-value")),
+func agentWiredTo(interactive, toolsets []string) *agentsv1alpha1.Agent {
+	return &agentsv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "scout", UID: "agent-uid-1"},
+		Spec: agentsv1alpha1.AgentSpec{
+			Tools: agentsv1alpha1.AgentToolPolicy{
+				Interactive: agentsv1alpha1.ToolGrant{Connections: interactive, Toolsets: toolsets},
 			},
-		}}, nil
-	})
-	return dyn
-}
-
-func TestEnsureAgentIdentity(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("provisions the identity and returns the populated token", func(t *testing.T) {
-		dyn := newIdentityFake(t, 3) // token appears on the third Get
-		tok, err := ensureAgentIdentity(ctx, dyn, "scout")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if tok != "sa-token-value" {
-			t.Fatalf("token = %q, want the decoded Secret value", tok)
-		}
-
-		sa, err := dyn.Resource(serviceAccountGVR).Namespace(identityNamespace).
-			Get(ctx, agentIdentityName("scout"), metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("ServiceAccount: %v", err)
-		}
-		if sa.GetName() != "railgrid-agent-scout" {
-			t.Fatalf("SA name = %q", sa.GetName())
-		}
-
-		// The RBAC is the security surface, so its exact shape is pinned. Read
-		// only, and confined to the infrastructure instance group: an agent
-		// identity must never be able to read Secrets or mutate anything.
-		role, err := dyn.Resource(clusterRoleGVR).Get(ctx, agentIdentityName("scout"), metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("ClusterRole: %v", err)
-		}
-		rules, _, _ := unstructured.NestedSlice(role.Object, "rules")
-		if len(rules) != 1 {
-			t.Fatalf("want exactly one rule, got %v", rules)
-		}
-		rule := rules[0].(map[string]any)
-		groups, _, _ := unstructured.NestedStringSlice(rule, "apiGroups")
-		verbs, _, _ := unstructured.NestedStringSlice(rule, "verbs")
-		if len(groups) != 1 || groups[0] != instanceGroup {
-			t.Fatalf("apiGroups = %v, want only %q", groups, instanceGroup)
-		}
-		for _, v := range verbs {
-			if v != "get" && v != "list" {
-				t.Fatalf("verb %q grants more than read", v)
-			}
-		}
-
-		binding, err := dyn.Resource(clusterRoleBindingGVR).Get(ctx, agentIdentityName("scout"), metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("ClusterRoleBinding: %v", err)
-		}
-		roleName, _, _ := unstructured.NestedString(binding.Object, "roleRef", "name")
-		if roleName != agentIdentityName("scout") {
-			t.Fatalf("binding points at %q", roleName)
-		}
-		subjects, _, _ := unstructured.NestedSlice(binding.Object, "subjects")
-		subj := subjects[0].(map[string]any)
-		if subj["name"] != agentIdentityName("scout") || subj["namespace"] != identityNamespace {
-			t.Fatalf("subject = %v", subj)
-		}
-	})
-
-	t.Run("the token Secret is a service-account-token naming the SA", func(t *testing.T) {
-		// Without the right type and annotation, kcp's token controller never
-		// populates it and the poll would time out with nothing to show for it.
-		dyn := newIdentityFake(t, 1)
-		if _, err := ensureAgentIdentity(ctx, dyn, "scout"); err != nil {
-			t.Fatal(err)
-		}
-		created := findCreated(t, dyn, "secrets")
-		if got, _, _ := unstructured.NestedString(created.Object, "type"); got != string(corev1.SecretTypeServiceAccountToken) {
-			t.Fatalf("Secret type = %q", got)
-		}
-		ann := created.GetAnnotations()
-		if ann[corev1.ServiceAccountNameKey] != agentIdentityName("scout") {
-			t.Fatalf("annotations = %v", ann)
-		}
-	})
-
-	t.Run("is idempotent — a second call creates nothing new", func(t *testing.T) {
-		// Every background run calls this. AlreadyExists must be success, not
-		// an error that disables instance tools for the rest of the process.
-		dyn := newIdentityFake(t, 1)
-		if _, err := ensureAgentIdentity(ctx, dyn, "scout"); err != nil {
-			t.Fatal(err)
-		}
-		before := countCreates(dyn)
-		dyn.ClearActions()
-		tok, err := ensureAgentIdentity(ctx, dyn, "scout")
-		if err != nil {
-			t.Fatalf("second call: %v", err)
-		}
-		if tok != "sa-token-value" {
-			t.Fatalf("token = %q", tok)
-		}
-		if before == 0 {
-			t.Fatal("first call created nothing")
-		}
-	})
-
-	t.Run("a token that never arrives is an error, not an empty token", func(t *testing.T) {
-		// An empty token would compose a data-plane URL that 401s two hops
-		// away; the caller needs to know provisioning failed.
-		dyn := newIdentityFake(t, 1_000_000)
-		ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-		defer cancel()
-		if _, err := ensureAgentIdentity(ctx, dyn, "scout"); err == nil {
-			t.Fatal("want an error when the token controller never populates the Secret")
-		}
-	})
-}
-
-// The identity cache is what keeps a busy scheduler from re-provisioning on
-// every run, and what lets a revoked identity recover.
-func TestIdentityCache(t *testing.T) {
-	c := newIdentityCache()
-	if _, ok := c.get("c1", "scout"); ok {
-		t.Fatal("empty cache returned a token")
-	}
-	c.put("c1", "scout", "t1")
-	if tok, ok := c.get("c1", "scout"); !ok || tok != "t1" {
-		t.Fatalf("get = %q,%v", tok, ok)
-	}
-	// Same agent name in a different workspace is a different identity; sharing
-	// one token across clusters would send workspace A's credential to B.
-	if _, ok := c.get("c2", "scout"); ok {
-		t.Fatal("token leaked across clusters")
-	}
-	// These tokens never expire on their own, so a withdrawn identity would be
-	// used from memory until restart if the cache did not age entries out.
-	now := time.Now()
-	c.now = func() time.Time { return now }
-	c.put("c1", "scout", "t1")
-	now = now.Add(identityTTL + time.Second)
-	if _, ok := c.get("c1", "scout"); ok {
-		t.Fatal("expired entry still served")
+		},
 	}
 }
 
-func findCreated(t *testing.T, dyn *dynamicfake.FakeDynamicClient, resource string) *unstructured.Unstructured {
-	t.Helper()
-	for _, a := range dyn.Actions() {
-		ca, ok := a.(k8stesting.CreateAction)
-		if !ok || a.GetResource().Resource != resource {
-			continue
-		}
-		if u, ok := ca.GetObject().(*unstructured.Unstructured); ok {
-			return u
+func ruleFor(rules []rbacv1.PolicyRule, resource string) *rbacv1.PolicyRule {
+	for i := range rules {
+		if slices.Contains(rules[i].Resources, resource) {
+			return &rules[i]
 		}
 	}
-	t.Fatalf("no create recorded for %s", resource)
 	return nil
 }
 
-func countCreates(dyn *dynamicfake.FakeDynamicClient) int {
-	n := 0
-	for _, a := range dyn.Actions() {
-		if a.GetVerb() == "create" {
-			n++
+// The grant this replaced was get+list on EVERY resource in the instance API
+// group: a standing key to every instance in the workspace, including browser
+// instances holding live logins the agent was never wired to. These rules name
+// the instances the agent actually references, and nothing else.
+func TestIdentityRulesNameOnlyTheReferencedInstances(t *testing.T) {
+	identities := newAgentIdentities(nil)
+	rules, err := identities.rulesFor(context.Background(), identityWorkspace(),
+		agentWiredTo([]string{"browser", "github"}, []string{"research"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clause B: see the instance, by name.
+	browsers := ruleFor(rules, "browsers")
+	if browsers == nil || !slices.Equal(browsers.ResourceNames, []string{"chrome-1"}) {
+		t.Fatalf("browsers rule = %+v, want a get on chrome-1 alone", browsers)
+	}
+	if !slices.Equal(browsers.Verbs, []string{"get"}) {
+		t.Errorf("browsers verbs = %v, want get only", browsers.Verbs)
+	}
+	// A toolset's connections count: the agent reaches them through it.
+	instances := ruleFor(rules, "instances")
+	if instances == nil || !slices.Equal(instances.ResourceNames, []string{"searx-1"}) {
+		t.Fatalf("instances rule = %+v, want the toolset's instance", instances)
+	}
+
+	// Clause C: act on those same instances, one rule per declared verb.
+	for _, verb := range instanceVerbs {
+		rule := ruleFor(rules, "browsers/"+verb)
+		if rule == nil || !slices.Equal(rule.ResourceNames, []string{"chrome-1"}) {
+			t.Fatalf("browsers/%s rule = %+v, want it scoped to chrome-1", verb, rule)
+		}
+		if !slices.Equal(rule.Verbs, []string{"create"}) {
+			t.Errorf("browsers/%s verbs = %v; the data plane expresses a grant as create", verb, rule.Verbs)
 		}
 	}
-	return n
+
+	// Nothing is granted on a wildcard, ever. This is the assertion that would
+	// have caught the old grant.
+	for _, rule := range rules {
+		if slices.Contains(rule.Resources, "*") || slices.Contains(rule.ResourceNames, "*") {
+			t.Fatalf("a wildcard rule reached the identity request: %+v", rule)
+		}
+		if len(rule.ResourceNames) == 0 {
+			t.Fatalf("an unnamed rule reached the identity request: %+v", rule)
+		}
+	}
+}
+
+// Clause D: the two objects the provider reads on the agent's behalf to find
+// out WHERE to send a data-plane call. An agent that references no instance
+// still gets them — resolving an endpoint is not access to anything.
+func TestIdentityRulesAlwaysCarryTheLookupGrants(t *testing.T) {
+	identities := newAgentIdentities(nil)
+	rules, err := identities.rulesFor(context.Background(), identityWorkspace(), agentWiredTo(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("an agent wired to nothing got %d rules, want only the two lookups: %+v", len(rules), rules)
+	}
+	binding := ruleFor(rules, APIBindingGVR.Resource)
+	if binding == nil || !slices.Equal(binding.ResourceNames, []string{"infrastructure"}) {
+		t.Fatalf("apibindings rule = %+v, want a get on the binding named after the provider", binding)
+	}
+	if !slices.Equal(binding.Verbs, []string{"get"}) {
+		t.Errorf("apibindings verbs = %v, want get", binding.Verbs)
+	}
+	mcp := ruleFor(rules, mcpServerGVR.Resource)
+	if mcp == nil || !slices.Equal(mcp.ResourceNames, []string{defaultMCPServer}) {
+		t.Fatalf("mcpservers rule = %+v, want a use on the default server", mcp)
+	}
+	if !slices.Equal(mcp.Verbs, []string{"use"}) {
+		t.Errorf("mcpservers verbs = %v, want use", mcp.Verbs)
+	}
+}
+
+// A connection with no instance contributes nothing: it reaches a public
+// endpoint with its own credential, and an identity rule for it would be a
+// grant with no subject.
+func TestConnectionsWithoutAnInstanceGrantNothing(t *testing.T) {
+	identities := newAgentIdentities(nil)
+	rules, err := identities.rulesFor(context.Background(), identityWorkspace(), agentWiredTo([]string{"github"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("a github connection produced instance rules: %+v", rules)
+	}
+}
+
+// A reference that cannot be read is not evidence of access. It contributes
+// nothing and does NOT fail the request: taking away an agent's whole identity
+// — and with it every instance-backed tool — because one toolset was briefly
+// unreadable would turn a blip into an outage.
+func TestAnUnreadableReferenceIsSkippedNotFatal(t *testing.T) {
+	identities := newAgentIdentities(nil)
+	rules, err := identities.rulesFor(context.Background(), identityWorkspace(),
+		agentWiredTo([]string{"browser", "does-not-exist"}, []string{"missing-toolset"}))
+	if err != nil {
+		t.Fatalf("an unreadable reference must not fail the rules: %v", err)
+	}
+	if browsers := ruleFor(rules, "browsers"); browsers == nil {
+		t.Fatal("the readable connection's grant was lost with the unreadable one")
+	}
+}
+
+// The fingerprint is what makes a changed grant actually change: without it the
+// old token source goes on refreshing the old rules, and the hub goes on
+// honouring them, because a refresh is idempotent on the owner tuple and says
+// nothing about what the agent references today.
+func TestRemovingAConnectionChangesTheFingerprint(t *testing.T) {
+	identities := newAgentIdentities(nil)
+	ctx := context.Background()
+	dyn := identityWorkspace()
+
+	with, err := identities.rulesFor(ctx, dyn, agentWiredTo([]string{"browser"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	without, err := identities.rulesFor(ctx, dyn, agentWiredTo(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint(with) == fingerprint(without) {
+		t.Fatal("dropping a connection left the rules looking unchanged")
+	}
+	// And the same wiring fingerprints the same, or every call would rebuild
+	// the source and re-mint a token it already had.
+	again, err := identities.rulesFor(ctx, dyn, agentWiredTo([]string{"browser"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint(with) != fingerprint(again) {
+		t.Fatal("identical wiring produced a different fingerprint")
+	}
+}
+
+// The instance API group is the one thing still hardcoded, and it is a contract
+// between the two providers' APIs rather than a routing detail. The provider
+// NAME is derived from it and confirmed against the tenant's own binding.
+func TestIdentityRulesUseTheDerivedProviderName(t *testing.T) {
+	if got := ProviderNameForAPIGroup(tools.InstanceAPIGroup); got != "infrastructure" {
+		t.Fatalf("provider name = %q", got)
+	}
+	if !strings.HasSuffix(tools.InstanceAPIGroup, ".railgrid.ai") {
+		t.Fatalf("instance API group %q is not a railgrid group", tools.InstanceAPIGroup)
+	}
 }

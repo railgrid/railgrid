@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
@@ -109,7 +110,7 @@ func testRepositoryActionAuthority(t *testing.T, actionName string) {
 			if err := registry.Register(backendFake); err != nil {
 				t.Fatal(err)
 			}
-			server := New(callerFixture{client: caller, t: t}, func(_ context.Context, cluster, name string) (dynamic.Interface, error) {
+			server := New(callerFixture{client: caller, t: t}, func(_ context.Context, cluster string, _ schema.GroupVersionResource, name string) (dynamic.Interface, error) {
 				if cluster != "tenant-id" || name != "product" {
 					t.Fatal("export crossed binding")
 				}
@@ -230,7 +231,9 @@ func TestRepositoryActionsConformance(t *testing.T) {
 	if err := registry.Register(&backendFixture{t: t}); err != nil {
 		t.Fatal(err)
 	}
-	server := New(callers, func(context.Context, string, string) (dynamic.Interface, error) { return provider, nil }, registry)
+	server := New(callers, func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error) {
+		return provider, nil
+	}, registry)
 
 	conformance.Test(t, server, conformance.Fixtures{
 		Callers:     callers,
@@ -247,4 +250,86 @@ func TestRepositoryActionsConformance(t *testing.T) {
 		DeniedStatus:   403,
 		ExpectEnvelope: true,
 	})
+}
+
+// A grant is per (resource, action). mint_registry_token is bound to a
+// Connection, so a caller who may run every repository action still cannot
+// mint a pull credential, and vice versa — which is the whole reason the
+// credential moved behind an action instead of staying a Secret read.
+func TestConnectionActionIsGatedSeparatelyFromRepositoryActions(t *testing.T) {
+	const cluster = "tenant-id"
+	conn := &api.Connection{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Connection"},
+		ObjectMeta: metav1.ObjectMeta{Name: "git", UID: "conn-uid"},
+		Spec:       api.ConnectionSpec{Provider: api.ProviderGitHub, Type: api.CredentialTypePAT, Owner: "example", SecretRef: api.LocalSecretReference{Name: "git-key"}},
+		Status:     api.ConnectionStatus{Login: "example"},
+	}
+	secret := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata": map[string]any{"name": "git-key", "namespace": "default"},
+		"data":     map[string]any{"token": base64.StdEncoding.EncodeToString([]byte("provider-secret"))},
+	}}
+	provider := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), actionObject(t, conn), secret)
+
+	newServer := func(allow func(conformance.Attributes) bool) (*Server, *conformance.FakeCallers) {
+		callers := &conformance.FakeCallers{
+			Cluster:   cluster,
+			Token:     "caller-token",
+			Objects:   []*unstructured.Unstructured{actionObject(t, conn)},
+			ListKinds: map[schema.GroupVersionResource]string{connections: "ConnectionList"},
+			Allow:     allow,
+		}
+		registry := backend.NewRegistry()
+		if err := registry.Register(&backendFixture{t: t}); err != nil {
+			t.Fatal(err)
+		}
+		return New(callers, func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error) {
+			return provider, nil
+		}, registry), callers
+	}
+
+	path := "/actions/clusters/" + cluster + "/connections/git/" + MintRegistryToken + "/v1"
+	body := `{"input":{"connectionUID":"conn-uid"}}`
+
+	// A repositories/* grant does not reach a connections/* subresource.
+	repoOnly, callers := newServer(func(a conformance.Attributes) bool {
+		return a.Verb == dataplane.SSARVerb && a.Resource == "repositories"
+	})
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+callers.Token)
+	request.Header.Set(dataplane.HeaderCluster, cluster)
+	recorder := httptest.NewRecorder()
+	repoOnly.ServeHTTP(recorder, request)
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("a repositories grant minted a registry token: %s", recorder.Body.String())
+	}
+
+	// The matching grant does, and what comes back is a pull credential for
+	// the connection's registry — never the Connection's own Secret contents
+	// under some other name.
+	granted, callers := newServer(func(a conformance.Attributes) bool {
+		return a.Verb == dataplane.SSARVerb && a.Resource == "connections" && a.Subresource == MintRegistryToken
+	})
+	request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+callers.Token)
+	request.Header.Set(dataplane.HeaderCluster, cluster)
+	recorder = httptest.NewRecorder()
+	granted.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("granted mint: got %d, body %s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Result RegistryTokenOutput `json:"result"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v (body %s)", err, recorder.Body.String())
+	}
+	if envelope.Result.Registry != "ghcr.io" || envelope.Result.Username != "example" || envelope.Result.Token == "" {
+		t.Fatalf("registry credential = %#v", envelope.Result)
+	}
+	// A PAT cannot be narrowed by any GitHub API, so the action says so
+	// rather than implying a least-privilege token it did not issue.
+	if envelope.Result.Scoped {
+		t.Fatal("a PAT-backed credential was reported as scoped")
+	}
 }

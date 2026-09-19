@@ -23,7 +23,7 @@ class FakeTerminal {
 class FakeSocket {
   static CONNECTING = 0; static OPEN = 1; static CLOSED = 3
   readyState = 0; sent = []; closed = false
-  constructor(url) { this.url = url; sockets.push(this) }
+  constructor(url, protocols) { this.url = url; this.protocols = protocols; sockets.push(this) }
   send(data) { this.sent.push(data) }
   close() { this.closed = true; this.readyState = FakeSocket.CLOSED }
 }
@@ -81,7 +81,15 @@ function setup(t) {
   globalThis.location = { protocol: 'https:', host: 'railgrid.test', pathname: '/ui/bonkers/users' }
   globalThis.window = { location: globalThis.location, dispatchEvent() {} }
   globalThis.WebSocket = FakeSocket
-  globalThis.fetch = async () => response({})
+  // The terminal mints a short-lived ticket on the gated "ticket" verb and
+  // presents it as a WebSocket subprotocol; there is no bearer in the URL.
+  globalThis.fetch = async (path, init) => {
+    if (typeof path === 'string' && path.endsWith('/ticket')) {
+      const bearer = String(init?.headers?.Authorization ?? '').replace(/^Bearer /, '')
+      return response({ subprotocol: 'railgrid.ticket.for-' + bearer, expiresIn: 60 })
+    }
+    return response({})
+  }
   sockets.length = terminals.length = 0
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -174,7 +182,9 @@ test('reconnect fences the previous token attempt and keeps only the replacement
   old.resolve('old-token')
   await flush()
   assert.equal(sockets.length, 1)
-  assert.ok(sockets[0].url.endsWith('token=new-token'))
+  assert.ok(sockets[0].url.endsWith('/linuxservers/private-server/ssh'), sockets[0].url)
+  assert.ok(!sockets[0].url.includes('token='), 'no bearer may appear in the WebSocket URL')
+  assert.deepEqual(sockets[0].protocols, ['railgrid.ticket.for-new-token'])
   assert.equal(terminals[0].disposed, true)
   assert.equal(terminals[1].disposed, false)
 })

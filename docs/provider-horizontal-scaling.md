@@ -1,13 +1,74 @@
 # Provider horizontal scaling — beyond leader election
 
-Status: **proposed** · Date: 2026-08-17 · Author: design note
+Status: **largely implemented** · Design note dated 2026-08-17, status refreshed
+2026-09-19 against the tree.
 Related: [`provider-connectivity-contract.md`](./provider-connectivity-contract.md),
 [`platform-internal-networking.md`](./platform-internal-networking.md) (tunnel-HA
-prior art), [`cross-provider-simplification.md`](./cross-provider-simplification.md)
-(kuery's dead sync path), [`helm.md`](./helm.md) §HA (the hub's own scaling
-model), `provider-sdk/leaderelection` (the first HA primitive).
+prior art), [`cross-provider-simplification.md`](./cross-provider-simplification.md),
+[`helm.md`](./helm.md) §HA (the hub's own scaling model),
+[`roadmap/provider-contract-remediation.md`](./roadmap/provider-contract-remediation.md)
+(§5, §6, §8, §9 Cut A landed the work below),
+`provider-sdk/leaderelection` (the first HA primitive).
 
-## The problem
+## Where this stands (2026-09-19)
+
+Every in-tree provider now runs its write loops under
+`provider-sdk/leaderelection.Run`, rebuilt per term, with the HTTP surface
+serving on every replica — `providers/{quickstart,code,infrastructure,edges,kuery,agents,app-studio}`
+(and `providers/infrastructure/operator.go` for the operator's own manager).
+The four structural blockers this doc was written about resolved as follows:
+
+| Provider | Blocker in Aug 2026 | Now |
+|---|---|---|
+| **edges** | process-global revdial dialer map | **Solved, but not by the tunnel-per-replica design below.** The agent still dials ONE replica; that replica claims the tunnel in a `Lease` and every other replica relays pickups and data-plane requests to the owner over a pod-to-pod internal listener (`providers/edges/main.go:216-288`, `providers/edges/internal/tunnel/haclient.go`). The tenant-config resolver is a controller-free multicluster manager that runs active-active on every replica (`providers/edges/controller_manager.go:143-183`), so the serving path no longer depends on the leader's manager. Reconcilers are leader-elected (`:129-141`). |
+| **kuery** | per-replica engagement state; dead sync path | **Solved.** The sync path reads each edge's coordinate from `KubernetesCluster.status.url` (`providers/kuery/engagement/controller.go:669-695`), engagement is a provider-private `Engagement` kind, and per-edge `coordination.k8s.io` Leases shard the edges (`providers/kuery/engagement/claims.go`). Controllers are leader-elected (`providers/kuery/main.go:208-218`); queries, MCP and the portal are answered from the shared store on every replica. |
+| **app-studio** | in-process run ownership; pod-local workspace tree | **Solved for the common path.** Controllers are leader-elected (`providers/app-studio/controller_manager.go:155-168`); everything that touches a project's workspace tree rides project affinity + peer forwarding over `internalPort` (`providers/app-studio/api/dataplane_routes.go:220-237`). |
+| **databricks** | authority resolved through the running manager | **Not started** — it lives in `railgrid/providers` and is §3 of the remediation plan, which has not begun. The audit finding below still applies to it verbatim. |
+
+`agents` was not in the original four and has changed the most: its background
+work is no longer an in-process queue at all. A `Run` CR **is** the queue — a
+Pending Run with no owner is claimed by the leader writing `status.owner`
+through the status subresource, optimistic concurrency settles the race, and a
+restart re-queues from the objects rather than losing them
+(`providers/agents/controller/run/controller.go`,
+`providers/agents/apis/v1alpha1/types_run.go`). The executor
+(`providers/agents/executor/executor.go`) is now just a local worker pool fed
+from claimed Runs, and the 30 s stale-run sweep became a computed-deadline
+`RequeueAfter` on the Run.
+
+### What is still open
+
+1. **app-studio's workspace PVC is still `ReadWriteOnce`**
+   (`providers/app-studio/deploy/chart/values.yaml:151-156`), so project
+   affinity is what makes multi-replica correct, not shared storage. A replica
+   crash still loses a project's uncommitted tree until it re-hydrates. The
+   chart still refuses `replicaCount > 1` when
+   `assistant.runSandbox.mode=force`, because coding-sandbox claims have no
+   distributed CAS (`deploy/chart/templates/deployment.yaml:9-10`), and the
+   shared single-session Playwright browser is serialized per process.
+2. **kuery's per-edge sharding is not an SDK primitive.** `engagement/claims.go`
+   is a local try-acquire/renew/release over Leases, and it currently shards
+   only *within* a leadership term, because the whole engagement controller sits
+   under one lease. It becomes load-sharing rather than handover insurance once
+   `provider-sdk` grows the P2 primitive below and the sync half can run
+   off-leader (`providers/kuery/deploy/chart/values.yaml:14-26`).
+3. **Chart defaults are still `replicaCount: 1`** for edges, kuery and
+   app-studio. Scaling is supported, not yet the default; kuery additionally
+   refuses `>1` without `store.driver=postgres`
+   (`providers/kuery/deploy/chart/templates/deployment.yaml:1-2`).
+4. **`sharedstore` (P1) and the generalized `ownership` registry (P2) were never
+   ported to `provider-sdk`.** Each provider solved its own case: edges with
+   registry Leases, kuery with per-edge Leases, app-studio with project
+   affinity. P3 (peer addressing + forwarding) exists twice, hand-rolled, as
+   edges' internal listener and app-studio's `internalPort` forwarder.
+
+The rest of this document is the **August 2026 audit and design**. It is kept
+for its reasoning and its survey of the alternatives; read the table above for
+what was actually built.
+
+---
+
+## The problem *(as of 2026-08-17)*
 
 Leader election (`provider-sdk/leaderelection`) made **code** and
 **infrastructure** safe to scale: their multicluster managers host only
@@ -27,7 +88,7 @@ reason, and today they pin `replicaCount: 1`:
 This doc answers: what does each provider actually need to scale out, whether
 the hub should grow a session/affinity layer, and in what order to do the work.
 
-## Evidence summary (what the audit found)
+## Evidence summary (what the audit found) *(2026-08-17)*
 
 Full per-provider audits were done against the tree on 2026-08-17; the
 load-bearing findings:
@@ -141,7 +202,7 @@ proxy to the owner replica recorded in P2". Contained entirely inside each
 provider; the hub keeps dialing the one ClusterIP Service. Charts gain a
 `replicaId` (pod name) env via the downward API.
 
-## Per-provider plans
+## Per-provider plans *(2026-08-17 proposals — see "Where this stands" for what shipped)*
 
 ### databricks — small; no new primitives needed
 
@@ -246,7 +307,7 @@ store-polling). Two work streams:
    (owner replica reconciles its own projects — reconcile-side sharding via
    the same claims), and lift the chart's `replicaCount != 1` fail.
 
-## Phasing and order
+## Phasing and order *(superseded)*
 
 | Phase | Work | Size | Unlocks |
 |---|---|---|---|

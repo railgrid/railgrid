@@ -38,38 +38,44 @@ func runInitCmd(ctx context.Context) error {
 	// bootstrap both the platform workspace and an org's self-hosted copy. Set
 	// the env var only to reference an export in a different workspace.
 	workspacePath := os.Getenv("QUICKSTART_WORKSPACE_PATH")
-	schemasDir := os.Getenv("RAILGRID_SCHEMAS_DIR")
-	if schemasDir == "" {
-		schemasDir = "/etc/railgrid/schemas"
+	kcpDir := os.Getenv("RAILGRID_KCP_DIR")
+	if kcpDir == "" {
+		kcpDir = "/etc/railgrid/kcp"
+	}
+	// Per-installation APIExport identity hashes for first-party claim groups,
+	// as "group=hash,group=hash". Empty for this provider: it claims only
+	// built-in types, which need no hash.
+	identityHashes, err := sdkinstall.ParseIdentityHashes(os.Getenv("RAILGRID_IDENTITY_HASHES"))
+	if err != nil {
+		return err
 	}
 	// CatalogEntry self-registration: the provider applies its own CatalogEntry
 	// into its workspace (the hub watches it there). Empty → skip.
 	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
 
 	// Bootstrap applies, idempotently and in order: the APIResourceSchemas in
-	// SchemasDir, the APIExport that serves them, the APIExportEndpointSlice
+	// KCPDir, the generated APIExport beside them, the APIExportEndpointSlice
 	// the controller manager watches to discover tenant workspaces, and the
 	// bind grant that lets tenants create an APIBinding. Without the slice the
 	// multicluster manager has nothing to watch and no Greeting anywhere is
 	// ever reconciled, so this one call is what makes the controller real.
 	//
-	// Claims is empty on purpose. A permission claim is access the provider
-	// asks every tenant to grant it in their own workspace; this one reconciles
-	// only the Greetings its own APIExport serves, so it needs none. Claims
-	// declared here MUST match manifest.yaml and
-	// deploy/chart/templates/catalogentry.yaml exactly — all three are the same
-	// promise written down three times, and hack/verify-provider-contract.mjs
-	// fails the build when they drift.
+	// There is no claim list here, and there is no place to put one: a
+	// permission claim is written in manifest.yaml and nowhere else, codegen
+	// turns it into deploy/chart/files/apiexport.yaml, and init applies that
+	// file as it stands. This provider claims nothing — it reconciles only the
+	// Greetings its own APIExport serves.
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:           config,
 		ExportName:       apiExportName,
 		WorkspacePath:    workspacePath,
-		SchemasDir:       schemasDir,
+		KCPDir:           kcpDir,
+		IdentityHashes:   identityHashes,
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}
-	log.Printf("quickstart-provider init: workspace bootstrapped (export=%s path=%s schemas=%s catalogEntry=%s)", apiExportName, workspacePath, schemasDir, catalogEntryFile)
+	log.Printf("quickstart-provider init: workspace bootstrapped (export=%s path=%s kcpDir=%s catalogEntry=%s)", apiExportName, workspacePath, kcpDir, catalogEntryFile)
 	return nil
 }
 

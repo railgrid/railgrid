@@ -292,7 +292,7 @@ func startKueryProvider(t *testing.T, workDir string) {
 	initCmd.Env = append(os.Environ(),
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"KUERY_WORKSPACE_PATH="+kueryWorkspacePath,
-		"RAILGRID_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "kuery", "deploy", "chart", "files", "schemas"),
+		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "kuery", "deploy", "chart", "files"),
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog

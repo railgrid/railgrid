@@ -13,7 +13,7 @@
 #
 # For local dev the provider binary runs on the host (PORT=8085, see the
 # Tiltfile run-provider-app-studio target) and the hub reverse-proxies both the
-# portal bundle and the /api backend to the loopback URLs below. For in-cluster
+# portal bundle and the /dataplane verbs to the loopback URLs below. For in-cluster
 # deployment, the Helm chart renders the Service DNS instead, e.g.
 #   url: http://app-studio.app-studio.svc.cluster.local:8081
 #
@@ -45,8 +45,9 @@ spec:
   backend:
     # The hub backend proxy forwards /services/providers/app-studio/* here,
     # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the
-    # caller's bearer token. The provider serves /api/projects/*, /healthz
-    # (liveness), and /readyz (controller-aware readiness).
+    # caller's bearer token. The provider serves /dataplane/* (the verbs
+    # below), /healthz (liveness) and /readyz (controller-aware readiness).
+    # There is no /api/* surface: provider-sdk/serve refuses to register one.
     url: "http://localhost:8085"
     healthPath: "/readyz"
 
@@ -57,31 +58,293 @@ spec:
     # tenant APIBinding at Enable time; a claim missing here is silently
     # denied at reconcile.
     permissionClaims:
-      # Built-in types ONLY — deliberately no first-party (*.railgrid.ai)
-      # claims. Those must pin the serving APIExport's identityHash, and one
-      # export can pin exactly one identity per resource for every consumer
-      # at once, which breaks mixed platform/self-hosted dependency
-      # deployments. Instance and repository lifecycling instead acts as
-      # per-project/per-studio ServiceAccounts through each workspace's own
-      # bindings (tenantaccess package).
+      # No serviceaccounts, clusterroles or clusterrolebindings: a provider
+      # does not mint identities, it asks the hub, and a claim on those types
+      # is a contract violation rather than a design choice
+      # (docs/provider-connectivity-contract.md §"Scoped identities"). What a
+      # project's WORKLOAD does as itself — reach the MCP aggregate, call a
+      # data-plane verb on its own instance — rides a hub-minted scoped
+      # identity (controller/project/identity.go).
       #
-      # Per-project ServiceAccount identity for reconciler instance and
-      # repository lifecycling + commits, plus per-workspace LLM credential
-      # Secrets.
-      - resource: serviceaccounts
-        verbs: ["get", "list", "watch", "create", "delete"]
-        tenantScoped: true
+      # Secrets are the credential material this provider writes and reads
+      # itself, all in the tenant workspace's "default" namespace:
+      #   * one per configured LLM model, named by Studio
+      #     spec.llm.models[].secretRef (api/llm_registry.go writes it, the
+      #     Studio reconciler reads it to report `configured`);
+      #   * "{instance}-registry", the dockerconfigjson image-pull credential
+      #     a promotion mints from the Code provider and the production
+      #     Instance references in spec.imagePullSecretRef
+      #     (api/project_promote.go).
+      # No other provider's Secrets are read: the hub mints no rule on the
+      # core group for anyone, and this provider reads no dependency's
+      # credential (cross-provider-simplification §2.1).
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
-      - resource: clusterroles
-        group: rbac.authorization.k8s.io
+      # The dependency kinds this provider's OWN controllers reconcile, served
+      # to them through its APIExport virtual workspace (AGENTS.md §5.4: a
+      # background controller acts as the provider ServiceAccount over the VW
+      # with accepted claims — a scoped identity is for what a WORKLOAD does as
+      # itself, not for the provider's own reconciliation).
+      #
+      # These are first-party groups, so each claim carries an identityHash
+      # pinning the exact APIExport that serves it. provider-sdk/install stamps
+      # it at init time from RAILGRID_IDENTITY_HASHES (the chart's
+      # apiExport.identityHashes value); init fails closed if one is missing.
+      # The consequence is the one these claims were avoided for: an export
+      # pins ONE identity per resource for every consuming workspace at once,
+      # so a tenant self-hosting infrastructure or code needs its own App Studio
+      # install with its own hashes (deploy/chart/README.md, "Dependency
+      # identity hashes").
+      #
+      # Verbs are what the controllers actually call, nothing wider:
+      #   instances          get/list/watch + create/update/delete —
+      #                      controller/project (bound environments) and
+      #                      controller/studio (search, browser) create them,
+      #                      converge them on drift and delete them on the
+      #                      owner's finalizer.
+      #   repositories       get/list/watch + create/update — created with
+      #                      autoInit and converged; NEVER deleted, they hold
+      #                      user code and outlive the project.
+      #   repositorycommits  get/list/watch only — the commit itself is created
+      #                      by the Code provider (its commit_files MCP tool
+      #                      writes the source bundle into its own store first,
+      #                      and the CR is only a pointer at that bundle); this
+      #                      provider follows the commit it asked for and wakes
+      #                      on its transitions.
+      - resource: instances
+        group: infrastructure.railgrid.ai
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
-      - resource: clusterrolebindings
-        group: rbac.authorization.k8s.io
-        verbs: ["get", "list", "watch", "create", "update", "delete"]
+      - resource: repositories
+        group: code.railgrid.ai
+        verbs: ["get", "list", "watch", "create", "update"]
         tenantScoped: true
+      - resource: repositorycommits
+        group: code.railgrid.ai
+        verbs: ["get", "list", "watch"]
+        tenantScoped: true
+  # Data-plane verbs this provider serves, declared so the coordinate is
+  # machine-readable. Declaring one grants and serves nothing: every call is
+  # still authorized by this provider's own caller-scoped GET of the addressed
+  # object plus an SSAR on {resource}/{verb}. What the declaration buys is
+  # that the hub scoped-identity service can mint a capability for a verb it
+  # can verify exists (pkg/hub/identity/policy.go clause C), instead of
+  # consumers hardcoding a coordinate nobody validates. Kept in lockstep with
+  # api/dataplane_table.go by TestDataPlaneVerbsMatchManifest, and with
+  # deploy/chart/templates/catalogentry.yaml by the chart parity test.
+  dataPlane:
+    verbs:
+      - resource: projects
+        verb: view
+        description: "Read the project's joined view: the CR, live instance status and the commit ledger."
+        readOnly: true
+      - resource: projects
+        verb: delete
+        description: "Delete the project and everything provisioned for it."
+      - resource: projects
+        verb: set-repository
+        description: "Bind or rebind the project's source repository."
+      - resource: projects
+        verb: set-template
+        description: "Bind or rebind the project's application template."
+      - resource: projects
+        verb: thumbnail
+        description: "Read the project's preview thumbnail."
+        readOnly: true
+      - resource: projects
+        verb: promote
+        description: "Deploy the selected release to production."
+      - resource: projects
+        verb: promotion
+        description: "Read the current production rollout."
+        readOnly: true
+      - resource: projects
+        verb: releases
+        description: "List the project's releases."
+        readOnly: true
+      - resource: projects
+        verb: checkpoints
+        description: "List the assistant's workspace checkpoints."
+        readOnly: true
+      - resource: projects
+        verb: hydrate-workspace
+        description: "Rebuild the development workspace from the repository."
+      - resource: projects
+        verb: restore-workspace
+        description: "Restore the development workspace to a checkpoint."
+      - resource: projects
+        verb: scaffold
+        description: "Re-seed the project's scaffold from its template."
+      - resource: projects
+        verb: sync-development
+        description: "Push the working tree to the development sandbox."
+      - resource: projects
+        verb: restart-development
+        description: "Restart the development sandbox's workload."
+      - resource: projects
+        verb: development-logs
+        description: "Stream the development sandbox's logs."
+        stream: true
+        readOnly: true
+      - resource: projects
+        verb: development-status
+        description: "Read the development sandbox's live status."
+        readOnly: true
+      - resource: projects
+        verb: authorize-development-preview
+        description: "Mint a short-lived authorization for the development preview."
+      - resource: projects
+        verb: files
+        description: "List files in the project's working tree."
+        readOnly: true
+      - resource: projects
+        verb: files-content
+        description: "Read, write or delete one file in the working tree; the tail carries its path."
+      - resource: projects
+        verb: files-raw
+        description: "Read one file's bytes verbatim; the tail carries its path."
+        readOnly: true
+      - resource: projects
+        verb: files-upload
+        description: "Upload files into the working tree."
+      - resource: projects
+        verb: preview
+        description: "Read, set or reset who may reach the development preview."
+      - resource: projects
+        verb: preview-grants
+        description: "List, create or revoke individual preview grants."
+      - resource: projects
+        verb: publishing
+        description: "Read, publish or unpublish the production app."
+      - resource: projects
+        verb: publishing-members
+        description: "List the people a published app may be shared with."
+        readOnly: true
+      - resource: projects
+        verb: publishing-grants
+        description: "List, create or revoke individual publishing grants."
+      - resource: projects
+        verb: preview-bridge-sessions
+        description: "Open or close a sandboxed preview-bridge session."
+      - resource: projects
+        verb: integrations
+        description: "List, add, edit or remove the project's provider integrations."
+      - resource: projects
+        verb: integration-actions
+        description: "Invoke a bound provider's action through an integration."
+      - resource: projects
+        verb: approval-mode
+        description: "Read or change the assistant's approval mode."
+      - resource: projects
+        verb: attachments
+        description: "List, upload or delete assistant attachments."
+      - resource: projects
+        verb: skills
+        description: "List the assistant skills available to the project."
+        readOnly: true
+      - resource: projects
+        verb: skill-detail
+        description: "Read one skill's detail by id."
+        readOnly: true
+      - resource: projects
+        verb: skills-create
+        description: "Create a project-owned assistant skill."
+      - resource: projects
+        verb: skills-import
+        description: "Import a project-owned assistant skill."
+      - resource: projects
+        verb: skills-activation
+        description: "Activate or deactivate a skill for the project."
+      - resource: projects
+        verb: skill-export
+        description: "Export a project-owned skill; the tail carries its package name."
+        readOnly: true
+      - resource: projects
+        verb: skill
+        description: "Read, update or delete a project-owned skill; the tail carries its package name."
+      - resource: projects
+        verb: sessions
+        description: "List the project's assistant conversations."
+        readOnly: true
+      - resource: projects
+        verb: create-session
+        description: "Start a new assistant conversation."
+      - resource: projects
+        verb: adopt-session
+        description: "Create the Session projection for a conversation that has none."
+      - resource: sessions
+        verb: update
+        description: "Rename or archive the conversation."
+      - resource: sessions
+        verb: delete
+        description: "Delete the conversation and purge its transcript."
+      - resource: sessions
+        verb: items
+        description: "Read the conversation's transcript."
+        readOnly: true
+      - resource: sessions
+        verb: events
+        description: "Stream the conversation's events."
+        stream: true
+        readOnly: true
+      - resource: sessions
+        verb: turn
+        description: "Start a new assistant turn."
+      - resource: sessions
+        verb: review
+        description: "Start a review turn."
+      - resource: sessions
+        verb: active-turn
+        description: "Read the in-flight turn, if any."
+        readOnly: true
+      - resource: sessions
+        verb: turn-status
+        description: "Read one turn's status; the tail carries the turn id."
+        readOnly: true
+      - resource: sessions
+        verb: steer
+        description: "Steer the in-flight turn; the tail carries the turn id."
+      - resource: sessions
+        verb: interrupt
+        description: "Interrupt the in-flight turn; the tail carries the turn id."
+      - resource: sessions
+        verb: continue
+        description: "Continue a paused turn; the tail carries the turn id."
+      - resource: sessions
+        verb: approval
+        description: "Answer a turn's approval request; the tail carries the turn id."
+      - resource: sessions
+        verb: input
+        description: "Answer a turn's input request; the tail carries the turn id."
+      - resource: studios
+        verb: create-project
+        description: "Create a project in this workspace."
+      - resource: studios
+        verb: create-project-stream
+        description: "Create a project, streaming its progress."
+        stream: true
+      - resource: studios
+        verb: create-readiness
+        description: "Report whether this workspace can create a project yet."
+        readOnly: true
+      - resource: studios
+        verb: plan
+        description: "Plan a project from a prompt before creating it."
+      - resource: studios
+        verb: development-templates
+        description: "List the templates a project may be created from."
+        readOnly: true
+      - resource: studios
+        verb: import-repositories
+        description: "List repositories this workspace may import a project from."
+        readOnly: true
+      - resource: studios
+        verb: discover-models
+        description: "Discover the models a configured LLM provider offers."
+      - resource: studios
+        verb: test-model
+        description: "Test a configured LLM connection."
   # Hub REST capabilities App Studio uses with the delegated token the hub
   # hands it in place of the caller's bearer: publishing validates grantees
   # against the org and workspace rosters, and sharing with a new email adds

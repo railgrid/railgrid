@@ -219,7 +219,11 @@ spec:
                 description: Labels are propagated from the agent.
                 type: object
               lastHeartbeatTime:
-                description: LastHeartbeatTime is the most recent agent heartbeat.
+                description: |-
+                  LastHeartbeatTime is when the agent's tunnel was last known alive: the
+                  hub's lifecycle reconciler copies the tunnel registry Lease's renewTime
+                  here while the edge is connected (the agent's own heartbeat also stamps
+                  it when it can reach the API).
                 format: date-time
                 type: string
               phase:

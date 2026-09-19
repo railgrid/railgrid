@@ -6,20 +6,30 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package api serves the agents provider's backend HTTP surface. The hub
-// forwards /services/providers/agents/* here, injecting the verified
-// X-Railgrid-Tenant/X-Railgrid-User headers and the caller's bearer token; handlers
-// act as the calling user against the tenant workspace and the provider's own
-// store.
+// Package api serves the agents provider's tenant-facing surface.
+//
+// There is exactly one shape: a data-plane verb on a bound resource,
+// /dataplane/clusters/{id}/{resource}/{name}/{verb}, authorized as the caller
+// by provider-sdk/dataplane's two gates. The route table and the router live in
+// dataplane.go; the handlers in the other files of this package are what those
+// verbs run. The provider also serves MCP (/mcp), the browser OAuth callback
+// (/oauth/…) and signed inbound webhooks (/webhooks/…), each mounted by
+// provider-sdk/serve as its own Pillar 2 route class.
+//
+// The objects themselves — Agent, Schedule, Connection, Toolset, Trigger and
+// the model-credential Secrets — are bound APIs in the tenant's own workspace
+// and are read and written through kcp, never through this package.
 package api
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"time"
 
+	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	"github.com/railgrid/provider-agents/engine"
@@ -49,11 +59,6 @@ type Config struct {
 	// WebhookKey signs trigger webhook URLs. Empty → derived from the provider
 	// kubeconfig contents.
 	WebhookKey string
-	// SchedulerInterval is the cadence of the background executor's slow tick:
-	// virtual-workspace endpoint re-discovery and the stranded-run recovery
-	// sweep (default 30s). Schedules themselves fire from the Schedule
-	// reconciler's watch + requeue, not from this timer.
-	SchedulerInterval time.Duration
 	// OAuthApps holds platform-wide OAuth app credentials by provider
 	// (github/google/slack), configured once by the operator via env. When a
 	// provider has an app here, connections of that provider Connect with no
@@ -77,12 +82,21 @@ type Server struct {
 	bg       *background
 	events   *eventBus
 	liveRuns *runRegistry
-	// capabilities caches what the hub's aggregate tool endpoint federates for
-	// a workspace, so the portal can hide flows the tenant cannot perform.
-	capabilities *capabilityCache
-	// s2sAuth memoizes service-to-service authorization decisions so a long wait
-	// does not re-run TokenReview + SubjectAccessReview on every poll.
-	s2sAuth *s2sAuthCache
+	// callers builds the per-request, caller-scoped kube client every
+	// data-plane gate runs through. It carries the provider's connection with
+	// every credential dropped, so a request without a bearer fails rather
+	// than silently acting as the provider.
+	callers dataplane.CallerFactory
+	// mcpEndpoints caches each workspace's aggregate MCP URL, read off the
+	// MCPServer object rather than composed from a hardcoded path.
+	mcpEndpoints *mcpEndpointCache
+	// providerLookups caches which provider serves an API group in a
+	// workspace, read off the tenant's own APIBinding. See crossprovider.go.
+	providerLookups *providerLookupCache
+	// scopeClusters maps a store scope back to its logical cluster, so a run
+	// transition can be projected onto its Run object without a store lookup
+	// every time. See runprojection.go.
+	scopeClusters *scopeClusterCache
 	// workspaces maps the cluster ID the hub identifies a tenant by to the
 	// workspace's path / org / workspace UUIDs, read from kcp as the caller.
 	// Nil without a hub URL; identity then carries no org/workspace scope.
@@ -120,18 +134,56 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		workspaces = tenantaccess.NewWorkspaceResolver(cfg.HubURL, cfg.HubInsecure, 0).Resolve
 	}
 
+	callers, err := callerFactory(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Server{
-		cfg:          cfg,
-		store:        st,
-		tenant:       tenantClient,
-		engine:       engine.New(),
-		events:       newEventBus(),
-		liveRuns:     newRunRegistry(),
-		capabilities: newCapabilityCache(),
-		s2sAuth:      newS2SAuthCache(),
-		workspaces:   workspaces,
-		started:      time.Now().UTC(),
+		cfg:             cfg,
+		store:           st,
+		tenant:          tenantClient,
+		engine:          engine.New(),
+		events:          newEventBus(),
+		liveRuns:        newRunRegistry(),
+		callers:         callers,
+		mcpEndpoints:    newMCPEndpointCache(),
+		providerLookups: newProviderLookupCache(),
+		scopeClusters:   newScopeClusterCache(),
+		workspaces:      workspaces,
+		started:         time.Now().UTC(),
 	}, nil
+}
+
+// callerFactory builds the data-plane caller factory.
+//
+// The provider kubeconfig is preferred — it is the same connection the
+// reconcilers use, so there is one CA and one host to get right — and the hub
+// URL is the fallback for a deployment that has no kubeconfig at serve time.
+// With neither, the factory is nil and every gated route answers 500 rather
+// than falling back to some other identity: a data-plane verb that cannot run
+// as the caller must not run at all.
+func callerFactory(cfg Config) (dataplane.CallerFactory, error) {
+	if cfg.ProviderKubeconfig != "" {
+		base, err := clientcmd.BuildConfigFromFlags("", cfg.ProviderKubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("loading provider kubeconfig for the data-plane caller factory: %w", err)
+		}
+		callers, err := dataplane.NewCallerFactory(base)
+		if err != nil {
+			return nil, fmt.Errorf("data-plane caller factory: %w", err)
+		}
+		return callers, nil
+	}
+	if cfg.HubURL != "" {
+		callers, err := dataplane.NewHubCallerFactory(cfg.HubURL, nil, cfg.HubInsecure)
+		if err != nil {
+			return nil, fmt.Errorf("data-plane caller factory: %w", err)
+		}
+		return callers, nil
+	}
+	log.Printf("agents: no provider kubeconfig and no hub URL — data-plane verbs are unavailable")
+	return nil, nil
 }
 
 // Close releases server resources.
@@ -139,133 +191,4 @@ func (s *Server) Close() {
 	if s.store != nil {
 		_ = s.store.Close()
 	}
-}
-
-// Routes returns the backend HTTP handler.
-func (s *Server) Routes() http.Handler {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /healthz", s.healthz)
-
-	// MCP transport — the hub's aggregate MCP endpoint probes every Ready
-	// provider's /mcp and federates these tools as "agents__<tool>", so agents
-	// (and any MCP client on the aggregate) can read and edit agent settings.
-	mcpHandler := s.MCPHandler()
-	mux.Handle("/mcp", mcpHandler)
-	mux.Handle("/mcp/sse", mcpHandler)
-
-	// Identity echo — proves the hub forwarded tenant headers and a bearer
-	// token. Useful for provider connectivity debugging.
-	mux.HandleFunc("GET /api/whoami", s.whoami)
-
-	// Agent chat and transcripts. The Agent object itself is NOT served here:
-	// it is a bound API in the tenant's own workspace, so the portal reads and
-	// writes it through kcp (portal/src/resources.ts) and the MCP tools below
-	// go through the same client. What is left on this route group is what kcp
-	// cannot answer — a chat turn, and the session/message transcripts, which
-	// live in Postgres under the projection carve-out.
-	mux.HandleFunc("GET /api/agents/{name}/sessions", s.listSessions)
-	mux.HandleFunc("DELETE /api/agents/{name}/sessions/{session}", s.deleteSession)
-	mux.HandleFunc("GET /api/agents/{name}/messages", s.listMessages)
-	mux.HandleFunc("POST /api/agents/{name}/chat", s.chat)
-	// Programmatic invocation: hand an agent an ad-hoc task with no stream to hold
-	// open and no pre-created Schedule/Trigger. See api/invoke.go.
-	mux.HandleFunc("POST /api/agents/{name}/runs", s.invokeAgentRun)
-
-	// Runs: the Activity feed and per-run trace (steps from the tool-call
-	// audit), plus cancellation of live runs.
-	mux.HandleFunc("GET /api/runs", s.listRuns)
-	mux.HandleFunc("GET /api/runs/{id}", s.getRun)
-	// Long-poll a run to a settled phase. Store-polled, so it answers correctly
-	// whichever replica is executing the run.
-	mux.HandleFunc("GET /api/runs/{id}/wait", s.waitRunHandler)
-	mux.HandleFunc("POST /api/runs/{id}/cancel", s.cancelRun)
-
-	// Service-to-service: callers that are not a signed-in user (another provider,
-	// a job) present their own ServiceAccount token and name the target workspace
-	// in the path. The provider authenticates and authorizes them itself — these
-	// routes deliberately do NOT use the hub's X-Railgrid-* identity headers, which
-	// only exist for users. See api/s2s.go.
-	mux.HandleFunc("POST /s2s/clusters/{cluster}/agents/{name}/runs", s.s2sInvoke)
-	mux.HandleFunc("GET /s2s/clusters/{cluster}/runs/{id}", s.s2sGetRun)
-	mux.HandleFunc("GET /s2s/clusters/{cluster}/runs/{id}/wait", s.s2sGetRun)
-
-	// Server-push events (SSE): run phases, inbox items — keeps the portal
-	// live without polling.
-	mux.HandleFunc("GET /api/events", s.streamEvents)
-
-	// What the tenant's enabled providers let an agent do — drives the portal's
-	// assisted setup flows.
-	mux.HandleFunc("GET /api/capabilities", s.listCapabilities)
-
-	// Model credentials are Secrets in the tenant workspace, written through
-	// kcp. What stays here is the live probe: it needs the key to reach the
-	// model endpoint, and the key must not leave the workspace with the
-	// browser holding it long enough to call a third party.
-	// Health-check a credential (real API probe → latency + served models).
-	mux.HandleFunc("POST /api/credentials/{name}/test", s.testCredential)
-	mux.HandleFunc("POST /api/credentials/test", s.testCredentialDraft)
-	mux.HandleFunc("POST /api/credentials/discover", s.discoverCredentialDraft)
-	// Curated model catalog: pricing + capabilities for the Models UI.
-	mux.HandleFunc("GET /api/catalog", s.modelCatalog)
-	// Usage / observability rollups over a window (cost, tokens, latency, errors).
-	mux.HandleFunc("GET /api/usage", s.usageRollup)
-
-	// Schedule / Connection / Toolset / Trigger objects are bound APIs too, and
-	// are read and written through kcp for the same reason. Only the verbs are
-	// left: firing one now needs the executor, and testing a connection needs
-	// the stored credential.
-	mux.HandleFunc("POST /api/schedules/{name}/run", s.runScheduleNow)
-	mux.HandleFunc("POST /api/connections/{name}/test", s.testConnection)
-	mux.HandleFunc("POST /api/triggers/{name}/run", s.runTriggerNow)
-
-	// Approvals inbox (M5).
-	mux.HandleFunc("GET /api/inbox", s.listInboxItems)
-	mux.HandleFunc("POST /api/inbox/{id}/resolve", s.resolveInboxItem)
-
-	// Inbound trigger webhooks — token-authenticated, no tenant headers
-	// (external senders reach this through the hub's anonymous forwarding).
-	mux.HandleFunc("POST /webhooks/triggers/{cluster}/{name}/{token}", s.webhookTrigger)
-
-	// Channel inbound (M6): chat with an agent FROM Telegram/Slack.
-	mux.HandleFunc("POST /webhooks/channels/{cluster}/{name}/{token}", s.webhookChannel)
-	mux.HandleFunc("POST /api/connections/{name}/enable-inbound", s.enableInbound)
-
-	// OAuth connections (M7): authorize (per-request) + public callback
-	// (anonymous — the signed state is the auth).
-	mux.HandleFunc("GET /api/oauth/providers", s.listOAuthProviders)
-	mux.HandleFunc("POST /api/connections/{name}/oauth/authorize", s.oauthAuthorize)
-	mux.HandleFunc("GET /oauth/callback", s.oauthCallback)
-
-	return mux
-}
-
-func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":    "ok",
-		"provider":  "agents",
-		"version":   "0.1.0",
-		"uptimeSec": int(time.Since(s.started).Seconds()),
-	})
-}
-
-// whoami echoes the caller context. tenantPath is kept for existing clients
-// but carries the tenant's kcp logical-cluster ID (what the hub identifies a
-// tenant by), the same value as clusterID; workspacePath is the workspace's
-// kcp path as resolved from kcp, empty when the lookup was unavailable.
-func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.identityFromRequest(w, r)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"tenantPath":    id.tenant,
-		"tenant":        id.tenant,
-		"clusterID":     id.clusterID,
-		"workspacePath": id.workspacePath,
-		"orgUUID":       id.orgUUID,
-		"workspaceUUID": id.workspaceUUID,
-		"user":          id.user,
-		"hasToken":      id.token != "",
-	})
 }

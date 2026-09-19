@@ -11,12 +11,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/store"
@@ -27,12 +32,12 @@ import (
 // so anything wanting to hand an agent an ad-hoc task had nowhere to go —
 // RunTriggerAPI existed in the constants and was produced by nothing.
 //
-//	POST /api/agents/{name}/runs   → 202 {runId, phase}   (or 200 when settled)
-//	GET  /api/runs/{id}/wait       → 200 the run, once it settles or time is up
+//	POST …/agents/{name}/run             → 202 {runId, phase} (200 when settled)
+//	GET  …/agents/{name}/runs/{id}/wait  → 200 the run, once it settles or time is up
 //
 // The run is detached: it outlives the request that started it, so a caller may
 // fire and forget, long-poll, or come back later — the answer is on the run
-// record either way (GET /api/runs/{id}).
+// record either way (…/agents/{name}/runs/{id}).
 const (
 	// invokeMaxWait bounds an inline wait. Past this a caller should poll: holding
 	// a request open for a long research run wastes a connection on both ends and
@@ -74,7 +79,22 @@ type invokeRunResponse struct {
 	Run *runDetail `json:"run,omitempty"`
 }
 
-// invokeAgentRun serves POST /api/agents/{name}/runs.
+// invokeAgentRun serves the `run` verb: POST …/agents/{name}/run.
+//
+// This is the ONE way to start an unattended run, for every kind of caller.
+// A signed-in user, an MCP client, another provider's ServiceAccount and a cron
+// job all reach it the same way and are authorized the same way — by the two
+// gates in dataplane.go, i.e. `get` on the agent plus `create` on `agents/run`
+// in the tenant's own RBAC. That is what retired the bespoke /s2s/ route, its
+// `agents/delegate` SubjectAccessReview, and the provider's own TokenReview
+// client.
+//
+// WHOSE IDENTITY THE RUN THEN USES is a separate question from who was allowed
+// to start it. Tools reach the platform data plane as the AGENT, through the
+// APIExport virtual workspace, exactly as a scheduled run does — so a caller
+// who may start a run does not thereby lend the agent their own reach. Without
+// the background plumbing (no provider kubeconfig; local dev) the run falls
+// back to the caller's own credentials, which is the only identity there is.
 func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 	c, id, ok := s.requireClient(w, r)
 	if !ok {
@@ -117,16 +137,29 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sessionID := strings.TrimSpace(req.SessionID)
-	runID := s.startDetachedRun(r, c, id, agent, taskRun{
-		SessionID: sessionID, Task: req.Task,
+	tr := taskRun{
+		SessionID: strings.TrimSpace(req.SessionID), Task: req.Task,
 		Trigger:        agentsv1alpha1.RunTriggerAPI,
 		IdempotencyKey: req.IdempotencyKey,
 		Callback:       req.Callback,
-		// SourceName attributes the run to its caller in the activity view; the
-		// hub resolves the identity, so this is not self-asserted.
+		// SourceName attributes the run to its caller in the activity view. The
+		// caller's name comes from the hub's verified header when there is one
+		// and is omitted otherwise — it is a label, never a trust root; the
+		// gates already decided this caller may run this agent.
 		SourceName: apiRunSource(id),
-	})
+	}
+
+	// Unattended: the agent acts as ITSELF, through the APIExport virtual
+	// workspace, so starting a run never lends the agent the caller's reach.
+	// Without that plumbing (local dev, no provider kubeconfig) the caller's
+	// own credentials are the only identity available.
+	var runID string
+	if dyn, derr := s.backgroundScoped(r.Context(), id.clusterID); derr == nil {
+		runID = s.startDetachedVWRun(r, dyn, id.clusterID, scope, agent, tr)
+		log.Printf("agents: %s started run %s on agent %s in %s", tr.SourceName, runID, name, id.clusterID)
+	} else {
+		runID = s.startDetachedRun(r, c, id, agent, tr)
+	}
 
 	// A caller that asked to wait gets the settled run inline; one that did not
 	// gets the id to poll. Either way the run is already going.
@@ -156,15 +189,26 @@ func apiRunSource(id identity) string {
 	return "api"
 }
 
-// waitRunHandler serves GET /api/runs/{id}/wait: block until the run settles, or
-// return its current state when the timeout expires. Safe to re-issue.
+// waitRunHandler serves the `wait` verb on a Run: GET …/runs/{id}/wait. It
+// blocks until the run settles, or returns its current state when the timeout
+// expires. Safe to re-issue.
+//
+// A caller with a kube client could watch the object instead, and should; this
+// exists for the caller that has neither a watch nor a reason to hold one — a
+// script, another provider, a job — and for whom one long-poll is simpler than
+// a watch it has to reconnect.
 func (s *Server) waitRunHandler(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
-	runID := r.PathValue("id")
-	scope := id.scope("")
+	agent, ok := gatedRunAgent(r)
+	if !ok {
+		writeStatus(w, http.StatusConflict, "Conflict", "this run names no agent, so it cannot be located in the store")
+		return
+	}
+	runID := r.PathValue("name")
+	scope := id.scope(agent)
 	// Confirm the run exists (and is this tenant's) before holding the request.
 	if _, err := s.store.GetRun(r.Context(), scope, runID); err != nil {
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
@@ -215,4 +259,46 @@ func runSettled(phase store.RunPhase) bool {
 		return true
 	}
 	return false
+}
+
+// backgroundScoped returns a dynamic client on clusterID through the APIExport
+// virtual workspace, or an error when the background plumbing is not running.
+func (s *Server) backgroundScoped(ctx context.Context, clusterID string) (dynamic.Interface, error) {
+	if s.bg == nil {
+		return nil, fmt.Errorf("no provider kubeconfig: the virtual workspace is unavailable")
+	}
+	return s.bg.scoped(ctx, clusterID)
+}
+
+// startDetachedVWRun starts a run through the APIExport virtual workspace, as
+// the agent's own identity. The sibling of startDetachedRun for work that has
+// no user behind it: same detachment and same pre-written record, different
+// credentials.
+func (s *Server) startDetachedVWRun(r *http.Request, dyn dynamic.Interface, clusterID string, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun) string {
+	runID := uuid.NewString()
+	now := time.Now().UTC()
+	tr.RunID = runID
+	tr.Creds = vwSecrets{dyn}
+	tr.CR = vwCR{dyn}
+	tr.Scope = scope
+	tr.Agent = agent
+	tr.ClusterID = clusterID
+	// The agent's own ServiceAccount, as for any unattended run — the caller's
+	// token authorized the request, it does not become the identity the agent
+	// acts with. Edges stays absent: nobody is watching (see buildToolset).
+	tr.HubToken = s.bg.agentToken(r.Context(), dyn, clusterID, agent.Name)
+
+	ctx := context.WithoutCancel(r.Context())
+	_ = s.saveRun(ctx, scope, store.Run{
+		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
+		IdempotencyKey: tr.IdempotencyKey,
+		Phase:          store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
+	})
+	go func() {
+		if _, err := s.executeTask(ctx, tr); err != nil {
+			log.Printf("agents: run %s on agent %s failed: %v", runID, agent.Name, err)
+		}
+		s.deliverRunCallback(ctx, scope, runID, tr.Callback)
+	}()
+	return runID
 }

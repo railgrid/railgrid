@@ -599,7 +599,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		Creds: c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
 		RunID:     runID,
 		SessionID: req.SessionID, Task: req.Message, Trigger: agentsv1alpha1.RunTriggerChat,
-		EdgesEndpoint: s.edgesEndpoint(id.clusterID), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+		EdgesEndpoint: s.aggregateMCPEndpoint(r.Context(), id), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
 		// ClusterID addresses the tenant workspace on the data plane — without
 		// it an instance-backed tool (self-hosted search, a browser instance)
 		// has no way to compose its URL.
@@ -679,30 +679,22 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// deleteSession wipes one chat session's transcript.
+// deleteSession wipes one chat session's transcript. It is the `session` verb
+// on the agent — DELETE …/agents/{name}/session/{sessionID} — kept separate
+// from the `sessions` list so a reader can be granted the transcript without
+// being granted the power to erase it.
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
 	name := r.PathValue("name")
-	session := r.PathValue("session")
+	session := r.PathValue("tail")
 	if err := s.store.DeleteSession(r.Context(), id.scope(name), session); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// edgesEndpoint is the hub's aggregate MCP virtual endpoint for a workspace
-// cluster — the edges tool family (kube + SSH tools) dials it as the calling
-// user. Uses the conventional "default" MCPServer; empty when the hub URL or
-// cluster is unknown.
-func (s *Server) edgesEndpoint(clusterID string) string {
-	if s.cfg.HubURL == "" || clusterID == "" {
-		return ""
-	}
-	return strings.TrimRight(s.cfg.HubURL, "/") + "/services/mcpserver/" + clusterID + "/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp"
 }
 
 // errNoCredential signals that an agent has no model credential assigned.

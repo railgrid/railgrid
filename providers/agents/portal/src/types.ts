@@ -155,6 +155,44 @@ export interface InboxItem {
 export type RunPhase = 'Pending' | 'Running' | 'PendingApproval' | 'Succeeded' | 'Failed' | 'Aborted'
 export type RunClass = 'interactive' | 'background'
 
+/**
+ * KubeRun is the Run custom resource as kcp serves it — the projection of one
+ * agent execution. It carries the run's identity, phase, timings and cost; its
+ * transcript and step-level tool trace are Postgres rows reached through the
+ * `trace` verb (see providers/agents/apis/v1alpha1/types_run.go).
+ */
+export interface KubeRun {
+  apiVersion?: string
+  kind?: string
+  metadata: { name: string; creationTimestamp?: string; labels?: Record<string, string>; deletionTimestamp?: string }
+  spec: {
+    agentRef: string
+    trigger: string
+    sessionID?: string
+    parentRunRef?: string
+    sourceName?: string
+    idempotencyKey?: string
+    inputPreview?: string
+  }
+  status?: {
+    phase?: string
+    message?: string
+    owner?: string
+    startedAt?: string
+    finishedAt?: string
+    deadlineAt?: string
+    transcriptRef?: { sessionID?: string; messages?: number; toolCalls?: number }
+    usage?: {
+      inputTokens?: number
+      outputTokens?: number
+      usdMicros?: number
+      usd?: string
+      durationMS?: number
+      workedDurationMS?: number
+    }
+  }
+}
+
 export interface RunSummary {
   id: string
   agent: string

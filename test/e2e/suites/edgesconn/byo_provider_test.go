@@ -115,7 +115,7 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 		_ = tenantAdmin.Resource(edgeServiceGVR).Delete(context.Background(), svcName, metav1.DeleteOptions{})
 	})
 
-	base := fmt.Sprintf("%s/services/providers/edges/edgeproxy/clusters/%s/apis/edges.railgrid.ai/v1alpha1/services/%s/proxy",
+	base := fmt.Sprintf("%s/services/providers/edges/dataplane/clusters/%s/services/%s/proxy",
 		hubURL, tenantWS, svcName)
 
 	t.Run("identity and passthrough auth survive the tunnel", func(t *testing.T) {

@@ -228,7 +228,7 @@ browser (user token)
   → hub /services/providers/{org-infra}/dataplane/…
       │ registry resolves org-owned → edge-fronted transport
       ▼
-    edges provider /edgeproxy/clusters/{ws}/apis/edges.railgrid.ai/v1alpha1/
+    edges provider /dataplane/clusters/{ws}/
                    services/provider-{name}/proxy/dataplane/…
       │ SAR: proxy on services/provider-{name}; Service is hub-owned; auth=passthrough
       ▼

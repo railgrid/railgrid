@@ -55,7 +55,7 @@ func TestProjectFinalizersForCreateRequireAttachmentStore(t *testing.T) {
 	if len(finalizers) != 1 || finalizers[0] != store.AttachmentStorageFinalizer {
 		t.Fatalf("project creation finalizers = %v, want attachment cleanup finalizer", finalizers)
 	}
-	if got := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}).projectFinalizersForCreate(identity{orgUUID: "org", workspaceUUID: "workspace"}); len(got) != 0 {
+	if got := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).projectFinalizersForCreate(identity{orgUUID: "org", workspaceUUID: "workspace"}); len(got) != 0 {
 		t.Fatalf("project creation finalizers without attachment store = %v, want none", got)
 	}
 	if got := server.projectFinalizersForCreate(identity{orgUUID: "org"}); len(got) != 0 {
@@ -88,7 +88,7 @@ func TestProjectListViewPreservesWorkspaceFenceForThumbnailCapture(t *testing.T)
 		t.Fatal(err)
 	}
 
-	view := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, workspaces: workspaces}).projectListView(ctx, nil, project, id)
+	view := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: workspaces}).projectListView(ctx, nil, project, id)
 	if view.SourceRevision != revision || revision <= 1 {
 		t.Fatalf("source revision = %d, want workspace revision %d greater than initial fence", view.SourceRevision, revision)
 	}
@@ -103,7 +103,7 @@ func TestCreateProjectPreflightTemplateCreatesBindingAndInstance(t *testing.T) {
 		Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
 		TemplateName: "application",
 	}
-	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
+	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
@@ -153,7 +153,7 @@ func TestCreateProjectLivePathListsCatalogCallsPreflightOnceAndCreatesInstance(t
 	client := asclient.NewFromDynamic(dynamicClient)
 	calls := 0
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		actionsExternalURL: "https://actions.example.test",
 		store:              store.NewMemoryStore(),
 		projectCreatePreflight: func(_ context.Context, _ *asclient.Client, prompt string, templates []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
@@ -224,7 +224,7 @@ func TestCreateProjectLivePathSurfacesCatalogListErrorBeforePreflight(t *testing
 	})
 	calls := 0
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectCreatePreflight: func(context.Context, *asclient.Client, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
 			calls++
 			return projectCreatePreflight{}, nil
@@ -265,7 +265,7 @@ func TestCreateProjectInvalidInferredTemplateFallsBackUnbound(t *testing.T) {
 		Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
 		TemplateName: "invented-template",
 	}
-	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
+	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
@@ -291,7 +291,7 @@ func TestCreateProjectPreflightTemplateRequiresExplicitInferenceAuthorization(t 
 		Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
 		TemplateName: "application",
 	}
-	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
+	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
@@ -317,7 +317,7 @@ func TestCreateProjectExplicitTemplateTakesPrecedenceOverPreflight(t *testing.T)
 		Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
 		TemplateName: "invented-template",
 	}
-	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
+	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
@@ -343,7 +343,7 @@ func TestCreateProjectExplicitNameOverridesPreflightRepositoryName(t *testing.T)
 	preflight := &projectCreatePreflight{
 		Naming: projectNamingResult{DisplayName: "Pomodoro Focus Timer", RepositoryName: "pomodoro-focus-timer"},
 	}
-	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}).createProjectFromRequestWithPreflight(
+	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).createProjectFromRequestWithPreflight(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
@@ -385,7 +385,7 @@ func TestCreateProjectRepositoryNameCollision(t *testing.T) {
 				codeConnectionObjectWithValidated("github", metav1.ConditionTrue),
 				codeRepositoryObject("focus-timer", "focus-timer", "github", true),
 			)
-			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 			req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(tt.body))
 			setPublishingIdentity(req)
 			response := httptest.NewRecorder()
@@ -421,7 +421,7 @@ func TestCreateProjectExplicitTemplateFailsClosedBeforeCreation(t *testing.T) {
 		codeConnectionObjectWithValidated("github", metav1.ConditionTrue),
 		applicationTemplateObject(),
 	)
-	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}).createProjectFromRequest(
+	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).createProjectFromRequest(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
@@ -508,7 +508,7 @@ func TestCreateProjectRejectsPlatformOwnedExplicitAndInferred(t *testing.T) {
 			platformOwned.SetName("universal-coding-sandbox")
 			platformOwned.SetLabels(map[string]string{projectTemplatePlatformOwnedLabel: projectTemplatePlatformOwnedValue})
 			client := newProjectCreationTestClient(platformOwned)
-			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 			id := identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:railgrid:tenants:org-a:ws-1"}
 			var (
 				created *aiv1alpha1.Project
@@ -753,7 +753,7 @@ func TestCreateProjectKeepsCallerDisplayNameOverPreflight(t *testing.T) {
 				return false, nil, nil
 			})
 			server := &Server{
-				tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup,
+				tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 				actionsExternalURL: "https://actions.example.test",
 				store:              store.NewMemoryStore(),
 				projectCreatePreflight: func(context.Context, *asclient.Client, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error) {

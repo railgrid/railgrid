@@ -28,21 +28,24 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/railgrid/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/identityclient"
+	"github.com/railgrid/provider-sdk/leaderelection"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcmulticluster "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	addonctrl "github.com/railgrid/provider-edges/internal/addonctrl"
 	edgectrl "github.com/railgrid/provider-edges/internal/edgectrl"
-	"github.com/railgrid/provider-edges/internal/events"
 	"github.com/railgrid/provider-edges/internal/scheduler"
 	"github.com/railgrid/provider-edges/internal/servicectrl"
 	"github.com/railgrid/provider-edges/internal/status"
 	sdktunnel "github.com/railgrid/provider-edges/internal/tunnel"
 	sdkinstall "github.com/railgrid/provider-sdk/install"
+	"github.com/railgrid/provider-sdk/vwhealth"
 
 	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 	edgescheme "github.com/railgrid/provider-edges/scheme"
@@ -57,48 +60,54 @@ var errControllerDisabled = errors.New("no kubeconfig available; edge controller
 // name — see sdkinstall.Bootstrap / EnsureAPIExportEndpointSlice.
 const endpointSliceName = apiExportName
 
-// eventsMaxAge bounds how long an edge event is retained in the in-memory store
-// (on top of the per-service count cap), so the "recent events" a tool returns
-// stay recent even for a quiet camera.
-const eventsMaxAge = 6 * time.Hour
+// controllerLeaseName gates the reconcilers on a Lease in the provider
+// workspace ("default" namespace — kcp serves Leases in every logical
+// cluster), so scaling the deployment past one replica keeps every tenant CR
+// single-writer. Non-leaders keep serving the tunnel plane, the data plane,
+// MCP and the portal.
+const controllerLeaseName = "edges-controllers"
 
-// startEdgeControllerManager builds the multicluster manager and starts the
-// edge token / RBAC / lifecycle reconcilers. A nil config means "skip the
-// manager" (healthz-only / dev).
+// startEdgeControllerManager wires the two halves of the edges control plane.
 //
-// Edge connectivity status has ONE writer. The tunnel plane records liveness
-// only in the registry Leases (provider workspace, label
-// edges.railgrid.ai/tunnel-registry: claimed on tunnel open, renewed every 30s
-// by the ConnManager sweeper, released on close, expired after
-// tunnel.RegistryLeaseTTL otherwise). The lifecycle reconciler watches those
-// Leases through this manager's LOCAL cache (the manager's own config
-// addresses the provider workspace; the multicluster provider engages only
-// tenant clusters, so Leases need this second, single-cluster source) and is
-// the sole writer of status.connected / status.phase / status.lastHeartbeatTime
-// / Registered=True. connManager only nudges it on local connect/disconnect.
+// They are split because they have different cardinality:
 //
-// Still NOT leader-elected (chart replicaCount is 1 today): this manager
-// doubles as the tunnel plane's tenant-config resolver (SetTenantConfigGetter
-// below goes through mgr.GetCluster), so it must run on every replica. Because
-// the lifecycle reconciler derives status from the shared Leases and writes
-// only on a diff, running it active-active on N replicas is correct — the
-// writes are duplicated, never contradictory. Leader-electing the reconcilers
-// requires first giving the serving path a slice-backed tenant resolver (see
-// the databricks SliceAuthority pattern) — tracked in
-// docs/provider-horizontal-scaling.md.
-func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *sdktunnel.Server, hubExternalURL string, hubCAData []byte, devMode bool) error {
+//   - The TUNNEL'S TENANT-CONFIG RESOLVER runs on EVERY replica. Any replica
+//     can terminate an agent tunnel or serve a data-plane request, and both
+//     need a cross-workspace *rest.Config for the tenant the request names.
+//     The provider's own SA credential is workspace-scoped — re-rooting it at
+//     /clusters/<tenant> is rejected by kcp, which is what broke agent
+//     join-token registration in production — so the only credential that
+//     works is the APIExport virtual workspace. The resolver is therefore a
+//     controller-free multicluster manager over the provider's
+//     APIExportEndpointSlice: it engages each tenant logical cluster and
+//     hands out its config, and it only ever reads.
+//
+//   - The RECONCILERS run on the LEADER ONLY, under a Lease in the provider
+//     workspace, and are rebuilt per term (a stopped controller-runtime
+//     manager cannot be restarted) — the same shape as
+//     providers/code/controller_manager.go. Every tenant CR therefore has one
+//     writer no matter how many replicas run.
+//
+// The Lease-based tunnel liveness model and the pod-to-pod relay are
+// unaffected: they are tunnel-plane state, claimed by whichever replica holds
+// the socket, and the lifecycle reconciler (leader) derives
+// status.connected / phase / lastHeartbeatTime from those Leases through the
+// leader manager's LOCAL cache.
+//
+// A nil config means "skip both" (healthz-only / dev). ready, when set,
+// reports the leader's multicluster provider watch state for the duration of
+// each term.
+func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *sdktunnel.Server, hubExternalURL string, hubCAData []byte, devMode bool, identities *identityclient.Client, ready *vwhealth.Readiness) error {
 	if config == nil {
 		return errControllerDisabled
 	}
-	connManager := tsrv.ConnManager()
 
 	ctrl.SetLogger(klog.NewKlogr())
-	s := edgescheme.NewScheme()
 
 	// The hub provisioner does not create the APIExportEndpointSlice for the
-	// provider's APIExport, so ensure it here (idempotent) before building the
-	// multicluster provider. Best-effort: log + continue; the manager engages
-	// no clusters until the slice lands.
+	// provider's APIExport, so ensure it here (idempotent) before building
+	// either manager. Best-effort: log + continue; nothing engages until the
+	// slice lands.
 	dynCl, err := dynamic.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("dynamic client: %w", err)
@@ -112,18 +121,111 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		log.Printf("edge controller manager: WARNING could not ensure APIExportEndpointSlice: %v", err)
 	}
 
+	if err := startTenantConfigResolver(ctx, config, tsrv); err != nil {
+		return fmt.Errorf("tunnel tenant-config resolver: %w", err)
+	}
+
+	go func() {
+		if err := leaderelection.Run(ctx, leaderelection.Options{
+			Config:    config,
+			Namespace: leaderelection.DefaultNamespace,
+			Name:      controllerLeaseName,
+		}, func(termCtx context.Context) {
+			if err := runEdgeControllerManager(termCtx, config, tsrv, hubExternalURL, hubCAData, devMode, identities, ready); err != nil {
+				log.Printf("edge controller manager exited: %v", err)
+			}
+		}); err != nil {
+			log.Printf("edge controller leader election failed; reconcilers are not running: %v", err)
+		}
+	}()
+	return nil
+}
+
+// startTenantConfigResolver builds the replica-local, controller-free
+// multicluster manager the tunnel plane resolves tenant configs through, and
+// wires it into the tunnel Server.
+//
+// It registers no reconcilers on purpose: its whole job is to keep the
+// APIExportEndpointSlice-backed engagement map warm so mgr.GetCluster answers
+// for any workspace that has bound this provider's APIExport. That is a read,
+// so running it active-active on N replicas is correct — which is exactly why
+// it can be split away from the reconcilers, which cannot.
+func startTenantConfigResolver(ctx context.Context, config *rest.Config, tsrv *sdktunnel.Server) error {
+	provider, err := apiexportprovider.New(config, endpointSliceName, apiexportprovider.Options{Scheme: edgescheme.NewScheme()})
+	if err != nil {
+		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
+	}
+	mgr, err := mcmanager.New(config, provider, manager.Options{
+		Scheme:  edgescheme.NewScheme(),
+		Metrics: metricsserver.Options{BindAddress: "0"}, // provider serves its own HTTP
+		// Nothing in this manager watches the provider workspace, so keep its
+		// local cache from starting informers for types it will never read.
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{}},
+	})
+	if err != nil {
+		return fmt.Errorf("creating resolver manager: %w", err)
+	}
+
+	tsrv.SetTenantConfigGetter(func(ctx context.Context, clusterName string) (*rest.Config, error) {
+		cl, err := mgr.GetCluster(ctx, mcmulticluster.ClusterName(clusterName))
+		if err != nil {
+			return nil, fmt.Errorf("engaging tenant cluster %q: %w", clusterName, err)
+		}
+		return cl.GetConfig(), nil
+	})
+
+	go func() {
+		log.Printf("edges tunnel tenant-config resolver starting (endpointSlice=%s)", endpointSliceName)
+		if err := mgr.Start(ctx); err != nil {
+			log.Printf("edges tunnel tenant-config resolver exited: %v", err)
+		}
+	}()
+	return nil
+}
+
+// runEdgeControllerManager builds the leader's multicluster manager, registers
+// every reconciler on it and blocks in Start until the leadership term ends.
+// Called once per term.
+//
+// The multicluster provider is attached to readiness for the term: from the
+// moment this replica is leader until it stops being one, /readyz (and so the
+// hub's BackendHealthy and the heartbeat) says whether tenant workspaces are
+// actually being watched. Without that, a watcher that failed to start left
+// every signal green while no edge ever got a status.
+//
+// Edge connectivity status has ONE writer. The tunnel plane records liveness
+// only in the registry Leases (provider workspace, label
+// edges.railgrid.ai/tunnel-registry: claimed on tunnel open, renewed every 30s
+// by the ConnManager sweeper, released on close, expired after
+// tunnel.RegistryLeaseTTL otherwise). The lifecycle reconciler watches those
+// Leases through this manager's LOCAL cache (the manager's own config
+// addresses the provider workspace; the multicluster provider engages only
+// tenant clusters, so Leases need this second, single-cluster source) and is
+// the sole writer of status.connected / status.phase / status.lastHeartbeatTime
+// / Registered=True. connManager only nudges it on local connect/disconnect.
+func runEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *sdktunnel.Server, hubExternalURL string, hubCAData []byte, devMode bool, identities *identityclient.Client, ready *vwhealth.Readiness) error {
+	connManager := tsrv.ConnManager()
+	s := edgescheme.NewScheme()
+
 	provider, err := apiexportprovider.New(config, endpointSliceName, apiexportprovider.Options{Scheme: s})
 	if err != nil {
 		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}
+	if ready != nil {
+		defer ready.Attach("controllers", provider)()
+	}
 
+	skipNameValidation := true
 	mgr, err := mcmanager.New(config, provider, manager.Options{
 		Scheme:  s,
 		Metrics: metricsserver.Options{BindAddress: "0"}, // provider serves its own HTTP
+		// Controller names register process-globally; the manager built for a
+		// later leadership term must skip that check.
+		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
 		Cache: cache.Options{
 			// The local cache is only used for the tunnel registry Leases the
 			// lifecycle reconcilers watch; restrict the Lease informer to them
-			// so presence leases and any leader-election lease stay out of it.
+			// so presence leases and the leader-election lease stay out of it.
 			ByObject: map[client.Object]cache.ByObject{
 				&coordinationv1.Lease{}: {
 					Label: labels.SelectorFromSet(labels.Set{sdktunnel.TunnelLeaseLabel: "true"}),
@@ -135,21 +237,7 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		return fmt.Errorf("creating multicluster manager: %w", err)
 	}
 
-	// Wire the tunnel plane's cross-workspace tenant reads/writes to this
-	// manager's APIExport virtual workspace. The provider's own SA credential is
-	// workspace-scoped, so re-rooting it to /clusters/<tenant> is rejected by kcp
-	// — which broke agent join-token registration in production. mgr.GetCluster
-	// engages each tenant logical cluster through the VW, the provider's only
-	// credential with cross-workspace access to the bound Edge resources.
-	tsrv.SetTenantConfigGetter(func(ctx context.Context, clusterName string) (*rest.Config, error) {
-		cl, err := mgr.GetCluster(ctx, mcmulticluster.ClusterName(clusterName))
-		if err != nil {
-			return nil, fmt.Errorf("engaging tenant cluster %q: %w", clusterName, err)
-		}
-		return cl.GetConfig(), nil
-	})
-
-	opts := edgectrl.Options{HubExternalURL: hubExternalURL, HubCAData: hubCAData, DevMode: devMode}
+	opts := edgectrl.Options{Identities: identities, HubExternalURL: hubExternalURL, HubCAData: hubCAData, DevMode: devMode}
 	// Drive the UpgradeAvailable condition off the hub's /version endpoint. A
 	// single cache is shared across both kinds' version reconcilers so many edges
 	// cost one periodic hub lookup, not one per edge. Skipped without a hub URL
@@ -192,20 +280,6 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		return fmt.Errorf("Workload status aggregator: %w", err)
 	}
 
-	// Edge event subscribers (currently UniFi Protect): a per-tenant, per-service
-	// event store the validation reconciler feeds via WebSocket subscribers, and
-	// the MCP `events` tool reads. The in-memory store is bounded per service and
-	// sits behind an interface so it can be swapped for Redis (or another shared
-	// backend). Multi-replica caveat: subscribers are gated to the replica that
-	// terminates the edge's tunnel, so events buffer on THAT replica only — an
-	// `events` MCP call the Service hands to a different replica sees an empty
-	// buffer until the store moves to a shared backend. Both the writer (manager)
-	// and reader (tunnel Server) share the one store; subscriber goroutines live
-	// under ctx, so they stop on shutdown.
-	eventStore := events.NewMemoryStore(events.DefaultPerServiceCap, eventsMaxAge)
-	eventsMgr := events.NewManager(ctx, eventStore, ctrl.Log.WithName("edge-events"))
-	tsrv.SetEventStore(eventStore)
-
 	// EdgeService controllers (LinuxServer and MacOSServer edges): the discovery
 	// reconciler pulls host services from each connected agent and materializes an
 	// EdgeService per service; the validation reconciler checks configured
@@ -213,7 +287,6 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 	// ConnManager for agent dials.
 	if err := servicectrl.SetupWithManager(mgr, connManager, servicectrl.Options{
 		EdgeProxyPublicPath: edgeProxyPublicPath,
-		Events:              eventsMgr,
 	}); err != nil {
 		return fmt.Errorf("EdgeService controllers: %w", err)
 	}
@@ -227,11 +300,9 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		return fmt.Errorf("Addon controller: %w", err)
 	}
 
-	go func() {
-		log.Printf("edges controller manager starting (endpointSlice=%s)", endpointSliceName)
-		if err := mgr.Start(ctx); err != nil {
-			log.Printf("edge controller manager exited: %v", err)
-		}
-	}()
+	log.Printf("edges controller manager starting (leader, endpointSlice=%s)", endpointSliceName)
+	if err := mgr.Start(ctx); err != nil {
+		return fmt.Errorf("manager: %w", err)
+	}
 	return nil
 }

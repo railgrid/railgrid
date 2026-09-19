@@ -87,7 +87,15 @@ Exceeding it **fails the request rather than truncating** — a silently
 shortened list is indistinguishable from a complete one. An action that can
 legitimately produce more pages in its own input.
 
-## Wiring a mux
+## Wiring a handler
+
+A provider does not hand-build its mux: [`provider-sdk/serve`](../serve)
+assembles the whole HTTP surface from the closed list of Pillar 2 route
+classes and mounts the handler below as `Options.DataPlane` (or
+`Options.Actions`). It dispatches those prefixes off the **raw** request path,
+before any `http.ServeMux` can clean `..` or `//` out of it and answer with a
+redirect — which is what makes the refusals described above happen where the
+contract says they do. What follows is the handler itself.
 
 ```go
 callers, err := dataplane.NewCallerFactory(providerRESTConfig) // credentials dropped
@@ -96,7 +104,7 @@ if err != nil {
 }
 greetings := schema.GroupVersionResource{Group: "quickstart.railgrid.ai", Version: "v1alpha1", Resource: "greetings"}
 
-mux.HandleFunc("/actions/clusters/", func(w http.ResponseWriter, r *http.Request) {
+actions := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	req, ok := dataplane.ParseRequest(dataplane.ActionsRoot, r)
 	if !ok || req.Resource != greetings.Resource || req.Version != "v1" || req.Tail != "" {
 		dataplane.WriteError(w, dataplane.ErrBadPath)
@@ -117,6 +125,8 @@ mux.HandleFunc("/actions/clusters/", func(w http.ResponseWriter, r *http.Request
 		return greet(ctx, caller, greeting, input)
 	})
 })
+
+handler, err := serve.New(serve.Options{Name: "quickstart", Readiness: vwhealth.Handler(ready), Actions: actions})
 ```
 
 `caller` is the caller-scoped client: keep using it for anything the caller
@@ -130,7 +140,8 @@ against what gate 1 returned.
 The suite lives in the sibling package `provider-sdk/dataplane/conformance`,
 so this package never links `testing` or the client-go fakes into a provider
 binary. `conformance.Test(t, handler, conformance.Fixtures{…})` drives any
-provider's mux through the contract's observable behaviour: granted verb 200,
+provider's handler — or, better, the whole `serve.New` server it is mounted
+in — through the contract's observable behaviour: granted verb 200,
 missing bearer 401, path/header cluster mismatch 400, foreign cluster denied,
 ungranted verb denied, malformed path 400, oversized input 413, unknown input
 field 400.

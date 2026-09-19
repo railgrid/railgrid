@@ -138,8 +138,17 @@ recorded upstream repository ID, and rejects replacement or redirection. Tenant
 callers need no Secret access. Responses use the shared Provider Action
 envelope: `requestID`, provider/action identity, `resourceRef`, and exactly one
 of `result` or `error`. `X-Request-ID` supplies the correlation ID.
-The CatalogEntry advertises the twelve bounded
+The CatalogEntry advertises the thirteen bounded
 action schemas and their digests.
+
+One of the thirteen is bound to a `Connection` instead of a `Repository`:
+`mint_registry_token/v1` issues a short-lived image-pull credential for the
+connection's container registry, so a consumer that has to pull an image built
+from a tenant's repository never reads this provider's `Connection` Secret to
+get one. It is gated on `connections/mint_registry_token`, which no repository
+grant reaches. See
+[docs/code-provider-architecture.md](../../docs/code-provider-architecture.md)
+§"`mint_registry_token`".
 
 Git bundles use a separate bounded upload: `stage_snapshot`, at the same route
 shape and behind the same two gates, with its own `create` grant on

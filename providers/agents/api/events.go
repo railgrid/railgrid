@@ -25,9 +25,9 @@ type event struct {
 	Data any
 }
 
-// eventBus fans workspace-scoped events out to /api/events subscribers so the
-// portal stays live (run phases, inbox items, schedule fires) without polling.
-// In-process only — one provider replica serves a portal session's stream.
+// eventBus fans workspace-scoped events out to subscribers so the portal stays
+// live (run phases, inbox items, schedule fires) without polling. In-process
+// only — one provider replica serves a portal session's stream.
 type eventBus struct {
 	mu   sync.Mutex
 	subs map[string]map[chan event]struct{}
@@ -74,13 +74,21 @@ func (b *eventBus) subscribe(scope store.Scope) (chan event, func()) {
 	}
 }
 
-// streamEvents serves GET /api/events: an SSE stream of run/inbox/schedule
-// changes in the caller's workspace, with id: fields and a 15s keepalive.
+// streamEvents serves the `events` verb: an SSE stream of run/inbox/schedule
+// changes for ONE agent, with id: fields and a 15s keepalive.
+//
+// The bus is workspace-scoped because a run's phase change is published from
+// wherever the run is, but what a caller is allowed to watch is decided per
+// agent — the gates authorized …/agents/{name}/events and nothing else — so
+// every frame is filtered against the addressed agent before it is written. An
+// event that names no agent is dropped rather than broadcast: a stream that
+// leaks a neighbouring agent's activity is worse than one that is quiet.
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
+	agentName := r.PathValue("name")
 	flusher, isFlusher := w.(http.Flusher)
 	if !isFlusher {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "streaming unsupported")
@@ -108,6 +116,9 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		case ev := <-ch:
+			if !eventNamesAgent(ev, agentName) {
+				continue
+			}
 			seq++
 			b, _ := json.Marshal(ev.Data)
 			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, ev.Type, b)
@@ -116,7 +127,20 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// runRegistry tracks live run contexts so POST /api/runs/{id}/cancel can abort
+// eventNamesAgent reports whether an event belongs to the named agent. Every
+// publisher stamps "agent" on the payload (run phases, inbox items, schedule
+// and trigger fires); anything that does not is not attributable and is
+// therefore not deliverable on a per-agent stream.
+func eventNamesAgent(ev event, agent string) bool {
+	data, ok := ev.Data.(map[string]any)
+	if !ok {
+		return false
+	}
+	name, _ := data["agent"].(string)
+	return name != "" && name == agent
+}
+
+// runRegistry tracks live run contexts so the `runs` verb's cancel can abort
 // them. In-process — matches the executor.
 type runRegistry struct {
 	mu sync.Mutex

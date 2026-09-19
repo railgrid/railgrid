@@ -27,8 +27,10 @@ spec:
       serviceAccountName: {{ include "kuery.serviceAccountName" . }}
       initContainers:
         # Bootstrap the provider workspace (schemas, APIExport, slice, bind
-        # grant) with the onboarded workspace-admin kubeconfig. No identity
-        # hashes: kuery claims no first-party resources — edge discovery acts
+        # grant) with the onboarded workspace-admin kubeconfig. The generated
+        # APIExport and its schemas are baked at /etc/railgrid/kcp (Dockerfile)
+        # and applied verbatim. No identity hashes: kuery claims no
+        # first-party resources — edge discovery acts
         # as a per-workspace ServiceAccount through each tenant's own edges
         # binding.
         - name: init
@@ -38,8 +40,8 @@ spec:
           env:
             - name: RAILGRID_PROVIDER_KUBECONFIG
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
-            - name: RAILGRID_SCHEMAS_DIR
-              value: /etc/railgrid/schemas
+            - name: RAILGRID_KCP_DIR
+              value: /etc/railgrid/kcp
             {{- if .Values.catalogEntry.enabled }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)

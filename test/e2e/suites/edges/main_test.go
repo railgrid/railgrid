@@ -177,7 +177,7 @@ func TestMain(m *testing.M) {
 	initCmd.Env = append(os.Environ(),
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"EDGES_WORKSPACE_PATH="+edgesWorkspacePath,
-		"RAILGRID_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files", "schemas"),
+		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files"),
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog

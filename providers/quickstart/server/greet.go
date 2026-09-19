@@ -42,14 +42,14 @@ type greetResult struct {
 	Greeting string `json:"greeting"`
 }
 
-// handleDataplane serves
+// ServeHTTP serves
 //
 //	POST /dataplane/clusters/{clusterID}/greetings/{name}/greet
 //
 // and is the one place a new provider author sees the two gates written out.
 // Read it top to bottom; everything a data-plane verb must do is here and
 // nothing else is.
-func (s *Server) handleDataplane(w http.ResponseWriter, r *http.Request) {
+func (s *dataPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 1. Parse. The grammar is the contract's, not ours: ParseRequest refuses
 	//    a traversal segment, a percent-encoded separator, a workspace path
 	//    where a logical-cluster ID belongs, and the legacy `apis` dialect. A

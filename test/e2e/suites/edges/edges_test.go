@@ -243,7 +243,7 @@ func TestCTenantEnableAndCRsUsable(t *testing.T) {
 // tenant's edgeproxy is 403 before the grant and 502 after (authorization runs
 // before the tunnel lookup, so a missing tunnel means auth PASSED). Adapted from
 // the pre-decouple hub-served test, now against
-// /services/providers/edges/edgeproxy/... with group edges.railgrid.ai.
+// /services/providers/edges/dataplane/... with group edges.railgrid.ai.
 func TestDEdgeProxyAuthBoundary(t *testing.T) {
 	workspaceGVR := schema.GroupVersionResource{Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces"}
 
@@ -368,8 +368,8 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 	}
 
 	// The edge name is irrelevant: authorization runs BEFORE the tunnel lookup.
-	proxyURL := hubURL + "/services/providers/edges/edgeproxy/clusters/" + tenantWS +
-		"/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/e2e-no-such-edge/k8s/api"
+	proxyURL := hubURL + "/services/providers/edges/dataplane/clusters/" + tenantWS +
+		"/kubernetesclusters/e2e-no-such-edge/k8s/api"
 	probe := func() int {
 		req, _ := http.NewRequest(http.MethodGet, proxyURL, nil)
 		req.Header.Set("Authorization", "Bearer "+saToken)

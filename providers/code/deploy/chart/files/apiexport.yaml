@@ -1,0 +1,72 @@
+# Copyright 2026 The Railgrid Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# GENERATED FILE — DO NOT EDIT.
+#
+# Written by provider-sdk/cmd/apiexportgen from two inputs:
+#   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
+#   spec.resources                        <- kcp apigen (hack/apigen.sh)
+# Regenerate with: make codegen-<provider>-provider. spec.permissionClaims
+# carries no identityHash: provider-sdk/install stamps one per installation for
+# first-party (*.railgrid.ai) claim groups.
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: code.providers.railgrid.ai
+spec:
+  permissionClaims:
+  - resource: secrets
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  resources:
+  - group: code.railgrid.ai
+    name: collaborators
+    schema: v260609-fc69fa2.collaborators.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: connections
+    schema: v260609-fc69fa2.connections.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: deploykeys
+    schema: v260609-fc69fa2.deploykeys.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: packages
+    schema: v260712-dabfd8e.packages.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: repositories
+    schema: v260609-fc69fa2.repositories.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: repositorybuildstatuses
+    schema: v260712-dabfd8e.repositorybuildstatuses.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: repositorycheckouts
+    schema: v260704-6d52bca.repositorycheckouts.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: repositorycommits
+    schema: v260802-8d0bfc17.repositorycommits.code.railgrid.ai
+    storage:
+      crd: {}

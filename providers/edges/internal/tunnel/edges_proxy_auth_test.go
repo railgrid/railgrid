@@ -19,58 +19,76 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
-// newAuthTestServer builds a Server with a kcp config present (so delegated
-// authorization is active), an injected authorize func, and a static-token set
-// populated the way a legacy RAILGRID_STATIC_TOKENS config would have — to prove
-// that set no longer short-circuits authorization anywhere.
-func newAuthTestServer(t *testing.T, authorizeErr error, calls *[]string) *Server {
+// newAuthTestServer builds a Server with a kcp config present (so the gates
+// are active), an injected gate func, and a static-token set populated the way
+// a legacy RAILGRID_STATIC_TOKENS config would have — to prove that set no
+// longer short-circuits authorization anywhere.
+func newAuthTestServer(t *testing.T, gateErr error, calls *[]string) *Server {
 	t.Helper()
 	kcp := &rest.Config{Host: "https://kcp.invalid"}
-	s := testServer("/services/providers/edges/edgeproxy")
+	s := testServer("/services/providers/edges/" + DataPlaneRoot)
 	s.kcpConfig = kcp
 	s.tenantConfig = func(context.Context, string) (*rest.Config, error) { return kcp, nil }
 	s.edgeConnManager = NewConnManager()
+	s.tickets = newTicketStore()
 	s.logger = klog.Background()
 	s.staticTokens = map[string]struct{}{"static-secret": {}}
-	s.authorizeFn = func(_ context.Context, _, _ *rest.Config, token, cluster, verb, group, resource, name string) error {
-		*calls = append(*calls, token+" "+verb+" "+group+"/"+resource+"/"+name+"@"+cluster)
-		return authorizeErr
+	s.gateFn = func(_ context.Context, _ *Server, token string, req dataplane.Request) (*unstructured.Unstructured, error) {
+		*calls = append(*calls, token+" "+dataplane.SSARVerb+" edges.railgrid.ai/"+req.Resource+"/"+req.Verb+"/"+req.Name+"@"+req.ClusterID)
+		if gateErr != nil {
+			return nil, gateErr
+		}
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "edges.railgrid.ai/v1alpha1",
+			"metadata":   map[string]any{"name": req.Name},
+			"spec": map[string]any{
+				"port":    float64(8080),
+				"edgeRef": map[string]any{"kind": "LinuxServer", "name": "edge-1"},
+			},
+		}}, nil
 	}
 	return s
 }
 
 const (
-	authTestEdgePath    = "/clusters/ws-1/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/ssh"
-	authTestServicePath = "/clusters/ws-1/apis/edges.railgrid.ai/v1alpha1/services/svc-1/proxy/"
+	authTestEdgePath    = "/" + DataPlaneRoot + "/clusters/ws-1/linuxservers/edge-1/ssh"
+	authTestServicePath = "/" + DataPlaneRoot + "/clusters/ws-1/services/svc-1/proxy/"
 )
 
+// MacOSServer is Service-only: it declares no verb of its own, so a path
+// naming one is a 404 BEFORE any gate runs. That ordering matters — an
+// un-served verb must not be usable to probe whether an object exists.
 func TestMacOSServerHasNoSSHOrKubernetesDataPlane(t *testing.T) {
-	for _, subresource := range []string{"ssh", "k8s"} {
-		t.Run(subresource, func(t *testing.T) {
+	for _, verb := range []string{"ssh", "k8s", "mcp", "proxy"} {
+		t.Run(verb, func(t *testing.T) {
 			var calls []string
 			s := newAuthTestServer(t, nil, &calls)
 			req := httptest.NewRequest(http.MethodGet,
-				"/clusters/ws-1/apis/edges.railgrid.ai/v1alpha1/macosservers/mac-1/"+subresource, nil)
+				"/"+DataPlaneRoot+"/clusters/ws-1/macosservers/mac-1/"+verb, nil)
 			req.Header.Set("Authorization", "Bearer caller-token")
 			rr := httptest.NewRecorder()
 
 			s.buildEdgesProxyHandler().ServeHTTP(rr, req)
 
 			if rr.Code != http.StatusNotFound {
-				t.Fatalf("MacOSServer %s status = %d, want 404 (body %q)", subresource, rr.Code, rr.Body.String())
+				t.Fatalf("MacOSServer %s status = %d, want 404 (body %q)", verb, rr.Code, rr.Body.String())
 			}
-			if len(calls) != 1 || calls[0] != "caller-token proxy edges.railgrid.ai/macosservers/mac-1@ws-1" {
-				t.Fatalf("authorization calls = %v, want one per-edge Mac authorization", calls)
+			if len(calls) != 0 {
+				t.Fatalf("gate ran for an un-served verb: %v", calls)
 			}
 		})
 	}
@@ -88,33 +106,33 @@ func TestEdgesProxyHandlerAuthorizesEveryToken(t *testing.T) {
 			name:     "static token is authorized like any other token",
 			token:    "static-secret",
 			path:     authTestEdgePath,
-			wantCall: "static-secret proxy edges.railgrid.ai/linuxservers/edge-1@ws-1",
+			wantCall: "static-secret create edges.railgrid.ai/linuxservers/ssh/edge-1@ws-1",
 		},
 		{
 			name:         "static token denied by kcp is forbidden",
 			token:        "static-secret",
 			path:         authTestEdgePath,
-			authorizeErr: errors.New("access denied"),
-			wantCall:     "static-secret proxy edges.railgrid.ai/linuxservers/edge-1@ws-1",
+			authorizeErr: fmt.Errorf("%w: access denied", dataplane.ErrDenied),
+			wantCall:     "static-secret create edges.railgrid.ai/linuxservers/ssh/edge-1@ws-1",
 		},
 		{
 			name:     "user token is authorized",
 			token:    "user-token",
 			path:     authTestEdgePath,
-			wantCall: "user-token proxy edges.railgrid.ai/linuxservers/edge-1@ws-1",
+			wantCall: "user-token create edges.railgrid.ai/linuxservers/ssh/edge-1@ws-1",
 		},
 		{
 			name:         "static token on the service proxy is authorized too",
 			token:        "static-secret",
 			path:         authTestServicePath,
-			authorizeErr: errors.New("access denied"),
-			wantCall:     "static-secret proxy edges.railgrid.ai/services/svc-1@ws-1",
+			authorizeErr: fmt.Errorf("%w: access denied", dataplane.ErrDenied),
+			wantCall:     "static-secret create edges.railgrid.ai/services/proxy/svc-1@ws-1",
 		},
 		{
 			name:     "user token on the service proxy is authorized",
 			token:    "user-token",
 			path:     authTestServicePath,
-			wantCall: "user-token proxy edges.railgrid.ai/services/svc-1@ws-1",
+			wantCall: "user-token create edges.railgrid.ai/services/proxy/svc-1@ws-1",
 		},
 	}
 
@@ -133,22 +151,24 @@ func TestEdgesProxyHandlerAuthorizesEveryToken(t *testing.T) {
 			// coordinates. Downstream status codes belong to whatever the handler
 			// does after the check and are deliberately not asserted here.
 			if len(calls) != 1 {
-				t.Fatalf("authorize called %d times, want exactly once: %v", len(calls), calls)
+				t.Fatalf("gate called %d times, want exactly once: %v", len(calls), calls)
 			}
 			if calls[0] != tc.wantCall {
-				t.Fatalf("authorize call = %q, want %q", calls[0], tc.wantCall)
+				t.Fatalf("gate call = %q, want %q", calls[0], tc.wantCall)
 			}
 
 			if tc.authorizeErr != nil {
-				if rr.Code != http.StatusForbidden {
-					t.Fatalf("status = %d, want %d (body %q)", rr.Code, http.StatusForbidden, rr.Body.String())
+				// A denial is a 404: the response must not disclose whether
+				// the object exists.
+				if rr.Code != http.StatusNotFound {
+					t.Fatalf("status = %d, want %d (body %q)", rr.Code, http.StatusNotFound, rr.Body.String())
 				}
 				return
 			}
 			// Allowed: only assert the request was not rejected by the auth
 			// layer, whatever the downstream outcome is.
 			switch rr.Code {
-			case http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable:
+			case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusServiceUnavailable:
 				t.Fatalf("authorized request rejected with %d (body %q)", rr.Code, rr.Body.String())
 			}
 		})
@@ -171,14 +191,21 @@ func (d *recordingDialer) Dial(context.Context) (net.Conn, error) {
 // Service's edge.
 func newNoKCPTestServer(t *testing.T, calls *[]string) (*Server, *recordingDialer) {
 	t.Helper()
-	s := testServer("/services/providers/edges/edgeproxy")
+	s := testServer("/services/providers/edges/" + DataPlaneRoot)
 	s.kcpConfig = nil
 	s.tenantConfig = nil
 	s.edgeConnManager = NewConnManager()
+	s.tickets = newTicketStore()
 	s.logger = klog.Background()
-	s.authorizeFn = func(_ context.Context, _, _ *rest.Config, token, cluster, verb, group, resource, name string) error {
-		*calls = append(*calls, token+" "+verb+" "+group+"/"+resource+"/"+name+"@"+cluster)
-		return nil
+	s.gateFn = func(_ context.Context, _ *Server, token string, req dataplane.Request) (*unstructured.Unstructured, error) {
+		*calls = append(*calls, token+" "+dataplane.SSARVerb+" edges.railgrid.ai/"+req.Resource+"/"+req.Verb+"/"+req.Name+"@"+req.ClusterID)
+		return &unstructured.Unstructured{Object: map[string]any{
+			"metadata": map[string]any{"name": req.Name},
+			"spec": map[string]any{
+				"port":    float64(8080),
+				"edgeRef": map[string]any{"kind": "LinuxServer", "name": "edge-1"},
+			},
+		}}, nil
 	}
 	d := &recordingDialer{}
 	s.edgeConnManager.dials[edgeConnKey("linuxservers", "ws-1", "edge-1")] = d
@@ -207,30 +234,9 @@ func TestEdgesProxyFailsClosedWithoutKCPConfig(t *testing.T) {
 				t.Fatal("request reached the tunnel dialer with no kcp authorization available")
 			}
 			if len(calls) != 0 {
-				t.Fatalf("authorize called with no kcp config: %v", calls)
+				t.Fatalf("the gate ran with no kcp config: %v", calls)
 			}
 		})
-	}
-}
-
-// serveService carries the same guard independently of the edgeproxy entry
-// point, so a future caller cannot reintroduce the fail-open path.
-func TestServeServiceFailsClosedWithoutKCPConfig(t *testing.T) {
-	var calls []string
-	s, dialer := newNoKCPTestServer(t, &calls)
-
-	req := httptest.NewRequest(http.MethodGet, authTestServicePath, nil)
-	rr := httptest.NewRecorder()
-	s.serveService(rr, req, "any-token", "ws-1", "svc-1", "proxy", "")
-
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d (body %q)", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
-	}
-	if dialer.dialed {
-		t.Fatal("serveService reached the tunnel dialer with no kcp authorization available")
-	}
-	if len(calls) != 0 {
-		t.Fatalf("authorize called with no kcp config: %v", calls)
 	}
 }
 
@@ -242,7 +248,7 @@ func TestEdgesProxyServesUnderTestOnlyBypass(t *testing.T) {
 	s, dialer := newNoKCPTestServer(t, &calls)
 	s.allowStaticTokenBypass = true
 
-	req := httptest.NewRequest(http.MethodGet, "/clusters/ws-1/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/k8s", nil)
+	req := httptest.NewRequest(http.MethodGet, "/"+DataPlaneRoot+"/clusters/ws-1/linuxservers/edge-1/k8s", nil)
 	req.Header.Set("Authorization", "Bearer any-token")
 	rr := httptest.NewRecorder()
 	s.buildEdgesProxyHandler().ServeHTTP(rr, req)

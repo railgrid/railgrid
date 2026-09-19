@@ -1,0 +1,10 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260919-abc1234.widgets.fixture.railgrid.ai
+spec:
+  group: fixture.railgrid.ai
+  names:
+    kind: Widget
+    plural: widgets
+  scope: Cluster

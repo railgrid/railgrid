@@ -46,7 +46,9 @@ no ticker. See [`controller_manager.go`](controller_manager.go).
 POST /dataplane/clusters/{clusterID}/greetings/{name}/greet
 ```
 
-plus `/healthz` and `/readyz`. There is no `/api/*`, and there will not be: if
+plus `/healthz` and `/readyz`. The layout is not hand-built: [`main.go`](main.go)
+passes one handler per route class to `provider-sdk/serve`, which refuses
+anything that is not one of them. There is no `/api/*`, and there will not be: if
 the UI needs to list, create or edit a Greeting it does that against kcp, because
 a Greeting is a bound CR and a backend route that mirrored it would be a
 deviation even when authorized correctly.
@@ -67,7 +69,8 @@ through `provider-sdk/dataplane`, **as the caller**:
 The provider's own credential never authorizes anything on this path. It lends
 only its host and CA to `dataplane.NewCallerFactory`, which drops every
 credential; the request then authenticates as the caller or not at all.
-[`server/server_test.go`](server/server_test.go) drives this mux through
+[`server/server_test.go`](server/server_test.go) drives this handler — mounted
+in the same `serve.New` server `main.go` builds — through
 `provider-sdk/dataplane/conformance`, the same suite every provider's data plane
 is held to.
 
@@ -143,17 +146,20 @@ make run-provider-quickstart      # run the binary on :8081
 
 Two caveats, both worth knowing before you copy this:
 
-- `init-provider-quickstart` runs `init` with `RAILGRID_SCHEMAS_DIR=/nonexistent`,
-  so it creates the APIExport but installs **no** schema. To get the `Greeting`
-  API into the provider workspace, re-run `init` yourself once the target has
-  written `.kcp/quickstart-runtime.kubeconfig`:
+- `init-provider-quickstart` points `init` at the chart's `files/` directory,
+  which holds both objects `init` applies: the generated APIExport and the
+  `Greeting` schema. To re-run it by hand once the target has written
+  `.kcp/quickstart-runtime.kubeconfig`:
 
   ```sh
   RAILGRID_PROVIDER_KUBECONFIG=.kcp/quickstart-runtime.kubeconfig \
   QUICKSTART_WORKSPACE_PATH=root:railgrid:providers:quickstart \
-  RAILGRID_SCHEMAS_DIR=providers/quickstart/deploy/chart/files/schemas \
+  RAILGRID_KCP_DIR=providers/quickstart/deploy/chart/files \
     ./bin/quickstart-provider init
   ```
+
+  In a container the same directory is baked at `/etc/railgrid/kcp`, which is
+  the default when `RAILGRID_KCP_DIR` is unset.
 
 - `run-provider-quickstart` does not set `RAILGRID_PROVIDER_KUBECONFIG`, so the
   controller manager and the `greet` verb start disabled (the portal still

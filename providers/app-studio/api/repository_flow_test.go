@@ -2474,7 +2474,7 @@ func TestProjectRepositoryViewPreservesCommitListFailure(t *testing.T) {
 	if view.CommitsError == "" {
 		t.Fatal("commit-list failure is not exposed to the History UI")
 	}
-	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}).checkpointCI(view, projectCheckpointStateDone)
+	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).checkpointCI(view, projectCheckpointStateDone)
 	if cp.State != projectCheckpointStateError || cp.Reason != "Could not read repository commit history." {
 		t.Fatalf("checkpoint = %#v, want commit-history error", cp)
 	}
@@ -2484,7 +2484,7 @@ func TestCheckpointCIReportsOnlyVerifiedSourceState(t *testing.T) {
 	view := &ProjectRepositoryView{
 		Commits: []ProjectRepositoryCommitView{{Phase: "Succeeded", CommitSHA: "abc123"}},
 	}
-	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}).checkpointCI(view, projectCheckpointStateDone)
+	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).checkpointCI(view, projectCheckpointStateDone)
 	if cp.Key != projectCheckpointCI || cp.Label != "Source" || cp.State != projectCheckpointStateDone {
 		t.Fatalf("checkpoint = %#v, want compatible ci key with done Source label", cp)
 	}

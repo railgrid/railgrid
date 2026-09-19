@@ -36,6 +36,7 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/railgrid/railgrid/pkg/hub/identity"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
@@ -93,11 +94,17 @@ func (f AttestorFunc) Verify(ctx context.Context, bearer string, req ExchangeReq
 	return f(ctx, bearer, req)
 }
 
-// TokenIssuer is the narrow service-account seam used by the exchange. The
-// concrete serviceaccounts.Manager creates the deterministic SA, reconciles
-// scoped GET-only RBAC, and calls TokenRequest with a fixed audience/TTL.
+// TokenIssuer is the narrow seam used by the exchange. The concrete
+// implementation is the hub scoped-identity service (pkg/hub/identity): it
+// records a ScopedIdentity owned by the Project, materializes the
+// deterministic SA and its scoped RBAC through the single hub minter, and
+// mints a TokenRequest with a fixed audience and TTL. The exchange is an
+// adapter over that service, not a minter of its own.
+//
+// clusterID is the /clusters/{…} segment of the tenant workspace; the
+// exchange passes the verified tenant PATH, which kcp accepts there.
 type TokenIssuer interface {
-	EnsureWorkloadIdentity(context.Context, string, string, serviceaccounts.WorkloadIdentityScope) (*serviceaccounts.WorkloadIdentityToken, error)
+	EnsureWorkload(ctx context.Context, clusterID string, scope serviceaccounts.WorkloadIdentityScope, subject string) (*identity.Token, error)
 }
 
 // Options configures the exchange handler.
@@ -174,7 +181,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "scope_denied", "workload identity scope was not accepted")
 		return
 	}
-	token, err := h.issuer.EnsureWorkloadIdentity(ctx, orgUUID, wsUUID, scope)
+	token, err := h.issuer.EnsureWorkload(ctx, req.TenantPath, scope, review.Subject)
 	if err != nil {
 		h.log.Error(err, "workload identity token issuance failed", "tenantPath", req.TenantPath, "project", req.Project, "environment", req.Environment, "instance", req.Instance)
 		writeError(w, http.StatusBadGateway, "token_issue_failed", "workload identity could not be issued")

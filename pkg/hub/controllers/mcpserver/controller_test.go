@@ -110,14 +110,17 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 	if r := findRule(t, rules, "edges.railgrid.ai", "kubernetesclusters"); r == nil {
 		t.Fatal("missing edges rule")
 	}
-	var proxy bool
-	for _, r := range rules {
-		if slices.Contains(r.APIGroups, "edges.railgrid.ai") && slices.Equal(r.Verbs, []string{"proxy"}) {
-			proxy = true
-		}
+	// The edges data plane gates create on {resource}/{verb}, never a bare
+	// verb on the object (providers/edges/internal/tunnel/grammar.go).
+	k8s := findRule(t, rules, "edges.railgrid.ai", "kubernetesclusters/k8s")
+	if k8s == nil || !slices.Equal(k8s.Verbs, []string{"create"}) ||
+		!slices.Equal(k8s.Resources, []string{"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp"}) {
+		t.Fatalf("edges data-plane rule = %+v, want create on kubernetesclusters/{k8s,ssh,mcp}", k8s)
 	}
-	if !proxy {
-		t.Fatalf("missing proxy verb on edges resources: %+v", rules)
+	for _, r := range rules {
+		if slices.Contains(r.APIGroups, "edges.railgrid.ai") && slices.Contains(r.Verbs, "proxy") {
+			t.Fatalf("retired wildcard proxy verb granted: %+v", r)
+		}
 	}
 
 	exec := findRule(t, rules, "infrastructure.railgrid.ai", "instances/exec")
@@ -165,19 +168,31 @@ func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
 		}
 	}
 
-	// A group whose data plane serves every bound resource keeps them all.
+	// Each edge kind gets exactly the verbs its data plane serves, and a kind
+	// the tunnel does not serve (macosservers) gets no data-plane grant.
 	edges := buildRules([]apisv1alpha2.BoundAPIResource{
 		bound("edges.railgrid.ai", "kubernetesclusters"),
 		bound("edges.railgrid.ai", "linuxservers"),
+		bound("edges.railgrid.ai", "macosservers"),
+		bound("edges.railgrid.ai", "services"),
 	}, nil, false)
-	var proxied []string
-	for _, r := range edges {
-		if slices.Contains(r.APIGroups, "edges.railgrid.ai") && slices.Equal(r.Verbs, []string{"proxy"}) {
-			proxied = r.Resources
+	want := map[string][]string{
+		"kubernetesclusters/k8s": {"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp"},
+		"linuxservers/k8s":       {"linuxservers/k8s", "linuxservers/ssh"},
+		"services/proxy":         {"services/proxy", "services/mcp"},
+	}
+	for key, resources := range want {
+		r := findRule(t, edges, "edges.railgrid.ai", key)
+		if r == nil || !slices.Equal(r.Verbs, []string{"create"}) || !slices.Equal(r.Resources, resources) {
+			t.Fatalf("%s rule = %+v, want create on %v", key, r, resources)
 		}
 	}
-	if !slices.Equal(proxied, []string{"kubernetesclusters", "linuxservers"}) {
-		t.Fatalf("proxy resources = %v, want both edge kinds", proxied)
+	for _, r := range edges {
+		for _, res := range r.Resources {
+			if strings.HasPrefix(res, "macosservers/") {
+				t.Fatalf("macosservers must get no data-plane grant: %+v", r)
+			}
+		}
 	}
 }
 

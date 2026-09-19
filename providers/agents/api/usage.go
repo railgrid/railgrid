@@ -50,19 +50,25 @@ type usageResponse struct {
 	Series     []usagePoint  `json:"series"`
 }
 
-// usageRollup aggregates the run history into cost/usage/observability rollups
-// over a rolling window (default 30 days, ?days= to override, capped at 90).
-// Everything is derived from the runs table — no separate telemetry store — so
-// it powers both the cost dashboard and the latency/error panel. Per-model
-// attribution uses each agent's CURRENT primary model (spec.models.chat), since
-// runs are recorded per agent; this is exact unless an agent's model changed
+// usageRollup aggregates one agent's run history into cost/usage/observability
+// rollups over a rolling window (default 30 days, ?days= to override, capped at
+// 90). Everything is derived from the runs table — no separate telemetry store
+// — so it powers both the cost dashboard and the latency/error panel. Per-model
+// attribution uses the agent's CURRENT primary model (spec.models.chat), since
+// runs are recorded per agent; this is exact unless the agent's model changed
 // mid-window.
+//
+// It is the `usage` verb on the agent, so the response is one agent's slice of
+// the workspace total: byAgent has a single bucket. A workspace-wide dashboard
+// sums the agents the caller can see, which is the only total that is honest
+// about what the caller is entitled to.
 func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 	c, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
-	scope := id.scope("")
+	agentName := r.PathValue("name")
+	scope := id.scope(agentName)
 
 	days := 30
 	if v := strings.TrimSpace(r.URL.Query().Get("days")); v != "" {
@@ -83,11 +89,8 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 	// agent → primary model, for per-model attribution. Best-effort: an agent
 	// with no assigned model is bucketed under "(unassigned)".
 	agentModel := map[string]string{}
-	if agents, aerr := c.Agents().List(r.Context(), metav1.ListOptions{}); aerr == nil {
-		for i := range agents.Items {
-			a := &agents.Items[i]
-			agentModel[a.Name] = strings.TrimSpace(a.Spec.Models["chat"])
-		}
+	if a, aerr := c.Agents().Get(r.Context(), agentName, metav1.GetOptions{}); aerr == nil {
+		agentModel[a.Name] = strings.TrimSpace(a.Spec.Models["chat"])
 	}
 
 	total := usageBucket{Key: "total"}

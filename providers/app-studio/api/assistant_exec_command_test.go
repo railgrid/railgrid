@@ -373,7 +373,7 @@ func TestProjectAssistantExecSyncEvidenceBootstrapsFreshProject(t *testing.T) {
 	}
 	calls := make(chan string, 1)
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		workspaces: files,
 		developmentSyncAfterMutation: func(_ identity, _ *aiv1alpha1.Project, name string) error {
 			calls <- name

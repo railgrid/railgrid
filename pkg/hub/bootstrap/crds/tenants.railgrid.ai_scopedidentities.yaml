@@ -1,0 +1,339 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: scopedidentities.tenants.railgrid.ai
+spec:
+  group: tenants.railgrid.ai
+  names:
+    kind: ScopedIdentity
+    listKind: ScopedIdentityList
+    plural: scopedidentities
+    singular: scopedidentity
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.owner.provider
+      name: Provider
+      type: string
+    - jsonPath: .spec.owner.name
+      name: Owner
+      type: string
+    - jsonPath: .spec.owner.kind
+      name: Kind
+      type: string
+    - jsonPath: .spec.attestation.mode
+      name: Mode
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ScopedIdentity is the hub's record of one scoped, TTL'd identity minted for
+          a tenant object. It is the single place standing credentials are auditable:
+          who asked, for which object, in which workspace, with exactly which rules.
+
+          Records live in root:railgrid:system:tenants beside Grant and
+          UserMembershipIndex — a workspace no tenant, provider or user identity can
+          reach — so nobody can widen their own identity by editing one. The token is
+          never written here, or anywhere: it is TokenRequest-minted per call and
+          handed straight back to the caller.
+
+          metadata.name is derived from (clusterID, provider, kind, owner name, owner
+          UID), which makes POST /api/identities idempotent on the owner tuple.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ScopedIdentitySpec is the requested identity.
+            properties:
+              annotations:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Annotations are the audit annotations stamped on the ServiceAccount.
+                  They carry no secret — the token is never written anywhere — and exist
+                  so an operator reading a tenant workspace can tell what a hub-managed
+                  account is for.
+                type: object
+              attestation:
+                description: Attestation records how the request was proven.
+                properties:
+                  mode:
+                    description: Mode is the attestation that was performed.
+                    enum:
+                    - workload
+                    - provider
+                    type: string
+                  subject:
+                    description: |-
+                      Subject is the authenticated requester: the provider service-account
+                      username for provider attestation, or the attested pod service account
+                      for workload attestation. Recorded for audit only; nothing authorizes
+                      off it.
+                    type: string
+                required:
+                - mode
+                type: object
+              clusterID:
+                description: |-
+                  ClusterID is the tenant workspace the ServiceAccount, ClusterRole and
+                  binding are materialized in. It is the /clusters/{…} segment: either a
+                  logical cluster id or a workspace path.
+                minLength: 1
+                type: string
+              immutableAnnotationKeys:
+                description: |-
+                  ImmutableAnnotationKeys are the annotation keys that identify the
+                  account. Reconciling one of them to a different value is refused rather
+                  than silently rebinding a live credential to another object.
+                items:
+                  type: string
+                type: array
+              owner:
+                description: Owner is the tenant object this identity exists for.
+                properties:
+                  clusterID:
+                    description: |-
+                      ClusterID is the logical cluster the owner object lives in. Empty means
+                      ScopedIdentitySpec.ClusterID.
+                    type: string
+                  group:
+                    description: Group is the owner object's API group.
+                    type: string
+                  kind:
+                    description: Kind is the owner object's kind (Agent, KubernetesCluster,
+                      Project, ...).
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the owner object's name.
+                    minLength: 1
+                    type: string
+                  provider:
+                    description: |-
+                      Provider is the provider that requested this identity and owns the
+                      owner object's API group.
+                    minLength: 1
+                    type: string
+                  resource:
+                    description: |-
+                      Resource is the owner object's plural resource name, which is what the
+                      GC probe reads.
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: |-
+                      UID is the owner object's UID. It participates in the deterministic
+                      ServiceAccount name, so a deleted-and-recreated owner never inherits the
+                      identity (and the RBAC) of its predecessor.
+                    type: string
+                  version:
+                    description: Version is the owner object's API version.
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                - provider
+                - resource
+                - version
+                type: object
+              rules:
+                description: |-
+                  Rules are the policy rules the identity's ClusterRole carries. They are
+                  the rules the hub ACCEPTED, not the rules that were asked for: every rule
+                  here passed pkg/hub/identity's policy, so the record is also the audit
+                  trail of what a provider was allowed to mint.
+                items:
+                  description: |-
+                    PolicyRule holds information that describes a policy rule, but does not contain information
+                    about who the rule applies to or which namespace the rule applies to.
+                  properties:
+                    apiGroups:
+                      description: |-
+                        APIGroups is the name of the APIGroup that contains the resources.  If multiple API groups are specified, any action requested against one of
+                        the enumerated resources in any API group will be allowed. "" represents the core API group and "*" represents all API groups.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    nonResourceURLs:
+                      description: |-
+                        NonResourceURLs is a set of partial urls that a user should have access to.  *s are allowed, but only as the full, final step in the path
+                        Since non-resource URLs are not namespaced, this field is only applicable for ClusterRoles referenced from a ClusterRoleBinding.
+                        Rules can either apply to API resources (such as "pods" or "secrets") or non-resource URL paths (such as "/api"),  but not both.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    resourceNames:
+                      description: ResourceNames is an optional white list of names
+                        that the rule applies to.  An empty set means that everything
+                        is allowed.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    resources:
+                      description: Resources is a list of resources this rule applies
+                        to. '*' represents all resources.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    verbs:
+                      description: Verbs is a list of Verbs that apply to ALL the
+                        ResourceKinds contained in this rule. '*' represents all verbs.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: atomic
+                  required:
+                  - verbs
+                  type: object
+                type: array
+              serviceAccountName:
+                description: |-
+                  ServiceAccountName is the deterministic account the identity is. It is
+                  recorded rather than re-derived so this object is the COMPLETE
+                  description of what exists in the tenant workspace: garbage collection
+                  deletes exactly what the record names, without having to know which
+                  attestation mode computed the name.
+                minLength: 1
+                type: string
+              ttlSeconds:
+                description: |-
+                  TTLSeconds is the lifetime requested for each minted token. Tokens are
+                  never persisted; this only paces re-minting and the GC re-check.
+                format: int64
+                maximum: 86400
+                minimum: 60
+                type: integer
+            required:
+            - attestation
+            - clusterID
+            - owner
+            - serviceAccountName
+            - ttlSeconds
+            type: object
+          status:
+            description: ScopedIdentityStatus is what the reconciler materialized.
+            properties:
+              clusterRole:
+                description: |-
+                  ClusterRole is the ClusterRole (and identically named binding) carrying
+                  spec.rules.
+                type: string
+              conditions:
+                description: Conditions carries the Ready condition and its reason.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              expiresAt:
+                description: |-
+                  ExpiresAt is when the most recently minted token stops working. It is
+                  also the reconciler's re-check pacing: the owner is probed again no later
+                  than this, so a deleted owner's identity is collected within one TTL.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the spec generation the rules were last reconciled
+                  from.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the coarse state.
+                enum:
+                - Pending
+                - Ready
+                - Failed
+                - Orphaned
+                type: string
+              serviceAccount:
+                description: |-
+                  ServiceAccount is the deterministic ServiceAccount name in the tenant
+                  workspace's default namespace.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

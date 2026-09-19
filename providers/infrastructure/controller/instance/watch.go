@@ -30,6 +30,7 @@ package instance
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -61,24 +62,42 @@ import (
 // once the controller is warm; entries are dropped when the Instance is gone.
 type instanceIndex struct {
 	mu sync.RWMutex
-	// byCluster: cluster name → Instance key → template name.
-	byCluster map[multicluster.ClusterName]map[types.NamespacedName]string
+	// byCluster: cluster name → Instance key → what that Instance references.
+	byCluster map[multicluster.ClusterName]map[types.NamespacedName]instanceRefs
+}
+
+// instanceRefs is what one Instance points at, as of its last reconcile: the
+// Template it is provisioned from and the tenant Secrets its typed
+// cross-provider references name. The Secret names are held here because they
+// are the ONLY way back from a Secret event to the Instances that read it —
+// the bridge no longer derives a name from the instance's, so the mapping is
+// not computable from the event alone.
+type instanceRefs struct {
+	template string
+	secrets  []string
 }
 
 func newInstanceIndex() *instanceIndex {
-	return &instanceIndex{byCluster: map[multicluster.ClusterName]map[types.NamespacedName]string{}}
+	return &instanceIndex{byCluster: map[multicluster.ClusterName]map[types.NamespacedName]instanceRefs{}}
 }
 
-// set records (or refreshes) the template an Instance references.
-func (ix *instanceIndex) set(cluster multicluster.ClusterName, key types.NamespacedName, template string) {
+// set records (or refreshes) what an Instance references. Blank secret names
+// are dropped, so an Instance with no refs indexes none.
+func (ix *instanceIndex) set(cluster multicluster.ClusterName, key types.NamespacedName, template string, secrets ...string) {
+	kept := make([]string, 0, len(secrets))
+	for _, name := range secrets {
+		if name = strings.TrimSpace(name); name != "" {
+			kept = append(kept, name)
+		}
+	}
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	m, ok := ix.byCluster[cluster]
 	if !ok {
-		m = map[types.NamespacedName]string{}
+		m = map[types.NamespacedName]instanceRefs{}
 		ix.byCluster[cluster] = m
 	}
-	m[key] = template
+	m[key] = instanceRefs{template: template, secrets: kept}
 }
 
 // remove forgets an Instance that no longer exists.
@@ -102,10 +121,29 @@ func (ix *instanceIndex) byTemplate(template string) []mcreconcile.Request {
 	defer ix.mu.RUnlock()
 	var out []mcreconcile.Request
 	for cluster, m := range ix.byCluster {
-		for key, tmpl := range m {
-			if tmpl == template {
+		for key, refs := range m {
+			if refs.template == template {
 				out = append(out, request(cluster, key))
 			}
+		}
+	}
+	return out
+}
+
+// bySecret returns a request for every indexed Instance in the cluster whose
+// typed references name the Secret. An unreferenced Secret maps to nothing,
+// which is what keeps a busy credentials namespace from re-reconciling
+// everything.
+func (ix *instanceIndex) bySecret(cluster multicluster.ClusterName, name string) []mcreconcile.Request {
+	if name == "" {
+		return nil
+	}
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	var out []mcreconcile.Request
+	for key, refs := range ix.byCluster[cluster] {
+		if slices.Contains(refs.secrets, name) {
+			out = append(out, request(cluster, key))
 		}
 	}
 	return out
@@ -144,46 +182,24 @@ func (c *Controller) mapTemplate(_ context.Context, obj client.Object) []mcrecon
 }
 
 // mapSecret maps a tenant Secret event (through the virtual workspace, so the
-// cluster is the tenant's logical cluster) to the Instance(s) whose bridge
-// reads it. Only the credentials namespace is relevant:
-//
-//   - "<instance>-registry" is the per-instance registry pull Secret App
-//     Studio mints at promote (bridgeRegistryPullSecret) → that Instance;
-//   - "cloud-credentials" is the workspace-wide BYO OIDC Secret
-//     (bridgeBYOSecret) → every Instance in the workspace: any of them may
-//     be the BYO one, and the reconcile is cheap when it is not.
+// cluster is the tenant's logical cluster) to the Instances that REFERENCE it
+// through spec.imagePullSecretRef or spec.oidcBridgeSecretRef. There is no
+// name convention left to invert: the index remembers what each Instance
+// pointed at when it was last reconciled, and only the credentials namespace
+// is watched at all.
 func (c *Controller) mapSecret(cluster multicluster.ClusterName, obj client.Object) []mcreconcile.Request {
-	instance, bridged := c.bridgedSecretTarget(obj)
-	if !bridged {
+	if obj.GetNamespace() != c.cfg.CredentialsNamespace {
 		return nil
 	}
-	return c.index.inCluster(cluster, instance)
+	return c.index.bySecret(cluster, obj.GetName())
 }
 
 // secretPredicate keeps the Secret watch quiet: only the credentials
-// namespace and the two bridged names reach the mapper.
+// namespace reaches the mapper, which then drops anything unreferenced.
 func (c *Controller) secretPredicate() predicate.Predicate {
 	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		_, bridged := c.bridgedSecretTarget(obj)
-		return bridged
+		return obj.GetNamespace() == c.cfg.CredentialsNamespace
 	})
-}
-
-// bridgedSecretTarget reports whether the bridge reads this tenant Secret
-// and, when it is a per-instance one, which Instance it belongs to (empty
-// for the workspace-wide cloud-credentials Secret).
-func (c *Controller) bridgedSecretTarget(obj client.Object) (instance string, bridged bool) {
-	if obj.GetNamespace() != c.cfg.CredentialsNamespace {
-		return "", false
-	}
-	name := obj.GetName()
-	if name == cloudCredentialsSecret {
-		return "", true
-	}
-	if inst, ok := strings.CutSuffix(name, registryPullSecretName("")); ok && inst != "" {
-		return inst, true
-	}
-	return "", false
 }
 
 // mapRuntimeObject maps a runtime-cluster CR event back to the tenant

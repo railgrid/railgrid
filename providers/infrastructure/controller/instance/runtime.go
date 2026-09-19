@@ -298,7 +298,7 @@ func (c *Controller) backfillRuntimeNamespaceLabels(ctx context.Context, ns *uns
 // changed. When runtimeObj is nil (validation failure, template missing) the
 // previously mirrored fields are preserved so a running instance's status
 // isn't wiped by a bad spec edit. Returns whether the instance is Ready.
-func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Client, inst *unstructured.Unstructured, tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured, valid, oidc *conditionSpec) (bool, error) {
+func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Client, inst *unstructured.Unstructured, tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured, valid *conditionSpec, extra ...*conditionSpec) (bool, error) {
 	prevStatus, _, _ := unstructured.NestedMap(inst.Object, "status")
 
 	var next map[string]any
@@ -318,8 +318,10 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 	prevConds, _ := prevStatus["conditions"].([]any)
 	conds = stampConditionObservedGeneration(conds, "Ready", inst.GetGeneration())
 	conds = upsertCondition(conds, prevConds, valid, inst.GetGeneration())
-	if oidc != nil {
-		conds = upsertCondition(conds, prevConds, oidc, inst.GetGeneration())
+	for _, cond := range extra {
+		if cond != nil {
+			conds = upsertCondition(conds, prevConds, cond, inst.GetGeneration())
+		}
 	}
 	next["conditions"] = conds
 

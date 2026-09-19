@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
 )
@@ -88,6 +89,23 @@ func jsonAction(items int64) dataplane.Limits {
 	}
 }
 
+// MintRegistryToken is the one action bound to a Connection rather than a
+// Repository: it hands a consumer a pull credential for that Connection's
+// container registry, so the credential itself never leaves this provider.
+// See tenant/registry_token.go for why it exists.
+const MintRegistryToken = "mint_registry_token"
+
+// connectionActions are the actions bound to connections/{name} instead of
+// repositories/{name}. Gate 2 therefore asks about connections/{action}, and
+// a grant on a repository action never reaches one of these.
+var connectionActions = map[string]dataplane.Limits{
+	MintRegistryToken: {
+		Timeout:        actionTimeout,
+		MaxInputBytes:  64 << 10,
+		MaxOutputBytes: MaxOutputBytes,
+	},
+}
+
 // snapshotActions share one memory admission slot: decoding, staging and
 // loading a bundle all hold it, including any git subprocess using it.
 var snapshotActions = map[string]bool{StageSnapshot: true, "prepare_snapshot": true, "publish_snapshot": true}
@@ -111,9 +129,12 @@ type Server struct {
 	// Caller builds the caller-scoped client both gates run through. It never
 	// carries the provider's own credential.
 	Caller dataplane.CallerFactory
-	// Authority resolves the provider's own view of a repository through its
-	// accepted APIExport, for pinning what gate 1 returned.
-	Authority     func(context.Context, string, string) (dynamic.Interface, error)
+	// Authority resolves the provider's own view of one of its own objects
+	// through its accepted APIExport, for pinning what gate 1 returned. It
+	// takes the resource being pinned because an action may be bound to a
+	// Repository or to a Connection, and the endpoint is found by proving the
+	// named object is readable through it.
+	Authority     func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error)
 	Backends      *backend.Registry
 	Credentials   tenant.CredentialResolver
 	SnapshotDir   string
@@ -121,7 +142,7 @@ type Server struct {
 	snapshotSlots chan struct{}
 }
 
-func New(caller dataplane.CallerFactory, authority func(context.Context, string, string) (dynamic.Interface, error), backends *backend.Registry) *Server {
+func New(caller dataplane.CallerFactory, authority func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error), backends *backend.Registry) *Server {
 	return &Server{Caller: caller, Authority: authority, Backends: backends, slots: make(chan struct{}, 8), snapshotSlots: make(chan struct{}, 1)}
 }
 
@@ -146,12 +167,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		dataplane.WriteError(w, dataplane.ErrBadPath)
 		return
 	}
+	// Which resource an action is bound to decides which object gate 1 reads
+	// and which subresource gate 2 asks about, so it is resolved from the
+	// route before anything else happens.
+	gvr, kind := repositories, "Repository"
 	limits, isServed := served[req.Verb]
-	if req.Resource != repositories.Resource || req.Component != "" || req.Version != "v1" || req.Tail != "" || !isServed {
+	if req.Resource == connections.Resource {
+		gvr, kind = connections, "Connection"
+		limits, isServed = connectionActions[req.Verb]
+	}
+	if (req.Resource != repositories.Resource && req.Resource != connections.Resource) ||
+		req.Component != "" || req.Version != "v1" || req.Tail != "" || !isServed {
 		http.NotFound(w, r)
 		return
 	}
-	envelope := actionwire.New(r, "code", req.Verb, actionwire.ResourceRef{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository", Resource: repositories.Resource, Name: req.Name})
+	envelope := actionwire.New(r, "code", req.Verb, actionwire.ResourceRef{APIVersion: "code.railgrid.ai/v1alpha1", Kind: kind, Resource: gvr.Resource, Name: req.Name})
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-ID", envelope.RequestID)
@@ -171,7 +201,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// The two gates, as the caller. The returned Repository is what resolve
 	// pins the provider's own read against.
-	visible, _, err := dataplane.Gate(r.Context(), r, s.Caller, repositories, req)
+	visible, _, err := dataplane.Gate(r.Context(), r, s.Caller, gvr, req)
 	if err != nil {
 		// The detail stays provider-side; the caller learns only the status.
 		logger.V(3).Info("repository action refused", "action", req.Verb, "repository", req.Name, "err", err)
@@ -191,6 +221,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dataplane.Serve(w, r, envelope, limits, func(ctx context.Context, raw json.RawMessage) (any, *actionwire.Error) {
+		if req.Resource == connections.Resource {
+			return s.runConnection(ctx, req, visible, raw)
+		}
 		return s.run(ctx, r, req, visible, raw)
 	}, dataplane.WithErrorStatus(func(e *actionwire.Error) int {
 		if status, ok := statusFor[e.Code]; ok {
@@ -323,7 +356,7 @@ func (s *Server) resolve(ctx context.Context, cluster, name string, visible *uns
 	if s.Authority == nil || input.RepositoryUID == "" || input.ConnectionUID == "" || string(visible.GetUID()) != input.RepositoryUID {
 		return fail()
 	}
-	provider, err := s.Authority(ctx, cluster, name)
+	provider, err := s.Authority(ctx, cluster, repositories, name)
 	if err != nil {
 		return fail()
 	}

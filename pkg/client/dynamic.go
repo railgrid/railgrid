@@ -115,6 +115,17 @@ var (
 		Resource: "grants",
 	}
 
+	// ScopedIdentityGVR points at the cluster-scoped ScopedIdentity CRD (see
+	// apis/tenancy/v1alpha1/types_scoped_identity.go): the hub's record of one
+	// TTL'd identity minted for a tenant object. Lives in
+	// root:railgrid:system:tenants beside Grant, so no tenant or provider can
+	// read or edit one.
+	ScopedIdentityGVR = schema.GroupVersionResource{
+		Group:    "tenants.railgrid.ai",
+		Version:  "v1alpha1",
+		Resource: "scopedidentities",
+	}
+
 	// OrganizationGVR points at the cluster-scoped Organization CRD
 	// (see apis/tenancy/v1alpha1/types_organization.go). Used by the
 	// step 10 REST surface for Org CRUD against root:railgrid:users.
@@ -237,6 +248,16 @@ func (c *Client) Grants() *TypedResource[tenancyv1alpha1.Grant, tenancyv1alpha1.
 	return &TypedResource[tenancyv1alpha1.Grant, tenancyv1alpha1.GrantList]{
 		client: c.dynamic.Resource(GrantGVR),
 		gvk:    GrantGVR.GroupVersion().WithKind("Grant"),
+	}
+}
+
+// ScopedIdentities returns a typed interface for the cluster-scoped
+// ScopedIdentity CRD. The hub identity service writes one record per minted
+// identity and its reconciler garbage-collects them when the owner is gone.
+func (c *Client) ScopedIdentities() *TypedResource[tenancyv1alpha1.ScopedIdentity, tenancyv1alpha1.ScopedIdentityList] {
+	return &TypedResource[tenancyv1alpha1.ScopedIdentity, tenancyv1alpha1.ScopedIdentityList]{
+		client: c.dynamic.Resource(ScopedIdentityGVR),
+		gvk:    ScopedIdentityGVR.GroupVersion().WithKind("ScopedIdentity"),
 	}
 }
 

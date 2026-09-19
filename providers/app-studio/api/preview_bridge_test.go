@@ -161,14 +161,14 @@ func TestPreviewBridgeStoreExpiresSessions(t *testing.T) {
 }
 
 func TestPreviewBridgeToolIsRemoved(t *testing.T) {
-	if projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}).Has("get_preview_bridge_logs") {
+	if projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).Has("get_preview_bridge_logs") {
 		t.Fatal("legacy preview bridge tool is still registered")
 	}
 }
 
 func TestProjectAssistantMetricsRouteExposesSkillMetrics(t *testing.T) {
 	router := mux.NewRouter()
-	(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}).Register(router)
+	(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).Register(router)
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -184,7 +184,7 @@ func TestProjectAssistantMetricsRouteExposesSkillMetrics(t *testing.T) {
 }
 
 func TestPreviewBridgeDisabledRouteReturnsControlledNotFound(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	router := mux.NewRouter()
 	server.Register(router)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/preview-bridge/sessions", strings.NewReader(`{}`))

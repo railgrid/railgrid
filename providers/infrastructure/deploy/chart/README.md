@@ -12,10 +12,12 @@ A provider needs a kcp credential for the workspace it registers into.
 The credential is used in two distinct steps, and the chart keeps them apart:
 
 - **`init`** (the `bootstrap.*` init container, or `make init-provider-infrastructure`
-  locally) is the one high-privilege step. It installs the CRDs, the APIExport
-  and its schemas, and the Templates CachedResource into the provider
-  workspace, then mints the ServiceAccount credential the long-lived process
-  runs with. Operator mode does the same work from the operator pod.
+  locally) is the one high-privilege step. It installs the CRDs, the generated
+  APIExport (read from `/etc/railgrid/kcp`, override with `RAILGRID_KCP_DIR`),
+  the schemas this provider mints at runtime, and the Templates CachedResource
+  into the provider workspace, then mints the ServiceAccount credential the
+  long-lived process runs with. Operator mode does the same work from the
+  operator pod.
 - **`serve`** is the long-lived process. It bootstraps nothing and accepts
   exactly one kubeconfig, `RAILGRID_PROVIDER_KUBECONFIG` (which this chart sets
   on the serve container from `providerKubeconfig.secretName`). There is no

@@ -20,6 +20,11 @@ spec:
     storage:
       crd: {}
   - group: tenants.railgrid.ai
+    name: scopedidentities
+    schema: v260919-91e6c6ad.scopedidentities.tenants.railgrid.ai
+    storage:
+      crd: {}
+  - group: tenants.railgrid.ai
     name: usermembershipindices
     schema: v260615-5246b68.usermembershipindices.tenants.railgrid.ai
     storage:

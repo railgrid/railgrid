@@ -30,7 +30,6 @@ import (
 	"os"
 	"strings"
 
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,8 +38,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/railgrid/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/identityclient"
 	"github.com/railgrid/provider-sdk/leaderelection"
-	"github.com/railgrid/provider-sdk/tenantaccess"
 	"github.com/railgrid/provider-sdk/vwhealth"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
@@ -49,8 +48,8 @@ import (
 	"github.com/railgrid/provider-app-studio/controller/project"
 	"github.com/railgrid/provider-app-studio/controller/session"
 	"github.com/railgrid/provider-app-studio/controller/studio"
-	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
 	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
+	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 	appscheme "github.com/railgrid/provider-app-studio/scheme"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
@@ -106,18 +105,30 @@ type controllerDeps struct {
 	ProjectSignals *reconcilesignal.Bus
 }
 
-// dependencyWatches builds the per-workspace watch hub the Project and
-// Studio reconcilers share. Watches ride the tenant-path identity exactly as
-// the reconcilers' writes do, so they need the hub address; without one
-// (REST-only dev) there are no watches and the reconcilers resync only.
-func dependencyWatches(deps controllerDeps) *tenantwatch.Hub {
+// scopedIdentities builds the hub identity client the Project reconciler mints
+// each project's identity with. That identity is NOT how this provider
+// reconciles — its own ServiceAccount over the APIExport virtual workspace is
+// (AGENTS.md §5.4) — it is what a project acts as when it reaches the MCP
+// aggregate or calls a data-plane verb on its own instance.
+//
+// A failure here is logged and degrades to nil rather than refusing to start:
+// a REST-only dev deployment has no hub to ask, and everything except the
+// commit path keeps converging without one.
+func scopedIdentities(deps controllerDeps) *scopedidentity.Cache {
 	if deps.HubBase == "" {
 		return nil
 	}
-	hubBase, insecure := deps.HubBase, deps.HubInsecure
-	return tenantwatch.NewHub(func(cluster, token string) (dynamic.Interface, error) {
-		return tenantaccess.NewDynamicClient(hubBase, cluster, token, insecure)
+	insecure := deps.HubInsecure
+	client, err := identityclient.New(identityclient.Options{
+		HubURL:   deps.HubBase,
+		Provider: providerName,
+		Insecure: &insecure,
 	})
+	if err != nil {
+		log.Printf("WARNING app-studio: the hub identity service is unavailable, so per-project identities cannot be minted: %v", err)
+		return nil
+	}
+	return scopedidentity.New(client)
 }
 
 // projectCommitNotifier adapts the API server's commit notification to the
@@ -204,7 +215,7 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 		return fmt.Errorf("project controller: message store does not support attachment lifecycle cleanup")
 	}
 
-	watches := dependencyWatches(deps)
+	identities := scopedIdentities(deps)
 	if err := (&project.Reconciler{
 		Actions:     deps.Actions,
 		Workspace:   deps.Workspace,
@@ -214,19 +225,15 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 		Attachments: attachments,
 		HubBase:     deps.HubBase,
 		HubInsecure: deps.HubInsecure,
-		Watches:     watches,
 		Signals:     deps.ProjectSignals,
+		Identities:  identities,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("project controller: %w", err)
 	}
 	if err := (&session.Reconciler{Store: deps.Store, Signals: deps.SessionSignals}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("session controller: %w", err)
 	}
-	if err := (&studio.Reconciler{
-		HubBase:     deps.HubBase,
-		HubInsecure: deps.HubInsecure,
-		Watches:     watches,
-	}).SetupWithManager(mgr); err != nil {
+	if err := (&studio.Reconciler{}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("studio controller: %w", err)
 	}
 

@@ -205,8 +205,9 @@ request logging, portal static serving with index fallback and SRI-stable
 `main.js`, heartbeat via `hubclient` (skipped automatically when the kubeconfig
 path is under `:tenants:`, so a BYO copy never beats the platform endpoint),
 graceful shutdown, and a `tenantaccess` dynamic-client factory on
-`runtime.Context`. Schemas embed into the binary too, so the Dockerfile stops
-copying `deploy/chart/files/schemas` and `RAILGRID_SCHEMAS_DIR` becomes an override.
+`runtime.Context`. The generated APIExport and its schemas embed into the binary
+too, so the Dockerfile stops copying `deploy/chart/files` and `RAILGRID_KCP_DIR`
+becomes an override.
 
 Quickstart's `main.go` drops to roughly 40 lines and `init_cmd.go` is deleted.
 The infrastructure provider's 279-line init keeps working via the hooks; nothing

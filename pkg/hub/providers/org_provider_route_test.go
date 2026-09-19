@@ -48,7 +48,7 @@ func TestOrgProviderRouteCarriesDelegatedTokenOverEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OrgProviderRoute: %v", err)
 	}
-	wantBase := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
+	wantBase := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy"
 	if !strings.HasSuffix(route.BaseURL, wantBase) {
 		t.Fatalf("BaseURL = %q, want it to end in %q", route.BaseURL, wantBase)
 	}

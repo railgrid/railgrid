@@ -159,17 +159,26 @@ the work is partitioned by project. Both premises are gone:
 
 So the controllers run under `provider-sdk/leaderelection.Run` on a Lease named
 `app-studio-controllers` in the provider workspace, rebuilt per term: a
-controller-runtime manager cannot be restarted, and neither can the
-`tenantwatch.Hub` the Project and Studio reconcilers share, so both are
-constructed inside the term and die with it. Losing the lease costs a
-controller pause, not a process restart.
+controller-runtime manager cannot be restarted, so it is constructed inside
+the term and dies with it. Losing the lease costs a controller pause, not a
+process restart.
 
 The 15 s manager restart loop is gone with it — the election's own campaign is
 the retry that covers a provider coming up before `init` has created its
 workspace and endpoint slice. So are the 10 minute safety resyncs in all three
-reconcilers: the watches and the signal buses are the triggers, and the only
-`RequeueAfter` left is the 5 s wait for a ServiceAccount token Secret, which is
-a backoff on a pending dependency rather than a poll.
+reconcilers: the watches and the signal buses are the triggers, and no
+`RequeueAfter` is left on the identity path at all. The 5 s wait for a
+ServiceAccount token Secret went with the ServiceAccount — the hub mints the
+project and Studio identities synchronously
+(`controller/project/identity.go`), so there is no pending dependency to back
+off on, and a hub failure is an error the controller's own backoff retries.
+
+The dependency watches hold no credential of their own at all any more: the
+Instances, Repositories and RepositoryCommits this provider reconciles are
+claimed by its APIExport, so they arrive on the manager's own wildcard informer
+alongside Projects, under the same lease, for every tenant workspace at once.
+`controller/tenantwatch` — a second watch hub with a per-workspace token and a
+relist loop — is deleted.
 
 ## What still requires affinity
 

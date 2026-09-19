@@ -22,6 +22,7 @@ import (
 
 	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/dataplane/conformance"
+	"github.com/railgrid/provider-sdk/serve"
 
 	quickstartv1alpha1 "github.com/railgrid/provider-quickstart/apis/v1alpha1"
 	"github.com/railgrid/provider-quickstart/server"
@@ -64,9 +65,26 @@ func greetingObject(name, message string) *unstructured.Unstructured {
 	}}
 }
 
-func newServer(callers dataplane.CallerFactory) http.Handler {
-	return server.New(server.Deps{Callers: callers, Greetings: greetings})
+// newServer assembles the provider exactly as main.go does — the greet verb
+// mounted in a provider-sdk/serve server — so every assertion below is made
+// against the surface tenants actually reach, not against a bare handler.
+func newServer(t *testing.T, callers dataplane.CallerFactory) http.Handler {
+	t.Helper()
+	handler, err := serve.New(serve.Options{
+		Name:      "quickstart",
+		Readiness: readyzOK,
+		DataPlane: server.NewDataPlane(server.Deps{Callers: callers, Greetings: greetings}),
+	})
+	if err != nil {
+		t.Fatalf("serve.New: %v", err)
+	}
+	return handler
 }
+
+// readyzOK stands in for vwhealth.Handler(readiness), which main.go passes.
+var readyzOK = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+})
 
 // TestGreetIsConformant holds the quickstart to the same eight assertions every
 // provider's data plane is held to: granted verb 200, missing bearer 401,
@@ -76,7 +94,7 @@ func TestGreetIsConformant(t *testing.T) {
 	callers := newCallers()
 	base := "/dataplane/clusters/" + tenantCluster + "/greetings/hello/"
 
-	conformance.Test(t, newServer(callers), conformance.Fixtures{
+	conformance.Test(t, newServer(t, callers), conformance.Fixtures{
 		Callers:     callers,
 		GrantedPath: base + "greet",
 		DeniedPath:  base + "shout",
@@ -96,7 +114,7 @@ func TestGreetIsConformant(t *testing.T) {
 // object gate 1 returned and names the hub-authenticated caller.
 func TestGreetRendersTheStoredMessage(t *testing.T) {
 	callers := newCallers()
-	response := do(t, newServer(callers), "/dataplane/clusters/"+tenantCluster+"/greetings/hello/greet", map[string]string{
+	response := do(t, newServer(t, callers), "/dataplane/clusters/"+tenantCluster+"/greetings/hello/greet", map[string]string{
 		dataplane.HeaderUser: "ada@railgrid.test",
 	})
 	if response.Code != http.StatusOK {
@@ -119,22 +137,18 @@ func TestGreetRendersTheStoredMessage(t *testing.T) {
 // provider kubeconfig is missing: no factory means no caller-scoped client, and
 // the request must not fall through to the provider's own identity.
 func TestGreetIsRefusedWithoutACallerFactory(t *testing.T) {
-	response := do(t, newServer(nil), "/dataplane/clusters/"+tenantCluster+"/greetings/hello/greet", nil)
+	response := do(t, newServer(t, nil), "/dataplane/clusters/"+tenantCluster+"/greetings/hello/greet", nil)
 	if response.Code == http.StatusOK {
 		t.Fatalf("greet succeeded with no caller factory: %d %q", response.Code, response.Body.String())
 	}
 }
 
-// TestHealthAndReadiness covers the two class-(c) routes. /healthz answers
-// without a readiness handler; /readyz is absent when none is wired, rather
-// than silently answering ok.
+// TestHealthAndReadiness covers the two class-(c) routes. Liveness is
+// unconditional and readiness is the provider's own answer — serve.New refuses
+// to build a server without one rather than serving a /readyz that always
+// says ok.
 func TestHealthAndReadiness(t *testing.T) {
-	handler := server.New(server.Deps{
-		Greetings: greetings,
-		Readiness: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
-		}),
-	})
+	handler := newServer(t, nil)
 	for _, path := range []string{"/healthz", "/readyz"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
@@ -151,7 +165,7 @@ func TestHealthAndReadiness(t *testing.T) {
 // the whole surface: the demo /api/* routes this provider used to teach are
 // gone and must not come back.
 func TestNoAdhocRESTSurface(t *testing.T) {
-	handler := server.New(server.Deps{Greetings: greetings})
+	handler := newServer(t, nil)
 	for _, path := range []string{"/api/hello", "/api/stream"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))

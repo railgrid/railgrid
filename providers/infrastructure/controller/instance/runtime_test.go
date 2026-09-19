@@ -21,10 +21,13 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/dataplane"
+	sdkdataplane "github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
 )
 
 func developmentTemplate() *infrav1alpha1.Template {
@@ -256,10 +259,10 @@ func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) 
 		},
 	}
 	handler := dataplane.NewHandler(
-		mirroredInstanceGetter{instance: instance},
+		mirroredCallers(instance),
 		mirroredContractGetter{contract: contract},
 		mirroredRuntime{},
-		dataplane.WithExec(mirroredExecutor{}, mirroredAuthorizer{}),
+		dataplane.WithExec(mirroredExecutor{}),
 		dataplane.WithDevelopmentGetter(mirroredDevelopmentGetter{}),
 	)
 	body, err := json.Marshal(map[string]any{
@@ -279,7 +282,26 @@ func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) 
 	}
 }
 
-type mirroredInstanceGetter struct{ instance *unstructured.Unstructured }
+// mirroredCallers is the caller factory both gates run through: the Instance
+// is visible in cluster "ws" to bearer "caller", and every verb on
+// instances/* is granted, so this test exercises the status mirror rather
+// than RBAC.
+func mirroredCallers(instance *unstructured.Unstructured) *conformance.FakeCallers {
+	object := instance.DeepCopy()
+	object.SetAPIVersion("infrastructure.railgrid.ai/v1alpha1")
+	object.SetKind("Instance")
+	// Instances are cluster-scoped in the tenant workspace, which is how
+	// gate 1 reads them.
+	object.SetNamespace("")
+	instancesGVR := schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances"}
+	return &conformance.FakeCallers{
+		Cluster:   "ws",
+		Token:     "caller",
+		Objects:   []*unstructured.Unstructured{object},
+		ListKinds: map[schema.GroupVersionResource]string{instancesGVR: "InstanceList"},
+		Allow:     func(a conformance.Attributes) bool { return a.Verb == sdkdataplane.SSARVerb },
+	}
+}
 
 type mirroredStatusClient struct{ ctrlclient.Client }
 
@@ -289,10 +311,6 @@ type mirroredStatusWriter struct{ ctrlclient.SubResourceWriter }
 
 func (mirroredStatusWriter) Update(context.Context, ctrlclient.Object, ...ctrlclient.SubResourceUpdateOption) error {
 	return nil
-}
-
-func (g mirroredInstanceGetter) Get(context.Context, string, string, string, string) (*unstructured.Unstructured, error) {
-	return g.instance, nil
 }
 
 type mirroredContractGetter struct {
@@ -331,10 +349,4 @@ func (mirroredExecutor) Poll(context.Context, dataplane.ExecCall) (dataplane.Exe
 
 func (mirroredExecutor) Cancel(context.Context, dataplane.ExecCall) (dataplane.ExecResult, error) {
 	return dataplane.ExecResult{SessionID: "session-1", State: "canceled"}, nil
-}
-
-type mirroredAuthorizer struct{}
-
-func (mirroredAuthorizer) AuthorizeExec(context.Context, dataplane.ExecAuthorization) error {
-	return nil
 }

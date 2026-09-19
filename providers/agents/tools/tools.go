@@ -18,9 +18,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/llm"
@@ -115,18 +116,29 @@ type DataPlane struct {
 	HubBase   string
 	ClusterID string
 	Token     string
+	// Provider is the catalog name of the provider serving the instance kinds
+	// this run reaches, resolved from the TENANT's APIBinding for the instance
+	// API group (see api/crossprovider.go). It is not configuration and it is
+	// not a constant: which provider serves a group is a property of the
+	// workspace, and writing "infrastructure" here would hardcode another
+	// provider's name into this one.
+	Provider string
 	// Insecure skips TLS verification against the hub (dev self-signed certs).
 	Insecure bool
 }
 
 // Available reports whether a data-plane call can be made at all.
 func (d DataPlane) Available() bool {
-	return d.HubBase != "" && d.ClusterID != "" && d.Token != ""
+	return d.HubBase != "" && d.ClusterID != "" && d.Token != "" && d.Provider != ""
 }
 
 // ProxyURL composes the URL of an instance's `proxy` verb:
 //
-//	{hub}/services/providers/infrastructure/dataplane/clusters/{cluster}/{resource}/{name}/proxy
+//	{hub}/services/providers/{provider}/dataplane/clusters/{cluster}/{resource}/{name}/proxy
+//
+// The path itself comes from dataplane.ProviderPath, so the grammar has one
+// implementation in the tree and a consumer cannot spell another provider's
+// route slightly differently from the way that provider parses it.
 //
 // The caller appends its own path, if the template's endpoint does not pin one.
 // It returns an error rather than a URL when the data plane is unusable, so
@@ -139,10 +151,23 @@ func (d DataPlane) ProxyURL(kind, connName, resource, instance string) (string, 
 	if d.Token == "" {
 		return "", fmt.Errorf("%s connection %q reaches instance %q over the platform data plane, which authorizes per caller, but this run has no identity — an interactive run uses yours, a background run uses the agent's own ServiceAccount, and provisioning that failed (check the provider log for \"identity unavailable\")", kind, connName, instance)
 	}
-	return strings.TrimRight(d.HubBase, "/") +
-		fmt.Sprintf("/services/providers/infrastructure/dataplane/clusters/%s/%s/%s/proxy",
-			url.PathEscape(d.ClusterID), url.PathEscape(resource), url.PathEscape(instance)), nil
+	if d.Provider == "" {
+		return "", fmt.Errorf("%s connection %q names instance %q, but which provider serves %s in this workspace is not known yet — it is read from the workspace's own APIBinding by a caller who can list them, so open the agent in the portal once (or check that provider is enabled here)", kind, connName, instance, InstanceAPIGroup)
+	}
+	path, err := dataplane.ProviderPath(d.Provider, dataplane.DataplaneRoot, dataplane.Request{
+		ClusterID: d.ClusterID, Resource: resource, Name: instance, Verb: "proxy",
+	})
+	if err != nil {
+		return "", fmt.Errorf("%s connection %q addresses instance %q: %w", kind, connName, instance, err)
+	}
+	return strings.TrimRight(d.HubBase, "/") + path, nil
 }
+
+// InstanceAPIGroup is the API group a Connection's instance reference lives in.
+// This IS a legitimate constant: it is the API contract between the two
+// providers, not a routing detail — an agent's Connection names an instance of
+// this group, and which provider serves that group is looked up per workspace.
+const InstanceAPIGroup = "infrastructure.railgrid.ai"
 
 // instanceRef reads the instance a Connection is bound to, with the resource
 // name the template's instance CRD uses. Empty instance means the connection is

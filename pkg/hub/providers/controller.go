@@ -330,6 +330,31 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
+	// Data-plane verbs gate what the scoped-identity service will mint on this
+	// provider's {resource}/{verb} coordinates, so a malformed declaration
+	// fails closed exactly as a malformed action does: the provider leaves the
+	// registry rather than keeping a stale, wider verb surface.
+	if dataPlaneErr := validateDataPlaneDeclaration(&entry); dataPlaneErr != nil {
+		r.reg.DeleteScoped(orgUUID, entry.Name)
+		now := metav1.NewTime(time.Now())
+		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
+		setCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidDataPlaneVerbs",
+			Message:            dataPlaneErr.Error(),
+			LastTransitionTime: now,
+			ObservedGeneration: entry.Generation,
+		})
+		if requeue, statusErr := updateStatusIfChanged(ctx, c, &entry, observedStatus); statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("updating invalid-data-plane status: %w", statusErr)
+		} else if requeue {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		logger.Info("Rejected invalid provider data-plane verb declarations", "error", dataPlaneErr.Error())
+		return ctrl.Result{}, nil
+	}
+
 	dependencies := make([]Dependency, 0, len(entry.Spec.Dependencies))
 	for _, dep := range entry.Spec.Dependencies {
 		dependencies = append(dependencies, Dependency{Name: dep.Name})
@@ -465,6 +490,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 	prov.Actions = parsedActions
+	prov.DataPlaneVerbs = dataPlaneVerbsFor(entry.Spec.DataPlane)
 	seenSkillPackages := make(map[string]struct{}, len(entry.Spec.AssistantSkills))
 	var assistantSkillBytes int64
 	for _, skill := range entry.Spec.AssistantSkills {
@@ -836,4 +862,43 @@ func removeCondition(conds *[]metav1.Condition, conditionType string) {
 			return
 		}
 	}
+}
+
+// validateDataPlaneDeclaration checks a CatalogEntry's data-plane verbs.
+//
+// Beyond shape, it enforces the one structural rule the hub can check here: a
+// provider declares verbs on resources its OWN APIExport serves, so declaring
+// any verb without declaring an APIExport is rejected. The hub cannot go
+// further at this layer — the CatalogEntry names the export but not the
+// resources it serves, and the APIResourceSchemas live in the provider's
+// workspace — so a verb on a resource the export does not actually serve is
+// caught where it matters instead: the coordinate is only ever granted
+// alongside a resourceNames-scoped rule on that same resource, which authorizes
+// nothing if the resource is not real.
+func validateDataPlaneDeclaration(entry *providersv1alpha1.CatalogEntry) error {
+	if err := providersv1alpha1.ValidateProviderDataPlane(entry.Spec.DataPlane); err != nil {
+		return err
+	}
+	if entry.Spec.DataPlane == nil || len(entry.Spec.DataPlane.Verbs) == 0 {
+		return nil
+	}
+	if entry.Spec.APIExport == nil || strings.TrimSpace(entry.Spec.APIExport.Name) == "" {
+		return fmt.Errorf("dataPlane.verbs requires spec.apiExport: a provider declares verbs on resources its own APIExport serves")
+	}
+	return nil
+}
+
+// dataPlaneVerbsFor projects the declaration into the registry's flat form.
+func dataPlaneVerbsFor(dataPlane *providersv1alpha1.ProviderDataPlane) []ProviderDataPlaneVerb {
+	if dataPlane == nil || len(dataPlane.Verbs) == 0 {
+		return nil
+	}
+	verbs := make([]ProviderDataPlaneVerb, 0, len(dataPlane.Verbs))
+	for _, verb := range dataPlane.Verbs {
+		verbs = append(verbs, ProviderDataPlaneVerb{
+			Resource: verb.Resource, Verb: verb.Verb,
+			Description: verb.Description, Stream: verb.Stream, ReadOnly: verb.ReadOnly,
+		})
+	}
+	return verbs
 }

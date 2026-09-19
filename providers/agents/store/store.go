@@ -375,14 +375,18 @@ type Store interface {
 	// its scope but not the cluster whose virtual workspace can resume it.
 	FindClusterForScope(ctx context.Context, orgUUID, workspaceUUID string) (string, bool, error)
 
-	// Recovery. ListUnfinishedRuns returns runs left in a non-terminal phase
-	// across EVERY tenant — the one query that deliberately ignores Scope,
-	// because a restart has to find work it has no request context for. Ordered
-	// oldest-first so the longest-stranded run is handled first.
-	ListUnfinishedRuns(ctx context.Context, phases []RunPhase, updatedBefore time.Time, limit int) ([]ScopedRun, error)
-
 	// Retention / teardown.
 	DeleteAgentData(ctx context.Context, scope Scope, agentName string) error
+	// DeleteRunData removes everything filed under one run: the run row itself,
+	// its transcript messages, and its tool-call trace. It is what the Run
+	// kind's finalizer calls, so deleting a Run object actually discards the
+	// run rather than hiding it.
+	//
+	// Usage rows are deliberately NOT removed. They are rolled up per agent and
+	// per window for budgets and billing, not per run, and a tenant deleting a
+	// run must not be able to delete the record of what it cost. Scope must
+	// name the agent.
+	DeleteRunData(ctx context.Context, scope Scope, runID string) error
 
 	Close() error
 }

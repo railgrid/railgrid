@@ -70,43 +70,114 @@ spec:
     # The provider stores per-workspace model credentials and per-connection
     # secrets in Secrets in the tenant workspace; the claim lets it read/write
     # them as the calling user.
+    #
+    # There are no serviceaccounts / clusterroles / clusterrolebindings claims:
+    # an agent's unattended identity is MINTED BY THE HUB, scoped to the exact
+    # Instances that agent references and TTL'd (api/agentidentity.go,
+    # provider-sdk/identityclient). The provider never writes RBAC into a
+    # tenant's workspace. There are no tokenreviews / subjectaccessreviews
+    # claims either: service callers use the same data-plane verb and gates as
+    # everyone else, so the provider no longer runs its own reviews.
     permissionClaims:
+      # Secrets, and ONLY secrets. Three names, all under this provider's own
+      # prefixes in the tenant workspace:
+      #
+      #   railgrid-agents-model-<name>   the LLM credential. TENANT-WRITTEN (the
+      #                                  portal writes it with a kube client);
+      #                                  the provider only reads it, to call the
+      #                                  model on the tenant's behalf.
+      #   railgrid-agents-conn-<name>    one per Connection. PROVIDER-WRITTEN:
+      #                                  the OAuth callback stores the access and
+      #                                  refresh tokens here (api/oauth.go), and
+      #                                  the Connection reconciler generates the
+      #                                  Telegram secret_token / Slack signing
+      #                                  secret that make an inbound webhook
+      #                                  verifiable.
+      #   railgrid-agents-llm            the legacy single-credential Secret,
+      #                                  read for workspaces that predate
+      #                                  per-name credentials.
+      #
+      # Write access is needed for the second of those and nothing else, but
+      # kcp claims are per resource, not per name.
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
-      # Per-agent identity for background runs. A scheduled run has no user to
-      # act as, so the provider mints the agent a ServiceAccount in the tenant
-      # workspace and calls the platform data plane as that identity. See
-      # api/agentidentity.go. Create-only on the RBAC objects: the provider
-      # grants the agent read access to instances and can never widen it to
-      # anything else, because it cannot write arbitrary roles.
-      - resource: serviceaccounts
-        verbs: ["get", "create"]
-        tenantScoped: true
-      - resource: clusterroles
-        group: rbac.authorization.k8s.io
-        verbs: ["get", "create"]
-        tenantScoped: true
-      - resource: clusterrolebindings
-        group: rbac.authorization.k8s.io
-        verbs: ["get", "create"]
-        tenantScoped: true
-      # Service-to-service invocation (api/s2s.go). A caller that is not a human
-      # — another provider, a job — presents its own ServiceAccount token instead
-      # of a user's, so the provider authenticates and authorizes it itself:
-      # TokenReview to resolve the identity, SubjectAccessReview to check it may
-      # run this agent, both on the APIExport virtual workspace scoped to the
-      # target cluster (kcp#4279 / kcp#4280). tenantScoped: the VW confines each
-      # review to the tenant's OWN workspace and cannot reach beyond it, so this
-      # is bounded. Built-in review APIs: no identityHash, verb create only.
-      - group: authentication.k8s.io
-        resource: tokenreviews
-        verbs: [create]
-        tenantScoped: true
-      - group: authorization.k8s.io
-        resource: subjectaccessreviews
-        verbs: [create]
-        tenantScoped: true
+  # Data-plane verbs this provider serves, declared so the coordinate is
+  # machine-readable. Declaring one grants and serves nothing: every call is
+  # still authorized by this provider's own caller-scoped SSAR on
+  # {resource}/{verb}. What the declaration buys is that the hub
+  # scoped-identity service can mint a capability for a verb it can verify
+  # exists (pkg/hub/identity/policy.go clause C), instead of consumers
+  # hardcoding a coordinate nobody validates.
+  dataPlane:
+    verbs:
+      - resource: agents
+        verb: chat
+        description: "Hold an interactive conversation with the agent."
+        stream: true
+      - resource: agents
+        verb: run
+        description: "Start an unattended run of the agent."
+      - resource: agents
+        verb: sessions
+        description: "List the agent's chat sessions."
+        readOnly: true
+      - resource: agents
+        verb: session
+        description: "Delete one chat session's transcript."
+      - resource: agents
+        verb: messages
+        description: "Read one chat session's transcript."
+        readOnly: true
+      - resource: agents
+        verb: usage
+        description: "Read the agent's cost, token and latency rollups."
+        readOnly: true
+      - resource: agents
+        verb: inbox
+        description: "List the agent's pending approvals and questions."
+        readOnly: true
+      - resource: agents
+        verb: inbox-resolve
+        description: "Approve, deny or answer one of the agent's inbox items."
+      - resource: agents
+        verb: events
+        description: "Follow the agent's run and inbox activity as it happens."
+        stream: true
+        readOnly: true
+      - resource: agents
+        verb: model-test
+        description: "Probe a model credential the agent uses with a real request."
+      - resource: agents
+        verb: model-discover
+        description: "List the model ids a model credential's endpoint serves."
+        readOnly: true
+      - resource: runs
+        verb: trace
+        description: "Read one run's step-level tool trace and answer."
+        readOnly: true
+      - resource: runs
+        verb: wait
+        description: "Block until the run reaches a settled phase."
+        readOnly: true
+      - resource: runs
+        verb: cancel
+        description: "Ask a run in flight to stop."
+      - resource: connections
+        verb: test
+        description: "Send a test message through the connection."
+      - resource: connections
+        verb: enable-inbound
+        description: "Register the connection's inbound webhook."
+      - resource: connections
+        verb: authorize
+        description: "Start the connection's OAuth authorization flow."
+      - resource: schedules
+        verb: run
+        description: "Fire the schedule now, without waiting for its next tick."
+      - resource: triggers
+        verb: run
+        description: "Fire the trigger now with an empty event."
   # Lets an organization run this provider in its own cluster
   # (docs/byo-providers.md). Keep manifest.yaml and
   # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the

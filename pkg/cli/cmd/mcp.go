@@ -293,11 +293,15 @@ func edgeTypeKind(edgeName string) string {
 // mcpURLFromServerURL derives the per-edge MCP endpoint URL from a kcp server URL and edge name.
 //
 // Input:  https://railgrid.example.com/clusters/11tcw27t4rdtnacy, "my-edge"
-// Output: https://railgrid.example.com/services/providers/edges/agent/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp
+// Output: https://railgrid.example.com/services/providers/edges/dataplane/clusters/11tcw27t4rdtnacy/kubernetesclusters/my-edge/mcp
 //
 // Per-edge MCP exposes the kube toolset against a single KubernetesCluster edge,
-// so the URL targets the `kubernetesclusters` resource on the decoupled edges
-// provider (server edges have no Kubernetes API and are rejected by the handler).
+// so the URL targets the `kubernetesclusters` resource on the edges provider
+// (server edges have no Kubernetes API and are rejected by the handler).
+//
+// It is a consumer verb on the data plane, class (a). It used to hang off the
+// provider's /agent mount — class (f), whose credential is an edge
+// ServiceAccount, not a person's — which is why it moved.
 //
 // Returns an error if the server URL does not contain a /clusters/ path segment.
 func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
@@ -305,7 +309,7 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 	if cluster == "default" {
 		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
 	}
-	return apiurl.ProviderAgentProxyURL(base, "kubernetes", cluster, edgeName, "mcp"), nil
+	return apiurl.ProviderDataPlaneURL(base, "edges", "kubernetesclusters", cluster, edgeName, "mcp"), nil
 }
 
 // mcpKubernetesURLFromServerURL / mcpLinuxURLFromServerURL were

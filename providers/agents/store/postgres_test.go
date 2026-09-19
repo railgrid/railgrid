@@ -406,47 +406,4 @@ func TestPostgres_CompactionAndRecovery(t *testing.T) {
 		}
 	})
 
-	t.Run("unfinished runs come back with their scope, oldest first", func(t *testing.T) {
-		old, newer := uuid.NewString(), uuid.NewString()
-		terminal := uuid.NewString()
-		mk := func(id string, phase RunPhase, age time.Duration) {
-			at := now.Add(-age)
-			if err := ps.SaveRun(ctx, sc, Run{
-				ID: id, AgentName: sc.AgentName, Trigger: "chat", Phase: phase,
-				CreatedAt: at, UpdatedAt: at,
-			}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		mk(old, RunPhaseRunning, 5*time.Hour)
-		mk(newer, RunPhaseRunning, 4*time.Hour)
-		mk(terminal, RunPhaseSucceeded, 5*time.Hour)
-
-		got, err := ps.ListUnfinishedRuns(ctx,
-			[]RunPhase{RunPhaseRunning, RunPhasePending}, now.Add(-3*time.Hour), 100)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var seen []string
-		for _, sr := range got {
-			if sr.Run.ID == old || sr.Run.ID == newer {
-				seen = append(seen, sr.Run.ID)
-				if sr.Scope.OrgUUID != sc.OrgUUID || sr.Scope.WorkspaceUUID != sc.WorkspaceUUID {
-					t.Fatalf("run %s lost its scope: %+v", sr.Run.ID, sr.Scope)
-				}
-				if sr.Scope.AgentName != sc.AgentName {
-					t.Fatalf("run %s scope should name its agent, got %q", sr.Run.ID, sr.Scope.AgentName)
-				}
-			}
-			if sr.Run.ID == terminal {
-				t.Fatal("a Succeeded run is not unfinished")
-			}
-			if sr.Run.Phase != RunPhaseRunning && sr.Run.Phase != RunPhasePending {
-				t.Fatalf("phase filter leaked %s", sr.Run.Phase)
-			}
-		}
-		if len(seen) != 2 || seen[0] != old {
-			t.Fatalf("got %v, want the older run first", seen)
-		}
-	})
 }

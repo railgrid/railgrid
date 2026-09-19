@@ -23,9 +23,13 @@
 //   - /, /main.js, /icon.svg, /query-schema.json, /assets/* — the portal-side
 //     micro-frontend built by Vite from portal/src/* and embedded via
 //     portal/dist (see assets.go and portal/README.md), plus the QuerySpec
-//     JSON Schema as a static asset beside it. Mounted in the portal under
-//     /ui/providers/kuery/.
+//     JSON Schema overlaid onto the same bundle as a static asset. Mounted in
+//     the portal under /ui/providers/kuery/.
 //   - /healthz (liveness) and /readyz (readiness, from vwhealth).
+//
+// The layout itself is provider-sdk/serve's: it takes one handler per Pillar 2
+// route class and refuses anything that is not one, which is what keeps the
+// deleted /api/ surface deleted.
 //
 // In production the tenant and UI surfaces are split only by URL — a single
 // Service exposes the port and the CatalogEntry routes the same URL to both
@@ -35,7 +39,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -43,7 +46,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -60,6 +62,7 @@ import (
 	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/hubclient"
 	"github.com/railgrid/provider-sdk/leaderelection"
+	"github.com/railgrid/provider-sdk/serve"
 	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
@@ -229,70 +232,39 @@ func runServe() {
 		Engagements: engagementCtl.Registry(),
 	}
 
-	mux := http.NewServeMux()
-
-	// Liveness only: a provider that cannot reach its virtual workspace is
-	// still serving queries from the store, and restarting it would take away
-	// the work it is still doing.
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-	// Readiness: what the CatalogEntry's backend.healthPath points at, and
-	// what gates the heartbeat below.
-	mux.Handle("/readyz", vwhealth.Handler(ready))
-
-	// The one tenant route.
-	mux.Handle(queryapi.RunPathPrefix, runner)
-
-	// QuerySpec JSON Schema — a static asset beside the portal bundle, served
-	// from the same constant the reconciler validates against. Unauthenticated
-	// on purpose: it is public API documentation, identical for everyone.
-	mux.Handle(queryapi.SchemaPath, queryapi.SchemaHandler{})
-
 	// MCP tools (kuery_query, kuery_impact) on the same gated executor; the
 	// hub proxies /services/providers/kuery/mcp{,/sse} here and the aggregate
 	// picks them up like the infrastructure provider's kro_* family.
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{Runner: runner})
-	mux.Handle("/mcp", mcpHandler)
-	mux.Handle("/mcp/sse", mcpHandler)
 
-	// Static portal assets (main.js, icon.svg, /assets/*) come from the
-	// embedded Vite build output. The "/" fallback serves index.html so
-	// direct browser visits get the standalone debug page.
-	fileServer, distFS, err := portalHandler()
+	// Static portal assets (main.js, icon.svg, query-schema.json, /assets/*)
+	// come from the embedded Vite build output; serve falls back to index.html
+	// so a direct browser visit to any client-side route gets the standalone
+	// debug page.
+	dist, err := portalFS()
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// GET for full responses; HEAD for cache/preflight checks the
-		// browser may issue when loading <img> or <script> assets.
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		// The routes above are registered explicitly and won't get here. For
-		// anything else: try the embedded FS first (catches /main.js,
-		// /icon.svg, /assets/foo-abc.js). If that misses, serve the index.html
-		// fallback so a browser visit to e.g. /anything shows the debug page
-		// rather than 404.
-		clean := strings.TrimPrefix(r.URL.Path, "/")
-		if clean != "" {
-			if servePortalAsset(w, r, distFS, clean) {
-				return
-			}
-		}
-		// Index fallback. Reuse the http.FileServer so caching headers and
-		// Last-Modified are handled correctly. Clone the request so we
-		// can override URL.Path to "/" without mutating the caller's r.
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = "/"
-		fileServer.ServeHTTP(w, r2)
+
+	// The whole surface, one handler per route class. The query verb is
+	// mounted as the data plane and therefore dispatched off the raw request
+	// path — an http.ServeMux would have cleaned "//" and ".." out of it and
+	// answered with a redirect instead of the refusal the grammar owes the
+	// caller.
+	handler, err := serve.New(serve.Options{
+		Name:      "kuery",
+		Readiness: vwhealth.Handler(ready),
+		Portal:    dist,
+		MCP:       mcpHandler,
+		DataPlane: runner,
 	})
+	if err != nil {
+		log.Fatalf("server: %v", err)
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           logMiddleware(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -335,11 +307,3 @@ func runServe() {
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
 const heartbeatVersion = "0.1.0"
-
-func logMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
-	})
-}

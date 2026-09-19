@@ -13,20 +13,25 @@
 // runner, the file workspace) light up only when the infrastructure provider
 // is present. See docs/agents-provider-architecture.md.
 //
-// It serves two URL groups on one port:
+// Its HTTP surface is assembled by provider-sdk/serve from the closed list of
+// Pillar 2 route classes — there is no /api/* and no bespoke /s2s/*:
 //
-//   - /, /main.js, /icon.svg, /assets/* — the portal micro-frontend, mounted
-//     in the portal under /ui/providers/agents/.
-//   - /healthz, /api/* — the backend HTTP API, reached via
-//     /services/providers/agents/.
-//   - /mcp, /mcp/sse — the MCP transport the hub's aggregate endpoint
-//     federates as agents__* tools (agent settings read/edit).
+//   - /healthz, /readyz                 liveness and virtual-workspace readiness
+//   - /mcp, /mcp/sse                    the MCP transport the hub's aggregate
+//     federates as agents__* tools
+//   - /dataplane/clusters/{id}/…        every tenant verb (chat, run, …), gated
+//     as the caller — see api/dataplane.go
+//   - /oauth/…                          the browser OAuth popup flow
+//   - /webhooks/…                       signed inbound trigger and channel hooks
+//   - everything else                   the portal micro-frontend, mounted in
+//     the portal under /ui/providers/agents/.
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -36,6 +41,7 @@ import (
 
 	"github.com/railgrid/provider-agents/api"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/serve"
 	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
@@ -87,7 +93,6 @@ func runServe() {
 		InMemoryStore:      os.Getenv("AGENTS_IN_MEMORY_STORE") == "true",
 		ProviderKubeconfig: os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),
 		WebhookKey:         os.Getenv("AGENTS_WEBHOOK_KEY"),
-		SchedulerInterval:  parseDuration(os.Getenv("AGENTS_SCHEDULER_INTERVAL")),
 		OAuthApps:          oauthAppsFromEnv(),
 	})
 	if err != nil {
@@ -118,17 +123,18 @@ func runServe() {
 		log.Printf("controller manager disabled (no provider kubeconfig); schedules, connection repair and Discord bots are off")
 	}
 
-	handler, err := withPortal(srv.Routes())
+	dist, err := portalFS()
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/readyz", vwhealth.Handler(vwState))
-	mux.Handle("/", handler)
+	handler, err := buildHandler(srv, vwhealth.Handler(vwState), dist)
+	if err != nil {
+		log.Fatalf("server: %v", err)
+	}
 
 	httpSrv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           logMiddleware(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -161,6 +167,52 @@ func runServe() {
 	srv.Close()
 }
 
+// buildHandler assembles the provider's whole HTTP surface from the closed
+// list of Pillar 2 route classes. It is a function of its own so a test can
+// prove serve.New accepts this layout — otherwise the only place that is
+// checked is a log.Fatalf on the first startup after a mistake.
+func buildHandler(srv *api.Server, readiness http.Handler, dist fs.FS) (http.Handler, error) {
+	// Class (d): the popup flow's public callback (the signed state is the
+	// auth) plus the deployment probe the connection form reads to decide
+	// whether the user has to paste their own client id and secret. Neither has
+	// a tenant object to be a verb on: the callback arrives with no identity at
+	// all, and which OAuth apps the operator configured is a fact about the
+	// deployment.
+	oauthRoutes := http.NewServeMux()
+	oauthRoutes.HandleFunc("GET "+oauthCallbackPath, srv.OAuthCallback)
+	oauthRoutes.HandleFunc("GET "+oauthProvidersPath, srv.ListOAuthProviders)
+
+	// Class (g): token-authenticated inbound hooks. No tenant headers — an
+	// external sender reaches these through the hub's anonymous forwarding, and
+	// the HMAC in the path is the whole credential.
+	webhookRoutes := http.NewServeMux()
+	webhookRoutes.HandleFunc("POST "+triggerWebhookPattern, srv.WebhookTrigger)
+	webhookRoutes.HandleFunc("POST "+channelWebhookPattern, srv.WebhookChannel)
+
+	return serve.New(serve.Options{
+		Name:      "agents",
+		Readiness: readiness,
+		Portal:    dist,
+		MCP:       srv.MCPHandler(),
+		DataPlane: srv.DataPlane(),
+		OAuth:     oauthRoutes,
+		Extra: []serve.Route{
+			{Prefix: serve.WebhooksPrefix, Class: serve.ClassWebhook, Handler: webhookRoutes},
+		},
+	})
+}
+
+// The exact paths of the two classes that are not simply a prefix handler.
+// They are constants so the test that walks them cannot drift from the mux.
+const (
+	oauthCallbackPath  = "/oauth/callback"
+	oauthProvidersPath = "/oauth/providers"
+	// The cluster and name are the addressing; the token is an HMAC this
+	// provider keys (internal/webhookpath), and it is the whole credential.
+	triggerWebhookPattern = "/webhooks/triggers/{cluster}/{name}/{token}"
+	channelWebhookPattern = "/webhooks/channels/{cluster}/{name}/{token}"
+)
+
 // oauthAppsFromEnv reads platform-wide OAuth app credentials, mirroring the
 // code provider's env convention. Set both id and secret for a provider to
 // enable one-click Connect (no per-connection client id/secret):
@@ -182,26 +234,4 @@ func oauthAppsFromEnv() map[string]api.OAuthApp {
 		}
 	}
 	return out
-}
-
-// parseDuration parses a Go duration ("45s", "2m"); empty or invalid → 0
-// (the server default applies).
-func parseDuration(s string) time.Duration {
-	if s == "" {
-		return 0
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		log.Printf("invalid AGENTS_SCHEDULER_INTERVAL %q — using default", s)
-		return 0
-	}
-	return d
-}
-
-func logMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
-	})
 }

@@ -38,12 +38,12 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/serve"
 	"github.com/railgrid/provider-sdk/vwhealth"
 
 	krobackend "github.com/railgrid/provider-infrastructure/backend/kro"
 	"github.com/railgrid/provider-infrastructure/install"
 	"github.com/railgrid/provider-infrastructure/mcpserver"
-	"github.com/railgrid/provider-infrastructure/server"
 	"github.com/railgrid/provider-infrastructure/tenant"
 )
 
@@ -182,7 +182,7 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 		DataPlane: dataPlaneHandler,
 	})
 
-	fileServer, distFS, err := portalHandler()
+	dist, err := portalFS()
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
@@ -193,15 +193,28 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 	vwState := &vwhealth.Readiness{}
 	go vwhealth.Watch(ctx, kcpConfig, install.APIExportName, vwState, vwhealth.DefaultInterval)
 
-	srv := server.New(server.Deps{
-		MCP:              mcpHandler,
-		DataPlane:        dataPlaneHandler,
-		WorkloadIdentity: buildWorkloadIdentityReviewHandler(),
-		PortalFileServer: fileServer,
-		PortalFS:         distFS,
-		ServePortalAsset: servePortalAsset,
-		Readiness:        vwState.Check,
+	// The whole HTTP surface, one handler per Pillar 2 route class
+	// (docs/provider-connectivity-contract.md). Templates and instances are
+	// absent on purpose: the portal and tenants read and write them as CRDs
+	// against kcp, and serve.New would refuse a route that mirrored them.
+	//
+	// /workload-identities/review is class (e): served here, refused to
+	// callers by the hub's backend proxy. serve.New checks the path against
+	// the prefixes that proxy actually denies, so a "hub-only" route cannot
+	// quietly become tenant-reachable.
+	srv, err := serve.New(serve.Options{
+		Name:      "infrastructure",
+		Readiness: vwhealth.Handler(vwState),
+		Portal:    dist,
+		MCP:       mcpHandler,
+		DataPlane: dataPlaneHandler,
+		HubOnly: map[string]http.Handler{
+			workloadIdentityReviewPath: buildWorkloadIdentityReviewHandler(),
+		},
 	})
+	if err != nil {
+		log.Fatalf("server: %v", err)
+	}
 
 	httpSrv := &http.Server{
 		Addr:              ":" + port,

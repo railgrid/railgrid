@@ -183,7 +183,7 @@ func TestMain(m *testing.M) {
 		"QUICKSTART_WORKSPACE_PATH="+workspacePath,
 		// The greetings APIResourceSchema the chart ships — init reads the
 		// schemas dir to author the APIExport's resources.
-		"RAILGRID_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "quickstart", "deploy", "chart", "files", "schemas"),
+		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "quickstart", "deploy", "chart", "files"),
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog

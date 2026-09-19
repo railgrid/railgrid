@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -99,77 +98,25 @@ func summarize(run store.Run) runSummary {
 	return rs
 }
 
-// listRuns serves GET /api/runs — the Activity feed. Filters: agent, phase,
-// trigger, class (interactive|background), session, parent; cursor+limit page
-// newest-first.
-func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
+// runTrace serves the `trace` verb on a Run: GET …/runs/{id}/trace.
+//
+// It is the Postgres half of the projection — the step-level tool trace (each
+// call's args, result, outcome and duration, secrets redacted), the answer,
+// the pending-approval state and the child runs. Everything ON the object
+// (phase, timings, usage, who started it) is read with a kube client and is
+// deliberately not served here: a route that restated the object would be a
+// second source of truth for the same facts.
+func (s *Server) runTrace(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
-	q := r.URL.Query()
-	scope := id.scope(strings.TrimSpace(q.Get("agent")))
-	limit := 50
-	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 {
-		limit = min(v, 200)
-	}
-	// Optional date range (RFC3339). Applied after the store query so the
-	// cursor stays a pure (createdAt, id) pair.
-	var since, until time.Time
-	if v := strings.TrimSpace(q.Get("since")); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "since must be RFC3339: "+err.Error())
-			return
-		}
-		since = t
-	}
-	if v := strings.TrimSpace(q.Get("until")); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "until must be RFC3339: "+err.Error())
-			return
-		}
-		until = t
-	}
-	page, err := s.store.QueryRuns(r.Context(), scope, store.RunQuery{
-		Phase:       store.RunPhase(strings.TrimSpace(q.Get("phase"))),
-		Trigger:     strings.TrimSpace(q.Get("trigger")),
-		SessionID:   strings.TrimSpace(q.Get("session")),
-		ParentRunID: strings.TrimSpace(q.Get("parent")),
-		Limit:       limit,
-		Cursor:      strings.TrimSpace(q.Get("cursor")),
-	})
-	if err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
-		return
-	}
-	class := strings.TrimSpace(q.Get("class"))
-	items := make([]runSummary, 0, len(page.Items))
-	for _, run := range page.Items {
-		if !since.IsZero() && run.CreatedAt.Before(since) {
-			continue
-		}
-		if !until.IsZero() && run.CreatedAt.After(until) {
-			continue
-		}
-		rs := summarize(run)
-		if class != "" && rs.Class != class {
-			continue
-		}
-		items = append(items, rs)
-	}
-	writeList(w, items, map[string]any{"nextCursor": page.NextCursor})
-}
-
-// getRun serves GET /api/runs/{id}: the step-level trace (tool calls in
-// execution order), pending-approval state, and delegated child runs.
-func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
-	_, id, ok := s.requireClient(w, r)
+	agent, ok := gatedRunAgent(r)
 	if !ok {
+		writeStatus(w, http.StatusConflict, "Conflict", "this run names no agent, so its trace cannot be located")
 		return
 	}
-	detail, err := s.runDetailFor(r.Context(), id.scope(""), r.PathValue("id"))
+	detail, err := s.runDetailFor(r.Context(), id.scope(agent), r.PathValue("name"))
 	if err != nil {
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
 		return
@@ -177,10 +124,10 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// runDetailFor assembles one run's full record: summary, answer, pending-approval
-// state, step trace, and child runs. Shared by GET /api/runs/{id}, the long-poll
-// wait, and an invoke that waited — so every way of asking about a run returns
-// the same shape.
+// runDetailFor assembles one run's full record: summary, answer,
+// pending-approval state, step trace, and child runs. Shared by the `trace`
+// verb, the long-poll `wait`, and a `run` that waited — so every way of asking
+// about a run returns the same shape.
 func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID string) (runDetail, error) {
 	run, err := s.store.GetRun(ctx, scope, runID)
 	if err != nil {
@@ -215,7 +162,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	return detail, nil
 }
 
-// cancelRun serves POST /api/runs/{id}/cancel. The request is recorded on the
+// cancelRun serves the `cancel` verb on a Run: POST …/runs/{id}/cancel. The request is recorded on the
 // run row first (store.RequestCancel) so it reaches the run wherever it is:
 // executing on this replica (its context is cancelled right away), executing
 // on another replica or still queued (the engine loop reads the flag between
@@ -228,8 +175,13 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	runID := r.PathValue("id")
-	run, err := s.store.GetRun(r.Context(), id.scope(""), runID)
+	agent, ok := gatedRunAgent(r)
+	if !ok {
+		writeStatus(w, http.StatusConflict, "Conflict", "this run names no agent, so it cannot be located in the store")
+		return
+	}
+	runID := r.PathValue("name")
+	run, err := s.store.GetRun(r.Context(), id.scope(agent), runID)
 	if err != nil {
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
 		return
@@ -247,20 +199,32 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 	}
 	live := s.liveRuns.cancel(runID)
 	if !live {
-		// Not executing on this replica: stamp the terminal phase directly.
-		startedAt := run.CreatedAt
-		if run.StartedAt != nil {
-			startedAt = *run.StartedAt
-		}
-		if startedAt.IsZero() {
-			startedAt = now
-		}
-		persistCtx, cancelPersist := boundedPersistContext(r.Context())
-		tracker := trackerForStored(run)
-		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(store.RunPhaseAborted), "", "cancelled by user")
-		s.finishRun(persistCtx, scope, runID, runOutcome{Phase: store.RunPhaseAborted, Message: "cancelled by user", WorkedDurationMS: tracker.workedDurationMS()}, now)
-		cancelPersist()
-		s.publishRunEvent(scope, runEvent{ID: runID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseAborted})
+		s.closeRunNow(r.Context(), scope, run, store.RunPhaseAborted, "cancelled by user")
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": runID, "cancelling": live})
+}
+
+// closeRunNow stamps a terminal phase on a run that is not executing on this
+// replica: it writes the closing transcript row, finishes the run record and
+// publishes the phase change.
+//
+// It exists because two things need it and must agree: a cancel the user asked
+// for, and a deadline the Run reconciler observed. Both are "this run is over
+// and nobody local is going to notice", and a second implementation of that
+// would be a second set of timing rules for the same event.
+func (s *Server) closeRunNow(ctx context.Context, scope store.Scope, run store.Run, phase store.RunPhase, message string) {
+	now := time.Now().UTC()
+	startedAt := run.CreatedAt
+	if run.StartedAt != nil {
+		startedAt = *run.StartedAt
+	}
+	if startedAt.IsZero() {
+		startedAt = now
+	}
+	persistCtx, cancelPersist := boundedPersistContext(ctx)
+	defer cancelPersist()
+	tracker := trackerForStored(run)
+	s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(phase), "", message)
+	s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now)
+	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 }

@@ -42,14 +42,38 @@ import (
 	kueryv1alpha1 "github.com/railgrid/provider-kuery/apis/v1alpha1"
 )
 
-// TestEdgeProxyURL keeps the inlined URL pattern in lockstep with the railgrid
-// monorepo's pkg/apiurl (EdgeProviderCoordinates + the edges provider's
-// edgeproxy mount).
+// TestEdgeProxyURL pins the rule that the coordinate comes from what the
+// edges provider PUBLISHED on the edge, not from a format string kuery keeps
+// its own copy of. A hub-relative status.url is externalized; an absolute one
+// is taken as is; a missing one is an error, because guessing is how the old
+// inlined pattern outlived the grammar it was copied from.
 func TestEdgeProxyURL(t *testing.T) {
-	got := edgeProxyURL("https://hub.example.com/", "2hx82dl9ncmepp5l", "edge-1")
-	want := "https://hub.example.com/services/providers/edges/edgeproxy/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/edge-1/k8s"
-	if got != want {
+	const published = "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/kubernetesclusters/edge-1/k8s"
+
+	got, err := edgeProxyURL("https://hub.example.com/", "2hx82dl9ncmepp5l", "edge-1", published)
+	if err != nil {
+		t.Fatalf("edgeProxyURL: %v", err)
+	}
+	if want := "https://hub.example.com" + published; got != want {
 		t.Fatalf("edgeProxyURL = %q, want %q", got, want)
+	}
+
+	// A self-hosted copy of the edges provider publishes its own coordinate,
+	// under its own provider name; the consumer follows it without knowing.
+	const selfHosted = "/services/providers/acme-edges/dataplane/clusters/2hx82dl9ncmepp5l/kubernetesclusters/edge-1/k8s"
+	got, err = edgeProxyURL("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", selfHosted)
+	if err != nil {
+		t.Fatalf("edgeProxyURL (self-hosted): %v", err)
+	}
+	if want := "https://hub.example.com" + selfHosted; got != want {
+		t.Fatalf("edgeProxyURL (self-hosted) = %q, want %q", got, want)
+	}
+
+	if _, err := edgeProxyURL("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", "  "); err == nil {
+		t.Fatal("an edge with no published status.url must be an error, not a guessed URL")
+	}
+	if _, err := edgeProxyURL("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", "not-a-path"); err == nil {
+		t.Fatal("an unusable status.url must be an error")
 	}
 }
 
@@ -60,9 +84,13 @@ func TestEdgeProxyURL(t *testing.T) {
 // proxy re-roots onto the edges provider's own workspace (doubled /clusters
 // path → 404 → 403). A workspace-issued token authenticates natively.
 func TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity(t *testing.T) {
-	cfg := edgeProxyConfig("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", "ws-sa-token", true)
+	const published = "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/kubernetesclusters/edge-1/k8s"
+	cfg, err := edgeProxyConfig("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", published, "ws-sa-token", true)
+	if err != nil {
+		t.Fatalf("edgeProxyConfig: %v", err)
+	}
 
-	if want := "https://hub.example.com/services/providers/edges/edgeproxy/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/edge-1/k8s"; cfg.Host != want {
+	if want := "https://hub.example.com" + published; cfg.Host != want {
 		t.Fatalf("Host = %q, want %q", cfg.Host, want)
 	}
 	if cfg.BearerToken != "ws-sa-token" {
@@ -78,7 +106,11 @@ func TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity(t *testing.T) {
 		t.Fatalf("QPS/Burst = %v/%v, want 50/100", cfg.QPS, cfg.Burst)
 	}
 
-	if strict := edgeProxyConfig("https://hub.example.com", "c", "e", "tok", false); strict.Insecure {
+	strict, err := edgeProxyConfig("https://hub.example.com", "c", "e", published, "tok", false)
+	if err != nil {
+		t.Fatalf("edgeProxyConfig (strict): %v", err)
+	}
+	if strict.Insecure {
 		t.Fatal("insecure=false must keep TLS verification on")
 	}
 }
@@ -124,15 +156,17 @@ func TestEngagementIdentityGrantsProxy(t *testing.T) {
 		}
 	}
 
-	// The separate grant carries exactly proxy on kubernetesclusters and is
-	// bound to the engagement SA, owned by the binding so Disable revokes it.
+	// The separate grant carries exactly the data-plane coordinate the edges
+	// provider gates on — "create" on kubernetesclusters/k8s, never the
+	// retired wildcard "proxy" verb — bound to the engagement SA and owned by
+	// the binding so Disable revokes it.
 	grant := &rbacv1.ClusterRole{}
 	if err := cl.Get(context.Background(), client.ObjectKey{Name: edgeProxyGrantName}, grant); err != nil {
 		t.Fatalf("get grant ClusterRole: %v", err)
 	}
 	if len(grant.Rules) != 1 || !slices.Equal(grant.Rules[0].APIGroups, []string{"edges.railgrid.ai"}) ||
-		!slices.Equal(grant.Rules[0].Resources, []string{"kubernetesclusters"}) || !slices.Equal(grant.Rules[0].Verbs, []string{"proxy"}) {
-		t.Fatalf("grant rules = %+v, want exactly proxy on edges.railgrid.ai/kubernetesclusters", grant.Rules)
+		!slices.Equal(grant.Rules[0].Resources, []string{"kubernetesclusters/k8s"}) || !slices.Equal(grant.Rules[0].Verbs, []string{"create"}) {
+		t.Fatalf("grant rules = %+v, want exactly create on edges.railgrid.ai/kubernetesclusters/k8s", grant.Rules)
 	}
 	if len(grant.OwnerReferences) != 1 || grant.OwnerReferences[0].UID != "b-1" {
 		t.Fatalf("grant must be owned by the kuery APIBinding, got %+v", grant.OwnerReferences)

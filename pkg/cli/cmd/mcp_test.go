@@ -34,19 +34,19 @@ func TestMCPURLFromServerURL(t *testing.T) {
 			name:      "standard kcp URL",
 			serverURL: "https://railgrid.localhost:9443/clusters/root:railgrid:user-default",
 			edgeName:  edgeName,
-			wantURL:   "https://railgrid.localhost:9443/services/providers/edges/agent/root:railgrid:user-default/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp",
+			wantURL:   "https://railgrid.localhost:9443/services/providers/edges/dataplane/clusters/root:railgrid:user-default/kubernetesclusters/my-edge/mcp",
 		},
 		{
 			name:      "trailing slash is stripped",
 			serverURL: "https://railgrid.localhost:9443/clusters/root:railgrid:user-default/",
 			edgeName:  edgeName,
-			wantURL:   "https://railgrid.localhost:9443/services/providers/edges/agent/root:railgrid:user-default/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp",
+			wantURL:   "https://railgrid.localhost:9443/services/providers/edges/dataplane/clusters/root:railgrid:user-default/kubernetesclusters/my-edge/mcp",
 		},
 		{
 			name:      "root cluster",
 			serverURL: "https://hub.example.com/clusters/root",
 			edgeName:  "edge-a",
-			wantURL:   "https://hub.example.com/services/providers/edges/agent/root/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/edge-a/mcp",
+			wantURL:   "https://hub.example.com/services/providers/edges/dataplane/clusters/root/kubernetesclusters/edge-a/mcp",
 		},
 		{
 			name:       "no /clusters/ path returns error",

@@ -38,11 +38,11 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 # 3. Runtime image: distroless/base (NOT static) for the glibc the CGO
 #    sqlite driver links against. /data is the conventional store mount. The
-#    APIResourceSchemas the `init` subcommand applies are baked at
-#    /etc/railgrid/schemas (RAILGRID_SCHEMAS_DIR).
+#    The two declarative objects `init` applies — the generated
+#    APIExport and its APIResourceSchemas — are baked at /etc/railgrid/kcp (RAILGRID_KCP_DIR).
 FROM gcr.io/distroless/base-debian12:nonroot
 COPY --from=build /out/kuery-provider /kuery-provider
-COPY providers/kuery/deploy/chart/files/schemas /etc/railgrid/schemas
+COPY providers/kuery/deploy/chart/files /etc/railgrid/kcp
 EXPOSE 8081
 ENV PORT=8081
 ENV KUERY_STORE_DSN=/data/kuery.db

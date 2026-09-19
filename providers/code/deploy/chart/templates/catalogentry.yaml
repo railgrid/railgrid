@@ -622,4 +622,68 @@ data:
           maxResultItems: 50
         consent:
           required: false
+      # The one Connection-bound action. It exists so a consumer that needs to pull
+      # an image built from a tenant's repository never has to read this
+      # provider's Connection Secret to get a credential — see
+      # tenant/registry_token.go and docs/code-provider-architecture.md.
+      - id: mint_registry_token/v1
+        displayName: Mint a registry pull token
+        description: Issue a short-lived image-pull credential for the connection's
+          container registry. For a GitHub App connection the token is issued with
+          packages:read alone; the connection's own credential is never returned.
+        boundResource:
+          apiVersion: code.railgrid.ai/v1alpha1
+          kind: Connection
+          resource: connections
+        inputSchema:
+          type: object
+          required:
+          - connectionUID
+          properties:
+            connectionUID:
+              type: string
+              minLength: 1
+              maxLength: 253
+          additionalProperties: false
+        outputSchema:
+          type: object
+          required:
+          - registry
+          - username
+          - token
+          - scoped
+          properties:
+            registry:
+              type: string
+              minLength: 1
+              maxLength: 253
+            username:
+              type: string
+              minLength: 1
+              maxLength: 253
+            token:
+              type: string
+              minLength: 1
+              maxLength: 8192
+            expiresAt:
+              type: string
+              minLength: 20
+              maxLength: 40
+            scoped:
+              type: boolean
+          additionalProperties: false
+        schemaDigest: sha256:3441d195d8221919653e0933ccd619714e5902f5830e40012de54e1e8968914f
+        executionMode: sync
+        # readOnly: it mints a credential but changes nothing about the
+        # Connection, the repository or the registry.
+        readOnly: true
+        risk: medium
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
 {{- end }}

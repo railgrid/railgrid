@@ -2,15 +2,15 @@
 layout: default
 title: MCP Architecture
 nav_order: 9
-description: "How railgrid aggregates Model Context Protocol (MCP) tools from in-binary edges and out-of-process providers into one endpoint"
+description: "How railgrid aggregates Model Context Protocol (MCP) tools from every provider into one endpoint"
 ---
 
 # MCP Architecture
 {: .no_toc }
 
 How railgrid exposes a single Model Context Protocol (MCP) endpoint that federates
-tools from connected **edges** (compiled into the hub) and from **providers**
-that run as separate processes.
+the tools of every **provider** — including the `edges` provider, whose tools
+reach connected edges through their tunnels.
 {: .fs-6 .fw-300 }
 
 <details open markdown="block">
@@ -31,13 +31,18 @@ virtual workspace*, served by the hub:
 https://<hub>/services/mcpserver/{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp
 ```
 
-That single endpoint is filled, **per request**, from two sources:
+That single endpoint is filled, **per request**, from exactly **one** source:
+**provider federation**. Every *Ready* provider visible to the verified caller
+has its own `/mcp` endpoint fetched over HTTP and its tools re-exposed as
+`<provider>__<tool>`.
 
-1. **In-binary tool families** — edge tool sets (`kubernetes`, `linux`) compiled
-   into the hub and registered at `init()` via `aggregate.RegisterToolFamily`.
-2. **Out-of-process provider federation** — every *Ready* provider (e.g. the
-   infrastructure provider, which runs as its own process) has its `/mcp`
-   endpoint fetched over HTTP and its tools re-exposed as `<provider>__<tool>`.
+> **There is no in-binary tool registry any more.** The former `mcp`,
+> `kubernetesedges` and `serveredges` built-ins were folded into the standalone
+> `edges` provider (#435) and the aggregate moved hub-side to
+> `pkg/hub/mcpaggregate/`. Edge tools — `kubernetes_*`, `linux_*`, per-`Service`
+> tools — now arrive by federation like everything else, as `edges__*`, from
+> `providers/edges/internal/tunnel/mcp_root.go` and `mcp_service.go`. Nothing
+> compiles a tool into the hub binary.
 
 Every tool runs **as the caller**, authorized by the caller's RBAC in the
 tenant workspace. There is no provider-wide identity. Platform providers receive
@@ -50,57 +55,64 @@ and never the caller's bearer — see
 
 ## The aggregate endpoint
 
-The MCP surface is registered as a railgrid *built-in provider* and mounted by the
-hub as a virtual workspace.
+The aggregate is a plain hub handler, always on — never edge-dependent, and an
+empty but valid MCP server when nothing is registered.
 
-- **Registration** — [`providers/mcp/manifest.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/manifest.go) calls
-  `providers.RegisterBuiltin(...)` with
-  `VirtualWorkspaceMount = apiurl.PathPrefixMCPServer` (`/services/mcpserver`)
-  and `VirtualWorkspaceHandler = mcpvirtual.Build`.
-- **Mounting** — [`pkg/hub/server.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/server.go) loops over `providers.AllBuiltins()`
-  and mounts each builtin's VW handler at its prefix.
-- **Handler** — [`providers/mcp/virtual/builder.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/virtual/builder.go) `Build()` parses
-  `/{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp`, reads the
-  `MCPServer` CR (for the edge selector + toolset config), then composes an
-  aggregate `mcp.Server`.
+- **Mounting** — [`pkg/hub/server.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/server.go) builds it with
+  `mcpaggregate.New(...)` and mounts it under
+  `apiurl.PathPrefixMCPServer` (`/services/mcpserver`), with the prefix
+  stripped.
+- **Handler** — [`pkg/hub/mcpaggregate/handler.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/mcpaggregate/handler.go) sees
+  `/{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp`, verifies the
+  bearer against that cluster and MCPServer, then composes an aggregate
+  `mcp.Server` for the verified caller.
 
 The server is built **fresh per request** (stateless), so every `tools/list`
-reflects the current edge inventory and the live readiness of every provider.
+reflects the live readiness of every provider. Each provider's discovered tools
+and instructions are cached briefly per caller and refreshed in the background
+([`discovery.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/mcpaggregate/discovery.go)).
 
 `MCPServer.status.URL` carries this endpoint URL for a given server, and the
 portal renders the connect/setup command for it — see
 [Per-MCPServer credentials](#authentication--identity).
 
-## Source 1 — in-binary tool families (edges)
+## Edge tools: the `edges` provider, federated like any other
 
-Edge providers contribute their tools by registering a `ToolFamily` at package
-`init()`:
+Edge tools are **not** special. The `edges` provider serves its own
+streamable-HTTP MCP handler (reached by the hub at
+`/services/providers/edges/mcp`), and the aggregate federates it exactly as it
+federates `infrastructure` or `code`. Its tools surface as `edges__*`.
 
-- The registry is **in-process and `init()`-only** —
-  [`providers/mcp/aggregate/registry.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/aggregate/registry.go) (`RegisterToolFamily`,
-  `RegisteredFamilies`). A `ToolFamily` has a `Name`, an `EdgeType`, and a
-  `Register(srv, familyCtx)` callback invoked once per request.
-- **Kubernetes edges** — [`providers/kubernetesedges/mcp/family.go`](https://github.com/railgrid/railgrid/blob/main/providers/kubernetesedges/mcp/family.go)
-  registers `{Name: "kubernetes", EdgeType: "kubernetes"}`. The family is wired
-  in via a side-effect import in
-  [`providers/kubernetesedges/manifest.go`](https://github.com/railgrid/railgrid/blob/main/providers/kubernetesedges/manifest.go).
-- **Server (Linux) edges** — [`providers/serveredges/mcp/family.go`](https://github.com/railgrid/railgrid/blob/main/providers/serveredges/mcp/family.go)
-  registers `{Name: "linux", EdgeType: "server"}`.
+- **Per-edge and per-Service tools** are registered by
+  [`providers/edges/internal/tunnel/mcp_root.go`](https://github.com/railgrid/railgrid/blob/main/providers/edges/internal/tunnel/mcp_root.go)
+  and
+  [`mcp_service.go`](https://github.com/railgrid/railgrid/blob/main/providers/edges/internal/tunnel/mcp_service.go),
+  fresh per request, from the edges the **caller** can see in the addressed
+  workspace.
+- **Reaching one edge's own MCP endpoint** is a declared data-plane verb, not a
+  separate mount:
 
-At request time, [`providers/mcp/aggregate/aggregatemcp.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/aggregate/aggregatemcp.go) `newServer`
-iterates `RegisteredFamilies()` and calls each `Register(...)`, filtering edges
-by `EdgeType` against the `MCPServer`'s selector. An edge tool call is proxied
-to the actual edge over its **agent-proxy / tunnel** connection (tracked in the
-hub's connection manager), not over plain HTTP.
+  ```
+  /services/providers/edges/dataplane/clusters/{clusterID}/{resource}/{name}/mcp
+  ```
 
-> Because the registry is `init()`-only, an out-of-process provider **cannot**
-> register an in-binary family. Out-of-process integrations use federation
-> (Source 2).
+  where `{resource}` is `kubernetesclusters` or `services`
+  (`providers/edges/internal/tunnel/grammar.go`, `VerbMCP`; declared in
+  `providers/edges/manifest.yaml` under `spec.dataPlane.verbs`). It is
+  authorized like every other verb: a real `GET` of the object as the caller,
+  then a `SelfSubjectAccessReview` for **`create` on `{resource}/mcp`**,
+  name-scoped. The old `/agent`-mounted per-edge MCP route and the wildcard
+  `proxy` verb that used to gate `k8s`, `ssh`, service proxy and MCP alike are
+  gone, not aliased.
 
-## Source 2 — out-of-process provider federation
+The call still crosses the edge's **reverse tunnel**; what changed is that the
+tunnel is terminated by the edges provider rather than by the hub binary, and
+the coordinate is a contract path rather than a hub-internal mount.
 
-Providers that run as their own process (own binary, own `/mcp` HTTP handler)
-are folded into the same aggregate over HTTP.
+## Provider federation — the one source
+
+Every provider runs as its own process with its own `/mcp` HTTP handler, and is
+folded into the aggregate over HTTP.
 
 **Discovery.** Providers are registered via a `ProviderCatalogEntry` and kept
 in an in-memory registry with a `BackendURL` and a heartbeat
@@ -118,15 +130,18 @@ provider's is reached over its edge route (below). Targets are sorted by name,
 so the aggregate's tool list is stable.
 
 **Federation.** Per request,
-[`providers/mcp/aggregate/provider_proxy.go`](https://github.com/railgrid/railgrid/blob/main/providers/mcp/aggregate/provider_proxy.go) `registerProviderTools`:
+[`pkg/hub/mcpaggregate/federation.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/mcpaggregate/federation.go):
 
 1. enumerates Ready providers,
 2. `POST`s `tools/list` to each `{BackendURL}/mcp`,
 3. registers every returned tool on the aggregate as **`<provider>__<tool>`**
    (e.g. `infrastructure__provision`), proxying `tools/call` straight through.
 
-A provider that fails `tools/list`, or a tool whose schema fails `AddTool`, is
-**logged and skipped** — one bad provider never poisons the aggregate.
+It also merges each provider's server-level MCP `instructions` into the
+aggregate's, so operator-authored guidance (a Home Assistant `Service`'s
+`spec.instructions`, say) reaches the client. A provider that fails
+`tools/list`, or a tool whose schema fails `AddTool`, is **logged and
+skipped** — one bad provider never poisons the aggregate.
 
 The provider's own MCP handler — e.g.
 [`providers/infrastructure/mcpserver/server.go`](https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/mcpserver/server.go) — is an ordinary
@@ -192,13 +207,13 @@ get a delegated token instead — see
 [above](#org-owned-bring-your-own-providers)):
 
 ```go
-// providers/mcp/aggregate/provider_proxy.go
+// pkg/hub/mcpaggregate/federation.go
 cli := newProviderMCPClient(cfg.BearerToken, cfg.Cluster)
 //                          └ caller's token   └ tenant cluster ID (→ X-Railgrid-Tenant + X-Railgrid-Cluster)
 ```
 
 - `cfg.BearerToken` is the token the client authenticated the **aggregate**
-  request with (`builder.ExtractBearerToken(r)`).
+  request with, after the verifier accepted it.
 - `cfg.Cluster` is the tenant workspace's kcp logical-cluster ID parsed off
   the MCPServer URL, forwarded as both `X-Railgrid-Tenant` and `X-Railgrid-Cluster`
   on every federated call — the same pair the hub backend proxy injects, so a
@@ -207,9 +222,9 @@ cli := newProviderMCPClient(cfg.BearerToken, cfg.Cluster)
 So the identity flows end-to-end:
 
 ```
-AI client ──Bearer T──▶ hub aggregate VW              (T = the MCPServer's SA token)
+AI client ──Bearer T──▶ hub aggregate endpoint        (T = the MCPServer's SA token)
+                          │ verify T against {cluster} + {mcpserver}
                           │ build one mcp.Server (stateless, per request)
-                          ├─ in-binary families ─────▶ edges (agent-proxy / tunnel)
                           └─ federation (platform provider): POST {provider BackendURL}/mcp
                                Authorization: Bearer T
                                X-Railgrid-Tenant: {cluster}
@@ -272,15 +287,25 @@ Two consequences:
   `status.boundResources[]` group/resource gets `get,list,watch` plus
   `create,update,patch,delete`; `spec.readOnly` drops the write verbs. On top
   of that it grants the RBAC coordinates provider data planes check via
-  SubjectAccessReview as the caller — verb `proxy` on `edges.railgrid.ai` objects
-  (tunnel `k8s`/`ssh`/`mcp` subresources, kept for readOnly servers because
-  read-only tools cannot reach an edge without it), `create` on
-  `infrastructure.railgrid.ai` `<instance>/exec` (dropped for readOnly), and
-  `create` on `<resource>/<action>` for every action declared in the platform
-  provider catalog whose resource is bound (read-only actions survive
-  readOnly) — plus read-only `core.kcp.io/logicalclusters` and
-  `selfsubjectaccessreviews` create. Nothing grants secrets, service accounts,
-  RBAC, or APIBinding access, so a leaked token cannot escalate.
+  SubjectAccessReview as the caller: verb `proxy` on `edges.railgrid.ai`
+  objects, `create` on `infrastructure.railgrid.ai` `<instance>/exec` (dropped
+  for readOnly), and `create` on `<resource>/<action>` for every action
+  declared in the platform provider catalog whose resource is bound (read-only
+  actions survive readOnly) — plus read-only `core.kcp.io/logicalclusters` and
+  `selfsubjectaccessreviews` create
+  (`pkg/hub/controllers/mcpserver/rbac.go`, `dataPlaneGrants`). Nothing grants
+  secrets, service accounts, RBAC, or APIBinding access, so a leaked token
+  cannot escalate.
+
+  > **Known gap.** The `edges.railgrid.ai` entry still spells the **wildcard
+  > `proxy` verb**, which the edges provider retired: it now gates every
+  > data-plane call with `create` on the `{resource}/{verb}` subresource
+  > (`kubernetesclusters/k8s`, `kubernetesclusters/mcp`, `services/proxy`,
+  > `services/mcp`, …). Until `dataPlaneGrants` emits those subresources, an
+  > MCPServer token is denied on the edges data plane and the `proxy` rule it
+  > does get authorizes nothing. The Enable-time grant in
+  > `pkg/hub/kcp/bootstrap.go` was already moved to the per-verb shape; this
+  > one was not.
 - **No provider-wide identity.** A federated provider must perform its tenant
   work as the forwarded caller token, scoped to the workspace whose cluster ID
   is in `X-Railgrid-Cluster` / `X-Railgrid-Tenant`. The infrastructure provider does this in
@@ -296,33 +321,14 @@ Two consequences:
 
 ## Adding a new integration
 
-### A) As an in-binary edge tool family
+There is one way in: **be a provider**. Tools cannot be compiled into the hub.
 
-Use this when your tools ship inside the hub binary and target connected edges.
-
-1. Implement a `ToolFamily` and register it at `init()`:
-   ```go
-   func init() {
-       aggregatemcp.RegisterToolFamily(aggregatemcp.ToolFamily{
-           Name:     "myfamily",
-           EdgeType: "myedgetype",
-           Register: registerMyTools, // wire mcp tools onto the per-request srv
-       })
-   }
-   ```
-2. Ensure the package is imported for its side effect from your provider's
-   `manifest.go` (mirror `providers/kubernetesedges/manifest.go`).
-3. Resolve your edges from the `FamilyContext` and proxy calls over the
-   agent-proxy/tunnel.
-
-### B) As an out-of-process provider
-
-Use this when your integration runs as its own process/binary.
-
-1. Serve a streamable-HTTP MCP handler at **`/mcp`** on your backend
-   (mirror `providers/infrastructure/mcpserver/`).
-2. Register a `ProviderCatalogEntry` and **heartbeat** so the hub marks you
-   `Ready` with a reachable `BackendURL`. The aggregate fetches `{BackendURL}/mcp`.
+1. Serve a streamable-HTTP MCP handler at **`/mcp`** on your backend. Register
+   it through `provider-sdk/serve.New(Options{MCP: ...})` — `/mcp` and
+   `/mcp/sse` are route classes of the fixed server layout, and `serve.New`
+   refuses anything outside it. Mirror `providers/infrastructure/mcpserver/`.
+2. Register a `CatalogEntry` and **heartbeat** so the hub marks you `Ready`
+   with a reachable `BackendURL`. The aggregate fetches `{BackendURL}/mcp`.
 3. **Honour the forwarded identity.** Read the caller from each request:
    `X-Railgrid-Cluster` (the tenant workspace's kcp logical-cluster ID; the
    hub sends the same value as `X-Railgrid-Tenant`) and
@@ -330,20 +336,25 @@ Use this when your integration runs as its own process/binary.
    `providers/infrastructure/mcpserver/context.go`).
    Do all tenant work **as that token**, scoped to that workspace — never with a
    provider-wide service account.
-4. Your tools appear in the aggregate as `<your-provider>__<tool>` automatically.
-
-Either way, tools surface on the **one** aggregate endpoint; clients don't add
-each provider separately.
+4. **A tool is a projection, not a third access path.** Every tool must wrap a
+   read the caller could have done through the bound CR, or a declared verb it
+   invokes through `provider-sdk/dataplane` with the same two gates. A tool may
+   not hold a credential or reach a coordinate the caller would not be granted
+   directly.
+5. Your tools appear in the aggregate as `<your-provider>__<tool>`
+   automatically, on the **one** aggregate endpoint; clients do not add each
+   provider separately.
 
 ## Request lifecycle
 
 1. Client opens the aggregate URL with `Authorization: Bearer <token>`.
-2. Hub routes to `mcpvirtual.Build` → `aggregatemcp.Handler`.
+2. Hub routes to `mcpaggregate.Handler`, which verifies the bearer against the
+   cluster and MCPServer named in the path before anything else happens.
 3. A fresh `mcp.Server` is built:
-   - each registered `ToolFamily.Register` runs (edges, filtered by selector),
-   - `list_targets` + the `railgrid://about` resource are added,
-   - `registerProviderTools` enumerates Ready providers and federates their
-     `/mcp` tools as `<provider>__<tool>`.
+   - the `railgrid://about` resource is added,
+   - federation enumerates the Ready providers visible to the verified caller
+     and registers their `/mcp` tools as `<provider>__<tool>`, merging their
+     server-level instructions.
 4. The composed server answers `tools/list` / `tools/call`.
 5. Federated `tools/call` is forwarded to the provider's `/mcp` with
    `X-Railgrid-Tenant` / `X-Railgrid-Cluster` (the cluster ID) and — for a platform
@@ -352,29 +363,28 @@ each provider separately.
 
 ## Resilience notes
 
-- **Stateless per request** — readiness/inventory is always current; nothing is
-  cached across requests.
+- **Stateless per request** — readiness is always current. Only a provider's
+  discovered tool list and instructions are cached briefly, per caller, with a
+  background refresh (`pkg/hub/mcpaggregate/discovery.go`).
 - **Fault isolation** — a provider failing `tools/list`, or a single tool
   failing schema validation, is logged and skipped; `AddTool` panics are
   recovered.
-- **Naming collisions** — provider tools register *after* in-binary tools, so a
-  provider shipping a tool named like a platform tool surfaces as an `AddTool`
-  duplicate error (logged), never a silent override.
+- **Naming collisions** — every tool is namespaced `<provider>__<tool>` and
+  targets are registered in sorted order, so the tool list is deterministic and
+  a duplicate surfaces as a logged `AddTool` error, never a silent override.
 
 ## Key files
 
 | Concern | File |
 | --- | --- |
-| Aggregate VW handler | `providers/mcp/virtual/builder.go` |
-| Built-in registration / mount prefix | `providers/mcp/manifest.go`, `pkg/apiurl/urls.go` |
+| Aggregate handler + mount prefix | `pkg/hub/mcpaggregate/handler.go`, `pkg/apiurl/urls.go` (`PathPrefixMCPServer`) |
 | Hub mounting | `pkg/hub/server.go` |
 | Tenant-scoped provider enumerator | `pkg/hub/mcpaggregate/enumerator.go` |
 | Bearer verification + verified caller | `pkg/hub/mcpaggregate/verifier.go` |
+| Federation (tools/list, tools/call, instructions) | `pkg/hub/mcpaggregate/federation.go` |
+| Per-caller tool/instruction discovery cache | `pkg/hub/mcpaggregate/discovery.go` |
 | Org-owned provider route (edge hop + delegated token) | `pkg/hub/providers/org_provider_route.go`, `pkg/hub/providers/proxy_edge.go` |
-| In-binary family registry | `providers/mcp/aggregate/registry.go` |
-| Aggregate composition | `providers/mcp/aggregate/aggregatemcp.go` |
-| Out-of-process federation | `providers/mcp/aggregate/provider_proxy.go` |
-| Edge families | `providers/kubernetesedges/mcp/family.go`, `providers/serveredges/mcp/family.go` |
+| Edge tools + per-edge MCP verb | `providers/edges/internal/tunnel/mcp_root.go`, `mcp_service.go`, `grammar.go` |
 | Provider registry / readiness | `pkg/hub/providers/registry.go` |
 | Backend proxy (header/token forwarding) | `pkg/hub/providers/proxy.go` |
 | Example out-of-process provider MCP | `providers/infrastructure/mcpserver/` |

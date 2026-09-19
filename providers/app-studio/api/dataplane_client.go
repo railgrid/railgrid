@@ -16,9 +16,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // App Studio no longer holds a kubeconfig to the runtime cluster. The live
@@ -26,16 +27,21 @@ import (
 // served by the infrastructure provider as subresources on the workload
 // instance, reached through the hub backend proxy:
 //
-//	{hub}/services/providers/infrastructure/dataplane/clusters/{cluster}/{resource}/{name}/{verb}
+//	{hub}/services/providers/{provider}/dataplane/clusters/{cluster}/{resource}/{name}/{verb}
 //	{hub}/…/{resource}/{name}/components/{component}/{verb}   (multi-tier templates)
 //
+// Neither half of that path is written here any more. {provider} is resolved
+// from the tenant's APIBinding for the infrastructure APIExport
+// (provider_binding.go), so a workspace running its own copy is reached by
+// the name it enabled; the rest is rendered by dataplane.ProviderPath, which
+// is the same grammar the serving provider parses with.
+//
 // The caller's bearer token is forwarded as-is; the infra provider authorizes
-// the request as that caller (a tenant-scoped GET on the instance) and owns the
-// runtime-cluster credential. See docs/app-studio-runtime-decoupling.md and
+// the request as that caller (a GET of the Instance, then an SSAR for
+// `create` on instances/{verb}) and owns the runtime-cluster credential. See
+// docs/app-studio-runtime-decoupling.md and
 // docs/app-studio-template-sandboxes.md §3.
 const (
-	infraDataPlaneProvider = "infrastructure"
-
 	dataPlaneVerbLog       = "log"
 	dataPlaneVerbSync      = "sync"
 	dataPlaneVerbRestart   = "restart"
@@ -61,24 +67,36 @@ type dataPlaneRef struct {
 	Component string
 }
 
-// dataPlaneURL composes the hub URL for a data-plane verb. tail (with leading
-// slash) is appended after the verb — used only by the open "proxy" verb; the
-// control verbs leave it empty. Every addressing segment is path-escaped so a
-// crafted value (a component name with a slash, say) cannot reroute the
-// request; kcp cluster IDs keep their colons (':' is a valid path character
-// PathEscape leaves alone).
-func (s *Server) dataPlaneURL(clusterID string, ref dataPlaneRef, verb, tail string) string {
-	u := strings.TrimRight(s.hubBase, "/") +
-		fmt.Sprintf("/services/providers/%s/dataplane/clusters/%s/%s/%s",
-			infraDataPlaneProvider, url.PathEscape(clusterID), url.PathEscape(ref.Resource), url.PathEscape(ref.Name))
-	if ref.Component != "" {
-		u += "/components/" + url.PathEscape(ref.Component)
+// dataPlaneURL composes the hub URL for a data-plane verb on the provider
+// this workspace binds for infrastructure.
+//
+// tail (with a leading slash, and optionally a "?query") is what the open
+// "proxy" verb addresses beyond the verb; the control verbs leave it empty.
+// The path is rendered by dataplane.ProviderPath, which refuses any segment
+// that would not parse back to the same request on the serving side — so a
+// component name with a slash in it fails here rather than rerouting the call.
+func (s *Server) dataPlaneURL(ctx context.Context, id identity, ref dataPlaneRef, verb, tail string) (string, error) {
+	provider, err := s.providerFor(ctx, id, infraAPIExportName)
+	if err != nil {
+		return "", err
 	}
-	u += "/" + url.PathEscape(verb)
-	if tail != "" {
-		u += tail
+	path, query, _ := strings.Cut(strings.TrimPrefix(tail, "/"), "?")
+	route, err := dataplane.ProviderPath(provider, dataplane.DataplaneRoot, dataplane.Request{
+		ClusterID: id.clusterID,
+		Resource:  ref.Resource,
+		Name:      ref.Name,
+		Component: ref.Component,
+		Verb:      verb,
+		Tail:      path,
+	})
+	if err != nil {
+		return "", fmt.Errorf("addressing %s/%s %s on provider %q: %w", ref.Resource, ref.Name, verb, provider, err)
 	}
-	return u
+	u := strings.TrimRight(s.hubBase, "/") + route
+	if query != "" {
+		u += "?" + query
+	}
+	return u, nil
 }
 
 // newDataPlaneRequest builds a data-plane request authenticated as the
@@ -96,7 +114,11 @@ func (s *Server) newDataPlaneRequest(ctx context.Context, method string, id iden
 	if strings.TrimSpace(ref.Resource) == "" || strings.TrimSpace(ref.Name) == "" {
 		return nil, fmt.Errorf("development target is incomplete (resource %q, name %q); the project's template binding did not resolve", ref.Resource, ref.Name)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, s.dataPlaneURL(id.clusterID, ref, verb, tail), body)
+	endpoint, err := s.dataPlaneURL(ctx, id, ref, verb, tail)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, err
 	}

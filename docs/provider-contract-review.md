@@ -10,6 +10,50 @@ plan unless the section says so.
 
 ---
 
+## Status — what this audit has already moved
+
+**This is a dated audit and is not rewritten as the tree changes.** The
+remediation it produced,
+[roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md),
+carries the authoritative per-section status line; read it before treating any
+finding below as open. As of **2026-09-19**, on branch
+`provider-contract/phase-0`:
+
+**Closed.**
+
+- **The four Pillar 2 dialects.** `provider-sdk/dataplane` owns the grammar,
+  the two gates and the limits; `provider-sdk/serve` owns the server layout.
+  Every in-tree provider serves through `serve.New`, and
+  `hack/verify-provider-contract.mjs` runs in `make verify` with **no
+  `adhoc-rest` exceptions** — so the ad-hoc `/api/*` tenant surfaces (§3.2,
+  §3.6, §3.7, §3.8) are gone, not grandfathered.
+- **The `invoke` verb.** The grant is `create` on `{resource}/{verb}`
+  everywhere (`dataplane.SSARVerb`).
+- **`spec.virtualWorkspace`,** retired from the CatalogEntry type.
+- **The "one manifest, three copies" problem** (§"Cross-cutting"). A permission
+  claim is written once, in `manifest.yaml`; the APIExport is generated; the
+  chart copies are verified outputs.
+- **The doc contradictions of Part 2,** folded into the amended contract
+  (§0.1 of the plan) and into the docs this review names.
+- **Provider-minted identities** (§3.5 edges, §3.6 agents): the hub identity
+  service exists and both providers consume it.
+- **Timer loops and readiness gaps** called out per provider: `CanSend` is now
+  mandatory, `/readyz` comes from `vwhealth`, and every provider's write loops
+  are leader-elected.
+
+**Open.**
+
+- §3.3 planner, §3.9 databricks and §3.11 factory live in `railgrid/providers`
+  and have **not started** (plan §3, §7).
+- §3.7 app-studio's largest deviation is partly done: Cut D (conversations and
+  the project source tree) has not started.
+- kuery and app-studio still mint their own workspace/project identities and
+  still hold `serviceaccounts`/`clusterroles`/`clusterrolebindings` claims.
+- Six providers still hold `secrets` claims that have not been narrowed to
+  provider-owned material (review X-4).
+
+---
+
 ## Why this doc exists
 
 The provider docs pin a lot of decisions, but they are spread over six

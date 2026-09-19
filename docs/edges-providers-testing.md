@@ -27,8 +27,8 @@ The full **connectivity** path is wired and builds (core + `provider-sdk` +
 `providers/edges`, under `go.work` and standalone/`GOWORK=off`):
 
 - register a `KubernetesCluster` / `LinuxServer`, run the agent, tunnel connects
-- `kubectl` streams through `/edgeproxy/.../kubernetesclusters/.../k8s`
-- `ssh` streams through `/edgeproxy/.../linuxservers/.../ssh`
+- `kubectl` streams through `/dataplane/clusters/{ws}/kubernetesclusters/{name}/k8s`
+- `ssh` streams through `/dataplane/clusters/{ws}/linuxservers/{name}/ssh`
 - the CLI verbs (`railgrid edge|list|ssh|kubeconfig edge|agent|mcp`) address the
   `edges.railgrid.ai` group
 
@@ -75,8 +75,8 @@ helm install edges providers/edges/deploy/chart \
   --set hub.externalURL=https://<public-hub-url>
 ```
 
-The init container bootstraps the APIExport (both KubernetesCluster + LinuxServer
-schemas baked at `/etc/railgrid/schemas`); the serve container terminates tunnels +
+The init container applies the two shipped objects — the generated APIExport and
+the edge schemas, both baked at `/etc/railgrid/kcp`; the serve container terminates tunnels +
 runs controllers. The chart renders the `CatalogEntry` into a ConfigMap the init
 container applies into the provider workspace (it is a kcp resource, not a
 host-cluster one).
@@ -87,16 +87,20 @@ Everything above is verified at build/lint level. The **unproven** runtime
 invariant is the reverse-tunnel handshake surviving the extra hop through the hub
 backend proxy:
 
-1. Agent dials `…/services/providers/edges/agent/{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers}/{name}/proxy`.
+1. Agent dials `…/services/providers/edges/agent/clusters/{cluster}/{kubernetesclusters|linuxservers}/{name}/proxy`.
 2. The hub backend proxy (`NewBackendProxy`, `FlushInterval:-1`) forwards the
    `Connection: Upgrade` / `101` to the single provider replica.
 3. The provider upgrades, calls `revdial.NewDialer(conn, /services/providers/edges/agent/proxy)`,
    and the agent re-enters via `…/services/providers/edges/agent/proxy?revdial.dialer=<id>`.
-4. The `X-Railgrid-Agent-Kubeconfig` / `X-Railgrid-Agent-Token` handshake headers ride
-   the `101` and must survive the proxy hop (and any CDN in front of the hub).
+4. On a JOIN-TOKEN connect the provider mints the edge's scoped identity and
+   returns the enrolment bundle in the `X-Railgrid-Agent-Credential` header on
+   the `101`, which must survive the proxy hop (and any CDN in front of the
+   hub). See [edges-agent-credentials.md](./edges-agent-credentials.md).
 
-**If a CDN strips the `101` headers**, fall back to the agent fetching the
-kubeconfig via a normal follow-up request instead of on the upgrade response.
+**If a CDN strips the `101` headers**, the agent never enrols — but the join
+token is NOT cleared in that case, so it keeps retrying rather than stranding
+the edge. The fallback is for the agent to fetch the bundle with a normal
+follow-up request to the `agent-token` verb instead of on the upgrade response.
 
 **403 on the data plane** means the tenant workspace is missing the edge-proxy
 grant — `EnsureProviderEdgeProxyGrant` grants the provider SA `proxy` on

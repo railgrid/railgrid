@@ -12,10 +12,11 @@ package restapi
 
 // The claims migration AGENTS.md §5.1 asks every provider to ship.
 //
-// A provider's permission claims exist in three copies — manifest.yaml, the
-// chart's catalogentry.yaml, and the `sdkinstall.PermissionClaim` list in the
-// provider's init_cmd.go — and bringing those three back into agreement still
-// changes nothing for an already-enabled tenant. `init` writes the
+// A provider's permission claims are written once, in manifest.yaml: codegen
+// stamps them onto the generated APIExport the provider ships, and the chart's
+// catalogentry.yaml mirrors the manifest for the portal. Bringing those back
+// into agreement still changes nothing for an already-enabled tenant. `init`
+// applies the
 // provider-side APIExport; what the provider is actually allowed to touch in a
 // tenant's workspace is the claim set on that tenant's own APIBinding, written
 // once by the Enable flow and never revisited. So a provider that starts

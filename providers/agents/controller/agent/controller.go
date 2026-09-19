@@ -34,7 +34,8 @@
 // their back and fighting whatever wrote it. It reports instead.
 //
 // A third job, when the provider gives it somewhere to write to: purging the
-// agent's rows from the provider store on delete. The CR is the agent's
+// agent's rows from the provider store on delete, and revoking the hub-minted
+// identity it ran unattended work with. The CR is the agent's
 // configuration, but its transcripts, runs, memories and usage live in
 // Postgres, and only the deleted DELETE /api/agents/{name} handler ever
 // removed them. A kube-client delete leaves them behind — invisible, billable,
@@ -105,6 +106,17 @@ type Reconciler struct {
 	// nil (no store configured, or the dev in-memory path) disables the
 	// finalizer entirely rather than adding one nothing would ever clear.
 	PurgeData func(ctx context.Context, clusterID, agentName string) error
+
+	// ReleaseIdentity revokes the agent's hub-minted identity. It runs in the
+	// same finalizer as PurgeData because both answer "this agent is gone":
+	// leaving the identity for the hub's own sweep keeps a usable, scoped token
+	// alive for up to a full TTL after the agent stopped existing, and an agent
+	// that no longer exists should not be able to reach anything for a minute
+	// longer than it has to.
+	//
+	// nil skips the release, which is right when no identity service is
+	// configured — there is nothing to revoke.
+	ReleaseIdentity func(ctx context.Context, clusterID, agentName string) error
 	// Now is the clock; nil means time.Now. Tests pin it.
 	Now func() time.Time
 }
@@ -168,7 +180,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if !agent.DeletionTimestamp.IsZero() {
 		return r.finalize(ctx, c, &agent, req.ClusterName.String())
 	}
-	if r.PurgeData != nil && !controllerutil.ContainsFinalizer(&agent, DataFinalizer) {
+	if (r.PurgeData != nil || r.ReleaseIdentity != nil) && !controllerutil.ContainsFinalizer(&agent, DataFinalizer) {
 		controllerutil.AddFinalizer(&agent, DataFinalizer)
 		if err := c.Update(ctx, &agent); err != nil {
 			if apierrors.IsConflict(err) {
@@ -443,6 +455,19 @@ func (r *Reconciler) finalize(ctx context.Context, c client.Client, agent *agent
 	logger := klog.FromContext(ctx).WithValues("agent", agent.Name, "cluster", clusterID)
 	if !controllerutil.ContainsFinalizer(agent, DataFinalizer) {
 		return ctrl.Result{}, nil
+	}
+	// Revocation first, and independently of the purge: it is the half with a
+	// security consequence, and it must not be held hostage by a store that is
+	// down. A failure here is retried on the same schedule as the purge.
+	if r.ReleaseIdentity != nil {
+		if err := r.ReleaseIdentity(ctx, clusterID, agent.Name); err != nil {
+			if r.now().Sub(agent.DeletionTimestamp.Time) < purgeGiveUp {
+				logger.Error(err, "revoking the agent's identity; will retry", "retryIn", purgeRetryInterval)
+				return ctrl.Result{RequeueAfter: purgeRetryInterval}, nil
+			}
+			logger.Error(err, "giving up on revoking the agent's identity; it will lapse when its token expires",
+				"deadline", purgeGiveUp)
+		}
 	}
 	if r.PurgeData != nil {
 		if err := r.PurgeData(ctx, clusterID, agent.Name); err != nil {

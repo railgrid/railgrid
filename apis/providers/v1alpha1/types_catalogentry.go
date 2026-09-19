@@ -157,6 +157,24 @@ type CatalogEntrySpec struct {
 	// +listMapKey=id
 	Actions []ProviderActionSpec `json:"actions,omitempty"`
 
+	// DataPlane declares the verbs this provider serves on its own resources
+	// through the Pillar 2 data-plane grammar
+	// (.../clusters/{clusterID}/{resource}/{name}/{verb}).
+	//
+	// Declaring a verb grants nothing and serves nothing: the provider still
+	// enforces it with its own caller-scoped SSAR on the virtual subresource
+	// {resource}/{verb}. What the declaration buys is that the coordinate is
+	// MACHINE-READABLE. Before it, `exec`, `proxy` and `delegate` existed only
+	// in provider code, so the hub scoped-identity service had no way to tell
+	// a real verb from an invented one and could not mint a cross-provider
+	// capability for any of them (pkg/hub/identity/policy.go, clause C).
+	//
+	// Actions (spec.actions) are the versioned, schema'd, request/response
+	// capabilities; data-plane verbs are the unversioned, streaming or
+	// proxying ones. Both land on the same RBAC coordinate.
+	// +optional
+	DataPlane *ProviderDataPlane `json:"dataPlane,omitempty"`
+
 	// AssistantSkills declares read-only App Studio skill packages supplied by
 	// this provider. Packages are embedded in the CatalogEntry so the hub can
 	// authenticate and validate the artifact without contacting a provider
@@ -515,6 +533,54 @@ type ProviderBackend struct {
 	// +optional
 	// +kubebuilder:default="/healthz"
 	HealthPath string `json:"healthPath,omitempty"`
+}
+
+// ProviderDataPlane declares the provider's data-plane verb surface.
+type ProviderDataPlane struct {
+	// Verbs are the verbs this provider serves, one entry per
+	// (resource, verb) coordinate.
+	// +optional
+	// +listType=map
+	// +listMapKey=resource
+	// +listMapKey=verb
+	// +kubebuilder:validation:MaxItems=64
+	Verbs []ProviderDataPlaneVerb `json:"verbs,omitempty"`
+}
+
+// ProviderDataPlaneVerb is one declared data-plane verb. The resource must be
+// one the provider's own APIExport serves: a provider declares verbs on its
+// own kinds, never on another provider's.
+type ProviderDataPlaneVerb struct {
+	// Resource is the plural resource name the verb is served on, in the
+	// provider's own API group.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9]*([a-z0-9-]*[a-z0-9])?$`
+	Resource string `json:"resource"`
+
+	// Verb is the verb name. It is the last path segment of the data-plane
+	// route and the subresource half of the {resource}/{verb} RBAC
+	// coordinate, so it carries no version and no slash.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9_-]*$`
+	Verb string `json:"verb"`
+
+	// Description explains what the verb does, for the Enable dialog and for
+	// anyone auditing what a provider can be asked to grant.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	Description string `json:"description,omitempty"`
+
+	// Stream is true when the verb upgrades or streams (exec, ssh, k8s, mcp,
+	// logs -f) rather than returning one bounded response.
+	// +optional
+	Stream bool `json:"stream,omitempty"`
+
+	// ReadOnly declares that the verb does not mutate the resource or what it
+	// fronts. A streaming shell is never read-only, whatever it is used for.
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // ProviderAPIExport declares the kcp APIExport the provider owns.

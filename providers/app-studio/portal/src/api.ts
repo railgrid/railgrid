@@ -47,7 +47,7 @@ import type {
 import type { ProjectCreateReadiness } from './createReadiness'
 import type { PreviewBridgeSession } from './previewBridge'
 import { providerFetch, readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
-import { createKubeClient, type KubeResourceRef } from './portalkit/kube'
+import { createKubeClient, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 import * as llmRegistry from './llmRegistry'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
 import {
@@ -104,21 +104,109 @@ function tenantSelection(ctx: RailgridContext | null): TenantSelection {
 // providerBase resolves the hub backend-proxy prefix for this provider from the
 // micro-frontend basePath the host injects (/ui/providers/app-studio →
 // /services/providers/app-studio). The hub strips that prefix, injects the
-// verified X-Railgrid-Tenant/X-Railgrid-User headers, and forwards to the provider's
-// /api/* routes. Falls back to the well-known prefix if no basePath arrived yet.
+// verified X-Railgrid-* headers, and forwards to the provider's /dataplane
+// routes. Falls back to the well-known prefix if no basePath arrived yet.
 function providerBase(ctx: RailgridContext | null): string {
   const derived = ctx?.basePath ? serviceBase(ctx.basePath) : ''
   return (derived || '/services/providers/app-studio').replace(/\/$/, '')
 }
 
-function baseURL(ctx: RailgridContext | null): string {
+// Every call this module makes is a data-plane verb on a bound resource:
+//
+//   {provider}/dataplane/clusters/{cluster}/projects/{name}/{verb}[/{tail}]
+//   {provider}/dataplane/clusters/{cluster}/sessions/{thread}/{verb}[/{tail}]
+//   {provider}/dataplane/clusters/{cluster}/studios/studio/{verb}
+//
+// The cluster is in the PATH, not only in a header: it is what the provider
+// authorizes against, so a request cannot address one workspace while claiming
+// another. The /api/projects/* facade these calls used to hit is gone.
+function dataPlaneBase(ctx: RailgridContext | null, resource: string, name: string): string {
   const t = tenantSelection(ctx)
   if (!t.orgUUID || !t.workspaceUUID) {
     throw new Error('select an organization and workspace first')
   }
-  // org/workspace travel as X-Railgrid-Org / X-Railgrid-Workspace headers (see
-  // request()); the hub resolves them to the workspace the provider acts on.
-  return `${providerBase(ctx)}/api/projects`
+  const cluster = ctx?.tenant?.trim() ?? ''
+  if (!cluster) throw new Error('select an organization and workspace first')
+  return `${providerBase(ctx)}/dataplane/clusters/${encodeURIComponent(cluster)}/${resource}/${encodeURIComponent(name)}`
+}
+
+// projectURL addresses a verb on one project. tail is the part of the address
+// INSIDE the object — an integration alias, a grant id, a skill package —
+// which stays out of the verb so one grant covers the set.
+function projectURL(ctx: RailgridContext | null, name: string, verb: string, ...tail: string[]): string {
+  return [dataPlaneBase(ctx, 'projects', name), verb, ...tail.map(encodeURIComponent)].join('/')
+}
+
+// sessionURL addresses a verb on one assistant conversation. The Session is
+// named after the thread, and the provider reads the project off it — which is
+// why no project travels here any more.
+function sessionURL(ctx: RailgridContext | null, threadID: string, verb: string, ...tail: string[]): string {
+  return [dataPlaneBase(ctx, 'sessions', threadID), verb, ...tail.map(encodeURIComponent)].join('/')
+}
+
+// studioURL addresses a workspace-wide verb. The Studio is the per-workspace
+// singleton, so "create a project here" has an object to be authorized
+// against instead of being a collection route.
+function studioURL(ctx: RailgridContext | null, verb: string): string {
+  return `${dataPlaneBase(ctx, 'studios', STUDIO_NAME)}/${verb}`
+}
+
+// STUDIO_NAME mirrors aiv1alpha1.StudioName: one Studio per workspace.
+const STUDIO_NAME = 'studio'
+
+const studioResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'studios' }
+
+// ProjectCR is the bound kind as the API server serves it. The list view needs
+// only what the CR itself carries; anything joined — live instance status, the
+// commit ledger, the source-revision fence — comes from the `view` verb, which
+// is exactly why that verb exists.
+interface ProjectCR extends KubeObject {
+  spec?: { displayName?: string; description?: string; template?: { name?: string }; sharing?: Project['sharing'] }
+  status?: { phase?: string; updatedAt?: string }
+}
+
+function projectFromCR(object: ProjectCR): Project {
+  return {
+    name: object.metadata.name,
+    uid: object.metadata.uid,
+    displayName: object.spec?.displayName ?? object.metadata.name,
+    description: object.spec?.description,
+    phase: object.status?.phase,
+    deleting: Boolean(object.metadata.deletionTimestamp),
+    template: object.spec?.template?.name,
+    sharing: object.spec?.sharing,
+    createdAt: object.metadata.creationTimestamp ?? '',
+    updatedAt: object.status?.updatedAt,
+  }
+}
+
+// ensureStudio creates the workspace's Studio when it is missing.
+//
+// A workspace-wide verb is authorized against the Studio, and gate 1 is a real
+// GET — so in a workspace that has never created a project there is nothing to
+// authorize against and the call would 404. Creating the bound CR first is the
+// Pillar 1 answer: the API server validates it against the CRD and the
+// caller's own membership, and the provider's reconciler fills in the service
+// references afterwards. Already-exists is success.
+async function ensureStudio(ctx: RailgridContext | null): Promise<void> {
+  const client = projectKubeClient(ctx)
+  try {
+    await client.get(studioResource, STUDIO_NAME)
+    return
+  } catch {
+    // fall through to create
+  }
+  try {
+    await client.create(studioResource, {
+      apiVersion: 'ai.railgrid.ai/v1alpha1',
+      kind: 'Studio',
+      metadata: { name: STUDIO_NAME },
+      spec: { search: { size: 'small' }, browser: { size: 'small' } },
+    })
+  } catch {
+    // A concurrent create, or a workspace where the binding has not caught up
+    // yet: the verb below reports the real reason.
+  }
 }
 
 // Project is a kcp CR on the workspace cluster, so a write to its spec is a
@@ -273,7 +361,7 @@ export function isProjectFileRequestError(err: unknown): err is ProjectFileReque
 }
 
 function projectFileContentURL(ctx: RailgridContext | null, name: string, path: string): string {
-  return `${baseURL(ctx)}/${encodeURIComponent(name)}/files/content?path=${encodeURIComponent(path)}`
+  return `${projectURL(ctx, name, 'files-content')}?path=${encodeURIComponent(path)}`
 }
 
 async function projectFileResponseError(res: Response, intent: ProjectFileWriteIntent): Promise<Error> {
@@ -331,7 +419,7 @@ function isProjectAPIInitializingResponse(status: number, reason: string, messag
 
 async function requestAssistantThreadEventStream(
   ctx: RailgridContext | null,
-  name: string,
+  _name: string,
   threadID: string,
   afterSequence: number,
   onEvent: (event: ProjectAssistantThreadEvent) => void,
@@ -340,7 +428,7 @@ async function requestAssistantThreadEventStream(
   const headers = tenantHeaders({})
   headers.Accept = 'text/event-stream'
   headers['Last-Event-ID'] = String(afterSequence)
-  const res = await providerFetch(ctx)(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/events?afterSequence=${encodeURIComponent(String(afterSequence))}`, {
+  const res = await providerFetch(ctx)(`${sessionURL(ctx, threadID, 'events')}?afterSequence=${encodeURIComponent(String(afterSequence))}`, {
     credentials: 'same-origin', headers, signal,
   })
   if (!res.ok) throw new Error(`assistant thread stream failed: ${res.status} ${res.statusText}`)
@@ -523,13 +611,17 @@ export const api = {
     return body.items ?? []
   },
 
+  // Projects are bound CRs, so listing them is a kube read through the hub's
+  // kcp proxy — authorized against the caller's workspace membership by the
+  // API server (Pillar 1). There is no list verb, and the provider serves no
+  // collection route for it.
   async listProjects(ctx: RailgridContext | null): Promise<Project[]> {
-    const body = await request<ListResponse<Project>>(ctx, 'GET', baseURL(ctx))
-    return body.items ?? []
+    const list = await projectKubeClient(ctx).list<ProjectCR>(projectResource)
+    return (list.items ?? []).map(projectFromCR)
   },
 
   async connectProjectRepository(ctx: RailgridContext | null, project: string, connectionRef: string, retry?: { retryRepositoryRef: string; projectUID: string }): Promise<Project> {
-    return request<Project>(ctx, 'PUT', `${baseURL(ctx)}/${encodeURIComponent(project)}/repository`, { connectionRef, ...retry })
+    return request<Project>(ctx, 'POST', `${projectURL(ctx, project, 'set-repository')}`, { connectionRef, ...retry })
   },
 
   async createProject(
@@ -545,7 +637,8 @@ export const api = {
       existingRepositoryRef?: string
     },
   ): Promise<Project> {
-    return request<Project>(ctx, 'POST', baseURL(ctx), body)
+    await ensureStudio(ctx)
+    return request<Project>(ctx, 'POST', studioURL(ctx, 'create-project'), body)
   },
 
   // createProjectStream creates a project over SSE, surfacing each creation
@@ -570,7 +663,7 @@ export const api = {
     const headers = tenantHeaders({})
     headers.Accept = 'text/event-stream'
     headers['Content-Type'] = 'application/json'
-    const res = await providerFetch(ctx)(`${baseURL(ctx)}/stream`, {
+    const res = await providerFetch(ctx)(`${studioURL(ctx, 'create-project-stream')}`, {
       method: 'POST',
       credentials: 'same-origin',
       headers,
@@ -627,7 +720,7 @@ export const api = {
     ctx: RailgridContext | null,
     body: { prompt?: string; templateName?: string },
   ): Promise<ProjectPlan> {
-    return request<ProjectPlan>(ctx, 'POST', `${baseURL(ctx)}/plan`, body)
+    return request<ProjectPlan>(ctx, 'POST', `${studioURL(ctx, 'plan')}`, body)
   },
 
   // reseedScaffold re-attaches the template's starter code to an empty
@@ -636,13 +729,13 @@ export const api = {
     ctx: RailgridContext | null,
     name: string,
   ): Promise<{ template: string; scaffold: { repository: string; ref?: string }; seeded: number }> {
-    return request(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/scaffold`, {})
+    return request(ctx, 'POST', `${projectURL(ctx, name, 'scaffold')}`, {})
   },
 
   // listProjectFiles returns the live dev workspace file tree (flat, sorted
   // paths with sizes) for the code explorer.
   async listProjectFiles(ctx: RailgridContext | null, name: string): Promise<ProjectFileList> {
-    return request<ProjectFileList>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/files`)
+    return request<ProjectFileList>(ctx, 'GET', `${projectURL(ctx, name, 'files')}`)
   },
 
   // readProjectFile returns one workspace file's bounded content plus its full
@@ -651,7 +744,7 @@ export const api = {
     const body = await request<ProjectFileContent>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/files/content?path=${encodeURIComponent(path)}`,
+      `${projectURL(ctx, name, 'files-content')}?path=${encodeURIComponent(path)}`,
     )
     return { ...body, size: typeof body?.size === 'number' ? body.size : new TextEncoder().encode(body?.content ?? '').byteLength }
   },
@@ -662,7 +755,7 @@ export const api = {
   rawProjectFileURL(ctx: RailgridContext | null, name: string, path: string, options: { download?: boolean } = {}): string {
     const query = new URLSearchParams({ path })
     if (options.download) query.set('download', '1')
-    return `${baseURL(ctx)}/${encodeURIComponent(name)}/files/raw?${query}`
+    return `${projectURL(ctx, name, 'files-raw')}?${query}`
   },
 
   // fetchProjectFileRaw returns a workspace file's raw bytes for previews and
@@ -736,7 +829,7 @@ export const api = {
     for (const file of files) form.append('file', file, file.name || 'upload')
     form.append('dir', options.dir ?? '')
     if (options.overwrite) form.append('overwrite', 'true')
-    const res = await providerFetch(ctx)(`${baseURL(ctx)}/${encodeURIComponent(name)}/files/upload`, {
+    const res = await providerFetch(ctx)(`${projectURL(ctx, name, 'files-upload')}`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: tenantHeaders({}),
@@ -763,7 +856,7 @@ export const api = {
     const body = await request<{ templates: DevelopmentTemplate[] }>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/development-templates`,
+      `${studioURL(ctx, 'development-templates')}`,
     )
     return body.templates ?? []
   },
@@ -772,7 +865,7 @@ export const api = {
     const body = await request<{ repositories: ImportRepository[] }>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/import-repositories`,
+      `${studioURL(ctx, 'import-repositories')}`,
     )
     return body.repositories ?? []
   },
@@ -784,8 +877,8 @@ export const api = {
   ): Promise<{ template: string; components: Record<string, string> }> {
     return request<{ template: string; components: Record<string, string> }>(
       ctx,
-      'PUT',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/template`,
+      'POST',
+      `${projectURL(ctx, name, 'set-template')}`,
       { template },
     )
   },
@@ -794,7 +887,7 @@ export const api = {
     return request<ProjectRestoreResult>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/restore-workspace`,
+      `${projectURL(ctx, name, 'restore-workspace')}`,
       { commitSHA, expectedSourceRevision },
     )
   },
@@ -803,7 +896,7 @@ export const api = {
     return request<ProjectPromotionReadiness>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/promotion`,
+      `${projectURL(ctx, name, 'promotion')}`,
     )
   },
 
@@ -811,7 +904,7 @@ export const api = {
     const body = await request<ProjectReleasesResponse>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/releases`,
+      `${projectURL(ctx, name, 'releases')}`,
     )
     return body.items ?? []
   },
@@ -820,7 +913,7 @@ export const api = {
     return request<ProjectCheckpoints>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/checkpoints`,
+      `${projectURL(ctx, name, 'checkpoints')}`,
     )
   },
 
@@ -838,7 +931,7 @@ export const api = {
     return request<ProjectPromoteResult>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/promote`,
+      `${projectURL(ctx, name, 'promote')}`,
       body,
     )
   },
@@ -849,7 +942,7 @@ export const api = {
     return request<ProjectPreviewAccess>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview`,
+      `${projectURL(ctx, name, 'preview')}`,
     )
   },
 
@@ -861,7 +954,7 @@ export const api = {
     return request<ProjectPreviewAccess>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview`,
+      `${projectURL(ctx, name, 'preview')}`,
       { mode },
     )
   },
@@ -870,7 +963,7 @@ export const api = {
     const res = await request<{ items?: ProjectPublishingGrant[] }>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview/grants`,
+      `${projectURL(ctx, name, 'preview-grants')}`,
     )
     return res.items ?? []
   },
@@ -884,7 +977,7 @@ export const api = {
     const res = await request<{ items?: ProjectPublishingGrant[] }>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview/grants`,
+      `${projectURL(ctx, name, 'preview-grants')}`,
       { user, invite },
     )
     return res.items ?? []
@@ -898,7 +991,7 @@ export const api = {
     const res = await request<{ items?: ProjectPublishingGrant[] }>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview/grants/${encodeURIComponent(grant)}`,
+      `${projectURL(ctx, name, 'preview-grants', grant)}`,
     )
     return res.items ?? []
   },
@@ -907,7 +1000,7 @@ export const api = {
     return request<ProjectPublishing>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing`,
+      `${projectURL(ctx, name, 'publishing')}`,
     )
   },
 
@@ -919,7 +1012,7 @@ export const api = {
     return request<ProjectPublishing>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing`,
+      `${projectURL(ctx, name, 'publishing')}`,
       { mode },
     )
   },
@@ -928,7 +1021,7 @@ export const api = {
     return request<ProjectPublishing>(
       ctx,
       'DELETE',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing`,
+      `${projectURL(ctx, name, 'publishing')}`,
     )
   },
 
@@ -936,7 +1029,7 @@ export const api = {
     const body = await request<{ items?: ProjectPublishingMember[] }>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing/members`,
+      `${projectURL(ctx, name, 'publishing-members')}`,
     )
     return body.items ?? []
   },
@@ -945,7 +1038,7 @@ export const api = {
     const body = await request<{ items?: ProjectPublishingGrant[] }>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing/grants`,
+      `${projectURL(ctx, name, 'publishing-grants')}`,
     )
     return body.items ?? []
   },
@@ -962,7 +1055,7 @@ export const api = {
     return request<{ items?: ProjectPublishingGrant[] }>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing/grants`,
+      `${projectURL(ctx, name, 'publishing-grants')}`,
       invite ? { user, invite: true } : { user },
     )
   },
@@ -971,19 +1064,19 @@ export const api = {
     return request<ProjectPublishingGrant>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing/grants/${encodeURIComponent(grant)}`,
+      `${projectURL(ctx, name, 'publishing-grants', grant)}`,
     )
   },
 
   async getProjectCreateReadiness(ctx: RailgridContext | null): Promise<ProjectCreateReadiness> {
-    return request<ProjectCreateReadiness>(ctx, 'GET', `${baseURL(ctx)}/create-readiness`)
+    return request<ProjectCreateReadiness>(ctx, 'GET', `${studioURL(ctx, 'create-readiness')}`)
   },
 
   async listAssistantSkills(ctx: RailgridContext | null, name: string): Promise<ProjectAssistantSkillsResponse> {
     const body = await request<ProjectAssistantSkillsResponse>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/skills`,
+      `${projectURL(ctx, name, 'skills')}`,
     )
     return {
       skills: (body.skills ?? []).map(normalizeAssistantSkill),
@@ -996,7 +1089,7 @@ export const api = {
     const body = await request<ProjectAssistantSkillDetail>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/skills/project/${encodeURIComponent(packageName)}`,
+      `${projectURL(ctx, name, 'skill', packageName)}`,
     )
     return normalizeAssistantSkillDetail(body)
   },
@@ -1006,7 +1099,7 @@ export const api = {
     const body = await request<ProjectAssistantSkillDetail>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/skills/detail?id=${encodeURIComponent(id)}`,
+      `${projectURL(ctx, name, 'skill-detail')}?id=${encodeURIComponent(id)}`,
     )
     return normalizeAssistantSkillDetail(body)
   },
@@ -1019,7 +1112,7 @@ export const api = {
     const result = await request<ProjectAssistantSkillDetail>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/skills/project`,
+      `${projectURL(ctx, name, 'skills-create')}`,
       normalizeAssistantSkillPackage(body),
     )
     return normalizeAssistantSkillDetail(result)
@@ -1034,7 +1127,7 @@ export const api = {
     const result = await request<ProjectAssistantSkillDetail>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/skills/project/import`,
+      `${projectURL(ctx, name, 'skills-import')}`,
       normalizeAssistantSkillPackage(body),
     )
     return normalizeAssistantSkillDetail(result)
@@ -1050,7 +1143,7 @@ export const api = {
     const result = await request<ProjectAssistantSkillDetail>(
       ctx,
       'PUT',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/skills/project/${encodeURIComponent(packageName)}`,
+      `${projectURL(ctx, name, 'skill', packageName)}`,
       { ...normalizeAssistantSkillPackage(body), expectedDigest },
     )
     return normalizeAssistantSkillDetail(result)
@@ -1065,7 +1158,7 @@ export const api = {
     const result = await request<ProjectAssistantSkillDetail | ProjectAssistantSkill>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/skills/activation`,
+      `${projectURL(ctx, name, 'skills-activation')}`,
       { id, enabled },
     )
     return normalizeAssistantSkillDetail(result)
@@ -1075,7 +1168,7 @@ export const api = {
     const result = await request<Record<string, unknown>>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/skills/project/${encodeURIComponent(packageName)}/export`,
+      `${projectURL(ctx, name, 'skill-export', packageName)}`,
     )
     return normalizeAssistantSkillExport(result)
   },
@@ -1084,7 +1177,7 @@ export const api = {
     await request<null>(
       ctx,
       'DELETE',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/skills/project/${encodeURIComponent(packageName)}?expectedDigest=${encodeURIComponent(expectedDigest)}`,
+      `${projectURL(ctx, name, 'skill', packageName)}?expectedDigest=${encodeURIComponent(expectedDigest)}`,
     )
   },
 
@@ -1103,7 +1196,7 @@ export const api = {
     ctx: RailgridContext | null,
     body: { provider: string; baseURL: string; apiKey?: string; existingModelID?: string },
   ): Promise<ProjectLLMModelDiscovery> {
-    return request<ProjectLLMModelDiscovery>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/models/discover`, body)
+    return request<ProjectLLMModelDiscovery>(ctx, 'POST', `${studioURL(ctx, 'discover-models')}`, body)
   },
 
   async createLLMModel(
@@ -1117,7 +1210,7 @@ export const api = {
     ctx: RailgridContext | null,
     body: { provider?: string; baseURL?: string; model: string; apiKey: string; existingModelID?: string },
   ): Promise<{ ok: boolean }> {
-    return request<{ ok: boolean }>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/test`, body, {
+    return request<{ ok: boolean }>(ctx, 'POST', `${studioURL(ctx, 'test-model')}`, body, {
       timeoutMS: 35_000,
       timeoutMessage: 'model connection test timed out',
     })
@@ -1140,19 +1233,19 @@ export const api = {
   },
 
   async getProject(ctx: RailgridContext | null, name: string): Promise<Project> {
-    return request<Project>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
+    return request<Project>(ctx, 'GET', `${projectURL(ctx, name, 'view')}`)
   },
 
   async getProjectThumbnail(ctx: RailgridContext | null, name: string, revision = ''): Promise<Blob> {
     const suffix = revision ? `?revision=${encodeURIComponent(revision)}` : ''
-    return requestBlob(ctx, `${baseURL(ctx)}/${encodeURIComponent(name)}/thumbnail${suffix}`)
+    return requestBlob(ctx, `${projectURL(ctx, name, 'thumbnail')}${suffix}`)
   },
 
   async listProjectIntegrations(ctx: RailgridContext | null, name: string): Promise<ProjectIntegration[]> {
     const body = await request<ListResponse<ProjectIntegration>>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/integrations`,
+      `${projectURL(ctx, name, 'integrations')}`,
     )
     return body.items ?? []
   },
@@ -1172,7 +1265,7 @@ export const api = {
     return request<ProjectIntegration>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/integrations`,
+      `${projectURL(ctx, name, 'integrations')}`,
       body,
     )
   },
@@ -1186,7 +1279,7 @@ export const api = {
     return request<ProjectIntegration>(
       ctx,
       'PATCH',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/integrations/${encodeURIComponent(alias)}`,
+      `${projectURL(ctx, name, 'integrations', alias)}`,
       body,
     )
   },
@@ -1195,7 +1288,7 @@ export const api = {
     await request<null>(
       ctx,
       'DELETE',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/integrations/${encodeURIComponent(alias)}`,
+      `${projectURL(ctx, name, 'integrations', alias)}`,
     )
   },
 
@@ -1237,15 +1330,15 @@ export const api = {
     if (!expectedUID) throw new ProjectAPIRequestError('project UID is required before deleting', 400)
     const query = new URLSearchParams({ uid: expectedUID })
     if (options.deleteRepository) query.set('deleteRepository', 'true')
-    await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}?${query}`)
+    await request<null>(ctx, 'POST', `${projectURL(ctx, name, 'delete')}?${query}`)
   },
 
   async syncDevelopment(ctx: RailgridContext | null, name: string): Promise<unknown> {
-    return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/sync-development`)
+    return request<unknown>(ctx, 'POST', `${projectURL(ctx, name, 'sync-development')}`)
   },
 
   async authorizeDevelopmentPreview(ctx: RailgridContext | null, name: string): Promise<unknown> {
-    return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/authorize-development-preview`)
+    return request<unknown>(ctx, 'POST', `${projectURL(ctx, name, 'authorize-development-preview')}`)
   },
 
   async listAssistantThreads(ctx: RailgridContext | null, name: string, includeArchived = false): Promise<ProjectAssistantThread[]> {
@@ -1270,7 +1363,7 @@ export const api = {
       const page = await request<{ items?: ProjectAssistantThread[]; nextCursor?: string }>(
         ctx,
         'GET',
-        `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads?${query.toString()}`,
+        `${projectURL(ctx, name, 'sessions')}?${query.toString()}`,
       )
       if (Array.isArray(page.items)) threads.push(...page.items)
       const nextCursor = typeof page.nextCursor === 'string' ? page.nextCursor.trim() : ''
@@ -1289,36 +1382,36 @@ export const api = {
     return request<ProjectAssistantThread>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads`,
+      `${projectURL(ctx, name, 'create-session')}`,
       { title, ...(threadID?.trim() ? { id: threadID.trim() } : {}) },
     )
   },
 
   async patchAssistantThread(
     ctx: RailgridContext | null,
-    name: string,
+    _name: string,
     threadID: string,
     body: { title?: string; archived?: boolean },
   ): Promise<ProjectAssistantThread> {
     return request<ProjectAssistantThread>(
       ctx,
-      'PATCH',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}`,
+      'POST',
+      `${sessionURL(ctx, threadID, 'update')}`,
       body,
     )
   },
 
-  async deleteAssistantThread(ctx: RailgridContext | null, name: string, threadID: string): Promise<void> {
+  async deleteAssistantThread(ctx: RailgridContext | null, _name: string, threadID: string): Promise<void> {
     await request<null>(
       ctx,
-      'DELETE',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}`,
+      'POST',
+      `${sessionURL(ctx, threadID, 'delete')}`,
     )
   },
 
   async listAssistantThreadItemPage(
     ctx: RailgridContext | null,
-    name: string,
+    _name: string,
     threadID: string,
     beforeSequence = '',
   ): Promise<ProjectAssistantThreadItemPage> {
@@ -1327,7 +1420,7 @@ export const api = {
     const body = await request<{ items?: ProjectAssistantThreadItem[]; nextCursor?: string }>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/items?${query.toString()}`,
+      `${sessionURL(ctx, threadID, 'items')}?${query.toString()}`,
     )
     return {
       items: Array.isArray(body.items) ? body.items : [],
@@ -1344,12 +1437,12 @@ export const api = {
 
   /** List durable project-scoped receipts; content parts carry only these references. */
   async listAssistantAttachments(ctx: RailgridContext | null, name: string): Promise<ProjectAssistantAttachmentReceipt[]> {
-    const body = await request<unknown>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/attachments`)
+    const body = await request<unknown>(ctx, 'GET', `${projectURL(ctx, name, 'attachments')}`)
     return assistantAttachmentReceipts(body)
   },
 
   async getAssistantAttachment(ctx: RailgridContext | null, name: string, attachmentID: string, signal?: AbortSignal): Promise<Blob> {
-    return requestBlob(ctx, `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/attachments/${encodeURIComponent(attachmentID)}`, signal)
+    return requestBlob(ctx, `${projectURL(ctx, name, 'attachments', attachmentID)}`, signal)
   },
 
   async uploadAssistantAttachment(
@@ -1361,7 +1454,7 @@ export const api = {
   ): Promise<ProjectAssistantAttachmentReceipt> {
     return requestAssistantAttachmentUpload(
       ctx,
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/attachments`,
+      `${projectURL(ctx, name, 'attachments')}`,
       file,
       signal,
       clientAttachmentID,
@@ -1369,39 +1462,39 @@ export const api = {
   },
 
   async deleteAssistantAttachment(ctx: RailgridContext | null, name: string, attachmentID: string): Promise<void> {
-    await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/attachments/${encodeURIComponent(attachmentID)}`)
+    await request<null>(ctx, 'DELETE', `${projectURL(ctx, name, 'attachments', attachmentID)}`)
   },
 
-  async startAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; modelID?: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
-    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns`, body)
+  async startAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, body: { content: string; clientUserMessageID: string; modelID?: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${sessionURL(ctx, threadID, 'turn')}`, body)
   },
 
-  async startAssistantReview(ctx: RailgridContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; modelID?: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
-    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/reviews`, body)
+  async startAssistantReview(ctx: RailgridContext | null, _name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; modelID?: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${sessionURL(ctx, threadID, 'review')}`, body)
   },
 
-  async getActiveAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
+  async getActiveAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
     const headers = tenantHeaders({})
-    const res = await providerFetch(ctx)(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/active`, { credentials: 'same-origin', headers })
+    const res = await providerFetch(ctx)(`${sessionURL(ctx, threadID, 'active-turn')}`, { credentials: 'same-origin', headers })
     if (res.status === 204) return undefined
     if (!res.ok) throw new Error(`active assistant turn failed: ${res.status} ${res.statusText}`)
     return res.json() as Promise<ProjectAssistantTurn>
   },
 
-  async steerAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
-    return request<ProjectAssistantTurn>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/steer`, body)
+  async steerAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
+    return request<ProjectAssistantTurn>(ctx, 'POST', `${sessionURL(ctx, threadID, 'steer', turnID)}`, body)
   },
 
-  async interruptAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, clientRequestID: string): Promise<{ turnID: string; status: ProjectAssistantRunStatus }> {
-    return request<{ turnID: string; status: ProjectAssistantRunStatus }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/interrupt`, { clientRequestID })
+  async interruptAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, turnID: string, clientRequestID: string): Promise<{ turnID: string; status: ProjectAssistantRunStatus }> {
+    return request<{ turnID: string; status: ProjectAssistantRunStatus }>(ctx, 'POST', `${sessionURL(ctx, threadID, 'interrupt', turnID)}`, { clientRequestID })
   },
 
-  async continueAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
-    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/continue`, body)
+  async continueAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
+    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }>(ctx, 'POST', `${sessionURL(ctx, threadID, 'continue', turnID)}`, body)
   },
 
-  async respondAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, kind: 'approval' | 'input', body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; answers?: Record<string, { answers: string[] }> }): Promise<ProjectAssistantTurn> {
-    return request<ProjectAssistantTurn>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/${kind}`, body)
+  async respondAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, turnID: string, kind: 'approval' | 'input', body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; answers?: Record<string, { answers: string[] }> }): Promise<ProjectAssistantTurn> {
+    return request<ProjectAssistantTurn>(ctx, 'POST', `${sessionURL(ctx, threadID, kind, turnID)}`, body)
   },
 
   async streamAssistantThread(ctx: RailgridContext | null, name: string, threadID: string, afterSequence: number, onEvent: (event: ProjectAssistantThreadEvent) => void, signal?: AbortSignal): Promise<void> {
@@ -1412,7 +1505,7 @@ export const api = {
     return request<ProjectAssistantApprovalPreference>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/approval-mode`,
+      `${projectURL(ctx, name, 'approval-mode')}`,
     )
   },
 
@@ -1424,7 +1517,7 @@ export const api = {
     return request<ProjectAssistantApprovalPreference>(
       ctx,
       'PATCH',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/approval-mode`,
+      `${projectURL(ctx, name, 'approval-mode')}`,
       { mode },
     )
   },
@@ -1438,7 +1531,7 @@ export const api = {
     return request<PreviewBridgeSession>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-bridge/sessions`,
+      `${projectURL(ctx, name, 'preview-bridge-sessions')}`,
       { generation, protocolVersion: 1, portalInstanceID },
       { timeoutMS: 8_000, timeoutMessage: PREVIEW_BRIDGE_TIMEOUT_MESSAGE },
     )
@@ -1452,7 +1545,7 @@ export const api = {
     await request<unknown>(
       ctx,
       'DELETE',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-bridge/sessions/${encodeURIComponent(sessionID)}`,
+      `${projectURL(ctx, name, 'preview-bridge-sessions', sessionID)}`,
       undefined,
       { timeoutMS: 3_000, timeoutMessage: PREVIEW_BRIDGE_TIMEOUT_MESSAGE },
     )

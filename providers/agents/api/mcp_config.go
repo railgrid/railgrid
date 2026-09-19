@@ -590,12 +590,12 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			Families: toolFamilyDocs,
 			Note:     "core is always granted and cannot be removed.",
 		}
-		// Best-effort, cache-only: the aggregate endpoint knows which railgrid
-		// providers an interactive run reaches without any grant. Probing it
-		// live would put a network round-trip inside a discovery call, so an
-		// empty list here means "not probed recently", not "nothing enabled".
-		if cached, hit := s.capabilities.get(s.mcpIdentity(ctx, r).clusterID); hit {
-			out.Providers = cached.Providers
+		// Best-effort: the workspace's MCPServer already publishes which railgrid
+		// providers its aggregate endpoint reaches, so this is one cached read
+		// of a bound object rather than a live MCP probe inside a discovery
+		// call. An empty list means "could not tell", not "nothing enabled".
+		if providers := s.federatedProviders(ctx, s.mcpIdentity(ctx, r)); len(providers) > 0 {
+			out.Providers = providers
 			out.Note += " The listed providers are reachable in interactive runs via the hub's aggregate endpoint, with no tool grant needed."
 		}
 		return nil, out, nil

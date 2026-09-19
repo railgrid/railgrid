@@ -140,7 +140,7 @@ func TestPlatformDelegationHonoursTheExclusionList(t *testing.T) {
 		proxy.SetDelegatedTokenIssuer(issuer)
 		proxy.SetDelegationPolicy(DelegationPolicy{Mode: DelegationPlatform, Exclude: DefaultDelegationExclude})
 
-		serveProxy(proxy, "/services/providers/edges/edgeproxy/x")
+		serveProxy(proxy, "/services/providers/edges/dataplane/x")
 
 		if rec.authorization != "Bearer "+callerBearer {
 			t.Errorf("Authorization = %q, want the caller's bearer for an excluded provider", rec.authorization)
@@ -155,7 +155,7 @@ func TestPlatformDelegationHonoursTheExclusionList(t *testing.T) {
 		proxy.SetDelegatedTokenIssuer(&recordingIssuer{})
 		proxy.SetDelegationPolicy(DelegationPolicy{Mode: DelegationAll, Exclude: DefaultDelegationExclude})
 
-		serveProxy(proxy, "/services/providers/edges/edgeproxy/x")
+		serveProxy(proxy, "/services/providers/edges/dataplane/x")
 
 		if rec.authorization != "Bearer "+delegatedToken {
 			t.Errorf("Authorization = %q, want the delegated token under mode=all", rec.authorization)

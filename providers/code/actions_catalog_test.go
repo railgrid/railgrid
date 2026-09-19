@@ -56,7 +56,7 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 		t.Fatal("rendered Code catalog missing")
 	}
 	actions, ok := expected.([]any)
-	if !ok || len(actions) != 12 {
+	if !ok || len(actions) != 13 {
 		t.Fatalf("unexpected Code actions: %#v", expected)
 	}
 	for _, raw := range actions {
@@ -69,8 +69,14 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 		if action["schemaDigest"] != "sha256:"+hex.EncodeToString(digest[:]) {
 			t.Fatalf("schema digest mismatch for %s", action["id"])
 		}
-		if action["boundResource"].(map[string]any)["resource"] != "repositories" {
-			t.Fatal("Code action is not repository-bound")
+		// Every action is bound to one of this provider's own kinds. The
+		// resource decides which object gate 1 reads and which subresource
+		// gate 2 asks about, so an action bound to anything else would be
+		// served under a grant nobody can be given.
+		switch action["boundResource"].(map[string]any)["resource"] {
+		case "repositories", "connections":
+		default:
+			t.Fatalf("Code action %v is bound to a kind this provider does not serve", action["id"])
 		}
 		if action["limits"].(map[string]any)["maxInputBytes"].(float64) > 1048576 {
 			t.Fatal("large artifact leaked into action input contract")

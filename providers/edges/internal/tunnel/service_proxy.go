@@ -23,24 +23,23 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/provider-edges/internal/kcpurl"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // serviceResource is the URL resource segment for the Service kind. It is
-// deliberately NOT registered as a tunnel Kind (Service is not connectable),
-// so parseEdgesProxyPath rejects it — edgeservice routes are branched before
-// that check in buildEdgesProxyHandler.
+// deliberately NOT registered as a tunnel Kind (Service is not connectable):
+// it names a published endpoint on some other edge's tunnel, and
+// buildEdgesProxyHandler branches to serveService on it after the gates.
 const serviceResource = "services"
 
 // svcTargetHeader mirrors the agent-side constant (pkg/agent/tunnel). The agent
@@ -162,64 +161,18 @@ func (v *serviceView) setSvcHeaders(h http.Header) {
 	}
 }
 
-// parseServicePath extracts {cluster}, {name}, {subresource}, and the
-// remaining service-local path from an edgeproxy path targeting a Service.
-// It returns ok=false for any non-service path so the caller falls through
-// to the connectable-kind handler.
+// serveService dispatches an already-gated Service verb. svcObj is the object
+// gate 1 read AS THE CALLER, so the spec this proxy acts on is the one the
+// caller could see — the provider never re-reads it on its own authority.
 //
-// Expected (after /edgeproxy is stripped):
-//
-//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/{subresource}[/rest...]
-func (p *Server) parseServicePath(path string) (cluster, name, subresource, rest string, ok bool) {
-	// [0]clusters [1]cluster [2]apis [3]group [4]version [5]resource [6]name [7]subresource [8...]rest
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 9)
-	if len(parts) < 8 {
-		return "", "", "", "", false
-	}
-	if parts[0] != "clusters" || parts[2] != "apis" || parts[3] != p.group ||
-		parts[4] != p.version || parts[5] != serviceResource {
-		return "", "", "", "", false
-	}
-	rest = ""
-	if len(parts) == 9 {
-		rest = "/" + parts[8]
-	}
-	return parts[1], parts[6], parts[7], rest, true
-}
-
-// serveService authorizes and dispatches a Service subresource request.
-// Supported subresources: "proxy" (HTTP data plane) and "mcp".
-func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, cluster, name, subresource, rest string) {
+// Verbs: "proxy" (HTTP data plane) and "mcp".
+func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token string, req dataplane.Request, svcObj *unstructured.Unstructured) {
 	ctx := r.Context()
 	logger := klog.FromContext(ctx).WithName("edgeservice-proxy")
 
-	// Fail closed when kcp delegated authorization is unavailable, as in
-	// buildEdgesProxyHandler: without a kcp credential there is nothing to
-	// TokenReview the bearer against, so refuse instead of proceeding to the
-	// Service fetch and proxy.
-	if p.denyIfAuthorizationUnavailable(w, r) {
-		return
-	}
-
-	// Delegated authorization for every bearer, as in buildEdgesProxyHandler.
-	// A nil kcpConfig here only happens under the test-only bypass.
-	if p.kcpConfig != nil {
-		tenantCfg, err := p.tenantConfigFor(ctx, cluster)
-		if err != nil {
-			logger.Error(err, "edgeservice authorization: resolving tenant config failed", "cluster", cluster, "name", name)
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-		if err := p.authorizeFn(ctx, tenantCfg, p.kcpConfig, token, cluster, "proxy", p.group, serviceResource, name); err != nil {
-			logger.Error(err, "edgeservice authorization failed", "cluster", cluster, "name", name)
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-	}
-
-	svc, err := p.fetchService(ctx, cluster, name, token)
+	svc, err := decodeServiceView(req.Name, svcObj)
 	if err != nil {
-		logger.Error(err, "fetching service", "cluster", cluster, "name", name)
+		logger.Error(err, "decoding service", "cluster", req.ClusterID, "name", req.Name)
 		http.Error(w, "service not found", http.StatusNotFound)
 		return
 	}
@@ -227,20 +180,25 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 	// Resolve the tunnel for the referenced edge (LinuxServer, MacOSServer, or
 	// KubernetesCluster).
 	if svc.connResource() == "" {
-		logger.Info("service references unsupported edge kind", "cluster", cluster, "name", name, "kind", svc.Spec.EdgeRef.Kind)
+		logger.Info("service references unsupported edge kind", "cluster", req.ClusterID, "name", req.Name, "kind", svc.Spec.EdgeRef.Kind)
 		http.Error(w, "unsupported service edge kind", http.StatusBadRequest)
 		return
 	}
-	key := edgeConnKey(svc.connResource(), cluster, svc.Spec.EdgeRef.Name)
+	key := edgeConnKey(svc.connResource(), req.ClusterID, svc.Spec.EdgeRef.Name)
 	dialer, found := p.edgeConnManager.Load(key)
 	if !found {
-		logger.Info("no active tunnel for edge", "cluster", cluster, "edge", svc.Spec.EdgeRef.Name)
+		logger.Info("no active tunnel for edge", "cluster", req.ClusterID, "edge", svc.Spec.EdgeRef.Name)
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		return
 	}
 
-	switch subresource {
-	case "proxy":
+	rest := ""
+	if req.Tail != "" {
+		rest = "/" + req.Tail
+	}
+
+	switch req.Verb {
+	case VerbProxy:
 		if rest == "" {
 			// ".../proxy" with no trailing slash: the agent routes only /svc/…,
 			// so this answered a bare 404. Like the Kubernetes service proxy,
@@ -248,8 +206,8 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 			// resolve under the proxy; other methods go to the service root.
 			if r.Method == http.MethodGet || r.Method == http.MethodHead {
 				// Relative on purpose, and set by hand: http.Redirect would
-				// absolutize it against r.URL.Path, which the hub and the
-				// /edgeproxy mount have already stripped their prefixes from.
+				// absolutize it against r.URL.Path, which the hub has already
+				// stripped its prefix from.
 				target := "proxy/"
 				if r.URL.RawQuery != "" {
 					target += "?" + r.URL.RawQuery
@@ -260,11 +218,11 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 			}
 			rest = "/"
 		}
-		p.serviceHTTPProxy(ctx, w, r, cluster, token, svc, dialer, rest)
-	case "mcp":
-		p.buildServiceMCPHandler(cluster, name, token, svc, dialer).ServeHTTP(w, r)
+		p.serviceHTTPProxy(ctx, w, r, req.ClusterID, token, svc, dialer, rest)
+	case VerbMCP:
+		p.buildServiceMCPHandler(req.ClusterID, req.Name, token, svc, dialer).ServeHTTP(w, r)
 	default:
-		http.Error(w, "unknown subresource", http.StatusNotFound)
+		http.Error(w, "not found", http.StatusNotFound)
 	}
 }
 
@@ -412,25 +370,20 @@ func (p *Server) userClusterConfig(cluster, token string) *rest.Config {
 	return cfg
 }
 
-// fetchService loads a Service CR from the tenant workspace, reading as the
-// caller (see userClusterConfig).
-func (p *Server) fetchService(ctx context.Context, cluster, name, token string) (*serviceView, error) {
-	if p.kcpConfig == nil {
-		return nil, fmt.Errorf("no kcp config")
-	}
-	clusterConfig := p.userClusterConfig(cluster, token)
-
-	dynClient, err := dynamic.NewForConfig(clusterConfig)
-	if err != nil {
-		return nil, fmt.Errorf("creating cluster-scoped dynamic client: %w", err)
-	}
-	gvr := schema.GroupVersionResource{Group: p.group, Version: p.version, Resource: serviceResource}
-	u, err := dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("fetching service %s: %w", name, err)
+// decodeServiceView projects the Service object gate 1 already read into the
+// fields the proxy needs, and refuses one whose spec cannot be acted on.
+//
+// It takes the object rather than re-reading it on purpose. The provider SA is
+// not granted direct RBAC on Service objects in tenant workspaces — only on
+// the connectable kinds — and more importantly, acting on a spec the provider
+// read with its own credential when the caller was authorized against a
+// different read is a confused deputy. Gate 1 is the read.
+func decodeServiceView(name string, obj *unstructured.Unstructured) (*serviceView, error) {
+	if obj == nil {
+		return nil, fmt.Errorf("service %s: no object", name)
 	}
 	view := &serviceView{Name: name}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, view); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, view); err != nil {
 		return nil, fmt.Errorf("decoding service %s: %w", name, err)
 	}
 	if view.Spec.EdgeRef.Name == "" {

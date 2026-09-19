@@ -27,15 +27,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/railgrid/railgrid/pkg/hub/identity"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 type fakeIssuer struct {
-	called bool
-	org    string
-	ws     string
-	scope  serviceaccounts.WorkloadIdentityScope
+	called    bool
+	clusterID string
+	subject   string
+	scope     serviceaccounts.WorkloadIdentityScope
 }
 
 type fakeScopeResolver struct{}
@@ -47,10 +48,10 @@ func (fakeScopeResolver) Resolve(_ context.Context, _, _ string, req ExchangeReq
 	}, nil
 }
 
-func (f *fakeIssuer) EnsureWorkloadIdentity(_ context.Context, org, ws string, scope serviceaccounts.WorkloadIdentityScope) (*serviceaccounts.WorkloadIdentityToken, error) {
+func (f *fakeIssuer) EnsureWorkload(_ context.Context, clusterID string, scope serviceaccounts.WorkloadIdentityScope, subject string) (*identity.Token, error) {
 	f.called = true
-	f.org, f.ws, f.scope = org, ws, scope
-	return &serviceaccounts.WorkloadIdentityToken{Token: "railgrid-token", ExpiresAt: time.Now().Add(5 * time.Minute)}, nil
+	f.clusterID, f.subject, f.scope = clusterID, subject, scope
+	return &identity.Token{Token: "railgrid-token", TokenType: "Bearer", ExpiresAt: time.Now().Add(5 * time.Minute)}, nil
 }
 
 func TestHandlerExchangeVerifiesExactTupleBeforeIssuing(t *testing.T) {
@@ -85,8 +86,14 @@ func TestHandlerExchangeVerifiesExactTupleBeforeIssuing(t *testing.T) {
 	if gotBearer != "Bearer bootstrap-token" || gotRequest.ProjectUID != "uid-1" || !issuer.called {
 		t.Fatalf("attestor/issuer did not receive exact request: bearer=%q request=%#v called=%v", gotBearer, gotRequest, issuer.called)
 	}
-	if issuer.org != "org" || issuer.ws != "workspace" {
-		t.Fatalf("tenant path parsed as %q/%q", issuer.org, issuer.ws)
+	// The exchange now addresses the tenant workspace by its path, which is a
+	// valid /clusters/{…} segment, and forwards the attested pod subject so
+	// the ScopedIdentity record says who was attested.
+	if issuer.clusterID != "root:railgrid:tenants:org:workspace" {
+		t.Fatalf("tenant workspace addressed as %q", issuer.clusterID)
+	}
+	if issuer.subject != "runtime" {
+		t.Fatalf("attested subject recorded as %q, want %q", issuer.subject, "runtime")
 	}
 }
 

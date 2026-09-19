@@ -129,7 +129,7 @@ func TestProjectAssistantSkillToolsReceiptsCheckpointAndReadOnlyVisibility(t *te
 		t.Fatalf("drift error = %v", err)
 	}
 
-	registry := projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup})
+	registry := projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders})
 	readOnly := projectAssistantToolsForTurnPolicy(registry.Tools(false), projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging))
 	visible := map[string]projectAssistantToolSpec{}
 	for _, tool := range readOnly {
@@ -242,7 +242,7 @@ func projectAssistantSkillTestSnapshot(t *testing.T) appskills.Snapshot {
 	if err != nil {
 		t.Fatalf("apply skill files: %v", err)
 	}
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, workspaces: files}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: files}
 	snapshot, err := server.projectAssistantSkillSnapshot(context.Background(), scope)
 	if err != nil {
 		t.Fatalf("load skill snapshot: %v", err)

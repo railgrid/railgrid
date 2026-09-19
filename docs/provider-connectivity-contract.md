@@ -150,6 +150,45 @@ Rules:
    `RAILGRID_DEV_ALLOW_TENANT_QUERY`, which takes the bearer or the tenant
    from the query string, must be compiled out of shipped binaries.
 
+### Declare the verbs you serve
+
+A class (a) verb is **declared** in the CatalogEntry, beside the actions:
+
+```yaml
+spec:
+  dataPlane:
+    verbs:
+      - resource: instances     # a resource this provider's own APIExport serves
+        verb: exec              # no version, no slash — the {resource}/{verb} coordinate
+        description: "Open an interactive shell or run a command in the instance."
+        stream: true            # upgrades or streams rather than returning one response
+        readOnly: false         # does not mutate the resource or what it fronts
+```
+
+Declaring a verb **grants nothing and serves nothing**. The provider still
+enforces it with the two gates above, exactly as before. What the declaration
+buys is that the coordinate is machine-readable:
+
+- The hub scoped-identity service will only mint a `create` capability on
+  `{resource}/{verb}` for a verb the owning provider declares. Before this
+  field existed, `exec`, `proxy`, `ssh` and `delegate` lived only in provider
+  code, so no cross-provider capability for any of them could be minted at all
+  — see §"Scoped identities", clause C.
+- Consumers read `dataPlaneVerbs` off `/api/providers` instead of hardcoding a
+  coordinate nobody validates (rule 5, and review X-8).
+
+A verb is on a resource of the provider's **own** API group — declaring
+`dataPlane.verbs` without `spec.apiExport` is rejected — and a standard
+Kubernetes verb (`get`, `list`, `create`, …) may not be one, because
+`instances/get` reads like the ordinary `get` on `instances` and is not. A
+malformed declaration fails closed: the provider leaves the registry rather
+than keeping a stale, wider verb surface.
+
+Actions (`spec.actions`) and data-plane verbs (`spec.dataPlane.verbs`) are two
+declarations of the same RBAC coordinate. An action is versioned, schema'd and
+request/response; a data-plane verb is unversioned and streaming or proxying.
+Declare each capability as exactly one of them.
+
 The shared server-kit that parses these paths, runs the two gates, enforces
 declared limits and writes the envelope is `provider-sdk/dataplane`, landing
 under
@@ -386,6 +425,165 @@ internal Service.
 
 ---
 
+## Scoped identities — asking the hub instead of minting
+
+A provider often needs a credential for one of its own objects: a background
+agent run that has no human behind it, an edge agent reconnecting over its own
+tunnel, a per-workspace execution identity. Three providers each solved this by
+minting a ServiceAccount themselves, with a ClusterRole over somebody else's
+API group and a legacy token Secret that never expires and that nothing ever
+collects. That is finding M7, and it is now closed structurally.
+
+**A provider does not mint identities. It asks the hub.**
+
+Providers therefore hold no `serviceaccounts`, `clusterroles` or
+`clusterrolebindings` permission claims. A claim on those types is a contract
+violation, not a design choice.
+
+### The service
+
+| Route | Method | What it does |
+|---|---|---|
+| `/api/identities` | `POST` | Create or refresh. Idempotent on the owner tuple; returns a fresh token every time. |
+| `/api/identities?provider={p}[&clusterID=…][&owner={kind}/{name}[/{uid}]&group=…]` | `GET` | List the caller's own records. Never returns a token — none is kept. |
+| `/api/identities/{name}?provider={p}` | `DELETE` | Revoke: deletes the ServiceAccount (killing every outstanding token), its ClusterRole, its binding and the record. Idempotent. |
+
+`POST` body:
+
+```json
+{
+  "owner": {
+    "provider": "agents", "kind": "Agent", "group": "agents.railgrid.ai",
+    "version": "v1alpha1", "resource": "agents",
+    "name": "scheduler", "uid": "8f0c…"
+  },
+  "clusterID": "root:railgrid:tenants:{org}:{ws}",
+  "rules": [ { "apiGroups": ["…"], "resources": ["…"], "verbs": ["…"], "resourceNames": ["…"] } ],
+  "ttlSeconds": 3600
+}
+```
+
+`200` response:
+
+```json
+{ "token": "…", "tokenType": "Bearer", "expiresAt": "…", "serviceAccount": "railgrid-si-…", "name": "si-…" }
+```
+
+Unknown fields are rejected, so nothing can be smuggled past the policy.
+
+### Authentication
+
+`/api/identities` carries no auth middleware: its callers are providers, not
+people. It authenticates exactly as the heartbeat does — bearer → TokenReview
+**in the provider's own workspace** → the subject must be
+`system:serviceaccount:default:provider`. A provider names itself in
+`owner.provider`, and the hub verifies that claim against the bearer, so naming
+another provider is a rejection rather than an escalation. Refusals say only
+what class they are (`401`/`403`/`503`); the reason stays in the hub's log.
+
+The App Studio workload exchange
+(`POST /api/provider-actions/workload/exchange`) is unchanged on the wire and
+keeps its own attestation: the runtime proves it is the pod the Project
+environment describes, via the infrastructure provider's
+`/workload-identities/review`. Underneath it is now an adapter over this same
+service, so a workload identity is recorded and collected like every other.
+
+### What may be asked for
+
+Every rule is checked before anything is written, and one refused rule refuses
+the whole request. Three shapes are admitted:
+
+| Clause | Shape | Name-scoped? |
+|---|---|---|
+| A — own group | any verb on resources of an API group the **requesting provider exports** | optional |
+| B — foreign read | `get` on resources of another provider's group, where that provider is **bound in the tenant workspace** | **required** |
+| C — foreign verb | `create` on `{resource}/{verb}`, where `{verb}` is **declared by that provider** for that resource — as a catalog action (`spec.actions`) or a data-plane verb (`spec.dataPlane.verbs`) | **required** |
+| D — platform | a fixed, closed allowlist every workspace-scoped identity needs to function at all | where the API allows it |
+
+Clause D is a closed list, identical for every provider, checked **before**
+clause A so owning a group cannot widen it:
+
+| Group | Admitted | Why it is not negotiable |
+|---|---|---|
+| `authorization.k8s.io` | `create` on `selfsubjectaccessreviews` | the only way an identity can ask what it may do; a self-review answers about the caller, so it can never confer anything the caller lacks |
+| `authentication.k8s.io` | `create` on `selfsubjectreviews` | same, for who the caller is |
+| `core.kcp.io` | `get` on `logicalclusters`, `resourceNames: ["cluster"]` **only** | several data planes refuse to send anything until the identity has confirmed which workspace it is in |
+| `coordination.k8s.io` | `get,create,update,patch,delete` on **named** `leases` | leader election and occupancy accounting; no identity needs a Lease it did not name |
+| `railgrid.ai` | `use` on **named** `mcpservers` | the exact verb the MCP aggregate reviews before admitting a caller (`pkg/hub/mcpaggregate/verifier.go`). Admission confers nothing downstream: federation keeps forwarding the caller's own bearer, so the identity still reaches only the providers it already could |
+| `apis.kcp.io` | `get` on **named** `apibindings` | an identity allowed to reach a foreign group must learn which provider serves it *in this workspace*, from the binding rather than a compiled-in string (review X-8) |
+
+Anything else in those groups is refused — a non-self review, another
+workspace's LogicalCluster, `shards`, `apiexports`, `list` on Leases,
+`list`/`watch` on MCPServers or APIBindings, and any verb on an MCPServer
+other than `use` (owning the object is the tenant's decision, not an
+identity's).
+
+Two of these are `get`-by-name where today's interactive code paths **list**.
+That is deliberate, and it is a change the consumers absorb: the hub names each
+APIBinding after the provider it enables
+(`pkg/hub/restapi/providers_enable.go`), so anyone who knows which provider
+they want already knows the name, while a `list` would hand a background
+identity the full inventory of what a tenant has enabled.
+
+Everything else is refused with a code the caller sees: the core API group
+(Secrets above all — review X-4), every wildcard, any write on another
+provider's objects, any unnamed rule outside the caller's own group, and any
+verb the owning provider has not declared.
+
+`list` and `watch` on a **foreign** group are refused outright. Kubernetes RBAC
+does not apply `resourceNames` to collection requests, so "get/list/watch on
+named resources" cannot be expressed: the rule either authorizes nothing or
+authorizes reading every object of that kind in the workspace. A consumer that
+needs a collection reads it by name, or the owning provider publishes a list
+API of its own.
+
+### What the hub guarantees
+
+- **An owner.** Every identity names a real object in a tenant workspace,
+  verified to exist with that UID before anything is minted. The ServiceAccount
+  name is a hash of the owner tuple **including the UID**, so a deleted and
+  recreated object never inherits its predecessor's credential.
+- **A TTL.** Tokens are TokenRequest-minted: ten minutes for workload
+  attestation, one hour for provider-asserted, capped at twenty-four hours
+  whatever is asked for. No legacy token Secrets.
+- **A record.** One `ScopedIdentity` in `root:railgrid:system:tenants` — a
+  workspace no tenant, provider or user identity can reach — carrying the
+  owner, the cluster, the attestation and the exact accepted rules. The token
+  is never written there, or anywhere.
+- **Collection.** A hub reconciler sweeps the records and deletes the identity
+  when its owner is gone. It has no cross-workspace owner watch (the owners
+  span every workspace and several providers' groups, whose CRDs arrive with
+  their APIExports), so it re-probes each record at its own token TTL: an
+  orphan is collected within one TTL of the last refresh, against *never*
+  before. A provider wanting immediate revocation calls `DELETE` from its own
+  delete reconciler rather than waiting for the sweep.
+- **Reconciled rules.** A record's rules are applied, not merely created: a
+  narrowed grant shrinks the ClusterRole, and an out-of-band widening is
+  reverted on the next sweep.
+
+### The client
+
+`provider-sdk/identityclient` is the supported way to call it:
+
+```go
+client, _ := identityclient.New(identityclient.Options{Provider: "agents"})
+source := identityclient.NewTokenSource(client, identityclient.Request{
+    Owner:     identityclient.Owner{Kind: "Agent", Group: "agents.railgrid.ai", Version: "v1alpha1",
+                                     Resource: "agents", Name: agent.Name, UID: string(agent.UID)},
+    ClusterID: clusterID,
+    Rules:     rules,
+})
+token, err := source.Token(ctx)   // refreshes at 80% of the TTL
+...
+client.Release(ctx, clusterID, owner)  // on the owner's delete path
+```
+
+It authenticates with `hubclient.ResolveHubToken` — the same provider
+service-account token the heartbeat uses. A `*identityclient.Error` reports
+whether retrying could help: a policy refusal is permanent, an unreachable hub
+is not.
+
+
 ## Known divergences (and why)
 
 1. **`kuery` / `app-studio` (and `agents`, `quickstart`) drive their UI
@@ -455,4 +653,10 @@ internal Service.
 | Hub bearer dispatch / verification | `pkg/server/proxy/proxy.go:248` |
 | (2a) endpointslice multicluster mgr | `providers/code/controller_manager.go` |
 | (2b) caller-token tenant factory | `providers/*/tenant/client.go` |
+| Scoped identity service | `pkg/hub/identity/` |
+| Scoped identity policy | `pkg/hub/identity/policy.go` |
+| The single identity minter | `pkg/hub/serviceaccounts/scoped_identity.go` |
+| Scoped identity record | `apis/tenancy/v1alpha1/types_scoped_identity.go` |
+| Scoped identity routes | `pkg/hub/restapi/identities.go` |
+| Scoped identity client | `provider-sdk/identityclient/` |
 

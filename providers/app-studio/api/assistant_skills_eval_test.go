@@ -54,7 +54,7 @@ func TestEvaluationSkillDisclosureAndAuthorityBoundaries(t *testing.T) {
 		t.Fatalf("prompt omitted the authority boundary: %q", prompt)
 	}
 
-	registry := projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup})
+	registry := projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders})
 	loadSpec, ok := registry.Spec(projectToolLoadSkill)
 	if !ok || loadSpec.Risk != projectAssistantToolRiskRead || !loadSpec.ParallelSafe {
 		t.Fatalf("load_skill is not an ordinary parallel read tool: %#v, found=%v", loadSpec, ok)

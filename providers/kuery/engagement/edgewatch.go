@@ -189,6 +189,11 @@ func (c *Controller) followEdgeWatch(
 				continue
 			}
 			now, _, _ := unstructured.NestedBool(object.Object, "status", "connected")
+			// The edges provider publishes the exact data-plane coordinate it
+			// serves this edge on in status.url. Reading it is contract 3
+			// rule 5: a consumer resolves the target from what the owning
+			// provider publishes, never from a format string of its own.
+			statusURL, _, _ := unstructured.NestedString(object.Object, "status", "url")
 			previous, known := connected[name]
 			connected[name] = now
 			// Heartbeat status updates on a steadily connected edge are not
@@ -196,14 +201,14 @@ func (c *Controller) followEdgeWatch(
 			if known && previous == now {
 				continue
 			}
-			c.observeEdge(ctx, tenantCluster, token, name, now)
+			c.observeEdge(ctx, tenantCluster, token, name, statusURL, now)
 		}
 	}
 }
 
 // observeEdge maps one edge's observed state onto the Engagement record and
 // this replica's sync.
-func (c *Controller) observeEdge(ctx context.Context, tenantCluster, token, edge string, connected bool) {
+func (c *Controller) observeEdge(ctx context.Context, tenantCluster, token, edge, statusURL string, connected bool) {
 	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster, "edge", edge)
 	name := EngagementName(tenantCluster, edge)
 
@@ -227,7 +232,7 @@ func (c *Controller) observeEdge(ctx context.Context, tenantCluster, token, edge
 		}
 		return
 	}
-	c.claimAndEngage(ctx, tenantCluster, token, edge)
+	c.claimAndEngage(ctx, tenantCluster, token, edge, statusURL)
 }
 
 // forgetEdge handles an edge that is gone from the workspace entirely.
@@ -245,7 +250,7 @@ func (c *Controller) forgetEdge(ctx context.Context, tenantCluster, edge string)
 // claimAndEngage takes the edge's Lease if it is free, engages the edge when
 // it holds it, and records the result. Declining a foreign claim is the
 // sharding: exactly one replica syncs each edge.
-func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster, token, edge string) {
+func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster, token, edge, statusURL string) {
 	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster, "edge", edge)
 	name := EngagementName(tenantCluster, edge)
 
@@ -260,7 +265,7 @@ func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster, token, e
 		c.dropLocal(ctx, StoreName(tenantCluster, edge), false)
 		return
 	}
-	if err := c.engage(ctx, tenantCluster, edge, token); err != nil {
+	if err := c.engage(ctx, tenantCluster, edge, statusURL, token); err != nil {
 		logger.Error(err, "engaging edge")
 		if statusErr := c.registry.SetStatus(ctx, name, func(status *kueryv1alpha1.EngagementStatus) {
 			status.Phase = kueryv1alpha1.EngagementPhasePending
@@ -299,10 +304,10 @@ func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster, token, e
 func (c *Controller) renewClaims(ctx context.Context, tenantCluster, token string) {
 	prefix := tenantCluster + "/"
 	c.mu.Lock()
-	edges := make([]string, 0, len(c.engaged))
+	edges := make([]engagedEdge, 0, len(c.engaged))
 	for key, entry := range c.engaged {
 		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
-			edges = append(edges, entry.edgeName)
+			edges = append(edges, entry)
 		}
 	}
 	c.mu.Unlock()
@@ -311,6 +316,6 @@ func (c *Controller) renewClaims(ctx context.Context, tenantCluster, token strin
 		if ctx.Err() != nil {
 			return
 		}
-		c.claimAndEngage(ctx, tenantCluster, token, edge)
+		c.claimAndEngage(ctx, tenantCluster, token, edge.edgeName, edge.statusURL)
 	}
 }

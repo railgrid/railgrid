@@ -314,6 +314,26 @@ type ProjectProviderBindingSpec struct {
 	// forwards a call.
 	// +optional
 	AllowedActions []ProjectProviderActionSpec `json:"allowedActions,omitempty"`
+
+	// ImagePullSecretRef names the Secret in this workspace that holds the
+	// image-pull credential the bound instance needs, and is copied onto the
+	// instance's spec.imagePullSecretRef.
+	//
+	// It is a typed reference on both ends. The infrastructure provider used
+	// to look for "<instance>-registry" and App Studio used to mint exactly
+	// that name, which coupled the two by a string neither validated
+	// (docs/provider-contract-review.md M8). Promotion now says which Secret
+	// it wrote; an unset ref means the instance pulls from a public registry.
+	// +optional
+	ImagePullSecretRef *LocalSecretReference `json:"imagePullSecretRef,omitempty"`
+}
+
+// LocalSecretReference names a Secret in the project's own workspace.
+type LocalSecretReference struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
 }
 
 type ProjectProviderResourceReference struct {

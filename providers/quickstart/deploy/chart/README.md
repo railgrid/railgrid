@@ -10,8 +10,11 @@ truth and carries the full inline notes; this table summarises it.
 A provider needs a kcp credential for the workspace it registers into, and this
 chart mounts it into **both** containers as `RAILGRID_PROVIDER_KUBECONFIG`:
 
-- the `init` container applies the provider's APIResourceSchemas, its APIExport,
-  the APIExportEndpointSlice the controller watches, and the bind grant;
+- the `init` container applies the two objects the provider ships — the
+  APIResourceSchemas and the generated APIExport, both baked into the image at
+  `/etc/railgrid/kcp` (override with `RAILGRID_KCP_DIR`) and applied verbatim —
+  then creates the APIExportEndpointSlice the controller watches and the bind
+  grant;
 - the `provider` container watches tenant workspaces through the APIExport
   virtual workspace, and lends the config's host and CA — never its bearer — to
   the per-request clients the `greet` data-plane verb authorizes through.

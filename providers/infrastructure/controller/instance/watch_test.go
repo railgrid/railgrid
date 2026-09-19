@@ -114,34 +114,37 @@ func TestInstanceIndexForgetsRemovedInstances(t *testing.T) {
 	assertRequests(t, ix.inCluster("ws-a", ""))
 }
 
-func TestMapSecretTargetsBridgedInstances(t *testing.T) {
+// A Secret event maps to the Instances that NAME it, not to a name derived
+// from theirs. Two Instances may share one pull Secret, one Instance may
+// reference two, and a Secret nobody references reconciles nothing.
+func TestMapSecretTargetsReferencingInstances(t *testing.T) {
 	c := testController()
-	c.index.set("ws-a", types.NamespacedName{Name: "app"}, "simple-webapp")
-	c.index.set("ws-a", types.NamespacedName{Name: "other"}, "simple-webapp")
-	c.index.set("ws-b", types.NamespacedName{Name: "app"}, "simple-webapp")
+	c.index.set("ws-a", types.NamespacedName{Name: "app"}, "simple-webapp", "team-registry", "team-oidc")
+	c.index.set("ws-a", types.NamespacedName{Name: "other"}, "simple-webapp", "team-registry")
+	c.index.set("ws-a", types.NamespacedName{Name: "public"}, "simple-webapp")
+	c.index.set("ws-b", types.NamespacedName{Name: "app"}, "simple-webapp", "team-registry")
 
-	// Per-instance registry pull Secret → exactly that Instance, in that cluster.
-	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "app-registry")), "cluster://ws-a/app")
-	// Workspace-wide BYO OIDC Secret → every Instance in the workspace.
-	assertRequests(t, c.mapSecret("ws-a", secretObj("default", cloudCredentialsSecret)), "cluster://ws-a/app", "cluster://ws-a/other")
-	// Wrong namespace, unrelated name, or a bare "-registry" map to nothing.
-	assertRequests(t, c.mapSecret("ws-a", secretObj("kube-system", "app-registry")))
-	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "app-token")))
-	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "-registry")))
-	// A registry Secret for an Instance the cluster doesn't have maps to nothing.
-	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "ghost-registry")))
+	// The shared pull Secret → both referencing Instances in that cluster,
+	// and only in that cluster.
+	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "team-registry")), "cluster://ws-a/app", "cluster://ws-a/other")
+	// The OIDC bridge Secret → only the Instance that names it.
+	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "team-oidc")), "cluster://ws-a/app")
+	// Nothing references these: the old conventions are not honoured any more.
+	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "app-registry")))
+	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "cloud-credentials")))
+	// Wrong namespace maps to nothing even for a referenced name.
+	assertRequests(t, c.mapSecret("ws-a", secretObj("kube-system", "team-registry")))
+
+	// Re-reconciling with a changed ref forgets the old one.
+	c.index.set("ws-a", types.NamespacedName{Name: "app"}, "simple-webapp", "new-registry")
+	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "team-registry")), "cluster://ws-a/other")
+	assertRequests(t, c.mapSecret("ws-a", secretObj("default", "new-registry")), "cluster://ws-a/app")
 
 	pred := c.secretPredicate()
-	if !pred.Create(createEvent(secretObj("default", "app-registry"))) {
-		t.Fatal("predicate dropped a registry pull Secret")
+	if !pred.Create(createEvent(secretObj("default", "team-registry"))) {
+		t.Fatal("predicate dropped a Secret in the credentials namespace")
 	}
-	if !pred.Create(createEvent(secretObj("default", cloudCredentialsSecret))) {
-		t.Fatal("predicate dropped the cloud-credentials Secret")
-	}
-	if pred.Create(createEvent(secretObj("default", "unrelated"))) {
-		t.Fatal("predicate passed an unrelated Secret")
-	}
-	if pred.Create(createEvent(secretObj("other", cloudCredentialsSecret))) {
+	if pred.Create(createEvent(secretObj("other", "team-registry"))) {
 		t.Fatal("predicate passed a Secret outside the credentials namespace")
 	}
 }

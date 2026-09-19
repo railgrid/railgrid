@@ -224,7 +224,7 @@ func TestProjectAssistantRunViewIncludesStructuredTerminalFields(t *testing.T) {
 }
 
 func TestProjectAssistantTerminalContentPreservesFinalProse(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	const want = "Final model prose."
 	if got := server.projectAssistantRunTerminalContent(context.Background(), store.Scope{}, store.AssistantRun{}, want, "partial", errors.New("provider failed"), projectAssistantCompletionEvidence{}, false); got != want {
 		t.Fatalf("terminal content = %q, want %q", got, want)
@@ -232,7 +232,7 @@ func TestProjectAssistantTerminalContentPreservesFinalProse(t *testing.T) {
 }
 
 func TestProjectAssistantTerminalContentDoesNotRewriteModelProse(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	const want = "Committed and pushed the changes; CI is running."
 	got := server.projectAssistantRunTerminalContent(
 		context.Background(),

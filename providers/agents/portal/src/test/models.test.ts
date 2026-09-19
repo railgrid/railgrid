@@ -236,11 +236,25 @@ describe('models view on an empty workspace', () => {
 describe('api client array normalization', () => {
   // The client must not depend on the server being new enough: an older
   // provider still in the cluster returns nulls.
+  //
+  // The verbs are per-agent now, so the stub answers two kinds of request: the
+  // kube list the client fans out from, and the data-plane verb itself.
   const clientWith = (json: unknown): ApiClient => {
     const api = new ApiClient()
-    api.setContext({ basePath: '/ui/providers/agents', orgUUID: 'o', workspaceUUID: 'w', token: 't' } as never)
-    globalThis.fetch = (() =>
-      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(json) } as Response)) as typeof fetch
+    api.setContext({ basePath: '/ui/providers/agents', tenant: 'c1', orgUUID: 'o', workspaceUUID: 'w', token: 't' } as never)
+    globalThis.fetch = ((input: RequestInfo | URL) => {
+      const url = String(typeof input === 'string' ? input : (input as Request).url ?? input)
+      const body = url.includes('/agents.railgrid.ai/')
+        ? { items: [{ metadata: { name: 'a' } }] }
+        : json
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(JSON.stringify(body)),
+      } as Response)
+    }) as typeof fetch
     return api
   }
 
@@ -252,14 +266,34 @@ describe('api client array normalization', () => {
   })
 
   it('getRun() turns null steps/children into empty arrays', async () => {
-    const d = await clientWith({ id: 'r1', agent: 'a', phase: 'Succeeded', steps: null, children: null }).getRun('r1')
+    // The object half comes from kcp, the trace half from the provider; the
+    // trace is the one that can answer null.
+    const api = new ApiClient()
+    api.setContext({ basePath: '/ui/providers/agents', tenant: 'c1', orgUUID: 'o', workspaceUUID: 'w', token: 't' } as never)
+    globalThis.fetch = ((input: RequestInfo | URL) => {
+      const url = String(typeof input === 'string' ? input : (input as Request).url ?? input)
+      const body = url.includes('/trace')
+        ? { id: 'r1', agent: 'a', phase: 'Succeeded', steps: null, children: null }
+        : { apiVersion: 'agents.railgrid.ai/v1alpha1', kind: 'Run', metadata: { name: 'r1' }, spec: { agentRef: 'a', trigger: 'api' }, status: { phase: 'Succeeded' } }
+      return Promise.resolve({
+        ok: true, status: 200, statusText: 'OK',
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(JSON.stringify(body)),
+      } as Response)
+    }) as typeof fetch
+    const d = await api.getRun('r1')
     expect(d.steps).toEqual([])
     expect(d.children).toEqual([])
+    expect(d.agent).toBe('a')
   })
 
-  it('listRuns() tolerates a null items array', async () => {
-    const p = await clientWith({ items: null }).listRuns()
-    expect(p.items).toEqual([])
+  it('listRuns() tolerates an object with no status yet', async () => {
+    // A Run created a moment ago has no status. It must render as a Pending run
+    // rather than faulting the whole feed.
+    const p = await clientWith({ items: [{ metadata: { name: 'r1' }, spec: { agentRef: 'a', trigger: 'api' } }] }).listRuns()
+    expect(p.items).toHaveLength(1)
+    expect(p.items[0].phase).toBe('Pending')
+    expect(p.items[0].class).toBe('background')
   })
 
   it('does not resurrect a stored workspace after the host explicitly clears context', () => {

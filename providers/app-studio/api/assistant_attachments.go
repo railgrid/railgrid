@@ -33,6 +33,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/railgrid/provider-sdk/dataplane"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -327,7 +328,18 @@ func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http
 		}
 		return
 	}
-	w.Header().Set("Location", "/api/projects/"+mux.Vars(r)["project"]+"/assistant/attachments/"+created.ID)
+	// Location points at the verb that reads the receipt back, on the same
+	// grammar the caller used to create it. It used to name the retired
+	// /api route, which by now would have been an address that 404s.
+	if location, err := (dataplane.Request{
+		ClusterID: id.clusterID,
+		Resource:  "projects",
+		Name:      mux.Vars(r)["project"],
+		Verb:      "attachments",
+		Tail:      created.ID,
+	}).Path(dataplane.DataplaneRoot); err == nil {
+		w.Header().Set("Location", location)
+	}
 	if newlyCreated {
 		writeJSON(w, http.StatusCreated, attachmentReceipt(created))
 		return

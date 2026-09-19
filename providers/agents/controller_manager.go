@@ -23,9 +23,11 @@ package main
 // changes or when the reconciler asked to be woken (a schedule's next fire, a
 // token's expiry), which is both cheaper and prompter.
 //
-// Runs are NOT a CR and have no reconciler: they are Postgres rows, by design
-// (see docs/agents-provider-architecture.md). The Schedule reconciler creates
-// them through the executor; the recovery sweep in api/recover.go tends them.
+// Runs are a CR now (agents.railgrid.ai/Run), and have a reconciler of their
+// own: it enforces each run's deadline by waking at the instant written on the
+// object, and purges the run's Postgres rows when the object is deleted. The
+// transcript and tool trace stay in Postgres under the projection carve-out —
+// what the object carries is the run's identity, phase and cost.
 //
 // Enabled together with the background executor (RAILGRID_PROVIDER_KUBECONFIG).
 // Without it the provider runs REST/MCP/portal-only.
@@ -35,6 +37,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
@@ -51,8 +54,10 @@ import (
 	"github.com/railgrid/provider-sdk/vwhealth"
 
 	"github.com/railgrid/provider-agents/api"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/controller/agent"
 	"github.com/railgrid/provider-agents/controller/connection"
+	runctl "github.com/railgrid/provider-agents/controller/run"
 	"github.com/railgrid/provider-agents/controller/schedule"
 	"github.com/railgrid/provider-agents/controller/toolset"
 	"github.com/railgrid/provider-agents/controller/trigger"
@@ -148,11 +153,15 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 	if err := (&connection.Reconciler{Telegram: deps.Telegram, OAuth: deps.OAuth, Gateway: deps.Gateway}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("connection controller: %w", err)
 	}
-	if err := (&agent.Reconciler{PurgeData: agentDataPurger(deps)}).SetupWithManager(mgr); err != nil {
+	purge, release := agentTeardown(deps)
+	if err := (&agent.Reconciler{PurgeData: purge, ReleaseIdentity: release}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("agent controller: %w", err)
 	}
 	if err := (&toolset.Reconciler{}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("toolset controller: %w", err)
+	}
+	if err := newRunReconciler(deps).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("run controller: %w", err)
 	}
 	// The Trigger reconciler mints inbound webhook URLs, so it needs the same
 	// signing key the HTTP layer signs with. It is read from the environment
@@ -174,6 +183,56 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 	return mgr.Start(ctx)
 }
 
+// runExecution is what the Run reconciler needs from the HTTP half of the
+// provider: the worker pool that actually executes a claimed run, the store
+// behind a purge, and the cluster→tenant mapping both need. Discovered on the
+// executor for the same reason storeTeardown is — the controller only knows the
+// logical cluster the CR came from.
+type runExecution interface {
+	DispatchRun(ctx context.Context, clusterID string, object *agentsv1alpha1.Run) error
+	RecoverRun(ctx context.Context, clusterID, agentName, runID string) error
+	StopRun(ctx context.Context, clusterID, agentName, runID, reason string) error
+	PurgeRunData(ctx context.Context, clusterID, agentName, runID string) error
+}
+
+// newRunReconciler builds the Run controller, wired to the provider's executor
+// when there is one.
+//
+// Without it the reconciler still runs but claims nothing: a replica that
+// cannot reach tenant workspaces must not take work off the queue, because a
+// claim it cannot execute is worse than no claim at all — it holds the run for
+// a full ClaimGrace before anyone else may try.
+func newRunReconciler(deps api.ControllerDeps) *runctl.Reconciler {
+	r := &runctl.Reconciler{ProcessID: processID()}
+	execution, ok := deps.Submit.(runExecution)
+	if !ok {
+		log.Printf("controller manager: unattended runs are not executed and run store data is not purged on delete (the executor exposes no run execution access)")
+		return r
+	}
+	r.Dispatch = execution.DispatchRun
+	r.Recover = execution.RecoverRun
+	r.Stop = execution.StopRun
+	r.PurgeData = execution.PurgeRunData
+	return r
+}
+
+// processID names this process as the owner of a run it claims.
+//
+// The pod name in Kubernetes, which is stable for the life of the process and
+// unique across replicas — exactly the two properties a claim needs. Outside a
+// cluster it falls back to the hostname plus the PID, so two dev processes on
+// one machine do not claim as each other.
+func processID() string {
+	if pod := os.Getenv("POD_NAME"); pod != "" {
+		return pod
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		host = "unknown"
+	}
+	return host + "-" + strconv.Itoa(os.Getpid())
+}
+
 // storeTeardown is the provider-store teardown the Agent reconciler performs
 // on delete: the rows DELETE /api/agents/{name} used to remove inline before
 // that handler was deleted. It is discovered on the executor rather than being
@@ -182,16 +241,23 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 // the controller only knows the logical cluster the CR came from.
 type storeTeardown interface {
 	PurgeAgentData(ctx context.Context, clusterID, agentName string) error
+	ReleaseAgentIdentity(ctx context.Context, clusterID, agentName string) error
 }
 
-// agentDataPurger returns the purge function, or nil when the provider has no
-// store to purge from. nil disables the Agent finalizer outright, which is the
-// right answer for the in-memory dev path: a finalizer nothing can clear would
-// make every agent undeletable.
-func agentDataPurger(deps api.ControllerDeps) func(context.Context, string, string) error {
-	if p, ok := deps.Submit.(storeTeardown); ok {
-		return p.PurgeAgentData
+// agentTeardown returns what the Agent finalizer does on delete: purge the
+// agent's store rows, and revoke the identity it ran unattended work with.
+//
+// Both nil disables the finalizer outright, which is the right answer for the
+// in-memory dev path: a finalizer nothing can clear would make every agent
+// undeletable.
+func agentTeardown(deps api.ControllerDeps) (
+	purge func(ctx context.Context, clusterID, agentName string) error,
+	release func(ctx context.Context, clusterID, agentName string) error,
+) {
+	teardown, ok := deps.Submit.(storeTeardown)
+	if !ok {
+		log.Printf("controller manager: a deleted agent's store data is not purged and its identity is not revoked (the executor exposes no teardown); transcripts and runs are left in the store")
+		return nil, nil
 	}
-	log.Printf("controller manager: agent store data is not purged on delete (the executor exposes no PurgeAgentData); transcripts and runs of a deleted agent are left in the store")
-	return nil
+	return teardown.PurgeAgentData, teardown.ReleaseAgentIdentity
 }

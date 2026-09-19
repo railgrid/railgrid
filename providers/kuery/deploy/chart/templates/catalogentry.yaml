@@ -43,11 +43,9 @@ data:
         # true the whole time nothing reconciled.
         healthPath: "/readyz"
 
-      # Kuery's engagement controller opens BACKGROUND connections to the
-      # tenant's edge clusters through the hub's edges-proxy (informer sync).
-      # On Enable the hub grants the provider SA the "proxy" verb on edges in
-      # the tenant workspace; removed again on Disable.
-      edgeProxyAccess: true
+      # No edgeProxyAccess: kuery reaches each tenant's edges as a
+      # per-workspace ServiceAccount it provisions itself, with its own grant
+      # for the data-plane coordinate. Mirrors manifest.yaml.
 
       apiExport:
         name: "kuery.providers.railgrid.ai"
@@ -72,6 +70,19 @@ data:
             group: rbac.authorization.k8s.io
             verbs: [get, list, watch, create]
             tenantScoped: true
+      # Data-plane verbs this provider serves, declared so the coordinate is
+      # machine-readable. Declaring one grants and serves nothing: every call is
+      # still authorized by this provider's own caller-scoped SSAR on
+      # {resource}/{verb}. What the declaration buys is that the hub
+      # scoped-identity service can mint a capability for a verb it can verify
+      # exists (pkg/hub/identity/policy.go clause C), instead of consumers
+      # hardcoding a coordinate nobody validates.
+      dataPlane:
+        verbs:
+          - resource: savedviews
+            verb: run
+            description: "Run the saved view's query and return its result."
+            readOnly: true
       # Lets an organization run this provider in its own cluster
       # (docs/byo-providers.md). Keep manifest.yaml and
       # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the

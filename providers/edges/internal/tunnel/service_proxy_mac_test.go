@@ -29,8 +29,11 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // serviceProxyDialer exposes one in-memory edge-agent connection and records
@@ -58,6 +61,24 @@ func (d *serviceProxyDialer) Dial(context.Context) (net.Conn, error) {
 	return local, nil
 }
 
+// svcRequest is the parsed class (a) route the handler would have produced.
+func svcRequest(verb, tail string) dataplane.Request {
+	return dataplane.Request{ClusterID: "tenant-a", Resource: serviceResource, Name: "mac-service", Verb: verb, Tail: tail}
+}
+
+// svcObject is what gate 1 read as the caller: the Service the proxy acts on.
+func svcObject(edgeKind, edgeName string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "edges.railgrid.ai/v1alpha1",
+		"kind":       "Service",
+		"metadata":   map[string]any{"name": "mac-service"},
+		"spec": map[string]any{
+			"edgeRef": map[string]any{"kind": edgeKind, "name": edgeName},
+			"port":    int64(8123),
+		},
+	}}
+}
+
 func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (*Server, *serviceProxyDialer) {
 	t.Helper()
 	const cluster = "tenant-a"
@@ -81,7 +102,7 @@ func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (
 	}))
 	t.Cleanup(kcp.Close)
 
-	s := testServer("/services/providers/edges/edgeproxy")
+	s := testServer("/services/providers/edges/" + DataPlaneRoot)
 	s.kcpConfig = &rest.Config{Host: kcp.URL}
 	s.tenantConfig = func(_ context.Context, gotCluster string) (*rest.Config, error) {
 		if gotCluster != cluster {
@@ -89,14 +110,8 @@ func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (
 		}
 		return s.kcpConfig, nil
 	}
-	s.authorizeFn = func(_ context.Context, _ *rest.Config, _ *rest.Config, token, gotCluster, verb, group, resource, name string) error {
-		if token != "caller-token" || gotCluster != cluster || verb != "proxy" ||
-			group != "edges.railgrid.ai" || resource != serviceResource || name != serviceName {
-			return errors.New("unexpected delegated authorization request")
-		}
-		return nil
-	}
 	s.edgeConnManager = NewConnManager()
+	s.tickets = newTicketStore()
 	s.logger = klog.Background()
 	d := &serviceProxyDialer{request: make(chan *http.Request, 1), errors: make(chan error, 1)}
 	if edgeKind == macOSServerKind {
@@ -108,10 +123,10 @@ func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (
 func TestMacOSServiceProxyUsesTheMacTunnelAndHostLoopback(t *testing.T) {
 	s, dialer := newServiceProxyTestServer(t, macOSServerKind, "mac-1")
 	req := httptest.NewRequest(http.MethodGet,
-		"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy/api/ping", nil)
+		"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy/api/ping", nil)
 	rr := httptest.NewRecorder()
 
-	s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "/api/ping")
+	s.serveService(rr, req, "caller-token", svcRequest("proxy", "api/ping"), svcObject(macOSServerKind, "mac-1"))
 
 	if rr.Code != http.StatusOK || rr.Body.String() != "ok" {
 		t.Fatalf("service proxy response = %d %q, want 200 %q", rr.Code, rr.Body.String(), "ok")
@@ -145,10 +160,10 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 	t.Run("GET redirects to the slash form", func(t *testing.T) {
 		s, dialer := newServiceProxyTestServer(t, macOSServerKind, "mac-1")
 		req := httptest.NewRequest(http.MethodGet,
-			"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy?tab=1", nil)
+			"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy?tab=1", nil)
 		rr := httptest.NewRecorder()
 
-		s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "")
+		s.serveService(rr, req, "caller-token", svcRequest("proxy", ""), svcObject(macOSServerKind, "mac-1"))
 
 		if rr.Code != http.StatusMovedPermanently {
 			t.Fatalf("status = %d (body %q), want 301", rr.Code, rr.Body.String())
@@ -166,10 +181,10 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 		// No body: the in-memory agent answers without reading one, and
 		// net.Pipe is unbuffered.
 		req := httptest.NewRequest(http.MethodPost,
-			"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy", nil)
+			"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy", nil)
 		rr := httptest.NewRecorder()
 
-		s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "")
+		s.serveService(rr, req, "caller-token", svcRequest("proxy", ""), svcObject(macOSServerKind, "mac-1"))
 
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d (body %q), want 200", rr.Code, rr.Body.String())
@@ -190,10 +205,10 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 func TestServiceProxyRejectsUnknownEdgeKindBeforeDialing(t *testing.T) {
 	s, dialer := newServiceProxyTestServer(t, "UnexpectedKind", "mac-1")
 	req := httptest.NewRequest(http.MethodGet,
-		"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy", nil)
+		"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy", nil)
 	rr := httptest.NewRecorder()
 
-	s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "")
+	s.serveService(rr, req, "caller-token", svcRequest("proxy", ""), svcObject("UnexpectedKind", "mac-1"))
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("unknown edge kind status = %d, want 400 (body %q)", rr.Code, rr.Body.String())

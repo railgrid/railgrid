@@ -148,7 +148,7 @@ func TestSanitizeReplicaID(t *testing.T) {
 			t.Fatalf("SanitizeReplicaID(%q) = %q, want unchanged", in, got)
 		}
 		for _, c := range got {
-			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
 				t.Fatalf("SanitizeReplicaID(%q) = %q contains %q", in, got, string(c))
 			}
 		}

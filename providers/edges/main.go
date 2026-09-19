@@ -14,13 +14,18 @@
 // subresources. The tunnel Server dispatches by the resource segment in the URL
 // path, so both kinds share one pod, one APIExport, one CatalogEntry.
 //
-// Routes (all behind the hub backend proxy at /services/providers/edges/*):
+// Routes (all behind the hub backend proxy at /services/providers/edges/*).
+// The whole surface is built by provider-sdk/serve, which takes one handler
+// per Pillar 2 route class and refuses anything that is not one:
 //
-//   - /healthz                                          liveness/readiness gate
-//   - /agent/{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy  agent control-tunnel ingress
-//   - /agent/proxy?revdial.dialer=<id>                  agent revdial pickup ingress (single-replica / legacy)
-//   - /agent/proxy/{replica}?revdial.dialer=<id>        replica-addressed pickup ingress
-//   - /edgeproxy/clusters/{cluster}/.../{name}/{k8s|ssh|mcp}  consumer egress
+//   - /healthz, /readyz                                 (c) liveness, readiness
+//   - /mcp, /mcp/sse                                    (b) provider MCP projection
+//   - /dataplane/clusters/{cluster}/{resource}/{name}/{verb}[/{tail}]
+//     (a) consumer egress: k8s | ssh | mcp | proxy | ticket
+//   - /agent/clusters/{cluster}/{resource}/{name}/proxy (f) agent control tunnel
+//   - /agent/proxy?revdial.dialer=<id>                  (f) revdial pickup (single-replica)
+//   - /agent/proxy/{replica}?revdial.dialer=<id>        (f) replica-addressed pickup
+//   - everything else                                   the portal bundle
 //
 // Multi-replica: revdial dialers stay process-local (the dialer closes over
 // the accepted socket), but each agent dials only ONE replica. The replica
@@ -32,7 +37,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -41,8 +45,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -52,9 +54,11 @@ import (
 	"k8s.io/klog/v2"
 
 	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
-	"github.com/railgrid/provider-edges/internal/svccatalog"
 	sdktunnel "github.com/railgrid/provider-edges/internal/tunnel"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/identityclient"
+	"github.com/railgrid/provider-sdk/serve"
+	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
@@ -68,11 +72,13 @@ const providerPublicBase = "/services/providers/edges"
 
 // agentPickupPath is the public revdial pickup path (behind the hub backend
 // proxy) the agent re-enters through for this provider.
-const agentPickupPath = providerPublicBase + "/agent/proxy"
+const agentPickupPath = providerPublicBase + "/" + sdktunnel.AgentRoot + "/proxy"
 
-// edgeProxyPublicPath is the public consumer-egress base for the k8s/ssh
-// subresources, stamped into edge status.URL.
-const edgeProxyPublicPath = providerPublicBase + "/edgeproxy"
+// edgeProxyPublicPath is the public consumer-egress base, stamped into edge
+// and Service status.URL. It is the shared class (a) root: the provider-private
+// "/edgeproxy" mount is gone, because provider-sdk/serve mounts the data plane
+// at /dataplane/ and refuses to register anything else.
+const edgeProxyPublicPath = providerPublicBase + "/" + sdktunnel.DataPlaneRoot
 
 func main() {
 	if len(os.Args) > 1 {
@@ -157,13 +163,16 @@ func runServe(opts serveOptions) error {
 		port = "8088"
 	}
 
-	mux := http.NewServeMux()
-
-	// Health gates Ready=true in the hub via spec.backend.healthPath.
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	// vwState is this provider's readiness: can THIS process reach the
+	// APIExport virtual workspace it watches, and — while this replica holds
+	// the controller lease — is the manager actually watching tenant
+	// workspaces. It backs /readyz, which the CatalogEntry points
+	// spec.backend.healthPath at, and it gates the heartbeat.
+	//
+	// /healthz stays unconditional and is NOT this: a provider whose watches
+	// are dead is alive and must not be restarted, it must stop claiming to
+	// be ready.
+	vwState := &vwhealth.Readiness{}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -173,6 +182,7 @@ func runServe(opts serveOptions) error {
 	// manager (Edge reconcilers across tenant workspaces).
 	kcpConfig := loadKCPConfig(log)
 	hubExternalURL := os.Getenv("RAILGRID_HUB_EXTERNAL_URL")
+	hubCA := hubCAData(log)
 
 	// RAILGRID_STATIC_TOKENS used to let listed bearers skip TokenReview/SAR on
 	// every data-plane path. The bypass is gone: kcp validates every token, and
@@ -190,6 +200,18 @@ func runServe(opts serveOptions) error {
 			"envVar", "RAILGRID_STATIC_TOKENS", "ignored", true, "severity", "warning")
 	}
 
+	// The hub scoped-identity client: how this provider obtains an edge
+	// agent's credential instead of minting one. Best-effort at startup — a
+	// dev run with no hub URL simply has no identity client, and the join path
+	// then hands out no credential rather than falling back to minting a
+	// permanent one itself.
+	identities, ierr := identityclient.New(identityclient.Options{Provider: "edges"})
+	if ierr != nil {
+		log.Error(ierr, "hub identity service unavailable; edge agents will not be issued credentials",
+			"consequence", "an enrolling agent keeps its join token and retries")
+		identities = nil
+	}
+
 	// Tunnel plane. The provider owns the ConnManager and terminates agent
 	// reverse tunnels in-process; with replica routing enabled below, peer
 	// replicas relay to whichever replica holds a tunnel. Both prefixes sit
@@ -205,12 +227,14 @@ func runServe(opts serveOptions) error {
 		KCPConfig:                 kcpConfig,
 		HubExternalURL:            hubExternalURL,
 		HubInternalURL:            os.Getenv("RAILGRID_HUB_INTERNAL_URL"),
+		HubCAData:                 hubCA,
 		AllowUnverifiedSSHHostKey: opts.allowUnverifiedSSHHostKey,
 		Logger:                    log,
 	})
 	if err != nil {
 		return fmt.Errorf("build tunnel server: %w", err)
 	}
+	tsrv.SetIdentityClient(identities)
 
 	// Tunnel Lease registry + multi-replica routing. The registry is always on
 	// when a kcp credential exists: the replica terminating a tunnel claims it
@@ -278,7 +302,7 @@ func runServe(opts serveOptions) error {
 	// APIExportEndpointSlice multicluster manager. Best-effort: a missing
 	// kubeconfig just disables the manager (healthz + tunnel still serve).
 	if cerr := startEdgeControllerManager(ctx, kcpConfig, tsrv,
-		hubExternalURL, hubCAData(log), os.Getenv("RAILGRID_DEV_MODE") == "true"); cerr != nil {
+		hubExternalURL, hubCA, os.Getenv("RAILGRID_DEV_MODE") == "true", identities, vwState); cerr != nil {
 		if errors.Is(cerr, errControllerDisabled) {
 			log.Info("edge controller manager disabled (no kcp kubeconfig)")
 		} else {
@@ -286,56 +310,51 @@ func runServe(opts serveOptions) error {
 		}
 	}
 
-	// Agent ingress: control tunnel + revdial pickup. StripPrefix so the
-	// handler sees /{cluster}/.../edges/{name}/proxy and /proxy.
-	mux.Handle("/agent/", http.StripPrefix("/agent", tsrv.AgentIngressHandler()))
-	// Consumer egress: k8s/ssh/mcp subresources on the Edge CR.
-	mux.Handle("/edgeproxy/", http.StripPrefix("/edgeproxy", tsrv.EdgeProxyHandler()))
-	// Provider aggregate MCP: the hub's MCP aggregate federates this endpoint
-	// (POST tools/list with the caller's token + X-Railgrid-Cluster). Exposes kube
-	// tools across the tenant's connected KubernetesCluster edges AND the Home
-	// Assistant tools of every Ready home-assistant EdgeService.
-	mux.Handle("/mcp", tsrv.RootMCPHandler())
+	// Probe the advertised virtual-workspace URL periodically, so an
+	// unreachable VW (the silent failure vwhealth exists for) shows up on
+	// /readyz instead of only in a watch log nobody reads. A nil kcpConfig
+	// makes this a no-op.
+	go vwhealth.Watch(ctx, kcpConfig, apiExportName, vwState, vwhealth.DefaultInterval)
 
-	// Service catalog: the UI-facing form schema for every service type
-	// (svccatalog.All() — connection defaults, auth model + credential fields,
-	// scheme-lock/host-required hints). The portal fetches this at
-	// /services/providers/edges/catalog to render the add/configure-service form
-	// from data, so it never drifts from the backend's auth/probe knowledge.
-	mux.HandleFunc("/catalog", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-cache")
-		if err := json.NewEncoder(w).Encode(svccatalog.All()); err != nil {
-			log.Error(err, "encoding service catalog")
-		}
-	})
-
+	// The whole HTTP surface, one handler per Pillar 2 route class.
+	// provider-sdk/serve refuses anything that is not a class — there is no
+	// /api/*, no unauthenticated /catalog, and no provider-private root: the
+	// consumer data plane is class (a) at /dataplane/ and the agent tunnel is
+	// class (f) at /agent/. Both receive the path EXACTLY as the caller sent
+	// it, so dataplane.ParseRequest — not an http.ServeMux — decides what
+	// ".." and "//" mean.
+	serveOpts := serve.Options{
+		Name:      "edges",
+		Readiness: vwhealth.Handler(vwState),
+		// (b) Provider aggregate MCP: the hub's MCP aggregate federates this
+		// endpoint (POST tools/list with the caller's token +
+		// X-Railgrid-Cluster). Exposes kube tools across the tenant's connected
+		// KubernetesCluster edges AND the tools of every Ready Service.
+		MCP: tsrv.RootMCPHandler(),
+		// (a) Consumer egress: the declared verbs on the edge kinds and on
+		// published Services.
+		DataPlane: tsrv.EdgeProxyHandler(),
+		// (f) Agent ingress: control tunnel + revdial pickup.
+		Extra: []serve.Route{{
+			Prefix:  serve.AgentPrefix,
+			Class:   serve.ClassAgentTunnel,
+			Handler: tsrv.AgentIngressHandler(),
+		}},
+		Logger: log,
+	}
 	// Provider portal micro-frontend (embedded Vite bundle). The hub proxies
-	// /ui/providers/edges/* here; ProviderFrame injects <script src=".../main.js">
-	// and mounts <railgrid-provider-edges>. Serve /main.js, /assets/*, /icon.svg from
-	// portal/dist with an index.html fallback. Best-effort: a missing/empty bundle
-	// just disables the UI (healthz + tunnel still serve).
-	if fileServer, distFS, perr := portalHandler(); perr != nil {
+	// /ui/providers/edges/* here; ProviderFrame injects
+	// <script src=".../main.js"> and mounts <railgrid-provider-edges>.
+	// Best-effort: a missing or empty bundle just disables the UI.
+	if distFS, perr := portalDist(); perr != nil {
 		log.Error(perr, "portal embed unavailable; provider UI disabled")
 	} else {
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			if clean := strings.TrimPrefix(r.URL.Path, "/"); clean != "" {
-				if servePortalAsset(w, r, distFS, clean) {
-					return
-				}
-			}
-			r2 := r.Clone(r.Context())
-			r2.URL.Path = "/"
-			fileServer.ServeHTTP(w, r2)
-		})
+		serveOpts.Portal = distFS
+	}
+
+	handler, err := serve.New(serveOpts)
+	if err != nil {
+		return fmt.Errorf("build server: %w", err)
 	}
 
 	// NOTE: no WriteTimeout / IdleTimeout — the agent control tunnel and
@@ -343,26 +362,14 @@ func runServe(opts serveOptions) error {
 	// deadline). ReadHeaderTimeout only bounds the header phase.
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
-	// ready gates the heartbeat below. The hub records any beat it receives as
-	// liveness and ignores the body's status, so the provider must not beat
-	// before it can serve: the tunnel plane and the edge controller manager
-	// are started above, so binding the listener here is the last step.
-	//
-	// TODO(provider-contract-remediation §5): edges gains leader election and
-	// a vwhealth.Readiness over the APIExport virtual workspace; gate the beat
-	// on that Readiness and delete this flag — a flag set once at startup
-	// cannot notice the edge controllers dying.
-	var ready atomic.Bool
 
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", srv.Addr, err)
 	}
-	ready.Store(true)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -377,7 +384,11 @@ func runServe(opts serveOptions) error {
 		log.Error(err, "resolving heartbeat token; beats will be unauthenticated")
 	}
 	hb.Logger = log
-	hb.CanSend = ready.Load
+	// The hub records any beat it receives as liveness and ignores the body's
+	// status, so the beat must stop the moment the provider stops being able
+	// to do its job — the same answer /readyz gives. A flag set once at
+	// startup, which this used to be, cannot notice the controllers dying.
+	hb.CanSend = func() bool { return vwState.Check() == nil }
 	go hubclient.RunHeartbeat(ctx, hb)
 
 	select {
@@ -385,7 +396,6 @@ func runServe(opts serveOptions) error {
 	case err := <-errCh:
 		return err
 	}
-	ready.Store(false)
 	log.Info("shutting down")
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

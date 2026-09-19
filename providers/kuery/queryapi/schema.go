@@ -8,10 +8,6 @@
 
 package queryapi
 
-import (
-	"net/http"
-)
-
 // QuerySpecSchema is a JSON Schema (draft-07) for the kuery QuerySpec — a
 // SavedView's spec.query, and the optional override the run verb accepts. It
 // is intentionally a curated, hand-authored subset of the full kuery type (the
@@ -140,8 +136,8 @@ const QuerySpecSchema = `{
   }
 }`
 
-// SchemaPath is where the schema is served: a static asset beside the portal
-// bundle, NOT an /api/ route.
+// SchemaPath is where the schema is served: a static asset overlaid onto the
+// portal bundle (assets.go), NOT an /api/ route.
 //
 // The provider has exactly one authorized tenant route (the query verb), and
 // the schema is not tenant data — it is the same document for everyone and is
@@ -151,18 +147,3 @@ const QuerySpecSchema = `{
 // from. The hub's UI proxy routes any path whose last segment contains a "."
 // to this binary, so it reaches the browser exactly like cytoscape.min.js.
 const SchemaPath = "/query-schema.json"
-
-// SchemaHandler serves the QuerySpec JSON Schema. It needs no identity — the
-// schema is the same for everyone — so it is safe unauthenticated, which lets
-// external clients fetch it for codegen and docs.
-type SchemaHandler struct{}
-
-func (SchemaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/schema+json")
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	_, _ = w.Write([]byte(QuerySpecSchema))
-}

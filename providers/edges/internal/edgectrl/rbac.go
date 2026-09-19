@@ -18,8 +18,12 @@ package edgectrl
 
 const (
 	rbacControllerName = "edge-rbac"
-	// edgeNamespace is the namespace where edge credentials are stored.
-	edgeNamespace = "railgrid-system"
-	// edgeAgentClusterRole is the ClusterRole name for edge agents.
-	edgeAgentClusterRole = "railgrid-edge-agent"
 )
+
+// edgeNamespace and edgeAgentClusterRole are gone with the ServiceAccount,
+// ClusterRole, binding and token Secret this provider used to mint per edge:
+// an agent's credential is now a hub-minted scoped identity (agentidentity.go)
+// and this provider writes nothing into the tenant workspace to create it.
+// The tenant namespace that still exists, railgrid-system, holds only the SSH
+// credential Secret the provider writes on the agent's behalf after the two
+// gates — see internal/tunnel/agentcred.go.

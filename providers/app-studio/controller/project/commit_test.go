@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
@@ -92,9 +93,13 @@ func TestCommitMessageStaysUnderRepositoryCommitLimit(t *testing.T) {
 	}
 }
 
-// commitTestEnv drives commitWorkspace against a fake hub MCP endpoint, a
-// fake tenant client holding RepositoryCommits, and a fake control-plane
-// client holding the Project (the pending-commit pointer is written there).
+// commitTestEnv drives commitWorkspace against a fake hub MCP endpoint and
+// one fake client standing in for the manager's cluster client: the provider's
+// APIExport virtual workspace serves both its own Projects and the claimed
+// RepositoryCommits, so the reconciler reads and writes them through the same
+// handle. The commit itself is still asked for over MCP (only the Code
+// provider can store the source bundle a RepositoryCommit points at), so the
+// env also mints a project identity from a fake hub identity service.
 type commitTestEnv struct {
 	t        *testing.T
 	ctx      context.Context
@@ -102,8 +107,7 @@ type commitTestEnv struct {
 	project  *aiv1alpha1.Project
 	scope    workspace.Scope
 	files    *workspace.FileStore
-	tenant   client.Client
-	control  client.Client
+	c        client.Client
 	repo     *unstructured.Unstructured
 	calls    int
 	respond  func(call int) (text string, isError bool)
@@ -150,18 +154,23 @@ func newCommitTestEnv(t *testing.T, respond func(call int) (string, bool), objec
 	env.repo = &unstructured.Unstructured{Object: map[string]any{
 		"status": map[string]any{"conditions": []any{map[string]any{"type": "Ready", "status": "True"}}},
 	}}
-	env.tenant = fake.NewClientBuilder().WithRuntimeObjects(objects...).Build()
 	scheme := runtime.NewScheme()
 	if err := aiv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	env.control = fake.NewClientBuilder().WithScheme(scheme).WithObjects(env.project).Build()
-	if err := env.control.Get(env.ctx, types.NamespacedName{Name: env.project.Name}, env.project); err != nil {
+	// The claimed kind is served to the provider as any other: register it so
+	// the fake client can hold RepositoryCommits alongside Projects, which is
+	// what one virtual workspace does.
+	scheme.AddKnownTypeWithName(repositoryCommitGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(repositoryCommitGVK.GroupVersion().WithKind("RepositoryCommitList"), &unstructured.UnstructuredList{})
+	env.c = fake.NewClientBuilder().WithScheme(scheme).WithObjects(env.project).WithRuntimeObjects(objects...).Build()
+	if err := env.c.Get(env.ctx, types.NamespacedName{Name: env.project.Name}, env.project); err != nil {
 		t.Fatal(err)
 	}
 	env.r = &Reconciler{
-		Workspace: env.files,
-		HubBase:   hub.URL,
+		Workspace:  env.files,
+		HubBase:    hub.URL,
+		Identities: scopedidentity.New((&fakeIdentityHub{}).server(t)),
 		OnCommitted: func(_ context.Context, got workspace.Scope, commit CommitResult) {
 			if got != env.scope {
 				t.Errorf("OnCommitted scope = %+v, want %+v", got, env.scope)
@@ -185,7 +194,7 @@ func (env *commitTestEnv) write(path, content string) {
 // commit runs one convergence pass and reports whether uncommitted work
 // remains (commitOutcome.dirty).
 func (env *commitTestEnv) commit() (bool, error) {
-	outcome, err := env.r.commitWorkspace(env.ctx, env.control, "token", env.tenant, env.project, env.repo)
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
 	return outcome.dirty, err
 }
 
@@ -207,7 +216,7 @@ func (env *commitTestEnv) pendingCommit() (string, bool) {
 		env.t.Fatal(err)
 	}
 	stored := &aiv1alpha1.Project{}
-	if err := env.control.Get(env.ctx, types.NamespacedName{Name: env.project.Name}, stored); err != nil {
+	if err := env.c.Get(env.ctx, types.NamespacedName{Name: env.project.Name}, stored); err != nil {
 		env.t.Fatal(err)
 	}
 	pointer := stored.Annotations[pendingCommitAnnotation]
@@ -224,11 +233,11 @@ func (env *commitTestEnv) setRepositoryCommit(name, phase, sha string) {
 	env.t.Helper()
 	landed := repositoryCommitObject(name, phase, sha)
 	current := repositoryCommitObject(name, "", "")
-	if err := env.tenant.Get(env.ctx, types.NamespacedName{Name: name}, current); err != nil {
+	if err := env.c.Get(env.ctx, types.NamespacedName{Name: name}, current); err != nil {
 		env.t.Fatal(err)
 	}
 	landed.SetResourceVersion(current.GetResourceVersion())
-	if err := env.tenant.Update(env.ctx, landed); err != nil {
+	if err := env.c.Update(env.ctx, landed); err != nil {
 		env.t.Fatal(err)
 	}
 }
@@ -386,7 +395,7 @@ func TestCommitWorkspaceClearsPointerWithoutLedgerRecord(t *testing.T) {
 	// The Project points at a commit the (replaced) workspace volume never
 	// heard of: the pointer is dropped and the commit is simply resent.
 	env.project.Annotations[pendingCommitAnnotation] = "commit-lost"
-	if err := env.control.Update(env.ctx, env.project); err != nil {
+	if err := env.c.Update(env.ctx, env.project); err != nil {
 		t.Fatal(err)
 	}
 	if dirty, err := env.commit(); err != nil || dirty {

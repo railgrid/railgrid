@@ -34,7 +34,13 @@ func edgeObject(name string, connected bool) *unstructured.Unstructured {
 		"apiVersion": edgeGVK.GroupVersion().String(),
 		"kind":       edgeGVK.Kind,
 		"metadata":   map[string]any{"name": name},
-		"status":     map[string]any{"connected": connected, "lastHeartbeat": time.Now().Format(time.RFC3339)},
+		"status": map[string]any{
+			"connected":     connected,
+			"lastHeartbeat": time.Now().Format(time.RFC3339),
+			// The coordinate the edges provider publishes for this edge; the
+			// consumer reads it rather than building one of its own.
+			"url": "/services/providers/edges/dataplane/clusters/cluster/kubernetesclusters/" + name + "/k8s",
+		},
 	}}
 }
 

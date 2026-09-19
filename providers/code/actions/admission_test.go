@@ -18,6 +18,7 @@ import (
 	"github.com/railgrid/provider-code/backend"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	ktesting "k8s.io/client-go/testing"
@@ -30,7 +31,7 @@ func admissionServer(t *testing.T, allowed bool) *Server {
 	caller.PrependReactor("create", "selfsubjectaccessreviews", func(ktesting.Action) (bool, runtime.Object, error) {
 		return true, &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"allowed": allowed}}}, nil
 	})
-	return New(callerFixture{client: caller, t: t}, func(context.Context, string, string) (dynamic.Interface, error) {
+	return New(callerFixture{client: caller, t: t}, func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error) {
 		t.Error("unexpected credential authority lookup")
 		return nil, context.Canceled
 	}, backend.NewRegistry())

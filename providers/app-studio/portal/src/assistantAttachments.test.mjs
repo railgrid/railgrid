@@ -186,7 +186,8 @@ test('keeps upload protocol and durable-accept clearing explicit in the portal s
     readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
   ])
-  assert.match(api, /assistant\/attachments/)
+  // Attachments are a verb on the project, with the attachment id in the tail.
+  assert.match(api, /projectURL\(ctx, name, 'attachments'/)
   assert.match(api, /method: 'POST'/)
   assert.match(api, /'DELETE'/)
   assert.match(api, /listAssistantAttachments/)

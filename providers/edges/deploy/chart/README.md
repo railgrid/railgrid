@@ -54,7 +54,7 @@ helm upgrade --install edges oci://ghcr.io/railgrid/charts/railgrid-edges-provid
 | `hub.caSecretRef.key` | `ca.crt` |  |
 | `devMode` | `false` | Enables dev-mode shortcuts in the controllers (e.g. relaxed kubeconfig CA). |
 | `allowUnverifiedSSHHostKey` | `false` | Legacy escape hatch: open SSH sessions to LinuxServers that have NO known sshd host key (no spec.sshHostKey pin and no agent-reported status.sshHostKey) without verifying the server. Edges with a known key are always verified. Prefer pinning spec.sshHostKey or sshHostKeyPolicy=tofu on the edge instead. |
-| `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted via /bonkers (admin onboarding). Used by BOTH the init container (bootstrap APIExport/schemas) and the serve container (token validation + cross-tenant controllers). Key must be "kubeconfig". |
+| `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted via /bonkers (admin onboarding). Used by BOTH the init container (applies the generated APIExport + schemas from /etc/railgrid/kcp) and the serve container (token validation + cross-tenant controllers). Key must be "kubeconfig". |
 | `providerKubeconfig.secretName` | `railgrid-provider-kubeconfig` |  |
 | `catalogEntry` |  | Render the CatalogEntry into a ConfigMap the init container applies into the provider workspace (it is a kcp resource, not a host-cluster one). |
 | `catalogEntry.enabled` | `true` |  |

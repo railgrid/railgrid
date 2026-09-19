@@ -42,36 +42,45 @@ data:
             builtinRoute: services
       backend:
         url: "http://{{ include "edges.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-        healthPath: "/healthz"
+        healthPath: "/readyz"
       apiExport:
         name: "edges.providers.railgrid.ai"
+        # KubernetesCluster, LinuxServer, and MacOSServer come with this export (the
+        # provider owns them). What remains here is the tenant-workspace access the
+        # data plane needs, and nothing else.
+        #
+        # Gone with §5.7: serviceaccounts, clusterroles and clusterrolebindings. A
+        # provider does not mint identities — it asks the hub's scoped-identity
+        # service, which TokenRequest-mints a TTL'd credential, records it and
+        # collects it (docs/provider-connectivity-contract.md §"Scoped identities").
+        # A claim on those three types is a contract violation, not a design choice.
         permissionClaims:
+          # The SSH data plane. The provider — never the agent — writes the
+          # railgrid-system namespace and the <edge>-ssh-credentials Secret when a
+          # host agent calls the gated ssh-credentials verb, and reads back
+          # spec.sshCredentialsRef Secrets to open a session. The agent used to
+          # hold this itself; identity policy X-4 refuses to mint a Secrets rule
+          # for anyone, so the write moved behind a verb rather than the claim
+          # moving to the agent.
           - group: ""
             resource: namespaces
-            verbs: [get, list, watch, create, update, patch, delete]
-            tenantScoped: true
-          - group: ""
-            resource: serviceaccounts
-            verbs: [get, list, watch, create, update, patch, delete]
+            verbs: [get, list, watch, create]
             tenantScoped: true
           - group: ""
             resource: secrets
-            verbs: [get, list, watch, create, update, patch, delete]
+            verbs: [get, list, watch, create, update]
             tenantScoped: true
-          - group: rbac.authorization.k8s.io
-            resource: clusterroles
-            verbs: [get, list, watch, create, update, patch, delete]
-            tenantScoped: true
-          - group: rbac.authorization.k8s.io
-            resource: clusterrolebindings
-            verbs: [get, list, watch, create, update, patch, delete]
-            tenantScoped: true
-          # Delegated authn/authz for the data plane (kcp#4279 / kcp#4280): the
-          # provider validates presented tokens and authorizes the resolved
-          # identity against the consumer workspace via the APIExport VW. Must
-          # match manifest.yaml + init_cmd.go. tenantScoped: the VW confines each
-          # review to the tenant's OWN workspace (bounded → auto-acceptable, no
-          # "reach beyond your workspace" warning). Built-in review APIs: create only.
+          # Delegated authn/authz for the AGENT ingress class (f). The provider
+          # terminates agent tunnels OUTSIDE kcp's request path, so a reconnecting
+          # agent's token is validated here: TokenReview to authenticate it,
+          # SubjectAccessReview to authorize the resolved identity for
+          # create on {resource}/proxy against THIS consumer workspace. The
+          # consumer data plane no longer needs either — it runs both gates as the
+          # caller — but class (f) still does, because an agent's bearer never
+          # passes through kcp on its way here. kcp serves both on the APIExport
+          # virtual workspace scoped to the engaged cluster (kcp#4279 / kcp#4280).
+          # tenantScoped: the VW confines each review to the tenant's OWN
+          # workspace. Built-in review APIs: no identityHash, verb create only.
           - group: authentication.k8s.io
             resource: tokenreviews
             verbs: [create]
@@ -80,6 +89,70 @@ data:
             resource: subjectaccessreviews
             verbs: [create]
             tenantScoped: true
+      # Data-plane verbs this provider serves, declared so the coordinate is
+      # machine-readable. Declaring one grants and serves nothing: every call is
+      # still authorized by this provider's own caller-scoped SSAR on
+      # {resource}/{verb}. What the declaration buys is that the hub
+      # scoped-identity service can mint a capability for a verb it can verify
+      # exists (pkg/hub/identity/policy.go clause C), instead of consumers
+      # hardcoding a coordinate nobody validates.
+      dataPlane:
+        verbs:
+          - resource: kubernetesclusters
+            verb: k8s
+            description: "Proxy the Kubernetes API of the edge through its tunnel."
+            stream: true
+          - resource: kubernetesclusters
+            verb: ssh
+            description: "Open an SSH session to the edge through its tunnel."
+            stream: true
+          - resource: kubernetesclusters
+            verb: mcp
+            description: "Reach the edge's MCP endpoint through its tunnel."
+            stream: true
+          - resource: kubernetesclusters
+            verb: ticket
+            description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
+            readOnly: true
+          - resource: kubernetesclusters
+            verb: agent-token
+            description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
+            readOnly: true
+          - resource: linuxservers
+            verb: k8s
+            description: "Proxy the Kubernetes API of the edge through its tunnel."
+            stream: true
+          - resource: linuxservers
+            verb: ssh
+            description: "Open an SSH session to the edge through its tunnel."
+            stream: true
+          - resource: linuxservers
+            verb: ticket
+            description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
+            readOnly: true
+          - resource: linuxservers
+            verb: agent-token
+            description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
+            readOnly: true
+          - resource: linuxservers
+            verb: ssh-credentials
+            description: "Hand the host's SSH credentials to the provider, which records them against this edge. Replaces the agent holding core-group Secrets access, which the hub's identity policy refuses to mint."
+          - resource: macosservers
+            verb: agent-token
+            description: "Re-mint the calling agent's own TTL'd credential. MacOSServer serves no consumer verb, but its agent still has a credential to rotate."
+            readOnly: true
+          - resource: services
+            verb: proxy
+            description: "Proxy HTTP to a Service published from an edge."
+            stream: true
+          - resource: services
+            verb: mcp
+            description: "Reach a published Service's MCP endpoint."
+            stream: true
+          - resource: services
+            verb: ticket
+            description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
+            readOnly: true
       # Lets an organization run edges in its own cluster (docs/byo-providers.md).
       # Mirrors manifest.yaml — keep both in sync.
       selfHosting:

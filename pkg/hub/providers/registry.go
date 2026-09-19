@@ -83,6 +83,12 @@ type Provider struct {
 	BackendHealthRequired bool
 	BackendHealthy        bool
 	Actions               []ProviderAction
+	// DataPlaneVerbs mirrors CatalogEntry.spec.dataPlane.verbs: the verbs this
+	// provider serves on its own resources. Declaring one serves nothing — the
+	// provider still enforces it with its own SSAR — but it is what makes the
+	// {resource}/{verb} coordinate machine-readable, which is what lets the
+	// hub scoped-identity service mint a capability for it.
+	DataPlaneVerbs []ProviderDataPlaneVerb
 	// AssistantSkills contains only validated, provider-supplied inline App
 	// Studio packages. It intentionally carries no provider URL, credential, or
 	// runtime handle; the authenticated catalog API is the sole distribution
@@ -282,6 +288,17 @@ type ProviderAction struct {
 	Limits          ProviderActionLimits
 	Consent         providersv1alpha1.ProviderActionConsent
 	Deprecation     *providersv1alpha1.ProviderActionDeprecation
+}
+
+// ProviderDataPlaneVerb is the registry's view of one declared data-plane
+// verb. It carries no schema: a data-plane verb is a coordinate and a
+// transport, not a request/response contract (that is what an action is).
+type ProviderDataPlaneVerb struct {
+	Resource    string
+	Verb        string
+	Description string
+	Stream      bool
+	ReadOnly    bool
 }
 
 // ProviderActionResource identifies the provider-owned resource an action is

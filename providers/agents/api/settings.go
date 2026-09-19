@@ -92,22 +92,6 @@ type credentialTestResult struct {
 	Models    []string `json:"models,omitempty"` // ids the endpoint serves (discovery)
 }
 
-// testCredential verifies that the configured model responds to a small chat request.
-// Model discovery is a separate operation and cannot mark a connection verified.
-func (s *Server) testCredential(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	name := r.PathValue("name")
-	profile, err := llm.LoadCredential(r.Context(), c, name)
-	if err != nil {
-		writeJSON(w, http.StatusOK, credentialTestResult{OK: false, Error: "credential not configured: " + err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, verifyCredentialModel(r.Context(), profile))
-}
-
 // probeOpenAIModels calls GET {baseURL}/models and returns the served model ids
 // plus the round-trip latency. A non-2xx status or transport error is returned
 // as err (with latency still measured for the health badge).
@@ -173,10 +157,4 @@ func (e *probeError) Error() string {
 		return "endpoint returned HTTP " + strconv.Itoa(e.status) + ": " + e.msg
 	}
 	return "endpoint returned HTTP " + strconv.Itoa(e.status)
-}
-
-// modelCatalog returns the curated pricing + capability catalog (public — no
-// tenant data, just reference data for the Models UI).
-func (s *Server) modelCatalog(w http.ResponseWriter, r *http.Request) {
-	writeList(w, llm.Catalog())
 }

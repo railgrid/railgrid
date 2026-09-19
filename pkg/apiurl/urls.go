@@ -30,8 +30,6 @@ import (
 // kcp's native /clusters, /apis/<group>, /api/v1 paths, which are forwarded
 // straight to kcp.
 const (
-	PathPrefixAgentProxy = "/services/agent-proxy"
-	PathPrefixEdgesProxy = "/services/edges-proxy"
 	// PathPrefixMCP + PathPrefixLinuxMCP were removed in the MCP
 	// collapse refactor — both surfaces live behind PathPrefixMCPServer
 	// (the aggregate endpoint) now.
@@ -107,21 +105,6 @@ func KCPClusterURL(kcpBase, cluster string) string {
 	return HubServerURL(kcpBase, cluster)
 }
 
-// EdgeAgentProxyPath returns the URL path (relative to the hub base) for the
-// agent-proxy virtual workspace endpoint.
-//
-// Pattern: /services/agent-proxy/{cluster}/apis/railgrid.ai/v1alpha1/edges/{name}/{subresource}
-func EdgeAgentProxyPath(cluster, edgeName, subresource string) string {
-	return fmt.Sprintf("%s/%s/apis/railgrid.ai/v1alpha1/edges/%s/%s",
-		PathPrefixAgentProxy, cluster, edgeName, subresource)
-}
-
-// EdgeAgentProxyURL returns the full agent-proxy URL for use when dialling the
-// hub tunnel endpoint.
-func EdgeAgentProxyURL(hubBase, cluster, edgeName, subresource string) string {
-	return strings.TrimRight(hubBase, "/") + EdgeAgentProxyPath(cluster, edgeName, subresource)
-}
-
 // EdgeProviderCoordinates resolves an edge type ("kubernetes" | "server" | "macos") to the
 // owning provider's backend-proxy name, API group and resource. The edge plane
 // is one provider `edges` holding all kinds under group edges.railgrid.ai;
@@ -138,55 +121,58 @@ func EdgeProviderCoordinates(edgeType string) (provider, group, resource string)
 }
 
 // ProviderAgentProxyPath returns the agent-ingress path for an edge provider's
-// reverse-tunnel control connection, routed through the hub backend proxy to the
-// provider Service. The provider StripPrefixes /services/providers/{provider}/agent
-// so its tunnel handler sees /{cluster}/apis/{group}/v1alpha1/{resource}/{name}/{subresource}.
+// reverse-tunnel control connection: Pillar 2 route class (f), on the shared
+// grammar, routed through the hub backend proxy to the provider Service. The
+// provider sees the path unmodified and parses it with
+// provider-sdk/dataplane.
 //
-// Pattern: /services/providers/{provider}/agent/{cluster}/apis/{group}/v1alpha1/{resource}/{name}/{subresource}
-func ProviderAgentProxyPath(provider, group, resource, cluster, edgeName, subresource string) string {
-	return fmt.Sprintf("%s/%s/agent/%s/apis/%s/v1alpha1/%s/%s/%s",
-		PathPrefixProvidersProxy, provider, cluster, group, resource, edgeName, subresource)
+// Pattern: /services/providers/{provider}/agent/clusters/{cluster}/{resource}/{name}/proxy
+//
+// The old dialect carried /apis/{group}/v1alpha1 between the cluster and the
+// resource. It is gone, not aliased — dataplane.ParsePath refuses "apis" in
+// the resource position — so an agent built before this change cannot connect
+// and must be upgraded.
+func ProviderAgentProxyPath(provider, resource, cluster, edgeName, verb string) string {
+	return fmt.Sprintf("%s/%s/agent/clusters/%s/%s/%s/%s",
+		PathPrefixProvidersProxy, provider, cluster, resource, edgeName, verb)
 }
 
 // ProviderAgentProxyURL returns the full agent-ingress URL for use when dialling
 // the hub from the agent, resolving the provider coordinates from the edge type.
-func ProviderAgentProxyURL(hubBase, edgeType, cluster, edgeName, subresource string) string {
-	provider, group, resource := EdgeProviderCoordinates(edgeType)
+func ProviderAgentProxyURL(hubBase, edgeType, cluster, edgeName, verb string) string {
+	provider, _, resource := EdgeProviderCoordinates(edgeType)
 	return strings.TrimRight(hubBase, "/") +
-		ProviderAgentProxyPath(provider, group, resource, cluster, edgeName, subresource)
+		ProviderAgentProxyPath(provider, resource, cluster, edgeName, verb)
 }
 
-// EdgeProxyPath returns the URL path (relative to the hub base) for the
-// edges-proxy virtual workspace endpoint.
+// ProviderDataPlanePath returns a consumer-egress path for a verb an edge
+// provider serves: Pillar 2 route class (a).
 //
-// Pattern: /services/edges-proxy/clusters/{cluster}/apis/railgrid.ai/v1alpha1/edges/{name}/{subresource}
-func EdgeProxyPath(cluster, edgeName, subresource string) string {
-	return fmt.Sprintf("%s/clusters/%s/apis/railgrid.ai/v1alpha1/edges/%s/%s",
-		PathPrefixEdgesProxy, cluster, edgeName, subresource)
+// Pattern: /services/providers/{provider}/dataplane/clusters/{cluster}/{resource}/{name}/{verb}
+func ProviderDataPlanePath(provider, resource, cluster, name, verb string) string {
+	return fmt.Sprintf("%s/%s/dataplane/clusters/%s/%s/%s/%s",
+		PathPrefixProvidersProxy, provider, cluster, resource, name, verb)
 }
 
-// EdgeProxyURL returns the full edges-proxy URL, combining the hub base URL
-// with the EdgeProxyPath.
-func EdgeProxyURL(hubBase, cluster, edgeName, subresource string) string {
-	return strings.TrimRight(hubBase, "/") + EdgeProxyPath(cluster, edgeName, subresource)
+// ProviderDataPlaneURL is ProviderDataPlanePath against a hub base URL.
+func ProviderDataPlaneURL(hubBase, provider, resource, cluster, name, verb string) string {
+	return strings.TrimRight(hubBase, "/") + ProviderDataPlanePath(provider, resource, cluster, name, verb)
 }
 
-// EdgeServiceProxyPath returns the consumer-egress path for a subresource on an
-// EdgeService, routed through the hub backend proxy to the edges provider. The
-// provider StripPrefixes /services/providers/edges/edgeproxy so its handler sees
-// /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/{subresource}.
+// EdgeServiceProxyPath returns the consumer-egress path for a verb on a
+// Service published from an edge, routed through the hub backend proxy to the
+// edges provider.
 //
-// subresource is "proxy" (HTTP data plane) or "mcp".
+// verb is "proxy" (HTTP data plane), "mcp", or "ticket".
 //
-// Pattern: /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/{subresource}
-func EdgeServiceProxyPath(cluster, name, subresource string) string {
-	return fmt.Sprintf("%s/edges/edgeproxy/clusters/%s/apis/edges.railgrid.ai/v1alpha1/services/%s/%s",
-		PathPrefixProvidersProxy, cluster, name, subresource)
+// Pattern: /services/providers/edges/dataplane/clusters/{cluster}/services/{name}/{verb}
+func EdgeServiceProxyPath(cluster, name, verb string) string {
+	return ProviderDataPlanePath("edges", "services", cluster, name, verb)
 }
 
-// EdgeServiceProxyURL returns the full EdgeService subresource URL.
-func EdgeServiceProxyURL(hubBase, cluster, name, subresource string) string {
-	return strings.TrimRight(hubBase, "/") + EdgeServiceProxyPath(cluster, name, subresource)
+// EdgeServiceProxyURL returns the full Service verb URL.
+func EdgeServiceProxyURL(hubBase, cluster, name, verb string) string {
+	return strings.TrimRight(hubBase, "/") + EdgeServiceProxyPath(cluster, name, verb)
 }
 
 // KubernetesMCPPath / KubernetesMCPURL / LinuxMCPPath / LinuxMCPURL

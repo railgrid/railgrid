@@ -17,7 +17,6 @@ import (
 	"sync"
 
 	"k8s.io/client-go/dynamic"
-	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/rest"
 )
 
@@ -41,9 +40,6 @@ type ClientFactory struct {
 
 	mu  sync.RWMutex
 	hot map[string]dynamic.Interface
-	// authHot mirrors hot for the authorization client used by the exec
-	// subresource. Polling must not allocate a new transport on every request.
-	authHot map[string]authorizationv1client.AuthorizationV1Interface
 }
 
 // NewClientFactory reuses the provider's existing kcp connection (base) for
@@ -73,7 +69,6 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 		baseHost: baseHost,
 		baseTLS:  tls,
 		hot:      make(map[string]dynamic.Interface),
-		authHot:  make(map[string]authorizationv1client.AuthorizationV1Interface),
 	}
 }
 
@@ -109,36 +104,6 @@ func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) 
 	}
 	f.hot[key] = d
 	return d, nil
-}
-
-// AuthorizationFor returns a caller-token-scoped authorization client for the
-// tenant logical cluster. SelfSubjectAccessReview therefore evaluates the
-// forwarded caller, never the infrastructure provider's own identity.
-func (f *ClientFactory) AuthorizationFor(clusterID, token string) (authorizationv1client.AuthorizationV1Interface, error) {
-	cfg, err := f.configFor(clusterID, token)
-	if err != nil {
-		return nil, err
-	}
-	key := clusterID + ":" + hashToken(token)
-
-	f.mu.RLock()
-	client, ok := f.authHot[key]
-	f.mu.RUnlock()
-	if ok {
-		return client, nil
-	}
-
-	client, err = authorizationv1client.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("authorization client for cluster %q: %w", clusterID, err)
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if existing, ok := f.authHot[key]; ok {
-		return existing, nil
-	}
-	f.authHot[key] = client
-	return client, nil
 }
 
 func (f *ClientFactory) configFor(clusterID, token string) (*rest.Config, error) {

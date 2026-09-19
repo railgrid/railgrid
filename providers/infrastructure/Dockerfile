@@ -41,6 +41,10 @@ RUN apk add --no-cache curl tar && \
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/infrastructure-provider /infrastructure-provider
 COPY --from=helm /helm /usr/local/bin/helm
+# The generated APIExport `init`/the operator applies (from manifest.yaml via
+# make codegen-infrastructure-provider), at /etc/railgrid/kcp (RAILGRID_KCP_DIR).
+# No schemas travel with it: this provider mints those at runtime.
+COPY providers/infrastructure/deploy/chart/files /etc/railgrid/kcp
 EXPOSE 8081
 ENV PORT=8081
 # helm needs writable cache/config/data dirs; point them at the world-writable

@@ -256,17 +256,8 @@ func (p *Server) storeSSHCredentials(ctx context.Context, cfg *rest.Config, clus
 	}
 
 	const ns = "railgrid-system"
-	// Ensure namespace exists.
-	_, err = k8sClient.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = k8sClient.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{Name: ns},
-		}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating namespace %s: %w", ns, err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("checking namespace %s: %w", ns, err)
+	if err := ensureEdgeNamespace(ctx, k8sClient, ns); err != nil {
+		return err
 	}
 
 	secretName := edgeName + "-ssh-credentials"

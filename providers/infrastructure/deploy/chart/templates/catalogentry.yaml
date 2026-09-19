@@ -112,6 +112,48 @@ data:
         # NOT touch the APIExport: tenants author the single flattened Instance
         # kind, so adding or changing a Template never changes the export's
         # resource list (controller/template/controller.go).
+      # Data-plane verbs this provider serves, declared so the coordinate is
+      # machine-readable. Declaring one grants and serves nothing: every call is
+      # still authorized by this provider's own caller-scoped SSAR on
+      # {resource}/{verb}. What the declaration buys is that the hub
+      # scoped-identity service can mint a capability for a verb it can verify
+      # exists (pkg/hub/identity/policy.go clause C), instead of consumers
+      # hardcoding a coordinate nobody validates.
+      dataPlane:
+        verbs:
+          - resource: instances
+            verb: env
+            description: "Set or read the instance's runtime environment."
+          - resource: instances
+            verb: exec
+            description: "Open an interactive shell or run a command in the instance."
+            stream: true
+          - resource: instances
+            verb: log
+            description: "Stream the instance's logs."
+            stream: true
+            readOnly: true
+          - resource: instances
+            verb: process
+            description: "List the processes running in the instance."
+            readOnly: true
+          - resource: instances
+            verb: proxy
+            description: "Proxy HTTP to the instance's own service."
+            stream: true
+          - resource: instances
+            verb: restart
+            description: "Restart the instance's workload."
+          - resource: instances
+            verb: status
+            description: "Read the instance's live runtime status."
+            readOnly: true
+          - resource: instances
+            verb: sync
+            description: "Trigger a reconcile of the instance's desired state."
+          - resource: instances
+            verb: workspace
+            description: "Read and write files in the instance's workspace."
       # Self-hosting: run Application Templates in your own cluster, so provisioned
       # workloads land there rather than on the platform. See docs/byo-providers.md.
       #

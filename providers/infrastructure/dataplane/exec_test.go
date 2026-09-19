@@ -41,16 +41,6 @@ func (f *fakeDevelopmentGetter) DevelopmentFor(context.Context, string, string) 
 	return f.component, f.err
 }
 
-type fakeExecAuthorizer struct {
-	got ExecAuthorization
-	err error
-}
-
-func (f *fakeExecAuthorizer) AuthorizeExec(_ context.Context, authorization ExecAuthorization) error {
-	f.got = authorization
-	return f.err
-}
-
 type fakeExecutor struct {
 	startCall  ExecCall
 	pollCall   ExecCall
@@ -115,15 +105,29 @@ func execRequest(t *testing.T, action ExecAction) *http.Request {
 		t.Fatal(err)
 	}
 	r := httptest.NewRequest(http.MethodPost, PathPrefix+"clusters/ws/instances/app/components/backend/exec", strings.NewReader(string(raw)))
-	r.Header.Set("Authorization", "Bearer caller-token")
+	r.Header.Set("Authorization", "Bearer "+callerToken)
 	r.Header.Set("Idempotency-Key", "run-1")
 	return r
 }
 
-func newExecHandler(t *testing.T, executor *fakeExecutor, authorizer *fakeExecAuthorizer, development *fakeDevelopmentGetter) *Handler {
+// execCluster is the logical cluster the exec fixtures live in; the instance's
+// runtime namespace is the one the provider derives from it.
+const execCluster = "ws"
+
+func newExecHandlerFor(t *testing.T, instance *unstructured.Unstructured, executor *fakeExecutor, development *fakeDevelopmentGetter) *Handler {
 	t.Helper()
-	instance := &fakeInstanceGetter{instance: execInstance()}
-	return NewHandler(instance, &fakeContractGetter{contract: execContract()}, &fakeRuntime{}, WithExec(executor, authorizer), WithDevelopmentGetter(development))
+	return NewHandler(
+		callersIn(execCluster, nil, instance),
+		&fakeContractGetter{contract: execContract()},
+		&fakeRuntime{},
+		WithExec(executor),
+		WithDevelopmentGetter(development),
+	)
+}
+
+func newExecHandler(t *testing.T, executor *fakeExecutor, development *fakeDevelopmentGetter) *Handler {
+	t.Helper()
+	return newExecHandlerFor(t, execInstance(), executor, development)
 }
 
 func execInstance() *unstructured.Unstructured {
@@ -144,15 +148,14 @@ func execInstance() *unstructured.Unstructured {
 	}}
 }
 
-func TestHandlerExecDeniesSetupPhaseBeforeExecutorOrAuthorizer(t *testing.T) {
+func TestHandlerExecDeniesSetupPhaseBeforeExecutor(t *testing.T) {
 	executor := &fakeExecutor{}
-	authorizer := &fakeExecAuthorizer{}
-	h := newExecHandler(t, executor, authorizer, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
-	instance := h.instances.(*fakeInstanceGetter).instance
+	instance := execInstance()
 	status := instance.Object["status"].(map[string]any)
 	status[infrav1alpha1.RailgridNetworkPhaseStatusField] = infrav1alpha1.RailgridNetworkPhaseSetup
 	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}}
 	status["phase"] = "Ready"
+	h := newExecHandlerFor(t, instance, executor, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
@@ -162,16 +165,13 @@ func TestHandlerExecDeniesSetupPhaseBeforeExecutorOrAuthorizer(t *testing.T) {
 	if executor.startCall.Request.Action != "" {
 		t.Fatalf("executor was called for setup-phase Instance: %+v", executor.startCall)
 	}
-	if authorizer.got.Component != "" {
-		t.Fatalf("authorizer was called for setup-phase Instance: %+v", authorizer.got)
-	}
 }
 
 func TestHandlerExecDeniesRuntimePhaseUntilInstanceReady(t *testing.T) {
-	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
-	instance := h.instances.(*fakeInstanceGetter).instance
+	instance := execInstance()
 	instance.Object["status"].(map[string]any)["conditions"] = []any{map[string]any{"type": "Ready", "status": "False"}}
 	instance.Object["status"].(map[string]any)["phase"] = "Pending"
+	h := newExecHandlerFor(t, instance, &fakeExecutor{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
@@ -181,8 +181,7 @@ func TestHandlerExecDeniesRuntimePhaseUntilInstanceReady(t *testing.T) {
 }
 
 func TestHandlerExecIgnoresTamperedTenantSpecPhase(t *testing.T) {
-	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
-	instance := h.instances.(*fakeInstanceGetter).instance
+	instance := execInstance()
 	status := instance.Object["status"].(map[string]any)
 	status[infrav1alpha1.RailgridNetworkPhaseStatusField] = infrav1alpha1.RailgridNetworkPhaseSetup
 	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}}
@@ -190,6 +189,7 @@ func TestHandlerExecIgnoresTamperedTenantSpecPhase(t *testing.T) {
 	instance.Object["spec"].(map[string]any)["values"] = map[string]any{
 		infrav1alpha1.RailgridNetworkPhaseField: infrav1alpha1.RailgridNetworkPhaseRuntime,
 	}
+	h := newExecHandlerFor(t, instance, &fakeExecutor{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
@@ -199,8 +199,7 @@ func TestHandlerExecIgnoresTamperedTenantSpecPhase(t *testing.T) {
 }
 
 func TestHandlerExecDeniesStaleReadyMirrorDuringRuntimeConvergence(t *testing.T) {
-	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
-	instance := h.instances.(*fakeInstanceGetter).instance
+	instance := execInstance()
 	status := instance.Object["status"].(map[string]any)
 	status[infrav1alpha1.RailgridNetworkPhaseStatusField] = infrav1alpha1.RailgridNetworkPhaseRuntime
 	status["phase"] = "Ready"
@@ -209,6 +208,7 @@ func TestHandlerExecDeniesStaleReadyMirrorDuringRuntimeConvergence(t *testing.T)
 	instance.Object["spec"].(map[string]any)["values"] = map[string]any{
 		infrav1alpha1.RailgridNetworkPhaseField: infrav1alpha1.RailgridNetworkPhaseRuntime,
 	}
+	h := newExecHandlerFor(t, instance, &fakeExecutor{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
@@ -218,11 +218,11 @@ func TestHandlerExecDeniesStaleReadyMirrorDuringRuntimeConvergence(t *testing.T)
 }
 
 func TestHandlerExecDeniesStaleTenantStatusGeneration(t *testing.T) {
-	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
-	instance := h.instances.(*fakeInstanceGetter).instance
+	instance := execInstance()
 	status := instance.Object["status"].(map[string]any)
 	status["observedGeneration"] = int64(1)
 	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(1)}}
+	h := newExecHandlerFor(t, instance, &fakeExecutor{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
@@ -232,10 +232,10 @@ func TestHandlerExecDeniesStaleTenantStatusGeneration(t *testing.T) {
 }
 
 func TestHandlerExecPreservesOrdinaryDevelopmentCompatibility(t *testing.T) {
-	h := newExecHandler(t, &fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running"}}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
-	instance := h.instances.(*fakeInstanceGetter).instance
+	instance := execInstance()
 	instance.Object["spec"].(map[string]any)["template"] = "ordinary-development"
 	instance.Object["status"].(map[string]any)[infrav1alpha1.RailgridNetworkPhaseStatusField] = infrav1alpha1.RailgridNetworkPhaseSetup
+	h := newExecHandlerFor(t, instance, &fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running"}}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
@@ -246,9 +246,8 @@ func TestHandlerExecPreservesOrdinaryDevelopmentCompatibility(t *testing.T) {
 
 func TestHandlerExecAllowsReadyRuntimeAndPassesPlatformDevelopment(t *testing.T) {
 	executor := &fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running", Stdout: "123456789"}}
-	authorizer := &fakeExecAuthorizer{}
 	development := &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{WorkingDir: "/workspace/backend"}}
-	h := newExecHandler(t, executor, authorizer, development)
+	h := newExecHandler(t, executor, development)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
 	if rec.Code != http.StatusOK {
@@ -260,8 +259,10 @@ func TestHandlerExecAllowsReadyRuntimeAndPassesPlatformDevelopment(t *testing.T)
 	if executor.startCall.IdempotencyKey != "run-1" || executor.startCall.Request.RequestID != "run-1" {
 		t.Fatalf("idempotency = %q / %q", executor.startCall.IdempotencyKey, executor.startCall.Request.RequestID)
 	}
-	if authorizer.got.CallerToken != "caller-token" || authorizer.got.Component != "backend" {
-		t.Fatalf("authorizer context = token %q component %q", authorizer.got.CallerToken, authorizer.got.Component)
+	// The run is keyed on the caller's own bearer and the addressed
+	// component, both taken from the gated request and never from a body.
+	if executor.startCall.CallerKey != execCallerKey(callerToken) || executor.startCall.Component != "backend" {
+		t.Fatalf("exec call context = callerKey %q component %q", executor.startCall.CallerKey, executor.startCall.Component)
 	}
 	if !strings.Contains(rec.Body.String(), `"truncated":true`) {
 		t.Fatalf("result was not bounded: %s", rec.Body.String())
@@ -271,10 +272,10 @@ func TestHandlerExecAllowsReadyRuntimeAndPassesPlatformDevelopment(t *testing.T)
 func TestHandlerExecRecordsActivityAfterAuthorization(t *testing.T) {
 	rt := &activityRuntime{fakeRuntime: &fakeRuntime{}}
 	h := NewHandler(
-		&fakeInstanceGetter{instance: execInstance()},
+		callersIn(execCluster, nil, execInstance()),
 		&fakeContractGetter{contract: execContract()},
 		rt,
-		WithExec(&fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running"}}, &fakeExecAuthorizer{}),
+		WithExec(&fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running"}}),
 		WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}),
 	)
 	rec := httptest.NewRecorder()
@@ -289,8 +290,7 @@ func TestHandlerExecRecordsActivityAfterAuthorization(t *testing.T) {
 
 func TestHandlerExecPollAndCancelDispatch(t *testing.T) {
 	executor := &fakeExecutor{result: ExecResult{SessionID: "session-1", State: "canceled"}}
-	authorizer := &fakeExecAuthorizer{}
-	h := newExecHandler(t, executor, authorizer, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+	h := newExecHandler(t, executor, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 	for _, action := range []ExecAction{ExecActionPoll, ExecActionCancel} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, execRequest(t, action))
@@ -304,7 +304,7 @@ func TestHandlerExecPollAndCancelDispatch(t *testing.T) {
 }
 
 func TestHandlerExecRejectsMissingIdempotencyAndTail(t *testing.T) {
-	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+	h := newExecHandler(t, &fakeExecutor{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 	r := execRequest(t, ExecActionStart)
 	r.Header.Del("Idempotency-Key")
 	rec := httptest.NewRecorder()
@@ -321,8 +321,15 @@ func TestHandlerExecRejectsMissingIdempotencyAndTail(t *testing.T) {
 	}
 }
 
-func TestHandlerExecRequiresAuthorizer(t *testing.T) {
-	h := NewHandler(&fakeInstanceGetter{instance: execInstance()}, &fakeContractGetter{contract: execContract()}, &fakeRuntime{}, WithExec(&fakeExecutor{}, nil), WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}))
+// A provider that could not build an executor must refuse exec outright
+// rather than answer as though the command had run.
+func TestHandlerExecRequiresExecutor(t *testing.T) {
+	h := NewHandler(
+		callersIn(execCluster, nil, execInstance()),
+		&fakeContractGetter{contract: execContract()},
+		&fakeRuntime{},
+		WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}),
+	)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -390,15 +397,15 @@ func fastExecRun(t *testing.T, budget time.Duration) {
 }
 
 func newScriptedExecHandler(executor Executor, rt *fakeRuntime) *Handler {
-	return NewHandler(&fakeInstanceGetter{instance: execInstance()}, &fakeContractGetter{contract: execContract()}, rt,
-		WithExec(executor, &fakeExecAuthorizer{}),
+	return NewHandler(callersIn(execCluster, nil, execInstance()), &fakeContractGetter{contract: execContract()}, rt,
+		WithExec(executor),
 		WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}))
 }
 
 func postExec(t *testing.T, h *Handler, body, idempotencyKey string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodPost, PathPrefix+"clusters/ws/instances/app/components/backend/exec", strings.NewReader(body))
-	r.Header.Set("Authorization", "Bearer caller-token")
+	r.Header.Set("Authorization", "Bearer "+callerToken)
 	if idempotencyKey != "" {
 		r.Header.Set("Idempotency-Key", idempotencyKey)
 	}
@@ -629,13 +636,5 @@ func TestDecodeExecRequestRunUsesRequestIDAsKey(t *testing.T) {
 	}
 	if key != "body-key" || req.RequestID != "body-key" {
 		t.Fatalf("key/requestID = %q/%q, want body requestID", key, req.RequestID)
-	}
-}
-
-func TestWriteExecAuthorizationError(t *testing.T) {
-	w := httptest.NewRecorder()
-	writeExecAuthorizationError(w, errors.New("policy denied"))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", w.Code)
 	}
 }

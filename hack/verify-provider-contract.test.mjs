@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { CHECKS, chartCatalogEntryYAML, extractGoClaims, parseYAML, verify } from './verify-provider-contract.mjs'
+import { CHECKS, chartCatalogEntryYAML, parseYAML, verify } from './verify-provider-contract.mjs'
 
 const MANIFEST = `# A comment block the parser has to skip.
 ---
@@ -116,20 +116,37 @@ data:
 {{- end }}
 `
 
-const INIT_CMD = `package main
-
-import "github.com/railgrid/provider-sdk/install"
-
-func run() error {
-	return sdkinstall.Bootstrap(ctx, sdkinstall.Options{
-		Claims: []sdkinstall.PermissionClaim{
-			{Resource: "secrets", Verbs: []string{"get", "list", "watch"}},
-			// A comment mentioning Resource: "decoys" that must not be read.
-			{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get", "create"}},
-		},
-	})
-}
+// The generated APIExport: what codegen writes from the manifest above plus
+// apigen's resources, and what `init` applies verbatim.
+const GENERATED_EXPORT = `# Copyright 2026 The Railgrid Authors.
+#
+# GENERATED FILE -- DO NOT EDIT.
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: fixture.providers.railgrid.ai
+spec:
+  permissionClaims:
+  - resource: secrets
+    verbs:
+    - get
+    - list
+    - watch
+  - group: rbac.authorization.k8s.io
+    resource: clusterroles
+    verbs:
+    - get
+    - create
+  resources:
+  - group: fixture.providers.railgrid.ai
+    name: widgets
+    schema: v260919-abc1234.widgets.fixture.providers.railgrid.ai
+    storage:
+      crd: {}
 `
+
+const EXPORT_PATH = 'providers/fixture/config/kcp/apiexport-fixture.providers.railgrid.ai.yaml'
+const CHART_EXPORT_PATH = 'providers/fixture/deploy/chart/files/apiexport.yaml'
 
 const MAIN_GO = `package main
 
@@ -145,7 +162,8 @@ function fixtureRepo(overrides = {}) {
   const files = {
     'providers/fixture/manifest.yaml': MANIFEST,
     'providers/fixture/deploy/chart/templates/catalogentry.yaml': CHART,
-    'providers/fixture/init_cmd.go': INIT_CMD,
+    [EXPORT_PATH]: GENERATED_EXPORT,
+    [CHART_EXPORT_PATH]: GENERATED_EXPORT,
     'providers/fixture/main.go': MAIN_GO,
     'providers/fixture/README.md': '# Fixture\n',
     'providers/fixture/deploy/chart/README.md': '# Fixture chart\n',
@@ -215,56 +233,59 @@ test('a missing chart template is a parity violation, not a crash', () => {
   assert.ok(result.violations.some((item) => item.check === CHECKS.MANIFEST_CHART_PARITY && /no chart CatalogEntry template/.test(item.message)))
 })
 
-test('claims parity reads the Go literals and ignores comments', () => {
-  const claims = extractGoClaims(INIT_CMD)
-  assert.deepEqual(claims, [
-    { group: '', resource: 'secrets', verbs: ['get', 'list', 'watch'], tenantScoped: undefined },
-    { group: 'rbac.authorization.k8s.io', resource: 'clusterroles', verbs: ['get', 'create'], tenantScoped: undefined },
-  ])
-})
-
-test('claims parity reads the appended sdkinstall.PermissionClaim form', () => {
-  const claims = extractGoClaims(`claims = append(claims,
-	sdkinstall.PermissionClaim{Resource: "serviceaccounts", Verbs: []string{"get", "create"}},
-	sdkinstall.PermissionClaim{
-		Group:    "rbac.authorization.k8s.io",
-		Resource: "clusterrolebindings",
-		Verbs:    []string{"get"},
-	},
-)`)
-  assert.deepEqual(claims.map((claim) => claim.resource), ['serviceaccounts', 'clusterrolebindings'])
-  assert.deepEqual(claims[1].group, 'rbac.authorization.k8s.io')
-})
-
 test('a claim only the manifest declares is reported', () => {
   const result = fixtureRepo({
-    'providers/fixture/init_cmd.go': INIT_CMD.replace('\t\t\t{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get", "create"}},\n', ''),
+    [EXPORT_PATH]: GENERATED_EXPORT.replace('  - group: rbac.authorization.k8s.io\n    resource: clusterroles\n    verbs:\n    - get\n    - create\n', ''),
+    [CHART_EXPORT_PATH]: GENERATED_EXPORT.replace('  - group: rbac.authorization.k8s.io\n    resource: clusterroles\n    verbs:\n    - get\n    - create\n', ''),
   }).run()
   const claims = result.violations.filter((item) => item.check === CHECKS.CLAIMS_PARITY)
   assert.equal(claims.length, 1)
-  assert.match(claims[0].message, /manifest\.yaml claims clusterroles\.rbac\.authorization\.k8s\.io \[create get\] but init_cmd\.go does not create it/)
+  assert.match(claims[0].message, /manifest\.yaml claims clusterroles\.rbac\.authorization\.k8s\.io \[create get\] but the generated APIExport does not/)
 })
 
-test('a claim only init_cmd.go creates is reported', () => {
-  const result = fixtureRepo({
-    'providers/fixture/init_cmd.go': INIT_CMD.replace('{Resource: "secrets", Verbs: []string{"get", "list", "watch"}},', '{Resource: "secrets", Verbs: []string{"get", "list", "watch"}},\n\t\t\t{Resource: "configmaps", Verbs: []string{"get"}},'),
-  }).run()
-  assert.ok(result.violations.some((item) => item.check === CHECKS.CLAIMS_PARITY && /init_cmd\.go creates configmaps \[get\] but manifest\.yaml does not declare it/.test(item.message)))
+test('a claim only the generated APIExport carries is reported', () => {
+  const extra = GENERATED_EXPORT.replace('  resources:', '  - resource: configmaps\n    verbs:\n    - get\n  resources:')
+  const result = fixtureRepo({ [EXPORT_PATH]: extra, [CHART_EXPORT_PATH]: extra }).run()
+  assert.ok(result.violations.some((item) => item.check === CHECKS.CLAIMS_PARITY && /the generated APIExport claims configmaps \[get\] but manifest\.yaml does not declare it/.test(item.message)))
 })
 
 test('differing verbs on the same resource are two reports, not a silent pass', () => {
-  const result = fixtureRepo({
-    'providers/fixture/init_cmd.go': INIT_CMD.replace('"get", "list", "watch"', '"get", "list"'),
-  }).run()
+  const narrowed = GENERATED_EXPORT.replace('    - get\n    - list\n    - watch\n', '    - get\n    - list\n')
+  const result = fixtureRepo({ [EXPORT_PATH]: narrowed, [CHART_EXPORT_PATH]: narrowed }).run()
   const claims = result.violations.filter((item) => item.check === CHECKS.CLAIMS_PARITY)
   assert.equal(claims.length, 2)
   assert.ok(claims.some((item) => /manifest\.yaml claims secrets \[get list watch\]/.test(item.message)))
-  assert.ok(claims.some((item) => /init_cmd\.go creates secrets \[get list\]/.test(item.message)))
+  assert.ok(claims.some((item) => /the generated APIExport claims secrets \[get list\]/.test(item.message)))
 })
 
-test('a missing init_cmd.go is reported', () => {
-  const result = fixtureRepo({ 'providers/fixture/init_cmd.go': null }).run()
-  assert.ok(result.violations.some((item) => item.check === CHECKS.CLAIMS_PARITY && /no init_cmd\.go/.test(item.message)))
+// The export's name is the other half of the contract: the CatalogEntry points
+// tenants at spec.apiExport.name, and that is the object init must create.
+test('an APIExport named after something other than spec.apiExport.name is reported', () => {
+  const renamed = GENERATED_EXPORT.replace('  name: fixture.providers.railgrid.ai', '  name: fixture.railgrid.ai')
+  const result = fixtureRepo({ [EXPORT_PATH]: renamed, [CHART_EXPORT_PATH]: renamed }).run()
+  assert.ok(result.violations.some((item) => item.check === CHECKS.CLAIMS_PARITY && /generated APIExport is named "fixture\.railgrid\.ai"/.test(item.message)))
+})
+
+test('a missing generated APIExport is reported, not a crash', () => {
+  const result = fixtureRepo({ [EXPORT_PATH]: null, [CHART_EXPORT_PATH]: null }).run()
+  const claims = result.violations.filter((item) => item.check === CHECKS.CLAIMS_PARITY)
+  assert.equal(claims.length, 1)
+  assert.match(claims[0].message, /no generated APIExport at .*apiexport-fixture\.providers\.railgrid\.ai\.yaml; run make codegen-fixture-provider/)
+  // export-copy stays quiet: there is nothing to copy yet.
+  assert.equal(result.violations.filter((item) => item.check === CHECKS.EXPORT_COPY).length, 0)
+})
+
+test('the chart copy of the APIExport must be byte-identical', () => {
+  const missing = fixtureRepo({ [CHART_EXPORT_PATH]: null }).run()
+  assert.ok(missing.violations.some((item) => item.check === CHECKS.EXPORT_COPY && /the chart ships no apiexport\.yaml/.test(item.message)))
+
+  const drifted = fixtureRepo({ [CHART_EXPORT_PATH]: `${GENERATED_EXPORT}# hand-edited\n` }).run()
+  const copy = drifted.violations.filter((item) => item.check === CHECKS.EXPORT_COPY)
+  assert.equal(copy.length, 1)
+  assert.match(copy[0].message, /the chart copy is an output, run make codegen-fixture-provider/)
+  assert.equal(copy[0].path, CHART_EXPORT_PATH)
+  // The content is still equivalent, so claims parity has nothing to say.
+  assert.equal(drifted.violations.filter((item) => item.check === CHECKS.CLAIMS_PARITY).length, 0)
 })
 
 test('both READMEs are required', () => {

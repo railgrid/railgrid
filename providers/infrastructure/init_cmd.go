@@ -77,16 +77,20 @@ func runInitCmd(ctx context.Context) error {
 	// the export by path — a missing export surfaces as the misleading
 	// "no permission to bind to export" forbidden, not a NotFound.
 	//
-	// Empty spec.resources: PlatformSchemaInAPIExport (below) upserts the
-	// Templates entry once the CachedResource identityHash is ready, and the
-	// Template controller adds per-template entries at runtime. The secrets claim
-	// (built-in type → no identityHash) lets the provider read each tenant's
-	// cloud-credentials Secret; tenantScoped auto-accept is a CatalogEntry/Enable
-	// concept and is not part of the kcp APIExport spec.
+	// The shell is the generated file (deploy/chart/files/apiexport.yaml, from
+	// manifest.yaml) and carries an empty spec.resources on purpose:
+	// PlatformSchemaInAPIExport (below) upserts the Templates entry once the
+	// CachedResource identityHash is ready, and the Template controller adds
+	// per-template entries at runtime — ApplyAPIExport merges, so neither
+	// writer erases the other. The secrets claim rides in from the manifest
+	// (built-in type → no identityHash); tenantScoped auto-accept is a
+	// CatalogEntry/Enable concept and is not part of the kcp APIExport spec.
 	log.Printf("init: materializing APIExport shell %q", apiExportName)
-	if err := sdkinstall.ApplyAPIExport(ctx, dynCl, apiExportName, nil, []sdkinstall.PermissionClaim{
-		{Resource: "secrets", Verbs: []string{"get", "list", "watch"}},
-	}); err != nil {
+	export, err := install.APIExport(install.KCPDir())
+	if err != nil {
+		return fmt.Errorf("read generated APIExport: %w", err)
+	}
+	if err := sdkinstall.ApplyAPIExport(ctx, dynCl, export); err != nil {
 		return fmt.Errorf("materialize APIExport: %w", err)
 	}
 

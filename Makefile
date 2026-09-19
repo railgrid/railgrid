@@ -214,11 +214,20 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
 	./hack/apigen.sh --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
-	@rm -f providers/edges/config/kcp/apiexport-*.yaml  # apigen names the export after the group; init creates the real <name>.providers.railgrid.ai export
 	@for r in kubernetesclusters linuxservers macosservers workloads placements services addons; do \
 		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.railgrid.ai.yaml \
 		   providers/edges/deploy/chart/files/schemas/$$r.edges.railgrid.ai.yaml; \
 	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/edges/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/edges/config/kcp/apiexport-edges.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/edges/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/edges/config/kcp/apiexport-edges.providers.railgrid.ai.yaml
+	cp providers/edges/config/kcp/apiexport-edges.providers.railgrid.ai.yaml providers/edges/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 .PHONY: codegen-quickstart-provider codegen-kuery-provider codegen-edges-provider build-edges-provider build-edges-provider-portal \
@@ -244,7 +253,7 @@ init-provider-edges: build-edges-provider ## Bootstrap edges APIExport + write d
 		"$(EDGES_KCP_SERVER)/clusters/$(EDGES_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(EDGES_RUNTIME_KUBECONFIG)
 	RAILGRID_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
-	RAILGRID_SCHEMAS_DIR=$(EDGES_SCHEMAS_DIR) \
+	RAILGRID_KCP_DIR=$(EDGES_KCP_DIR) \
 	EDGES_WORKSPACE_PATH=$(EDGES_WORKSPACE_PATH) \
 		$(BINDIR)/edges-provider init
 
@@ -376,6 +385,17 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 	cp providers/infrastructure/config/crds/infrastructure.railgrid.ai_templates.yaml \
 	   providers/infrastructure/config/crds/infrastructure.railgrid.ai_instances.yaml \
 	   providers/infrastructure/install/crds/
+	@# infrastructure mints its APIResourceSchemas at RUNTIME (install/crds.go
+	@# plus the Templates CachedResource), so there is no apigen output to fold
+	@# in. The APIExport is generated from the manifest all the same, so a
+	@# permission claim is still written in exactly one place; spec.resources is
+	@# empty and provider-sdk/install merges it with the entries the runtime
+	@# writers add.
+	@mkdir -p providers/infrastructure/config/kcp providers/infrastructure/deploy/chart/files
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/infrastructure/manifest.yaml \
+		--out $(CURDIR)/providers/infrastructure/config/kcp/apiexport-infrastructure.providers.railgrid.ai.yaml
+	cp providers/infrastructure/config/kcp/apiexport-infrastructure.providers.railgrid.ai.yaml providers/infrastructure/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the code
@@ -388,11 +408,20 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
 	./hack/apigen.sh --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
-	@rm -f providers/code/config/kcp/apiexport-*.yaml  # apigen names the export after the group; init creates the real <name>.providers.railgrid.ai export
 	@for r in connections repositories repositorycommits repositorycheckouts repositorybuildstatuses deploykeys collaborators packages; do \
 		cp providers/code/config/kcp/apiresourceschema-$$r.code.railgrid.ai.yaml \
 		   providers/code/deploy/chart/files/schemas/$$r.code.railgrid.ai.yaml; \
 	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/code/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/code/config/kcp/apiexport-code.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/code/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/code/config/kcp/apiexport-code.providers.railgrid.ai.yaml
+	cp providers/code/config/kcp/apiexport-code.providers.railgrid.ai.yaml providers/code/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 codegen-quickstart-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the quickstart provider's local API (+ chart schemas)
@@ -402,11 +431,20 @@ codegen-quickstart-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/quickstart/config/crds
 	./hack/apigen.sh --input-dir providers/quickstart/config/crds --output-dir providers/quickstart/config/kcp
-	@rm -f providers/quickstart/config/kcp/apiexport-*.yaml
 	@for r in greetings; do \
 		cp providers/quickstart/config/kcp/apiresourceschema-$$r.quickstart.providers.railgrid.ai.yaml \
 		   providers/quickstart/deploy/chart/files/schemas/$$r.quickstart.providers.railgrid.ai.yaml; \
 	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/quickstart/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/quickstart/config/kcp/apiexport-quickstart.providers.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/quickstart/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/quickstart/config/kcp/apiexport-quickstart.providers.railgrid.ai.yaml
+	cp providers/quickstart/config/kcp/apiexport-quickstart.providers.railgrid.ai.yaml providers/quickstart/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 codegen-kuery-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the kuery provider's local API (+ chart schemas)
@@ -416,11 +454,20 @@ codegen-kuery-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the k
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/kuery/config/crds
 	./hack/apigen.sh --input-dir providers/kuery/config/crds --output-dir providers/kuery/config/kcp
-	@rm -f providers/kuery/config/kcp/apiexport-*.yaml
 	@for r in savedviews; do \
 		cp providers/kuery/config/kcp/apiresourceschema-$$r.kuery.providers.railgrid.ai.yaml \
 		   providers/kuery/deploy/chart/files/schemas/$$r.kuery.providers.railgrid.ai.yaml; \
 	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/kuery/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/kuery/config/kcp/apiexport-kuery.providers.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/kuery/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/kuery/config/kcp/apiexport-kuery.providers.railgrid.ai.yaml
+	cp providers/kuery/config/kcp/apiexport-kuery.providers.railgrid.ai.yaml providers/kuery/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the agents provider's local API (+ chart schemas)
@@ -430,11 +477,20 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./hack/apigen.sh --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
-	@rm -f providers/agents/config/kcp/apiexport-*.yaml  # apigen names the export after the group; init creates the real <name>.providers.railgrid.ai export
-	@for r in agents connections schedules triggers toolsets; do \
+	@for r in agents connections schedules triggers toolsets runs; do \
 		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.railgrid.ai.yaml \
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.railgrid.ai.yaml; \
 	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/agents/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/agents/config/kcp/apiexport-agents.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/agents/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/agents/config/kcp/apiexport-agents.railgrid.ai.yaml
+	cp providers/agents/config/kcp/apiexport-agents.railgrid.ai.yaml providers/agents/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the App Studio provider's local API (+ manifest + chart schema)
@@ -444,13 +500,22 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/app-studio/config/crds
 	./hack/apigen.sh --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
-	@rm -f providers/app-studio/config/kcp/apiexport-*.yaml  # apigen names the export after the group; init creates the real <name>.providers.railgrid.ai export
 	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.railgrid.ai.yaml \
 	   providers/app-studio/deploy/chart/files/schemas/projects.ai.railgrid.ai.yaml
 	cp providers/app-studio/config/kcp/apiresourceschema-sessions.ai.railgrid.ai.yaml \
 	   providers/app-studio/deploy/chart/files/schemas/sessions.ai.railgrid.ai.yaml
 	cp providers/app-studio/config/kcp/apiresourceschema-studios.ai.railgrid.ai.yaml \
 	   providers/app-studio/deploy/chart/files/schemas/studios.ai.railgrid.ai.yaml
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/app-studio/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/app-studio/config/kcp/apiexport-ai.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/app-studio/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/app-studio/config/kcp/apiexport-ai.railgrid.ai.yaml
+	cp providers/app-studio/config/kcp/apiexport-ai.railgrid.ai.yaml providers/app-studio/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 test:
@@ -1077,7 +1142,7 @@ EDGES_MANIFEST ?= providers/edges/manifest.yaml
 EDGES_PROVIDER_MANIFEST ?= providers/edges/provider.yaml
 EDGES_WORKSPACE_PATH ?= root:railgrid:providers:edges
 EDGES_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/edges-runtime.kubeconfig
-EDGES_SCHEMAS_DIR ?= $(CURDIR)/providers/edges/deploy/chart/files/schemas
+EDGES_KCP_DIR ?= $(CURDIR)/providers/edges/deploy/chart/files
 
 ## Run the quickstart provider binary locally. Heartbeats to the hub on
 ## $(QUICKSTART_HUB_URL); TLS verification skipped (dev cert is self-signed).
@@ -1474,7 +1539,7 @@ init-provider-quickstart: build-quickstart-provider ## Bootstrap quickstart APIE
 	@echo "Running quickstart-provider init (creates APIExport + endpoint slice + bind grant)"
 	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 	QUICKSTART_WORKSPACE_PATH=$(QUICKSTART_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=providers/quickstart/deploy/chart/files/schemas \
+	RAILGRID_KCP_DIR=providers/quickstart/deploy/chart/files \
 		$(BINDIR)/quickstart-provider init
 
 ## Delete the quickstart CatalogEntry + Provider. Deleting the Provider triggers
@@ -1499,7 +1564,7 @@ KUERY_KCP_SERVER ?= https://localhost:6443
 KUERY_MANIFEST ?= providers/kuery/manifest.yaml
 KUERY_PROVIDER_MANIFEST ?= providers/kuery/provider.yaml
 KUERY_WORKSPACE_PATH ?= root:railgrid:providers:kuery
-KUERY_SCHEMAS_DIR ?= providers/kuery/deploy/chart/files/schemas
+KUERY_KCP_DIR ?= providers/kuery/deploy/chart/files
 # Dev runtime kubeconfig for the engagement controller, written by
 # init-provider-kuery from the provider SA token the hub mints.
 KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
@@ -1635,7 +1700,7 @@ init-provider-kuery: build-kuery-provider ## Bootstrap kuery APIExport (schemas+
 	@echo "Running kuery-provider init (schemas + APIExport + endpoint slice + bind grant)"
 	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
 	KUERY_WORKSPACE_PATH=$(KUERY_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=$(KUERY_SCHEMAS_DIR) \
+	RAILGRID_KCP_DIR=$(KUERY_KCP_DIR) \
 		$(BINDIR)/kuery-provider init
 
 uninstall-provider-kuery: ## Delete kuery CatalogEntry + Provider (full teardown)
@@ -1681,7 +1746,14 @@ APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 APP_STUDIO_KCP_SERVER ?= https://localhost:6443
 APP_STUDIO_WORKSPACE_PATH ?= root:railgrid:providers:app-studio
 APP_STUDIO_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-provider.kubeconfig
-APP_STUDIO_SCHEMAS_DIR ?= providers/app-studio/deploy/chart/files/schemas
+APP_STUDIO_KCP_DIR ?= providers/app-studio/deploy/chart/files
+# identityHash of the exports serving app-studio's claimed dependency kinds
+# (infrastructure.railgrid.ai instances; code.railgrid.ai repositories and
+# repositorycommits). Empty resolves them from the dependency provider
+# workspaces at init time, so run init-provider-infrastructure and
+# init-provider-code first.
+APP_STUDIO_INFRA_IDENTITY_HASH ?=
+APP_STUDIO_CODE_IDENTITY_HASH ?=
 APP_STUDIO_MANIFEST ?= providers/app-studio/manifest.yaml
 APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
 APP_STUDIO_DATABASE_URL ?=
@@ -1707,7 +1779,7 @@ AGENTS_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 AGENTS_KCP_SERVER ?= https://localhost:6443
 AGENTS_WORKSPACE_PATH ?= root:railgrid:providers:agents
 AGENTS_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/agents-provider.kubeconfig
-AGENTS_SCHEMAS_DIR ?= providers/agents/deploy/chart/files/schemas
+AGENTS_KCP_DIR ?= providers/agents/deploy/chart/files
 AGENTS_MANIFEST ?= providers/agents/manifest.yaml
 AGENTS_PROVIDER_MANIFEST ?= providers/agents/provider.yaml
 # Durable store: dev runs use a local Postgres container by default (mirrors
@@ -1958,12 +2030,31 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 		"$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(APP_STUDIO_PROVIDER_KUBECONFIG)
 	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
-	@# No identity hashes: app-studio claims no first-party resources. The
-	@# reconcilers act as workspace ServiceAccounts through each tenant's own
-	@# bindings, so no APIExport identityHash pinning is involved.
+	@# app-studio's controllers reconcile infrastructure Instances and code
+	@# Repositories/RepositoryCommits through its own APIExport VW, so those
+	@# first-party claims must carry the identityHash of the export serving
+	@# each group. Resolved from the dependency provider workspaces; override
+	@# with APP_STUDIO_{INFRA,CODE}_IDENTITY_HASH.
+	@INFRA_HASH="$(APP_STUDIO_INFRA_IDENTITY_HASH)"; \
+	if [ -z "$$INFRA_HASH" ]; then \
+		INFRA_HASH=$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
+			--server=$(APP_STUDIO_KCP_SERVER)/clusters/$(INFRASTRUCTURE_WORKSPACE_PATH) \
+			--insecure-skip-tls-verify \
+			get apiexport infrastructure.providers.railgrid.ai -o jsonpath='{.status.identityHash}'); \
+	fi; \
+	CODE_HASH="$(APP_STUDIO_CODE_IDENTITY_HASH)"; \
+	if [ -z "$$CODE_HASH" ]; then \
+		CODE_HASH=$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
+			--server=$(APP_STUDIO_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
+			--insecure-skip-tls-verify \
+			get apiexport code.providers.railgrid.ai -o jsonpath='{.status.identityHash}'); \
+	fi; \
+	test -n "$$INFRA_HASH" -a -n "$$CODE_HASH" || { \
+		echo "identityHash missing: run 'make init-provider-infrastructure init-provider-code' first"; exit 1; }; \
 	RAILGRID_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
 	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
+	RAILGRID_KCP_DIR=$(APP_STUDIO_KCP_DIR) \
+	RAILGRID_IDENTITY_HASHES="infrastructure.railgrid.ai=$$INFRA_HASH,code.railgrid.ai=$$CODE_HASH" \
 		$(BINDIR)/app-studio-provider init
 
 ## Delete the App Studio CatalogEntry. Useful while iterating on the chart.
@@ -2054,7 +2145,7 @@ init-provider-agents: build-agents-provider ## Bootstrap agents APIExport + writ
 	@echo "Running agents-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
 	RAILGRID_PROVIDER_KUBECONFIG=$(AGENTS_PROVIDER_KUBECONFIG) \
 	AGENTS_WORKSPACE_PATH=$(AGENTS_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=$(AGENTS_SCHEMAS_DIR) \
+	RAILGRID_KCP_DIR=$(AGENTS_KCP_DIR) \
 		$(BINDIR)/agents-provider init
 
 uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
@@ -2142,6 +2233,7 @@ init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrast
 	@echo "  runtime: $(INFRASTRUCTURE_RUNTIME_KUBECONFIG)"
 	INFRASTRUCTURE_ADMIN_KUBECONFIG=$(KROMC_KCP_KUBECONFIG) \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
+	RAILGRID_KCP_DIR=$(CURDIR)/providers/infrastructure/deploy/chart/files \
 	INFRASTRUCTURE_KUBECONFIG=$(INFRASTRUCTURE_RUNTIME_KUBECONFIG) \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 		$(BINDIR)/infrastructure-provider init
@@ -2226,7 +2318,7 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 			--insecure-skip-tls-verify=true >/dev/null
 	RAILGRID_PROVIDER_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
 	CODE_WORKSPACE_PATH=$(CODE_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=$(CURDIR)/providers/code/deploy/chart/files/schemas \
+	RAILGRID_KCP_DIR=$(CURDIR)/providers/code/deploy/chart/files \
 		$(BINDIR)/code-provider init
 
 # --- Provider Databricks (local dev) ---

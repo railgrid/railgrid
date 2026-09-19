@@ -1,6 +1,6 @@
 # railgrid-kuery-provider
 
-Railgrid provider for fleet-wide object search, relationship traversal, and impact analysis across connected edge clusters (built on railgrid/kuery). Ships the provider Deployment, ClusterIP Service, and the CatalogEntry that registers the provider (UI + backend + the SavedView APIExport + edgeProxyAccess) with the railgrid hub.
+Railgrid provider for fleet-wide object search, relationship traversal, and impact analysis across connected edge clusters (built on railgrid/kuery). Ships the provider Deployment, ClusterIP Service, and the CatalogEntry that registers the provider (UI + backend + the SavedView APIExport) with the railgrid hub.
 
 Helm chart for the railgrid **kuery** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.

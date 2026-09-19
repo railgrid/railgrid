@@ -315,7 +315,8 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	templateName, _, _ := unstructured.NestedString(inst.Object, "spec", "template")
-	c.index.set(req.ClusterName, req.NamespacedName, templateName)
+	c.index.set(req.ClusterName, req.NamespacedName, templateName,
+		secretRefName(inst, "imagePullSecretRef"), secretRefName(inst, "oidcBridgeSecretRef"))
 
 	if !inst.GetDeletionTimestamp().IsZero() {
 		return c.finalize(ctx, tenantClient, tenant, inst)
@@ -380,9 +381,12 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil // our own spec update re-queues with fresh values
 	}
 
-	// Bridge the registry pull Secret (private production images) for any
-	// promoted instance, and the BYO OIDC client secret when the gate says so.
-	if err := c.bridgeSecrets(ctx, tenantClient, tenant, inst, proceed.bridgeOIDC); err != nil {
+	// Bridge the Secrets this instance REFERENCES: the registry pull Secret
+	// named by spec.imagePullSecretRef, and the BYO OIDC client secret named
+	// by spec.oidcBridgeSecretRef when the gate says so. A reference that
+	// names nothing is reported on the Instance, never guessed at.
+	bridgedCond, err := c.bridgeSecrets(ctx, tenantClient, tenant, inst, proceed.bridgeOIDC)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -408,7 +412,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	ready, err := c.mirrorStatus(ctx, tenantClient, inst, tmpl, runtimeObj, validCondition(metav1.ConditionTrue, infrav1alpha1.ReasonReady, ""), oidcCond)
+	ready, err := c.mirrorStatus(ctx, tenantClient, inst, tmpl, runtimeObj, validCondition(metav1.ConditionTrue, infrav1alpha1.ReasonReady, ""), oidcCond, bridgedCond)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("mirroring status: %w", err)
 	}

@@ -42,6 +42,19 @@ data:
       # three must change together.
       apiExport:
         name: "quickstart.providers.railgrid.ai"
+      # Data-plane verbs this provider serves, declared so the coordinate is
+      # machine-readable. Declaring one grants and serves nothing: every call is
+      # still authorized by this provider's own caller-scoped SSAR on
+      # {resource}/{verb}. What the declaration buys is that the hub
+      # scoped-identity service can mint a capability for a verb it can verify
+      # exists (pkg/hub/identity/policy.go clause C), instead of consumers
+      # hardcoding a coordinate nobody validates.
+      dataPlane:
+        verbs:
+          - resource: greetings
+            verb: greet
+            description: "Return the greeting this Greeting describes."
+            readOnly: true
       # Lets an organization run its own copy of this provider (see
       # docs/byo-providers.md). The chart version is stamped from the release so
       # the instructions the hub generates pin the same version that published

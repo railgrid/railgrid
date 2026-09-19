@@ -37,15 +37,12 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -436,57 +433,16 @@ type Agent struct {
 	// Options.SvcPolicy) handed to every tunnel connection.
 	svcProxy tunnel.SvcProxyOptions
 
-	// tunnelToken holds the bearer token used by the proxy tunnel goroutine on
-	// every (re)connect. It is seeded with the bootstrap token at startup and
-	// replaced by the SA token after the hub delivers a kubeconfig via the
-	// token-exchange flow. Atomic because the tunnel goroutine reads it while
-	// onAgentToken (running on the tunnel goroutine's connect path) writes it.
+	// credentials holds this agent's scoped identity and re-mints it on the
+	// reconnect path. It supplies the bearer for every (re)connect: the
+	// bootstrap join token while enrolling, the TTL'd credential afterwards.
 	//
-	// Without this, the tunnel keeps using the bootstrap join token forever,
-	// which the hub rejects on reconnect once edge.Status.JoinToken has been
-	// cleared on the first successful auth — leaving the agent in an endless
-	// "websocket: bad handshake" loop until manually restarted.
-	tunnelToken atomic.Pointer[string]
-}
-
-// setTunnelToken stores t as the token used for tunnel (re)connects.
-func (a *Agent) setTunnelToken(t string) {
-	a.tunnelToken.Store(&t)
-}
-
-// currentTunnelToken returns the bearer token the tunnel should use for the
-// next (re)connect. Returns "" if no token has been set yet.
-func (a *Agent) currentTunnelToken() string {
-	if p := a.tunnelToken.Load(); p != nil {
-		return *p
-	}
-	return ""
-}
-
-// extractTokenFromKubeconfigB64 decodes a base64-encoded kubeconfig (as
-// delivered by the hub in the X-Railgrid-Agent-Kubeconfig header) and returns the
-// bearer token of its current context's AuthInfo.
-func extractTokenFromKubeconfigB64(kubeconfigB64 string) (string, error) {
-	raw, err := base64.StdEncoding.DecodeString(kubeconfigB64)
-	if err != nil {
-		return "", fmt.Errorf("decoding kubeconfig: %w", err)
-	}
-	cfg, err := clientcmd.Load(raw)
-	if err != nil {
-		return "", fmt.Errorf("parsing kubeconfig: %w", err)
-	}
-	ctx, ok := cfg.Contexts[cfg.CurrentContext]
-	if !ok {
-		return "", fmt.Errorf("kubeconfig has no current context %q", cfg.CurrentContext)
-	}
-	auth, ok := cfg.AuthInfos[ctx.AuthInfo]
-	if !ok {
-		return "", fmt.Errorf("kubeconfig has no auth info %q", ctx.AuthInfo)
-	}
-	if auth.Token == "" {
-		return "", fmt.Errorf("kubeconfig auth info %q has no token", ctx.AuthInfo)
-	}
-	return auth.Token, nil
+	// The transition matters. The hub clears edge.Status.JoinToken on the
+	// first successful join, so an agent that kept using the join token would
+	// be rejected forever afterwards — an endless "websocket: bad handshake"
+	// loop until someone restarted it. The store swaps the bearer at exactly
+	// the moment the provider hands one over.
+	credentials *tunnel.CredentialStore
 }
 
 // New creates a new agent.
@@ -631,6 +587,7 @@ func New(opts *Options) (*Agent, error) {
 		hubTLSConfig: hubTLSConfig,
 		svcProxy:     tunnel.SvcProxyOptions{AllowedCIDRs: svcCIDRs, Policy: svcPolicy},
 	}
+	a.credentials = a.newCredentialStore()
 	// MacOSServer is intentionally service-only. Keep the shared server-mode
 	// tunnel but disable the SSH bridge even when the CLI's Linux-compatible
 	// default --ssh-proxy-port=22 was left in place.
@@ -753,46 +710,25 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	// agentKubeconfigDelivered is closed (once) when the hub returns a SA
-	// kubeconfig via the token-exchange flow and we've saved it to disk. In
-	// out-of-cluster join-token mode the main flow waits on this signal so it
-	// can rebuild hubClient with valid kcp credentials before starting any
-	// goroutines that talk to the hub.
-	agentKubeconfigDelivered := make(chan struct{})
+	// agentEnrolled is closed once, when the provider delivers this
+	// agent's scoped identity on the join connect and it has been persisted.
+	// Out-of-cluster join-token startup waits on it so the reporters below
+	// have a working kcp credential on their first run instead of needing a
+	// manual restart.
+	agentEnrolled := make(chan struct{})
 	var deliverOnce sync.Once
-	onAgentToken := func(kubeconfigB64 string) {
-		path, _ := AgentKubeconfigPath(a.opts.EdgeName)
-		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName, "path", path)
-		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
-			logger.Error(err, "failed to save agent kubeconfig from hub")
-			return
-		}
-		// Swap the tunnel's bearer token to the SA token before the hub clears
-		// edge.Status.JoinToken — otherwise reconnects after a hub restart fail
-		// with "websocket: bad handshake".
-		if saToken, err := extractTokenFromKubeconfigB64(kubeconfigB64); err != nil {
-			logger.Error(err, "failed to extract SA token from delivered kubeconfig; tunnel reconnects may fail")
-		} else {
-			a.setTunnelToken(saToken)
-		}
-		// In-cluster mode: also persist to Secret so it survives pod restarts,
-		// then force a restart so the agent re-launches with the saved kubeconfig.
-		if IsInCluster() {
-			kubeconfigData, decErr := decodeKubeconfigB64(kubeconfigB64)
-			if decErr != nil {
-				logger.Error(decErr, "failed to decode kubeconfig for in-cluster Secret save")
-			} else if saveErr := SaveKubeconfigToSecret(a.opts.EdgeName, kubeconfigData); saveErr != nil {
-				logger.Error(saveErr, "failed to save kubeconfig to in-cluster Secret")
-			} else {
-				logger.Info("Saved kubeconfig to in-cluster Secret; restarting pod to activate", "edgeName", a.opts.EdgeName)
-				os.Exit(1)
-			}
-			return
-		}
-		deliverOnce.Do(func() { close(agentKubeconfigDelivered) })
+	onEnrolled := func(credential tunnel.Credential) {
+		path, _ := AgentCredentialPath(a.opts.EdgeName)
+		logger.Info("Enrolled: the provider issued this agent a scoped identity",
+			"edgeName", a.opts.EdgeName, "path", path, "expiresAt", credential.ExpiresAt)
+		// Rebuild the hub client from the bundle: the agent connected with a
+		// bootstrap join token, which is not a kcp credential at all, and
+		// everything it needs to become one is in the bundle (hub URL, CA,
+		// logical cluster).
+		a.hubConfig = hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
+		deliverOnce.Do(func() { close(agentEnrolled) })
 	}
-	a.setTunnelToken(a.hubConfig.BearerToken)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, string(a.agentType), a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.svcProxy, clusterName, onAgentToken, nil)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.credentials, a.opts.EdgeName, string(a.agentType), a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.svcProxy, clusterName, onEnrolled, nil)
 
 	// Out-of-cluster join-token mode: the in-memory hubClient was built from
 	// the bootstrap join token, which is not a valid kcp credential. Wait for
@@ -800,19 +736,19 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	// hubClient from it so the reporters/reconcilers below have working
 	// credentials on the first run (instead of needing a manual restart).
 	if a.opts.Token != "" && !IsInCluster() {
-		logger.Info("Join-token mode: waiting for hub to deliver SA kubeconfig via token-exchange...")
+		logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
 		select {
 		case <-ctx.Done():
-			logger.Info("Agent shutting down before token-exchange completed")
+			logger.Info("Agent shutting down before enrolment completed")
 			return nil
-		case <-agentKubeconfigDelivered:
+		case <-agentEnrolled:
 		}
-		refreshed, err := a.refreshHubClientFromSavedKubeconfig()
+		refreshed, err := a.refreshHubClientFromCredential()
 		if err != nil {
-			return fmt.Errorf("refreshing hub client after token-exchange: %w", err)
+			return fmt.Errorf("refreshing hub client after enrolment: %w", err)
 		}
 		hubClient = refreshed
-		logger.Info("Refreshed hub client from saved SA kubeconfig")
+		logger.Info("Refreshed hub client from the issued credential")
 	}
 
 	// Workload plane: Workload/Placement scheduling onto this kubernetes
@@ -876,33 +812,57 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	return nil
 }
 
-// refreshHubClientFromSavedKubeconfig loads the SA kubeconfig that the tunnel
-// token-exchange callback just saved to disk, builds a fresh rest.Config from
-// it, updates a.hubConfig in place, and returns a railgrid client backed by the
-// new credentials. Used by out-of-cluster join-token startup to transition the
-// agent's in-memory clients from the bootstrap join token (no kcp access) to
-// the durable SA credential without exiting the process.
-func (a *Agent) refreshHubClientFromSavedKubeconfig() (*railgridclient.Client, error) {
-	kubeconfigPath, err := AgentKubeconfigPath(a.opts.EdgeName)
-	if err != nil {
-		return nil, fmt.Errorf("resolving saved kubeconfig path: %w", err)
+// newCredentialStore builds the agent's credential store: the join token as
+// the fallback while enrolling, and persistence to disk (plus the in-cluster
+// Secret, when running as a pod) for every credential the provider issues.
+func (a *Agent) newCredentialStore() *tunnel.CredentialStore {
+	edgeName := a.opts.EdgeName
+	store := &tunnel.CredentialStore{
+		Fallback:  func() string { return a.opts.Token },
+		TLSConfig: a.hubTLSConfig,
+		Persist: func(credential tunnel.Credential) error {
+			if err := SaveAgentCredential(edgeName, credential); err != nil {
+				return err
+			}
+			if IsInCluster() {
+				// A pod's filesystem does not survive a restart, so the bundle
+				// also goes into the Secret the deployment mounts. Unlike the
+				// kubeconfig this replaces, there is no os.Exit here: the
+				// token is live in memory and the agent keeps serving.
+				if err := SaveCredentialToSecret(edgeName, credential); err != nil {
+					return fmt.Errorf("persisting the agent credential to its Secret: %w", err)
+				}
+			}
+			return nil
+		},
 	}
-	rules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
-	newCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
-	if err != nil {
-		return nil, fmt.Errorf("loading saved kubeconfig %s: %w", kubeconfigPath, err)
+	// A credential from a previous run means this agent has already enrolled;
+	// the join token it was started with (if any) is stale.
+	if credential, ok, err := LoadAgentCredential(edgeName); err != nil {
+		klog.Background().Error(err, "could not read the saved agent credential; falling back to the join token")
+	} else if ok {
+		_ = store.Adopt(credential)
 	}
-	if a.opts.InsecureSkipTLSVerify {
-		newCfg.Insecure = true
-		// CA data combined with Insecure=true is rejected by rest.TLSConfigFor.
-		newCfg.CAData = nil
-		newCfg.CAFile = ""
-	}
-	applyHubClientDefaults(newCfg)
+	return store
+}
 
+// refreshHubClientFromCredential rebuilds the agent's kcp client from the
+// credential the provider issued, and updates a.hubConfig in place.
+//
+// Out-of-cluster join-token startup needs it: the in-memory client was built
+// from the bootstrap join token, which is not a kcp credential at all, so
+// every reporter call would fail until the agent transitioned. It used to
+// transition by loading a kubeconfig off disk; now everything it needs is in
+// the bundle.
+func (a *Agent) refreshHubClientFromCredential() (*railgridclient.Client, error) {
+	credential, ok := a.credentials.Current()
+	if !ok {
+		return nil, fmt.Errorf("no agent credential has been issued yet")
+	}
+	newCfg := hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
 	dynClient, err := dynamic.NewForConfig(newCfg)
 	if err != nil {
-		return nil, fmt.Errorf("creating dynamic client from saved kubeconfig: %w", err)
+		return nil, fmt.Errorf("creating dynamic client from the agent credential: %w", err)
 	}
 	a.hubConfig = newCfg
 	return railgridclient.NewFromDynamic(dynClient), nil
@@ -953,66 +913,47 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	// serverAgentKubeconfigDelivered mirrors the kubernetes-mode signal: closed
-	// once when the hub delivers a SA kubeconfig via token-exchange, used to
-	// refresh hubClient before starting the edge_reporter in out-of-cluster
-	// join-token mode (so heartbeats actually work on the first run).
-	serverAgentKubeconfigDelivered := make(chan struct{})
+	// serverAgentEnrolled is closed once, when the provider delivers this
+	// agent's scoped identity on the join connect and it has been persisted.
+	// Out-of-cluster join-token startup waits on it so the reporters below
+	// have a working kcp credential on their first run instead of needing a
+	// manual restart.
+	serverAgentEnrolled := make(chan struct{})
 	var serverDeliverOnce sync.Once
-	serverOnAgentToken := func(kubeconfigB64 string) {
-		path, _ := AgentKubeconfigPath(a.opts.EdgeName)
-		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName, "path", path)
-		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
-			logger.Error(err, "failed to save agent kubeconfig from hub")
-			return
-		}
-		// Swap the tunnel's bearer token to the SA token before the hub clears
-		// edge.Status.JoinToken — otherwise reconnects after a hub restart fail
-		// with "websocket: bad handshake".
-		if saToken, err := extractTokenFromKubeconfigB64(kubeconfigB64); err != nil {
-			logger.Error(err, "failed to extract SA token from delivered kubeconfig; tunnel reconnects may fail")
-		} else {
-			a.setTunnelToken(saToken)
-		}
-		// In-cluster mode: also persist to Secret and restart.
-		if IsInCluster() {
-			kubeconfigData, decErr := decodeKubeconfigB64(kubeconfigB64)
-			if decErr != nil {
-				logger.Error(decErr, "failed to decode kubeconfig for in-cluster Secret save")
-			} else if saveErr := SaveKubeconfigToSecret(a.opts.EdgeName, kubeconfigData); saveErr != nil {
-				logger.Error(saveErr, "failed to save kubeconfig to in-cluster Secret")
-			} else {
-				logger.Info("Saved kubeconfig to in-cluster Secret; restarting pod to activate", "edgeName", a.opts.EdgeName)
-				os.Exit(1)
-			}
-			return
-		}
-		serverDeliverOnce.Do(func() { close(serverAgentKubeconfigDelivered) })
+	serverOnEnrolled := func(credential tunnel.Credential) {
+		path, _ := AgentCredentialPath(a.opts.EdgeName)
+		logger.Info("Enrolled: the provider issued this agent a scoped identity",
+			"edgeName", a.opts.EdgeName, "path", path, "expiresAt", credential.ExpiresAt)
+		// Rebuild the hub client from the bundle: the agent connected with a
+		// bootstrap join token, which is not a kcp credential at all, and
+		// everything it needs to become one is in the bundle (hub URL, CA,
+		// logical cluster).
+		a.hubConfig = hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
+		serverDeliverOnce.Do(func() { close(serverAgentEnrolled) })
 	}
 
 	sshHeaders := a.serverTunnelHeaders()
 
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	a.setTunnelToken(a.hubConfig.BearerToken)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, string(a.agentType), nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.svcProxy, serverClusterName, serverOnAgentToken, sshHeaders)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.credentials, a.opts.EdgeName, string(a.agentType), nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.svcProxy, serverClusterName, serverOnEnrolled, sshHeaders)
 
 	// Out-of-cluster join-token mode: wait for the SA kubeconfig before
 	// starting the edge_reporter, otherwise its patch calls would all return
 	// Unauthorized until a restart.
 	if a.opts.Token != "" && !IsInCluster() {
-		logger.Info("Join-token mode: waiting for hub to deliver SA kubeconfig via token-exchange...")
+		logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
 		select {
 		case <-ctx.Done():
-			logger.Info("Agent shutting down before token-exchange completed")
+			logger.Info("Agent shutting down before enrolment completed")
 			return nil
-		case <-serverAgentKubeconfigDelivered:
+		case <-serverAgentEnrolled:
 		}
-		refreshed, err := a.refreshHubClientFromSavedKubeconfig()
+		refreshed, err := a.refreshHubClientFromCredential()
 		if err != nil {
-			return fmt.Errorf("refreshing hub client after token-exchange: %w", err)
+			return fmt.Errorf("refreshing hub client after enrolment: %w", err)
 		}
 		hubClient = refreshed
-		logger.Info("Refreshed hub client from saved SA kubeconfig")
+		logger.Info("Refreshed hub client from the issued credential")
 	}
 
 	// In-cluster join-token mode is the only path where we still lack working
@@ -1185,11 +1126,6 @@ func ensureAuthorizedKey(privateKeyPath string) error {
 	return nil
 }
 
-const (
-	// sshCredentialsNamespace is the namespace where SSH credential secrets are stored.
-	sshCredentialsNamespace = "railgrid-system"
-)
-
 // serverTunnelHeaders builds host metadata for both Linux and macOS tunnels.
 func (a *Agent) serverTunnelHeaders() http.Header {
 	// In join-token mode, pass LinuxServer SSH credentials as WebSocket headers so the hub
@@ -1265,12 +1201,26 @@ func (a *Agent) sshHostKeyHeader() http.Header {
 	return h
 }
 
-// setupSSHCredentials creates a Secret with SSH credentials and updates the Edge status.
-func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hubClient *railgridclient.Client) error {
-	// Determine SSH username.
+// setupSSHCredentials hands this host's SSH credentials to the edges provider
+// through the gated ssh-credentials verb.
+//
+// It used to write the tenant Secret itself, with the agent's own credential:
+// ensure the railgrid-system namespace, create or update
+// <edge>-ssh-credentials, then patch status.sshCredentials to point at it.
+// That is why an edge agent held get/create on namespaces and
+// get/create/update on secrets in the tenant workspace — the broadest grant it
+// had, on a token that never expired, and exactly the rule the hub's
+// scoped-identity policy refuses to mint for anyone (X-4: no Secrets).
+//
+// Now the agent proves which edge it is — gate 1 a real GET of its own object,
+// gate 2 an SSAR for create on linuxservers/ssh-credentials, name-scoped — and
+// the PROVIDER performs the write. Nothing in the request names a destination:
+// the namespace, the Secret name and the status field are all derived from the
+// edge the caller just proved it is, so an agent that lies about its
+// credentials only ever lies about its own.
+func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, _ *railgridclient.Client) error {
 	sshUser := a.opts.SSHUser
 	if sshUser == "" {
-		// Default to current user.
 		if u, err := user.Current(); err == nil {
 			sshUser = u.Username
 		} else {
@@ -1278,130 +1228,29 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		}
 	}
 
-	// Check if we have any credentials to set up.
-	hasPassword := a.opts.SSHPassword != ""
-	hasPrivateKey := a.opts.SSHPrivateKeyPath != ""
-
-	if !hasPassword && !hasPrivateKey {
+	body := tunnel.SSHCredentials{Username: sshUser}
+	if a.opts.SSHPassword != "" {
+		body.Password = a.opts.SSHPassword
+		logger.Info("Using SSH password authentication", "user", sshUser)
+	}
+	if a.opts.SSHPrivateKeyPath != "" {
+		keyData, err := os.ReadFile(a.opts.SSHPrivateKeyPath)
+		if err != nil {
+			return fmt.Errorf("reading SSH private key from %s: %w", a.opts.SSHPrivateKeyPath, err)
+		}
+		body.PrivateKey = keyData
+		logger.Info("Using SSH private key authentication", "user", sshUser, "keyPath", a.opts.SSHPrivateKeyPath)
+	}
+	if body.Password == "" && len(body.PrivateKey) == 0 {
 		logger.Info("No SSH credentials provided, skipping credential setup",
 			"hint", "use --ssh-user with --ssh-password or --ssh-private-key")
 		return nil
 	}
 
-	secretName := a.opts.EdgeName + "-ssh-credentials"
-	secretData := make(map[string][]byte)
-
-	if hasPassword {
-		secretData["password"] = []byte(a.opts.SSHPassword)
-		logger.Info("Using SSH password authentication", "user", sshUser)
+	if err := a.credentials.PostSSHCredentials(ctx, body); err != nil {
+		return fmt.Errorf("handing the SSH credentials to the edges provider: %w", err)
 	}
-
-	if hasPrivateKey {
-		keyData, err := os.ReadFile(a.opts.SSHPrivateKeyPath)
-		if err != nil {
-			return fmt.Errorf("reading SSH private key from %s: %w", a.opts.SSHPrivateKeyPath, err)
-		}
-		secretData["privateKey"] = keyData
-		logger.Info("Using SSH private key authentication", "user", sshUser, "keyPath", a.opts.SSHPrivateKeyPath)
-	}
-
-	// Create or update the Secret via the hub's dynamic client.
-	// We use the kubernetes clientset for core resources.
-	hubK8s, err := kubernetes.NewForConfig(a.hubConfig)
-	if err != nil {
-		return fmt.Errorf("creating hub kubernetes client: %w", err)
-	}
-
-	// Ensure namespace exists.
-	_, err = hubK8s.CoreV1().Namespaces().Get(ctx, sshCredentialsNamespace, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = hubK8s.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{Name: sshCredentialsNamespace},
-		}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating namespace %s: %w", sshCredentialsNamespace, err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("checking namespace %s: %w", sshCredentialsNamespace, err)
-	}
-
-	// Create or update the secret.
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: sshCredentialsNamespace,
-			Labels: map[string]string{
-				"railgrid.ai/edge": a.opts.EdgeName,
-			},
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: secretData,
-	}
-
-	_, err = hubK8s.CoreV1().Secrets(sshCredentialsNamespace).Get(ctx, secretName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = hubK8s.CoreV1().Secrets(sshCredentialsNamespace).Create(ctx, secret, metav1.CreateOptions{})
-		if err != nil {
-			return fmt.Errorf("creating SSH credentials secret: %w", err)
-		}
-		logger.Info("Created SSH credentials secret", "secret", sshCredentialsNamespace+"/"+secretName)
-	} else if err != nil {
-		return fmt.Errorf("checking SSH credentials secret: %w", err)
-	} else {
-		_, err = hubK8s.CoreV1().Secrets(sshCredentialsNamespace).Update(ctx, secret, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("updating SSH credentials secret: %w", err)
-		}
-		logger.Info("Updated SSH credentials secret", "secret", sshCredentialsNamespace+"/"+secretName)
-	}
-
-	// Update Edge status with SSH credentials reference. The Edge type now lives
-	// in the edges-connectivity provider, so we build the credentials as a plain
-	// map (marshaled into the merge patch below) rather than a typed struct.
-	sshCreds := map[string]interface{}{
-		"username": sshUser,
-	}
-	if hasPassword {
-		sshCreds["passwordSecretRef"] = map[string]interface{}{
-			"name":      secretName,
-			"namespace": sshCredentialsNamespace,
-		}
-	}
-	if hasPrivateKey {
-		sshCreds["privateKeySecretRef"] = map[string]interface{}{
-			"name":      secretName,
-			"namespace": sshCredentialsNamespace,
-		}
-	}
-
-	// Build the proxy URL path for this edge.
-	edgeURL := apiurl.EdgeAPIPath(a.opts.Cluster, a.opts.EdgeName)
-
-	// The Edge CRD marks status.connected as required (no `omitempty` on the
-	// Go field) so a merge patch on a freshly-created Edge that omits it
-	// fails validation. setupSSHCredentials runs before the tunnel is
-	// established, so `false` is the truthful initial value here — the
-	// heartbeat reporter will set it to true once the tunnel is up.
-	patch := map[string]interface{}{
-		"status": map[string]interface{}{
-			"connected":      false,
-			"sshCredentials": sshCreds,
-			"URL":            edgeURL,
-		},
-	}
-	patchBytes, err := json.Marshal(patch)
-	if err != nil {
-		return fmt.Errorf("marshaling edge status patch: %w", err)
-	}
-
-	_, err = hubClient.Dynamic().Resource(railgridclient.LinuxServerGVR).Patch(ctx, a.opts.EdgeName,
-		types.MergePatchType, patchBytes,
-		metav1.PatchOptions{}, "status")
-	if err != nil {
-		return fmt.Errorf("updating edge status with SSH credentials: %w", err)
-	}
-
-	logger.Info("Edge status updated with SSH credentials", "user", sshUser)
+	logger.Info("SSH credentials recorded against the edge", "user", sshUser)
 	return nil
 }
 

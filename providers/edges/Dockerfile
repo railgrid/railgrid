@@ -29,12 +29,13 @@ COPY providers/edges/ ./
 COPY --from=portal /portal/dist ./portal/dist
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags="-s -w" -o /out/edges-provider .
 
-# 3. Minimal runtime image. The KubernetesCluster + LinuxServer + MacOSServer APIResourceSchemas
-#    the `init` subcommand applies are baked at /etc/railgrid/schemas
-#    (RAILGRID_SCHEMAS_DIR), synced there by `make codegen-edges-provider`.
+# 3. Minimal runtime image. The two declarative objects the `init` subcommand
+#    applies — the generated APIExport and the edge APIResourceSchemas it
+#    references — are baked at /etc/railgrid/kcp (RAILGRID_KCP_DIR), written
+#    there by `make codegen-edges-provider`.
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/edges-provider /edges-provider
-COPY providers/edges/deploy/chart/files/schemas /etc/railgrid/schemas
+COPY providers/edges/deploy/chart/files /etc/railgrid/kcp
 EXPOSE 8088
 ENV PORT=8088
 USER nonroot:nonroot

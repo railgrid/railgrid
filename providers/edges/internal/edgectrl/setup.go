@@ -22,11 +22,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
+	"github.com/railgrid/provider-sdk/identityclient"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
-// Options configures the RBAC reconciler's agent-kubeconfig generation.
+// Options configures the per-kind edge reconcilers.
 type Options struct {
+	// Identities is the hub scoped-identity client the RBAC reconciler asks
+	// for each edge agent's credential. Nil disables credential provisioning
+	// (dev runs without a hub); it is never replaced by minting one locally.
+	Identities     *identityclient.Client
 	HubExternalURL string
 	HubCAData      []byte
 	DevMode        bool
@@ -54,7 +59,7 @@ func SetupControllers(
 	if err := SetupTokenWithManager(mgr, gvr, newObj); err != nil {
 		return err
 	}
-	if err := SetupRBACWithManager(mgr, gvr, kind, newObj, opts.HubExternalURL, opts.HubCAData, opts.DevMode); err != nil {
+	if err := SetupRBACWithManager(mgr, gvr, kind, newObj, opts.Identities); err != nil {
 		return err
 	}
 	if opts.LatestAgentVersion != nil {

@@ -1,18 +1,97 @@
 # Cross-provider access — unification architecture
 
-**Status:** Design draft (audit complete, target architecture proposed)
+**Status:** Largely implemented — see "Status after remediation" below. The
+August 2026 audit body is retained as history.
 **Owner:** TBD
-**Last updated:** 2026-08-08
+**Last updated:** 2026-09-19 (status section); audit body 2026-08-08
 **Reads as a delta on:** [providers.md](./providers.md),
 [provider-connectivity-contract.md](./provider-connectivity-contract.md),
 [provider-actions.md](./provider-actions.md)
 
 ---
 
-## Restore-from-reboot summary
+## Status after remediation (2026-09-19)
+
+> **Read this section first; everything below it is history.** The body of this
+> doc is the August 2026 audit, kept verbatim as the record of *why* this work
+> happened. Most of what it describes as present-tense is no longer true on
+> branch `provider-contract/phase-0`. Where the two disagree, this section
+> wins. The per-section landing status is in
+> [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md).
+
+### The eight mechanisms (Part 1)
+
+| # | Mechanism | State | Anchor |
+|---|---|---|---|
+| M1 | Bound CRs via APIBinding | **unchanged** — still the healthy core | — |
+| M2 | Provider SA + endpoint slice + claims | **unchanged in mechanics, single-sourced in declaration.** A claim is written once, in `manifest.yaml`; `provider-sdk/cmd/apiexportgen` stamps the APIExport; `init` applies schemas + export from `RAILGRID_KCP_DIR` and adds only `identityHash` at runtime | `hack/verify-provider-contract.mjs` (`claims-parity`, `export-copy`), `providers/*/init_cmd.go` |
+| M3 | Blanket `secrets` claims as a credential side-door | **narrowed, not closed.** The cross-provider *uses* are gone (see finding 1 below), but six providers still claim `secrets`; only infrastructure's is read-only | `providers/{agents,app-studio,code,edges,kuery}/manifest.yaml`; `providers/infrastructure/manifest.yaml` (`[get, list, watch]`) |
+| M4 | Hub backend-proxy data-plane paths, in four dialects | **collapsed to one.** `provider-sdk/dataplane` owns the grammar, the two gates and the limits; `provider-sdk/serve` owns the server layout and refuses anything outside it. Every in-tree provider serves through `serve.New`. `/edgeproxy/…/apis/…`, `/s2s/*` and the ad-hoc `/api/*` surfaces are gone, not aliased | `provider-sdk/dataplane/{path,gate,serve}.go`, `provider-sdk/serve/serve.go`, `providers/*/main.go` |
+| M5 | MCP as a third access path | **demoted to a projection.** The aggregate verifies the bearer and its right to the addressed cluster *before* fan-out, and enumerates for that verified caller; per-edge MCP is now an ordinary data-plane verb, not its own mount | `pkg/hub/mcpaggregate/verifier.go`, `pkg/hub/mcpaggregate/enumerator.go`, `providers/edges/internal/tunnel/grammar.go` (`VerbMCP`) |
+| M6 | Provider Actions as a hub router | **deleted.** `pkg/hub/provideractions` no longer exists; an action is a verb under `dataplane.ActionsRoot` on the ordinary backend proxy, authorized by the same two gates. `spec.virtualWorkspace` is retired from the CatalogEntry type | `pkg/hub/server.go:431-434`, `provider-sdk/dataplane/path.go` (`ActionsRoot`) |
+| M7 | Providers minting SAs/ClusterRoles over other groups | **closed for agents and edges, open for kuery and app-studio.** The hub service exists and refuses anything outside four clauses; agents and edges consume it and hold no RBAC-authoring claims. kuery and app-studio still provision their own identities through `provider-sdk/tenantaccess` and still claim `serviceaccounts`/`clusterroles`/`clusterrolebindings` | `pkg/hub/identity/policy.go` (clauses A–D), `provider-sdk/identityclient`, `providers/agents/manifest.yaml:74`, `providers/edges/manifest.yaml:57`; open: `providers/kuery/manifest.yaml`, `providers/app-studio/manifest.yaml` |
+| M8 | String-literal runtime conventions | **closed for the two this doc named.** `Instance.spec.imagePullSecretRef` and `spec.oidcBridgeSecretRef` are typed, validated inputs; `<instance>-registry` survives only as the name of the Secret the infrastructure provider writes *inside its own runtime*, which is nobody else's contract. Consumers render foreign paths with `dataplane.ProviderPath` | `providers/infrastructure/controller/instance/bridge.go:66-67,87,94`, `provider-sdk/dataplane/build.go` |
+
+### The findings (Part 2)
+
+**2.1 Contract-3 violations**
+
+1. **Foreign credential via the Secrets side-door — closed.** App Studio no
+   longer reads code's `Connection` Secret. It invokes code's
+   `mint_registry_token` action **as the caller**, then writes its own
+   `dockerconfigjson` Secret and names it on the Instance's
+   `spec.imagePullSecretRef`
+   (`providers/app-studio/api/project_promote.go:56-61,66-68,87-103,172-185`).
+2. **kuery's edge sync dead three ways — closed.** It claims
+   `edges.railgrid.ai/kubernetesclusters`, and the per-edge coordinate comes
+   from the edge's own `status.url`; an edge that has not published one is an
+   error, not a guessed format string
+   (`providers/kuery/engagement/controller.go:669-695`, `edgeProxyURL`). The
+   `/services/edges-proxy/…` dial is gone.
+3. **`<instance>-registry` naming convention — closed.** See M8.
+4. **Providers authoring RBAC over each other's API groups — closed for
+   agents.** Per-agent identities are hub-minted, TTL'd and scoped
+   (`providers/agents/api/agentidentity.go:60,146`); the policy refuses any
+   rule outside clauses A–D, and in particular any write on a foreign group
+   and anything at all on the core group (`pkg/hub/identity/policy.go`).
+   Still open for kuery and app-studio (M7).
+5. **The Enable-time edges-proxy grant — narrowed, not removed.** It now
+   writes `access` on `/` plus `create` on the per-verb subresources
+   (`kubernetesclusters/k8s`, `linuxservers/ssh`, `services/proxy`,
+   `services/mcp`, `services/ticket`, …). The wildcard `proxy` verb and the
+   non-VW Secrets/Namespaces read-write are gone
+   (`pkg/hub/kcp/bootstrap.go:2379-2433`).
+   `CatalogEntry.spec.edgeProxyAccess` still exists
+   (`apis/providers/v1alpha1/types_catalogentry.go:125-134`) but no in-tree
+   provider sets it any more.
+6. **Foreign path grammar hardcoded in consumers — closed.** Both named
+   consumers render the path from the shared grammar and the provider name
+   their own binding gives them: `providers/agents/tools/tools.go:157` and
+   `providers/app-studio/api/dataplane_client.go:84`, both through
+   `dataplane.ProviderPath`.
+
+**2.2 Fail-open hub surfaces**
+
+| Surface | Now | Anchor |
+|---|---|---|
+| `POST /api/providers/{name}/heartbeat` | Authenticated as the provider's own SA, verified by TokenReview in the provider's workspace. **Not yet fail-closed by default**: `--provider-heartbeat-auth` ships as `warn` (log and accept) this release, `enforce` next | `pkg/hub/providers/heartbeat_auth.go`, `pkg/hub/options.go:205` |
+| `GET /api/providers` | Authenticated upstream of the handler; catalog visibility scoped to the verified Org | `pkg/hub/providers/api.go:29-34`, `pkg/hub/server.go:452,727` |
+| MCP aggregate | Bearer verified against the addressed cluster before any fan-out; enumeration runs for the verified caller | `pkg/hub/mcpaggregate/verifier.go`, `enumerator.go` |
+| UI proxy / backend proxy | Inbound `X-Railgrid-User`/`-Tenant`/`-Cluster` are **always** stripped on both. A resolver failure still forwards without identity headers, which is safe only because no provider authorizes on a header — every one of them gates on the bearer | `pkg/hub/providers/proxy.go:115-126,144` |
+| `/metrics` | Off the public listener; no `/metrics` route remains on the hub router | `pkg/hub/server.go` |
+
+**2.3 Two grant systems — closed.** There is one enforcement plane: kcp RBAC
+plus the two gates, run by `provider-sdk/dataplane.Gate` as the caller, with
+`create` on `{resource}/{verb}` as the only grant shape. The hub Go authorizer
+is deleted with the router it served.
+
+---
+
+## Restore-from-reboot summary *(historical — August 2026)*
 
 > Enough context for a fresh session (or a returning human) to pick this up
-> without replaying the audit.
+> without replaying the audit. **Superseded by "Status after remediation"
+> above**; kept for the reasoning, not for the present tense.
 
 **Where we are:** a full audit of every cross-provider access channel in the
 tree (branch `provider-actions`, PR #499 included) is complete. Roughly **40
@@ -75,7 +154,7 @@ between providers.
 
 ---
 
-## Part 1 — Inventory: the eight mechanisms
+## Part 1 — Inventory: the eight mechanisms *(historical)*
 
 Compressed here; the full per-channel tables with anchors are in the Appendix.
 
@@ -96,7 +175,7 @@ absorbs. M5 is kept but demoted to a projection.
 
 ---
 
-## Part 2 — Findings
+## Part 2 — Findings *(historical — see "Status after remediation" for what is closed)*
 
 ### 2.1 Contract-3 violations, ranked
 
@@ -160,7 +239,7 @@ largest source of conceptual confusion the audit found.
 
 ---
 
-## Part 3 — Target architecture
+## Part 3 — Target architecture *(historical; this is what was built)*
 
 ### The three primitives
 
@@ -300,11 +379,38 @@ routing, and the human/workload authorization asymmetry.
 
 ### One identity service
 
-Three identity minters exist today:
+**Status: the hub service has landed** on branch `provider-contract/phase-0`
+(§10 of [provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)).
+`pkg/hub/identity` is the service, `pkg/hub/serviceaccounts/scoped_identity.go`
+is the single minter, `apis/tenancy/v1alpha1/types_scoped_identity.go` is the
+record, and `provider-sdk/identityclient` is the client. The hub workload
+exchange is already an adapter over it and its identities are recorded and
+collected for the first time. The three consumers below have **not** migrated
+yet: agents (§8.6), edges (§5.7) and factory each still mint their own, and
+each drops its `serviceaccounts` / `clusterroles` / `clusterrolebindings`
+claims when it moves. See
+[provider-connectivity-contract.md §"Scoped identities"](./provider-connectivity-contract.md)
+for the API, the policy and the client.
+
+One adjustment to the design as sketched: `list` and `watch` on **another**
+provider's group are refused rather than minted. RBAC does not apply
+`resourceNames` to collection requests, so "get/list/watch on named resources"
+is not expressible — the rule either authorizes nothing or authorizes reading
+every object of that kind in the workspace. A consumer that needs a collection
+reads it by name, or the owning provider publishes a list API.
+
+A second, smaller gap worth recording: a CatalogEntry declares **catalog
+actions** but not **data-plane verbs**, so the verb-subresource clause can only
+admit declared actions. `exec`, `proxy` and `delegate` exist nowhere
+machine-readable. A provider needing a data-plane verb on its *own* group gets
+it from clause A; a foreign one would need a `spec.dataPlane.verbs`
+declaration the contract does not yet have.
+
+Three identity minters existed before it:
 
 | Minter | Scope | TTL | GC |
 |---|---|---|---|
-| Hub workload exchange ([workload_identity.go](../pkg/hub/serviceaccounts/workload_identity.go)) | GET-only, resourceNames-scoped | 10 min | none |
+| Hub workload exchange ([workload_identity.go](../pkg/hub/serviceaccounts/workload_identity.go)) | GET-only, resourceNames-scoped | 10 min | ~~none~~ → owner Project |
 | Agents per-agent SAs ([agentidentity.go](../providers/agents/api/agentidentity.go)) | read on the whole infra group | **never expires** | manual |
 | edges per-edge SAs ([rbac_reconciler.go](../providers/edges/internal/edgectrl/rbac_reconciler.go)) | proxy on one edge | never expires | edge deletion |
 
@@ -327,16 +433,19 @@ workload-identity machinery generalized:
 
 ## Part 4 — Decisions proposed for pinning
 
-| # | Decision | Rationale |
-|---|---|---|
-| X-1 | **One data-plane grammar** (`…/clusters/{clusterID}/{resource}/{rname}/{verb}`) behind the backend proxy; no dedicated hub routers per capability | One transport to secure, one to document; deletes the bypass-prevention machinery a parallel route requires |
-| X-2 | **Verb grants are kcp RBAC on virtual subresources**, uniform for humans and SAs; the two-gate (visibility + verb SSAR) pattern is the only provider-side authz shape | Removes the dual grant system; auditable; the exec precedent already proves it |
-| X-3 | **`spec.virtualWorkspace.url` is retired** (or re-scoped to a real, implemented `/vw/*` design). Hub-only provider endpoints are reserved path prefixes on `spec.backend.url`, denied by the proxy from a single list | Ends the fake-VW confusion and the stale decision #6; one URL per provider |
-| X-4 | **Cross-provider Secret reads are forbidden.** Claims on core Secrets are for provider-owned material only; credential hand-offs are published APIs of the owning provider | Closes the side-door behind violations #1 and #3 |
-| X-5 | **All scoped identities come from the hub identity service**: TTL'd, attested, GC'd, resourceNames-scoped. Providers hold no RBAC-authoring claims | Ends M7; one place to audit standing credentials |
-| X-6 | **MCP is a projection.** Tools wrap P1/P2 executors; aggregate verifies bearer↔cluster; discovery is hub-authored from the registry | Prevents MCP becoming a fourth access path with its own trust model |
-| X-7 | **Discovery and state-changing hub surfaces are authenticated** (`/api/providers`, heartbeat, metrics off the public listener) | Prerequisite for org-scoped catalogs (provider-scoping P-1..P-12) and basic hygiene |
-| X-8 | **Consumers route by publication** (shared grammar package + `status`-stamped endpoints), never by hand-built foreign paths | Ends violation #6; provider renames stop breaking callers silently |
+Status column added 2026-09-19 against the tree; the decision and rationale
+columns are as pinned in August 2026.
+
+| # | Decision | Rationale | Status (2026-09-19) |
+|---|---|---|---|
+| X-1 | **One data-plane grammar** (`…/clusters/{clusterID}/{resource}/{rname}/{verb}`) behind the backend proxy; no dedicated hub routers per capability | One transport to secure, one to document; deletes the bypass-prevention machinery a parallel route requires | **Implemented.** `provider-sdk/dataplane.ParsePath` is the only parser in the tree and `provider-sdk/serve` mounts only the contract's route classes; the hub-side action router is deleted (`pkg/hub/server.go:431-434`). |
+| X-2 | **Verb grants are kcp RBAC on virtual subresources**, uniform for humans and SAs; the two-gate (visibility + verb SSAR) pattern is the only provider-side authz shape | Removes the dual grant system; auditable; the exec precedent already proves it | **Implemented.** `dataplane.Gate` runs a real GET then an SSAR for `create` on `{resource}/{verb}` as the caller, for every verb of every provider (`provider-sdk/dataplane/gate.go`, `SSARVerb = "create"`). |
+| X-3 | **`spec.virtualWorkspace.url` is retired** (or re-scoped to a real, implemented `/vw/*` design). Hub-only provider endpoints are reserved path prefixes on `spec.backend.url`, denied by the proxy from a single list | Ends the fake-VW confusion and the stale decision #6; one URL per provider | **Implemented.** The field is gone from `apis/providers/v1alpha1/types_catalogentry.go`, and `/workload-identities` is the one hub-only reserved prefix (`provider-sdk/serve/serve.go:85-90`). |
+| X-4 | **Cross-provider Secret reads are forbidden.** Claims on core Secrets are for provider-owned material only; credential hand-offs are published APIs of the owning provider | Closes the side-door behind violations #1 and #3 | **Partially.** Every known cross-provider read is gone (finding 1), and `pkg/hub/identity/policy.go` will not mint *any* rule on the core group. Not done: narrowing the six surviving `secrets` claims to provider-owned material. |
+| X-5 | **All scoped identities come from the hub identity service**: TTL'd, attested, GC'd, resourceNames-scoped. Providers hold no RBAC-authoring claims | Ends M7; one place to audit standing credentials | **Partially.** Service, record and client shipped (`pkg/hub/identity`, `apis/tenancy/v1alpha1/types_scoped_identity.go`, `provider-sdk/identityclient`); agents and edges migrated and dropped their RBAC-authoring claims. kuery and app-studio have not. |
+| X-6 | **MCP is a projection.** Tools wrap P1/P2 executors; aggregate verifies bearer↔cluster; discovery is hub-authored from the registry | Prevents MCP becoming a fourth access path with its own trust model | **Partially.** Bearer/cluster verification before fan-out and caller-scoped enumeration are done; per-edge MCP is a declared data-plane verb rather than its own mount. Open: the hub-authored capability resource — the aggregate still serves only `railgrid://about` (`pkg/hub/mcpaggregate/handler.go:361`). |
+| X-7 | **Discovery and state-changing hub surfaces are authenticated** (`/api/providers`, heartbeat, metrics off the public listener) | Prerequisite for org-scoped catalogs (provider-scoping P-1..P-12) and basic hygiene | **Partially.** `GET /api/providers` is authenticated and Org-scoped, and `/metrics` is off the public listener. The heartbeat is authenticated but ships `--provider-heartbeat-auth=warn`, so it is not yet fail-closed. |
+| X-8 | **Consumers route by publication** (shared grammar package + `status`-stamped endpoints), never by hand-built foreign paths | Ends violation #6; provider renames stop breaking callers silently | **Implemented.** `dataplane.ProviderPath` renders every foreign path (agents, app-studio), and kuery follows `KubernetesCluster.status.url`. |
 
 ---
 
@@ -415,7 +524,7 @@ grammar. Amend [providers.md](./providers.md) decision #6 per X-3. Rewrite
 
 ---
 
-## Appendix — full channel inventory
+## Appendix — full channel inventory *(historical — August 2026 snapshot; many anchors no longer exist)*
 
 Identities: **C** = caller bearer, **P** = provider SA, **W** = minted
 workload/agent SA, **H** = hub-privileged, **R** = provider's runtime

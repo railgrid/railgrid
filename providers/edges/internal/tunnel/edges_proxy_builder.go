@@ -48,102 +48,119 @@ import (
 	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 	utilssh "github.com/railgrid/provider-edges/internal/ssh"
 	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
-// buildEdgesProxyHandler creates the HTTP handler for user-facing access to
-// Edge resources (the user-side of the new Edge workflow).
+// buildEdgesProxyHandler serves class (a), the consumer data plane, on the one
+// grammar every provider shares:
 //
-// Path (relative to /services/edges-proxy/ mount point):
+//	/dataplane/clusters/{clusterID}/{resource}/{name}/{verb}[/{tail}]
 //
-//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/{subresource}[/...]
+// {resource} is kubernetesclusters, linuxservers, macosservers or services and
+// {verb} is one of the coordinates in dataPlaneVerbs — the same set
+// manifest.yaml declares under spec.dataPlane.verbs. The path is parsed by
+// provider-sdk/dataplane, not by hand, so ".." , "//" and a percent-encoded
+// separator are refused here rather than reinterpreted, and the old
+// ".../apis/edges.railgrid.ai/v1alpha1/..." dialect no longer parses at all.
 //
-// Supported subresources:
-//   - k8s  — reverse-proxy to the Kubernetes API of a type=kubernetes edge
-//   - ssh  — WebSocket SSH terminal session on a type=server edge
+// Every request runs the two gates as the CALLER (see gateAsCaller): a real
+// GET of the addressed object, then a SelfSubjectAccessReview for "create" on
+// {resource}/{verb}, name-scoped. The single wildcard "proxy" verb that used
+// to cover k8s, ssh, service proxy and MCP alike is gone.
 func (p *Server) buildEdgesProxyHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 1. Authenticate: require a valid bearer token.
-		token := extractBearerToken(r)
-		if token == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		req, ok := dataplane.ParseRequest(DataPlaneRoot, r)
+		if !ok {
+			dataplane.WriteError(w, fmt.Errorf("%w: expected /%s/clusters/{cluster}/{resource}/{name}/{verb}",
+				dataplane.ErrBadPath, DataPlaneRoot))
 			return
 		}
 
-		// 1a. Fail closed when kcp delegated authorization is unavailable: no
-		// credential means no TokenReview + SAR, and this handler is mounted
-		// whether or not kcp is wired.
+		// A coordinate this provider does not serve is a 404 before anything
+		// else happens, so an un-served verb cannot be used to probe whether
+		// an object exists.
+		if !verbServed(req.Resource, req.Verb) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		// Fail closed when kcp delegated authorization is unavailable: no
+		// credential means no caller client and no gates, and this handler is
+		// mounted whether or not kcp is wired.
 		if p.denyIfAuthorizationUnavailable(w, r) {
 			return
 		}
 
-		// 1b. Service subresources (proxy/mcp) are branched here BEFORE
-		// parseEdgesProxyPath: "services" is not a tunnel Kind, so that
-		// parser (which validates against gvrForResource) would reject it.
-		if esCluster, esName, esSub, esRest, ok := p.parseServicePath(r.URL.Path); ok {
-			p.serveService(w, r, token, esCluster, esName, esSub, esRest)
+		// The bearer comes from Authorization, or — for a browser WebSocket,
+		// which cannot set that header — from a ticket this caller minted a
+		// moment ago for THIS object. There is no "?token=" path: a bearer in
+		// a query string is a bearer in every log between here and the
+		// browser.
+		token := extractBearerToken(r)
+		if token == "" {
+			token = p.redeemTicket(r, req)
+		}
+		if token == "" {
+			dataplane.WriteError(w, dataplane.ErrNoBearer)
 			return
 		}
 
-		// 2. Parse cluster, resource (kind), name, and subresource from the URL path.
-		cluster, resource, name, subresource, ok := p.parseEdgesProxyPath(r.URL.Path)
-		if !ok {
-			http.Error(w, "invalid path: expected /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{subresource}[/...]", http.StatusBadRequest)
+		obj, err := p.gate(r.Context(), r, token, req)
+		if err != nil {
+			p.logger.Error(err, "edges data-plane gate refused the request",
+				"cluster", req.ClusterID, "resource", req.Resource, "name", req.Name, "verb", req.Verb)
+			dataplane.WriteError(w, err)
 			return
 		}
 
-		// 3. Delegated authorization via kcp. Every bearer goes through
-		// authorizeFn — hub static-token users are ordinary kcp identities
-		// (railgrid:static:<hash>) and pass TokenReview + SAR like any other caller.
-		// Step 1a already refused the request if there is no kcp credential, so
-		// a nil kcpConfig here only happens under the test-only bypass.
-		if p.kcpConfig != nil {
-			tenantCfg, err := p.tenantConfigFor(r.Context(), cluster)
-			if err != nil {
-				p.logger.Error(err, "edges proxy authorization: resolving tenant config failed",
-					"cluster", cluster, "name", name, "subresource", subresource)
-				http.Error(w, "Forbidden", http.StatusForbidden)
-				return
-			}
-			if err := p.authorizeFn(r.Context(), tenantCfg, p.kcpConfig, token, cluster, "proxy", p.group, resource, name); err != nil {
-				p.logger.Error(err, "edges proxy authorization failed",
-					"cluster", cluster, "name", name, "subresource", subresource)
-				http.Error(w, "Forbidden", http.StatusForbidden)
-				return
-			}
-		}
-
-		// MacOSServer is a Service-only host edge. It intentionally has no
-		// Kubernetes API or SSH data-plane subresource; its authenticated Service
-		// path was handled above.
-		if resource == macOSServerResource {
-			http.Error(w, "MacOSServer supports Service proxy access only", http.StatusNotFound)
+		// Three verbs answer here, before any tunnel lookup, because they act
+		// on the OBJECT rather than through the tunnel — and an edge that is
+		// momentarily disconnected (or, for agent-token, an agent whose tunnel
+		// is exactly what it is trying to re-establish) must still be served.
+		switch req.Verb {
+		case VerbTicket:
+			p.serveTicket(w, r, token, req)
+			return
+		case VerbAgentToken:
+			p.serveAgentToken(w, r, req, obj)
+			return
+		case VerbSSHCredentials:
+			p.serveSSHCredentials(w, r, req)
 			return
 		}
 
-		// 4. Look up the dialer registered by the agent-proxy-v2 handler.
-		key := edgeConnKey(resource, cluster, name)
+		if req.Resource == serviceResource {
+			p.serveService(w, r, token, req, obj)
+			return
+		}
+
+		// 4. Look up the dialer registered by the agent-ingress handler.
+		key := edgeConnKey(req.Resource, req.ClusterID, req.Name)
 		dialer, found := p.edgeConnManager.Load(key)
 		if !found {
-			p.logger.Info("no active tunnel found for edge", "cluster", cluster, "name", name)
+			p.logger.Info("no active tunnel found for edge", "cluster", req.ClusterID, "name", req.Name)
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 			return
 		}
 
-		// 5. Route to the appropriate subresource handler.
-		switch subresource {
-		case "k8s":
+		gvr, _, _ := p.gvrForResource(req.Resource)
+		switch req.Verb {
+		case VerbK8s:
 			p.edgesK8sHandler(r.Context(), w, r, key, dialer)
-		case "ssh":
+		case VerbSSH:
 			// Resolve caller identity for identity-mode SSH mapping and the
 			// session audit line. Best-effort: inherited/provided modes work
-			// without it (the token already passed authorizeFn above); the audit
+			// without it (the token already passed both gates above); the audit
 			// line then records caller=unknown with the reason.
 			callerIdentity, callerErr := resolveCallerIdentity(r.Context(), p.kcpConfig, token)
-			gvr, _, _ := p.gvrForResource(resource)
 			p.edgesSSHHandler(r.Context(), w, r, key, dialer, callerIdentity, callerErr, gvr)
+		case VerbMCP:
+			// Per-edge MCP. It used to hang off the /agent mount, where it was
+			// the one route on the agent-ingress class that no agent ever
+			// called; it is a consumer verb and belongs here, gated like one.
+			p.buildMCPHandler(req.ClusterID, req.Resource, req.Name).ServeHTTP(w, r)
 		default:
-			p.logger.Info("unknown subresource requested", "subresource", subresource, "cluster", cluster, "name", name)
-			http.Error(w, "unknown subresource", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 		}
 	})
 }
@@ -270,14 +287,19 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 	// hub's external origin — NOT at this provider's host (the request reaches us
 	// through the hub backend proxy, so r.Host is the internal provider address).
 	// Allow the hub external origin in addition to same-origin. This request is
-	// already authenticated by the bearer token in the query param, so the origin
-	// check is defense-in-depth, not the primary auth boundary.
+	// already gated (a caller GET plus a SelfSubjectAccessReview on
+	// {resource}/ssh) before it reaches here, so the origin check is
+	// defence-in-depth, not the primary auth boundary.
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return utilhttp.CheckSameOrAllowedOrigin(r, allowedOriginsFor(p.hubExternalURL))
 		},
 	}
-	wsConn, err := upgrader.Upgrade(w, r, nil)
+	// A browser aborts a WebSocket whose server does not select one of the
+	// subprotocols it offered, and the ticket travels as one — so echo it.
+	upgradeHeaders := http.Header{}
+	acceptTicketSubprotocol(upgradeHeaders, r)
+	wsConn, err := upgrader.Upgrade(w, r, upgradeHeaders)
 	if err != nil {
 		outcome = fmt.Errorf("upgrading caller connection: %w", err)
 		logger.Error(err, "failed to upgrade caller connection to WebSocket")
@@ -788,44 +810,20 @@ func (t *edgeDeviceConnTransport) RoundTrip(req *http.Request) (*http.Response, 
 	return http.ReadResponse(bufio.NewReader(t.conn), req)
 }
 
-// parseEdgesProxyPath extracts {cluster}, {resource}, {name}, and {subresource}
-// from the path the handler sees after "/services/providers/edges/edgeproxy"
-// has been stripped (hub backend proxy strips /services/providers/edges, the
-// provider mux strips /edgeproxy).
-//
-// Expected format:
-//
-//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{subresource}[/...]
-func (p *Server) parseEdgesProxyPath(path string) (cluster, resource, name, subresource string, ok bool) {
-	// Segments: [0]clusters [1]cluster [2]apis [3]group [4]version [5]resource
-	//           [6]name [7]subresource (may have more after for k8s pass-through)
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 9)
-	if len(parts) < 8 {
-		return "", "", "", "", false
-	}
-	if _, _, known := p.gvrForResource(parts[5]); !known {
-		return "", "", "", "", false
-	}
-	if parts[0] != "clusters" || parts[2] != "apis" || parts[3] != p.group ||
-		parts[4] != p.version {
-		return "", "", "", "", false
-	}
-	return parts[1], parts[5], parts[6], parts[7], true
-}
-
 // edgeProxyStatusURL builds the public consumer-egress path stamped into an
-// edge's status.URL. It is the inverse of parseEdgesProxyPath, prefixed with
-// the public path the hub backend proxy mounts this provider at
-// (edgeProxyPublicPath, e.g. /services/providers/edges/edgeproxy). CLI clients
-// read status.URL, swap in the hub host, and land back on the {k8s|ssh}
-// subresource handler here.
+// edge's status.URL:
 //
-// The default subresource is derived from the kind: KubernetesCluster is
-// reached over "k8s" (its Kubernetes API), LinuxServer over "ssh". MacOSServer
-// is Service-only, so it has no status URL. Returns "" when edgeProxyPublicPath
+//	{edgeProxyPublicPath}/clusters/{cluster}/{resource}/{name}/{verb}
+//
+// It is the inverse of dataplane.ParsePath, prefixed with the public mount the
+// hub backend proxy gives this provider (/services/providers/edges/dataplane).
+// CLI clients read status.URL, swap in the hub host, and land back on the verb
+// handler here.
+//
+// The default verb is derived from the kind: KubernetesCluster is reached over
+// "k8s" (its Kubernetes API), LinuxServer over "ssh". MacOSServer is
+// Service-only, so it has no status URL. Returns "" when edgeProxyPublicPath
 // is unset, so callers skip stamping.
-//
-// Pattern: {edgeProxyPublicPath}/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/{subresource}
 func (p *Server) edgeProxyStatusURL(gvr schema.GroupVersionResource, cluster, name string) string {
 	if p.edgeProxyPublicPath == "" {
 		return ""
@@ -833,19 +831,17 @@ func (p *Server) edgeProxyStatusURL(gvr schema.GroupVersionResource, cluster, na
 	if gvr.Resource == macOSServerResource {
 		return ""
 	}
-	subresource := "k8s"
-	if gvr.Resource == "linuxservers" {
-		subresource = "ssh"
+	verb := VerbK8s
+	if gvr.Resource == linuxServerResource {
+		verb = VerbSSH
 	}
-	return fmt.Sprintf("%s/clusters/%s/apis/%s/%s/%s/%s/%s",
-		strings.TrimRight(p.edgeProxyPublicPath, "/"),
-		cluster, gvr.Group, gvr.Version, gvr.Resource, name, subresource)
+	return edgeProxyPath(p.edgeProxyPublicPath, cluster, gvr.Resource, name, verb)
 }
 
-// extractEdgeK8sPath strips the edges-proxy prefix from the request path,
+// extractEdgeK8sPath strips the data-plane prefix from the request path,
 // keeping the /k8s/ prefix that the agent expects.
 //
-// Input:  /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/k8s/api/v1/pods
+// Input:  /dataplane/clusters/{cluster}/kubernetesclusters/{name}/k8s/api/v1/pods
 // Output: /k8s/api/v1/pods
 func extractEdgeK8sPath(path string) string {
 	idx := strings.Index(path, "/k8s/")

@@ -292,11 +292,22 @@ func TestTelegramCallReportsDecodeFailure(t *testing.T) {
 
 // ---- handler tests -----------------------------------------------------------
 
-// captureExec records submitted jobs; err, when set, is what Submit returns.
+// captureExec stands in for the worker pool.
+//
+// It no longer observes submission: the Run OBJECT is the queue, so an inbound
+// delivery that was accepted is a Pending run in the store, not a job on a
+// channel. count() therefore reads the store — which is also what makes these
+// tests keep testing the thing they were written for ("did a run start?")
+// rather than an implementation detail that moved.
 type captureExec struct {
 	mu   sync.Mutex
 	jobs []executor.Job
 	err  error
+
+	// store and cluster locate the runs a submission records. Set by
+	// inboundServerFake.
+	store   store.Store
+	cluster string
 }
 
 func (c *captureExec) Start(context.Context) error { return nil }
@@ -310,10 +321,23 @@ func (c *captureExec) Submit(_ context.Context, job executor.Job) error {
 	c.jobs = append(c.jobs, job)
 	return nil
 }
+
+// count is how many runs this delivery path has accepted.
 func (c *captureExec) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.jobs)
+	if c.store == nil {
+		return len(c.jobs)
+	}
+	// scopeFor's fallback: these fixtures never map the tenant, so runs land
+	// under {unmapped, cluster} exactly as a real unmapped workspace's would.
+	runs, err := c.store.ListRuns(context.Background(), store.Scope{
+		OrgUUID: "unmapped", WorkspaceUUID: c.cluster,
+	}, 100)
+	if err != nil {
+		return 0
+	}
+	return len(runs)
 }
 
 const (
@@ -389,6 +413,9 @@ func inboundServerFake(t *testing.T, ex executor.Executor, objs ...runtime.Objec
 		agentsclient.AgentGVR:      "AgentList",
 	}, objs...)
 	s := &Server{cfg: Config{WebhookKey: "unit-test-webhook-key"}, store: store.NewMemoryStore()}
+	if capture, ok := ex.(*captureExec); ok {
+		capture.store, capture.cluster = s.store, testCluster
+	}
 	s.bg = &background{
 		server: s,
 		exec:   ex,
@@ -440,14 +467,25 @@ func TestSlackInboundValidSignatureRunsTheAgent(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	if ex.count() != 1 {
-		t.Fatalf("want 1 job, got %d", ex.count())
+		t.Fatalf("want 1 recorded run, got %d", ex.count())
 	}
-	job := ex.jobs[0]
-	if job.Task != "deploy status?" || job.AgentRef != testAgentName || job.Kind != executor.KindChannel {
-		t.Fatalf("unexpected job %+v", job)
+	// The accepted delivery is a Pending run, and it carries everything a
+	// process that picks it up later needs: the task, the agent, and where the
+	// answer goes. That last part is what a crash used to destroy — the
+	// goroutine knew and nothing else did.
+	runs, err := s.store.ListRuns(t.Context(), store.Scope{OrgUUID: "unmapped", WorkspaceUUID: testCluster}, 10)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.HasSuffix(job.ID, "/Ev1") {
-		t.Fatalf("job ID should carry the platform event id for durable dedup, got %q", job.ID)
+	got := runs[0]
+	if got.Input != "deploy status?" || got.AgentName != testAgentName {
+		t.Fatalf("unexpected run %+v", got)
+	}
+	if got.Phase != store.RunPhasePending {
+		t.Fatalf("phase = %s, want Pending — the reconciler claims it from there", got.Phase)
+	}
+	if got.Delivery == nil || got.Delivery.Kind != string(executor.KindChannel) || got.Delivery.SourceName != testConn {
+		t.Fatalf("delivery = %+v, want the channel it came from", got.Delivery)
 	}
 }
 
@@ -556,69 +594,95 @@ func TestSlackInboundRetryOfHandledEventIsAcknowledged(t *testing.T) {
 	}
 }
 
-func TestSlackInboundQueueFullAsksForRetry(t *testing.T) {
-	ex := &captureExec{err: executor.ErrQueueFull}
+// A delivery this provider could not RECORD is the only remaining reason to
+// ask a platform to retry, and the reason must not describe the provider's
+// insides to Slack or Telegram.
+//
+// The queue-full case this used to cover is gone with the queue. Submission is
+// a write of a Pending Run, so a saturated worker pool no longer refuses an
+// inbound message — it only means the run starts a moment later, which is what
+// the sender wanted anyway.
+func TestInboundStoreFailureAsksForRetryWithoutExplainingItself(t *testing.T) {
+	ex := &captureExec{}
 	s, token := inboundServer(t, ex, slackObjects(map[string]string{signingSecretKey: testSlackSecret})...)
-	body := slackMessage("Ev-full", "busy")
+	s.store = failingRunStore{Store: s.store}
+	ex.store = nil // the store is broken; fall back to counting jobs (there are none)
 
+	body := slackMessage("Ev-store", "busy")
 	w := postChannel(s, token, body, slackHeaders(testSlackSecret, body, time.Now()))
+
 	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status %d, want 503", w.Code)
+		t.Fatalf("status %d, want 503 so the platform redelivers", w.Code)
 	}
-	if w.Header().Get("Retry-After") == "" {
-		t.Fatal("503 must carry Retry-After")
+	if got := w.Body.String(); strings.Contains(got, "postgres") || strings.Contains(got, "dial") {
+		t.Errorf("the response describes the provider's storage to the caller: %s", got)
 	}
-	// The refused event was not consumed: once there is room, Slack's retry
-	// of the same event_id must be accepted and run.
-	ex.mu.Lock()
-	ex.err = nil
-	ex.mu.Unlock()
-	h := slackHeaders(testSlackSecret, body, time.Now())
-	h["X-Slack-Retry-Num"] = "1"
-	if w := postChannel(s, token, body, h); w.Code != http.StatusOK {
-		t.Fatalf("retry after queue full: status %d", w.Code)
-	}
-	if ex.count() != 1 {
-		t.Fatalf("want the retried event to run once, got %d", ex.count())
+	if ex.count() != 0 {
+		t.Fatalf("a delivery that could not be recorded must not run, got %d", ex.count())
 	}
 }
 
-// The 503 goes to Slack or Telegram, not to an operator. The executor's error
-// names queue depth and capacity, the job kind and source, and the context
-// error — all of it belongs in the log and none of it in the response.
-func TestInboundSubmitFailureDoesNotDescribeTheExecutorToTheCaller(t *testing.T) {
-	// Shaped exactly like executor.InProcess.Submit's timeout error.
-	queueFull := fmt.Errorf("%w (64/64 queued) — job channel/slack-main not accepted: %v", executor.ErrQueueFull, context.DeadlineExceeded)
-	for name, tc := range map[string]struct {
-		err        error
-		retryAfter bool
-	}{
-		"queue full": {err: queueFull, retryAfter: true},
-		"stopped":    {err: executor.ErrStopped, retryAfter: false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			ex := &captureExec{err: tc.err}
-			s, token := inboundServer(t, ex, slackObjects(map[string]string{signingSecretKey: testSlackSecret})...)
-			body := slackMessage("Ev-leak", "busy")
+// For unattended work the Run OBJECT is what will cause the run to execute —
+// the reconciler claims it, and nothing else is watching — so a submission that
+// could not create one must fail, not proceed. Proceeding is the failure mode
+// this closes: a row in Postgres that nothing will ever pick up, invisible to
+// every part of the system that looks at objects.
+func TestInboundSubmissionFailsWhenTheRunObjectCannotBeCreated(t *testing.T) {
+	ex := &captureExec{}
+	s, token, dyn := inboundServerFake(t, ex,
+		slackObjects(map[string]string{signingSecretKey: testSlackSecret})...)
+	dyn.PrependReactor("create", "runs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewServiceUnavailable("virtual workspace is unavailable")
+	})
 
-			w := postChannel(s, token, body, slackHeaders(testSlackSecret, body, time.Now()))
-			if w.Code != http.StatusServiceUnavailable {
-				t.Fatalf("status %d, want 503", w.Code)
-			}
-			if got := w.Header().Get("Retry-After") != ""; got != tc.retryAfter {
-				t.Fatalf("Retry-After present = %v, want %v", got, tc.retryAfter)
-			}
-			resp := w.Body.String()
-			for _, leak := range []string{"64/64", "queued", "channel/slack-main", "not accepted", "deadline", "executor", "not running"} {
-				if strings.Contains(resp, leak) {
-					t.Fatalf("response leaks %q to the platform: %s", leak, resp)
-				}
-			}
-			if !strings.Contains(resp, inboundSubmitUnavailableMessage) {
-				t.Fatalf("response should carry the fixed message, got: %s", resp)
-			}
-		})
+	body := slackMessage("Ev-object", "deploy status?")
+	w := postChannel(s, token, body, slackHeaders(testSlackSecret, body, time.Now()))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503 so the platform redelivers", w.Code)
 	}
+	// And nothing is left behind: the row is not written without an object,
+	// so a later retry starts clean rather than duplicating the work.
+	runs, err := s.store.ListRuns(t.Context(), store.Scope{OrgUUID: "unmapped", WorkspaceUUID: testCluster}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("recorded %d run(s) that nothing would ever execute", len(runs))
+	}
+}
+
+// The mirror image: the object was created and the ROW write failed. The
+// submission still fails, and the orphaned object is taken back out — a Run
+// nothing can dispatch is worse than no Run at all.
+func TestInboundSubmissionRemovesTheObjectWhenTheRowCannotBeWritten(t *testing.T) {
+	ex := &captureExec{}
+	s, token, dyn := inboundServerFake(t, ex,
+		slackObjects(map[string]string{signingSecretKey: testSlackSecret})...)
+	s.store = failingRunStore{Store: s.store}
+
+	var deleted int
+	dyn.PrependReactor("delete", "runs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		deleted++
+		return false, nil, nil
+	})
+
+	body := slackMessage("Ev-row", "deploy status?")
+	if w := postChannel(s, token, body, slackHeaders(testSlackSecret, body, time.Now())); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503", w.Code)
+	}
+	if deleted != 1 {
+		t.Fatalf("the orphaned Run object was not removed (%d deletes)", deleted)
+	}
+}
+
+// failingRunStore is a store whose run writes fail; everything else is real.
+type failingRunStore struct {
+	store.Store
+}
+
+func (failingRunStore) SaveRun(context.Context, store.Scope, store.Run) error {
+	return errors.New("dial tcp 10.0.0.1:5432: connect: connection refused")
 }
 
 func TestSlackInboundIgnoresUnconfiguredChannel(t *testing.T) {
@@ -647,9 +711,10 @@ func TestTelegramInboundSecretToken(t *testing.T) {
 		if w.Code != http.StatusOK || ex.count() != 1 {
 			t.Fatalf("status %d, jobs %d: %s", w.Code, ex.count(), w.Body.String())
 		}
-		if !strings.HasSuffix(ex.jobs[0].ID, "/7") {
-			t.Fatalf("job ID should carry update_id, got %q", ex.jobs[0].ID)
-		}
+		// A platform retry of the same update_id must not run a second time.
+		// The de-duplication happens before the run is recorded (b.seen), so
+		// what proves it is the run count after the retry, below — not an id
+		// on a job that no longer exists.
 		// Telegram redelivers until it sees 2xx; the same update must not run twice.
 		if w := postChannel(s, token, body, map[string]string{"X-Telegram-Bot-Api-Secret-Token": testTGSecret}); w.Code != http.StatusOK {
 			t.Fatalf("redelivery status %d", w.Code)

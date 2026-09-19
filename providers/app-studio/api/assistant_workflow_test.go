@@ -1366,7 +1366,7 @@ func TestPollProjectAssistantProcessStatusWaitsForCurrentAttemptPort(t *testing.
 		})
 	}))
 	defer upstream.Close()
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, hubBase: upstream.URL}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}
 	process, supported, err := pollProjectAssistantProcessStatusWithTiming(
 		context.Background(),
 		server,
@@ -1396,7 +1396,7 @@ func TestPollProjectAssistantProcessStatusMarksFirstWarmupTimeoutOperational(t *
 		})
 	}))
 	defer upstream.Close()
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, hubBase: upstream.URL}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}
 	ref := dataPlaneRef{Resource: "applications", Name: "demo", Component: "backend"}
 	process, _, err := pollProjectAssistantProcessStatusWithTiming(
 		context.Background(), server, identity{clusterID: "root"}, ref,

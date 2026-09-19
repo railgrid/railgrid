@@ -71,18 +71,21 @@ func parseServiceAccountToken(token string) (saTokenClaims, bool) {
 }
 
 // extractBearerToken extracts the bearer token from the Authorization header
-// or, as a fallback, the "token" query parameter.  The query-parameter path
-// exists because browsers cannot set headers on WebSocket connections.
+// and NOWHERE ELSE.
+//
+// There used to be a "?token=" fallback, because a browser cannot set headers
+// on a WebSocket upgrade. A bearer in a query string is a bearer in every
+// access log, proxy log and Referer between the browser and this process, and
+// it is the full-lifetime kcp credential of the person at the keyboard. The
+// browser path now mints a short-lived, single-object ticket
+// (POST .../{name}/ticket) and presents it as a Sec-WebSocket-Protocol
+// subprotocol instead — see ticket.go and callerBearer.
 func extractBearerToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
+	scheme, token, ok := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return ""
 	}
-	// Fallback for WebSocket upgrades from the browser terminal.
-	if t := r.URL.Query().Get("token"); t != "" {
-		return t
-	}
-	return ""
+	return strings.TrimSpace(token)
 }
 
 // authorize performs delegated authentication and authorization for a caller of
@@ -90,7 +93,8 @@ func extractBearerToken(r *http.Request) string {
 // kcp's standard auth-delegator pattern:
 //  1. TokenReview — authenticate the bearer token in the workspace that issued
 //     it, and resolve the caller identity.
-//  2. SubjectAccessReview — authorize that identity for verb on the resource,
+//  2. SubjectAccessReview — authorize that identity for verb on the resource
+//     (and, for a data-plane verb, its virtual subresource {resource}/{verb}),
 //     ALWAYS in the consumer workspace (clusterName), served on the provider's
 //     APIExport virtual workspace scoped to the engaged cluster (kcp#4279 /
 //     kcp#4280 — this is what the edges APIExport claims tokenreviews +
@@ -113,7 +117,7 @@ func extractBearerToken(r *http.Request) string {
 // The SAR deliberately does NOT re-root kcpConfig at /clusters/<consumer> (the
 // old approach), which the production hub proxy rejects with an opaque 404 —
 // the failure kcp#4279 documents. It goes through the VW instead.
-func authorize(ctx context.Context, tenantCfg, kcpConfig *rest.Config, token, clusterName, verb, group, resource, name string) error {
+func authorize(ctx context.Context, tenantCfg, kcpConfig *rest.Config, token, clusterName, verb, group, resource, subresource, name string) error {
 	saClaims, isForeignSA := parseServiceAccountToken(token)
 	if isForeignSA && saClaims.ClusterName == clusterName {
 		// SA minted in the consumer workspace (agent credentials): it
@@ -170,11 +174,12 @@ func authorize(ctx context.Context, tenantCfg, kcpConfig *rest.Config, token, cl
 			User:   sarUser,
 			Groups: sarGroups,
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Verb:     verb,
-				Group:    group,
-				Version:  "v1alpha1",
-				Resource: resource,
-				Name:     name,
+				Verb:        verb,
+				Group:       group,
+				Version:     "v1alpha1",
+				Resource:    resource,
+				Subresource: subresource,
+				Name:        name,
 			},
 		},
 	}, metav1.CreateOptions{})

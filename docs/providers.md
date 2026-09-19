@@ -32,7 +32,7 @@ the how):
 | 4 | Distribution = **one Helm chart per provider**, targets *host cluster only* | All kcp work owned by hub catalog controller |
 | 5 | Registration = **hybrid**: chart creates `CatalogEntry` shell; provider pod heartbeats every 30s (`POST /api/providers/{name}/heartbeat`, TTL 90s) | Declarative install + runtime liveness |
 | 6 | VW = **APIExport-only.** `spec.virtualWorkspace.url` is **removed** from the `CatalogEntry`: the hub never routed `/services/providers/{name}/vw/*`, so the field and its `/vw/*` story are gone rather than deprecated | Custom verbs belong on the data-plane grammar (`/{root}/clusters/{clusterID}/{resource}/{name}/{verb}`), not on a second transport |
-| 7 | Provider→kcp identity = SA `provider` in the provider's workspace; hub mints kubeconfig and writes it as Secret `railgrid-provider-kubeconfig` in the provider's host namespace; **24h token rotation** | Reuses existing exec-credential pattern from `pkg/server/proxy/proxy.go` |
+| 7 | Provider→kcp identity = SA `provider` in the provider's workspace; hub mints kubeconfig and writes it as Secret `railgrid-provider-kubeconfig` in the provider's host namespace; a legacy non-expiring ServiceAccount token, rotated on demand via the credentials-rotate endpoints (see §"Credentials and rotation") | Reuses existing exec-credential pattern from `pkg/server/proxy/proxy.go` |
 | 8 | Schema delivery = **inline** in `CatalogEntry.spec.apiExport.schemas[].body`; hub parses + applies | Solves chicken-and-egg of "chart can't apply to workspace that doesn't exist yet" |
 | 9 | PermissionClaim acceptance = **auto-accept-all** at Enable time, but ONLY for claims marked `tenantScoped: true`. Non-tenant-scoped claims refused unless admin sets `railgrid.ai/accept-untrusted-claims=true` on the `CatalogEntry` | Simplest safe default; per-claim toggles deferred to v2 |
 | 10 | Tenant Enable = **a kcp `APIBinding` in the tenant workspace, created by the hub**. No `ProviderBinding` CRD — kcp-native. The portal never talks to kcp for this: it `POST`s the hub's Enable endpoint (`pkg/hub/restapi/providers_enable.go`), which checks workspace membership and that the provider's `dependencies` are already enabled, then creates the `APIBinding` **as kcp-admin**. Permission-claim safety enforced by `MaximalPermissionPolicy` on the APIExport (kcp). | Simpler, kcp-native; fewer moving parts. The hub's kcp user-proxy pre-checks the cluster path against the user's default workspace, so a user-credentialed create would 403 on every other workspace — the membership check moves into the Enable handler instead. Audit/inventory queries fan out across tenant workspaces (acceptable). |
@@ -122,14 +122,18 @@ top-level workspace, no new vocabulary.
 │  /ui/*                       → embedded SPA (Vue portal)              │
 │  /ui/providers/{p}/*         → reverse proxy → catalog.spec.ui.url    │
 │  /services/providers/{p}/*   → reverse proxy → catalog.spec.backend.url│
-│  /clusters/*, /services/agent-proxy, /services/mcp ... (unchanged)    │
+│      …/dataplane/clusters/{id}/…  data-plane verbs (gated by the      │
+│      …/actions/clusters/{id}/…    provider itself, as the caller)     │
+│      …/mcp                        federated by the MCP aggregate      │
+│  /clusters/*                 → kcp front door (CR traffic)            │
+│  /services/mcpserver/*       → aggregate MCP endpoint                 │
 │  /api/providers/{p}/heartbeat (POST, provider-SA-authed)              │
 │                                                                       │
 │  Catalog controller: watches CatalogEntry                     │
 │    - auto-creates root:railgrid:providers:{p} sub-workspace              │
 │    - creates `provider` ServiceAccount in that workspace              │
 │    - writes railgrid-provider-kubeconfig Secret to provider's namespace  │
-│    - applies inline bootstrap (APIResourceSchema, APIExport)          │
+│      (the provider's own `init` applies schemas + APIExport)          │
 │    - rebuilds proxy routing table; tracks heartbeats                  │
 │                                                                       │
 │  Tenants APIBind to provider APIExports DIRECTLY in their workspace   │
@@ -198,12 +202,19 @@ as three parts:
      binding to its `APIExport` (an `APIBinding` in the tenant workspace)
      and reading/writing its CRs over the normal `/clusters/...` path.
      Control-plane state (spec/status) flows this way.
-   - **Virtual-workspace/data-plane subresources** on those resources — for
-     example `{template-resource}/{name}/log`,
-     `{template-resource}/{name}/proxy/{path}`, or a component-scoped
-     `{template-resource}/{name}/components/{component}/sync` — for streams,
-     proxies, and other verbs that aren't plain CRUD.
-     The owning provider serves them against *its* backend; the caller
+   - **Data-plane verbs** on those resources — one grammar, served by the
+     owning provider behind the hub's backend proxy:
+
+     ```
+     /services/providers/{name}/{dataplane|actions}/clusters/{clusterID}/{resource}/{rname}[/components/{c}]/{verb}
+     ```
+
+     for streams, proxies, and other verbs that aren't plain CRUD. Every verb
+     is declared (`spec.dataPlane.verbs` or `spec.actions`) and authorized by
+     the owning provider as the caller: a real `GET` of the object, then a
+     `SelfSubjectAccessReview` for `create` on `{resource}/{verb}`. There is no
+     hub-side authorizer and no second URL field — `spec.virtualWorkspace` is
+     retired. The owning provider serves them against *its* backend; the caller
      never sees that backend.
 
    Both are invoked **as the tenant user** (the caller's forwarded bearer
@@ -211,7 +222,10 @@ as three parts:
    [`provider-connectivity-contract.md`](./provider-connectivity-contract.md))
    and **routed by binding, never by a hardcoded backend URL**. The calling
    provider resolves *which* provider backs a workspace from the
-   binding/APIExport, not from its own configuration.
+   binding/APIExport, not from its own configuration, and renders the path with
+   `provider-sdk/dataplane.ProviderPath` rather than building the string — or
+   follows a coordinate the owning provider published in `status` (as kuery
+   does with `KubernetesCluster.status.url`).
 
 **Why the rule pays off:**
 
@@ -449,6 +463,21 @@ spec:
         # Tenant-scoped flag tells the binding controller this is safe to
         # auto-accept. Out-of-tenant claims are refused.
         tenantScoped: true
+
+  # OPTIONAL: the data-plane verbs this provider serves on its own resources
+  # (Pillar 2 class (a)). Declaring a verb grants and serves NOTHING — the
+  # provider still runs its own two gates on every call. It makes the
+  # {resource}/{verb} coordinate machine-readable, so consumers can discover
+  # it from /api/providers instead of hardcoding it, and so the hub
+  # scoped-identity service can mint a capability for a verb it can verify
+  # exists. Requires apiExport: a provider declares verbs on its own kinds.
+  dataPlane:
+    verbs:
+      - resource: greetings   # plural, in this provider's own API group
+        verb: greet           # no version, no slash; not a standard kube verb
+        description: "Return the greeting this Greeting describes."
+        stream: false         # true when the verb upgrades or streams
+        readOnly: true        # false when it mutates the resource or what it fronts
 
 status:
   # Filled by catalog controller
@@ -1013,20 +1042,54 @@ override needed). Confirm → calls the mutation, sets
 ## Provider author experience
 
 A provider ships as one Helm chart. **Chart only targets the host
-cluster — never kcp directly.** All kcp interactions are owned by the
-hub's catalog controller.
+cluster — never kcp directly**: everything inside the provider's kcp workspace
+is applied by the provider's own `init`, which the chart runs as an init
+container.
+
+A provider author writes exactly **two declarative objects**, and `init` applies
+both verbatim:
+
+| Object | File | Written by | Holds |
+| --- | --- | --- | --- |
+| `CatalogEntry` | `manifest.yaml` | by hand | display metadata, URLs, actions, self-hosting, **the APIExport name and its permission claims** |
+| `APIExport` | `config/kcp/apiexport-<exportName>.yaml` | `make codegen-<name>-provider` | `spec.resources` from kcp `apigen`, `metadata.name` + `spec.permissionClaims` from the manifest |
+
+`make codegen-<name>-provider` runs kcp's `apigen` and then
+`provider-sdk/cmd/apiexportgen`, which reads `manifest.yaml`, renames the export
+(apigen names it after the API *group*, which is not the export name), stamps
+the claims, and drops apigen's group-named file. Everything downstream is an
+**output** the same target writes — `deploy/chart/files/apiexport.yaml` and
+`deploy/chart/files/schemas/` — and
+`hack/verify-provider-contract.mjs` fails the build when an output drifts from
+its input (`claims-parity`, `export-copy`).
+
+There is no third copy: a permission claim is written in `manifest.yaml`, and
+nowhere else. The chart's `catalogentry.yaml` still mirrors the manifest's whole
+spec, because that rendering is what reaches production.
 
 ```
 provider-cost-insights/
 ├── Chart.yaml
 ├── values.yaml
+├── files/
+│   ├── apiexport.yaml           # generated APIExport (output of codegen)
+│   └── schemas/                 # APIResourceSchemas (output of codegen)
 └── templates/
     ├── namespace.yaml
     ├── serviceaccount.yaml
-    ├── deployment.yaml          # provider pod (controllers + UI + backend)
+    ├── deployment.yaml          # init container (`<provider> init`) + provider pod
     ├── service.yaml             # ClusterIP services for UI and backend
-    └── catalogentry.yaml        # CatalogEntry (with inline schemas)
+    └── catalogentry.yaml        # CatalogEntry, mirroring manifest.yaml
 ```
+
+The image bakes `files/` at `/etc/railgrid/kcp`; the init container points
+`RAILGRID_KCP_DIR` there. `init` applies the schemas, applies the APIExport as
+it stands, then creates the `APIExportEndpointSlice` and the bind grant — the
+two runtime objects, which are not declarations. The one thing it adds to the
+export at runtime is `identityHash` for first-party (`*.railgrid.ai`) claim
+groups: that value is per-installation, supplied through
+`RAILGRID_IDENTITY_HASHES`, and a missing one fails `init` rather than shipping
+an unpinned claim kcp will silently refuse at bind time.
 
 `helm install cost-insights ./chart` →
 
@@ -1039,7 +1102,10 @@ provider-cost-insights/
    b. Creates `provider` SA in that workspace.
    c. Mints token, writes `railgrid-provider-kubeconfig` Secret to
       `cost-insights` namespace.
-   d. Applies `APIResourceSchema` + `APIExport` to the workspace.
+   d. The provider's own `init` container then applies the
+      `APIResourceSchema`s and the generated `APIExport` from
+      `RAILGRID_KCP_DIR`, and creates the `APIExportEndpointSlice` and bind
+      grant. The hub does not apply them.
 4. Provider pod's controller-runtime manager sees the kubeconfig file
    appear (or retries until it does), starts reconciling its own CRs.
 5. Provider starts heartbeating; `status.ready=true`.
@@ -1105,6 +1171,31 @@ Secret* differ.
 
 A provider's backend (if it declares one) MUST:
 
+- **Be built by `provider-sdk/serve`.** `serve.New(Options{Name, Readiness,
+  Portal, MCP, DataPlane, Actions, HubOnly, OAuth})` returns the whole
+  `http.Handler` with the fixed layout — `/healthz`, `/readyz`, `/mcp` +
+  `/mcp/sse`, `/dataplane/`, `/actions/`, `/workload-identities/*` (hub-only),
+  `/oauth/`, and the portal file server with SPA fallback — and **refuses to
+  register anything outside it**. There is no `/api/*`: a provider cannot add
+  one by accident, and `hack/verify-provider-contract.mjs` fails the build on
+  an `"/api/` route literal (check `adhoc-rest`).
+- **Serve every tenant verb through `provider-sdk/dataplane`**, on the one
+  grammar
+  `/{dataplane|actions}/clusters/{clusterID}/{resource}/{name}[/components/{c}]/{verb}`,
+  and gate **every** one of them: `dataplane.Gate` does a real `GET` of the
+  object as the caller, then a `SelfSubjectAccessReview` for `create` on
+  `{resource}/{verb}`, name-scoped. Both gates run for every verb, read or
+  write. `dataplane.Serve` applies the declared limits and the `actionwire`
+  envelope. Verify with `dataplane.ConformanceTest` against the real handler.
+- **Declare every verb in the manifest** — `spec.dataPlane.verbs` for
+  unversioned streaming/proxy verbs, `spec.actions` for versioned, schema'd
+  request/response ones. Declaring grants and serves nothing; it is what lets
+  the hub's scoped-identity service mint a capability for a coordinate it can
+  verify exists, instead of consumers hardcoding one nobody validates.
+- `GET /readyz` → 200 when the provider's tenant watches are actually healthy
+  (`provider-sdk/vwhealth`). This — not `/healthz` — is what
+  `spec.backend.healthPath` should point at: `/healthz` only says the process
+  is up, which stays true while nothing reconciles.
 - Heartbeat, **platform providers only**: `POST /api/providers/{name}/heartbeat`
   to the hub every 30s via the shared `provider-sdk/hubclient.RunHeartbeat`
   (not a local copy), authenticated as the provider's own service account
@@ -1117,7 +1208,7 @@ A provider's backend (if it declares one) MUST:
   the endpoint is keyed by bare name and resolves only platform providers, so
   the beat is rejected and would in any case never mark it Ready. Its readiness
   comes from endpoint validity instead — see the heartbeat endpoint section.
-- `GET /healthz` → 200 when ready (used by hub for `BackendHealthy`).
+- `GET /healthz` → 200 when the process is serving (liveness).
 
 A provider's controller (the kcp-talking part) MUST:
 
@@ -1237,9 +1328,9 @@ POST /api/admin/providers/{name}/claims/reaccept             platform admin
 ```
 
 Ships the migration AGENTS.md §5.1 demands whenever a provider **adds** a
-permission claim. Bringing `manifest.yaml`, the chart's `catalogentry.yaml` and
-the provider's `init_cmd.go` back into agreement updates the provider-side
-`APIExport` and nothing else: what the provider is actually allowed to touch in
+permission claim. Editing `manifest.yaml`, re-running
+`make codegen-<name>-provider` and mirroring the chart's `catalogentry.yaml`
+updates the provider-side `APIExport` and nothing else: what the provider is actually allowed to touch in
 a tenant's workspace is the claim set on that tenant's own `APIBinding`, which
 the Enable flow wrote once and nobody revisits. Deploy code that *requires* the
 new claim without this step and every already-enabled tenant 403s, with the
@@ -1292,10 +1383,23 @@ rather than stripping every tenant's grants.
   kcp gates by `permissionClaims`.
 - **Provider→provider isolation**: a provider never holds a credential into
   another provider's backend (runtime cluster, DB, internal Service). All
-  cross-provider access is through the other provider's published
-  `APIExport` resources + VW subresources, as the tenant user — see
-  §"Provider isolation". This contains blast radius (one owner per backend)
-  and is what makes BYO compute work.
+  cross-provider access is through the other provider's published `APIExport`
+  resources and its **declared data-plane verbs**, as the tenant user, with the
+  owning provider running both gates — see §"Provider isolation". This contains
+  blast radius (one owner per backend) and is what makes BYO compute work.
+- **A provider does not mint identities.** Where background work needs a
+  workspace-local credential, it asks the hub's scoped-identity service
+  (`pkg/hub/identity`, client `provider-sdk/identityclient`): TokenRequest-minted,
+  TTL'd, `resourceNames`-scoped, garbage-collected with its owning object, and
+  refused unless the rule fits one of four clauses — the requester's own group;
+  `get` on *named* resources of another provider's group that the tenant has
+  bound; `create` on a `{resource}/{verb}` that provider **declares**; or a
+  closed platform allowlist. Nothing on the core group is mintable, and no
+  foreign write is. Providers therefore hold no `serviceaccounts`,
+  `clusterroles` or `clusterrolebindings` permission claims; a claim on those
+  types is a contract violation. (kuery and app-studio still carry theirs —
+  outstanding debt tracked in
+  [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md).)
 - How published apps get their URL and access control (the template-embedded
   access gate + kcp RBAC grants) is documented in
   [Published apps: template-native access](./app-studio-publishing.md).

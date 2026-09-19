@@ -33,6 +33,10 @@ type BootstrapOptions struct {
 	WorkspacePath string
 	// APIExportName is the provider's APIExport name.
 	APIExportName string
+	// KCPDir holds the generated APIExport (apiexport.yaml). Empty resolves to
+	// RAILGRID_KCP_DIR, then to the image's baked copy at
+	// install.DefaultKCPDir — which is what every in-cluster caller wants.
+	KCPDir string
 	// CatalogEntryFile, when set, self-registers the CatalogEntry from this path.
 	CatalogEntryFile string
 	// SkipSeedTemplates leaves the catalog empty (GitOps-managed clusters).
@@ -60,9 +64,18 @@ func Bootstrap(ctx context.Context, providerCfg *rest.Config, opts BootstrapOpti
 		return fmt.Errorf("dynamic client: %w", err)
 	}
 
-	if err := sdkinstall.ApplyAPIExport(ctx, dynCl, opts.APIExportName, nil, []sdkinstall.PermissionClaim{
-		{Resource: "secrets", Verbs: []string{"get", "list", "watch"}},
-	}); err != nil {
+	// The APIExport shell is the generated file (manifest.yaml -> codegen ->
+	// deploy/chart/files/apiexport.yaml), read from KCPDir. Its spec.resources
+	// is empty; PlatformSchemaInAPIExport and the Template controller fill it
+	// in, and ApplyAPIExport merges instead of clobbering.
+	export, err := install.APIExport(opts.KCPDir)
+	if err != nil {
+		return fmt.Errorf("read generated APIExport: %w", err)
+	}
+	if name := export.GetName(); name != opts.APIExportName {
+		return fmt.Errorf("generated APIExport is %q but the operator was configured for %q", name, opts.APIExportName)
+	}
+	if err := sdkinstall.ApplyAPIExport(ctx, dynCl, export); err != nil {
 		return fmt.Errorf("materialize APIExport: %w", err)
 	}
 	if err := sdkinstall.ApplyBindGrant(ctx, dynCl, opts.APIExportName); err != nil {

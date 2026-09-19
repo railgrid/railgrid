@@ -1,11 +1,30 @@
 # Provider contract remediation — provider by provider
 
-Status: **IN PROGRESS** on branch `provider-contract/phase-0` (uncommitted as of
-19 September 2026). Plan written 19 September 2026 from the findings in
-[provider-contract-review.md](../provider-contract-review.md). Landed on the
-branch: §0 in full; §1 in full; §2 in full; §4 PRs 1, 2, 3, 5, 7; §6 PRs 1, 2,
-3, 5; §8 PRs 1, 2; §9 Cut A and Cut B. Not started: §3 (external repo), §4 PRs
-4 and 6, §5, §6 PR 4, §7 (external repo), §8 PRs 3–6, §9 Cuts C and D, §10.
+Status: **IN PROGRESS** on branch `provider.contracts` (uncommitted working tree
+on top of `91e6c6ad`, 19 September 2026). Plan written 19 September 2026 from the
+findings in [provider-contract-review.md](../provider-contract-review.md).
+Landed on the branch: §0 in full (§0.1–0.5); §1; §2; §4 in full; §5 in full with
+§6 PR 4; §6 PRs 1, 2, 3, 5; §8 in full; §9 Cuts A, B and C; §10 with declarable
+`spec.dataPlane.verbs` and policy clauses for platform groups, MCPServer `use`
+and named APIBinding `get`. Every provider serves through `provider-sdk/serve`,
+every verb passes `provider-sdk/dataplane` gates, no provider mints identities,
+and `verify-provider-contract` runs with an empty exception registry.
+Not started: §3 and §7 (external repo), §9 Cut D.
+Open follow-ups recorded by the implementation:
+- A commit is required before `make codegen-agents-provider` and
+  `make codegen-edges-provider` can mint fresh APIResourceSchema names for the
+  `Run` schema changes (PR 5) and the edges kind doc-comment fixes; apigen
+  derives the name from HEAD and refuses to reuse one for changed content.
+- Code provider: a `repositories/commit` action (or verb) that accepts file
+  contents, so App Studio can create a `RepositoryCommit` directly instead of
+  through the `code__commit_files` MCP tool (§9 Cut C part 4 note).
+- Tiltfile: `app-studio` init must run after `infrastructure` and `code` init
+  (their exports' `status.identityHash` feeds `RAILGRID_IDENTITY_HASHES`).
+- kuery still holds `serviceaccounts`/`clusterroles`/`clusterrolebindings`
+  claims for its per-workspace edge-watch identity; move it to
+  `identityclient` (owner `Engagement`) when §6 PR 4's follow-up lands.
+- Six providers still hold `secrets` claims (X-4); each manifest now names the
+  Secrets it writes, but the claim is still resource-wide.
 When a phase merges, replace the branch name with the PR number; when a provider
 is fully conformant, delete its section.
 
@@ -32,9 +51,10 @@ weeks, **XL** more.
 
 Three rules apply to every PR below:
 
-1. A change to permission claims edits `manifest.yaml`, the chart
-   `catalogentry.yaml` and `init_cmd.go` together, and ships a migration for
-   already-bound tenants before any code depends on the new claim
+1. A change to permission claims edits `manifest.yaml`, re-runs
+   `make codegen-<name>-provider` (which regenerates the APIExport and its
+   chart copy), mirrors the chart `catalogentry.yaml`, and ships a migration
+   for already-bound tenants before any code depends on the new claim
    (AGENTS.md §5.1).
 2. No backwards-compatibility windows. A changed path, verb, field or route
    is replaced outright and every in-tree consumer moves in the same PR.
@@ -122,6 +142,47 @@ callers (§4, §3); everyone else migrates onto it in their own section.
   both READMEs present, and no `/api/` route literal in `main.go` or
   `server/`. Exceptions live in a JSON file next to it with a reason, the
   same way `hack/ui-conformance-exceptions.json` works.
+
+### 0.4 Two shipped objects: a generated APIExport and the CatalogEntry — M
+
+A provider ships exactly two declarative objects and `init` applies them
+verbatim. The **CatalogEntry** is `manifest.yaml`, hand-written, the single
+source for display metadata, URLs, permission claims, actions and self-hosting.
+The **APIExport** is generated: kcp's `apigen` already emits the correct
+`spec.resources` (every kind with its immutable, versioned schema name), but
+names the export after the API group and knows nothing about claims. A small
+Go generator, `provider-sdk/cmd/apiexportgen`, runs after `apigen` in every
+`codegen-<name>-provider` target: it reads `manifest.yaml`, renames the export
+to `spec.apiExport.name`, stamps `spec.permissionClaims` from the manifest
+(kcp shape; `identityHash` left for `init` to fill from configuration when a
+first-party group requires one), and writes `config/kcp/apiexport-<name>.yaml`.
+The codegen target copies it into `deploy/chart/files/apiexport.yaml` next to
+the schemas.
+
+`provider-sdk/install` then loses its claim plumbing: `Bootstrap` reads the
+APIExport file and the schema files from `RAILGRID_KCP_DIR`, applies the
+schemas, applies the export as generated, and still creates the endpoint slice
+and bind grant (those are runtime objects, not declarations). The
+`sdkinstall.PermissionClaim` list in every `init_cmd.go` is deleted, which
+ends the three-copies problem at the source: the manifest is the only place a
+claim is written, the generated export is verified against it by
+`hack/verify-provider-contract.mjs` (`claims-parity` now compares manifest to
+the generated file), and the chart copies are outputs. The `rm -f
+apiexport-*.yaml` lines added in §0.1 go away.
+
+### 0.5 `provider-sdk/serve`: one server layout — S
+
+Handler logic is shared (§0.2) but every provider still hand-builds its mux.
+`provider-sdk/serve.New(Options{Name, Readiness, Portal fs.FS, MCP, DataPlane,
+Actions, HubOnly, OAuth})` returns the complete `http.Handler` with the fixed
+layout: `/healthz`, `/readyz`, `/mcp` + `/mcp/sse`, `/dataplane/`,
+`/actions/`, `/workload-identities/*` (hub-only), `/oauth/`, the portal file
+server with SPA index fallback, request logging, and a `ServeHTTP` that routes
+the grammar prefixes **before** `http.ServeMux` can rewrite `..`/`//`. It
+refuses to register anything else, so a provider cannot add `/api/*` by
+accident. quickstart, code, kuery and infrastructure migrate onto it in the
+same change; agents, app-studio and edges migrate in their own sections.
+`conformance.Test` runs against the real server, not the bare handler.
 
 ---
 

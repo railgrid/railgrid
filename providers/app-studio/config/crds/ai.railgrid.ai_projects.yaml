@@ -149,6 +149,25 @@ spec:
                               - version
                               type: object
                             type: array
+                          imagePullSecretRef:
+                            description: |-
+                              ImagePullSecretRef names the Secret in this workspace that holds the
+                              image-pull credential the bound instance needs, and is copied onto the
+                              instance's spec.imagePullSecretRef.
+
+                              It is a typed reference on both ends. The infrastructure provider used
+                              to look for "<instance>-registry" and App Studio used to mint exactly
+                              that name, which coupled the two by a string neither validated
+                              (docs/provider-contract-review.md M8). Promotion now says which Secret
+                              it wrote; an unset ref means the instance pulls from a public registry.
+                            properties:
+                              name:
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
                           kind:
                             enum:
                             - providerResource

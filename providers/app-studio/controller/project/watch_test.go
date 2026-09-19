@@ -18,15 +18,16 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/bindings"
-	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
 )
 
-func watchedObject(name string, labels map[string]string, spec map[string]any) *unstructured.Unstructured {
+func watchedObject(gvk schema.GroupVersionKind, name string, labels map[string]string, spec map[string]any) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{Object: map[string]any{"metadata": map[string]any{"name": name}}}
+	obj.SetGroupVersionKind(gvk)
 	if len(labels) > 0 {
 		obj.SetLabels(labels)
 	}
@@ -36,7 +37,11 @@ func watchedObject(name string, labels map[string]string, spec map[string]any) *
 	return obj
 }
 
-func TestMapDependencyEventResolvesOwningProject(t *testing.T) {
+// The dependency kinds now ride the manager's own informer, so what has to be
+// right is the mapping from a watched object back to the Project it belongs
+// to. Each kind answers that question differently, and a wrong answer is
+// either a project that never converges or a reconcile storm.
+func TestDependencyOwnersResolveTheOwningProject(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := aiv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -53,50 +58,44 @@ func TestMapDependencyEventResolvesOwningProject(t *testing.T) {
 		project("blog", "blog-repo"),
 		project("none", ""),
 	).Build()
-	r := &Reconciler{}
-	names := func(evt tenantwatch.Event) []string {
-		var out []string
-		for _, nn := range r.mapDependencyEvent(context.Background(), c, evt) {
-			out = append(out, nn.Name)
+	ctx := context.Background()
+	one := func(t *testing.T, got []string, want string) {
+		t.Helper()
+		if len(got) != 1 || got[0] != want {
+			t.Fatalf("owners = %v, want [%s]", got, want)
 		}
-		return out
 	}
 
 	// Instances map through the project label the reconciler stamps; an
-	// instance without it (a sandbox the API layer owns) maps to nothing.
-	if got := names(tenantwatch.Event{GVR: tenantwatch.InstancesGVR, Object: watchedObject("shop-dev", map[string]string{bindings.ProjectLabel: "shop"}, nil)}); len(got) != 1 || got[0] != "shop" {
-		t.Fatalf("instance → %v, want [shop]", got)
-	}
-	if got := names(tenantwatch.Event{GVR: tenantwatch.InstancesGVR, Object: watchedObject("sandbox", map[string]string{"railgrid.ai/app-studio-run-sandbox": "true"}, nil)}); len(got) != 0 {
+	// instance without it (a run sandbox the API layer owns, or the Studio's
+	// shared search backend) maps to nothing.
+	one(t, instanceOwner(ctx, c, watchedObject(instanceGVK, "shop-dev", map[string]string{bindings.ProjectLabel: "shop"}, nil)), "shop")
+	if got := instanceOwner(ctx, c, watchedObject(instanceGVK, "sandbox", map[string]string{"railgrid.ai/app-studio-run-sandbox": "true"}, nil)); len(got) != 0 {
 		t.Fatalf("unowned instance → %v, want none", got)
 	}
 
-	// Repositories map through the claim label, else through the Project
-	// that binds them by name.
-	if got := names(tenantwatch.Event{GVR: tenantwatch.RepositoriesGVR, Object: watchedObject("shop-repo", map[string]string{projectRepositoryLabel: "shop"}, nil)}); len(got) != 1 || got[0] != "shop" {
-		t.Fatalf("labelled repository → %v, want [shop]", got)
-	}
-	if got := names(tenantwatch.Event{GVR: tenantwatch.RepositoriesGVR, Object: watchedObject("blog-repo", nil, nil)}); len(got) != 1 || got[0] != "blog" {
-		t.Fatalf("adopted repository → %v, want [blog]", got)
-	}
+	// Repositories map through the claim label, else through the Project that
+	// binds them by name — an adopted repository carries no label.
+	one(t, repositoryOwner(ctx, c, watchedObject(repositoryGVK, "shop-repo", map[string]string{projectRepositoryLabel: "shop"}, nil)), "shop")
+	one(t, repositoryOwner(ctx, c, watchedObject(repositoryGVK, "blog-repo", nil, nil)), "blog")
 
 	// RepositoryCommits name only their repository.
-	if got := names(tenantwatch.Event{GVR: tenantwatch.RepositoryCommitsGVR, Object: watchedObject("commit-1", nil, map[string]any{"repositoryRef": "shop-repo"})}); len(got) != 1 || got[0] != "shop" {
-		t.Fatalf("commit → %v, want [shop]", got)
+	commit := func(name, repositoryRef string) client.Object {
+		return watchedObject(repositoryCommitGVK, name, nil, map[string]any{"repositoryRef": repositoryRef})
 	}
-	if got := names(tenantwatch.Event{GVR: tenantwatch.RepositoryCommitsGVR, Object: watchedObject("commit-2", nil, map[string]any{"repositoryRef": "unknown-repo"})}); len(got) != 0 {
+	one(t, repositoryCommitOwner(ctx, c, commit("commit-1", "shop-repo")), "shop")
+	if got := repositoryCommitOwner(ctx, c, commit("commit-2", "unknown-repo")); len(got) != 0 {
 		t.Fatalf("commit for an unbound repository → %v, want none", got)
 	}
 
-	// Kinds the reconciler does not watch, a nil object, and a nil client
-	// are all inert.
-	if got := names(tenantwatch.Event{GVR: schema.GroupVersionResource{Group: "x", Version: "v1", Resource: "things"}, Object: watchedObject("thing", nil, nil)}); len(got) != 0 {
-		t.Fatalf("unknown kind → %v", got)
-	}
-	if got := names(tenantwatch.Event{GVR: tenantwatch.InstancesGVR}); len(got) != 0 {
-		t.Fatalf("nil object → %v", got)
-	}
-	if got := r.mapDependencyEvent(context.Background(), nil, tenantwatch.Event{GVR: tenantwatch.RepositoryCommitsGVR, Object: watchedObject("commit-1", nil, map[string]any{"repositoryRef": "shop-repo"})}); len(got) != 0 {
+	// A mapping that needs a client and has none returns nothing rather than
+	// panicking: the local (unnamed) manager engages no cluster client.
+	if got := repositoryCommitOwner(ctx, nil, commit("commit-1", "shop-repo")); len(got) != 0 {
 		t.Fatalf("nil client → %v", got)
+	}
+	// A typed object arriving on the commit watch is not one this mapping can
+	// read; it names nothing rather than guessing.
+	if got := repositoryCommitOwner(ctx, c, &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop"}}); len(got) != 0 {
+		t.Fatalf("unexpected object kind → %v", got)
 	}
 }

@@ -60,7 +60,7 @@ func publishingTestServer(t *testing.T, dyn *fake.FakeDynamicClient, members ...
 	t.Helper()
 	client := asclient.NewFromDynamic(dyn)
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		publishingMembershipFetcher: func(context.Context, identity) ([]publishingMember, error) {
 			return members, nil
@@ -413,7 +413,7 @@ func TestGrantInviteByEmailProvisionsThroughHubAndWritesRBAC(t *testing.T) {
 	client := asclient.NewFromDynamic(dyn)
 	var invitedEmail string
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		publishingMembershipFetcher: func(context.Context, identity) ([]publishingMember, error) {
 			return nil, nil // the invitee is not a member yet
@@ -601,7 +601,7 @@ func publishingServerAgainstHub(t *testing.T, dyn *fake.FakeDynamicClient, hubUR
 	t.Helper()
 	client := asclient.NewFromDynamic(dyn)
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		hubBase:          hubURL,
 	}

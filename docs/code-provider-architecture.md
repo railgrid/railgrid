@@ -208,3 +208,60 @@ two gates as every catalogued action. The exception, and the four conditions a
 verb has to meet to claim it, are written down in
 [provider-actions.md](./provider-actions.md) §"Uncatalogued large-upload
 verbs".
+
+---
+
+## `mint_registry_token` — the one Connection-bound action
+
+Added 19 September 2026
+([provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§9 Cut C.3).
+
+```
+POST /actions/clusters/{id}/connections/{name}/mint_registry_token/v1
+```
+
+Every other action this provider serves is bound to a `Repository`. This one is
+bound to a `Connection`, because what it hands out is derived from the
+Connection's credential and nothing else.
+
+**Why it exists.** A container image built from a tenant's repository lives in
+that repository's package registry, and a workload cluster needs a credential
+to pull it. That credential used to be made by App Studio: it read this
+provider's `Connection` Secret and re-minted the raw token into a
+`dockerconfigjson` (`api/project_promote.go`). Two things were wrong with it.
+The consumer had to hold the credential that can also **push code** in order to
+produce one that only needs to **pull**; and it had to know that "the Code
+provider keeps a git token under `spec.secretRef`", which is a coupling by
+Secret layout rather than by contract
+([cross-provider-simplification.md](./cross-provider-simplification.md) §2.1).
+
+**What it returns.** `{registry, username, token, expiresAt?, scoped}` — a pull
+credential and what is known about it. Never the Connection's own credential
+under another name.
+
+For a **GitHub App** connection the token is a fresh installation token
+requested with `permissions: {packages: read}` and about an hour to live
+(`tenant/registry_token.go`, `RegistryPullPermissions`). That is the narrowest
+credential GitHub will issue, and it matters because a pull secret sits on a
+runtime cluster for as long as the workload does.
+
+For a **PAT or OAuth** connection there is no narrowing API. The stored token
+is returned with `scoped: false` and no expiry, and the action says so rather
+than implying a least-privilege credential it did not issue. A consumer that
+requires a genuinely scoped pull secret can refuse an unscoped one. The
+credential still never leaves this provider's control path, and the consumer
+still never reads the Secret.
+
+**Authorization** is the ordinary pair: gate 1 GETs the `Connection` as the
+caller, gate 2 asks for `create` on `connections/mint_registry_token` scoped to
+its name. A grant on `repositories/*` does not reach it and vice versa — the
+point of moving the credential behind an action rather than leaving it a Secret
+read (`actions/server_test.go`,
+`TestConnectionActionIsGatedSeparatelyFromRepositoryActions`). The caller then
+pins what it saw with `connectionUID`, and this provider re-reads the
+Connection through its own APIExport before opening the Secret, so a Connection
+deleted and recreated under the same name between the two reads fails closed.
+
+It is catalogued `readOnly: true`: it mints a credential but changes nothing
+about the Connection, the repository or the registry.

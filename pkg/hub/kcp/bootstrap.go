@@ -2357,15 +2357,34 @@ func edgeProxyGrantName(providerName string) string {
 }
 
 // EnsureProviderEdgeProxyGrant grants `subject` (the provider SA's
-// cluster-qualified identity — see pkg/util/identity) the "proxy" verb on the
-// edges provider's group (edges.railgrid.ai, resources kubernetesclusters +
-// linuxservers + macosservers) in the child workspace root:railgrid:tenants:{orgUUID}:{wsUUID}.
-// The edges provider's tunnel edgeproxy handler SAR-checks exactly this tuple
-// (provider-sdk/tunnel/auth.go), so the grant is what lets a provider with
-// CatalogEntry spec.edgeProxyAccess open background connections to the tenant's
-// edges. Idempotent; subjects are reconciled on
-// re-Enable so a provider workspace re-provision (new cluster ID → new
-// qualified subject) heals on the next Enable.
+// cluster-qualified identity — see pkg/util/identity) what a provider with
+// CatalogEntry spec.edgeProxyAccess needs to reach the tenant's edges through
+// the edges provider's data plane, in the child workspace
+// root:railgrid:tenants:{orgUUID}:{wsUUID}. Idempotent; subjects are
+// reconciled on re-Enable so a provider workspace re-provision (new cluster
+// ID → new qualified subject) heals on the next Enable.
+//
+// The grant is exactly the two gates the edges data plane runs, and nothing
+// else:
+//
+//   - "access" on "/", because kcp's workspaceContentAuthorizer requires it
+//     before any resource RBAC is consulted and a foreign SA is not covered
+//     by the tenant workspace's system:authenticated grants.
+//   - "get" on the three edge kinds — gate 1, the real GET of the addressed
+//     object.
+//   - "create" on the virtual subresources {resource}/{verb} — gate 2, for
+//     the verbs the edges provider declares in its CatalogEntry
+//     spec.dataPlane.verbs.
+//
+// It used to be much wider. It carried the wildcard "proxy" verb, write
+// access to the three /status subresources, get/list/watch/create/update on
+// Secrets, get/create on Namespaces, and create on TokenReviews and
+// SubjectAccessReviews — all of it for the EDGES PROVIDER'S OWN SA, back when
+// the tunnel read and wrote tenant objects directly with its own credential.
+// It does not: it goes through its APIExport virtual workspace, which its
+// permission claims cover (docs/provider-contract-review.md §3.5, finding
+// M7). Everything but the two gates is therefore removed here rather than
+// left as a standing cross-workspace credential nothing uses.
 func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error {
 	if orgUUID == "" || wsUUID == "" || providerName == "" || subject == "" {
 		return fmt.Errorf("EnsureProviderEdgeProxyGrant: orgUUID, wsUUID, providerName, subject are required")
@@ -2392,69 +2411,35 @@ func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID
 				"nonResourceURLs": []any{"/"},
 				"verbs":           []any{"access"},
 			},
-			// The edge plane is the single `edges` provider owning both kinds
-			// under one group edges.railgrid.ai. Using its OWN SA it reads +
-			// writes the edge CR DIRECTLY in the tenant workspace
-			// (kcpurl.ClusterURL, not the APIExport VW):
-			//   - get/list/watch on the kinds: validate the agent's bootstrap
-			//     join token against status.joinToken (else the tunnel is
-			//     rejected "invalid join token") + read SSH creds for edgeproxy.
-			//   - update/patch on the /status subresource: markEdgeConnected
-			//     flips status.connected/phase and clears status.joinToken when
-			//     the agent tunnel comes up (else the edge stays AwaitingAgent /
-			//     connected=false forever).
-			//   - proxy on the kinds: the SDK tunnel's edgeproxy consumer SAR.
-			// Bound to the provider SA's cluster-qualified identity (see
-			// pkg/util/identity).
+			// Gate 1: the edges data plane GETs the addressed object as the
+			// caller before it does anything, so a consumer that cannot see
+			// an edge cannot reach it either.
 			map[string]any{
 				"apiGroups": []any{"edges.railgrid.ai"},
 				"resources": []any{"kubernetesclusters", "linuxservers", "macosservers"},
-				"verbs":     []any{"get", "list", "watch", "proxy"},
+				"verbs":     []any{"get"},
 			},
+			// Gate 2: "create" on the virtual subresource {resource}/{verb},
+			// which is how the contract spells a data-plane verb and how the
+			// hub materializes every other data-plane grant
+			// (pkg/hub/serviceaccounts/workload_identity.go). The wildcard
+			// "proxy" verb that used to stand in for k8s, ssh, service proxy
+			// and MCP alike is gone from the provider and from here.
 			map[string]any{
 				"apiGroups": []any{"edges.railgrid.ai"},
-				"resources": []any{"kubernetesclusters/status", "linuxservers/status", "macosservers/status"},
-				"verbs":     []any{"get", "update", "patch"},
+				"resources": []any{
+					"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp", "kubernetesclusters/ticket",
+					"linuxservers/k8s", "linuxservers/ssh", "linuxservers/ticket",
+					"services/proxy", "services/mcp", "services/ticket",
+				},
+				"verbs": []any{"create"},
 			},
-			// The tunnel reads AND writes Secrets + Namespaces DIRECTLY with the
-			// provider SA (not the VW):
-			//   - read: token-exchange reads the agent's SA kubeconfig Secret
-			//     (edge-<name>-kubeconfig) + SSH-cred lookups read
-			//     spec.sshCredentialsRef Secrets.
-			//   - create/update: on a SERVER edge's connect, markEdgeConnected →
-			//     storeSSHCredentials creates a namespace + a
-			//     <edge>-ssh-credentials Secret and records it in
-			//     status.sshCredentials. Without create access the Secret write
-			//     403s, status.sshCredentials stays null, and the SSH handler has
-			//     no creds → openAgentSSHTunnel fails → the browser terminal shows
-			//     "session ended".
+			// Gate 1 for a published Service, which a consumer reaches the
+			// same way.
 			map[string]any{
-				"apiGroups": []any{""},
-				"resources": []any{"secrets"},
-				"verbs":     []any{"get", "list", "watch", "create", "update"},
-			},
-			map[string]any{
-				"apiGroups": []any{""},
-				"resources": []any{"namespaces"},
-				"verbs":     []any{"get", "create"},
-			},
-			// When an agent RECONNECTS with its SA token (after token-exchange),
-			// the tunnel authenticates it via delegated authn/authz: a TokenReview
-			// + SubjectAccessReview run with the provider SA in the tenant
-			// workspace. The provider SA must be able to CREATE those review
-			// objects — otherwise authorizeFn errors and the reconnect is rejected
-			// (bad handshake), even though the JOIN-token first connect (which
-			// only reads the CR) succeeds. This is the "initial join works,
-			// follow-up SA-token connect fails" case.
-			map[string]any{
-				"apiGroups": []any{"authentication.k8s.io"},
-				"resources": []any{"tokenreviews"},
-				"verbs":     []any{"create"},
-			},
-			map[string]any{
-				"apiGroups": []any{"authorization.k8s.io"},
-				"resources": []any{"subjectaccessreviews"},
-				"verbs":     []any{"create"},
+				"apiGroups": []any{"edges.railgrid.ai"},
+				"resources": []any{"services"},
+				"verbs":     []any{"get"},
 			},
 		},
 	}}

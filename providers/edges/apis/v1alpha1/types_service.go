@@ -256,7 +256,38 @@ type ServiceStatus struct {
 	// +optional
 	LastSeen metav1.Time `json:"lastSeen,omitempty"`
 
+	// MCPURL is the externalized data-plane URL of this service's MCP
+	// endpoint, set when the service's type exposes AI tools. Together with
+	// Tools it is what makes a published Service DISCOVERABLE: an MCP client
+	// or another provider reads the bound Service CR and learns what it can
+	// call, instead of asking this provider's backend for a catalog.
+	// +optional
+	MCPURL string `json:"mcpURL,omitempty"`
+
+	// Tools are the MCP tools this service's type exposes, projected from the
+	// provider's service catalog for the type in spec.type. Empty for a type
+	// with no tools.
+	//
+	// This is a projection, not tenant input: the provider stamps it, and it
+	// changes only when the provider's own catalog does. It exists because
+	// "which tools does this service offer" is a property of a published
+	// object, and Pillar 1 says a property of an object lives in the object —
+	// not behind an unauthenticated catalog route the UI has to know about.
+	// +optional
+	Tools []ServiceTool `json:"tools,omitempty"`
+
 	// Conditions: Detected, CredentialsValid, Ready.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ServiceTool is one MCP operation a published Service exposes.
+type ServiceTool struct {
+	// Name is the tool name as it appears to an MCP client, without the
+	// per-service prefix the provider adds when it registers the tool.
+	Name string `json:"name"`
+
+	// Description is what the tool does, for the model that will call it.
+	// +optional
+	Description string `json:"description,omitempty"`
 }

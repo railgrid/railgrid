@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/tenantaccess"
 )
 
@@ -78,19 +79,25 @@ var ErrActorUnresolved = errors.New("caller identity could not be established")
 // resolution error, so an endpoint that only needs the cluster ID keeps
 // working when the lookup is unavailable.
 func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool) {
+	// The workspace comes from the PATH: the data-plane dispatcher parsed it,
+	// refused it when it disagreed with the hub's header, and ran both gates
+	// against it before any handler saw the request. Reading it from a header
+	// here would be reading a value nothing checked
+	// (docs/provider-contract-review.md §3.7, "X-Railgrid-User is taken from
+	// the header as the actor").
+	cluster := dataPlaneCluster(r)
+	if cluster == "" {
+		cluster = strings.TrimSpace(r.Header.Get(dataplane.HeaderCluster))
+	}
 	id := identity{
-		tenant:    strings.TrimSpace(r.Header.Get("X-Railgrid-Tenant")),
-		clusterID: strings.TrimSpace(r.Header.Get("X-Railgrid-Cluster")),
-		userLabel: strings.TrimSpace(r.Header.Get("X-Railgrid-User")),
+		tenant:    cluster,
+		clusterID: cluster,
+		userLabel: strings.TrimSpace(r.Header.Get(dataplane.HeaderUser)),
 		token:     bearerToken(r),
 	}
-	if id.tenant == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "tenant context missing — the hub did not resolve a workspace for this request")
-		return identity{}, false
-	}
 	if id.clusterID == "" {
-		// Older hubs sent only X-Railgrid-Tenant; both carry the cluster ID now.
-		id.clusterID = id.tenant
+		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "no workspace on this request — it did not arrive through the data plane")
+		return identity{}, false
 	}
 	s.resolveWorkspace(r.Context(), &id)
 	s.resolveActor(r.Context(), &id)

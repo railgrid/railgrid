@@ -440,7 +440,7 @@ func TestSyncProjectDevelopmentTargetRejectsUnroutedWorkspaceAsPrecondition(t *t
 		t.Fatal(err)
 	}
 	dyn := publishingTestDynamic(publishingTestTarget("demo-dev", "uid", "private", ""))
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, workspaces: workspaces}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: workspaces}
 	target := projectDevelopmentSyncTargetInfo{
 		ResourceName: "demo-dev",
 		Components:   map[string]projectTemplateComponent{"api": {WorkspacePath: "api", Toolchain: "node"}},

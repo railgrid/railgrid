@@ -43,13 +43,13 @@ spec:
     # whole time nothing reconciled.
     healthPath: "/readyz"
 
-  # Kuery's engagement controller opens BACKGROUND connections to the
-  # tenant's edge clusters through the hub's edges-proxy (informer sync).
-  # This flag asks the hub to grant the provider SA the "proxy" verb on
-  # edges in the tenant workspace when the tenant clicks Enable; the
-  # Enable dialog surfaces the request. Removed again on Disable.
-  edgeProxyAccess: true
-
+  # No edgeProxyAccess. Kuery's engagement controller reaches each tenant's
+  # edges as a per-workspace "railgrid-kuery" ServiceAccount it provisions
+  # itself, with its own per-workspace grant for the data-plane coordinate
+  # (create on kubernetesclusters/k8s). The Enable-time edges-proxy grant this
+  # flag used to ask for was never the credential on that path — it grants the
+  # PROVIDER SA, which the edges data plane cannot authenticate across
+  # workspaces anyway (see engagement/controller.go).
   apiExport:
     name: "kuery.providers.railgrid.ai"
     # Built-in types ONLY — deliberately no first-party (*.railgrid.ai) claims:
@@ -72,6 +72,19 @@ spec:
         group: rbac.authorization.k8s.io
         verbs: [get, list, watch, create]
         tenantScoped: true
+  # Data-plane verbs this provider serves, declared so the coordinate is
+  # machine-readable. Declaring one grants and serves nothing: every call is
+  # still authorized by this provider's own caller-scoped SSAR on
+  # {resource}/{verb}. What the declaration buys is that the hub
+  # scoped-identity service can mint a capability for a verb it can verify
+  # exists (pkg/hub/identity/policy.go clause C), instead of consumers
+  # hardcoding a coordinate nobody validates.
+  dataPlane:
+    verbs:
+      - resource: savedviews
+        verb: run
+        description: "Run the saved view's query and return its result."
+        readOnly: true
   # Lets an organization run this provider in its own cluster
   # (docs/byo-providers.md). Keep manifest.yaml and
   # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the

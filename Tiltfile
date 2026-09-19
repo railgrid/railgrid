@@ -244,7 +244,7 @@ local_resource(
         'providers/code/portal/package-lock.json',
         'providers/code/portal/vite.config.ts',
         'providers/code/apis',
-        'providers/code/deploy/chart/files/schemas',
+        'providers/code/deploy/chart/files',
         'provider-sdk',
         'go.work',
         'Makefile',

@@ -38,6 +38,7 @@ import type {
   AgentCreate,
   AgentChannel,
   AgentPatch,
+  Capabilities,
   Connection,
   ConnectionWrite,
   Credential,
@@ -46,6 +47,7 @@ import type {
   Schedule,
   ScheduleCreate,
   SchedulePatch,
+  KubeRun,
   Toolset,
   ToolsetWrite,
   Trigger,
@@ -63,6 +65,22 @@ const CONNECTIONS: KubeResourceRef = { group: GROUP, version: VERSION, resource:
 const TOOLSETS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'toolsets' }
 const TRIGGERS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'triggers' }
 const SECRETS: KubeResourceRef = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
+// The workspace's aggregate MCP endpoint, owned by the hub and bound here. Its
+// status already says which providers it federates and whether each answered,
+// which is what "what can an agent in this workspace reach?" means — so the
+// question is a read of a bound object, not a backend probe.
+const MCPSERVERS: KubeResourceRef = { group: 'railgrid.ai', version: 'v1alpha1', resource: 'mcpservers' }
+// Runs are objects: the Activity feed is a kube LIST, not a backend route, and
+// a run's phase, timings and cost are read off the object. What is not on the
+// object — the step-level tool trace and the answer — is Postgres, reached
+// through the `trace` verb.
+const RUNS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'runs' }
+// LABEL_AGENT mirrors api/runprojection.go. It is what makes "this agent's
+// runs" a server-side list rather than a filter over every run in the
+// workspace.
+const LABEL_AGENT = 'agents.railgrid.ai/agent'
+// DEFAULT_MCPSERVER is the conventional endpoint every workspace gets.
+const DEFAULT_MCPSERVER = 'default'
 
 // FIELD_MANAGER names this writer in server-side apply's ownership records, so
 // a field the portal sets is distinguishable from one the provider backend or
@@ -274,6 +292,61 @@ export class Resources {
       throw asResourceError(error)
     }
   }
+
+  // ---- capabilities --------------------------------------------------------
+
+  /**
+   * capabilities answers "can an agent in this workspace reach <provider>'s
+   * tools?" from the workspace's MCPServer, whose reconciler already probed
+   * every federated provider and recorded the result.
+   *
+   * It used to be GET /api/capabilities on the provider backend, which dialled
+   * MCP itself and derived the provider set by splitting tool names. That was a
+   * backend route mirroring state the platform already publishes on an object
+   * the caller can read — so it is a kube read now, with no route at all.
+   *
+   * Never an error: every consumer of this is an optional enhancement, and a
+   * capability we could not confirm must read as absent rather than blocking a
+   * render.
+   */
+  async capabilities(): Promise<Capabilities> {
+    try {
+      const server = await this.client().get<KubeObject & {
+        status?: { federatedProviders?: Array<{ name?: string; reachable?: boolean }> }
+      }>(MCPSERVERS, DEFAULT_MCPSERVER)
+      const providers = (server.status?.federatedProviders ?? [])
+        .filter((p) => p.reachable && !!p.name)
+        .map((p) => p.name as string)
+      return { providers }
+    } catch (error) {
+      if (isKubeNotFound(error)) {
+        return { providers: [], unavailable: true, message: 'this workspace has no aggregate tool endpoint yet' }
+      }
+      return { providers: [], unavailable: true, message: (error as Error).message }
+    }
+  }
+
+  // ---- runs ----------------------------------------------------------------
+
+  /**
+   * listRuns reads the Run objects, newest-first.
+   *
+   * It used to be GET /api/runs, and then — briefly — a fan-out over one verb
+   * per agent, because the data-plane grammar addresses an object and a run
+   * had none. Now it does, so this is an ordinary Pillar 1 list: the caller
+   * sees exactly the runs their RBAC lets them see, the server does the
+   * narrowing for `agent` via a label selector, and there is no provider route
+   * involved at all.
+   */
+  listRuns = (agent?: string): Promise<KubeRun[]> =>
+    this.run((c) => c.listAll<KubeRun & KubeObject>(RUNS, agent ? { labelSelector: `${LABEL_AGENT}=${agent}` } : {}))
+
+  getRun = (name: string): Promise<KubeRun> => this.run((c) => c.get<KubeRun & KubeObject>(RUNS, name))
+
+  /** deleteRun discards a run. The object's finalizer purges its store rows. */
+  deleteRun = (name: string): Promise<void> => this.run(async (c) => {
+    await c.delete(RUNS, name)
+  })
 
   // ---- agents --------------------------------------------------------------
 

@@ -16,8 +16,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 // PostgresStore is the durable production Store. Schema is created/updated by
@@ -1000,43 +998,6 @@ func (p *PostgresStore) FindRunByIdempotencyKey(ctx context.Context, scope Scope
 
 // ---- recovery -------------------------------------------------------------------------
 
-func (p *PostgresStore) ListUnfinishedRuns(ctx context.Context, phases []RunPhase, updatedBefore time.Time, limit int) ([]ScopedRun, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	names := make([]string, 0, len(phases))
-	for _, ph := range phases {
-		names = append(names, string(ph))
-	}
-	// Cross-tenant by design (see the Store interface): a restart has to find
-	// stranded work it has no request scope for.
-	qs := `
-		SELECT org_uuid, workspace_uuid, ` + runColumns + `
-		FROM agents_runs WHERE updated_at < $1`
-	args := []any{updatedBefore.UTC()}
-	if len(names) > 0 {
-		qs += ` AND phase = ANY($2)`
-		args = append(args, pq.Array(names))
-	}
-	qs += fmt.Sprintf(` ORDER BY updated_at ASC LIMIT %d`, limit)
-	rows, err := p.db.QueryContext(ctx, qs, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ScopedRun
-	for rows.Next() {
-		var sc Scope
-		run, err := scanScopedRun(rows, &sc)
-		if err != nil {
-			return nil, err
-		}
-		sc.AgentName = run.AgentName
-		out = append(out, ScopedRun{Scope: sc, Run: run})
-	}
-	return out, rows.Err()
-}
-
 // ---- teardown -------------------------------------------------------------------------
 
 func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentName string) error {
@@ -1049,6 +1010,33 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// DeleteRunData removes one run's rows. See Store.DeleteRunData for why usage
+// is not among them.
+func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID string) error {
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(runID) == "" {
+		return fmt.Errorf("run ID is required")
+	}
+	// Messages and tool calls first: a crash between statements must leave the
+	// run row behind as the thing that still points at them, never orphans
+	// nothing points at.
+	for _, table := range []string{"agents_messages", "agents_tool_calls"} {
+		if _, err := p.db.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND run_id=$4`, table),
+			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
+			return err
+		}
+	}
+	if _, err := p.db.ExecContext(ctx,
+		`DELETE FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
+		return err
 	}
 	return nil
 }

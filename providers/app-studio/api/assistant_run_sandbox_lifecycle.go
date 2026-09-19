@@ -40,7 +40,7 @@ func projectAssistantSandboxTargetFromTemplate(info projectTemplateInfo, name st
 	return projectDevelopmentSyncTargetInfo{
 		EnvironmentName:    projectAssistantRunSandboxEnvironment,
 		BindingName:        projectAssistantRunSandboxBinding,
-		Provider:           infraDataPlaneProvider,
+		Provider:           infraDependencyName,
 		ResourceName:       name,
 		Resource:           projectAssistantRunSandboxResource,
 		Kind:               projectAssistantRunSandboxKind,

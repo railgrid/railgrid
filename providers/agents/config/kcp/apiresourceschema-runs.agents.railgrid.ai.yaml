@@ -1,0 +1,299 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260919-91e6c6ad.runs.agents.railgrid.ai
+spec:
+  group: agents.railgrid.ai
+  names:
+    kind: Run
+    listKind: RunList
+    plural: runs
+    singular: run
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.agentRef
+      name: Agent
+      type: string
+    - jsonPath: .spec.trigger
+      name: Trigger
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.startedAt
+      name: Started
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: |-
+        Run is one execution of an Agent: the identity the platform can authorize,
+        list, watch and garbage-collect it by.
+
+        It is a PROJECTION, not the record. The transcript, the step-level tool
+        trace and the resume checkpoint are rows in the provider's Postgres, keyed
+        by this object's name — they are high-churn, unbounded and of no interest to
+        the API server, and the projection carve-out in
+        docs/provider-connectivity-contract.md is exactly this case. What lives here
+        is what a tenant needs to ASK about a run without the provider relaying it:
+        which agent, what started it, what phase it is in, when it started and
+        finished, and what it cost.
+
+        Nobody writes spec but the provider. A Run is the record of something that
+        happened, so "create a Run to start a run" would be a second way to start
+        work, racing the one that already exists (the `run` verb on the Agent).
+        Deleting one, on the other hand, is ordinary and meaningful: it is how a
+        tenant discards a run, and the finalizer turns that into a purge of the rows
+        behind it.
+
+        The object's NAME is the run id, so a caller that has one has the other.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: |-
+            RunSpec is what the run was asked to do. It is written once, when the run is
+            created, and never edited: a run's request cannot change after the fact.
+          properties:
+            agentRef:
+              description: |-
+                AgentRef is the Agent this run executes. It is also the object an
+                ownerReference points at, so deleting an agent garbage-collects its runs.
+              maxLength: 253
+              minLength: 1
+              type: string
+            idempotencyKey:
+              description: |-
+                IdempotencyKey is the caller-supplied de-duplication token this run was
+                accepted under, recorded so a reader can tell a retry from a repeat.
+              maxLength: 253
+              type: string
+            inputPreview:
+              description: |-
+                InputPreview is the opening of the task, bounded, so `kubectl get run -o
+                yaml` says what the run is about. It is NOT the input: the authoritative
+                text is the first transcript row, which has no length limit and does not
+                belong on an API object.
+              maxLength: 2048
+              type: string
+            parentRunRef:
+              description: |-
+                ParentRunRef names the run that started this one, for delegation and
+                spawn lineage. It is a Run name, so the tree is walkable with the kube
+                client alone.
+              maxLength: 253
+              type: string
+            sessionID:
+              description: |-
+                SessionID is the conversation this run belongs to, and the second half of
+                the key its transcript rows are stored under. Empty for a run with no
+                conversation (an unattended fire with nothing to continue).
+              maxLength: 253
+              type: string
+            sourceName:
+              description: |-
+                SourceName attributes the run to whatever asked for it: a schedule, a
+                trigger, a channel connection, or a caller identity. A label, never a
+                trust root — the gates already decided the caller could start this.
+              maxLength: 253
+              type: string
+            trigger:
+              description: |-
+                Trigger is what started the run: chat, schedule, heartbeat, wakeup,
+                event, api, channel, delegation or spawn.
+              maxLength: 32
+              minLength: 1
+              type: string
+          required:
+          - agentRef
+          - trigger
+          type: object
+        status:
+          description: RunStatus is what happened. Only the provider writes it.
+          properties:
+            conditions:
+              description: Conditions follows the standard Kubernetes conditions pattern.
+              items:
+                description: Condition contains details for one aspect of the current
+                  state of this API Resource.
+                properties:
+                  lastTransitionTime:
+                    description: |-
+                      lastTransitionTime is the last time the condition transitioned from one status to another.
+                      This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      message is a human readable message indicating details about the transition.
+                      This may be an empty string.
+                    maxLength: 32768
+                    type: string
+                  observedGeneration:
+                    description: |-
+                      observedGeneration represents the .metadata.generation that the condition was set based upon.
+                      For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                      with respect to the current state of the instance.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  reason:
+                    description: |-
+                      reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                      Producers of specific condition types may define expected values and meanings for this field,
+                      and whether the values are considered a guaranteed API.
+                      The value should be a CamelCase string.
+                      This field may not be empty.
+                    maxLength: 1024
+                    minLength: 1
+                    pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                    type: string
+                  status:
+                    description: status of the condition, one of True, False, Unknown.
+                    enum:
+                    - "True"
+                    - "False"
+                    - Unknown
+                    type: string
+                  type:
+                    description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                    maxLength: 316
+                    pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                    type: string
+                required:
+                - lastTransitionTime
+                - message
+                - reason
+                - status
+                - type
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - type
+              x-kubernetes-list-type: map
+            deadlineAt:
+              description: |-
+                DeadlineAt is startedAt plus the agent's per-run timeout: when the run
+                stops being allowed to continue. It is on the object rather than
+                recomputed because the reconciler that enforces it wakes on it, and a
+                deadline you cannot read is one you cannot explain.
+              format: date-time
+              type: string
+            finishedAt:
+              description: FinishedAt is when the run reached a terminal phase.
+              format: date-time
+              type: string
+            message:
+              description: |-
+                Message explains a non-Succeeded phase — the error, the cancellation, the
+                timeout.
+              maxLength: 2048
+              type: string
+            observedGeneration:
+              description: ObservedGeneration mirrors metadata.generation last reconciled.
+              format: int64
+              type: integer
+            owner:
+              description: |-
+                Owner is the replica currently executing this run, written when it is
+                claimed and cleared when it settles. It is what makes a restart
+                recoverable without a timer: a Pending run with no owner is unclaimed
+                work, and a Running run whose owner is gone is work to re-queue.
+              maxLength: 253
+              type: string
+            phase:
+              description: |-
+                Phase is the run's lifecycle position: Pending, Running,
+                PendingApproval, Succeeded, Failed or Aborted.
+              type: string
+            startedAt:
+              description: |-
+                StartedAt is when execution began — not when the run was accepted. The
+                timeout deadline is measured from it.
+              format: date-time
+              type: string
+            transcriptRef:
+              description: |-
+                TranscriptRef locates the run's rows in the provider's store. It carries
+                no credential and is not a URL: it is the coordinate the `trace` verb
+                resolves, stated so the projection's other half is discoverable from the
+                object rather than by knowing how the provider is built.
+              properties:
+                messages:
+                  description: |-
+                    Messages is how many transcript rows the run produced, so a reader can
+                    tell an empty trace from an unfetched one.
+                  format: int32
+                  type: integer
+                sessionID:
+                  description: SessionID is the conversation the transcript rows are
+                    filed under.
+                  maxLength: 253
+                  type: string
+                toolCalls:
+                  description: ToolCalls is how many tool calls the run made.
+                  format: int32
+                  type: integer
+              type: object
+            usage:
+              description: |-
+                Usage is what the run cost. A summary: the per-call breakdown is in the
+                store with the rest of the trace.
+              properties:
+                durationMS:
+                  description: DurationMS is wall-clock time from startedAt to finishedAt.
+                  format: int64
+                  type: integer
+                inputTokens:
+                  description: InputTokens and OutputTokens are what the model was
+                    billed for.
+                  format: int64
+                  type: integer
+                outputTokens:
+                  format: int64
+                  type: integer
+                usd:
+                  description: |-
+                    USD is USDMicros rendered for a human, e.g. "0.0123". A display field:
+                    compute from USDMicros, never parse this.
+                  maxLength: 32
+                  type: string
+                usdMicros:
+                  description: |-
+                    USDMicros is the estimated cost in millionths of a USD, from the model
+                    catalog. Integer because money is not a float, and micros because a cheap
+                    model's turn costs less than a cent.
+                  format: int64
+                  type: integer
+                workedDurationMS:
+                  description: |-
+                    WorkedDurationMS is measured model and tool time, which excludes the
+                    pauses a run spends waiting on a human. Nil when it was never measured; a
+                    non-nil zero is a measured zero.
+                  format: int64
+                  type: integer
+              type: object
+          type: object
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

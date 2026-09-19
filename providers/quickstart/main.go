@@ -35,6 +35,7 @@ import (
 
 	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/serve"
 	"github.com/railgrid/provider-sdk/vwhealth"
 
 	quickstartv1alpha1 "github.com/railgrid/provider-quickstart/apis/v1alpha1"
@@ -107,21 +108,32 @@ func runServe() {
 		callers = factory
 	}
 
-	fileServer, distFS, err := portalHandler()
+	dist, err := portalFS()
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
 
-	srv := &http.Server{
-		Addr: ":" + port,
-		Handler: server.New(server.Deps{
-			Callers:          callers,
-			Greetings:        quickstartv1alpha1.GreetingsResource,
-			Readiness:        vwhealth.Handler(vwState),
-			PortalFileServer: fileServer,
-			PortalFS:         distFS,
-			ServePortalAsset: servePortalAsset,
+	// The whole HTTP surface, assembled from the closed list of Pillar 2 route
+	// classes by provider-sdk/serve: this provider serves exactly one
+	// data-plane verb, the two health routes and its portal. serve.New refuses
+	// a route that is not one of the classes, so the /api/* this provider once
+	// taught cannot come back by accident.
+	handler, err := serve.New(serve.Options{
+		Name:      "quickstart",
+		Readiness: vwhealth.Handler(vwState),
+		Portal:    dist,
+		DataPlane: server.NewDataPlane(server.Deps{
+			Callers:   callers,
+			Greetings: quickstartv1alpha1.GreetingsResource,
 		}),
+	})
+	if err != nil {
+		log.Fatalf("server: %v", err)
+	}
+
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

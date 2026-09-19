@@ -48,10 +48,40 @@ const statusLabel = computed(() => {
   return 'Unknown'
 })
 
-function buildWsUrl(token: string): string {
+// The edges provider's consumer data plane, Pillar 2 class (a):
+// /dataplane/clusters/{cluster}/{resource}/{name}/{verb}.
+const EDGE_DATAPLANE_BASE = `/services/providers/edges/dataplane/clusters`
+
+function verbPath(verb: string): string {
+  return `${EDGE_DATAPLANE_BASE}/${props.cluster}/linuxservers/${props.edgeName}/${verb}`
+}
+
+// The ticket subprotocol namespace, mirroring the provider
+// (providers/edges/internal/tunnel/ticket.go).
+const TICKET_SUBPROTOCOL_PREFIX = 'railgrid.ticket.'
+
+// A browser cannot set an Authorization header on a WebSocket upgrade. It used
+// to put the caller's kcp bearer in "?token=", which is a full-lifetime,
+// workspace-wide credential written into every access log, proxy log and
+// Referer on the way. Instead we POST to the gated "ticket" verb with the
+// bearer in a header like any other fetch, and get back a short-lived,
+// single-object, single-use string — which we hand over as the one header a
+// browser WebSocket CAN set, Sec-WebSocket-Protocol.
+async function mintTicket(token: string): Promise<string> {
+  const res = await fetch(verbPath('ticket'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`ticket request failed: ${res.status}`)
+  const body = (await res.json()) as { subprotocol?: string; ticket?: string }
+  const subprotocol = body.subprotocol ?? (body.ticket ? TICKET_SUBPROTOCOL_PREFIX + body.ticket : '')
+  if (!subprotocol) throw new Error('ticket response carried no subprotocol')
+  return subprotocol
+}
+
+function buildWsUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const path = `/services/providers/edges/edgeproxy/clusters/${props.cluster}/apis/edges.railgrid.ai/v1alpha1/linuxservers/${props.edgeName}/ssh`
-  return `${proto}//${location.host}${path}?token=${encodeURIComponent(token)}`
+  return `${proto}//${location.host}${verbPath('ssh')}`
 }
 
 async function initialize() {
@@ -93,16 +123,19 @@ async function initialize() {
   terminal.open(termEl.value)
   fitAddon.fit()
 
-  let token: string
+  let subprotocol: string
   try {
-    token = await auth.getValidToken()
+    const token = await auth.getValidToken()
+    // Logout, unmount, or reconnect can occur while token refresh is pending.
+    if (attempt !== lifecycle || disposed || JSON.stringify(auth.user) !== owner) return
+    subprotocol = await mintTicket(token)
   } catch {
     if (attempt === lifecycle) cleanup()
     return
   }
-  // Logout, unmount, or reconnect can occur while token refresh is pending.
+  // …and again while the ticket was being minted.
   if (attempt !== lifecycle || disposed || JSON.stringify(auth.user) !== owner) return
-  ws = new WebSocket(buildWsUrl(token))
+  ws = new WebSocket(buildWsUrl(), [subprotocol])
   ws.binaryType = 'arraybuffer'
 
   ws.onopen = () => {

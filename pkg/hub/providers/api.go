@@ -126,6 +126,13 @@ type providerDTO struct {
 	// only discovery and consent policy metadata; provider transport URLs and
 	// credentials are intentionally not exposed here.
 	Actions []providerActionDTO `json:"actions,omitempty"`
+	// DataPlaneVerbs is the provider's declared data-plane verb surface:
+	// which verbs it serves on which of its own resources. Like Actions it is
+	// discovery metadata only — declaring a verb grants nothing, and the
+	// provider still authorizes every call with its own SSAR — but it is what
+	// a consumer reads to learn the {resource}/{verb} coordinate it needs
+	// granted, instead of hardcoding one.
+	DataPlaneVerbs []providerDataPlaneVerbDTO `json:"dataPlaneVerbs,omitempty"`
 	// AssistantSkills contains validated inline App Studio packages. This
 	// response is their only distribution surface; no provider runtime URL or
 	// credential is projected into this shape.
@@ -391,6 +398,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 				HubAccess:        p.HubAccess,
 				Builtin:          isBuiltin,
 				Actions:          actions,
+				DataPlaneVerbs:   dataPlaneVerbDTOs(p.DataPlaneVerbs),
 				AssistantSkills:  assistantSkills,
 				// Only platform providers are offered for self-hosting: an
 				// org-owned entry IS someone's self-hosted copy already, and
@@ -415,4 +423,25 @@ func listHandlerFunc(reg *Registry) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(listResponse{Items: items, Categories: cats})
 	})
+}
+
+// providerDataPlaneVerbDTO is one declared data-plane verb as the catalog API
+// publishes it.
+type providerDataPlaneVerbDTO struct {
+	Resource    string `json:"resource"`
+	Verb        string `json:"verb"`
+	Description string `json:"description,omitempty"`
+	Stream      bool   `json:"stream,omitempty"`
+	ReadOnly    bool   `json:"readOnly,omitempty"`
+}
+
+func dataPlaneVerbDTOs(verbs []ProviderDataPlaneVerb) []providerDataPlaneVerbDTO {
+	if len(verbs) == 0 {
+		return nil
+	}
+	out := make([]providerDataPlaneVerbDTO, 0, len(verbs))
+	for _, verb := range verbs {
+		out = append(out, providerDataPlaneVerbDTO(verb))
+	}
+	return out
 }

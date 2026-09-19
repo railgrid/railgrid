@@ -19,6 +19,8 @@ package tunnel
 import (
 	"net/http"
 	"testing"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // newServiceView builds a serviceView the way fetchService would decode one.
@@ -121,71 +123,95 @@ func TestServiceViewSetSvcHeaders(t *testing.T) {
 	}
 }
 
-func TestParseServicePath(t *testing.T) {
-	s := testServer("/services/providers/edges/edgeproxy")
-
+// The Service routes are the shared grammar now, parsed by
+// provider-sdk/dataplane rather than by a hand-rolled splitter. What this
+// pins is the provider's half: which {resource}/{verb} pairs it serves, and
+// that the old dialect no longer parses at all.
+func TestServiceRouteGrammar(t *testing.T) {
 	cases := []struct {
-		name                             string
-		path                             string
-		wantOK                           bool
-		cluster, obj, subresource, wantR string
+		name             string
+		path             string
+		wantOK           bool
+		cluster, obj     string
+		verb, tail       string
+		wantVerbUnserved bool
 	}{
 		{
-			name:        "proxy subresource, no trailing path",
-			path:        "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/services/ha-box-home-assistant/proxy",
-			wantOK:      true,
-			cluster:     "abc",
-			obj:         "ha-box-home-assistant",
-			subresource: "proxy",
-			wantR:       "",
+			name:    "proxy verb, no trailing path",
+			path:    "/" + DataPlaneRoot + "/clusters/abc/services/ha-box-home-assistant/proxy",
+			wantOK:  true,
+			cluster: "abc", obj: "ha-box-home-assistant", verb: "proxy",
 		},
 		{
-			name:        "proxy subresource with trailing service path",
-			path:        "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/services/ha/proxy/api/services/cover/open_cover",
-			wantOK:      true,
-			cluster:     "abc",
-			obj:         "ha",
-			subresource: "proxy",
-			wantR:       "/api/services/cover/open_cover",
+			name:    "proxy verb with a trailing service path",
+			path:    "/" + DataPlaneRoot + "/clusters/abc/services/ha/proxy/api/services/cover/open_cover",
+			wantOK:  true,
+			cluster: "abc", obj: "ha", verb: "proxy", tail: "api/services/cover/open_cover",
 		},
 		{
-			name:        "mcp subresource",
-			path:        "/clusters/xyz/apis/edges.railgrid.ai/v1alpha1/services/ha/mcp",
-			wantOK:      true,
-			cluster:     "xyz",
-			obj:         "ha",
-			subresource: "mcp",
-			wantR:       "",
+			name:    "mcp verb",
+			path:    "/" + DataPlaneRoot + "/clusters/xyz/services/ha/mcp",
+			wantOK:  true,
+			cluster: "xyz", obj: "ha", verb: "mcp",
 		},
 		{
-			name:   "connectable kind is not an edgeservice path",
-			path:   "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/linuxservers/srv/ssh",
-			wantOK: false,
+			name:    "ticket verb",
+			path:    "/" + DataPlaneRoot + "/clusters/xyz/services/ha/ticket",
+			wantOK:  true,
+			cluster: "xyz", obj: "ha", verb: "ticket",
 		},
 		{
-			name:   "wrong group",
-			path:   "/clusters/abc/apis/other.group/v1alpha1/services/ha/proxy",
+			name:    "a connectable kind parses, and serves its own verbs",
+			path:    "/" + DataPlaneRoot + "/clusters/abc/linuxservers/srv/ssh",
+			wantOK:  true,
+			cluster: "abc", obj: "srv", verb: "ssh",
+		},
+		{
+			name:             "a verb this provider does not serve is refused",
+			path:             "/" + DataPlaneRoot + "/clusters/abc/services/ha/k8s",
+			wantOK:           true,
+			cluster:          "abc",
+			obj:              "ha",
+			verb:             "k8s",
+			wantVerbUnserved: true,
+		},
+		{
+			name:   "the old apis/{group}/{version} dialect no longer parses",
+			path:   "/" + DataPlaneRoot + "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/services/ha/proxy",
 			wantOK: false,
 		},
 		{
 			name:   "too short",
-			path:   "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/services/ha",
+			path:   "/" + DataPlaneRoot + "/clusters/abc/services/ha",
+			wantOK: false,
+		},
+		{
+			name:   "a traversal segment is refused, not cleaned",
+			path:   "/" + DataPlaneRoot + "/clusters/abc/services/../ha/proxy",
+			wantOK: false,
+		},
+		{
+			name:   "a workspace path is not a cluster ID",
+			path:   "/" + DataPlaneRoot + "/clusters/root:railgrid:tenants:a/services/ha/proxy",
 			wantOK: false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cluster, name, sub, rest, ok := s.parseServicePath(tc.path)
+			req, ok := dataplane.ParsePath(DataPlaneRoot, tc.path)
 			if ok != tc.wantOK {
-				t.Fatalf("parseServicePath(%q) ok=%v, want %v", tc.path, ok, tc.wantOK)
+				t.Fatalf("ParsePath(%q) ok=%v, want %v", tc.path, ok, tc.wantOK)
 			}
 			if !tc.wantOK {
 				return
 			}
-			if cluster != tc.cluster || name != tc.obj || sub != tc.subresource || rest != tc.wantR {
-				t.Fatalf("parseServicePath(%q) = (%q,%q,%q,%q), want (%q,%q,%q,%q)",
-					tc.path, cluster, name, sub, rest, tc.cluster, tc.obj, tc.subresource, tc.wantR)
+			if req.ClusterID != tc.cluster || req.Name != tc.obj || req.Verb != tc.verb || req.Tail != tc.tail {
+				t.Fatalf("ParsePath(%q) = %+v, want cluster=%q name=%q verb=%q tail=%q",
+					tc.path, req, tc.cluster, tc.obj, tc.verb, tc.tail)
+			}
+			if served := verbServed(req.Resource, req.Verb); served == tc.wantVerbUnserved {
+				t.Fatalf("verbServed(%q, %q) = %v", req.Resource, req.Verb, served)
 			}
 		})
 	}

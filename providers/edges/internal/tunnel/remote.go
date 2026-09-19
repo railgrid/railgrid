@@ -109,13 +109,13 @@ func (c *relayConn) Read(p []byte) (int, error) {
 }
 
 // pickupRouter dispatches replica-addressed pickup connections
-// (/proxy/{replicaID}?revdial.dialer=...): local replica → the revdial
+// (/agent/proxy/{replicaID}?revdial.dialer=...): local replica → the revdial
 // ConnHandler; a peer → a proxied WebSocket upgrade to that peer's internal
 // listener, resolved through its presence lease. Unknown or dead replicas get
 // 502 — the agent reports pickup-failed and the pending Dial errors cleanly.
 func (s *Server) pickupRouter(local http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		replicaID := strings.TrimPrefix(r.URL.Path, "/proxy/")
+		replicaID := strings.TrimPrefix(r.URL.Path, agentPickupRoute+"/")
 		if replicaID == "" || strings.Contains(replicaID, "/") {
 			http.Error(w, "invalid pickup path", http.StatusBadRequest)
 			return
@@ -189,9 +189,9 @@ func (s *Server) relayHandler() http.HandlerFunc {
 		go func() {
 			// Drain anything the hijacked reader buffered before splicing.
 			if n := bufrw.Reader.Buffered(); n > 0 {
-				buffered, _ := bufrw.Reader.Peek(n)
+				buffered, _ := bufrw.Peek(n)
 				_, _ = down.Write(buffered)
-				_, _ = bufrw.Reader.Discard(n)
+				_, _ = bufrw.Discard(n)
 			}
 			_, _ = io.Copy(down, up)
 			done <- struct{}{}

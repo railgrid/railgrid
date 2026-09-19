@@ -68,35 +68,31 @@ type dataPlaneGrant struct {
 	// really does serve all of them. Anything narrower must be listed, or the
 	// grant widens itself as new resources join the group's APIExport.
 	resources []string
-	// verbs are extra verbs granted on the bound resources themselves. They
-	// gate access to a data plane rather than a mutation of the object, and
-	// they are dropped for readOnly servers: the data planes behind them do
-	// not distinguish reads from writes (the edges tunnel serves kubectl
-	// delete, exec and an SSH shell under the one "proxy" verb), so keeping
-	// the verb would make a read-only token a full operator of every bound
-	// edge. Read-only servers therefore lose data-plane access until a data
-	// plane offers a read-only mode of its own; that is the safe direction.
-	verbs []string
 	// subresources are virtual subresources granted with "create". They
 	// invoke something (a shell, a job) and are dropped for readOnly servers.
 	subresources []string
 }
 
-// dataPlaneGrants is keyed by API group of the bound resources.
-var dataPlaneGrants = map[string]dataPlaneGrant{
-	// The edges tunnel authorizes verb "proxy" on the edge object before
-	// serving its k8s/ssh/mcp subresources (providers/edges/internal/tunnel).
-	// Every edge kind the group exports is proxyable, so no resource filter.
-	// The tunnel checks "proxy" for every HTTP method on the k8s subresource
-	// and for ssh sessions alike, so this is never granted to readOnly
-	// servers (see dataPlaneGrant.verbs).
-	"edges.railgrid.ai": {verbs: []string{"proxy"}},
-	// The infrastructure data plane authorizes "create" on <instance>/exec
-	// before running a command in a dev instance
-	// (providers/infrastructure/dataplane/authorizer.go). instances is the
-	// only resource the data plane serves — the handler rejects anything else
-	// — so exec is granted on instances alone and never on, say, templates.
-	"infrastructure.railgrid.ai": {resources: []string{"instances"}, subresources: []string{"exec"}},
+// dataPlaneGrants is keyed by API group of the bound resources. Every
+// data-plane verb is an RBAC subresource granted with "create": the owning
+// provider runs a SelfSubjectAccessReview for exactly {resource}/{verb} as the
+// caller before serving it (provider-sdk/dataplane.Gate), so each entry mirrors
+// the verbs that provider declares in CatalogEntry.spec.dataPlane.verbs.
+var dataPlaneGrants = map[string][]dataPlaneGrant{
+	// providers/edges/internal/tunnel/grammar.go dataPlaneVerbs. The tunnel
+	// serves kubectl (including delete and exec), an SSH shell and MCP under
+	// these verbs, so none of them survives readOnly. ticket, agent-token and
+	// ssh-credentials are for browsers and the edge agent, never an MCP token.
+	"edges.railgrid.ai": {
+		{resources: []string{"kubernetesclusters"}, subresources: []string{"k8s", "ssh", "mcp"}},
+		{resources: []string{"linuxservers"}, subresources: []string{"k8s", "ssh"}},
+		{resources: []string{"services"}, subresources: []string{"proxy", "mcp"}},
+	},
+	// The infrastructure data plane gates "create" on instances/{verb} for
+	// every verb (providers/infrastructure/dataplane/handler.go); exec is the
+	// one an MCP token may hold. instances is the only resource the data plane
+	// serves, so exec is granted on instances alone and never on templates.
+	"infrastructure.railgrid.ai": {{resources: []string{"instances"}, subresources: []string{"exec"}}},
 }
 
 // privilegedResources are bound resources a generated MCPServer role NEVER
@@ -209,25 +205,22 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 		}
 		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: resources, Verbs: verbs})
 
-		if dp, ok := dataPlaneGrants[g]; ok {
+		for _, dp := range dataPlaneGrants[g] {
 			// Scope the grant to the resources the data plane actually serves,
 			// so binding an unrelated resource in the same group never widens
-			// it (e.g. templates must not get templates/exec).
+			// it (e.g. templates must not get templates/exec). Subresources
+			// are invocation rights, not reads; none survives readOnly.
 			targets := filterResources(resources, dp.resources)
-			// Data-plane verbs and subresources are both invocation rights,
-			// not reads; neither survives readOnly.
-			if !readOnly && len(dp.verbs) > 0 && len(targets) > 0 {
-				rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: targets, Verbs: dp.verbs})
+			if readOnly || len(dp.subresources) == 0 || len(targets) == 0 {
+				continue
 			}
-			if !readOnly && len(dp.subresources) > 0 && len(targets) > 0 {
-				subs := make([]string, 0, len(targets)*len(dp.subresources))
-				for _, r := range targets {
-					for _, s := range dp.subresources {
-						subs = append(subs, r+"/"+s)
-					}
+			subs := make([]string, 0, len(targets)*len(dp.subresources))
+			for _, r := range targets {
+				for _, s := range dp.subresources {
+					subs = append(subs, r+"/"+s)
 				}
-				rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: subs, Verbs: []string{"create"}})
 			}
+			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: subs, Verbs: []string{"create"}})
 		}
 		if subs := actionSubs[g]; len(subs) > 0 {
 			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: sortedKeys(subs), Verbs: []string{"create"}})

@@ -224,3 +224,202 @@ Phases 0–1 are the de-risking core (prove the contract + the transport). Phase
 - The runtime credential's blast radius shrinks from "App Studio + infra both hold it" to "infra only," and the minimal runtime role from [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) §Runtime-kubeconfig-RBAC now applies to the infra provider's serve account.
 - The control-token Secret is read provider-side; it never transits App Studio.
 - The untrusted-code caveats in [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) §Current-Security-Caveats are unchanged by this work — they remain a runtime-isolation TODO independent of where the data plane lives.
+
+---
+
+## Addendum: the coordinate comes from the binding (19 September 2026)
+
+[provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§9 Cut C.2–C.4.
+
+### The provider name is read, not compiled in
+
+App Studio used to build every infrastructure data-plane URL from a constant:
+
+```go
+const infraDataPlaneProvider = "infrastructure"
+u := hub + fmt.Sprintf("/services/providers/%s/dataplane/clusters/%s/%s/%s", …)
+```
+
+Which provider serves a dependency is a fact about the **tenant's workspace**,
+not about App Studio's configuration: a workspace may have enabled the platform
+copy of infrastructure or its own self-hosted one, and they answer to different
+names under `/services/providers/{name}/`. That was
+[cross-provider-simplification.md](./cross-provider-simplification.md) X-8.
+
+`api/provider_binding.go` resolves the name from the workspace's own
+`APIBinding` for the dependency's APIExport, **as the caller** — a caller who
+cannot see the binding cannot use the provider either — and caches it per
+(cluster, export), because it is a property of the workspace and not of who
+asked.
+
+It **gets the binding by name** rather than listing them. The hub names each
+binding after the provider it enables
+([`pkg/hub/restapi/providers_enable.go`](../pkg/hub/restapi/providers_enable.go)),
+so the name is derivable from the export; reading the object then earns its
+keep through the assertion that it really serves the export asked for, and a
+binding that does not is refused rather than guessed from. The reason it is a
+`get` is the hub's scoped-identity policy: a background identity may `get` an
+APIBinding it names and may not list them, because a list would hand it the
+full inventory of what a tenant has enabled
+([provider-connectivity-contract.md](./provider-connectivity-contract.md)
+§"Scoped identities", clause D). A dependency that is not enabled here is
+reported as exactly that.
+
+The rest of the URL comes from `dataplane.ProviderPath`, the inverse of the
+parser the serving provider uses, so the grammar has one spelling in the tree
+and a segment that would not parse back (a component name with a slash, a
+workspace path where a cluster ID belongs) fails here rather than being minted
+and sent. Both the data-plane client (`api/dataplane_client.go`) and the
+integration action gateway (`api/integrations.go`) go through it.
+
+`infraDependencyName` survives as a **label** — it names the dependency in the
+project view — and is never a URL segment.
+
+### The pull secret is a typed reference, not a name
+
+At promote, App Studio asks the Code provider for an image-pull credential
+(`connections/{n}/mint_registry_token/v1`, as the caller), writes it as a
+`dockerconfigjson` Secret, and then **names that Secret** on the production
+binding — which the Project controller copies onto the instance's
+`spec.imagePullSecretRef`. The infrastructure provider bridges the Secret it is
+pointed at, instead of guessing `<instance>-registry`
+([provider-contract-review.md](./provider-contract-review.md) M8,
+[infrastructure-architecture.md](./infrastructure-architecture.md) §12.2).
+
+App Studio no longer reads the Code `Connection`'s Secret at all. When the
+action returns an expiry, it is recorded as an annotation on the pull Secret,
+so an operator debugging an `ImagePullBackOff` finds the answer on the object.
+
+Minting stays best-effort: a public image needs no pull credential, so a
+failure leaves the reference unset and logs why rather than blocking a
+promotion.
+
+---
+
+## Addendum: the surface is verbs now (19 September 2026)
+
+[provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§9 Cut C.1 and C.5.
+
+App Studio served about ninety-five routes under `/api/projects/*`. They were
+three different things wearing one shape: CRUD facades over the Project CR,
+Postgres CRUD for conversation threads, and the calls that were always verbs —
+promote, sync, restart, logs, hydrate, turns. The hub cannot authorize any of
+it per resource, because nothing in the path says which object is being acted
+on in a way RBAC can see.
+
+### The grammar
+
+```
+/dataplane/clusters/{id}/projects/{project}/{verb}[/{tail…}]
+/dataplane/clusters/{id}/sessions/{thread}/{verb}[/{tail…}]
+/dataplane/clusters/{id}/studios/studio/{verb}
+```
+
+62 verbs — 41 on `Project`, 13 on `Session`, 8 on the workspace `Studio` —
+declared in `manifest.yaml` and the chart, and checked against the served
+table by `TestDataPlaneVerbsMatchManifest`. `main.go` builds its surface with
+`provider-sdk/serve`, which has no `/api/*` field at all, so the deviation this
+provider had the most of is now one it cannot express.
+
+**Three things the move made true that the old routes could not:**
+
+- **The workspace comes from the path.** `identityFromRequest` no longer reads
+  `X-Railgrid-Tenant` for the cluster; it takes the one the dispatcher parsed
+  and both gates ran against. A forged header cannot move a request.
+- **A conversation's project comes off the gated Session.** The old route had
+  `{project}` and `{thread}` as two independent segments a caller could
+  mismatch. Now `spec.projectRef` is read from the object gate 1 returned.
+- **A tail is not a verb.** `integrations/{alias}`, `preview-grants/{id}`,
+  `skill/{package}` keep one grant for the set, instead of needing one per
+  member of it.
+
+### What the Studio is for
+
+A workspace-wide call — create a project, plan one, list importable
+repositories — had no object, so it had no grant. It hangs off the
+per-workspace `Studio` singleton now. Gate 1 is a real GET, so the portal
+creates the Studio with the kube client before the first such call in a fresh
+workspace (`ensureStudio` in `portal/src/api.ts`); the reconciler fills in the
+service references afterwards.
+
+### Deliberately not done here
+
+- **`listProjects` is a kube read**, not a verb: a Project is a bound CR
+  (Pillar 1). Anything joined — live instance status, the commit ledger, the
+  pod-local source-revision fence — comes from `projects/{p}/view`, which is
+  the whole reason that verb exists.
+- **`projects/{p}/delete` is still orchestration behind a verb.** Moving it
+  into a Project finalizer is Cut D. The route does not have to wait for the
+  authority to move, and gating it now is strictly better than a `DELETE` on a
+  facade.
+- **`create-project` still ends with pod-local `sourceRevision` state.** Also
+  Cut D. Again, a property of what the verb does, not of where it lives.
+- **`/metrics` moved to the internal listener.** It was beside `/api/*` on the
+  public port, reachable by any caller the hub proxied; it is not a Pillar 2
+  route class, and `serve.New` has no field for it.
+
+### The two headers that remain, and what they are not
+
+`X-Railgrid-User` is a display label. `X-Railgrid-Project` is new and is a
+**routing hint only**: a session verb names the conversation, not the project,
+and the replica that owns a project's workspace volume has to be chosen before
+the body is read — so the portal says which project a conversation belongs to.
+Nothing is authorized from it. A forged value sends the request to the wrong
+replica, which then authorizes it exactly as this one would have, because the
+gates run on the `Session` against the caller's own RBAC wherever it lands.
+The worst a lie buys is a wasted hop.
+
+
+## Addendum: two credentials, and which is which (19 September 2026)
+
+§9 Cut C.3.4. Getting this split wrong is the easiest mistake in the file, and
+the first cut of it made the mistake, so it is written down.
+
+**The provider reconciles as the provider.** Creating a project's bound
+`Instance`, converging the backing `Repository`, watching both, tearing them
+down on a finalizer — that is this provider's own background work. It runs as
+the provider's ServiceAccount through its **APIExport virtual workspace**, with
+tenant-scoped permission claims the workspace accepted at Enable
+(AGENTS.md §5.4). App Studio's `manifest.yaml` therefore claims
+`infrastructure.railgrid.ai/instances` (get/list/watch/create/update/delete),
+`code.railgrid.ai/repositories` (the same minus delete — repositories hold user
+code and outlive the project) and `code.railgrid.ai/repositorycommits`
+(read-only). The reconcilers use the multicluster manager's client for
+`req.ClusterName` and nothing else; there is no second client, no per-workspace
+token, and no watch machinery of App Studio's own — the kinds are claimed, so
+one wildcard informer per shard already serves them, and `builder.Watches` with
+a mapping function back to the owning Project is the whole of it. The
+`controller/tenantwatch` package that used to do this by hand is gone.
+
+Those are **first-party** claims, so each carries an `identityHash` pinning the
+exact APIExport that serves it, stamped at init from `RAILGRID_IDENTITY_HASHES`
+(chart value `apiExport.identityHashes`; see the chart README). That is the
+real cost of this design and it should be stated plainly: an APIExport pins one
+identity per claimed resource for **every** consuming workspace at once, so one
+App Studio installation serves workspaces bound to one copy of infrastructure
+and one copy of code. An organization self-hosting either runs its own App
+Studio with its own hashes.
+
+**A project acts as itself with a scoped identity.** The hub-minted per-project
+identity (`controller/project/identity.go`) is not a reconciliation credential
+and never was one. It is what something acting *as the project*, with no human
+behind it, presents: `use` on the workspace's default `MCPServer`, `get` on the
+APIBindings that say where a dependency answers, `get` on the exact Instance,
+Repository and Connection the project is bound to, and `create` on the declared
+`instances/{verb}` subresources plus `connections/mint_registry_token`. The
+`get`s are not for this provider's own reads — those go over the virtual
+workspace — they are what **gate 1** on the serving side needs, since a
+data-plane verb is authorized by re-reading the addressed object as the caller
+before anything runs.
+
+**The one place the two meet** is the commit. A `RepositoryCommit` is a pointer
+at a source bundle held in the Code provider's own store
+(`providers/code/commitbundle`), and only that provider can put bytes there, so
+App Studio asks for the commit through the Code provider's `commit_files` MCP
+tool — as the project identity, which is what the aggregate admits on `use` —
+and then follows the `RepositoryCommit` it created over the claimed, read-only
+watch. That is why the claim on `repositorycommits` is read-only and why the
+identity keeps its MCP grant: a claim would let this provider write the CR, but
+not the bundle it has to point at.

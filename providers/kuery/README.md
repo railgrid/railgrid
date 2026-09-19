@@ -68,8 +68,8 @@ What works today:
   the declared blast radius of one object, grouped by relation. Edges and
   SavedViews are read with the **kube client** from the tenant's own
   workspace, not from this provider.
-- **Registration surface**: heartbeats, CatalogEntry (SavedView schema,
-  `edgeProxyAccess`), Helm chart. The APIExport claims **no** first-party
+- **Registration surface**: heartbeats, CatalogEntry (SavedView schema),
+  Helm chart. The APIExport claims **no** first-party
   (`*.railgrid.ai`) resources — there is no `edges` claim. Such a claim would
   have to pin one serving APIExport identity for every consuming workspace at
   once, which breaks as soon as one org self-hosts `edges`. Edge discovery
@@ -93,7 +93,7 @@ engagement/         edge watch → Engage/Disengage, Engagements, per-edge Lease
 queryapi/           the query verb: gates, engagement scoping, QuerySpec validation
 mcpserver/          kuery_query + kuery_impact, through the same gated executor
 assets.go           //go:embed of portal/dist
-manifest.yaml       CatalogEntry (SavedView schema, edgeProxyAccess; no first-party claims)
+manifest.yaml       CatalogEntry (SavedView schema; no first-party claims, no edgeProxyAccess)
 portal/             Vite + TS micro-frontend (custom element)
 deploy/chart/       Helm chart (host cluster only; PVC for the SQLite store)
 ```

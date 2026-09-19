@@ -25,7 +25,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,13 +32,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -48,6 +45,7 @@ import (
 	"github.com/railgrid/provider-app-studio/tenant"
 	"github.com/railgrid/provider-app-studio/workspace"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/serve"
 	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
@@ -300,7 +298,7 @@ func runServe() {
 	core := apiServer.ReplicaAffinity(handler)
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           logMiddleware(apiServer.StripReplicaHeaders(core)),
+		Handler:           apiServer.StripReplicaHeaders(core),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -311,10 +309,18 @@ func runServe() {
 		}
 	}()
 
+	// The internal listener carries peer-forwarded project requests AND
+	// /metrics. Metrics used to sit beside /api/* on the public port, where
+	// any caller the hub proxied could scrape the assistant's operational
+	// counters; it is not a Pillar 2 route class and serve.New has no field
+	// for it, which is the contract saying the same thing.
+	internalMux := http.NewServeMux()
+	internalMux.Handle("/metrics", apiServer.MetricsHandler())
+	internalMux.Handle("/", apiServer.InternalReplicaHandler(core))
 	if replicaAddr != "" {
 		internalSrv := &http.Server{
 			Addr:              ":" + internalPort,
-			Handler:           logMiddleware(apiServer.InternalReplicaHandler(core)),
+			Handler:           internalMux,
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
@@ -337,7 +343,7 @@ func runServe() {
 	// provider that cannot reach the tenant workspaces it serves.
 	go vwhealth.Watch(ctx, kcpConfig, endpointSliceName, vwState, vwhealth.DefaultInterval)
 
-	hb, err := hubclient.ConfigFromEnv("app-studio", heartbeatVersion)
+	hb, err := hubclient.ConfigFromEnv(providerName, heartbeatVersion)
 	if err != nil {
 		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}
@@ -387,56 +393,41 @@ func runServe() {
 	apiServer.RelinquishProjectClaims(release)
 }
 
-// newHandler builds the combined backend-API + portal handler. apiServer may be
-// nil (the portal still serves), which keeps the asset tests independent of the
-// kube/store wiring. readiness may be nil, which serves /readyz as always ready.
+// newHandler builds the provider's whole HTTP surface from provider-sdk/serve.
+//
+// It used to be a hand-rolled gorilla router: /healthz, /readyz, ~95 /api/*
+// routes, a /metrics endpoint beside them, and a portal catch-all with its own
+// index fallback. serve.New takes one handler per Pillar 2 route class and
+// refuses anything else — there is no /api/* field, so the deviation this
+// provider had the most of is now one it cannot express
+// (docs/provider-connectivity-contract.md §"Pillar 2 route classes").
+//
+// apiServer may be nil (the portal still serves), which keeps the asset tests
+// independent of the kube/store wiring. readiness may be nil, which serves
+// /readyz as always ready.
 func newHandler(apiServer *api.Server, readiness http.Handler) (http.Handler, error) {
-	r := mux.NewRouter()
-
-	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-	if readiness == nil {
-		readiness = vwhealth.Handler(&vwhealth.Readiness{})
-	}
-	r.Handle("/readyz", readiness).Methods(http.MethodGet)
-
-	if apiServer != nil {
-		apiServer.Register(r)
-	}
-
-	fileServer, distFS, err := portalHandler()
+	_, distFS, err := portalHandler()
 	if err != nil {
 		return nil, err
 	}
-
-	// Portal catch-all: try the embedded FS first (main.js, icon.svg,
-	// /assets/*), else serve index.html so a deep link renders the SPA.
-	r.PathPrefix("/").HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodGet && req.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		clean := strings.TrimPrefix(req.URL.Path, "/")
-		if clean != "" {
-			if servePortalAsset(w, req, distFS, clean) {
-				return
-			}
-			// Missing executable/style/image requests must fail as assets. Serving
-			// the SPA document with 200 here turns a retired lazy chunk into a
-			// misleading JavaScript MIME error and can conceal broken manifests.
-			if strings.HasPrefix(clean, "assets/") || path.Ext(clean) != "" {
-				http.NotFound(w, req)
-				return
-			}
-		}
-		req2 := req.Clone(req.Context())
-		req2.URL.Path = "/"
-		fileServer.ServeHTTP(w, req2)
-	})
-
-	return r, nil
+	if readiness == nil {
+		readiness = vwhealth.Handler(&vwhealth.Readiness{})
+	}
+	options := serve.Options{
+		Name:      providerName,
+		Readiness: readiness,
+		Portal:    distFS,
+	}
+	if apiServer != nil {
+		// Class (a): every tenant-facing verb, on the one grammar, each gated
+		// as the caller. serve.New hands it the RAW request path.
+		options.DataPlane = apiServer.DataPlane()
+	}
+	handler, err := serve.New(options)
+	if err != nil {
+		return nil, err
+	}
+	return handler, nil
 }
 
 func openWorkspaceStore() *workspace.FileStore {
@@ -543,12 +534,4 @@ func runAttachmentRetention(ctx context.Context, attachmentStore store.Attachmen
 			}
 		}
 	}
-}
-
-func logMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
-	})
 }

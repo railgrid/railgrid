@@ -80,7 +80,7 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 
 	var syncs atomic.Int32
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:      store.NewMemoryStore(),
 		workspaces: workspaces,
 		hubBase:    upstream.URL,
@@ -202,7 +202,7 @@ func TestRestoreProjectWorkspaceKeepsSkippedFiles(t *testing.T) {
 			}, nil)
 			defer upstream.Close()
 			server := &Server{
-				tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup,
+				tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 				store:                        store.NewMemoryStore(),
 				workspaces:                   workspaces,
 				hubBase:                      upstream.URL,
@@ -260,7 +260,7 @@ func TestRestoreProjectWorkspaceRejectsMutationDuringCheckout(t *testing.T) {
 	defer upstream.Close()
 
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:      store.NewMemoryStore(),
 		workspaces: workspaces,
 		hubBase:    upstream.URL,
@@ -295,7 +295,7 @@ func TestRestoreProjectWorkspaceRejectsStaleHistorySelectionBeforeCheckout(t *te
 		t.Fatal(err)
 	}
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:      store.NewMemoryStore(),
 		workspaces: workspaces,
 		// No hubBase is deliberate: a stale request must fail before checkout.
@@ -414,7 +414,7 @@ func TestRestoreProjectWorkspaceAcceptsQuotedSourceRevision(t *testing.T) {
 	}, nil)
 	defer upstream.Close()
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:                        store.NewMemoryStore(),
 		workspaces:                   workspaces,
 		hubBase:                      upstream.URL,

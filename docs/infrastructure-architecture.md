@@ -476,3 +476,100 @@ Pre-v1. Clean break. PR A through C ship the new architecture in parallel with t
 ## 11. What this doc is not
 
 This is a design proposal. Code changes happen in the PRs in §7 after this doc is reviewed. Nothing in this commit changes runtime behavior.
+
+---
+
+## 12. The data plane after the shared server-kit
+
+Written against the code, 19 September 2026
+([provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§4.4 and §4.6).
+
+### 12.1 Every verb is gated, not just `exec`
+
+`providers/infrastructure/dataplane/` no longer parses its own paths or runs
+its own gates. `ServeHTTP` is:
+
+```go
+req, ok := sdk.ParseRequest(sdk.DataplaneRoot, r)          // the one grammar
+instance, _, err := sdk.Gate(ctx, r, h.callers, instancesGVR, req)  // both gates
+```
+
+`sdk` is [`provider-sdk/dataplane`](../provider-sdk/dataplane). The gates run
+**as the caller**, from the caller's own bearer and nothing else:
+
+1. a real `GET instances/{name}` in the path's cluster — visibility, and the
+   authoritative object every later decision is made from;
+2. a `SelfSubjectAccessReview` for `create` on `instances/{verb}`, scoped to
+   `{name}`.
+
+Gate 2 used to exist for `exec` alone (`authorizer.go`, now deleted); every
+other verb was gated by the GET, which means a caller who could *see* an
+Instance could `restart` it. Now one grant is one verb.
+
+**A component verb collapses onto the instance-level subresource.**
+`.../instances/{n}/components/{c}/log` asks about `instances/log`, exactly as
+`.../instances/{n}/log` does. A component is an addressing detail of the same
+object, not a separate thing to grant, and splitting them would mean a grant
+per component of every template — a set the platform cannot enumerate ahead of
+time and the hub's scoped-identity service could not verify
+(`pkg/hub/identity/policy.go`, clause C, mints exactly `{resource}/{verb}`).
+
+Everything after the gates is unchanged and still this provider's own:
+the template contract comes from the **authorized** Instance's `spec.template`
+and never from a request field; `ValidateRuntimeNamespace` confines the verb to
+the namespace that Instance owns; a `FromStatus` verb short-circuits without a
+runtime hop; and the caller's `Authorization` header is deleted before the
+runtime proxy (`proxy.go`).
+
+The contract's own suite runs against the real handler
+(`TestDataPlaneConformance` in `dataplane/handler_test.go`), so the grammar and
+the gates cannot fork again without a red test.
+
+**Who holds the grant.** Workspace members already hold `cluster-admin` in
+their tenant workspace (`pkg/hub/kcp/bootstrap.go`, `ensureWorkspaceAdmin`,
+granted to every workspace-scope member and every org admin), and RBAC's
+`resources: ["*"]` matches a subresource, so `create` on `instances/{verb}` is
+covered for humans with no Enable-flow change. The infrastructure APIExport
+deliberately sets no `maximalPermissionPolicy`
+(`test/e2e/suites/provider/provider_test.go` asserts it), so workspace RBAC is
+the only thing consulted. Non-human callers — a workload identity, a
+per-project identity — get the verbs named explicitly, which is what the hub's
+identity service already materializes
+(`pkg/hub/serviceaccounts/workload_identity.go`).
+
+### 12.2 Cross-provider Secrets are typed references
+
+`Instance.spec` carries two:
+
+```yaml
+spec:
+  imagePullSecretRef: {name: my-app-prod-registry}   # dockerconfigjson
+  oidcBridgeSecretRef: {name: acme-oidc}             # key: oidc_client_secret
+```
+
+Both name a Secret in the provider's credentials namespace in the tenant
+workspace. They replace two string conventions: `<instance>-registry`, which
+App Studio minted and this provider guessed at, and the well-known
+`cloud-credentials` Secret that BYO OIDC read. That was finding **M8** of
+[provider-contract-review.md](./provider-contract-review.md) — two providers
+coupled by a name neither validated.
+
+The controller **reports** a reference it cannot resolve instead of falling
+back. `status.conditions[type=SecretsBridged]` is `False` with
+`SecretRefNotFound` when the named Secret does not exist,
+`SecretRefInvalid` when it exists without the key the reference is for, and
+`BridgeSecretRefMissing` when `oidc.mode=byo` names no Secret at all. An unset
+`imagePullSecretRef` means "this instance pulls from a public registry" — a
+statement, not a gap.
+
+This also changes how a Secret event finds its Instance. There is no name to
+invert any more, so the reconciler's index remembers what each Instance
+referenced at its last reconcile and the Secret watch maps through that
+(`controller/instance/watch.go`, `instanceIndex.bySecret`). Two Instances may
+share one pull Secret; a Secret nobody references reconciles nothing.
+
+The runtime-side name of the bridged Secret stays derived from the instance
+(`runtimePullSecretName`). That namespace belongs to this provider, so the name
+is this provider's to choose — only the tenant-side name was ever a
+cross-provider fact.

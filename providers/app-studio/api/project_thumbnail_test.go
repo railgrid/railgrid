@@ -48,7 +48,7 @@ func TestProjectViewWithThumbnailCapturesLatestSuccessfulCommit(t *testing.T) {
 	defer cancel()
 	memory := store.NewMemoryStore()
 	s := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:                   memory,
 		previewInspector:        inspector,
 		projectThumbnailContext: thumbnailContext,
@@ -145,7 +145,7 @@ func TestCaptureProjectThumbnailRespectsForeignReplicaClaim(t *testing.T) {
 		t.Fatalf("seed foreign claim: held=%v err=%v", held, err)
 	}
 	inspector := &fakeProjectAssistantPreviewInspector{}
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, store: memory, previewInspector: inspector}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: memory, previewInspector: inspector}
 	request := &projectThumbnailCaptureRequest{
 		id: id, project: project, commitSHA: "commit", commitCreatedAt: time.Now().UTC(), commitOrder: "commit-name",
 	}
@@ -206,7 +206,7 @@ func TestProjectThumbnailCaptureUsesBoundedWorkerPool(t *testing.T) {
 	defer cancel()
 	memory := store.NewMemoryStore()
 	s := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store: memory, previewInspector: inspector, projectThumbnailContext: thumbnailContext,
 		projectThumbnailCurrentness: func(context.Context, identity, *aiv1alpha1.Project, uint64) error {
 			return nil
@@ -259,7 +259,7 @@ func TestCaptureProjectThumbnailRejectsScreenshotWhenRuntimeRevisionTurnsStale(t
 	ctx, cancel := context.WithCancel(context.Background())
 	checks := 0
 	s := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store: memory, previewInspector: inspector,
 		previewInspectionResolveURL: func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
 			return "https://preview.example/", nil

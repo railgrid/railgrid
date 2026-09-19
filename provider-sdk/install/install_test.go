@@ -10,28 +10,239 @@ You may obtain a copy of the License at
 
 package install
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
 
-func TestSplitSchemaName(t *testing.T) {
-	cases := []struct {
-		name         string
-		wantResource string
-		wantGroup    string
-	}{
-		{"v260522-abc.greetings.hello.cost.railgrid.ai", "greetings", "hello.cost.railgrid.ai"},
-		{"v260609-fc69fa2.connections.code.railgrid.ai", "connections", "code.railgrid.ai"},
-		{"v1.savedviews.kuery.railgrid.ai", "savedviews", "kuery.railgrid.ai"},
-		{"noversion", "", ""},     // no dot
-		{"version.only", "", ""},  // missing group segment
-		{"trailing.dot.", "", ""}, // trailing dot
-	}
-	for _, c := range cases {
-		group, resource := splitSchemaName(c.name)
-		if resource != c.wantResource || group != c.wantGroup {
-			t.Errorf("splitSchemaName(%q) = (group=%q, resource=%q), want (group=%q, resource=%q)",
-				c.name, group, resource, c.wantGroup, c.wantResource)
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+)
+
+// writeKCPDir lays out a KCPDir the way the chart's files/ directory is laid
+// out: schemas in a schemas/ subdirectory, the generated export beside it.
+func writeKCPDir(t *testing.T, export string, schemas map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if export != "" {
+		if err := os.WriteFile(filepath.Join(dir, APIExportFileName), []byte(export), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
+	if len(schemas) == 0 {
+		return dir
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "schemas"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range schemas {
+		if err := os.WriteFile(filepath.Join(dir, "schemas", name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func schemaYAML(name string) string {
+	return "apiVersion: apis.kcp.io/v1alpha1\nkind: APIResourceSchema\nmetadata:\n  name: " + name + "\n"
+}
+
+const testExportYAML = `apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: code.providers.railgrid.ai
+spec:
+  permissionClaims:
+  - resource: secrets
+    verbs:
+    - get
+  resources:
+  - group: code.railgrid.ai
+    name: connections
+    schema: v1.connections.code.railgrid.ai
+    storage:
+      crd: {}
+`
+
+// A KCPDir holds the schemas AND the generated export. The export is not a
+// schema, whichever of the two directory layouts it arrives in.
+func TestSchemaFilesSkipTheGeneratedExport(t *testing.T) {
+	dir := writeKCPDir(t, testExportYAML, map[string]string{
+		"connections.code.railgrid.ai.yaml": schemaYAML("v1.connections.code.railgrid.ai"),
+	})
+	// config/kcp's layout: schemas flat, beside an apiexport-<name>.yaml.
+	flat := t.TempDir()
+	for name, body := range map[string]string{
+		"apiresourceschema-connections.code.railgrid.ai.yaml": schemaYAML("v1.connections.code.railgrid.ai"),
+		"apiexport-code.providers.railgrid.ai.yaml":           testExportYAML,
+	} {
+		if err := os.WriteFile(filepath.Join(flat, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []string{dir, flat} {
+		files, err := schemaFiles(d)
+		if err != nil {
+			t.Fatalf("schemaFiles(%s): %v", d, err)
+		}
+		if len(files) != 1 {
+			t.Fatalf("schemaFiles(%s) = %v, want exactly the one schema", d, files)
+		}
+		if strings.Contains(filepath.Base(files[0]), "apiexport") {
+			t.Errorf("the APIExport was read as a schema: %s", files[0])
+		}
+	}
+}
+
+func TestLoadAPIExportRejectsTheWrongObject(t *testing.T) {
+	dir := writeKCPDir(t, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: nope\n", nil)
+	if _, err := LoadAPIExport(filepath.Join(dir, APIExportFileName)); err == nil || !strings.Contains(err.Error(), "expected APIExport") {
+		t.Fatalf("err = %v, want a kind error", err)
+	}
+	if _, err := LoadAPIExport(filepath.Join(dir, "missing.yaml")); err == nil {
+		t.Fatal("a missing file must be an error, not an empty export")
+	}
+}
+
+func TestIsFirstPartyGroup(t *testing.T) {
+	for group, want := range map[string]bool{
+		"":                          false,
+		"rbac.authorization.k8s.io": false,
+		"railgrid.ai":               true,
+		"edges.railgrid.ai":         true,
+		"notrailgrid.ai":            false,
+	} {
+		if got := IsFirstPartyGroup(group); got != want {
+			t.Errorf("IsFirstPartyGroup(%q) = %v, want %v", group, got, want)
+		}
+	}
+}
+
+func TestStampIdentityHashes(t *testing.T) {
+	export := func() *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apis.kcp.io/v1alpha2",
+			"kind":       "APIExport",
+			"metadata":   map[string]any{"name": "x.providers.railgrid.ai"},
+			"spec": map[string]any{"permissionClaims": []any{
+				map[string]any{"resource": "secrets", "verbs": []any{"get"}},
+				map[string]any{"group": "edges.railgrid.ai", "resource": "kubernetesclusters", "verbs": []any{"get"}},
+			}},
+		}}
+	}
+
+	// A first-party claim with no supplied hash must fail loudly: kcp accepts
+	// the export and then silently refuses the claim at bind time.
+	if err := StampIdentityHashes(export(), nil); err == nil || !strings.Contains(err.Error(), "edges.railgrid.ai") {
+		t.Fatalf("err = %v, want a missing-identityHash error naming the group", err)
+	}
+
+	stamped := export()
+	if err := StampIdentityHashes(stamped, map[string]string{"edges.railgrid.ai": "deadbeef"}); err != nil {
+		t.Fatalf("StampIdentityHashes: %v", err)
+	}
+	claims, _, err := unstructured.NestedSlice(stamped.Object, "spec", "permissionClaims")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := claims[0].(map[string]any)["identityHash"]; ok {
+		t.Error("a built-in claim was stamped")
+	}
+	if got := claims[1].(map[string]any)["identityHash"]; got != "deadbeef" {
+		t.Errorf("identityHash = %v, want deadbeef", got)
+	}
+
+	// No claims at all is not a failure (quickstart).
+	bare := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIExport",
+		"metadata": map[string]any{"name": "bare"}, "spec": map[string]any{},
+	}}
+	if err := StampIdentityHashes(bare, nil); err != nil {
+		t.Errorf("StampIdentityHashes on a claimless export: %v", err)
+	}
+}
+
+func TestParseIdentityHashes(t *testing.T) {
+	got, err := ParseIdentityHashes(" edges.railgrid.ai=abc , code.railgrid.ai=def ")
+	if err != nil {
+		t.Fatalf("ParseIdentityHashes: %v", err)
+	}
+	if got["edges.railgrid.ai"] != "abc" || got["code.railgrid.ai"] != "def" {
+		t.Errorf("got %v", got)
+	}
+	if got, err := ParseIdentityHashes(""); err != nil || len(got) != 0 {
+		t.Errorf("empty = %v, %v", got, err)
+	}
+	if _, err := ParseIdentityHashes("edges.railgrid.ai"); err == nil {
+		t.Error("a bare group must be rejected")
+	}
+}
+
+// The export is applied exactly as generated — name, claims and resources —
+// and the schemas it references have to be in the workspace first.
+func TestApplyAPIExportAppliesTheFileVerbatim(t *testing.T) {
+	ctx := context.Background()
+	cl := exportClient(t, seedSchema("v1.connections.code.railgrid.ai"))
+
+	export, err := LoadAPIExport(filepath.Join(writeKCPDir(t, testExportYAML, nil), APIExportFileName))
+	if err != nil {
+		t.Fatalf("LoadAPIExport: %v", err)
+	}
+	if err := ApplyAPIExport(ctx, cl, export); err != nil {
+		t.Fatalf("ApplyAPIExport: %v", err)
+	}
+	got, err := cl.Resource(apiExportGVR).Get(ctx, "code.providers.railgrid.ai", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get export: %v", err)
+	}
+	claims, _, _ := unstructured.NestedSlice(got.Object, "spec", "permissionClaims")
+	if len(claims) != 1 || claims[0].(map[string]any)["resource"] != "secrets" {
+		t.Errorf("claims = %v", claims)
+	}
+	resources, _, _ := unstructured.NestedSlice(got.Object, "spec", "resources")
+	if len(resources) != 1 || resources[0].(map[string]any)["name"] != "connections" {
+		t.Errorf("resources = %v", resources)
+	}
+}
+
+func TestApplyAPIExportRefusesAnUnappliedSchema(t *testing.T) {
+	export, err := LoadAPIExport(filepath.Join(writeKCPDir(t, testExportYAML, nil), APIExportFileName))
+	if err != nil {
+		t.Fatalf("LoadAPIExport: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err = ApplyAPIExport(ctx, exportClient(t), export)
+	if err == nil || !strings.Contains(err.Error(), "v1.connections.code.railgrid.ai") {
+		t.Fatalf("err = %v, want a missing-schema error", err)
+	}
+}
+
+func seedSchema(name string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apis.kcp.io/v1alpha1",
+		"kind":       "APIResourceSchema",
+		"metadata":   map[string]any{"name": name},
+	}}
+}
+
+func exportClient(t *testing.T, seed ...*unstructured.Unstructured) *dynamicfake.FakeDynamicClient {
+	t.Helper()
+	objs := make([]runtime.Object, 0, len(seed))
+	for _, o := range seed {
+		objs = append(objs, o)
+	}
+	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			apiExportGVR:         "APIExportList",
+			apiResourceSchemaGVR: "APIResourceSchemaList",
+		}, objs...)
 }
 
 func TestMergeAPIExportResources(t *testing.T) {

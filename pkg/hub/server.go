@@ -55,6 +55,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/controllers/organization"
 	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
+	"github.com/railgrid/railgrid/pkg/hub/identity"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
 	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
@@ -850,9 +851,48 @@ func (s *Server) Run(ctx context.Context) error {
 			workloadAttestor := workloadidentity.NewHTTPAttestor(workloadidentity.HTTPAttestorOptions{
 				Registry: providerRegistry,
 			})
+			// §10: ONE identity service. Both the pod-attested App Studio
+			// workload exchange and every provider-asserted identity go
+			// through pkg/hub/identity, which records a ScopedIdentity in
+			// root:railgrid:system:tenants, materializes the ServiceAccount
+			// and its policy-checked RBAC through the single minter in
+			// pkg/hub/serviceaccounts, and garbage-collects on the owner.
+			identityClients, err := serviceaccounts.NewClusterClientFactory(kcpConfig, apiurl.KCPClusterURL)
+			if err != nil {
+				return fmt.Errorf("creating scoped identity workspace clients: %w", err)
+			}
+			identityOwners, err := identity.NewDynamicOwnerProbe(kcpConfig)
+			if err != nil {
+				return fmt.Errorf("creating scoped identity owner probe: %w", err)
+			}
+			identityBindings, err := identity.NewAPIBindingChecker(kcpConfig, providerRegistry)
+			if err != nil {
+				return fmt.Errorf("creating scoped identity binding checker: %w", err)
+			}
+			identityService := identity.New(identity.Options{
+				Records: userClient.ScopedIdentities(),
+				Clients: identityClients,
+				Policy:  identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings),
+				Owners:  identityOwners,
+			})
+			// The sweep is what collects an identity whose holder stopped
+			// refreshing. Every replica runs one; each action is idempotent.
+			go identity.NewReconciler(identity.ReconcilerOptions{
+				Service: identityService,
+				Logger:  logger.WithName("scoped-identity"),
+			}).Start(ctx)
+			// Provider-asserted identities authenticate exactly as heartbeats
+			// do, with the same authenticator instance and therefore the same
+			// TokenReview caches.
+			restapi.NewIdentityHandler(
+				identityService,
+				identity.NewProviderAttestor(heartbeatAuthenticator),
+				logger.WithName("scoped-identity"),
+			).Register(router)
+
 			workloadHandler := workloadidentity.New(workloadidentity.Options{
 				Attestor:      workloadAttestor,
-				Issuer:        saMgr,
+				Issuer:        identityService,
 				ScopeResolver: workloadidentity.NewKCPProjectScopeResolver(bootstrapper),
 				Logger:        logger,
 			})

@@ -12,6 +12,9 @@ test.after(async () => vite.close())
 
 const context = {
   token: 'token-1',
+  // The workspace cluster travels in the data-plane path, so a context
+  // without one cannot address anything — same as in the host.
+  tenant: 'cluster-1',
   basePath: '/ui/providers/app-studio',
 }
 

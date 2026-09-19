@@ -24,8 +24,8 @@ var connections = schema.GroupVersionResource{Group: "code.railgrid.ai", Version
 
 // ExportClient resolves a provider client through its accepted APIExport. It
 // cannot use the caller's credentials or enter an unbound tenant workspace.
-func ExportClient(config *rest.Config) func(context.Context, string, string) (dynamic.Interface, error) {
-	return func(ctx context.Context, cluster, repository string) (dynamic.Interface, error) {
+func ExportClient(config *rest.Config) func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error) {
+	return func(ctx context.Context, cluster string, gvr schema.GroupVersionResource, name string) (dynamic.Interface, error) {
 		if config == nil || !dataplane.IsClusterID(cluster) {
 			return nil, errors.New("code provider authority unavailable")
 		}
@@ -53,10 +53,10 @@ func ExportClient(config *rest.Config) func(context.Context, string, string) (dy
 			if err != nil {
 				return nil, err
 			}
-			if _, err = client.Resource(repositories).Get(ctx, repository, metav1.GetOptions{}); err == nil {
+			if _, err = client.Resource(gvr).Get(ctx, name, metav1.GetOptions{}); err == nil {
 				return client, nil
 			}
 		}
-		return nil, errors.New("repository unavailable through Code export")
+		return nil, errors.New("object unavailable through Code export")
 	}
 }

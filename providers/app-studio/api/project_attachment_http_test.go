@@ -176,7 +176,7 @@ func TestProjectAssistantAttachmentTurnAdmissionVerifiesAllBeforeBinding(t *test
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"}}
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-uid"}
 	memory := store.NewMemoryStore()
-	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster": testWorkspace("cluster", "org", "workspace")}.lookup, tenantActors: defaultTestActors.lookup, attachments: memory}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster": testWorkspace("cluster", "org", "workspace")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, attachments: memory}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	makeAttachment := func(id string, data []byte) projectAssistantAttachmentReceipt {
 		digest := sha256.Sum256(data)
@@ -226,7 +226,7 @@ func TestProjectAssistantStoreAttachmentReaderVerifiesScopedReceipt(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster": testWorkspace("cluster", "org", "workspace")}.lookup, tenantActors: defaultTestActors.lookup, attachments: memory}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster": testWorkspace("cluster", "org", "workspace")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, attachments: memory}
 	reader := server.projectAssistantAttachmentReader()
 	receipt := projectAssistantAttachmentReceipt{ID: created.ID, Filename: created.Filename, ContentType: created.ContentType, SizeBytes: created.SizeBytes, SHA256: created.SHA256, CreatedAt: created.CreatedAt}
 	read, err := reader.ReadAttachment(ctx, scope, receipt, "alice", 0, 64)

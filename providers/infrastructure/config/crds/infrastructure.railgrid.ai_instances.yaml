@@ -76,6 +76,52 @@ spec:
           spec:
             description: InstanceSpec is the desired state.
             properties:
+              imagePullSecretRef:
+                description: |-
+                  ImagePullSecretRef names the Secret in the tenant's credentials
+                  namespace that holds a kubernetes.io/dockerconfigjson credential for
+                  the instance's private image. The instance controller bridges it into
+                  the runtime namespace and attaches it to that namespace's default
+                  ServiceAccount, so every pod of every component can pull.
+
+                  It is a typed reference because the alternative is a naming
+                  convention: this provider used to look for "<instance>-registry" and
+                  App Studio used to mint exactly that name, which coupled the two
+                  providers by a string neither of them validated
+                  (docs/provider-contract-review.md M8). A producer now says which
+                  Secret it wrote, and an unset ref means "this instance pulls from a
+                  public registry" — never "guess a name and see".
+                properties:
+                  name:
+                    description: Name is the Secret's metadata.name.
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                required:
+                - name
+                type: object
+              oidcBridgeSecretRef:
+                description: |-
+                  OIDCBridgeSecretRef names the Secret in the tenant's credentials
+                  namespace that holds the BYO OIDC client secret, under the key
+                  "oidc_client_secret". The instance controller bridges that one key
+                  into the runtime namespace for the template's oauth2-proxy, so the
+                  client secret never sits in spec.values in clear text.
+
+                  Required when spec.values.oidc.mode is "byo"; an instance that asks
+                  for a BYO gate without naming its Secret reports OIDCConfigured=False
+                  rather than falling back to a well-known name.
+                properties:
+                  name:
+                    description: Name is the Secret's metadata.name.
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                required:
+                - name
+                type: object
               template:
                 description: |-
                   Template names the catalog Template this instance is provisioned from

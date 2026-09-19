@@ -21,8 +21,6 @@ package servicectrl
 
 import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-
-	"github.com/railgrid/provider-edges/internal/events"
 )
 
 // Options configures the servicectrl controllers.
@@ -31,11 +29,6 @@ type Options struct {
 	// backend proxy), e.g. /services/providers/edges/edgeproxy. Stamped into
 	// Service status.URL. Empty disables URL stamping.
 	EdgeProxyPublicPath string
-	// Events, when set, drives the per-Service event subscribers (currently
-	// UniFi Protect): the validation reconciler starts one when a Service is
-	// Ready and stops it when the Service is deleted or goes NotReady. Nil
-	// disables event subscriptions.
-	Events *events.Manager
 }
 
 // SetupWithManager registers both Service controllers on the multicluster
@@ -44,5 +37,5 @@ func SetupWithManager(mgr mcmanager.Manager, connManager ConnManager, opts Optio
 	if err := SetupDiscoveryWithManager(mgr, connManager); err != nil {
 		return err
 	}
-	return SetupValidationWithManager(mgr, connManager, opts.EdgeProxyPublicPath, opts.Events)
+	return SetupValidationWithManager(mgr, connManager, opts.EdgeProxyPublicPath)
 }

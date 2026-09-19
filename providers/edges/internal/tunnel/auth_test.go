@@ -166,7 +166,7 @@ func TestAuthorizeAcceptsADelegatedUserToken(t *testing.T) {
 
 	token := delegatedSAToken(t, cluster, sa)
 	err := authorize(context.Background(), tenantCfg, kcpCfg, token, cluster,
-		"proxy", "edges.railgrid.ai", "services", "provider-infrastructure")
+		"create", "edges.railgrid.ai", "services", "proxy", "provider-infrastructure")
 	if err != nil {
 		t.Fatalf("authorize() = %v, want nil — a delegated token must reach an edge the caller may use", err)
 	}
@@ -189,8 +189,8 @@ func TestAuthorizeAcceptsADelegatedUserToken(t *testing.T) {
 		t.Errorf("SAR groups = %v, want the reviewed groups kept for a workspace-local SA", rec.sarGroups[0])
 	}
 	want := authorizationv1.ResourceAttributes{
-		Verb: "proxy", Group: "edges.railgrid.ai", Version: "v1alpha1",
-		Resource: "services", Name: "provider-infrastructure",
+		Verb: "create", Group: "edges.railgrid.ai", Version: "v1alpha1",
+		Resource: "services", Subresource: "proxy", Name: "provider-infrastructure",
 	}
 	if rec.sarAttributes[0] != want {
 		t.Errorf("SAR attributes = %+v, want %+v", rec.sarAttributes[0], want)
@@ -210,7 +210,7 @@ func TestAuthorizeRefusesADelegatedTokenWithoutTheProxyGrant(t *testing.T) {
 	cfg := rec.start(t)
 
 	err := authorize(context.Background(), cfg, cfg, delegatedSAToken(t, cluster, "railgrid-du-9f2c1a7b5e4d3c2b1a09"), cluster,
-		"proxy", "edges.railgrid.ai", "linuxservers", "prod-eu")
+		"create", "edges.railgrid.ai", "linuxservers", "ssh", "prod-eu")
 	if err == nil {
 		t.Fatal("authorize() = nil, want a denial when the SAR says no")
 	}
@@ -224,7 +224,7 @@ func TestAuthorizeRefusesAnUnauthenticatedToken(t *testing.T) {
 	cfg := rec.start(t)
 
 	err := authorize(context.Background(), cfg, cfg, delegatedSAToken(t, "260dym853j73uupr", "railgrid-du-dead"), "260dym853j73uupr",
-		"proxy", "edges.railgrid.ai", "services", "svc")
+		"create", "edges.railgrid.ai", "services", "proxy", "svc")
 	if err == nil {
 		t.Fatal("authorize() = nil, want a refusal for an unauthenticated token")
 	}
@@ -285,7 +285,7 @@ func TestAuthorizeRequalifiesAForeignServiceAccount(t *testing.T) {
 	// Both configs point at the recorder so the foreign branch (which re-roots
 	// kcpConfig at the SA's home cluster) still reaches it.
 	if err := authorize(context.Background(), cfg, cfg, legacySAToken(t, home, "provider-edges"), consumer,
-		"proxy", "edges.railgrid.ai", "services", "svc"); err != nil {
+		"create", "edges.railgrid.ai", "services", "proxy", "svc"); err != nil {
 		t.Fatalf("authorize() = %v, want nil", err)
 	}
 
@@ -308,7 +308,7 @@ func TestAuthorizeRefusesAForeignTokenThatResolvesToANonServiceAccount(t *testin
 	cfg := rec.start(t)
 
 	err := authorize(context.Background(), cfg, cfg, legacySAToken(t, "1a2b3c4d5e6f7g8h", "x"), "260dym853j73uupr",
-		"proxy", "edges.railgrid.ai", "services", "svc")
+		"create", "edges.railgrid.ai", "services", "proxy", "svc")
 	if err == nil {
 		t.Fatal("authorize() = nil, want a refusal")
 	}
@@ -333,7 +333,7 @@ func TestMacOSAgentIngressRejectsAServiceAccountForAnotherEdge(t *testing.T) {
 	}
 	cfg := rec.start(t)
 
-	s := testServer("/services/providers/edges/edgeproxy")
+	s := testServer("/services/providers/edges/dataplane")
 	s.kcpConfig = cfg
 	s.tenantConfig = func(_ context.Context, cluster string) (*rest.Config, error) {
 		if cluster != consumer {
@@ -345,7 +345,7 @@ func TestMacOSAgentIngressRejectsAServiceAccountForAnotherEdge(t *testing.T) {
 	s.logger = klog.Background()
 
 	req := httptest.NewRequest(http.MethodGet,
-		"/"+consumer+"/apis/edges.railgrid.ai/v1alpha1/macosservers/build/proxy", nil)
+		"/agent/clusters/"+consumer+"/macosservers/build/proxy", nil)
 	req.Header.Set("Authorization", "Bearer "+legacySAToken(t, home, "macos-edge-other"))
 	rr := httptest.NewRecorder()
 	s.AgentIngressHandler().ServeHTTP(rr, req)
@@ -366,8 +366,8 @@ func TestMacOSAgentIngressRejectsAServiceAccountForAnotherEdge(t *testing.T) {
 		t.Fatalf("foreign Mac SA groups = %v, want none", got)
 	}
 	want := authorizationv1.ResourceAttributes{
-		Verb: "proxy", Group: "edges.railgrid.ai", Version: "v1alpha1",
-		Resource: "macosservers", Name: "build",
+		Verb: "create", Group: "edges.railgrid.ai", Version: "v1alpha1",
+		Resource: "macosservers", Subresource: "proxy", Name: "build",
 	}
 	if len(rec.sarAttributes) != 1 || rec.sarAttributes[0] != want {
 		t.Fatalf("SAR attributes = %+v, want %+v", rec.sarAttributes, want)

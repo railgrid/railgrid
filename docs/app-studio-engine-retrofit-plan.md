@@ -123,6 +123,14 @@ per-project ServiceAccount.
       `APP_STUDIO_CODE_IDENTITY_HASH` / Helm `apiExport.codeIdentityHash` /
       Makefile auto-discovery) + `serviceaccounts`/`secrets`/`clusterroles`/
       `clusterrolebindings` — in all THREE claim places.
+      **Superseded, then partly restored (2026-09-19).** The identity-minting
+      claims (`serviceaccounts`, `clusterroles`, `clusterrolebindings`) are
+      gone for good. The first-party claims came back deliberately in 3.4, as
+      the contract's mechanism for a provider's own background controllers,
+      and now cover `instances` as well as `repositories` and
+      `repositorycommits` — with the identityHash cost that implies, which is
+      why the chart takes them as a value. `secrets` stays for the LLM model
+      credentials and the promotion pull Secret this provider writes itself.
 - [x] 3.2 CRD: `spec.repository.adopted` (additive) so the reconciler can
       tell created-by-us from imported; `make codegen-app-studio-provider`
       regenerated CRD + APIResourceSchema + chart schema.
@@ -133,6 +141,28 @@ per-project ServiceAccount.
       (vibe's is per-session; app-studio has no Session CR): SA +
       ClusterRole (infra RO, code RW) + binding + legacy token Secret, all
       ownerRef'd to the Project → GC'd with it.
+      **Superseded (2026-09-19, §9 Cut C).** Two changes, and the split
+      between them is the point.
+      (a) The provider no longer mints identities: it asks the hub
+      (`provider-sdk/identityclient`), which checks every rule against a
+      policy, records what it issued and collects it when the Project goes.
+      The token is TTL'd and re-minted at 80% of its life. That identity is
+      what a project acts as — `use` on the workspace MCPServer, `get` on the
+      APIBindings and on its own bound objects, `create` on the declared
+      `instances/{verb}` and `connections/mint_registry_token` — not how this
+      provider reconciles.
+      (b) Reconciliation moved where the contract puts it: the provider's own
+      ServiceAccount over its APIExport virtual workspace, with tenant-scoped
+      claims on `infrastructure.railgrid.ai/instances`,
+      `code.railgrid.ai/repositories` and `code.railgrid.ai/repositorycommits`
+      (AGENTS.md §5.4). The reconcilers write through the manager's cluster
+      client, the dependency watches are `builder.Watches` on the same
+      informer, and `controller/tenantwatch` is deleted. Those claims are
+      first-party, so each pins an `identityHash` supplied at install
+      (`apiExport.identityHashes`).
+      3.1's `serviceaccounts` / `clusterroles` / `clusterrolebindings` claims
+      are gone either way — a claim on those types is a contract violation
+      (`docs/provider-connectivity-contract.md` §"Scoped identities").
 - [x] 3.5 `controller/project/repository.go` — ensureRepository
       (create-if-missing with autoInit; NEVER creates adopted bindings;
       repositories are never deleted on Project delete — handler-side claim

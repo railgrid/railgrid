@@ -42,6 +42,7 @@ var (
 	ScheduleGVR   = agentsGVR("schedules")
 	TriggerGVR    = agentsGVR("triggers")
 	ToolsetGVR    = agentsGVR("toolsets")
+	RunGVR        = agentsGVR("runs")
 	SecretGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 )
 

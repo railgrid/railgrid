@@ -162,34 +162,57 @@ A **provider** is a pluggable platform extension. It can supply any of:
 
 - An **APIExport** in kcp (custom APIs tenants bind to) — usually the core of it.
 - A **UI micro-frontend** served under `/ui/providers/{name}/*`.
-- A **backend HTTP service** proxied at `/services/providers/{name}/*`.
+- A **backend HTTP service** proxied at `/services/providers/{name}/*`, built
+  with `provider-sdk/serve` and serving only the contract's route classes.
 - **Controllers** reconciling provider resources.
-- Optionally a custom **virtual workspace**.
+
+A provider does **not** get a virtual workspace of its own:
+`spec.virtualWorkspace` is retired, and hub-only endpoints are reserved path
+prefixes on `spec.backend.url` (`provider-sdk/serve.HubOnlyPrefixes`).
 
 ### 5.1 The CatalogEntry manifest
 
 Every provider ships a `manifest.yaml` that is a `CatalogEntry`
 (`providers.railgrid.ai/v1alpha1`, type at
 `apis/providers/v1alpha1/types_catalogentry.go`). It declares display metadata,
-the UI/backend/virtual-workspace URLs, a health path, the APIExport name +
-permission claims, and inline `APIResourceSchema` bodies. The hub's catalog
-controller reads it and provisions the kcp side (sub-workspace, ServiceAccount,
-APIExport, schemas) and registers routing/heartbeat state.
+the UI/backend URLs, a health path, and the APIExport name + permission claims.
+It is the only place a permission claim is written: codegen turns it into the
+provider's APIExport. The hub's catalog controller reads the CatalogEntry and
+registers routing/heartbeat state; the provider's own `init` creates the kcp
+side (schemas, APIExport, endpoint slice, bind grant).
 
-> **⚠️ `manifest.yaml` and `deploy/chart/templates/catalogentry.yaml` are TWO
-> copies of the CatalogEntry that MUST stay in sync — for the WHOLE spec, not just
-> claims.** `manifest.yaml` is the source-of-truth/dev copy; the chart template is
-> what actually gets applied in prod. They drift silently: a change to `manifest.yaml`
-> alone (a new `ui.children` sidebar item, a display field, a URL, permission claims,
-> …) never reaches prod. Symptoms seen in the wild: a sidebar sub-nav item present in
-> `manifest.yaml` but missing in prod (e.g. edges "Services"); Enable offering the old
-> claim set. **When you touch either, mirror the change into the other.**
+> **⚠️ A provider ships exactly TWO declarative objects, and `init` applies both
+> verbatim.**
 >
-> Permission-claim changes additionally need a THIRD edit — the **APIExport** side:
-> - `providers/<name>/init_cmd.go` — the `sdkinstall.PermissionClaim` list that
->   `init` stamps onto the APIExport (`spec.permissionClaims`). If this drifts, `init`
->   updates the APIExport but the deployed CatalogEntry (what the hub Enable flow
->   offers tenants) still advertises the old set — so all three must match for claims.
+> 1. The **CatalogEntry** — `manifest.yaml`, hand-written. The single source for
+>    display metadata, URLs, actions, self-hosting, **and the APIExport's name and
+>    permission claims**.
+> 2. The **APIExport** — `config/kcp/apiexport-<exportName>.yaml`, **generated**.
+>    `make codegen-<name>-provider` runs kcp's `apigen` for `spec.resources`, then
+>    `provider-sdk/cmd/apiexportgen` renames the export to
+>    `spec.apiExport.name` and stamps `spec.permissionClaims` from the manifest.
+>
+> Everything else is an **output**: `deploy/chart/files/apiexport.yaml` and
+> `deploy/chart/files/schemas/` are copies the codegen target writes, and
+> `deploy/chart/templates/catalogentry.yaml` is the chart's rendering of the
+> CatalogEntry. Do not hand-edit an output; change the input and re-run codegen.
+>
+> There is **no claim list in Go**. `providers/<name>/init_cmd.go` reads
+> `RAILGRID_KCP_DIR` (the chart's `files/`, baked into the image at
+> `/etc/railgrid/kcp`), applies the schemas and the generated APIExport as they
+> stand, and creates the endpoint slice and bind grant. The one thing `init`
+> adds at runtime is `identityHash` for first-party (`*.railgrid.ai`) claim
+> groups, which is per-installation and comes from configuration
+> (`RAILGRID_IDENTITY_HASHES`); a missing one is a hard failure, not a silent
+> unpinned claim.
+>
+> `deploy/chart/templates/catalogentry.yaml` still has to mirror `manifest.yaml`
+> for the WHOLE spec, not just claims — it is what actually reaches prod, and the
+> two drift silently (a new `ui.children` sidebar item, a display field, a URL, …
+> changed in only one place never ships). `hack/verify-provider-contract.mjs`
+> fails the build on all of it: `manifest-chart-parity`, `claims-parity`
+> (manifest vs the generated APIExport, including `metadata.name`) and
+> `export-copy` (the chart copy is byte-identical to the generated file).
 >
 > **Existing tenants do NOT auto-migrate.** `init` only touches the provider-side
 > APIExport, never per-tenant `APIBinding`s (they live in tenant workspaces, written
@@ -231,7 +254,7 @@ APIExport, schemas) and registers routing/heartbeat state.
 
 | File | Role |
 |------|------|
-| `provision.go` | Creates kcp sub-workspace, ServiceAccount, APIExport, applies inline schemas; mints the provider kubeconfig |
+| `provision.go` | Creates the kcp sub-workspace and the `provider` ServiceAccount, and mints the provider kubeconfig. It does **not** apply schemas or the APIExport — the provider's own `init` does, from `RAILGRID_KCP_DIR` (§5.1) |
 | `proxy.go` | UI reverse-proxy (`/ui/providers/{name}/*`) + backend proxy (`/services/providers/{name}/*`); injects tenant/user headers |
 | registry / controller / heartbeat | In-memory routing table, catalog reconcile, `POST /api/providers/{name}/heartbeat` liveness (TTL ~90s) |
 | `pkg/hub/provider_tenant_resolver.go` + `provider_cluster_resolver.go` | Resolves caller identity → tenant workspace → kcp logical-cluster ID; the proxy injects `X-Railgrid-User` and the ID as both `X-Railgrid-Tenant` / `X-Railgrid-Cluster` (never the path), strips spoofed inbound copies |
@@ -342,11 +365,14 @@ the browser OAuth routes, the agent tunnel, and signed inbound webhooks (see
 `tenantHeaders` supplies org/workspace scope where a backend call needs it;
 it is addressing, never authorization.
 
-A portal that drives everything through its own REST (`agents`, `app-studio`,
-`kuery`, `quickstart` today) is a **deviation being migrated**, not a second
-sanctioned model — see
-[roadmap/provider-contract-remediation.md](docs/roadmap/provider-contract-remediation.md).
-Do not copy it into a new portal.
+**There is no `/api/*`.** The portals that used to drive everything through
+their own REST (`agents`, `app-studio`, `kuery`, `quickstart`) have been
+migrated; `provider-sdk/serve.New` refuses to register a route outside the
+layout, and `hack/verify-provider-contract.mjs` fails the build on an `"/api/`
+route literal in `main.go`, `server/` or `api/` (check `adhoc-rest`, currently
+with **no** exceptions in `hack/provider-contract-exceptions.json`). If a
+portal needs to list, create or patch something, that is a CR and the kube
+client, not a new backend route.
 
 Rule of thumb: **need a confirm, an icon, a table, a status pill, or tenant
 headers → import from `portalkit`, don't reinvent.** New shared primitive → add
@@ -366,6 +392,47 @@ workspace UUIDs or the path resolves them from kcp with
 `providers/code/tenant/` and `providers/infrastructure/tenant/` for the
 canonical pattern, and `docs/provider-scoping.md`.
 
+#### The backend surface: one layout, one grammar, two gates
+
+A provider's HTTP server is built by
+[`provider-sdk/serve`](provider-sdk/serve/serve.go) — `serve.New(Options{...})`
+returns the whole `http.Handler` with the fixed layout (`/healthz`, `/readyz`,
+`/mcp` + `/mcp/sse`, `/dataplane/`, `/actions/`, `/workload-identities/*`
+hub-only, `/oauth/`, the portal file server with SPA fallback) and **refuses to
+register anything else**, so `/api/*` cannot be added by accident.
+
+Every tenant-facing verb is a route in the one grammar and goes through
+[`provider-sdk/dataplane`](provider-sdk/dataplane/):
+
+```
+/{dataplane|actions}/clusters/{clusterID}/{resource}/{name}[/components/{c}]/{verb}[/{tail}]
+```
+
+- `dataplane.ParsePath` is the only parser. It rejects a workspace path in the
+  cluster position, the legacy `apis/` resource position, and a path cluster
+  that disagrees with `X-Railgrid-Cluster`.
+- `dataplane.Gate` runs **both gates as the caller**, for *every* verb — not
+  just the dangerous-looking ones: (1) a real `GET` of `{resource}/{name}` in
+  the path's cluster with the caller's bearer, which proves visibility and
+  returns the object to pin UID/spec against; then (2) a
+  `SelfSubjectAccessReview` for **`create` on `{resource}/{verb}`**,
+  name-scoped (`dataplane.SSARVerb`). There is no hub-side authorizer: kcp RBAC
+  is the grant.
+- `dataplane.Serve` enforces the declared limits and writes the `actionwire`
+  envelope.
+- Consumers never string-build another provider's URL — `dataplane.ProviderPath`
+  renders it, from the provider name the consumer's own binding gives it.
+
+**Declare every verb.** Each one is listed in `manifest.yaml` under
+`spec.dataPlane.verbs` (`{resource, verb, description, stream?, readOnly?}`),
+or, when it is versioned and schema'd, under `spec.actions`. Declaring grants
+and serves nothing; what it buys is that the hub's scoped-identity service can
+mint a capability for a coordinate it can **verify exists**
+(`pkg/hub/identity/policy.go` clause C), instead of consumers hardcoding one
+nobody validates. The declaration and the served table are kept in lockstep by
+a test in the provider (e.g. `TestDataPlaneVerbsMatchManifest`). Run
+`dataplane.ConformanceTest` against the real server.
+
 #### Provider controllers and tenancy
 
 - Controllers for tenant-owned resources must reconcile across the workspaces
@@ -382,10 +449,21 @@ canonical pattern, and `docs/provider-scoping.md`.
 - Background controllers have no active caller. Unlike the request handlers
   above, they use the provider's ServiceAccount identity through its APIExport
   virtual workspace, with accepted permission claims for additional resources.
-  Where cross-provider access requires a workspace-local identity, follow
-  [the SDK tenantaccess pattern](provider-sdk/tenantaccess/tenantaccess.go) to
-  provision scoped identity/RBAC and use the workspace's own bindings. Do not
-  substitute admin credentials or retained interactive-user tokens.
+  Do not substitute admin credentials or retained interactive-user tokens.
+- **A provider does not mint identities — it asks the hub.** Where background
+  work needs a workspace-local credential (a per-agent run, a reconnecting edge
+  agent, a per-project execution identity), request one from the hub's scoped
+  identity service through
+  [`provider-sdk/identityclient`](provider-sdk/identityclient/identityclient.go):
+  TokenRequest-minted, TTL'd, `resourceNames`-scoped, garbage-collected with
+  its owning object, and refused by `pkg/hub/identity/policy.go` unless it fits
+  one of four clauses (own group; `get` on named foreign resources; `create` on
+  a foreign `{resource}/{verb}` the owning provider **declares**; a closed
+  platform allowlist). A provider therefore holds **no** `serviceaccounts`,
+  `clusterroles` or `clusterrolebindings` permission claims — a claim on those
+  types is a contract violation, not a design choice. (kuery and app-studio
+  still carry theirs and still use `provider-sdk/tenantaccess`; that is
+  outstanding debt, not the pattern to copy.)
 - Keep tenant-owned desired state and durable reconciliation status in KRM
   resources in the owning workspace. Reconciliation must be idempotent and recover
   from persisted state; process memory must not be the sole authority for work
@@ -414,6 +492,9 @@ Before claiming tenant-controller integration complete, verify:
   without duplicate external operations.
 - Failed controller watches appear in readiness, with recovery reflected when
   watching resumes. Record which checks used real kcp versus test doubles.
+- Every data-plane verb passes `dataplane.ConformanceTest` against the real
+  `serve.New` handler: wrong verb denied, foreign cluster denied, missing
+  bearer 401, header/path mismatch 400, limits enforced, envelope shape.
 
 ### 5.8 Reconcilers, not loops
 
@@ -464,7 +545,7 @@ lives hub-side in `pkg/hub/mcpaggregate/`; `projects` was folded into
 | Provider | APIExport | What it does |
 |----------|-----------|--------------|
 | `quickstart` | `quickstart.providers.railgrid.ai` | **Reference provider** — minimal HTTP server + embedded Vite portal + sample `Greeting` API. Start here. |
-| `edges` | `edges.providers.railgrid.ai` | The connectivity core: `KubernetesCluster`/`LinuxServer` edges, revdial tunnel termination, kubectl/SSH/MCP proxying, `Service` connectors (host/LAN apps → MCP tools), `Workload`/`Placement` scheduling + Helm marketplace. Single-replica (process-global dialer map). |
+| `edges` | `edges.providers.railgrid.ai` | The connectivity core: `KubernetesCluster`/`LinuxServer` edges, revdial tunnel termination, kubectl/SSH/MCP proxying, `Service` connectors (host/LAN apps → MCP tools), `Workload`/`Placement` scheduling + Helm marketplace. Horizontally scalable: reconcilers are leader-elected, the tenant-config resolver runs active-active on every replica, and an agent's tunnel is owned by the replica it dialled and relayed to from the others over a pod-to-pod listener (chart still defaults to `replicaCount: 1`). |
 | `infrastructure` | `infrastructure.providers.railgrid.ai` | Application Templates via kro: template catalog, instance provisioning, data plane (exec/logs/etc.), app hosting + access gate |
 | `code` | `code.providers.railgrid.ai` | Git hosting management (repos, deploy keys, collaborators, packages) behind a `GitBackend` seam; GitHub is the only real backend today |
 | `databricks` | `databricks.providers.railgrid.ai` | Databricks SQL warehouse tables via governed `query_table` action + MCP tools; private source in railgrid/providers; platform installation supported |
@@ -495,31 +576,50 @@ cannot capture a platform provider's proxy or heartbeat route by name. See
 1. Scaffold from `providers/quickstart/` (closest minimal example).
 2. Define APIs under `apis/v1alpha1/` (or inline schemas in the manifest);
    regenerate deepcopy if you keep Go types.
-3. Write `manifest.yaml` (CatalogEntry): displayName, ui/backend URLs, health
-   path, apiExport name + permission claims + schema bodies.
-4. Build the portal (`providers/{name}/portal/`, embedded via `assets.go`).
-5. Wire the heartbeat with `provider-sdk/hubclient` (`ConfigFromEnv` +
+3. Write `manifest.yaml` (CatalogEntry): displayName, ui/backend URLs,
+   `healthPath: /readyz`, apiExport name + permission claims, **and every verb
+   the backend serves** under `spec.dataPlane.verbs` (or `spec.actions`). No
+   `serviceaccounts`/`clusterroles`/`clusterrolebindings` claims — identities
+   come from the hub (§5.4). Then `make codegen-<name>-provider`: the APIExport
+   and the chart's `files/` are **generated outputs** (§5.1), and
+   `init_cmd.go` reads them from `RAILGRID_KCP_DIR` rather than carrying a
+   claim list in Go.
+4. Build the portal (`providers/{name}/portal/`, embedded via `assets.go`). It
+   reads and writes its CRs with the `portalkit` kube client; it does not get
+   its own REST surface (§5.3).
+5. Build the server with `provider-sdk/serve.New` — the only sanctioned layout,
+   and the thing that makes `/api/*` impossible. Serve every tenant verb
+   through `provider-sdk/dataplane` (`ParsePath` → `Gate` → `Serve`), and keep
+   the served verb table in lockstep with `spec.dataPlane.verbs` (§5.4).
+6. Wire the heartbeat with `provider-sdk/hubclient` (`ConfigFromEnv` +
    `go RunHeartbeat`) — never a local copy — plus a tenant-scoped client if it
    talks to kcp. `CanSend` is **required**, not optional: point it at the
    provider's readiness (`vwhealth.Readiness.Check`, the same gate as
    `/readyz`), or `RunHeartbeat` refuses to start. Anything that reacts to tenant objects is a multicluster-runtime
    reconciler under leader election, not a loop (§5.8).
-6. Add Makefile `build-{name}-provider[-portal]` + `run/install/uninstall`
+7. Add Makefile `build-{name}-provider[-portal]` + `run/install/uninstall`
    targets if standalone; add the module to `go.work`.
-7. Add an e2e suite under `test/e2e/suites/` if it has tenant-isolation or
-   provisioning behavior worth guarding.
-8. Write **two** READMEs: `providers/{name}/README.md` (what the provider is and
+8. Add an e2e suite under `test/e2e/suites/` if it has tenant-isolation or
+   provisioning behavior worth guarding, and run
+   `dataplane.ConformanceTest` against the real handler.
+9. Write **two** READMEs: `providers/{name}/README.md` (what the provider is and
    its APIs) and `providers/{name}/deploy/chart/README.md` (values reference).
    The chart README is user-facing: charts embed it into their CatalogEntry
    (`valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}`) and the portal
    renders it inline in the Self-Hosting flow. It is the answer to "what can I
    configure?" and must not go stale.
-9. To offer the provider for self-hosting, declare `spec.selfHosting` in **both**
-   `manifest.yaml` and `deploy/chart/templates/catalogentry.yaml` (chart
-   coordinates, namespace, release name, `docsURL` → the chart README, and any
-   `requiredValues`). Prefer placeholders — `{{hubURL}}`, `{{workspacePath}}`,
-   `{{kubeconfigSecret}}` — over values the installer must look up. See
-   `docs/byo-providers.md`.
+10. Run `make verify-provider-contract` (it is in `make verify`). It checks
+    manifest/chart parity, claims parity against the **generated** APIExport,
+    that the chart's export copy is byte-identical, both READMEs, and that no
+    `"/api/` route literal exists in `main.go`, `server/` or `api/`. An
+    exception in `hack/provider-contract-exceptions.json` needs a reason — the
+    file is currently empty, and it is meant to stay that way.
+11. To offer the provider for self-hosting, declare `spec.selfHosting` in **both**
+    `manifest.yaml` and `deploy/chart/templates/catalogentry.yaml` (chart
+    coordinates, namespace, release name, `docsURL` → the chart README, and any
+    `requiredValues`). Prefer placeholders — `{{hubURL}}`, `{{workspacePath}}`,
+    `{{kubeconfigSecret}}` — over values the installer must look up. See
+    `docs/byo-providers.md`.
 
 ---
 

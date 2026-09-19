@@ -52,22 +52,23 @@ import (
 // host agent). It selects which resource the agent dials on the single
 // `edges` provider via apiurl.ProviderAgentProxyURL.
 //
-// cluster is the kcp logical cluster path (e.g., "root:railgrid:user-default").
-// If empty, it's extracted from the token (for SA tokens) or defaults to "default".
+// cluster is the tenant workspace's kcp LOGICAL-CLUSTER ID (e.g.
+// "2hx82dl9ncmepp5l"), never a workspace path: the agent-ingress route is the
+// shared grammar, and provider-sdk/dataplane refuses a path-form cluster
+// segment because the hub proxy will not serve one either. If empty, it is
+// extracted from the token (for SA tokens) or defaults to "default".
 //
-// onAgentToken, if non-nil, is called on the first successful connection when
-// the hub returns an X-Railgrid-Agent-Token header (token-exchange flow). The
-// callback receives the durable token string. Callers can use this to persist
-// the token locally so the agent can reconnect without the bootstrap join token.
+// credentials holds the agent's scoped identity and re-mints it on the
+// reconnect path. It supplies the bearer for every connect attempt — the
+// bootstrap join token until the agent has enrolled, the TTL'd credential
+// afterwards — and adopts the enrolment bundle the provider returns on the
+// upgrade response of a join-token connect.
 //
-// getToken is invoked on every connect/reconnect attempt to obtain the current
-// bearer token. Callers should return the SA token from the saved kubeconfig
-// after token-exchange has succeeded, otherwise the join token is rejected on
-// reconnect once the hub has cleared edge.Status.JoinToken.
+// A nil store is a caller that manages its own bearer (tests).
 //
 // svc is the /svc proxy host policy (--svc-allow-cidr / --svc-policy); see
 // SvcProxyOptions and newSvcProxyHandler.
-func StartProxyTunnel(ctx context.Context, hubURL string, getToken func() string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, svc SvcProxyOptions, cluster string, onAgentToken func(string), extraHeaders http.Header) {
+func StartProxyTunnel(ctx context.Context, hubURL string, credentials *CredentialStore, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, svc SvcProxyOptions, cluster string, onEnrolled func(Credential), extraHeaders http.Header) {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "edgeName", edgeName, "resourceType", resourceType)
 
@@ -86,7 +87,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, getToken func() string
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, getToken, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, svc, cluster, onAgentToken, extraHeaders)
+		err := startTunneler(ctx, hubURL, credentials, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, svc, cluster, onEnrolled, extraHeaders)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -125,16 +126,28 @@ func sendTunnelState(c chan bool, v bool) {
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, getToken func() string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, svc SvcProxyOptions, cluster string, onAgentToken func(string), extraHeaders http.Header) error {
+func startTunneler(ctx context.Context, hubURL string, credentials *CredentialStore, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, svc SvcProxyOptions, cluster string, onEnrolled func(Credential), extraHeaders http.Header) error {
 	logger := klog.FromContext(ctx)
 
-	// Resolve the current bearer token for this connect attempt. After
-	// token-exchange the caller's closure should return the SA token rather
-	// than the bootstrap join token (which the hub clears from
-	// edge.Status.JoinToken on first successful auth).
+	// Refresh before dialling, not from a timer: the reconnect path is the
+	// only place the agent is guaranteed to be doing something, and a
+	// credential it has stopped using is one its identity should be allowed to
+	// lapse with. A refresh failure is logged and the connect proceeds with
+	// the token in hand — it is still valid for the remaining 20% of its TTL,
+	// and the next attempt tries again.
+	if credentials != nil {
+		if err := credentials.EnsureFresh(ctx); err != nil {
+			logger.Error(err, "could not refresh the agent credential; continuing with the one in hand")
+		}
+	}
+
+	// The bearer for this attempt: the bootstrap join token while enrolling,
+	// the scoped identity once the provider has issued one (the hub clears
+	// edge.Status.JoinToken on the first successful join, so the join token
+	// stops working at exactly that point).
 	token := ""
-	if getToken != nil {
-		token = getToken()
+	if credentials != nil {
+		token = credentials.Token()
 	}
 
 	// Connect to hub's tunnel endpoint.
@@ -153,10 +166,16 @@ func startTunneler(ctx context.Context, hubURL string, getToken func() string, e
 		}
 	}
 
-	// The agent dials the single `edges` provider's agent-ingress path, choosing
-	// the resource (kubernetesclusters, linuxservers, or macosservers) by type,
-	// routed through the hub backend proxy. resourceType is the agent type
-	// ("kubernetes" | "server" | "macos").
+	// The agent dials the single `edges` provider's agent-ingress route —
+	// Pillar 2 class (f), /agent/clusters/{id}/{resource}/{name}/proxy —
+	// choosing the resource (kubernetesclusters, linuxservers, or
+	// macosservers) by type, routed through the hub backend proxy.
+	// resourceType is the agent type ("kubernetes" | "server" | "macos").
+	//
+	// This path changed shape: the old route carried
+	// /apis/edges.railgrid.ai/v1alpha1 between the cluster and the resource.
+	// There is no compatibility window — an agent built before this change
+	// gets a 400 and must be upgraded.
 	edgeProxyURL := apiurl.ProviderAgentProxyURL(baseHubURL, resourceType, clusterName, edgeName, "proxy")
 
 	conn, resp, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig, extraHeaders)
@@ -164,22 +183,42 @@ func startTunneler(ctx context.Context, hubURL string, getToken func() string, e
 		return fmt.Errorf("failed to initiate connection: %w", err)
 	}
 
-	// Token-exchange flow: if the hub returned an agent kubeconfig in the
-	// WebSocket upgrade response, call the onAgentToken callback so the caller
-	// can persist it for reconnects without the bootstrap join token.
-	// The header value is base64-encoded kubeconfig YAML.
-	if resp != nil && onAgentToken != nil {
-		if kubeconfigB64 := resp.Header.Get("X-Railgrid-Agent-Kubeconfig"); kubeconfigB64 != "" {
-			onAgentToken(kubeconfigB64)
+	// Enrolment: a join-token connect comes back with the scoped identity the
+	// provider just minted, plus the hub URL, its CA and the routes this agent
+	// refreshes at. Adopt it before serving anything — from here the join
+	// token is neither needed nor valid.
+	//
+	// This replaces X-Railgrid-Agent-Kubeconfig, which carried a permanent
+	// ServiceAccount token the agent wrote to disk and into a Secret.
+	if resp != nil && credentials != nil {
+		if encoded := resp.Header.Get(CredentialHeader); encoded != "" {
+			credential, cerr := DecodeCredential(encoded)
+			if cerr != nil {
+				logger.Error(cerr, "the provider returned an unusable agent credential")
+			} else if aerr := credentials.Adopt(credential); aerr != nil {
+				logger.Error(aerr, "could not persist the agent credential; it is held in memory only")
+			} else {
+				logger.Info("agent credential issued", "expiresAt", credential.ExpiresAt)
+				if onEnrolled != nil {
+					onEnrolled(credential)
+				}
+			}
 		}
 	}
 
 	logger.Info("Tunnel connection established")
 	sendTunnelState(stateChannel, true)
 
-	// Create revdial listener. Pass the token-provider through so each new
-	// sub-connection picked up over the tunnel uses the freshest token.
-	ln := revdial.NewListener(conn, revdialFunc(hubURL, getToken, tlsConfig))
+	// Create revdial listener. Pickups read the credential through the store,
+	// so a sub-connection opened after a refresh carries the new token rather
+	// than the one this tunnel was established with.
+	pickupToken := func() string {
+		if credentials == nil {
+			return ""
+		}
+		return credentials.Token()
+	}
+	ln := revdial.NewListener(conn, revdialFunc(hubURL, pickupToken, tlsConfig))
 	defer ln.Close() //nolint:errcheck
 
 	// Create and serve local HTTP server

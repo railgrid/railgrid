@@ -13,8 +13,14 @@
 // Routes on a single port ($PORT, default 8083):
 //
 //   - /, /main.js, /icon.svg, /assets/*  — embedded Vite bundle
-//   - /healthz                           — liveness; gates BackendHealthy
+//   - /healthz, /readyz                  — liveness and readiness
 //   - /mcp, /mcp/sse                     — MCP transport
+//   - /actions/…                         — repository-bound Provider Actions
+//   - /oauth/github/…                    — the GitHub "Connect" popup flow
+//
+// The layout is assembled by provider-sdk/serve from the closed list of
+// Pillar 2 route classes; there is no /api/*, and serve.New refuses to
+// register one.
 //
 // Connection / Repository / RepositoryCommit / DeployKey / Collaborator are NOT
 // served as REST here: the portal and tenants drive them as CRDs directly
@@ -42,10 +48,10 @@ import (
 	"github.com/railgrid/provider-code/controller/shared"
 	"github.com/railgrid/provider-code/mcpserver"
 	"github.com/railgrid/provider-code/oauthgithub"
-	"github.com/railgrid/provider-code/server"
 	"github.com/railgrid/provider-code/tenant"
 	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/serve"
 	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
@@ -148,7 +154,7 @@ func runServe() {
 		Bundles: bundles,
 	})
 
-	fileServer, distFS, err := portalHandler()
+	dist, err := portalFS()
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
@@ -175,15 +181,22 @@ func runServe() {
 	codeActions := actions.New(callers, actions.ExportClient(kcpConfig), backends)
 	codeActions.Credentials = credentials
 	codeActions.SnapshotDir = filepath.Join(bundles.Dir(), "git-snapshots")
-	srv := server.New(server.Deps{
-		Actions:          codeActions,
-		MCP:              mcpHandler,
-		PortalFileServer: fileServer,
-		PortalFS:         distFS,
-		ServePortalAsset: servePortalAsset,
-		Readiness:        vwhealth.Handler(vwState),
-		OAuth:            oauthHandler,
+	// Class (d) is three fixed paths under /oauth/, so the flow registers them
+	// on a sub-mux of its own and serve mounts that as the whole class.
+	oauthRoutes := http.NewServeMux()
+	oauthHandler.Mount(oauthRoutes)
+
+	srv, err := serve.New(serve.Options{
+		Name:      "code",
+		Readiness: vwhealth.Handler(vwState),
+		Portal:    dist,
+		MCP:       mcpHandler,
+		Actions:   codeActions,
+		OAuth:     oauthRoutes,
 	})
+	if err != nil {
+		log.Fatalf("server: %v", err)
+	}
 
 	httpSrv := &http.Server{
 		Addr:              ":" + port,

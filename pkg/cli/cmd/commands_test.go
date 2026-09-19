@@ -48,7 +48,7 @@ func edgeObject(kind, name string, connected bool, labels map[string]string) map
 		status["hostname"] = name + ".local"
 		status["lastHeartbeatTime"] = "2026-09-11T10:00:00Z"
 		// An internal host: the CLI must externalize it against the hub.
-		status["URL"] = "https://hub.internal:8443/services/providers/edges/edgeproxy/clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/" + resource + "/" + name + "/" + sub
+		status["URL"] = "https://hub.internal:8443/services/providers/edges/dataplane/clusters/cl-b/" + resource + "/" + name + "/" + sub
 	}
 	meta := map[string]any{"name": name, "creationTimestamp": "2026-09-01T00:00:00Z"}
 	if labels != nil {
@@ -194,7 +194,7 @@ func TestEdgeKubeconfigConnectDisconnect(t *testing.T) {
 	hub := newFakeHub(t)
 	serveEdges(hub)
 	path := hub.useKubeconfig("cl-b")
-	wantServer := hub.URL + "/services/providers/edges/edgeproxy/clusters/cl-b/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/prod/k8s"
+	wantServer := hub.URL + "/services/providers/edges/dataplane/clusters/cl-b/kubernetesclusters/prod/k8s"
 
 	// Standalone kubeconfig on stdout: one context, the hub's credentials,
 	// the proxy URL externalized onto the hub host.

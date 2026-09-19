@@ -45,21 +45,15 @@ const (
 	// for little gain; every fourth bounds the lost work to a few tool calls.
 	checkpointEveryIterations = 4
 
-	// staleRunGrace is how long a run may go without a status write before the
-	// sweep treats it as abandoned. It must comfortably exceed the gap between
-	// checkpoints of a healthy long-running run, or the sweep would fight live
-	// work; a run that is genuinely alive rewrites its row every few rounds.
-	staleRunGrace = 15 * time.Minute
-
 	// maxRecoveryAttempts caps how many times a run may be recovered. A run that
 	// crashes the provider would otherwise be resumed forever, taking the
 	// provider down with it on every restart — a crash loop that looks like an
 	// outage. After this it is failed and left for a human.
+	// maxRecoveryAttempts caps how many times a run may be recovered. It is the
+	// store-side counterpart of the Run reconciler's MaxClaims: that one bounds
+	// how often a run may be PICKED UP, this one how often it may be RESUMED,
+	// and a run that crashes whatever touches it has to be stopped by both.
 	maxRecoveryAttempts = 3
-
-	// sweepBatch bounds one sweep pass so a large backlog is worked through over
-	// several ticks instead of in one burst.
-	sweepBatch = 50
 )
 
 // turnContextBudget is the wire-conversation budget for one turn: a fraction of
@@ -118,7 +112,7 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID 
 			stored.WorkedDurationMS = &value
 		}
 		stored.UpdatedAt = time.Now().UTC()
-		if err := s.store.SaveRun(ctx, scope, stored); err != nil {
+		if err := s.saveRun(ctx, scope, stored); err != nil {
 			log.Printf("recovery: checkpointing run %s (agent %s, session %s): %v", runID, agentName, sessionID, err)
 		}
 	}
@@ -180,38 +174,13 @@ type recoveryRunner func(ctx context.Context, scoped store.ScopedRun, clusterID 
 // alongside recoveryRunner because delivery needs the same tenant access.
 type recoveryNotifier func(ctx context.Context, scoped store.ScopedRun, clusterID, text string) error
 
-// sweepStaleRuns handles runs left non-terminal by a crashed or restarted
-// replica. Safe to call repeatedly; safe to call while other replicas are
-// working, because a run executing here is skipped and ClaimRun settles races
-// between replicas.
-func (s *Server) sweepStaleRuns(ctx context.Context, resume recoveryRunner, notify recoveryNotifier) {
-	cutoff := time.Now().UTC().Add(-staleRunGrace)
-	stale, err := s.store.ListUnfinishedRuns(ctx,
-		[]store.RunPhase{store.RunPhaseRunning, store.RunPhasePending}, cutoff, sweepBatch)
-	if err != nil {
-		log.Printf("recovery: listing unfinished runs: %v", err)
-		return
-	}
-	var resumed, failed int
-	for _, sr := range stale {
-		// Executing here: not stale, however old the last status write is (a run
-		// can sit inside one slow tool call for a long time).
-		if s.liveRuns.has(sr.Run.ID) {
-			continue
-		}
-		if s.recoverRun(ctx, sr, resume, notify) {
-			resumed++
-		} else {
-			failed++
-		}
-	}
-	if resumed+failed > 0 {
-		log.Printf("recovery: swept %d stranded run(s) — %d resumed, %d failed", resumed+failed, resumed, failed)
-	}
-}
-
 // recoverRun resumes one stranded run, or fails it when it cannot be resumed.
 // Reports whether it was resumed.
+//
+// It is called by the Run reconciler, once, for a run whose claim went stale —
+// not by a sweep. The policy below is unchanged; what went away is the timer
+// that used to scan every non-terminal run in every tenant looking for work
+// this function could already describe object by object.
 func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume recoveryRunner, notify recoveryNotifier) bool {
 	run, scope := sr.Run, sr.Scope
 	close := func(phase store.RunPhase, reason string, tell bool) bool {
@@ -237,6 +206,13 @@ func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume reco
 	fail := func(reason string) bool { return close(store.RunPhaseFailed, reason, true) }
 
 	switch {
+	case runSettled(run.Phase):
+		// Settled is settled. The phase filter used to live in the sweep that
+		// selected which runs to look at; now that this is called per object,
+		// it belongs here — a run waiting on a human for a week is not
+		// stranded, and failing it would throw away an approval somebody is
+		// about to give.
+		return false
 	case run.CancelRequested:
 		// Someone asked for this run to stop while no replica could act on it
 		// (queued on a process that died, or the flag landed after the crash).

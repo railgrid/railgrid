@@ -64,6 +64,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-sdk/identityclient"
+
 	"github.com/railgrid/provider-agents/channels"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/executor"
@@ -100,12 +102,11 @@ type background struct {
 	// serves it, learned from wildcard lists and endpoint probes.
 	clusterShard map[string]string
 
-	interval time.Duration
-	key      []byte // webhook HMAC key ("" → webhooks disabled)
+	key []byte // webhook HMAC key ("" → webhooks disabled)
 
-	// identities memoises each agent's minted ServiceAccount token, so a busy
-	// scheduler does not re-provision on every run. See agentidentity.go.
-	identities *identityCache
+	// identities holds one hub-minted, TTL'd identity per (cluster, agent).
+	// See agentidentity.go.
+	identities *agentIdentities
 
 	discord *DiscordGateway // Discord gateway bots (inbound chat)
 
@@ -133,18 +134,29 @@ func (s *Server) StartBackground(ctx context.Context) {
 		log.Printf("background executor disabled: loading provider kubeconfig: %v", err)
 		return
 	}
-	interval := 30 * time.Second
-	if s.cfg.SchedulerInterval > 0 {
-		interval = s.cfg.SchedulerInterval
+	// The hub identity service mints each agent's scoped, TTL'd credential.
+	// Without it (no hub URL, no provider token) unattended runs still work —
+	// they simply have no identity, so instance-backed tools report that per
+	// tool instead of the run failing.
+	var identities *agentIdentities
+	if client, ierr := identityclient.New(identityclient.Options{
+		HubURL:   s.cfg.HubURL,
+		Provider: providerName,
+		Insecure: &s.cfg.HubInsecure,
+	}); ierr != nil {
+		log.Printf("background executor: agent identities unavailable (%v); instance-backed tools are disabled in unattended runs", ierr)
+	} else {
+		identities = newAgentIdentities(client)
 	}
-	bg := &background{server: s, base: base, interval: interval, key: s.webhookKeyBytes(), identities: newIdentityCache(),
+
+	bg := &background{server: s, base: base, key: s.webhookKeyBytes(), identities: identities,
 		seen: newInboundDedup(inboundDedupTTL, inboundDedupMax)}
 	bg.exec = executor.NewInProcess(bg.handle, 4, 10*time.Minute)
 	bg.discord = newDiscordGateway(bg)
 	_ = bg.exec.Start(ctx)
 	s.bg = bg
 	go bg.run(ctx)
-	log.Printf("background executor started (discovery/recovery interval %s)", interval)
+	log.Printf("background executor started")
 }
 
 // webhookKeyBytes and webhookToken bind this Server's configuration to the
@@ -173,6 +185,12 @@ func (s *Server) webhookToken(clusterID, name string) string {
 // endpoint slice in the provider workspace — one per kcp shard. Existing shard
 // clients are preserved across calls; only new URLs build a client.
 func (b *background) ensureVW(ctx context.Context) error {
+	if b == nil || b.base == nil {
+		// No provider kubeconfig: there is nothing to discover and nothing to
+		// discover it with. Reported rather than panicked because shardFor now
+		// calls this on demand, from request paths.
+		return fmt.Errorf("no provider kubeconfig: the APIExport virtual workspace cannot be discovered")
+	}
 	dyn, err := dynamic.NewForConfig(b.base)
 	if err != nil {
 		return err
@@ -289,6 +307,16 @@ func (b *background) shardFor(ctx context.Context, clusterID string) (string, er
 		return url, nil
 	}
 	shards := b.snapshotShards()
+	if len(shards) == 0 {
+		// Nothing discovered yet, or everything went away. Re-read the slice
+		// here rather than on a timer: this is the moment the answer is
+		// actually needed, and failing without trying would make the provider
+		// wait out an interval for no reason.
+		if err := b.ensureVW(ctx); err != nil {
+			return "", fmt.Errorf("no APIExport virtual workspace endpoint: %w", err)
+		}
+		shards = b.snapshotShards()
+	}
 	switch len(shards) {
 	case 0:
 		return "", fmt.Errorf("no APIExport virtual workspace endpoint discovered yet")
@@ -313,28 +341,45 @@ func (b *background) shardFor(ctx context.Context, clusterID string) (string, er
 	return "", fmt.Errorf("tenant workspace %q is not served by any of the %d APIExport virtual workspace endpoints", clusterID, len(shards))
 }
 
-// agentToken returns the agent's ServiceAccount token, provisioning the
-// identity on first use. Returns "" on failure — the caller degrades to a run
-// without instance-backed tools, which reports a clear message per tool, rather
-// than failing the whole run.
-func (b *background) agentToken(ctx context.Context, dyn dynamic.Interface, cluster, agent string) string {
+// agentToken returns the agent's hub-minted identity token, scoped to exactly
+// the Instances this agent references. Returns "" on failure — the caller
+// degrades to a run without instance-backed tools, which reports a clear
+// message per tool, rather than failing the whole run.
+func (b *background) agentToken(ctx context.Context, dyn dynamic.Interface, cluster, agentName string) string {
 	if b.identities == nil {
 		return ""
 	}
-	if tok, ok := b.identities.get(cluster, agent); ok {
-		return tok
-	}
-	tok, err := ensureAgentIdentity(ctx, dyn, agent)
+	u, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, agentName, metav1.GetOptions{})
 	if err != nil {
-		log.Printf("background: agent %q identity unavailable, instance-backed tools disabled for this run: %v", agent, err)
+		log.Printf("background: agent %q identity unavailable, instance-backed tools disabled for this run: %v", agentName, err)
 		return ""
 	}
-	b.identities.put(cluster, agent, tok)
-	return tok
+	agent, err := fromU[agentsv1alpha1.Agent](u)
+	if err != nil {
+		log.Printf("background: agent %q identity unavailable: %v", agentName, err)
+		return ""
+	}
+	// The UID is read here, from the object the hub will verify against: an
+	// identity is owned by a specific Agent, so an agent deleted and recreated
+	// under the same name does not inherit the old one's access.
+	return b.identities.token(ctx, dyn, cluster, agent)
+}
+
+// ReleaseAgentIdentity revokes an agent's hub-minted identity. The Agent
+// reconciler's purge finalizer calls it alongside the store teardown: both are
+// "this agent is gone, take its things away", and leaving the identity for the
+// hub's own sweep would keep a usable token alive for up to a full TTL after
+// the agent stopped existing.
+func (b *background) ReleaseAgentIdentity(ctx context.Context, clusterID, agentName string) error {
+	return b.identities.release(ctx, clusterID, agentName)
 }
 
 // apiExportNameForSlice is the slice name (same as the export by convention).
 const apiExportNameForSlice = "agents.railgrid.ai"
+
+// providerName is how this provider's CatalogEntry registers it, and therefore
+// how the hub identity service knows who is asking.
+const providerName = "agents"
 
 // scoped returns a dynamic client bound to one tenant logical cluster, on
 // whichever shard's VW actually serves it.
@@ -376,36 +421,30 @@ func fromU[T any](u *unstructured.Unstructured) (*T, error) {
 // run is the slow tick that remains after the reconcilers took over: it keeps
 // the shard set current and sweeps runs a dead replica left in flight. Both are
 // things no CR watch can trigger.
+// run discovers the virtual workspace and then waits for shutdown.
+//
+// It used to be a 30-second ticker doing two unrelated jobs: re-reading the
+// endpoint slice, and sweeping Postgres across EVERY tenant for runs a crashed
+// replica had left in flight. Both are gone as timed work.
+//
+// The sweep is the Run reconciler's now, and per-object: an unclaimed run is
+// claimed when the watch delivers it, an abandoned claim is re-taken when its
+// grace lapses, and a run past its deadline is stopped when the requeue the
+// deadline itself scheduled comes due. None of that needs a process to wake up
+// and ask.
+//
+// Endpoint discovery is demand-driven instead: shardFor re-discovers when it
+// has no shards or does not recognise a cluster, so a shard added to the
+// platform is picked up by the first request that needs it rather than up to an
+// interval later. The startup call is what makes the very first inbound webhook
+// or OAuth callback work without waiting for anything.
 func (b *background) run(ctx context.Context) {
-	t := time.NewTicker(b.interval)
-	defer t.Stop()
-	// Discover the VW immediately so OAuth callbacks and inbound webhooks work
-	// right after startup instead of failing for a full interval.
 	if err := b.ensureVW(ctx); err != nil {
-		log.Printf("background: virtual workspace not ready at startup: %v", err)
+		log.Printf("background: virtual workspace not ready at startup: %v (it will be rediscovered on demand)", err)
 	}
-	// Recover runs a previous process left in flight before doing anything else:
-	// a restarted deploy should pick its work back up, not sit on rows stuck in
-	// Running until someone notices.
-	if b.ready() {
-		b.server.sweepStaleRuns(ctx, b.resumeRecoveredRun, b.notifyStrandedRun)
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			if b.discord != nil {
-				b.discord.CloseAll()
-			}
-			return
-		case <-t.C:
-			if err := b.ensureVW(ctx); err != nil {
-				log.Printf("background: virtual workspace not ready: %v", err)
-				continue
-			}
-			// Catches runs stranded by a crash of ANOTHER replica, and any this
-			// process could not recover at startup.
-			b.server.sweepStaleRuns(ctx, b.resumeRecoveredRun, b.notifyStrandedRun)
-		}
+	<-ctx.Done()
+	if b.discord != nil {
+		b.discord.CloseAll()
 	}
 }
 
@@ -455,7 +494,7 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 	if stored, gerr := b.server.store.GetRun(ctx, sr.Scope, sr.Run.ID); gerr == nil {
 		stored.Attempt++
 		stored.UpdatedAt = time.Now().UTC()
-		if serr := b.server.store.SaveRun(ctx, sr.Scope, stored); serr != nil {
+		if serr := b.server.saveRun(ctx, sr.Scope, stored); serr != nil {
 			return fmt.Errorf("recording the resume attempt: %w", serr)
 		}
 	}
@@ -474,51 +513,156 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 
 // Submit is the one door for background work (schedule fires from the
 // reconciler, trigger webhooks, channel messages, Discord gateway messages).
-// It records a Pending run row BEFORE the job enters the in-process queue and
-// pins the job to that row, so the executor handler executes the run the
-// producer already made visible instead of creating a second record.
 //
-// What this makes durable, and what it does not:
+// It writes a Pending Run object and returns. That is the whole submission:
+// the OBJECT is the queue, and the Run reconciler is what claims one and hands
+// it to this process's worker pool.
 //
-//   - Durable: the fact that a run was requested. A crash between Submit and
-//     execution leaves a Pending row that the recovery sweep (recover.go)
-//     finds once it is older than staleRunGrace, closes honestly, and reports
-//     to the chat or channel the answer was headed for. Nobody waits forever
-//     on a message the process lost. A cancel requested while the job is
-//     still queued is honoured too: handle() checks the row before starting.
-//   - Not durable: the queue itself. A restart drops queued jobs; the Pending
-//     row is closed by the sweep, not re-executed, because re-executing a
-//     schedule fire or a webhook without the producer's context is guesswork.
-//     Schedules limit the damage on their own: fire times live on the CR, so
-//     a fire that was never CLAIMED (the reconciler died before the status
-//     update) fires on the first reconcile after restart. A fire that was
-//     claimed but whose job was lost is the case the sweep reports.
+// What that changed. Submission used to be a push onto an in-process channel,
+// with a Pending row recorded first so a lost job could at least be reported.
+// Two things followed from the channel being the queue, and neither does any
+// more:
 //
-// A persistent queue (a durable-execution engine registering handle as its
-// activity — the executor package was shaped for that) is the follow-up that
-// would close the second gap.
+//   - A restart dropped every queued job. A schedule that fired seconds before
+//     a deploy was closed by the recovery sweep as "did not finish" rather than
+//     run, because re-deriving a fire from a timer that had already passed was
+//     guesswork. The watch re-delivers every Pending Run when a process starts,
+//     so unclaimed work is picked up by definition.
+//   - A saturated pool made Submit fail. Inbound webhook handlers mapped
+//     ErrQueueFull to 503 + Retry-After and leaned on the sender to redeliver,
+//     which Slack and Telegram do on their own schedule and GitHub does not.
+//     A write that returns is now the end of the producer's responsibility.
+//
+// A cancel requested while the run is still queued is honoured the same way it
+// always was: the claim path checks the row before starting.
 func (b *background) Submit(ctx context.Context, job executor.Job) error {
-	if job.RunID == "" {
-		now := time.Now().UTC()
-		runID := uuid.NewString()
-		scope := b.scopeFor(ctx, job.ClusterID, job.AgentRef)
-		err := b.server.store.SaveRun(ctx, scope, store.Run{
-			ID: runID, AgentName: job.AgentRef, SessionID: job.SessionID, Trigger: job.Trigger,
-			Phase: store.RunPhasePending, Input: job.Task, CreatedAt: now, UpdatedAt: now,
-			Delivery: &store.RunDelivery{
-				SourceName: job.SourceName, ReplyTarget: job.ReplyTarget,
-				NotifyChannel: job.NotifyChannel, Kind: string(job.Kind),
-			},
-		})
-		if err != nil {
-			// The store being down must not lose the job as well: run it without
-			// the pre-record, exactly as before this existed.
-			log.Printf("background: recording pending run for job %s/%s: %v (running without a pre-record)", job.Kind, job.SourceName, err)
-		} else {
-			job.RunID = runID
-		}
+	if job.RunID != "" {
+		// Already a run of its own — the producer pre-recorded it. Nothing to
+		// enqueue: the object exists and the reconciler will claim it.
+		return nil
 	}
+	now := time.Now().UTC()
+	runID := uuid.NewString()
+	scope := b.scopeFor(ctx, job.ClusterID, job.AgentRef)
+	err := b.server.saveNewRun(ctx, job.ClusterID, scope, store.Run{
+		ID: runID, AgentName: job.AgentRef, SessionID: job.SessionID, Trigger: job.Trigger,
+		Phase: store.RunPhasePending, Input: job.Task, CreatedAt: now, UpdatedAt: now,
+		Delivery: &store.RunDelivery{
+			SourceName: job.SourceName, ReplyTarget: job.ReplyTarget,
+			NotifyChannel: job.NotifyChannel, Kind: string(job.Kind),
+		},
+	})
+	if err != nil {
+		// Nothing was recorded that will ever run, so say so. The producer has
+		// a retry path — an inbound webhook answers 503 and the platform
+		// redelivers, a schedule is re-fired by its reconciler — and all of
+		// them are better than a fire that is silently swallowed.
+		return fmt.Errorf("recording the run for %s/%s: %w", job.Kind, job.SourceName, err)
+	}
+	return nil
+}
+
+// DispatchRun executes a run the Run reconciler has claimed for this process.
+//
+// It rebuilds the job from the two halves of the projection: the object, which
+// carries the request (which agent, what trigger, where the answer goes), and
+// the store row, which carries the task itself — unbounded text that has no
+// business on an API object. Neither half is trusted to be complete on its own:
+// a run whose row has gone is closed rather than executed with a blank prompt.
+func (b *background) DispatchRun(ctx context.Context, clusterID string, object *agentsv1alpha1.Run) error {
+	scope := b.scopeFor(ctx, clusterID, object.Spec.AgentRef)
+	run, err := b.server.store.GetRun(ctx, scope, object.Name)
+	if err != nil {
+		return fmt.Errorf("reading run %s to execute it: %w", object.Name, err)
+	}
+	if run.CancelRequested {
+		// Cancelled while it sat in the queue. Honour it rather than start work
+		// nobody wants; the person who cancelled is not told twice.
+		b.server.closeRunNow(ctx, scope, run, store.RunPhaseAborted, "cancelled by user")
+		return nil
+	}
+	if runSettled(run.Phase) {
+		return nil
+	}
+
+	job := executor.Job{
+		ID:        object.Name,
+		RunID:     object.Name,
+		ClusterID: clusterID,
+		AgentRef:  object.Spec.AgentRef,
+		Trigger:   object.Spec.Trigger,
+		SessionID: object.Spec.SessionID,
+		Task:      run.Input,
+	}
+	if d := object.Spec.Delivery; d != nil {
+		job.Kind = executor.JobKind(d.Kind)
+		job.SourceName = d.SourceName
+		job.ReplyTarget = d.ReplyTarget
+		job.NotifyChannel = d.NotifyChannel
+	}
+	// The pool is a concurrency limit now, not a queue of record: the run is
+	// already durable and already claimed, so a pool that is momentarily full
+	// only delays this dispatch. The reconciler retries it.
 	return b.exec.Submit(ctx, job)
+}
+
+// RecoverRun picks up a run that was executing on a process that is gone.
+//
+// The policy is unchanged and lives where it always did (api/recover.go): a
+// cancelled run is closed rather than resumed, a run with no checkpoint or too
+// many attempts is failed and reported to whoever was waiting, and anything
+// else is resumed from its last checkpoint as the agent's own identity. What
+// changed is who asks, and when: a sweep over every non-terminal run in every
+// tenant, every thirty seconds, is now one reconcile of one object whose own
+// claim went stale.
+func (b *background) RecoverRun(ctx context.Context, clusterID, agentName, runID string) error {
+	scope := b.scopeFor(ctx, clusterID, agentName)
+	run, err := b.server.store.GetRun(ctx, scope, runID)
+	if err != nil {
+		return err
+	}
+	if runSettled(run.Phase) {
+		return nil
+	}
+	if b.server.liveRuns.has(runID) {
+		// Executing right here after all. A run can sit inside one slow tool
+		// call for far longer than any grace, and killing it because its claim
+		// looks old would be the sweep's oldest bug reintroduced.
+		return nil
+	}
+	b.server.recoverRun(ctx, store.ScopedRun{Scope: scope, Run: run}, b.resumeRecoveredRun, b.notifyStrandedRun)
+	return nil
+}
+
+// StopRun closes a run the Run reconciler has decided must not continue: one
+// past its deadline, or one claimed too many times without finishing.
+//
+// The reconciler watches objects and cannot see a goroutine, so it does not
+// kill runs. This records the request where the run will find it — the same
+// durable flag a user's cancel sets, which the engine reads between tool rounds
+// on whichever replica is executing. A run executing nowhere is stamped
+// terminal here, because otherwise it would sit past its deadline forever with
+// nobody left to notice.
+func (b *background) StopRun(ctx context.Context, clusterID, agentName, runID, reason string) error {
+	scope := b.scopeFor(ctx, clusterID, agentName)
+	run, err := b.server.store.GetRun(ctx, scope, runID)
+	if err != nil {
+		return err
+	}
+	if runSettled(run.Phase) {
+		return nil
+	}
+	now := time.Now().UTC()
+	if err := b.server.store.RequestCancel(ctx, scope, runID, now); err != nil {
+		return err
+	}
+	if b.server.liveRuns.cancel(runID) {
+		// Executing here: its context is cancelled and the executor writes the
+		// terminal phase with the timing it actually measured.
+		return nil
+	}
+	b.server.closeRunNow(ctx, scope, run, store.RunPhaseAborted, reason)
+	return nil
 }
 
 // ---- job handler ------------------------------------------------------------
@@ -659,6 +803,19 @@ func (b *background) scopeFor(ctx context.Context, clusterID, agentName string) 
 // other way would walk straight past it.
 func (b *background) PurgeAgentData(ctx context.Context, clusterID, agentName string) error {
 	return b.server.store.DeleteAgentData(ctx, b.scopeFor(ctx, clusterID, agentName), agentName)
+}
+
+// PurgeRunData removes one run's rows from the provider store: its transcript,
+// its tool-call trace and the run record itself. It is what the Run
+// reconciler's finalizer calls, so deleting a Run object — directly, or by
+// garbage collection when its owning Agent goes — actually discards the run
+// instead of hiding it.
+//
+// Same scopeFor as PurgeAgentData, and for the same reason: the rows were
+// WRITTEN through it, fallback included, and a purge scoped any other way
+// would walk straight past a run recorded before the tenant mapping existed.
+func (b *background) PurgeRunData(ctx context.Context, clusterID, agentName, runID string) error {
+	return b.server.store.DeleteRunData(ctx, b.scopeFor(ctx, clusterID, agentName), runID)
 }
 
 // recordOutcome updates the firing schedule's status counters (lastRunID,

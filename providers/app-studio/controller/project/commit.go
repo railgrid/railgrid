@@ -90,10 +90,19 @@ type commitOutcome struct {
 const pendingCommitAnnotation = "ai.railgrid.ai/pending-commit"
 
 // commitWorkspace pushes dirty workspace files to git when the project is
-// idle. c is the claimed-VW client the Project itself is written through
-// (the pending-commit pointer); tc the tenant-path client the Code provider
-// is read through.
-func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, token string, tc client.Client, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
+// idle. c is the manager's client for this workspace — the provider's own
+// ServiceAccount over its APIExport virtual workspace — which reads and
+// writes the Project AND the claimed RepositoryCommits.
+//
+// Asking for the commit is the one thing here that is not a CR write, and
+// deliberately: a RepositoryCommit is a POINTER at a source bundle held in the
+// Code provider's own store (providers/code/commitbundle), and only that
+// provider can put bytes there. Its commit_files MCP tool stores the bundle
+// and creates the CR in one step, so this calls the tool and then follows the
+// CR it created — which is why this provider claims repositorycommits
+// read-only, and why the per-project identity keeps `use` on the workspace's
+// MCP aggregate.
+func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
 	if r.Workspace == nil || r.HubBase == "" {
 		return commitOutcome{}, nil // commit convergence not wired (REST-only dev)
 	}
@@ -135,7 +144,7 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, token
 		return commitOutcome{dirty: true}, fmt.Errorf("read pending commit: %w", err)
 	}
 	if hasPending {
-		resolved, err := r.resolvePendingCommit(ctx, c, tc, p, scope, pending)
+		resolved, err := r.resolvePendingCommit(ctx, c, p, scope, pending)
 		if err != nil || !resolved {
 			return commitOutcome{dirty: true}, err
 		}
@@ -162,6 +171,15 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, token
 		return commitOutcome{dirty: true}, nil // an assistant turn owns the workspace; its end is signalled
 	}
 
+	// The project's own hub-minted identity is what asks for the commit: the
+	// aggregate admits it on `use` of the workspace's MCPServer, and the Code
+	// provider then authorizes the call as that identity rather than as this
+	// provider. No identity (no hub configured) means no commit path — the
+	// files stay dirty and are committed once there is one.
+	token, err := r.identityToken(ctx, clusterOf(p), p)
+	if err != nil {
+		return commitOutcome{dirty: true, retry: true}, fmt.Errorf("project identity for commit: %w", err)
+	}
 	mcp := hubmcp.NewClient(r.HubBase, clusterOf(p), token, r.HubInsecure)
 	if !mcp.Ready() {
 		return commitOutcome{dirty: true, retry: true}, nil
@@ -467,13 +485,13 @@ func (r *Reconciler) clearPendingCommit(ctx context.Context, c client.Client, p 
 // it is resolved: Succeeded (settled and announced) or Failed/gone (cleared,
 // so a fresh commit may be sent). A still-running commit stays recorded and
 // is re-read when its watch event arrives.
-func (r *Reconciler) resolvePendingCommit(ctx context.Context, c, tc client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (bool, error) {
-	if tc == nil {
+func (r *Reconciler) resolvePendingCommit(ctx context.Context, c client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (bool, error) {
+	if c == nil {
 		return false, nil
 	}
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(repositoryCommitGVK)
-	if err := tc.Get(ctx, types.NamespacedName{Name: pending.Name}, obj); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Name: pending.Name}, obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Printf("app-studio project %s: pending RepositoryCommit %s is gone; a fresh commit will be sent", scope.ProjectName, pending.Name)
 			return true, r.clearPendingCommit(ctx, c, p, scope)

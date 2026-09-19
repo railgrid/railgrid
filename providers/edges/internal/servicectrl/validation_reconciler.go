@@ -44,7 +44,6 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
-	"github.com/railgrid/provider-edges/internal/events"
 	"github.com/railgrid/provider-edges/internal/haclient"
 	"github.com/railgrid/provider-edges/internal/svccatalog"
 )
@@ -68,8 +67,6 @@ type ValidationReconciler struct {
 	mgr                 mcmanager.Manager
 	connManager         ConnManager
 	edgeProxyPublicPath string
-	// events, when non-nil, runs a per-Service event subscriber (UniFi Protect).
-	events *events.Manager
 
 	// retryMu guards retry: the current backoff delay per Service, keyed by
 	// cluster + name. Absent means the last probe succeeded (or never ran).
@@ -83,8 +80,8 @@ type ValidationReconciler struct {
 // probeRetryInitial) and a Ready Service is re-validated every
 // validationResyncInterval. It also watches Secrets so an edited auth token is
 // re-validated immediately rather than on the next resync.
-func SetupValidationWithManager(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string, eventsMgr *events.Manager) error {
-	r := newValidationReconciler(mgr, connManager, edgeProxyPublicPath, eventsMgr)
+func SetupValidationWithManager(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string) error {
+	r := newValidationReconciler(mgr, connManager, edgeProxyPublicPath)
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-validation").
 		For(&edgesv1alpha1.Service{}).
@@ -92,12 +89,11 @@ func SetupValidationWithManager(mgr mcmanager.Manager, connManager ConnManager, 
 		Complete(r)
 }
 
-func newValidationReconciler(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string, eventsMgr *events.Manager) *ValidationReconciler {
+func newValidationReconciler(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string) *ValidationReconciler {
 	return &ValidationReconciler{
 		mgr:                 mgr,
 		connManager:         connManager,
 		edgeProxyPublicPath: edgeProxyPublicPath,
-		events:              eventsMgr,
 		retry:               map[string]time.Duration{},
 	}
 }
@@ -178,10 +174,6 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	es := &edgesv1alpha1.Service{}
 	if err := c.Get(ctx, req.NamespacedName, es); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Service deleted: tear down its subscriber and drop its events.
-			if r.events != nil {
-				r.events.Stop(ctx, eventsKey(req))
-			}
 			r.resetRetry(rkey)
 			return ctrl.Result{}, nil
 		}
@@ -197,38 +189,11 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	// reuse it for the auth header.
 	def, _ := svccatalog.Get(string(es.Spec.Type))
 
-	// Subscriber lifecycle: reconcile it on every return path from the captured
-	// final state. It only runs for a Ready UniFi Protect Service; every other
-	// outcome (not ready, wrong type, disabled) stops it and clears its events.
-	var (
-		subReady  bool
-		subDialer haclient.Dialer
-		subToken  string
-		subTarget haclient.Target
-	)
-	defer func() {
-		if r.events == nil || es.Spec.Type != edgesv1alpha1.ServiceTypeUniFiProtect {
-			return
-		}
-		key := eventsKey(req)
-		// Only the replica terminating the edge's tunnel subscribes: every
-		// replica runs this reconciler, and without the local gate a fleet of
-		// N replicas would open N relayed WebSocket sessions per service.
-		local := r.connManager.HasLocalConnection(connKey(connResource(es), string(req.ClusterName), es.Spec.EdgeRef.Name))
-		if subReady && subDialer != nil && local {
-			r.events.Ensure(events.SubscriberConfig{
-				Key:           key,
-				ResolveDialer: r.dialerResolver(connResource(es), string(req.ClusterName), es.Spec.EdgeRef.Name),
-				Target:        subTarget,
-				Header:        unifiAuthHeader(ctx, subDialer, subTarget, def, subToken),
-			})
-		} else {
-			r.events.Stop(ctx, key)
-		}
-	}()
-
-	// Always keep status.URL current.
+	// Always keep the published coordinates and the tool projection current.
+	// They are what makes this Service discoverable from the object itself —
+	// no catalog route, no provider-specific fetch.
 	es.Status.URL = r.statusURL(string(req.ClusterName), es.Name)
+	r.projectCatalog(es, string(req.ClusterName), def)
 
 	// The CRD enum rejects unknown edge kinds, but keep the reconciler fail
 	// closed for objects that predate that validation or arrive through a bypass.
@@ -273,8 +238,6 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		return r.commit(ctx, c, orig, es, r.nextRetry(rkey))
 	}
 
-	subDialer = dialer // captured for the subscriber defer
-
 	var token string
 	if es.Spec.AuthSecretRef != nil {
 		token, err = r.readToken(ctx, c, es)
@@ -284,7 +247,6 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 			return r.commit(ctx, c, orig, es, validationResyncInterval)
 		}
 	}
-	subToken = token
 
 	// Build the probe request and apply the type's auth. For the session-login
 	// kinds (qBittorrent/Pi-hole) Apply performs the login, so a failure here is
@@ -295,7 +257,6 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		Port:                  es.Spec.Port,
 		TLSInsecureSkipVerify: es.Spec.TLSInsecureSkipVerify,
 	}
-	subTarget = target // captured for the subscriber defer
 	header := http.Header{}
 	query := url.Values{}
 	if err := svccatalog.Apply(ctx, dialer, target, def, token, header, query); err != nil {
@@ -370,7 +331,6 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 			break
 		}
 		es.Status.Phase = "Ready"
-		subReady = true
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "service reachable")
 		if token != "" && resp.StatusCode < http.StatusMultipleChoices {
 			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionTrue, "Validated", "credentials accepted by the service")
@@ -392,7 +352,6 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 				}
 			}
 			es.Status.Phase = "Ready"
-			subReady = true
 			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionTrue, "Validated", "credentials accepted by the service")
 			setCondition(&es.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "service reachable and authenticated")
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
@@ -428,33 +387,6 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	// backoff. The common case is a Service created seconds before its pod
 	// answers — a 502 from the agent's svc proxy — which must not wait a cycle.
 	return r.commit(ctx, c, orig, es, r.nextRetry(rkey))
-}
-
-// eventsKey is the tenant+service scope events are stored and looked up under.
-func eventsKey(req mcreconcile.Request) events.Key {
-	return events.Key{Cluster: string(req.ClusterName), Service: req.Name}
-}
-
-// dialerResolver returns a closure that re-resolves the edge's tunnel dialer on
-// demand, so a subscriber survives an edge tunnel that drops and re-registers.
-func (r *ValidationReconciler) dialerResolver(resource, cluster, name string) func() (haclient.Dialer, bool) {
-	key := connKey(resource, cluster, name)
-	return func() (haclient.Dialer, bool) {
-		d, ok := r.connManager.Load(key)
-		if !ok || d == nil {
-			return nil, false
-		}
-		return d, true
-	}
-}
-
-// unifiAuthHeader builds the header the events WebSocket handshake needs, using
-// the same catalog Apply as the data-plane proxy (UniFi → X-API-KEY). Apply does
-// not dial for the API-key auth kind, so this is a pure header build.
-func unifiAuthHeader(ctx context.Context, dialer haclient.Dialer, target haclient.Target, def svccatalog.Definition, token string) http.Header {
-	h := http.Header{}
-	_ = svccatalog.Apply(ctx, dialer, target, def, token, h, url.Values{})
-	return h
 }
 
 // bodySnippet reads up to a small cap from an upstream response body and trims
@@ -512,14 +444,42 @@ func (r *ValidationReconciler) readToken(ctx context.Context, c client.Client, e
 	return string(tok), nil
 }
 
-// statusURL builds the externalized svc-proxy base for a Service.
+// projectCatalog stamps what the provider's own service catalog says about
+// this Service's type onto its status: the MCP endpoint (when the type has
+// tools) and the tool list itself. An unknown type clears both rather than
+// leaving a stale projection of a type the provider no longer serves.
+func (r *ValidationReconciler) projectCatalog(es *edgesv1alpha1.Service, cluster string, def svccatalog.Definition) {
+	if len(def.Tools) == 0 {
+		es.Status.MCPURL = ""
+		es.Status.Tools = nil
+		return
+	}
+	tools := make([]edgesv1alpha1.ServiceTool, 0, len(def.Tools))
+	for _, tool := range def.Tools {
+		tools = append(tools, edgesv1alpha1.ServiceTool{Name: tool.Name, Description: tool.Desc})
+	}
+	es.Status.Tools = tools
+	es.Status.MCPURL = r.verbURL(cluster, es.Name, "mcp")
+}
+
+// statusURL builds the externalized svc-proxy base for a Service, on the
+// shared data-plane grammar:
+//
+//	{edgeProxyPublicPath}/clusters/{cluster}/services/{name}/proxy
 func (r *ValidationReconciler) statusURL(cluster, name string) string {
 	if r.edgeProxyPublicPath == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s/clusters/%s/apis/%s/%s/services/%s/proxy",
-		r.edgeProxyPublicPath, cluster,
-		edgesv1alpha1.GroupName, edgesv1alpha1.Version, name)
+	return r.verbURL(cluster, name, "proxy")
+}
+
+// verbURL renders one data-plane coordinate for a Service.
+func (r *ValidationReconciler) verbURL(cluster, name, verb string) string {
+	if r.edgeProxyPublicPath == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/clusters/%s/services/%s/%s",
+		strings.TrimRight(r.edgeProxyPublicPath, "/"), cluster, name, verb)
 }
 
 func schemeString(s edgesv1alpha1.ServiceScheme) string {

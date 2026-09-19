@@ -40,6 +40,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/railgrid/provider-sdk/dataplane"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
@@ -141,7 +142,7 @@ func (s *Server) ReplicaAffinity(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		project, rest, scoped := splitProjectPath(r.URL.Path)
+		project, rest, scoped := affinityProject(r)
 		if !scoped || localSafeProjectRead(r.Method, rest) {
 			next.ServeHTTP(w, r)
 			return
@@ -348,36 +349,91 @@ func (b *forwardBody) Close() error { return nil }
 // /api/projects/{project}[/rest]. Literal collection endpoints that happen to
 // sit under /api/projects/ are not project-scoped.
 func splitProjectPath(path string) (project, rest string, ok bool) {
-	const prefix = "/api/projects/"
-	if !strings.HasPrefix(path, prefix) {
+	request, parsed := dataplane.ParsePath(dataplane.DataplaneRoot, path)
+	if !parsed || request.Resource != projectsGVR.Resource {
+		// A session verb addresses a conversation, not a project, so the
+		// project it belongs to is not in the path — it is read off the
+		// gated Session, one layer down. Affinity therefore cannot route it
+		// here; ReplicaAffinity falls back to the routing hint (see
+		// affinityProject) and, failing that, serves locally.
 		return "", "", false
 	}
-	tail := strings.TrimPrefix(path, prefix)
-	project, rest, _ = strings.Cut(tail, "/")
-	if rest != "" {
-		rest = "/" + rest
+	rest = "/" + request.Verb
+	if request.Tail != "" {
+		rest += "/" + request.Tail
 	}
-	switch project {
-	case "", "stream", "create-readiness", "plan", "development-templates", "import-repositories", "llm-settings":
+	return request.Name, rest, true
+}
+
+// affinityProjectHeader is a ROUTING hint, and nothing else.
+//
+// The replica that owns a project's workspace volume is the one that must run
+// anything touching its files. A session verb names the conversation, not the
+// project, so the portal tells this layer which project the conversation
+// belongs to — before any gate has run, because forwarding has to happen
+// before the body is read.
+//
+// Nothing is authorized from it. A forged value routes the request to the
+// wrong replica, which authorizes it exactly as this one would have: the
+// gates run on the Session, against the caller's own RBAC, wherever the
+// request lands. The worst a lie achieves is a wasted hop.
+const affinityProjectHeader = "X-Railgrid-Project"
+
+// affinityProject returns the project a request should be routed by: the one
+// in the path for a project verb, or the routing hint for a session verb.
+func affinityProject(r *http.Request) (project, rest string, ok bool) {
+	if project, rest, ok = splitProjectPath(r.URL.Path); ok {
+		return project, rest, true
+	}
+	request, parsed := dataplane.ParsePath(dataplane.DataplaneRoot, r.URL.Path)
+	if !parsed || request.Resource != sessionsGVR.Resource {
 		return "", "", false
 	}
-	return project, rest, true
+	hint := strings.TrimSpace(r.Header.Get(affinityProjectHeader))
+	if hint == "" || !dataplaneSegmentSafe(hint) {
+		return "", "", false
+	}
+	// A session verb always touches the conversation, and a turn touches the
+	// workspace, so none of them is a local-safe read.
+	return hint, "/" + request.Verb, true
+}
+
+// dataplaneSegmentSafe keeps a routing hint from becoming a path.
+func dataplaneSegmentSafe(s string) bool {
+	return s != "." && s != ".." && !strings.ContainsAny(s, "/\x00") && len(s) <= 253
 }
 
 // localSafeProjectRead reports whether a project-scoped request is safe on
 // any replica: read-only AND backed by the store/CRs/data-plane rather than
-// the pod-local workspace. The root project document includes SourceRevision,
-// so it joins workspace-reading GETs (files, skills) on the owner. Everything
-// mutating always goes there too. Defaulting unknown routes to "forward" keeps
-// a forgotten route correct at the cost of one hop.
+// the pod-local workspace. Everything mutating always goes to the owner.
+// Defaulting unknown verbs to "forward" keeps a forgotten one correct at the
+// cost of one hop.
 func localSafeProjectRead(method, rest string) bool {
 	if method != http.MethodGet && method != http.MethodHead {
 		return false
 	}
-	if rest == "" || strings.HasPrefix(rest, "/files") || strings.HasPrefix(rest, "/assistant/skills") {
-		return false
+	verb := strings.TrimPrefix(rest, "/")
+	if i := strings.IndexByte(verb, '/'); i >= 0 {
+		verb = verb[:i]
 	}
-	return true
+	return !ownerAffineVerbs[verb]
+}
+
+// ownerAffineVerbs are the reads that touch the pod-local workspace volume and
+// must therefore run on the replica that owns it.
+//
+//   - view carries the source-revision fence, which is pod-local state;
+//   - every files* verb reads the working tree;
+//   - every skill* verb reads the project's skill packages off that tree.
+var ownerAffineVerbs = map[string]bool{
+	"view":          true,
+	"files":         true,
+	"files-content": true,
+	"files-raw":     true,
+	"skills":        true,
+	"skill":         true,
+	"skill-detail":  true,
+	"skill-export":  true,
 }
 
 // adoptProject prepares this replica's workspace after it takes over a
