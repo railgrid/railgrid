@@ -244,8 +244,9 @@ func TestRetryStopsWhenURLIsUnpublished(t *testing.T) {
 	if got := fw.attemptsFor(url1); got != settled {
 		t.Errorf("retries continued after the URL was unpublished: %d -> %d", settled, got)
 	}
-	if err := p.Check(); err == nil || !strings.Contains(err.Error(), "no endpoints") {
-		t.Errorf("slice with no endpoints should report unready, got: %v", err)
+	// Nothing published means nothing to watch: idle, not unready.
+	if err := p.Check(); err != nil {
+		t.Errorf("slice with no endpoints should report ready (idle), got: %v", err)
 	}
 }
 
@@ -313,9 +314,13 @@ func TestCheckReportsStartupStates(t *testing.T) {
 	if err := p.Check(); err == nil || !strings.Contains(err.Error(), "code.railgrid.ai") {
 		t.Errorf("before the slice is seen: %v", err)
 	}
+	// kcp publishes a shard's URL only once the export has a consumer there, so
+	// an empty slice is a provider nobody has enabled yet. Reporting that as
+	// unready shows a fresh provider as "Not ready" in the catalog, which is
+	// what stops anyone from enabling it.
 	p.endpointSliceUpdate(t.Context(), &mockAware{}, slice())
-	if err := p.Check(); err == nil || !strings.Contains(err.Error(), "no endpoints") {
-		t.Errorf("slice without endpoints: %v", err)
+	if err := p.Check(); err != nil {
+		t.Errorf("slice without endpoints should be ready (idle): %v", err)
 	}
 	p.endpointSliceUpdate(t.Context(), &mockAware{}, slice(url1))
 	if err := p.Check(); err != nil {

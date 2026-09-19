@@ -107,6 +107,9 @@ func TestFirstEndpointURL(t *testing.T) {
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := FirstEndpointURL(tc.obj, "x.railgrid.ai")
+			if (tc.name == "no endpoints yet" || tc.name == "no status") != errors.Is(err, ErrNoEndpoints) {
+				t.Errorf("errors.Is(%v, ErrNoEndpoints) wrong for %q", err, tc.name)
+			}
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %q", got)
@@ -191,5 +194,41 @@ func TestHandlerCarriesAttachedReason(t *testing.T) {
 	}
 	if !strings.Contains(body["reason"], "has not started") {
 		t.Errorf("reason = %q", body["reason"])
+	}
+}
+
+// A provider nobody has enabled publishes no endpoints (kcp only publishes a
+// shard's URL once the export has a consumer). That is idle, not broken: it
+// must read as ready, or the catalog shows a fresh provider as "Not ready" and
+// nobody enables it.
+func TestNoEndpointsIsIdleNotUnready(t *testing.T) {
+	var r Readiness
+	_, err := FirstEndpointURL(map[string]any{"status": map[string]any{"endpoints": []any{}}}, "x.railgrid.ai")
+	r.set("", err)
+	if err := r.Check(); err != nil {
+		t.Fatalf("empty slice reported unready: %v", err)
+	}
+	if !r.Idle() {
+		t.Error("empty slice not reported as idle")
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(&r).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("idle → %d, want 200", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["status"] != "ok" || !strings.Contains(body["detail"], "no workspace has enabled") {
+		t.Errorf("idle body = %v, want status ok with a detail", body)
+	}
+
+	// Once a workspace enables it, a published but unreachable URL is still
+	// the fault this package exists to report.
+	r.set("https://x/y", errors.New("no such host"))
+	if r.Check() == nil || r.Idle() {
+		t.Error("an unreachable published endpoint must report unready")
 	}
 }

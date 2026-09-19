@@ -270,10 +270,14 @@ func (p *Provider) IndexField(ctx context.Context, obj client.Object, field stri
 // attach it to its readiness for the lifetime of a controller term.
 //
 // Unready states, in the order they occur during startup: Start has not run;
-// the APIExportEndpointSlice has not been observed; it publishes no endpoints
-// yet (normal right after install); an endpoint watcher is failing and being
-// retried. A stopped provider reports unready too — a caller that keeps it
-// attached after the manager exits is the mistake this surfaces.
+// the APIExportEndpointSlice has not been observed; an endpoint watcher is
+// failing and being retried. A stopped provider reports unready too — a caller
+// that keeps it attached after the manager exits is the mistake this surfaces.
+//
+// A slice that publishes no endpoints is ready, not unready: kcp publishes a
+// shard's URL only once the export has a consumer there, so an empty slice means
+// no workspace has enabled the provider yet and there is nothing to watch. See
+// vwhealth.ErrNoEndpoints.
 func (p *Provider) Check() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -285,7 +289,7 @@ func (p *Provider) Check() error {
 	case !p.sliceSeen:
 		return fmt.Errorf("waiting for APIExportEndpointSlice %s to be observed", p.sliceName)
 	case len(p.published) == 0:
-		return fmt.Errorf("APIExportEndpointSlice %s publishes no endpoints yet", p.sliceName)
+		return nil
 	}
 	failing := make([]string, 0, len(p.pending))
 	for url := range p.pending {
