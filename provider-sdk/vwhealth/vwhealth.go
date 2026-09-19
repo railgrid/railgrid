@@ -43,6 +43,7 @@ package vwhealth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -60,6 +61,17 @@ import (
 var endpointSliceGVR = schema.GroupVersionResource{
 	Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiexportendpointslices",
 }
+
+// ErrNoEndpoints means the APIExportEndpointSlice publishes no endpoints.
+//
+// That is the normal state of a provider nobody has enabled yet, not a fault:
+// a shard publishes its virtual-workspace URL into the slice only once the
+// export has a consumer on it (an APIBinding). Until then there is nothing to
+// reach and nothing to reconcile, so readiness treats it as idle, not unready —
+// otherwise the catalog shows a brand-new provider as "Not ready", which is
+// exactly what stops anyone from enabling it. A reachability fault still shows
+// up the moment an endpoint is published.
+var ErrNoEndpoints = errors.New("no endpoints published")
 
 // DefaultInterval is how often Watch re-probes. Slow on purpose: this detects a
 // misconfiguration that persists until someone changes the platform, not a
@@ -145,7 +157,7 @@ func (r *Readiness) Attach(name string, c Checker) (detach func()) {
 func (r *Readiness) Check() error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.checked && r.err != nil {
+	if r.checked && r.err != nil && !errors.Is(r.err, ErrNoEndpoints) {
 		return fmt.Errorf("cannot reach the APIExport virtual workspace at %s: %w — "+
 			"resources in tenant workspaces will not reconcile. That address comes from the "+
 			"platform's Shard.spec.virtualWorkspaceURL and must be reachable from where this "+
@@ -164,6 +176,14 @@ func (r *Readiness) Check() error {
 	return nil
 }
 
+// Idle reports whether the last probe found no published endpoints: the
+// provider is ready but no workspace has enabled it yet (see ErrNoEndpoints).
+func (r *Readiness) Idle() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.checked && errors.Is(r.err, ErrNoEndpoints)
+}
+
 // Handler serves a readiness endpoint for r: 200 when ready, 503 with the
 // reason otherwise. Mount it at /readyz and point the provider's CatalogEntry
 // backend.healthPath there, so the hub's BackendHealthy reflects it.
@@ -179,7 +199,11 @@ func Handler(r *Readiness) http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "unready", "reason": err.Error()})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		body := map[string]string{"status": "ok"}
+		if r.Idle() {
+			body["detail"] = "no workspace has enabled this provider yet"
+		}
+		_ = json.NewEncoder(w).Encode(body)
 	})
 }
 
@@ -258,8 +282,9 @@ func Probe(ctx context.Context, cfg *rest.Config, exportName string) (string, er
 func FirstEndpointURL(obj map[string]any, exportName string) (string, error) {
 	endpoints, _, _ := unstructured.NestedSlice(obj, "status", "endpoints")
 	if len(endpoints) == 0 {
-		// Normal right after install: kcp has not reconciled the slice yet.
-		return "", fmt.Errorf("APIExportEndpointSlice %s publishes no endpoints yet", exportName)
+		// Normal until the first workspace enables the provider (and briefly
+		// right after install); see ErrNoEndpoints.
+		return "", fmt.Errorf("APIExportEndpointSlice %s publishes no endpoints yet: %w", exportName, ErrNoEndpoints)
 	}
 	first, _ := endpoints[0].(map[string]any)
 	url, _ := first["url"].(string)
