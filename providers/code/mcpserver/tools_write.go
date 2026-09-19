@@ -204,7 +204,7 @@ func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 		if err != nil {
 			return nil, commitFilesOutput{}, err
 		}
-		return commitFiles(ctx, dyn, deps.Bundles, ident.tenant, in)
+		return commitFiles(ctx, dyn, deps.Bundles, ident.clusterID, in)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -355,10 +355,10 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	}
 	// Remove the staging copy only when it lives under a different scope
 	// than the controller will read. The RepositoryCommit controller reads
-	// the bundle under storageScope (the commit's kcp.io/cluster ID). The hub
-	// sends the logical-cluster ID as X-Railgrid-Tenant, so tenantScope normally
-	// equals storageScope and deleting here would remove the only bundle
-	// copy, leaving the controller to fail with "bundle not found".
+	// the bundle under storageScope (the commit's kcp.io/cluster ID), and the
+	// staging scope is X-Railgrid-Cluster — the same logical-cluster ID — so
+	// the two normally agree and deleting here would remove the only copy,
+	// leaving the controller to fail with "bundle not found".
 	if tenantScope != storageScope {
 		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
 	}

@@ -56,32 +56,6 @@ func writeResourceError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	list, err := c.Agents().List(r.Context(), metav1.ListOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	a, err := c.Agents().Get(r.Context(), r.PathValue("name"), metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, a)
-}
-
 type createAgentRequest struct {
 	Name            string `json:"name"`
 	DisplayName     string `json:"displayName"`
@@ -238,24 +212,6 @@ func (s *Server) validateChannelUniqueness(ctx context.Context, c *agentsclient.
 		}
 	}
 	return nil
-}
-
-func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req createAgentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := s.applyAgentCreate(r.Context(), c, &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
 }
 
 // agentFromCreateRequest validates the request and builds the Agent to
@@ -430,26 +386,6 @@ func writeUpdateError(w http.ResponseWriter, err error) {
 	writeResourceError(w, err)
 }
 
-// updateAgent patches mutable agent fields — notably the assigned model
-// credential, so a user can reassign an agent to a different credential.
-func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req updateAgentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := s.applyAgentUpdate(r.Context(), c, r.PathValue("name"), &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
 // applyAgentUpdate reads the agent, applies the patch fields that are present,
 // and writes it back. Shared by the REST handler and the MCP update_agent tool
 // so both surfaces have identical semantics: absent fields are untouched, list
@@ -547,21 +483,6 @@ func (s *Server) applyAgentUpdate(ctx context.Context, c *agentsclient.Client, n
 		agent.Spec.Budget = budget
 	}
 	return c.Agents().Update(ctx, agent, metav1.UpdateOptions{})
-}
-
-func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
-	c, id, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	name := r.PathValue("name")
-	if err := c.Agents().Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	// Best-effort teardown of the agent's store data.
-	_ = s.store.DeleteAgentData(r.Context(), id.scope(name), name)
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {

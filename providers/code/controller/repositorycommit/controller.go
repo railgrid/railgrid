@@ -17,13 +17,16 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -39,17 +42,99 @@ type Reconciler struct {
 	Manager  mcmanager.Manager
 	Backends *backend.Registry
 	Bundles  commitbundle.Store
+
+	waiters bundleWaiters
 }
 
+// bundleArrivalTimeout bounds how long a commit waits for its bundle. The wait
+// itself is event-driven — commitbundle.Notifier wakes the commit the moment
+// the bundle lands — so this is only the backstop for a bundle that never
+// arrives at all (a crashed writer, or a writer in another replica whose
+// in-process notification this replica never sees).
 const bundleArrivalTimeout = 30 * time.Second
 
-// SetupWithManager wires the reconciler into the multicluster manager.
+// SetupWithManager wires the reconciler into the multicluster manager. When the
+// bundle store can announce arrivals, a channel source turns "the bundle
+// landed" into an enqueue instead of a poll.
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
-	return mcbuilder.ControllerManagedBy(mgr).
+	b := mcbuilder.ControllerManagedBy(mgr).
 		Named("code-repositorycommits").
-		For(&codev1alpha1.RepositoryCommit{}).
-		Complete(r)
+		For(&codev1alpha1.RepositoryCommit{})
+	if notifier, ok := r.Bundles.(commitbundle.Notifier); ok {
+		b = b.WatchesRawSource(bundleArrivals(notifier, &r.waiters))
+	}
+	return b.Complete(r)
+}
+
+// bundleArrivals enqueues the RepositoryCommits that are waiting for each
+// bundle as it lands.
+func bundleArrivals(notifier commitbundle.Notifier, waiters *bundleWaiters) source.TypedSource[mcreconcile.Request] {
+	return source.TypedFunc[mcreconcile.Request](func(ctx context.Context, q workqueue.TypedRateLimitingInterface[mcreconcile.Request]) error {
+		arrivals := notifier.Notify(ctx)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case arrival, ok := <-arrivals:
+					if !ok {
+						return
+					}
+					for _, request := range waiters.wake(arrival.Scope, arrival.Name) {
+						q.Add(request)
+					}
+				}
+			}
+		}()
+		return nil
+	})
+}
+
+// bundleWaiters records which commits are blocked on which bundle. A commit
+// registers before it looks for its bundle, so an arrival between the lookup
+// and the registration cannot be missed.
+type bundleWaiters struct {
+	mu      sync.Mutex
+	waiting map[string]map[mcreconcile.Request]struct{}
+}
+
+func bundleKey(scope, name string) string { return scope + "\x00" + name }
+
+func (w *bundleWaiters) wait(scope, name string, request mcreconcile.Request) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.waiting == nil {
+		w.waiting = map[string]map[mcreconcile.Request]struct{}{}
+	}
+	key := bundleKey(scope, name)
+	if w.waiting[key] == nil {
+		w.waiting[key] = map[mcreconcile.Request]struct{}{}
+	}
+	w.waiting[key][request] = struct{}{}
+}
+
+func (w *bundleWaiters) forget(scope, name string, request mcreconcile.Request) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := bundleKey(scope, name)
+	delete(w.waiting[key], request)
+	if len(w.waiting[key]) == 0 {
+		delete(w.waiting, key)
+	}
+}
+
+// wake removes and returns everything waiting for one bundle.
+func (w *bundleWaiters) wake(scope, name string) []mcreconcile.Request {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := bundleKey(scope, name)
+	requests := make([]mcreconcile.Request, 0, len(w.waiting[key]))
+	for request := range w.waiting[key] {
+		requests = append(requests, request)
+	}
+	delete(w.waiting, key)
+	return requests
 }
 
 // Reconcile commits the referenced bundle once and records the terminal result.
@@ -124,14 +209,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fail(fmt.Sprintf("ensure repository: %v", err))
 	}
 
+	// Register before the lookup: a bundle that lands between the two wakes
+	// this commit through the arrival source instead of being missed.
+	r.waiters.wait(bundleScope, bundleRef.Name, req)
 	bundle, err := r.Bundles.Get(ctx, bundleScope, bundleRef.Name, bundleRef.Digest)
 	if err != nil {
-		if commitbundle.IsNotFound(err) && !bundleArrivalTimedOut(commit.Status.StartedAt, time.Now()) {
-			logger.V(4).Info("source bundle not visible yet, requeuing", "bundle", bundleRef.Name)
-			return ctrl.Result{RequeueAfter: time.Second}, nil
+		if wait, waiting := bundleArrivalBackoff(commit.Status.StartedAt, time.Now()); commitbundle.IsNotFound(err) && waiting {
+			// The arrival notification is the wake-up; this requeue only
+			// bounds a bundle that never arrives.
+			logger.V(4).Info("source bundle not visible yet, waiting for arrival", "bundle", bundleRef.Name, "deadline", wait)
+			return ctrl.Result{RequeueAfter: wait}, nil
 		}
+		r.waiters.forget(bundleScope, bundleRef.Name, req)
 		return ctrl.Result{}, fail(err.Error())
 	}
+	r.waiters.forget(bundleScope, bundleRef.Name, req)
 	files := make([]backend.RepositoryCommitFile, 0, len(bundle.Files))
 	fileStatus := make([]codev1alpha1.RepositoryCommitFileStatus, 0, len(bundle.Files))
 	for _, f := range bundle.Files {
@@ -273,9 +365,17 @@ func repositoryCommitIdempotencyKey(commit *codev1alpha1.RepositoryCommit) strin
 	return commit.Name
 }
 
-func bundleArrivalTimedOut(startedAt *metav1.Time, now time.Time) bool {
+// bundleArrivalBackoff reports whether a commit may still wait for its bundle
+// and, if so, how long is left of bundleArrivalTimeout. The remainder is the
+// backoff for the case where no arrival is ever announced; it is never zero,
+// so the commit cannot spin.
+func bundleArrivalBackoff(startedAt *metav1.Time, now time.Time) (time.Duration, bool) {
 	if startedAt == nil {
-		return false
+		return bundleArrivalTimeout, true
 	}
-	return now.Sub(startedAt.Time) >= bundleArrivalTimeout
+	remaining := bundleArrivalTimeout - now.Sub(startedAt.Time)
+	if remaining <= 0 {
+		return 0, false
+	}
+	return max(remaining, time.Second), true
 }

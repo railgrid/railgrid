@@ -543,14 +543,10 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			}
 		}
 	}
-	if entry.Spec.VirtualWorkspace != nil {
-		u, err := ParseURL(entry.Spec.VirtualWorkspace.URL)
-		if err != nil {
-			parseErrs = append(parseErrs, "virtualWorkspace.url: "+err.Error())
-		} else {
-			prov.VirtualWorkspaceURL = u
-		}
-	}
+	// There is no virtual-workspace endpoint to parse: spec.virtualWorkspace was
+	// removed from the CatalogEntry. The hub never routed
+	// /services/providers/{name}/vw/*; custom verbs belong on the data-plane
+	// grammar (docs/provider-connectivity-contract.md).
 
 	// If this CatalogEntry name matches a first-party provider that
 	// registered LocalUIAssets via BuiltinSpec, plumb the embedded FS into
@@ -581,7 +577,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// It opens no route — the proxies independently 404 when UIURL/BackendURL
 	// are nil — it only stops the portal from rendering the provider as broken.
 	prov.EndpointsValid = len(parseErrs) == 0 &&
-		(prov.UIURL != nil || prov.BackendURL != nil || prov.VirtualWorkspaceURL != nil ||
+		(prov.UIURL != nil || prov.BackendURL != nil ||
 			prov.BuiltinRoute != "" || prov.LocalUIAssets != nil || prov.APIExportName != "")
 
 	r.reg.Upsert(prov)

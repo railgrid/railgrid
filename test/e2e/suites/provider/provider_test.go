@@ -46,6 +46,14 @@ const workspacePath = "root:railgrid:providers:quickstart"
 
 var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
+// greetingGVR is the provider's one kind. Cluster-scoped — see the comment in
+// providers/quickstart/apis/v1alpha1/types_greeting.go.
+var greetingGVR = schema.GroupVersionResource{
+	Group: "quickstart.providers.railgrid.ai", Version: "v1alpha1", Resource: "greetings",
+}
+
+var apiBindingGVR = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
+
 // providersWorkspaceClient returns a dynamic client targeting
 // systemProvidersClient returns a dynamic client targeting
 // root:railgrid:system:providers — where Provider + CatalogEntry live since the
@@ -213,9 +221,13 @@ func TestACatalogProvisioning(t *testing.T) {
 		if len(resources) != 1 {
 			t.Fatalf("expected 1 resource in APIExport spec, got %d", len(resources))
 		}
+		// No permission claims: the provider reconciles only the Greetings its
+		// own APIExport serves, so it asks tenants for nothing in their
+		// workspaces. manifest.yaml, the chart CatalogEntry and init_cmd.go
+		// must agree (hack/verify-provider-contract.mjs).
 		claims, _, _ := unstructured.NestedSlice(got.Object, "spec", "permissionClaims")
-		if len(claims) != 1 {
-			t.Fatalf("expected 1 permissionClaim, got %d", len(claims))
+		if len(claims) != 0 {
+			t.Fatalf("expected 0 permissionClaims, got %d", len(claims))
 		}
 		// MaximalPermissionPolicy must NOT be set — see the comment in
 		// provision.go:ApplyAPIExport explaining why.
@@ -293,7 +305,10 @@ func TestBAPIProvidersDTO(t *testing.T) {
 		if qs == nil {
 			t.Fatalf("quickstart not in /api/providers: keys=%v", keysOf(byName))
 		}
-		for _, k := range []string{"displayName", "ready", "hasUI", "hasBackend", "apiExportPath", "apiExportName", "permissionClaims"} {
+		// permissionClaims is NOT in this list: quickstart declares none, and
+		// the DTO omits an empty claim list. A provider that asks tenants for
+		// nothing is the default, not a missing field.
+		for _, k := range []string{"displayName", "ready", "hasUI", "hasBackend", "apiExportPath", "apiExportName"} {
 			if _, ok := qs[k]; !ok {
 				t.Errorf("expected key %q in DTO, got: %v", k, qs)
 			}
@@ -303,6 +318,9 @@ func TestBAPIProvidersDTO(t *testing.T) {
 		}
 		if qs["apiExportPath"] != "root:railgrid:providers:quickstart" {
 			t.Errorf("apiExportPath = %v", qs["apiExportPath"])
+		}
+		if claims, ok := qs["permissionClaims"].([]any); ok && len(claims) != 0 {
+			t.Errorf("quickstart declares no permission claims; DTO carries %d", len(claims))
 		}
 		// Third-party provider should NOT carry a builtinRoute.
 		if br, ok := qs["builtinRoute"]; ok && br != "" {
@@ -355,14 +373,34 @@ func keysOf(m map[string]map[string]any) []string {
 // because they must spawn their own hub on port 2380 (embedded etcd's
 // hard-coded port) and so cannot coexist with this suite's shared hub.
 
+// TestCBackendProxy exercises the only non-verb routes the provider is allowed
+// to serve (Pillar 2 class (c)), through the hub's backend proxy. /readyz is
+// what the CatalogEntry's spec.backend.healthPath points at, so a 200 here is
+// what keeps the hub's BackendHealthy green.
 func TestCBackendProxy(t *testing.T) {
-	body := httpGetJSON(t, hubURL+"/services/providers/quickstart/api/hello", staticToken)
-	if body["provider"] != "quickstart" {
-		t.Errorf("expected provider=quickstart, got %v", body["provider"])
+	for _, path := range []string{"/healthz", "/readyz"} {
+		url := hubURL + "/services/providers/quickstart" + path
+		ok := waitForCondition(t, 90*time.Second, func() (bool, string) {
+			code, body := httpGet(t, url, staticToken)
+			return code == 200 && strings.Contains(body, `"ok"`), fmt.Sprintf("status %d body=%s", code, body)
+		})
+		if !ok {
+			t.Errorf("%s never answered 200 ok", url)
+		}
 	}
-	// tokenLength != 0 proves Authorization header was forwarded.
-	if n, _ := body["tokenLength"].(float64); n == 0 {
-		t.Error("Authorization header was not forwarded to provider")
+}
+
+// TestC2NoAdhocRESTSurface pins the closed route list: the demo /api/* routes
+// the reference provider used to teach are gone, and a provider that grows one
+// back is a deviation even if it authorizes correctly.
+func TestC2NoAdhocRESTSurface(t *testing.T) {
+	for _, path := range []string{"/api/hello", "/api/stream"} {
+		code, body := httpGet(t, hubURL+"/services/providers/quickstart"+path, staticToken)
+		// The provider falls through to its portal index for unknown paths, so
+		// what must not happen is a JSON payload of its own.
+		if strings.Contains(body, `"provider"`) || strings.Contains(body, "chunk 1") {
+			t.Errorf("GET %s answered with an ad-hoc REST payload (status %d): %s", path, code, body)
+		}
 	}
 }
 
@@ -404,8 +442,6 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 	t.Logf("tenant workspace = %s", tenantWS)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
 
-	apiBindingGVR := schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
-
 	// Clean any stale binding from a previous run.
 	_ = tenant.Resource(apiBindingGVR).Delete(ctxWithTimeout(t, 5*time.Second), "quickstart", metav1.DeleteOptions{})
 	// Wait briefly for delete to settle.
@@ -428,14 +464,6 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 					"name": "quickstart.providers.railgrid.ai",
 				},
 			},
-			"permissionClaims": []any{
-				map[string]any{
-					"resource": "configmaps",
-					"verbs":    []any{"get", "list", "watch"},
-					"selector": map[string]any{"matchAll": true},
-					"state":    "Accepted",
-				},
-			},
 		},
 	}}
 	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), binding, metav1.CreateOptions{}); err != nil {
@@ -455,24 +483,23 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 		t.Fatal("APIBinding never reached Bound")
 	}
 
-	// CR must now be creatable in the tenant workspace.
-	greetingGVR := schema.GroupVersionResource{
-		Group: "quickstart.providers.railgrid.ai", Version: "v1alpha1", Resource: "greetings",
-	}
+	// CR must now be creatable in the tenant workspace. Greeting is
+	// cluster-scoped: the data-plane grammar addresses an object by name alone,
+	// so a kind a verb hangs off cannot be namespaced.
 	g := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "quickstart.providers.railgrid.ai/v1alpha1",
 		"kind":       "Greeting",
-		"metadata":   map[string]any{"name": "e2e-hello", "namespace": "default"},
+		"metadata":   map[string]any{"name": "e2e-hello"},
 		"spec":       map[string]any{"message": "hello from e2e"},
 	}}
-	if _, err := tenant.Resource(greetingGVR).Namespace("default").Create(ctxWithTimeout(t, 10*time.Second), g, metav1.CreateOptions{}); err != nil {
+	if _, err := tenant.Resource(greetingGVR).Create(ctxWithTimeout(t, 10*time.Second), g, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create Greeting: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = tenant.Resource(greetingGVR).Namespace("default").Delete(context.Background(), "e2e-hello", metav1.DeleteOptions{})
+		_ = tenant.Resource(greetingGVR).Delete(context.Background(), "e2e-hello", metav1.DeleteOptions{})
 	})
 
-	got, err := tenant.Resource(greetingGVR).Namespace("default").Get(ctxWithTimeout(t, 5*time.Second), "e2e-hello", metav1.GetOptions{})
+	got, err := tenant.Resource(greetingGVR).Get(ctxWithTimeout(t, 5*time.Second), "e2e-hello", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("read Greeting back: %v", err)
 	}
@@ -481,14 +508,175 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 	}
 }
 
+// TestF2GreetVerbAcrossTwoWorkspaces is the suite's contract test for the
+// provider's Pillar 1 and Pillar 2 halves at once.
+//
+// Two static tokens mean two users and therefore two tenant workspaces, each of
+// which enables the provider independently. That is what makes the two
+// assertions here meaningful:
+//
+//   - ONE reconciler stamps status.observedAt in BOTH workspaces. It is a
+//     multicluster reconciler on the provider's APIExportEndpointSlice, so a
+//     provider that quietly engaged only the first workspace fails here.
+//   - Workspace A's bearer greets A's Greeting and is DENIED on B's — sent
+//     straight to the provider's own port, with no hub in front to inject a
+//     cluster header. The denial therefore comes from gate 1 (a real GET as the
+//     caller, which A cannot do in B's workspace), not from anything the hub
+//     did on the way.
+func TestF2GreetVerbAcrossTwoWorkspaces(t *testing.T) {
+	workspaceA := loginAndGetCluster(t, staticToken)
+	workspaceB := loginAndGetCluster(t, secondToken)
+	t.Logf("workspace A = %s, workspace B = %s", workspaceA, workspaceB)
+	if workspaceA == workspaceB {
+		t.Fatalf("both static tokens resolved to the same workspace %s; the isolation assertion would be vacuous", workspaceA)
+	}
+
+	enableQuickstart(t, workspaceA, staticToken)
+	enableQuickstart(t, workspaceB, secondToken)
+
+	createGreeting(t, workspaceA, staticToken, "greet-a", "Hello from A")
+	createGreeting(t, workspaceB, secondToken, "greet-b", "Hello from B")
+
+	// Pillar 1: one reconciler, every bound workspace. status.observedAt is
+	// absent until a controller has actually seen the object.
+	for _, ws := range []struct{ cluster, token, name string }{
+		{workspaceA, staticToken, "greet-a"},
+		{workspaceB, secondToken, "greet-b"},
+	} {
+		if !waitForCondition(t, 120*time.Second, func() (bool, string) {
+			got, err := kcpDynamic(t, ws.cluster, ws.token).Resource(greetingGVR).
+				Get(ctxWithTimeout(t, 5*time.Second), ws.name, metav1.GetOptions{})
+			if err != nil {
+				return false, err.Error()
+			}
+			observed, _, _ := unstructured.NestedString(got.Object, "status", "observedAt")
+			ready := "unset"
+			conds, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+			for _, c := range conds {
+				if m, _ := c.(map[string]any); m["type"] == "Ready" {
+					ready = fmt.Sprintf("%v/%v", m["status"], m["reason"])
+				}
+			}
+			return observed != "" && ready == "True/GreetingReady", "observedAt=" + observed + " Ready=" + ready
+		}) {
+			t.Fatalf("Greeting %s in %s never got status.observedAt with Ready=True", ws.name, ws.cluster)
+		}
+	}
+
+	// Pillar 2, the happy path: the caller can see the object and holds
+	// `create` on greetings/greet in their own workspace.
+	code, body := greet(t, workspaceA, staticToken, "greet-a")
+	if code != http.StatusOK {
+		t.Fatalf("greet own Greeting: got %d, want 200 (body %s)", code, body)
+	}
+	var envelope struct {
+		Result struct {
+			Greeting string `json:"greeting"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		t.Fatalf("greet response is not an actionwire envelope: %v (body %s)", err, body)
+	}
+	if !strings.HasPrefix(envelope.Result.Greeting, "Hello from A,") {
+		t.Errorf("greeting = %q, want it to start with the spec.message stored in workspace A", envelope.Result.Greeting)
+	}
+
+	// The isolation assertion. 404, not 403: a denial must not disclose that
+	// the object exists.
+	code, body = greet(t, workspaceB, staticToken, "greet-b")
+	if code != http.StatusNotFound {
+		t.Fatalf("workspace A's token greeted workspace B's Greeting: got %d, want 404 (body %s)", code, body)
+	}
+	if strings.Contains(body, "greet-b") || strings.Contains(body, workspaceB) {
+		t.Errorf("denial body leaks tenant detail: %s", body)
+	}
+}
+
+// enableQuickstart creates the APIBinding a tenant's Enable flow would create,
+// as the tenant, and waits for it to bind. Idempotent.
+func enableQuickstart(t *testing.T, cluster, token string) {
+	t.Helper()
+	tenant := kcpDynamic(t, cluster, token)
+	binding := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apis.kcp.io/v1alpha2",
+		"kind":       "APIBinding",
+		"metadata":   map[string]any{"name": "quickstart"},
+		"spec": map[string]any{
+			"reference": map[string]any{
+				"export": map[string]any{
+					"path": workspacePath,
+					"name": "quickstart.providers.railgrid.ai",
+				},
+			},
+		},
+	}}
+	_, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), binding, metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create APIBinding in %s: %v", cluster, err)
+	}
+	if !waitForCondition(t, 60*time.Second, func() (bool, string) {
+		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "quickstart", metav1.GetOptions{})
+		if err != nil {
+			return false, err.Error()
+		}
+		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+		return phase == "Bound", "phase=" + phase
+	}) {
+		t.Fatalf("APIBinding in %s never reached Bound", cluster)
+	}
+}
+
+// createGreeting writes a Greeting as the tenant, the way the portal's kube
+// client does. Cluster-scoped: the data-plane grammar addresses by name alone.
+func createGreeting(t *testing.T, cluster, token, name, message string) {
+	t.Helper()
+	tenant := kcpDynamic(t, cluster, token)
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "quickstart.providers.railgrid.ai/v1alpha1",
+		"kind":       "Greeting",
+		"metadata":   map[string]any{"name": name},
+		"spec":       map[string]any{"message": message},
+	}}
+	// The binding lands before the API is servable in the workspace, so retry.
+	if !waitForCondition(t, 60*time.Second, func() (bool, string) {
+		_, err := tenant.Resource(greetingGVR).Create(ctxWithTimeout(t, 10*time.Second), object, metav1.CreateOptions{})
+		if err == nil || apierrors.IsAlreadyExists(err) {
+			return true, ""
+		}
+		return false, err.Error()
+	}) {
+		t.Fatalf("create Greeting %s in %s never succeeded", name, cluster)
+	}
+	t.Cleanup(func() {
+		_ = tenant.Resource(greetingGVR).Delete(context.Background(), name, metav1.DeleteOptions{})
+	})
+}
+
+// greet POSTs the provider's one data-plane verb DIRECTLY at the provider's own
+// port, with no hub in between. That is deliberate: it proves the gates hold on
+// their own, rather than relying on the hub proxy to have rejected the request
+// first.
+func greet(t *testing.T, cluster, token, name string) (int, string) {
+	t.Helper()
+	url := fmt.Sprintf("%s/dataplane/clusters/%s/greetings/%s/greet", providerURL, cluster, name)
+	req, err := http.NewRequestWithContext(ctxWithTimeout(t, 30*time.Second), http.MethodPost, url, strings.NewReader(`{"input":{}}`))
+	if err != nil {
+		t.Fatalf("build greet request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, strings.TrimSpace(string(body))
+}
+
 func TestGTenantDisableRemovesCR(t *testing.T) {
 	tenantWS := loginStaticTokenAndGetCluster(t)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
-
-	apiBindingGVR := schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
-	greetingGVR := schema.GroupVersionResource{
-		Group: "quickstart.providers.railgrid.ai", Version: "v1alpha1", Resource: "greetings",
-	}
 
 	// Sanity: binding exists from the previous test.
 	if _, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "quickstart", metav1.GetOptions{}); err != nil {
@@ -500,7 +688,7 @@ func TestGTenantDisableRemovesCR(t *testing.T) {
 
 	// After delete, the CR group should disappear from the tenant workspace.
 	ok := waitForCondition(t, 30*time.Second, func() (bool, string) {
-		_, err := tenant.Resource(greetingGVR).Namespace("default").List(ctxWithTimeout(t, 2*time.Second), metav1.ListOptions{})
+		_, err := tenant.Resource(greetingGVR).List(ctxWithTimeout(t, 2*time.Second), metav1.ListOptions{})
 		if err == nil {
 			return false, "Greeting list still succeeds"
 		}
@@ -544,6 +732,24 @@ func TestHHeartbeatEndpoint(t *testing.T) {
 	}
 }
 
+// httpGet GETs url with bearer auth and returns the status and raw body.
+func httpGet(t *testing.T, url, token string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec
+		Timeout:   10 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err.Error()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, strings.TrimSpace(string(b))
+}
+
 // httpGetJSON GETs url with bearer auth and decodes the JSON body.
 func httpGetJSON(t *testing.T, url, token string) map[string]any {
 	t.Helper()
@@ -569,10 +775,17 @@ func httpGetJSON(t *testing.T, url, token string) map[string]any {
 	return out
 }
 
-// loginStaticTokenAndGetCluster calls /auth/token-login with the static
-// token and extracts the tenant workspace's logical cluster name from the
-// returned kubeconfig.
+// loginStaticTokenAndGetCluster is loginAndGetCluster for the default static
+// user.
 func loginStaticTokenAndGetCluster(t *testing.T) string {
+	t.Helper()
+	return loginAndGetCluster(t, staticToken)
+}
+
+// loginAndGetCluster calls /auth/token-login with token and extracts that
+// user's tenant workspace logical cluster from the returned kubeconfig. Each
+// static token is its own identity with its own workspace.
+func loginAndGetCluster(t *testing.T, token string) string {
 	t.Helper()
 	// The hub reports /readyz before the users APIBinding in
 	// root:railgrid:users is fully usable, so the first logins after startup
@@ -585,7 +798,7 @@ func loginStaticTokenAndGetCluster(t *testing.T) string {
 	)
 	if !waitForCondition(t, 90*time.Second, func() (bool, string) {
 		req, _ := http.NewRequest(http.MethodPost, hubURL+"/auth/token-login", nil)
-		req.Header.Set("Authorization", "Bearer "+staticToken)
+		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return false, "token-login: " + err.Error()

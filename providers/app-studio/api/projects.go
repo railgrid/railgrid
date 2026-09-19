@@ -61,18 +61,6 @@ type CreateProjectRequest struct {
 	ExistingRepositoryRef string `json:"existingRepositoryRef,omitempty"`
 }
 
-type PatchProjectRequest struct {
-	DisplayName *string                        `json:"displayName,omitempty"`
-	Description *string                        `json:"description,omitempty"`
-	Sharing     *aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
-}
-
-type PatchProjectMemoryRequest struct {
-	Goals        *[]string `json:"goals,omitempty"`
-	Requirements *[]string `json:"requirements,omitempty"`
-	Constraints  *[]string `json:"constraints,omitempty"`
-}
-
 func projectInitialBootstrapPromptDigest(content string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(content)))
 	return fmt.Sprintf("%x", sum[:])
@@ -669,69 +657,21 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.projectViewWithThumbnail(r.Context(), view, id, p))
 }
 
-func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
-	c, id, p, ok := s.requireProjectWithClient(w, r)
-	if !ok {
-		return
-	}
-	var req PatchProjectRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	changed, err := applyProjectPatchRequest(p, req)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	if !changed {
-		writeProjectError(w, newValidationError("PATCH body must set displayName, description, or sharing"))
-		return
-	}
-	updated, err := c.Projects().Update(r.Context(), p, metav1.UpdateOptions{})
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	updated, err = touchProjectStatus(r.Context(), c, updated)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	view := s.projectViewWithSourceRevision(r.Context(), c, updated, id)
-	writeJSON(w, http.StatusOK, s.projectViewWithThumbnail(r.Context(), view, id, updated))
-}
-
-func applyProjectPatchRequest(p *aiv1alpha1.Project, req PatchProjectRequest) (bool, error) {
-	changed := false
-	if req.DisplayName != nil {
-		displayName := strings.TrimSpace(*req.DisplayName)
-		if displayName == "" {
-			return false, newValidationError("displayName cannot be empty")
-		}
-		p.Spec.DisplayName = displayName
-		changed = true
-	}
-	if req.Description != nil {
-		p.Spec.Description = strings.TrimSpace(*req.Description)
-		changed = true
-	}
-	if req.Sharing != nil {
-		requested := *req.Sharing
-		if requested.Publishing.Mode == "" {
-			// A patch that only carries the preview policy must not silently
-			// unpublish production: the publishing policy is written by
-			// POST/DELETE /publishing, and an omitted key keeps it.
-			requested.Publishing.Mode = p.Spec.Sharing.Publishing.Mode
-		}
-		sharing, err := normalizeProjectSharingSpec(requested)
-		if err != nil {
-			return false, err
-		}
-		p.Spec.Sharing = sharing
-		changed = true
-	}
-	return changed, nil
-}
+// Project metadata (spec.displayName, spec.description) has no REST facade.
+// The portal merge-patches the Project CR through the hub's kcp proxy, which
+// validates against the CRD — displayName is Required/MinLength=1/
+// MaxLength=128 there, so the handler's own "displayName cannot be empty"
+// was a second, weaker copy of a rule the API server already enforced.
+// status.updatedAt is stamped by the Project reconciler off
+// metadata.generation, so it now follows a write from ANY client rather than
+// only from requests that happened to pass through here.
+//
+// Sharing was never really metadata: preview visibility is POST /preview and
+// publishing is POST/DELETE /publishing, and both reconcile the app-access
+// grants behind the policy. normalizeProjectSharingSpec below stays as the
+// READ path's normalizer — it coerces the legacy preview mode "shared" to
+// private for Projects that still store it, which the CRD enum cannot do for
+// data written before the enum existed.
 
 func normalizeProjectSharingSpec(sharing aiv1alpha1.ProjectSharingSpec) (aiv1alpha1.ProjectSharingSpec, error) {
 	sharing.Preview.Mode = normalizedProjectPreviewSharingMode(sharing.Preview.Mode)
@@ -1686,52 +1626,11 @@ func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) 
 	return next
 }
 
-func (s *Server) getProjectMemory(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.requireProject(w, r)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, p.Spec.Memory)
-}
-
-func (s *Server) patchProjectMemory(w http.ResponseWriter, r *http.Request) {
-	c, _, p, ok := s.requireProjectWithClient(w, r)
-	if !ok {
-		return
-	}
-	var req PatchProjectMemoryRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	changed := false
-	if req.Goals != nil {
-		p.Spec.Memory.Goals = append([]string(nil), (*req.Goals)...)
-		changed = true
-	}
-	if req.Requirements != nil {
-		p.Spec.Memory.Requirements = append([]string(nil), (*req.Requirements)...)
-		changed = true
-	}
-	if req.Constraints != nil {
-		p.Spec.Memory.Constraints = append([]string(nil), (*req.Constraints)...)
-		changed = true
-	}
-	if !changed {
-		writeProjectError(w, newValidationError("PATCH body must set at least one memory field"))
-		return
-	}
-	updated, err := c.Projects().Update(r.Context(), p, metav1.UpdateOptions{})
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	updated, err = touchProjectStatus(r.Context(), c, updated)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, updated.Spec.Memory)
-}
+// Project memory (spec.memory) has no REST facade. It is part of the Project
+// CR and is read through the project view and written by whoever owns the
+// Project — the portal with the kube client, the assistant through the
+// Project reconciler. A GET/PATCH pair over two spec fields was a copy of the
+// API server with worse validation.
 
 func projectName(ctx context.Context, c *asclient.Client, requested, displayName string) (string, error) {
 	if requested != "" {

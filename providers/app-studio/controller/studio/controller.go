@@ -22,10 +22,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -61,12 +63,9 @@ const (
 	// like SearchInstanceName — one instance every project's preview
 	// inspection addresses.
 	BrowserInstanceName = "app-studio-browser"
-	// resyncInterval is the safety net under the instance watch: an instance
-	// deleted out of band while the watcher reconnected comes back within
-	// this long.
-	resyncInterval = 10 * time.Minute
-	// identityRequeueInterval waits for the Studio ServiceAccount's token
-	// Secret, the one dependency that is not watched and never takes long.
+	// identityRequeueInterval is a backoff, not a resync: it waits for the
+	// Studio ServiceAccount's token Secret, the one dependency that is not
+	// watched and never takes long.
 	identityRequeueInterval = 5 * time.Second
 )
 
@@ -212,17 +211,36 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			next.Phase = aiv1alpha1.StudioServicePending
 		}
 	}
+	// A broken model registry does NOT make the Studio pending: the shared
+	// search and browser backends are fine, and the workspace should not look
+	// half-provisioned because one model lost its credential. It is reported,
+	// not escalated. Read over the claimed VW as the provider — the Studio's
+	// own ServiceAccount may only touch infrastructure kinds.
+	llm := r.checkLLMRegistry(ctx, c, &st)
+	next.Conditions = append(next.Conditions, llm.condition)
+	next.Models = llm.models
 	if !statusEqual(st.Status, next) {
 		now := metav1.Now()
 		next.UpdatedAt = &now
+		// Carry each condition's existing transition time forward when its
+		// status has not changed, so "since when" stays true across edits to
+		// the message.
+		for i := range next.Conditions {
+			next.Conditions[i].ObservedGeneration = st.Generation
+			prior := meta.FindStatusCondition(st.Status.Conditions, next.Conditions[i].Type)
+			if prior != nil && prior.Status == next.Conditions[i].Status {
+				next.Conditions[i].LastTransitionTime = prior.LastTransitionTime
+			} else {
+				next.Conditions[i].LastTransitionTime = now
+			}
+		}
 		st.Status = next
 		if err := c.Status().Update(ctx, &st); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	// Readiness arrives on the instance watch; the slow resync only covers
-	// what the watch missed (an instance deleted out of band comes back).
-	return ctrl.Result{RequeueAfter: resyncInterval}, nil
+	// Readiness arrives on the instance watch — nothing to poll for.
+	return ctrl.Result{}, nil
 }
 
 // service describes one shared backend the Studio owns (search or browser).
@@ -433,7 +451,29 @@ func statusEqual(a, b aiv1alpha1.StudioStatus) bool {
 	if a.Phase != b.Phase {
 		return false
 	}
-	return serviceStatusEqual(a.Search, b.Search) && serviceStatusEqual(a.Browser, b.Browser)
+	if !serviceStatusEqual(a.Search, b.Search) || !serviceStatusEqual(a.Browser, b.Browser) {
+		return false
+	}
+	if !slices.Equal(a.Models, b.Models) {
+		return false
+	}
+	return conditionsEqual(a.Conditions, b.Conditions)
+}
+
+// conditionsEqual compares only what this controller sets. LastTransitionTime
+// is excluded for the same reason UpdatedAt is: it is a consequence of a
+// change, so including it would make every pass look like one.
+func conditionsEqual(a, b []metav1.Condition) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, want := range b {
+		found := meta.FindStatusCondition(a, want.Type)
+		if found == nil || found.Status != want.Status || found.Reason != want.Reason || found.Message != want.Message {
+			return false
+		}
+	}
+	return true
 }
 
 // serviceStatusEqual compares one shared service's status (StudioServiceStatus

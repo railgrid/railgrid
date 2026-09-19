@@ -48,14 +48,28 @@ type identity struct {
 	orgUUID       string // from workspacePath
 	workspaceUUID string // from workspacePath ("" for an organization workspace)
 	workspaceErr  error  // why workspacePath could not be resolved, when it could not
-	user          string // X-Railgrid-User
-	token         string // bearer token, forwarded as-is from Authorization
+	// user is the AUTHENTICATED actor: the username kcp answers a
+	// SelfSubjectReview with, for this request's own bearer, on this
+	// request's cluster. Thread and attachment ownership, approval decisions
+	// and audit records all key on it, so it is never read from a header.
+	user string
+	// userErr is why the actor could not be resolved, when it could not.
+	userErr error
+	// userLabel is X-Railgrid-User: a display hint from the hub, never an
+	// identity. Nothing may authorize on it.
+	userLabel string
+	token     string // bearer token, forwarded as-is from Authorization
 }
 
 // workspaceLookup resolves a cluster ID to its workspace as the caller holding
 // token. Production wires tenantaccess.WorkspaceResolver over the hub; tests
 // substitute a table.
 type workspaceLookup func(ctx context.Context, clusterID, token string) (tenantaccess.Workspace, error)
+
+// ErrActorUnresolved is what requireProjectClient reports when the caller's
+// identity could not be established. It is deliberately not a fallback to the
+// header: an unverified actor is not an actor.
+var ErrActorUnresolved = errors.New("caller identity could not be established")
 
 // identityFromRequest extracts the caller identity from the proxy-injected
 // headers. It returns ok=false (and writes 401) when no tenant is present.
@@ -67,7 +81,7 @@ func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (id
 	id := identity{
 		tenant:    strings.TrimSpace(r.Header.Get("X-Railgrid-Tenant")),
 		clusterID: strings.TrimSpace(r.Header.Get("X-Railgrid-Cluster")),
-		user:      strings.TrimSpace(r.Header.Get("X-Railgrid-User")),
+		userLabel: strings.TrimSpace(r.Header.Get("X-Railgrid-User")),
 		token:     bearerToken(r),
 	}
 	if id.tenant == "" {
@@ -79,7 +93,25 @@ func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (id
 		id.clusterID = id.tenant
 	}
 	s.resolveWorkspace(r.Context(), &id)
+	s.resolveActor(r.Context(), &id)
 	return id, true
+}
+
+// resolveActor fills id.user from a SelfSubjectReview against this request's
+// cluster with this request's bearer, once per request and cached per token
+// hash. A failure leaves the actor empty and records why; handlers that need
+// an actor refuse rather than fall back to X-Railgrid-User.
+func (s *Server) resolveActor(ctx context.Context, id *identity) {
+	if s == nil || s.tenantActors == nil || id.clusterID == "" || id.token == "" {
+		id.userErr = errNoActorLookup
+		return
+	}
+	user, err := s.tenantActors(ctx, id.clusterID, id.token)
+	if err != nil {
+		id.userErr = err
+		return
+	}
+	id.user = user
 }
 
 // resolveWorkspace fills the org/workspace scope of id from kcp. A missing
@@ -220,4 +252,12 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 // ListResponse is the envelope for list endpoints.
 type ListResponse[T any] struct {
 	Items []T `json:"items"`
+}
+
+// errorText renders an error for a status message, tolerating nil.
+func errorText(err error) string {
+	if err == nil {
+		return "no reason recorded"
+	}
+	return err.Error()
 }

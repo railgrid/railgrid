@@ -10,7 +10,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -25,19 +24,6 @@ import (
 	"github.com/railgrid/provider-agents/internal/connsecret"
 	"github.com/railgrid/provider-agents/llm"
 )
-
-func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	list, err := c.Connections().List(r.Context(), metav1.ListOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
 
 type createConnectionRequest struct {
 	Name        string            `json:"name"`
@@ -64,24 +50,6 @@ type createConnectionRequest struct {
 }
 
 func connectionSecretName(conn string) string { return connsecret.Name(conn) }
-
-func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req createConnectionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := s.applyConnectionCreate(r.Context(), c, &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
-}
 
 // applyConnectionCreate writes the credential Secret and creates the
 // Connection. Shared by the REST handler and the MCP create_connection tool.
@@ -197,24 +165,6 @@ type updateConnectionRequest struct {
 	// This is how a Slack connection created before signature verification
 	// existed becomes usable for inbound again.
 	SigningSecret *string `json:"signingSecret,omitempty"`
-}
-
-func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req updateConnectionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := applyConnectionUpdate(r.Context(), c, r.PathValue("name"), &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
 }
 
 // applyConnectionUpdate patches the connection and, when a new secret is given,
@@ -349,18 +299,6 @@ func sendConnectionTest(ctx context.Context, c *agentsclient.Client, name string
 		return &requestError{http.StatusBadGateway, "SendFailed", err.Error()}
 	}
 	return nil
-}
-
-func (s *Server) deleteConnection(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	if err := deleteConnectionAndSecret(r.Context(), c, r.PathValue("name")); err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // deleteConnectionAndSecret removes the Connection and, best-effort, its

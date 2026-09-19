@@ -18,6 +18,24 @@ spec:
   ui:
     url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "agents.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
     indexPath: "/"
+    # Sub-nav entries shown indented under "Agents" in the portal side menu.
+    # The portal composes each child URL as /providers/agents/{builtinRoute}
+    # and pushes the trailing segment back as railgridContext.subPath; the
+    # micro-frontend maps it onto its own route in portal/src/router.ts
+    # (routeForSubPath). Every builtinRoute here MUST name a real top-level
+    # route in that file — an entry with no route renders a sidebar item that
+    # lands on a blank page.
+    #
+    # Schedules and triggers are deliberately absent: they are edited on an
+    # agent's Automation tab, not as a workspace-level collection, so there is
+    # no route to point at.
+    children:
+      - displayName: Agents
+        builtinRoute: agents
+      - displayName: Activity
+        builtinRoute: activity
+      - displayName: Connections
+        builtinRoute: connections
   backend:
     # The hub backend proxy forwards /services/providers/agents/* here,
     # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the
@@ -49,6 +67,48 @@ spec:
         group: rbac.authorization.k8s.io
         verbs: ["get", "create"]
         tenantScoped: true
+      # Service-to-service invocation (api/s2s.go). A caller that is not a human
+      # — another provider, a job — presents its own ServiceAccount token instead
+      # of a user's, so the provider authenticates and authorizes it itself:
+      # TokenReview to resolve the identity, SubjectAccessReview to check it may
+      # run this agent, both on the APIExport virtual workspace scoped to the
+      # target cluster (kcp#4279 / kcp#4280). tenantScoped: the VW confines each
+      # review to the tenant's OWN workspace and cannot reach beyond it, so this
+      # is bounded. Built-in review APIs: no identityHash, verb create only.
+      - group: authentication.k8s.io
+        resource: tokenreviews
+        verbs: [create]
+        tenantScoped: true
+      - group: authorization.k8s.io
+        resource: subjectaccessreviews
+        verbs: [create]
+        tenantScoped: true
+  # Lets an organization run this provider in its own cluster
+  # (docs/byo-providers.md). Keep manifest.yaml and
+  # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
+  # one that reaches production.
+  #
+  # Part of the define, not of the ConfigMap branch below: rendered outside it
+  # this block was emitted at the ConfigMap's indentation whatever
+  # catalogEntry.renderAsConfigMap said, so with the ConfigMap off the template
+  # produced a stray YAML fragment, and any future direct-apply branch would
+  # have shipped a CatalogEntry with no selfHosting at all.
+  selfHosting:
+    supported: true
+    chart:
+      repository: "oci://ghcr.io/railgrid/charts"
+      name: "railgrid-agents-provider"
+      version: {{ .Chart.Version | quote }}
+    namespace: "railgrid-provider-agents"
+    releaseName: "agents"
+    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/agents/deploy/chart/README.md"
+    # The chart carries its own values reference, so the portal can show it
+    # offline and for the version actually installed.
+    valuesDoc: |{{ .Files.Get "README.md" | nindent 6 }}
+    requiredValues:
+      - name: store.databaseURLSecretRef.name
+        description: >-
+          Secret holding the Postgres connection URL. Postgres is this provider's only hard dependency beyond the hub — create the Secret before installing.
 {{- end -}}
 
 {{- if .Values.catalogEntry.enabled -}}
@@ -69,24 +129,4 @@ data:
   catalogentry.yaml: |
 {{ include "agents.catalogEntry" . | indent 4 }}
 {{- end }}
-      # Lets an organization run this provider in its own cluster
-      # (docs/byo-providers.md). Keep manifest.yaml and
-      # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
-      # one that reaches production.
-      selfHosting:
-        supported: true
-        chart:
-          repository: "oci://ghcr.io/railgrid/charts"
-          name: "railgrid-agents-provider"
-          version: {{ .Chart.Version | quote }}
-        namespace: "railgrid-provider-agents"
-        releaseName: "agents"
-        docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/agents/deploy/chart/README.md"
-        # The chart carries its own values reference, so the portal can show it
-        # offline and for the version actually installed.
-        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
-        requiredValues:
-          - name: store.databaseURLSecretRef.name
-            description: >-
-              Secret holding the Postgres connection URL. Postgres is this provider's only hard dependency beyond the hub — create the Secret before installing.
 {{- end }}

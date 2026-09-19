@@ -813,11 +813,9 @@ make run-provider-infrastructure
         'providers/infrastructure/go.mod',
         'providers/infrastructure/go.sum',
         # Restart whenever init writes/updates the runtime kubeconfig:
-        # the controller manager only starts when INFRASTRUCTURE_KUBECONFIG
-        # resolves to a real file (see the Makefile target). Without this
-        # watch, the provider that booted before `infrastructure-init`
-        # keeps running with controllers disabled, and per-template
-        # APIResourceSchemas never get added to the APIExport.
+        # serve refuses to start until RAILGRID_PROVIDER_KUBECONFIG resolves
+        # to a real file (see the Makefile target), so the provider must be
+        # restarted once `infrastructure-init` has written it.
         '.kcp/infrastructure-runtime.kubeconfig',
     ],
     # hub for CatalogEntry registration target, kro-mgmt-up for the
@@ -846,7 +844,7 @@ local_resource(
 # writes the kubeconfig run-provider-infrastructure reads. Order is:
 #   infrastructure-register  → creates the workspace
 #   infrastructure-init      → seeds the workspace + writes kubeconfig
-#   infrastructure (long-lived) → picks up INFRASTRUCTURE_KUBECONFIG
+#   infrastructure (long-lived) → serve mounts RAILGRID_PROVIDER_KUBECONFIG
 # Manual so devs control when re-bootstrap happens (it overwrites
 # the runtime kubeconfig and rotates the token).
 infrastructure_init_cmd = 'make init-provider-infrastructure'

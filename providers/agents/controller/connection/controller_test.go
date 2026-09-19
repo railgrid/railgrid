@@ -18,6 +18,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -442,5 +443,158 @@ func TestSecretToConnectionMapsOnlyOurSecrets(t *testing.T) {
 	elsewhere := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: connsecret.Name("team-chat"), Namespace: "other"}}
 	if got := secretToConnection(context.Background(), elsewhere); len(got) != 0 {
 		t.Fatalf("a secret outside the credentials namespace must not map, got %v", got)
+	}
+}
+
+// ---- the Validated condition ---------------------------------------------------
+
+func (h *harness) validated(t *testing.T) metav1.Condition {
+	t.Helper()
+	var got agentsv1alpha1.Connection
+	if err := h.c.Get(context.Background(), client.ObjectKey{Name: testConn}, &got); err != nil {
+		t.Fatal(err)
+	}
+	c := meta.FindStatusCondition(got.Status.Conditions, agentsv1alpha1.ConditionValidated)
+	if c == nil {
+		t.Fatalf("no %s condition: %+v", agentsv1alpha1.ConditionValidated, got.Status.Conditions)
+	}
+	return *c
+}
+
+// applyConnectionCreate wrote the Secret and then the Connection, in that
+// order, so the pair arrived whole or not at all. A kube-client writer writes
+// two objects with no transaction between them, and a Connection whose Secret
+// never landed is now reachable — and otherwise silent.
+func TestValidatedFlagsAMissingSecret(t *testing.T) {
+	h := newHarness(t, connection(agentsv1alpha1.ConnectionTypeTelegram, false))
+	h.reconcile(t)
+	cond := h.validated(t)
+	if cond.Status != metav1.ConditionFalse || cond.Reason != agentsv1alpha1.ReasonSecretMissing {
+		t.Fatalf("condition = %s/%s (%q), want False/SecretMissing", cond.Status, cond.Reason, cond.Message)
+	}
+	if !strings.Contains(cond.Message, connsecret.Name(testConn)) {
+		t.Fatalf("message must name the Secret: %q", cond.Message)
+	}
+}
+
+// A Secret that exists but holds no token is the same failure one step later:
+// the connection authenticates with nothing.
+func TestValidatedFlagsASecretWithoutAToken(t *testing.T) {
+	h := newHarness(t, connection(agentsv1alpha1.ConnectionTypeGitHub, false), secret(map[string]string{"other": "x"}))
+	h.reconcile(t)
+	cond := h.validated(t)
+	if cond.Status != metav1.ConditionFalse || cond.Reason != agentsv1alpha1.ReasonSecretIncomplete {
+		t.Fatalf("condition = %s/%s (%q), want False/SecretIncomplete", cond.Status, cond.Reason, cond.Message)
+	}
+}
+
+func TestValidatedTrueWithACompleteSecret(t *testing.T) {
+	h := newHarness(t, connection(agentsv1alpha1.ConnectionTypeGitHub, false), secret(map[string]string{"token": "ghp_1"}))
+	h.reconcile(t)
+	if cond := h.validated(t); cond.Status != metav1.ConditionTrue {
+		t.Fatalf("condition = %s/%s (%q), want True", cond.Status, cond.Reason, cond.Message)
+	}
+}
+
+// The types that may legitimately carry no credential must not be flagged, or
+// the condition becomes noise nobody reads: an unauthenticated MCP server, a
+// self-hosted SearXNG that takes no key, a discord connection that only posts
+// to a webhook URL, and the edges marker that carries nothing by design.
+func TestValidatedAllowsCredentiallessTypes(t *testing.T) {
+	for _, typ := range []string{
+		agentsv1alpha1.ConnectionTypeMCP,
+		agentsv1alpha1.ConnectionTypeHTTP,
+		agentsv1alpha1.ConnectionTypeWebSearch,
+		agentsv1alpha1.ConnectionTypeEdges,
+		agentsv1alpha1.ConnectionTypeDiscord,
+	} {
+		t.Run(typ, func(t *testing.T) {
+			h := newHarness(t, connection(typ, false))
+			h.reconcile(t)
+			if cond := h.validated(t); cond.Status != metav1.ConditionTrue {
+				t.Fatalf("%s: condition = %s/%s (%q), want True", typ, cond.Status, cond.Reason, cond.Message)
+			}
+		})
+	}
+}
+
+// An oauth connection's Secret is filled in by the Connect flow later, and its
+// client credentials may come from a platform-wide OAuth app the reconciler
+// cannot see. status.oauthConnected is what reports on it.
+func TestValidatedDoesNotFlagAnUnconnectedOAuthConnection(t *testing.T) {
+	conn := connection(agentsv1alpha1.ConnectionTypeGitHub, false)
+	conn.Spec.Auth = "oauth"
+	conn.Spec.OAuth = &agentsv1alpha1.ConnectionOAuth{Provider: "github"}
+	h := newHarness(t, conn)
+	h.reconcile(t)
+	if cond := h.validated(t); cond.Status != metav1.ConditionTrue {
+		t.Fatalf("condition = %s/%s (%q), want True", cond.Status, cond.Reason, cond.Message)
+	}
+}
+
+// Inbound Slack is verified with the app signing secret, which only the user
+// can supply. The same fact drives Phase/Message; the condition repeats it so
+// one place answers "is this connection usable" for every reader.
+func TestValidatedFlagsInboundSlackWithoutASigningSecret(t *testing.T) {
+	h := newHarness(t, connection(agentsv1alpha1.ConnectionTypeSlack, true), secret(map[string]string{"token": "xoxb-1"}))
+	h.reconcile(t)
+	cond := h.validated(t)
+	if cond.Status != metav1.ConditionFalse || cond.Reason != agentsv1alpha1.ReasonSecretIncomplete {
+		t.Fatalf("condition = %s/%s (%q), want False/SecretIncomplete", cond.Status, cond.Reason, cond.Message)
+	}
+	if cond.Message != connsecret.SigningSecretMissingMessage {
+		t.Fatalf("message = %q, want the one shared wording", cond.Message)
+	}
+}
+
+// An outbound-only Slack connection has nothing to verify and must not be
+// flagged for a secret it will never use.
+func TestValidatedAllowsOutboundOnlySlack(t *testing.T) {
+	h := newHarness(t, connection(agentsv1alpha1.ConnectionTypeSlack, false), secret(map[string]string{"token": "xoxb-1"}))
+	h.reconcile(t)
+	if cond := h.validated(t); cond.Status != metav1.ConditionTrue {
+		t.Fatalf("condition = %s/%s (%q), want True", cond.Status, cond.Reason, cond.Message)
+	}
+}
+
+// applyConnectionCreate refused an unsupported type at the door.
+func TestValidatedFlagsAnUnsupportedType(t *testing.T) {
+	h := newHarness(t, connection("carrier-pigeon", false))
+	h.reconcile(t)
+	cond := h.validated(t)
+	if cond.Status != metav1.ConditionFalse || cond.Reason != agentsv1alpha1.ReasonUnsupportedType {
+		t.Fatalf("condition = %s/%s (%q), want False/UnsupportedType", cond.Status, cond.Reason, cond.Message)
+	}
+}
+
+// The verdict is read after the rest of the reconcile has run, so a Telegram
+// connection that just had a secret_token generated for it is judged on the
+// Secret as it now stands rather than a stale copy.
+func TestValidatedSeesTheTelegramSecretTheSamePassGenerated(t *testing.T) {
+	h := newHarness(t, connection(agentsv1alpha1.ConnectionTypeTelegram, true), secret(map[string]string{"token": "bot:1"}))
+	h.reconcile(t)
+	if got := h.secretKey(t, connsecret.SigningSecretKey); got == "" {
+		t.Fatal("the reconciler must still generate a telegram secret_token")
+	}
+	if cond := h.validated(t); cond.Status != metav1.ConditionTrue {
+		t.Fatalf("condition = %s/%s (%q), want True", cond.Status, cond.Reason, cond.Message)
+	}
+}
+
+// A settled connection must not be rewritten on every pass.
+func TestValidatedIsIdempotent(t *testing.T) {
+	h := newHarness(t, connection(agentsv1alpha1.ConnectionTypeGitHub, false), secret(map[string]string{"token": "ghp_1"}))
+	h.reconcile(t)
+	var first agentsv1alpha1.Connection
+	if err := h.c.Get(context.Background(), client.ObjectKey{Name: testConn}, &first); err != nil {
+		t.Fatal(err)
+	}
+	h.reconcile(t)
+	var second agentsv1alpha1.Connection
+	if err := h.c.Get(context.Background(), client.ObjectKey{Name: testConn}, &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.ResourceVersion != first.ResourceVersion {
+		t.Fatalf("a settled connection was written again (rv %s -> %s)", first.ResourceVersion, second.ResourceVersion)
 	}
 }

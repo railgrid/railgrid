@@ -51,7 +51,7 @@ func newProjectFilesFixture(t *testing.T) *projectFilesFixture {
 		project:    project,
 	}
 	fixture.server = &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup,
 		store:            store.NewMemoryStore(),
 		workspaces:       fixture.workspaces,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },

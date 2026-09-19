@@ -1,11 +1,13 @@
 # App Studio replica awareness — design
 
-Status: **single-replica deployment boundary enforced**. Phases A–C are
-implemented (run claims; project affinity + peer forwarding; git re-hydration
-on adoption, emptyDir workspaces, owner-gated commit convergence), but the
-workspace's shared Playwright Browser adds a newer fleet-wide serialization
-requirement that these mechanisms do not satisfy. ·
-Date: 2026-08-17 · Author: design note
+Status: **controllers leader-elected; data plane still project-affine**. Phases
+A–C are implemented (run claims; project affinity + peer forwarding; git
+re-hydration on adoption, emptyDir workspaces), and the controllers now run
+behind a Lease instead of the claims-sharding this note originally proposed
+(provider-contract-remediation §9 Cut A). The chart no longer refuses
+`replicaCount > 1`; what is still process-local is listed under "What still
+requires affinity" below. ·
+Date: 2026-08-17, revised for Cut A · Author: design note
 Related: [`provider-horizontal-scaling.md`](./provider-horizontal-scaling.md)
 (the cross-provider plan this details), the kuery per-edge claims
 (`providers/kuery/engagement/claims.go`) and the edges replica routing
@@ -42,21 +44,26 @@ There is also one cross-project resource: each workspace has one shared,
 single-session Playwright Browser. The browser session manager serializes that
 resource only within one App Studio process. Project pinning can place projects
 from the same workspace on different replicas, so two processes could invalidate
-or concurrently drive the same browser. The chart therefore rejects
-`replicaCount > 1` and uses a Recreate strategy to avoid transient overlap
-during upgrades (`deploy/chart/templates/deployment.yaml`).
+or concurrently drive the same browser. The chart keeps a Recreate strategy so
+an upgrade does not transiently run two pods against that browser
+(`deploy/chart/templates/deployment.yaml`), and `replicaCount` still defaults
+to 1 — but it is a default now, not a guard.
 
 ## Design verdict
 
-No hub changes, no shared filesystem. Two implemented provider-side mechanisms:
+No hub changes, no shared filesystem. Three implemented provider-side
+mechanisms:
 
 - **Durable run claims in Postgres** make run lifecycle correct fleet-wide.
 - **Project pinning + peer forwarding** keep all workspace-touching work on
   one replica per project, with git re-hydration as the failover story.
+- **A controller Lease** keeps CR writes single-writer (mechanism 3 below).
 
-These mechanisms make project and run state replica-aware, but they do not make
-the workspace-wide Browser replica-safe. App Studio remains one replica until
-browser ownership and serialization become durable or distributed.
+These make project state, run state and CR reconciliation replica-aware. They
+do not make the workspace-wide Browser replica-safe, so one replica stays the
+recommended deployment until browser ownership and serialization become
+durable or distributed — but it is now a recommendation the operator can weigh,
+not something the chart refuses to render.
 
 The hub keeps its "no request pinned to a pod" model: the Service still
 round-robins, and the *provider* forwards internally exactly like edges does
@@ -130,22 +137,63 @@ Git. Ephemeral deployments still lose local source on pod replacement, and
 Git can only recover committed files. Projects without Git require retained
 storage or an operator backup. Multiple provider replicas remain unsupported.
 
-## Mechanism 3 — reconciler sharding (no leader election)
+## Mechanism 3 — leader-elected controllers
 
-The multicluster manager stays on every replica (pod readiness requires it —
-`controller_manager.go:266-292` — and it is not serving-entangled). Instead
-of a global lease, the **Project reconciler's commit-convergence path runs
-only on the project's owner** (claim check at the top; foreign projects
-requeue). The CR-only parts (instance ensure, status mirroring) are
-idempotent and may stay active-active initially; folding them under the same
-claim check is a later cleanup. This is claims-sharding, same shape as
-kuery's engagement — leader election is the wrong tool here because the
-work is inherently partitioned by project, not singleton.
+This note originally argued for claims-sharding the reconcilers instead of a
+global lease, on the grounds that pod readiness required the manager and that
+the work is partitioned by project. Both premises are gone:
+
+- Readiness is no longer "manager started". It is `provider-sdk/vwhealth`:
+  reachability of the `ai.railgrid.ai` APIExport virtual workspace, plus the
+  multicluster provider's watch state attached for the duration of a
+  leadership term. A non-leader has nothing attached and is ready on the probe
+  alone, because its API server, assistant supervisor and replica-affinity
+  forwarder are all still serving. So a standby never wedges a rollout.
+- The reconcilers' *writes* are not partitioned by project. Instance
+  convergence, status mirroring, the Studio's shared search/browser instances
+  and the Session projection are ordinary single-writer CR work, and the one
+  path that does read pod-local state — commit convergence out of the
+  workspace FileStore — is already gated by `Owns(scope)`, the project claim.
+  A leader that is not the project's owner declines that path and leaves it to
+  the owner's next signal.
+
+So the controllers run under `provider-sdk/leaderelection.Run` on a Lease named
+`app-studio-controllers` in the provider workspace, rebuilt per term: a
+controller-runtime manager cannot be restarted, and neither can the
+`tenantwatch.Hub` the Project and Studio reconcilers share, so both are
+constructed inside the term and die with it. Losing the lease costs a
+controller pause, not a process restart.
+
+The 15 s manager restart loop is gone with it — the election's own campaign is
+the retry that covers a provider coming up before `init` has created its
+workspace and endpoint slice. So are the 10 minute safety resyncs in all three
+reconcilers: the watches and the signal buses are the triggers, and the only
+`RequeueAfter` left is the 5 s wait for a ServiceAccount token Secret, which is
+a backoff on a pending dependency rather than a poll.
+
+## What still requires affinity
+
+Leader election makes the *controllers* replica-safe. It does not make the data
+plane replica-safe, and three things still are not:
+
+1. **The workspace tree** (`workspace/store.go`) — pod-local, covered by the
+   project claim and peer forwarding. The durable fix is moving the source
+   tree and commit ledger onto code-provider `RepositoryCheckout`/
+   `RepositoryCommit` objects (remediation §9 Cut D).
+2. **The workspace's shared Playwright Browser** — serialized only inside one
+   process, and project pinning can place two projects of the same workspace
+   on different replicas. Unchanged by Cut A; this is the reason
+   `replicaCount` still defaults to 1 and the strategy is still Recreate.
+3. **Coding-sandbox claims with `assistant.runSandbox.mode=force`** — no
+   distributed CAS behind them yet. The chart used to `fail` on this
+   combination; it now renders, and the constraint lives here.
 
 ## What this deletes
 
 - The orphan-interrupt cross-kill (F1) and the non-mutual Busy gate (F5).
 - The chart's `replicaCount != 1` hard fail and the RWO PVC.
+- The 15 s controller restart loop, the "manager started" readiness contract,
+  and the three 10 minute safety resyncs.
 - The empty-workspace dev-sync wipe (F3) — non-owners never touch workspaces.
 - Preview-bridge session breakage (F6) — bridge routes ride the pin.
 
@@ -160,7 +208,8 @@ The chart's single-replica guard remains the safety boundary.
 | A | Run claims table + Busy/reservation/orphan-interrupt on claims | Yes — strictly better restart semantics |
 | B | Internal listener + project claims + forwarding middleware; revision fence to durable side | Yes — forwarding is a no-op single-replica |
 | C | Claim-driven hydration, `emptyDir` default, reconciler owner-gating | Makes workspace/run state replica-aware, but does not unlock N replicas by itself |
-| D | Distributed or durable ownership for the workspace-wide Playwright Browser | Required before allowing `replicaCount > 1` |
+| C.1 | Leader-elected controllers, vwhealth readiness, resyncs deleted (remediation §9 Cut A) | Yes — a single replica simply always wins the lease |
+| D | Distributed or durable ownership for the workspace-wide Playwright Browser | Required before *recommending* `replicaCount > 1` |
 | E (optional) | WIP snapshot-to-git; preview-bridge to shared store if forwarding proves noisy | Hardening |
 
 ## Open decisions

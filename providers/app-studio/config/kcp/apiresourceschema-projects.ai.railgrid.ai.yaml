@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260915-52c2152f.projects.ai.railgrid.ai
+  name: v260919-b1e9b5e6.projects.ai.railgrid.ai
 spec:
   group: ai.railgrid.ai
   names:
@@ -335,12 +335,23 @@ spec:
                     type: string
                 type: object
               type: array
+            observedGeneration:
+              description: |-
+                ObservedGeneration is the metadata.generation the controller last
+                stamped UpdatedAt for. It is what makes UpdatedAt honest without a
+                write-side facade: kcp bumps generation on every spec change, so the
+                reconciler can tell "the spec moved" from "I am reconciling again".
+              format: int64
+              type: integer
             phase:
               description: Phase is Ready for MVP-created Projects.
               type: string
             updatedAt:
-              description: UpdatedAt reflects the latest API mutation affecting metadata
-                or memory.
+              description: |-
+                UpdatedAt reflects the latest spec mutation the controller has observed.
+                The project list is ordered by it, so it must follow writes from any
+                client — the portal patching the CR directly, kubectl, the assistant —
+                not just the ones that once went through a REST facade.
               format: date-time
               type: string
           type: object

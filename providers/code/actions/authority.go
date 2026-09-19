@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/railgrid/provider-code/install"
+	"github.com/railgrid/provider-sdk/dataplane"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -25,7 +26,7 @@ var connections = schema.GroupVersionResource{Group: "code.railgrid.ai", Version
 // cannot use the caller's credentials or enter an unbound tenant workspace.
 func ExportClient(config *rest.Config) func(context.Context, string, string) (dynamic.Interface, error) {
 	return func(ctx context.Context, cluster, repository string) (dynamic.Interface, error) {
-		if config == nil || !segment.MatchString(cluster) {
+		if config == nil || !dataplane.IsClusterID(cluster) {
 			return nil, errors.New("code provider authority unavailable")
 		}
 		own, err := dynamic.NewForConfig(config)

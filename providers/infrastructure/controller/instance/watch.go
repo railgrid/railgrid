@@ -21,9 +21,11 @@ package instance
 //   - tenant Secrets through the APIExport virtual workspace → the Instance(s)
 //     whose bridge reads them (mapSecret).
 //
-// What remains timer-driven is a long safety resync (resyncPeriod) and the
-// exact lifecycle deadlines (lifecycleRequeueAfter), which are computed, not
-// polled.
+// Nothing else is timer-driven. The one RequeueAfter left is the exact
+// lifecycle deadline of a development Instance (lifecycleRequeueAfter), which
+// is computed from the object's own spec/status rather than polled — the third
+// sanctioned use in docs/provider-connectivity-contract.md § "Pillar 1
+// carve-outs".
 
 import (
 	"context"
@@ -187,8 +189,8 @@ func (c *Controller) bridgedSecretTarget(obj client.Object) (instance string, br
 // mapRuntimeObject maps a runtime-cluster CR event back to the tenant
 // Instance it was materialized from, through the annotations syncRuntime
 // stamps. A CR without them (written before the annotations existed, or by
-// someone else) maps to nothing; the safety resync converges its annotations
-// on the next pass of the owning Instance.
+// someone else) maps to nothing; the next reconcile of the owning Instance —
+// driven by its own watch — stamps them, and events from then on map.
 func mapRuntimeObject(_ context.Context, obj client.Object) []mcreconcile.Request {
 	ann := obj.GetAnnotations()
 	cluster := ann[infrav1alpha1.RailgridInstanceClusterAnnotation]

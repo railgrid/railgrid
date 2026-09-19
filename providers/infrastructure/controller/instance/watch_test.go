@@ -163,7 +163,7 @@ func TestMapRuntimeObjectUsesInstanceAnnotations(t *testing.T) {
 	assertRequests(t, mapRuntimeObject(context.Background(), runtimeObj), "cluster://root:orgs:x/team/app")
 
 	// A runtime CR written before the annotations existed maps to nothing —
-	// the safety resync converges it, then it maps.
+	// the next reconcile of the owning Instance stamps them, then it maps.
 	bare := &unstructured.Unstructured{}
 	bare.SetName("app")
 	bare.SetLabels(map[string]string{"railgrid.ai/tenant": "abcdef012345"})

@@ -143,6 +143,12 @@ func runServe() {
 	if err != nil {
 		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}
+	// The hub records any received beat as liveness and ignores the body's
+	// status, so the beat itself has to carry the readiness: gate it on the
+	// same vwhealth state /readyz reports. A provider that cannot reach the
+	// virtual workspace stops beating and the hub's TTL flips it to NotReady
+	// instead of it staying green over dead watches.
+	hb.CanSend = func() bool { return vwState.Check() == nil }
 	go hubclient.RunHeartbeat(ctx, hb)
 
 	<-ctx.Done()

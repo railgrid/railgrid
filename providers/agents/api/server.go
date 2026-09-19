@@ -158,12 +158,12 @@ func (s *Server) Routes() http.Handler {
 	// token. Useful for provider connectivity debugging.
 	mux.HandleFunc("GET /api/whoami", s.whoami)
 
-	// Agents CRUD + chat (milestone 2).
-	mux.HandleFunc("GET /api/agents", s.listAgents)
-	mux.HandleFunc("POST /api/agents", s.createAgent)
-	mux.HandleFunc("GET /api/agents/{name}", s.getAgent)
-	mux.HandleFunc("PUT /api/agents/{name}", s.updateAgent)
-	mux.HandleFunc("DELETE /api/agents/{name}", s.deleteAgent)
+	// Agent chat and transcripts. The Agent object itself is NOT served here:
+	// it is a bound API in the tenant's own workspace, so the portal reads and
+	// writes it through kcp (portal/src/resources.ts) and the MCP tools below
+	// go through the same client. What is left on this route group is what kcp
+	// cannot answer — a chat turn, and the session/message transcripts, which
+	// live in Postgres under the projection carve-out.
 	mux.HandleFunc("GET /api/agents/{name}/sessions", s.listSessions)
 	mux.HandleFunc("DELETE /api/agents/{name}/sessions/{session}", s.deleteSession)
 	mux.HandleFunc("GET /api/agents/{name}/messages", s.listMessages)
@@ -198,10 +198,10 @@ func (s *Server) Routes() http.Handler {
 	// assisted setup flows.
 	mux.HandleFunc("GET /api/capabilities", s.listCapabilities)
 
-	// Named model credentials — created once, assigned to agents by name.
-	mux.HandleFunc("GET /api/credentials", s.listCredentials)
-	mux.HandleFunc("POST /api/credentials", s.createCredential)
-	mux.HandleFunc("DELETE /api/credentials/{name}", s.deleteCredential)
+	// Model credentials are Secrets in the tenant workspace, written through
+	// kcp. What stays here is the live probe: it needs the key to reach the
+	// model endpoint, and the key must not leave the workspace with the
+	// browser holding it long enough to call a third party.
 	// Health-check a credential (real API probe → latency + served models).
 	mux.HandleFunc("POST /api/credentials/{name}/test", s.testCredential)
 	mux.HandleFunc("POST /api/credentials/test", s.testCredentialDraft)
@@ -211,34 +211,12 @@ func (s *Server) Routes() http.Handler {
 	// Usage / observability rollups over a window (cost, tokens, latency, errors).
 	mux.HandleFunc("GET /api/usage", s.usageRollup)
 
-	// Schedules (M3): cron / wakeup / heartbeat, plus synchronous "run now".
-	mux.HandleFunc("GET /api/schedules", s.listSchedules)
-	mux.HandleFunc("POST /api/schedules", s.createSchedule)
-	mux.HandleFunc("GET /api/schedules/{name}", s.getSchedule)
-	mux.HandleFunc("PUT /api/schedules/{name}", s.updateSchedule)
-	mux.HandleFunc("DELETE /api/schedules/{name}", s.deleteSchedule)
+	// Schedule / Connection / Toolset / Trigger objects are bound APIs too, and
+	// are read and written through kcp for the same reason. Only the verbs are
+	// left: firing one now needs the executor, and testing a connection needs
+	// the stored credential.
 	mux.HandleFunc("POST /api/schedules/{name}/run", s.runScheduleNow)
-
-	// Connections (M4/M6): named external credentials + messaging test-send.
-	mux.HandleFunc("GET /api/connections", s.listConnections)
-	mux.HandleFunc("POST /api/connections", s.createConnection)
-	mux.HandleFunc("PUT /api/connections/{name}", s.updateConnection)
-	mux.HandleFunc("DELETE /api/connections/{name}", s.deleteConnection)
 	mux.HandleFunc("POST /api/connections/{name}/test", s.testConnection)
-
-	// Toolsets: workspace-shared bundles of tool grants that agents link.
-	mux.HandleFunc("GET /api/toolsets", s.listToolsets)
-	mux.HandleFunc("POST /api/toolsets", s.createToolset)
-	mux.HandleFunc("GET /api/toolsets/{name}", s.getToolset)
-	mux.HandleFunc("PUT /api/toolsets/{name}", s.updateToolset)
-	mux.HandleFunc("DELETE /api/toolsets/{name}", s.deleteToolset)
-
-	// Event triggers (M7): CRUD + synchronous "run now".
-	mux.HandleFunc("GET /api/triggers", s.listTriggers)
-	mux.HandleFunc("POST /api/triggers", s.createTrigger)
-	mux.HandleFunc("GET /api/triggers/{name}", s.getTrigger)
-	mux.HandleFunc("PUT /api/triggers/{name}", s.updateTrigger)
-	mux.HandleFunc("DELETE /api/triggers/{name}", s.deleteTrigger)
 	mux.HandleFunc("POST /api/triggers/{name}/run", s.runTriggerNow)
 
 	// Approvals inbox (M5).
@@ -290,12 +268,4 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 		"user":          id.user,
 		"hasToken":      id.token != "",
 	})
-}
-
-func (s *Server) notImplemented(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.identityFromRequest(w, r); !ok {
-		return
-	}
-	writeStatus(w, http.StatusNotImplemented, "NotImplemented",
-		"this endpoint is not wired yet — chat, resources, and scheduling arrive in later milestones")
 }

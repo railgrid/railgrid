@@ -19,16 +19,11 @@ package edgesconn
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -46,11 +41,13 @@ import (
 // revdial hop. This suite can, because it runs a real hub, a real edges
 // provider, a real agent and a real edge.
 //
-// The far end here is the quickstart provider, whose /api/hello reports the
-// identity headers and a fingerprint of the Authorization it was given, and
-// whose /api/stream flushes chunks. Those three answers are exactly E-5
-// (passthrough auth, not substitution), E-6 (identity survives) and E-7
-// (streaming is not buffered).
+// The far end is the suite's own probe backend (probe_backend_test.go): its
+// identity route reports the headers and a fingerprint of the Authorization it
+// was handed, and its stream route flushes chunks. Those three answers are
+// exactly E-5 (passthrough auth, not substitution), E-6 (identity survives) and
+// E-7 (streaming is not buffered). Nothing here is specific to a provider —
+// the transport is what is under test, and a real provider on the far end would
+// only add its own failure modes to the ones being measured.
 //
 // This exercises the transport with spec.host, which the host-run agent in this
 // suite can dial. The hub-owned Services the catalog controller writes use
@@ -61,13 +58,7 @@ var edgeServiceGVR = schema.GroupVersionResource{
 	Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "services",
 }
 
-const quickstartPort = "18099"
-
 func TestBYOProviderBackendThroughTunnel(t *testing.T) {
-	if portInUse(quickstartPort) {
-		t.Fatalf("port :%s already in use; stop the stray process and retry", quickstartPort)
-	}
-
 	edgeName := "byo-server"
 	workDir := suiteTempDir(t, "byo-provider")
 	kubeconfig := filepath.Join(workDir, "railgrid.kubeconfig")
@@ -90,9 +81,9 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 	startAgent(t, edgeName, joinToken, tenantWS, "--type", "server")
 	waitForConnected(t, tenantAdmin, linuxServerGVR, edgeName)
 
-	// The provider a tenant would be self-hosting. Run as a host process the
-	// agent can dial, standing in for a workload in the tenant's cluster.
-	startQuickstart(t)
+	// The backend a tenant would be self-hosting, standing in for a workload in
+	// the tenant's cluster: a host-local HTTP server the agent can dial.
+	probePort := startProbeBackend(t)
 
 	// A LinuxServer edge, because the agent here runs as a host process and
 	// spec.host is the shape that supports: for a KubernetesCluster edge the
@@ -103,7 +94,7 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 	// serviceHTTPProxy, the same revdial stream. auth=passthrough is the field
 	// that matters — the default, "secret", substitutes a token and would break
 	// the far end's entire authorization model.
-	const svcName = "provider-quickstart"
+	const svcName = "provider-probe"
 	svc := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "edges.railgrid.ai/v1alpha1",
 		"kind":       "Service",
@@ -111,7 +102,7 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 		"spec": map[string]any{
 			"edgeRef": map[string]any{"kind": "LinuxServer", "name": edgeName},
 			"host":    "127.0.0.1",
-			"port":    int64(mustAtoi(t, quickstartPort)),
+			"port":    probePort,
 			"scheme":  "http",
 			"type":    "generic",
 			"auth":    "passthrough",
@@ -128,37 +119,34 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 		hubURL, tenantWS, svcName)
 
 	t.Run("identity and passthrough auth survive the tunnel", func(t *testing.T) {
-		var hello struct {
-			Provider         string `json:"provider"`
-			UserHeader       string `json:"userHeader"`
-			TenantHeader     string `json:"tenantHeader"`
-			TokenFingerprint string `json:"tokenFingerprint"`
-			TokenLength      int    `json:"tokenLength"`
+		var seen probeIdentity
+		body := getThroughTunnel(t, base+probeIdentityPath)
+		if err := json.Unmarshal(body, &seen); err != nil {
+			t.Fatalf("decode %s (%q): %v", probeIdentityPath, string(body), err)
 		}
-		body := getThroughTunnel(t, base+"/api/hello")
-		if err := json.Unmarshal(body, &hello); err != nil {
-			t.Fatalf("decode /api/hello (%q): %v", string(body), err)
-		}
-		t.Logf("quickstart saw: %+v", hello)
+		t.Logf("probe backend saw: %+v", seen)
 
-		if hello.Provider != "quickstart" {
-			t.Fatalf("reached something other than the quickstart provider: %q", hello.Provider)
+		if seen.Probe != probeName {
+			t.Fatalf("reached something other than the probe backend: %q", seen.Probe)
 		}
 		// E-6: the far end authorizes the CALLER, so it has to learn who that is.
-		if hello.UserHeader == "" {
+		if seen.UserHeader == "" {
 			t.Error("X-Railgrid-User did not survive the tunnel; the provider cannot attribute the call")
 		}
-		if hello.TenantHeader == "" {
+		if seen.TenantHeader == "" {
 			t.Error("X-Railgrid-Tenant did not survive the tunnel; the provider cannot scope the call")
 		}
-		// E-5: the caller's own bearer must arrive, not the Service's. A length
-		// check would accept a substituted token of the same size, so compare
-		// the fingerprint of exactly what we sent.
+		// E-5: the caller's own bearer must arrive, not the Service's. Presence
+		// or a length check would accept a substituted token, so compare the
+		// fingerprint of exactly what we sent.
+		if !seen.AuthorizationPresent {
+			t.Error("no Authorization reached the far end; auth=passthrough stripped the caller's credential")
+		}
 		want := fingerprint("Bearer " + staticToken)
-		if hello.TokenFingerprint != want {
+		if seen.TokenFingerprint != want {
 			t.Errorf("Authorization was not passed through: fingerprint %q, want %q (length seen %d) — "+
 				"a substituted token means per-user RBAC collapsed into 'anyone who can reach the tunnel'",
-				hello.TokenFingerprint, want, hello.TokenLength)
+				seen.TokenFingerprint, want, seen.TokenLength)
 		}
 	})
 
@@ -167,7 +155,9 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 		// everything at once at the end, which is indistinguishable from
 		// streaming if you only compare the final body — the failure only shows
 		// in WHEN bytes arrive.
-		req, err := http.NewRequestWithContext(ctxWithTimeout(t, 60*time.Second), http.MethodGet, base+"/api/stream?chunks=4", nil)
+		const chunks = 4
+		url := fmt.Sprintf("%s%s?chunks=%d", base, probeStreamPath, chunks)
+		req, err := http.NewRequestWithContext(ctxWithTimeout(t, 60*time.Second), http.MethodGet, url, nil)
 		if err != nil {
 			t.Fatalf("build stream request: %v", err)
 		}
@@ -195,60 +185,17 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 		}
 		t.Logf("chunk arrivals: %v", arrivals)
 
-		if len(arrivals) < 4 {
-			t.Fatalf("got %d chunks, want 4", len(arrivals))
+		if len(arrivals) < chunks {
+			t.Fatalf("got %d chunks, want %d", len(arrivals), chunks)
 		}
-		// The provider spaces chunks 150ms apart. If anything buffered, they
-		// all land together at the end; require the last to be meaningfully
-		// later than the first.
+		// The backend spaces chunks probeChunkInterval apart. If anything
+		// buffered, they all land together at the end; require the last to be
+		// meaningfully later than the first.
 		if spread := arrivals[len(arrivals)-1] - arrivals[0]; spread < 200*time.Millisecond {
 			t.Errorf("all chunks arrived within %v — the response was buffered somewhere on the tunnel, "+
 				"which turns log tailing into a hang", spread)
 		}
 	})
-}
-
-// startQuickstart builds and runs the quickstart provider as a host process.
-// It is its own Go module, so it cannot be imported — running the real binary
-// is also closer to what a self-hoster deploys.
-func startQuickstart(t *testing.T) {
-	t.Helper()
-	// Via the Makefile, not a bare `go build`: the provider embeds its portal
-	// with //go:embed all:portal/dist, and that directory is a build artifact
-	// rather than something in git. A clean checkout has no dist, so compiling
-	// directly fails — which is invisible on a dev machine that still has one
-	// lying around from an earlier build, and fails only in CI.
-	build := exec.Command("make", "build-quickstart-provider")
-	build.Dir = repoRoot
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build quickstart provider: %v\n%s", err, out)
-	}
-	bin := filepath.Join(repoRoot, "bin", "quickstart-provider")
-
-	logDir := suiteTempDir(t, "quickstart-provider")
-	logf, _ := os.Create(filepath.Join(logDir, "quickstart.log"))
-	cmd := exec.Command(bin, "serve")
-	cmd.Env = append(os.Environ(), "PORT="+quickstartPort)
-	cmd.Stdout = logf
-	cmd.Stderr = logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start quickstart provider: %v", err)
-	}
-	t.Cleanup(func() { killGroup(cmd) })
-
-	// Wait for it to serve before the tunnel is pointed at it, so a failure
-	// here reads as "the provider did not start" rather than a tunnel error.
-	if !waitFor(t, 30*time.Second, func() (bool, string) {
-		resp, err := http.Get("http://127.0.0.1:" + quickstartPort + "/healthz") //nolint:noctx // short-lived readiness probe
-		if err != nil {
-			return false, err.Error()
-		}
-		defer func() { _ = resp.Body.Close() }()
-		return resp.StatusCode == http.StatusOK, fmt.Sprintf("status %d", resp.StatusCode)
-	}) {
-		t.Fatalf("quickstart provider never became healthy (log=%s)", logf.Name())
-	}
 }
 
 // getThroughTunnel issues one authenticated GET through the hub and returns the
@@ -278,21 +225,4 @@ func getThroughTunnel(t *testing.T, url string) []byte {
 		t.Fatalf("GET %s = %d: %s", url, resp.StatusCode, string(body))
 	}
 	return body
-}
-
-// fingerprint mirrors the quickstart provider's tokenFingerprint. Duplicated
-// rather than imported because the provider is a separate Go module; the
-// provider's own test pins the algorithm on its side.
-func fingerprint(authorization string) string {
-	sum := sha256.Sum256([]byte(authorization))
-	return hex.EncodeToString(sum[:])[:12]
-}
-
-func mustAtoi(t *testing.T, s string) int64 {
-	t.Helper()
-	var n int64
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
-		t.Fatalf("parse %q: %v", s, err)
-	}
-	return n
 }

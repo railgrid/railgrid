@@ -44,6 +44,7 @@ import (
 	"github.com/railgrid/provider-code/oauthgithub"
 	"github.com/railgrid/provider-code/server"
 	"github.com/railgrid/provider-code/tenant"
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/hubclient"
 	"github.com/railgrid/provider-sdk/vwhealth"
 )
@@ -128,12 +129,22 @@ func runServe() {
 	}
 	log.Printf("commit bundle store: %s", bundles.Dir())
 
-	// Caller-token client factory for the MCP tools: they act on the caller's
-	// behalf, never as the provider.
-	tenantFactory := tenant.NewClientFactory(kcpConfig)
+	// Caller-token client factory for the MCP tools and the action gates: both
+	// act on the caller's behalf, never as the provider. NewCallerFactory
+	// keeps only the host and TLS of the provider's own connection and drops
+	// every credential on it, so a request without a bearer fails instead of
+	// falling back to the provider identity.
+	var callers dataplane.CallerFactory
+	if kcpConfig != nil {
+		factory, err := dataplane.NewCallerFactory(kcpConfig)
+		if err != nil {
+			log.Fatalf("caller factory: %v", err)
+		}
+		callers = factory
+	}
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Tenant:  tenantFactory,
+		Tenant:  callers,
 		Bundles: bundles,
 	})
 
@@ -161,7 +172,7 @@ func runServe() {
 	}
 	shared.Credentials = credentials
 
-	codeActions := actions.New(tenantFactory, actions.ExportClient(kcpConfig), backends)
+	codeActions := actions.New(callers, actions.ExportClient(kcpConfig), backends)
 	codeActions.Credentials = credentials
 	codeActions.SnapshotDir = filepath.Join(bundles.Dir(), "git-snapshots")
 	srv := server.New(server.Deps{

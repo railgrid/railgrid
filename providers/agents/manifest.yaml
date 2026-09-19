@@ -40,6 +40,24 @@ spec:
     # colliding with quickstart (8081), kuery (8084), and app-studio (8085).
     url: "http://localhost:8087"
     indexPath: "/"
+    # Sub-nav entries shown indented under "Agents" in the portal side menu.
+    # The portal composes each child URL as /providers/agents/{builtinRoute}
+    # and pushes the trailing segment back as railgridContext.subPath; the
+    # micro-frontend maps it onto its own route in portal/src/router.ts
+    # (routeForSubPath). Every builtinRoute here MUST name a real top-level
+    # route in that file — an entry with no route renders a sidebar item that
+    # lands on a blank page.
+    #
+    # Schedules and triggers are deliberately absent: they are edited on an
+    # agent's Automation tab, not as a workspace-level collection, so there is
+    # no route to point at.
+    children:
+      - displayName: Agents
+        builtinRoute: agents
+      - displayName: Activity
+        builtinRoute: activity
+      - displayName: Connections
+        builtinRoute: connections
   backend:
     # The hub backend proxy forwards /services/providers/agents/* here,
     # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the

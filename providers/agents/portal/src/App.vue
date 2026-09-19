@@ -12,6 +12,7 @@ import {
   activeMenu,
   hashFor,
   parseHash,
+  routeForSubPath,
   syncHash,
   writeHash,
   type CreateSuccessDetail,
@@ -342,6 +343,21 @@ function onEditSuccess(detail: EditSuccessDetail): void {
 function selectMenu(id: string): void {
   if ((MENUS as string[]).includes(id)) go({ kind: 'menu', menu: id as MenuKey })
 }
+
+// The host's sidebar sub-nav (CatalogEntry ui.children) navigates by pushing a
+// subPath rather than a hash, so a click on "Connections" out there has to
+// become a route in here. Only a change that actually moves the user is acted
+// on: the host republishes its context on every hash-only navigation too, and
+// re-asserting the sub-nav's menu then would bounce a user out of an agent the
+// moment they opened it.
+watch(
+  () => props.ctx?.subPath,
+  (subPath) => {
+    const menu = routeForSubPath(subPath)
+    if (menu && activeMenu(route.value) !== menu) go({ kind: 'menu', menu }, 'replace')
+  },
+  { immediate: true },
+)
 
 onMounted(() => {
   requestWorkspaceLayout(workspaceActive.value)

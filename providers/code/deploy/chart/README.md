@@ -1,6 +1,6 @@
 # railgrid-code-provider
 
-railgrid provider that manages source-code repositories and access (deploy keys, collaborators) across git hosting providers (GitHub today). Ships the provider Deployment, ClusterIP Service, and the CatalogEntry that registers the provider — with its four tenant-authored APIResourceSchemas — with the railgrid hub.
+railgrid provider that manages source-code repositories and access (deploy keys, collaborators) across git hosting providers (GitHub today). Ships the provider Deployment, ClusterIP Service, and the CatalogEntry that registers the provider — with its eight tenant-authored APIResourceSchemas — with the railgrid hub.
 
 Helm chart for the railgrid **code** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
@@ -89,7 +89,8 @@ helm upgrade --install code oci://ghcr.io/railgrid/charts/railgrid-code-provider
 ## Repository actions and credential ownership
 
 The chart CatalogEntry includes the Repository Provider Actions contract, matching
-`manifest.yaml`. Consumers receive scoped Repository read/invoke permissions;
+`manifest.yaml`. Consumers receive scoped Repository permissions — `read` on the
+Repository plus `create` on the `repositories/<action>` subresource;
 Code keeps Git credentials and performs Git/PR/comment operations. Configure a
 GitHub App Connection with a tenant Secret containing `appID`, `installationID`,
 and `privateKey`, or use the existing PAT/OAuth token Connection. Do not mount

@@ -9,8 +9,8 @@
 package main
 
 // Multicluster controller manager — reconciles the agents provider's
-// tenant-authored CRs (Schedule / Connection / Agent) across EVERY tenant
-// workspace that has bound this provider's APIExport.
+// tenant-authored CRs (Schedule / Connection / Agent / Toolset / Trigger)
+// across EVERY tenant workspace that has bound this provider's APIExport.
 //
 // The CRs live in tenant workspaces, so we use the kcp apiexport multicluster
 // provider (provider-sdk/apiexportprovider): it watches the provider's
@@ -54,6 +54,9 @@ import (
 	"github.com/railgrid/provider-agents/controller/agent"
 	"github.com/railgrid/provider-agents/controller/connection"
 	"github.com/railgrid/provider-agents/controller/schedule"
+	"github.com/railgrid/provider-agents/controller/toolset"
+	"github.com/railgrid/provider-agents/controller/trigger"
+	"github.com/railgrid/provider-agents/internal/webhookpath"
 	agentsscheme "github.com/railgrid/provider-agents/scheme"
 )
 
@@ -145,10 +148,50 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 	if err := (&connection.Reconciler{Telegram: deps.Telegram, OAuth: deps.OAuth, Gateway: deps.Gateway}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("connection controller: %w", err)
 	}
-	if err := (&agent.Reconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&agent.Reconciler{PurgeData: agentDataPurger(deps)}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("agent controller: %w", err)
+	}
+	if err := (&toolset.Reconciler{}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("toolset controller: %w", err)
+	}
+	// The Trigger reconciler mints inbound webhook URLs, so it needs the same
+	// signing key the HTTP layer signs with. It is read from the environment
+	// rather than passed through ControllerDeps because the key is
+	// configuration, not a dependency: both halves of the provider derive it
+	// from the same two variables main.go reads, and internal/webhookpath's
+	// golden vectors keep the derivation itself honest. An empty key is not
+	// fatal — the reconciler then leaves existing paths alone instead of
+	// minting or revoking anything.
+	webhookKey := webhookpath.Key(os.Getenv("AGENTS_WEBHOOK_KEY"), os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"))
+	if len(webhookKey) == 0 {
+		log.Printf("controller manager: WARNING no webhook signing key (AGENTS_WEBHOOK_KEY / RAILGRID_PROVIDER_KUBECONFIG); triggers will not be given inbound URLs")
+	}
+	if err := (&trigger.Reconciler{WebhookKey: webhookKey}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("trigger controller: %w", err)
 	}
 
 	log.Printf("agents controller manager starting (endpointSlice=%s)", endpointSliceName)
 	return mgr.Start(ctx)
+}
+
+// storeTeardown is the provider-store teardown the Agent reconciler performs
+// on delete: the rows DELETE /api/agents/{name} used to remove inline before
+// that handler was deleted. It is discovered on the executor rather than being
+// a field of ControllerDeps because the store, and the cluster→tenant mapping
+// needed to scope the delete, both live behind the HTTP half of the provider;
+// the controller only knows the logical cluster the CR came from.
+type storeTeardown interface {
+	PurgeAgentData(ctx context.Context, clusterID, agentName string) error
+}
+
+// agentDataPurger returns the purge function, or nil when the provider has no
+// store to purge from. nil disables the Agent finalizer outright, which is the
+// right answer for the in-memory dev path: a finalizer nothing can clear would
+// make every agent undeletable.
+func agentDataPurger(deps api.ControllerDeps) func(context.Context, string, string) error {
+	if p, ok := deps.Submit.(storeTeardown); ok {
+		return p.PurgeAgentData
+	}
+	log.Printf("controller manager: agent store data is not purged on delete (the executor exposes no PurgeAgentData); transcripts and runs of a deleted agent are left in the store")
+	return nil
 }

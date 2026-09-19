@@ -286,7 +286,7 @@ func (p *researchCapabilityDiscoveryPort) DiscoverMCP(context.Context, identity,
 }
 
 func TestProjectEinoAssistantRefreshToolDiscoveryActivatesResearchForSteeredMessage(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup}
 	port := &researchCapabilityDiscoveryPort{researchCapabilityFakePort{listAgentsResult: `{"agents":[{"name":"researcher","phase":"Ready"}]}`}}
 	req := projectAssistantRunRequest{
 		ToolPort:          port,

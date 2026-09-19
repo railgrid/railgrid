@@ -33,7 +33,7 @@
 // Everything on the far side of the seam is watched, not polled: the
 // runtime CRs (one watch per template GVR, registered as templates become
 // Ready), the Templates in the provider workspace, and the tenant Secrets
-// the bridge reads (see watch.go). A long safety resync backs the watches.
+// the bridge reads (see watch.go). Nothing is re-reconciled on a timer.
 //
 // Cleanup is finalizer-driven: the runtime CR and the bridged Secrets live
 // on a different cluster than the Instance, so cross-cluster ownerRefs
@@ -57,6 +57,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
@@ -93,13 +94,6 @@ const (
 	// Instance — unlike the retired application controller, every instance
 	// now owns runtime state.
 	finalizer = infrav1alpha1.FinalizerInstanceRuntime
-
-	// resyncPeriod is the safety net behind the watches: every Instance is
-	// re-reconciled at least this often, so a missed event (an informer
-	// restart, a runtime CR written before the mapping annotations existed)
-	// converges within the period. Status freshness itself comes from the
-	// runtime-cluster watch, not from this.
-	resyncPeriod = 10 * time.Minute
 )
 
 // Config wires the Instance controller.
@@ -147,6 +141,9 @@ type Controller struct {
 	index *instanceIndex
 	// runtimeWatches registers the per-GVR runtime-cluster watches.
 	runtimeWatches *runtimeWatchRegistrar
+	// runtimeCache is the cache the per-GVR watches are registered on; the
+	// Template controller shares it for its RGD watch (RuntimeCache).
+	runtimeCache cache.Cache
 
 	// networkPolicySynced records, per runtime namespace name, which namespace
 	// UID its isolation policy was last converged in and when
@@ -255,9 +252,22 @@ func New(cfg Config) (*Controller, error) {
 
 	c.mgr = mgr
 	c.templates = mgr.GetLocalManager().GetClient()
-	c.runtimeWatches = newRuntimeWatchRegistrar(instanceController, runtimeCluster.GetCache())
+	c.runtimeCache = runtimeCluster.GetCache()
+	c.runtimeWatches = newRuntimeWatchRegistrar(instanceController, c.runtimeCache)
 	return c, nil
 }
+
+// LocalManager is the plain controller-runtime manager for the multicluster
+// manager's local cluster — the provider's own workspace, where Templates
+// live. Callers register provider-workspace controllers (the Template
+// reconciler) on it instead of standing up a second manager and a second
+// lease for the same cluster.
+func (c *Controller) LocalManager() manager.Manager { return c.mgr.GetLocalManager() }
+
+// RuntimeCache is the cache over the kro runtime cluster this controller runs
+// (started with the manager). The Template controller watches the RGDs the kro
+// backend authors there through the same cache.
+func (c *Controller) RuntimeCache() cache.Cache { return c.runtimeCache }
 
 // templateHandler enqueues every Instance of the Template that changed. The
 // cluster argument is the local cluster and irrelevant: the mapper spans all
@@ -435,29 +445,33 @@ func desiredNetworkPhase(runtimeObj *unstructured.Unstructured) string {
 	return infrav1alpha1.RailgridNetworkPhaseSetup
 }
 
-// instanceRequeueAfter schedules the next timer-driven pass: the exact
-// lifecycle deadline of a development Instance (idle timeout, max lifetime)
-// when one is due before the safety resync, else the resync. Readiness and
-// the setup -> runtime network transition are not polled: the runtime CR's
-// status changes arrive through the runtime-cluster watch.
+// instanceRequeueAfter returns the only RequeueAfter this reconciler asks for:
+// the exact lifecycle deadline of a development Instance (idle timeout, max
+// lifetime), derived from the Template and the Instance's own timestamps. That
+// is the "waking at a computed lifecycle deadline" carve-out of
+// docs/provider-connectivity-contract.md § "Pillar 1 carve-outs" — not a
+// resync. An Instance with no deadline gets 0: nothing to wake up for, because
+// everything else it depends on is watched (the runtime CR through the
+// runtime-cluster watch, its Template and bridged Secrets through watch.go).
 func instanceRequeueAfter(now time.Time, created metav1.Time, tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured) time.Duration {
 	var development *infrav1alpha1.TemplateDevelopment
 	if tmpl != nil {
 		development = tmpl.Spec.Development
 	}
-	return lifecycleRequeueAfter(now, created, development, runtimeObj, resyncPeriod)
+	return lifecycleRequeueAfter(now, created, development, runtimeObj)
 }
 
-// failValidation reports a terminal validation outcome on the Instance. A
-// Template fix is picked up through the Template watch (mapTemplate), so
-// only the safety resync backs it. The runtime CR — if one exists from a
-// previously valid spec — is deliberately left alone: last-good keeps
-// running.
+// failValidation reports a terminal validation outcome on the Instance.
+// Terminal means terminal: nothing changes until the tenant edits the Instance
+// or an author fixes the Template, and both arrive as events (the Instance's
+// own watch, mapTemplate), so there is nothing to requeue for. The runtime CR
+// — if one exists from a previously valid spec — is deliberately left alone:
+// last-good keeps running.
 func (c *Controller) failValidation(ctx context.Context, tenantClient client.Client, inst *unstructured.Unstructured, reason, message string) (ctrl.Result, error) {
 	if _, err := c.mirrorStatus(ctx, tenantClient, inst, nil, nil, validCondition(metav1.ConditionFalse, reason, message), nil); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: resyncPeriod}, nil
+	return ctrl.Result{}, nil
 }
 
 // resolveTemplate reads the Template from the provider-workspace cache and

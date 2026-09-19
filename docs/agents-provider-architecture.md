@@ -280,10 +280,22 @@ The [Milestones](#milestones) section lists the full plan.
    periodically) the provider probes the hub catalog for `infrastructure`
    (workspace + compute runner) and for tenant `MCPServer` resources (edge
    tools). Absent → those tool families and runners simply don't register.
-4. **Everything an agent can do, the API can do.** Chat, run-on-demand,
-   schedules, connections, memory, files, notifications — all are REST +
-   APIExport resources first; the portal, channels, and the agent's own
-   self-management tools sit on top.
+4. **Objects are kcp; the backend serves verbs.** `Agent`, `Schedule`,
+   `Connection`, `Toolset`, `Trigger` and the tenant's credential Secrets are
+   bound APIs in the tenant's own workspace, so every reader and writer —
+   the portal, `kubectl`, another provider, the agent's own self-management
+   MCP tools — goes to kcp for them. The provider's own HTTP surface carries
+   only what kcp cannot answer: a chat turn, a run and its cancellation, a
+   connection test, an OAuth authorize, a webhook delivery. This is the
+   provider contract's Pillar 2/3 split, and it replaced an earlier rule
+   ("all are REST first") that had the provider relaying CRUD the hub could
+   not authorize per resource.
+
+   The consequence is that **there are two writers and no gatekeeper between
+   them.** Anything that must be true of a stored object regardless of who
+   wrote it is a reconciler's `Validated` condition, not a check in a
+   request handler; a handler-side check is a convenience for whoever is
+   typing, and is mirrored in the portal for the same reason.
 5. **Trigger-scoped trust.** What an agent may do depends on who is watching.
    Interactive chat can unlock risky tools behind approvals; scheduled,
    heartbeat, and wakeup runs default to read-only + notify-first. This is
@@ -534,6 +546,34 @@ cross-agent **Inbox**. This keeps per-agent config inside the agent and shared
 secrets outside it, mirroring app-studio. (Vite + `railgrid.ready`/`railgrid.context`
 handshake; streaming chat with tool-call rows + approval prompts.)
 
+**How the portal reads and writes.** The micro-frontend has two data paths,
+and `portal/src/api.ts` is the single entry point to both. Objects go to kcp
+through portalkit's kube client (`portal/src/resources.ts`,
+`createKubeClient({ fetch: providerFetch(ctx), cluster: ctx.tenant })`):
+creates are a plain `create` so a duplicate name is still a 409, edits are JSON
+merge patches — which replace list and map fields wholesale, matching what the
+Go patch helpers did — and Secrets are server-side applied. Verbs go to
+`/services/providers/agents/api/*` with the hub's tenant headers, as before.
+The read shapes did not change in the move: the deleted CRUD handlers returned
+the raw CRs, so the portal's `Agent`, `Schedule`, `Connection`, `Toolset` and
+`Trigger` types were already the Kubernetes objects.
+
+Two consequences worth stating plainly. A model credential's Secret now reaches
+the browser on a list, exactly as `kubectl get secret` would for the same user
+in the same workspace — the key is the user's own and the provider no longer
+stands between them; `listCredentials` projects it away immediately and no view
+ever sees it. And a `Trigger`'s `status.webhookPath` is minted by the Trigger
+reconciler rather than by whoever created the object, because the token is an
+HMAC the provider keys and the browser must never hold.
+
+**Sidebar sub-nav.** `CatalogEntry.spec.ui.children` declares Agents, Activity
+and Connections. The portal composes each as `/providers/agents/<builtinRoute>`
+and pushes the trailing segment back as `railgridContext.subPath`, which
+`portal/src/router.ts` (`routeForSubPath`) maps onto this element's own hash
+route. Schedules and triggers are deliberately not children: they are edited on
+an agent's Automation tab, not as a workspace-level collection, so there is no
+route to point a sidebar entry at.
+
 **OAuth connections.** For `auth: oauth` Connections the portal starts the flow
 at `/api/connections/{name}/oauth/authorize` (redirect to the provider, e.g.
 GitHub App / Google / Slack). The provider's callback
@@ -589,9 +629,13 @@ providers/agents/
   manifest.yaml      # CatalogEntry (dev loopback URL, own port)
   apis/v1alpha1/     # Agent, Connection, AgentSchedule, AgentTrigger,
                      # AgentRun (+AgentSkill)
-  api/               # REST handlers: chat SSE, agents, runs, schedules,
-                     # triggers, inbox, connections, oauth callback, budgets,
-                     # files proxy
+  api/               # Verb handlers (NOT object CRUD — see design rule 4):
+                     # chat SSE, runs, schedules/{n}/run, triggers/{n}/run,
+                     # connections/{n}/{test,enable-inbound,authorize}, inbox,
+                     # credential test/discover, oauth callback, webhooks,
+                     # capabilities, catalog, usage, plus the MCP tools, which
+                     # are the one place the apply*Create/apply*Update
+                     # builders still run
   channels/          # telegram/, slack/: webhook verify, inbound routing,
                      # outbound delivery, approval round-trips
   triggers/          # event sources (webhook/channel/email/github/connection),

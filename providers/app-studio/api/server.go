@@ -95,6 +95,10 @@ type Server struct {
 	// caller. Nil without a hub URL; identity then carries no org/workspace
 	// scope.
 	tenantWorkspaces workspaceLookup
+	// tenantActors resolves the AUTHENTICATED caller behind a request's
+	// bearer, through a SelfSubjectReview on the request's own cluster. It is
+	// the only source of identity.actor; X-Railgrid-User is a label.
+	tenantActors actorLookup
 	// llmDiscoveryHTTPClient is a narrow test seam for credential-scoped model
 	// catalog requests. Production uses a redirect-denying bounded client.
 	llmDiscoveryHTTPClient *http.Client
@@ -227,6 +231,7 @@ func NewWithWorkspaceContext(parent context.Context, tenantClient *tenant.Client
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		tenantWorkspaces:         workspaceLookupFor(tenantClient, hubBase, mcpInsecureSkipTLSVerify),
+		tenantActors:             actorLookupFor(hubBase, mcpInsecureSkipTLSVerify),
 		hubPublicURL:             strings.TrimSpace(os.Getenv("RAILGRID_HUB_PUBLIC_URL")),
 		actionsExternalURL:       strings.TrimSpace(os.Getenv("RAILGRID_ACTIONS_EXTERNAL_URL")),
 		actionsCABundle:          actionsCABundle,
@@ -341,16 +346,16 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/plan", s.planProject).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/development-templates", s.listDevelopmentTemplates).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/import-repositories", s.listImportRepositories).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/llm-settings", s.getProjectLLMSettings).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/llm-settings", s.patchProjectLLMSettings).Methods(http.MethodPatch)
+	// The registry itself is Studio spec, and each credential is its own
+	// Secret; the portal reads and writes both with the kube client, as the
+	// caller — who always was the writer, since these handlers only ever
+	// acted on the caller's behalf. What stays are the two things a browser
+	// cannot do, because both need the key server-side and neither returns
+	// anything secret: reach a model provider to test a credential, and ask
+	// it what models it serves.
 	r.HandleFunc("/api/projects/llm-settings/models/discover", s.discoverProjectLLMModels).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/llm-settings/test", s.testProjectLLMConnection).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/llm-settings/models", s.createProjectLLMModel).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.patchProjectLLMModel).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.deleteProjectLLMModel).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/llm-settings/default", s.setDefaultProjectLLMModel).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.getProject).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}", s.patchProject).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}/repository", s.putProjectRepository).Methods(http.MethodPut)
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/thumbnail", s.getProjectThumbnail).Methods(http.MethodGet)
@@ -430,8 +435,6 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/preview-bridge/sessions/{session}", s.deleteProjectPreviewBridgeSession).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.getProjectAssistantApprovalMode).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.patchProjectAssistantApprovalMode).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/memory", s.patchProjectMemory).Methods(http.MethodPatch)
 }
 
 // ConfigureAttachmentDraftRetention changes the expiry applied to explicitly
@@ -503,6 +506,15 @@ func (s *Server) requireProjectClient(w http.ResponseWriter, r *http.Request) (*
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Railgrid-Cluster missing) — the hub did not resolve a cluster for this workspace")
 		return nil, identity{}, false
 	}
+	if id.user == "" {
+		// Everything under /api/projects records or checks an actor somewhere
+		// (thread and attachment ownership, approval decisions, the audit
+		// trail). Serving a request whose caller could not be identified
+		// would write those as if nobody did them.
+		log.Printf("app-studio: resolving caller identity on cluster %s: %v", id.clusterID, id.userErr)
+		writeStatus(w, http.StatusBadGateway, "ActorUnresolved", ErrActorUnresolved.Error()+" on cluster "+id.clusterID+": "+errorText(id.userErr))
+		return nil, identity{}, false
+	}
 	c, err := s.clientFor(id)
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "creating project client: "+err.Error())
@@ -525,12 +537,6 @@ func (s *Server) requireProjectWithClient(w http.ResponseWriter, r *http.Request
 	}
 	s.noteWorkspaceCluster(id)
 	return c, id, p, true
-}
-
-// requireProject fetches the named Project, discarding the client/identity.
-func (s *Server) requireProject(w http.ResponseWriter, r *http.Request) (*aiv1alpha1.Project, bool) {
-	_, _, p, ok := s.requireProjectWithClient(w, r)
-	return p, ok
 }
 
 // requireStore guards against a nil message store.

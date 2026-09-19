@@ -39,61 +39,6 @@ type modelCredential struct {
 	APIKey string `json:"apiKey,omitempty"`
 }
 
-// listCredentials returns all named model credentials in the workspace (keys
-// redacted).
-func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	secrets, err := c.ListSecrets(r.Context(), llm.SecretNamespace)
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	out := []modelCredential{}
-	for i := range secrets {
-		sec := &secrets[i]
-		if !strings.HasPrefix(sec.Name, llm.ModelCredentialPrefix) {
-			continue
-		}
-		get := func(k string) string {
-			if v, okk := sec.Data[k]; okk {
-				return strings.TrimSpace(string(v))
-			}
-			return ""
-		}
-		out = append(out, modelCredential{
-			Name:      strings.TrimPrefix(sec.Name, llm.ModelCredentialPrefix),
-			Provider:  get("provider"),
-			BaseURL:   get("baseURL"),
-			Model:     get("model"),
-			HasAPIKey: get("apiKey") != "",
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	writeList(w, out)
-}
-
-// createCredential writes a named model-credential Secret (create-or-update).
-func (s *Server) createCredential(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req modelCredential
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := applyCredentialUpsert(r.Context(), c, &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
-}
-
 // applyCredentialUpsert writes the named model-credential Secret
 // (create-or-update), preserving an existing key when none is supplied. Shared
 // by the REST handler and the MCP save_model_credential tool. The returned view
@@ -234,17 +179,4 @@ func (e *probeError) Error() string {
 // tenant data, just reference data for the Models UI).
 func (s *Server) modelCatalog(w http.ResponseWriter, r *http.Request) {
 	writeList(w, llm.Catalog())
-}
-
-func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	name := r.PathValue("name")
-	if err := c.DeleteSecret(r.Context(), llm.SecretNamespace, llm.CredentialSecretName(name)); err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }

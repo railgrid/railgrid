@@ -368,9 +368,19 @@ type ProjectStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
-	// UpdatedAt reflects the latest API mutation affecting metadata or memory.
+	// UpdatedAt reflects the latest spec mutation the controller has observed.
+	// The project list is ordered by it, so it must follow writes from any
+	// client — the portal patching the CR directly, kubectl, the assistant —
+	// not just the ones that once went through a REST facade.
 	// +optional
 	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+
+	// ObservedGeneration is the metadata.generation the controller last
+	// stamped UpdatedAt for. It is what makes UpdatedAt honest without a
+	// write-side facade: kcp bumps generation on every spec change, so the
+	// reconciler can tell "the spec moved" from "I am reconciling again".
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Environments reports provider-observed environment state.
 	// +optional

@@ -15,15 +15,26 @@ import (
 	"os"
 
 	sdkinstall "github.com/railgrid/provider-sdk/install"
+
+	"github.com/railgrid/provider-kuery/install"
 )
 
 const (
 	apiExportName = "kuery.providers.railgrid.ai"
 )
 
-// runInitCmd applies kuery's in-workspace objects (APIResourceSchemas,
-// APIExport, APIExportEndpointSlice, bind grant) using the workspace-admin
-// kubeconfig the admin onboarded. Idempotent.
+// runInitCmd applies kuery's in-workspace objects using the workspace-admin
+// kubeconfig the admin onboarded. Idempotent. Two separate sets, and the
+// separation is the point:
+//
+//   - EXPORTED: the APIResourceSchemas under RAILGRID_SCHEMAS_DIR (SavedView,
+//     and only SavedView), the APIExport that references them, its endpoint
+//     slice and the bind grant. Anything in that directory becomes bindable by
+//     every tenant.
+//   - PROVIDER-PRIVATE: the Engagement CRD, applied straight into the provider
+//     workspace and deliberately absent from the export, so kuery's own
+//     bookkeeping about which replica syncs which tenant's edge is not a
+//     tenant-visible API. See the install package.
 //
 // kuery's APIExport deliberately claims NO first-party (*.railgrid.ai)
 // resources. Such a claim must pin the serving APIExport's identityHash, and
@@ -71,6 +82,14 @@ func runInitCmd(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}
-	log.Printf("kuery init: workspace bootstrapped (export=%s path=%s schemas=%s catalogEntry=%s)", apiExportName, workspacePath, schemasDir, catalogEntryFile)
+
+	// After the export, not before: a failure here must not leave a workspace
+	// with private storage and no API.
+	if err := install.EnsureEngagementCRD(ctx, config); err != nil {
+		return err
+	}
+
+	log.Printf("kuery init: workspace bootstrapped (export=%s path=%s schemas=%s catalogEntry=%s, private Engagement CRD installed)",
+		apiExportName, workspacePath, schemasDir, catalogEntryFile)
 	return nil
 }

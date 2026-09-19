@@ -8,8 +8,8 @@ RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 COPY providers/quickstart/portal/ ./
 RUN npm run build
 
-# 2. Build the Go binary. assets.go //go:embeds portal/dist; init_cmd.go uses
-#    the published railgrid-provider-sdk (no replace), fetched from the proxy.
+# 2. Build the Go binary. assets.go //go:embeds portal/dist; the provider-sdk
+#    is consumed through the go.mod replace below, not the module proxy.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY providers/quickstart/go.mod providers/quickstart/go.sum ./
@@ -18,7 +18,12 @@ COPY providers/quickstart/go.mod providers/quickstart/go.sum ./
 # REPO ROOT: docker build -f providers/quickstart/Dockerfile .
 COPY provider-sdk/ /provider-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY providers/quickstart/main.go providers/quickstart/assets.go providers/quickstart/init_cmd.go ./
+COPY providers/quickstart/main.go providers/quickstart/assets.go \
+     providers/quickstart/init_cmd.go providers/quickstart/controller_manager.go ./
+COPY providers/quickstart/apis/ ./apis/
+COPY providers/quickstart/controller/ ./controller/
+COPY providers/quickstart/scheme/ ./scheme/
+COPY providers/quickstart/server/ ./server/
 COPY --from=portal /portal/dist ./portal/dist
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/quickstart-provider .
 

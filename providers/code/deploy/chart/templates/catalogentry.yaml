@@ -66,6 +66,12 @@ data:
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
+      # Twelve catalogued actions, all Repository-bound. The provider also
+      # serves stage_snapshot on the same route, deliberately uncatalogued: its
+      # 25 MiB body cannot be declared under limits.maxInputBytes, which the
+      # CatalogEntry API caps at 1 MiB. See docs/provider-actions.md,
+      # "Uncatalogued large-upload verbs". This list must stay identical to
+      # providers/code/manifest.yaml (actions_catalog_test.go enforces it).
       actions:
       - id: branches/v1
         displayName: List branches

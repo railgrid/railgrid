@@ -240,7 +240,11 @@ Heartbeat: standalone providers POST every ~30s through the one shared
 client in `provider-sdk/hubclient` (`ConfigFromEnv` + `RunHeartbeat`), which
 reads `RAILGRID_HUB_URL`, `RAILGRID_PROVIDER_NAME`, `RAILGRID_HUB_INSECURE` and
 `RAILGRID_PROVIDER_VERSION`. Do not copy the loop into a provider: TLS, token
-and retry behaviour must change in one place. The beat is authenticated as
+and retry behaviour must change in one place. `HeartbeatConfig.CanSend` is
+**required** — `RunHeartbeat` logs `ErrNoReadinessGate` and refuses to start
+without it, so a provider whose watches are dead cannot keep reporting alive.
+Wire it to the provider's real readiness (`vwhealth.Readiness.Check`, or
+whatever gates `/readyz`). The beat is authenticated as
 the provider's own service account: the bearer is `RAILGRID_HUB_TOKEN` if set,
 otherwise the token inside `RAILGRID_PROVIDER_KUBECONFIG`
 (`hubclient.ResolveHubToken`), and the hub verifies it by TokenReview in the
@@ -325,15 +329,24 @@ the ONE copy of the hub-proxy contract — `readTenant()` (localStorage
 scope, falling back to `fetch` + `ctx.token` on older hosts), and
 `serviceBase()` (`/ui/providers/*` → `/services/providers/*`). The wrong
 header/key means 401/403, so **do not re-inline this** — call the helpers and
-never call the global `fetch` for a hub request. Two auth models coexist;
-`providerFetch` serves both, `tenantHeaders` only the first:
-- **hub-proxy model** (uses `tenant.ts`): `agents`, `app-studio` (migrated);
-  `kuery`/`quickstart` read the tenant off `railgrid-context` instead, so they only
-  use `serviceBase`.
-- **cluster-in-path model** (`code`, `edges`, `infrastructure`, `databricks`):
-  address kcp by `/clusters/<cluster>` (the `portalkit` kube client over the
-  hub's kcp proxy) or their own `/services/providers/<name>` with just the
-  bearer token; they don't use `tenantHeaders`.
+never call the global `fetch` for a hub request.
+
+**There is one auth model, not two.** A portal reads and writes its bound CRs
+with the `portalkit` kube client over the hub's kcp proxy at
+`/clusters/<cluster>`, addressing kcp by cluster in the path and
+authenticating with the caller's bearer. It calls its own
+`/services/providers/<name>` backend **only** for the closed set of Pillar 2
+classes — a data-plane verb or action on a bound resource, `/mcp`, health,
+the browser OAuth routes, the agent tunnel, and signed inbound webhooks (see
+[provider-connectivity-contract.md](docs/provider-connectivity-contract.md)).
+`tenantHeaders` supplies org/workspace scope where a backend call needs it;
+it is addressing, never authorization.
+
+A portal that drives everything through its own REST (`agents`, `app-studio`,
+`kuery`, `quickstart` today) is a **deviation being migrated**, not a second
+sanctioned model — see
+[roadmap/provider-contract-remediation.md](docs/roadmap/provider-contract-remediation.md).
+Do not copy it into a new portal.
 
 Rule of thumb: **need a confirm, an icon, a table, a status pill, or tenant
 headers → import from `portalkit`, don't reinvent.** New shared primitive → add
@@ -486,9 +499,10 @@ cannot capture a platform provider's proxy or heartbeat route by name. See
    path, apiExport name + permission claims + schema bodies.
 4. Build the portal (`providers/{name}/portal/`, embedded via `assets.go`).
 5. Wire the heartbeat with `provider-sdk/hubclient` (`ConfigFromEnv` +
-   `go RunHeartbeat`; set `CanSend` if a required controller gates
-   liveness) — never a local copy — plus a tenant-scoped client if it talks
-   to kcp. Anything that reacts to tenant objects is a multicluster-runtime
+   `go RunHeartbeat`) — never a local copy — plus a tenant-scoped client if it
+   talks to kcp. `CanSend` is **required**, not optional: point it at the
+   provider's readiness (`vwhealth.Readiness.Check`, the same gate as
+   `/readyz`), or `RunHeartbeat` refuses to start. Anything that reacts to tenant objects is a multicluster-runtime
    reconciler under leader election, not a loop (§5.8).
 6. Add Makefile `build-{name}-provider[-portal]` + `run/install/uninstall`
    targets if standalone; add the module to `go.work`.

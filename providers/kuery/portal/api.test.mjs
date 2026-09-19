@@ -76,20 +76,25 @@ test('mapQueryStatus preserves metadata and derives hasNext only from next curso
   assert.equal(truncatedWithoutCursor.nextCursor, null)
 })
 
-test('KueryApi forwards auth headers, JSON body, and AbortSignal', async () => {
+// A query is the run verb on a named SavedView, addressed by the workspace's
+// kcp logical-cluster ID, with the spec carried as the request's input
+// override. There is no un-named query route.
+test('KueryApi posts the query as a run verb on a SavedView', async () => {
   const controller = new AbortController()
   let capturedInput
   let capturedInit
   const fetch = async (input, init) => {
     capturedInput = input
     capturedInit = init
-    return new Response(JSON.stringify({ objects: [] }), {
+    return new Response(JSON.stringify({ requestID: 'r-1', result: { objects: [] } }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
   }
   const client = api.createKueryApi({
     basePath: '/services/providers/kuery/',
+    cluster: '1ngen6o0so3jwz2h',
+    savedView: 'playground-0123456789ab',
     headers: { Authorization: 'Bearer test-token' },
     fetch,
   })
@@ -97,26 +102,60 @@ test('KueryApi forwards auth headers, JSON body, and AbortSignal', async () => {
   const spec = { limit: 1, cursor: true }
   await client.query(spec, { signal: controller.signal })
 
-  assert.equal(capturedInput, '/services/providers/kuery/api/query')
+  assert.equal(capturedInput, '/services/providers/kuery/dataplane/clusters/1ngen6o0so3jwz2h/savedviews/playground-0123456789ab/run')
   assert.equal(capturedInit.method, 'POST')
   assert.equal(capturedInit.signal, controller.signal)
   assert.equal(new Headers(capturedInit.headers).get('Authorization'), 'Bearer test-token')
   assert.equal(new Headers(capturedInit.headers).get('Content-Type'), 'application/json')
-  assert.deepEqual(JSON.parse(capturedInit.body), spec)
+  assert.deepEqual(JSON.parse(capturedInit.body), { input: { query: spec } })
+
+  // A per-call view overrides the client's default, which is how the shell
+  // runs a specific saved view without a second client.
+  await client.query(spec, { savedView: 'fleet-deployments' })
+  assert.equal(capturedInput, '/services/providers/kuery/dataplane/clusters/1ngen6o0so3jwz2h/savedviews/fleet-deployments/run')
+})
+
+// A view name is caller-authored, so it must not be able to escape its path
+// segment.
+test('runPath encodes every caller-supplied segment', () => {
+  assert.equal(
+    api.runPath('/services/providers/kuery', 'abc', '../../etc/passwd'),
+    '/services/providers/kuery/dataplane/clusters/abc/savedviews/..%2F..%2Fetc%2Fpasswd/run',
+  )
+})
+
+// The executor reports a refusal inside the envelope with a 200; the message
+// is the one that says what to change, so it must win over the status text.
+test('KueryApi surfaces the envelope error over the HTTP status', async () => {
+  const client = api.createKueryApi({
+    basePath: '/services/providers/kuery',
+    cluster: 'abc',
+    savedView: 'view',
+    fetch: async () => new Response(
+      JSON.stringify({ requestID: 'r-1', error: { code: 'not_engaged', message: 'no edges are engaged for this workspace' } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ),
+  })
+
+  await assert.rejects(
+    client.query({}),
+    error => error instanceof api.KueryApiError && /no edges are engaged/u.test(error.message),
+  )
 })
 
 test('KueryApi surfaces HTTP failures with status and bounded response detail', async () => {
   const client = api.createKueryApi({
     basePath: '/services/providers/kuery',
-    fetch: async () => new Response('missing tenant identity', { status: 401, statusText: 'Unauthorized' }),
+    cluster: 'abc',
+    savedView: 'view',
+    fetch: async () => new Response('Unauthorized\n', { status: 401, statusText: 'Unauthorized' }),
   })
 
   await assert.rejects(
     client.query({}),
     error => error instanceof api.KueryApiError
       && error.status === 401
-      && error.body === 'missing tenant identity'
-      && error.message === 'kuery request failed (401): missing tenant identity',
+      && error.message === 'kuery request failed (401): Unauthorized',
   )
 })
 
@@ -134,7 +173,12 @@ test('KueryApi rejects malformed JSON and invalid QueryStatus shapes', async () 
   for (const body of bodies) {
     const client = api.createKueryApi({
       basePath: '/services/providers/kuery',
-      fetch: async () => new Response(body, { status: 200 }),
+      cluster: 'abc',
+      savedView: 'view',
+      fetch: async () => new Response(
+        body === 'not-json' ? body : JSON.stringify({ requestID: 'r-1', result: JSON.parse(body) }),
+        { status: 200 },
+      ),
     })
     await assert.rejects(client.query({}), /invalid (?:JSON|QueryStatus)/u, `body should be rejected: ${body}`)
   }

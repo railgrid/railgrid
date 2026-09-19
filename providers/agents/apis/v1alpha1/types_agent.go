@@ -334,6 +334,14 @@ type AgentStatus struct {
 	// SuspendedReason explains a Suspended phase (e.g. "budget exceeded").
 	// +optional
 	SuspendedReason string `json:"suspendedReason,omitempty"`
+
+	// Conditions follows the standard Kubernetes conditions pattern. The
+	// Validated condition reports whether the spec is usable as written —
+	// see conditions.go.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // AgentUsageStatus is the observed rolling-window spend.

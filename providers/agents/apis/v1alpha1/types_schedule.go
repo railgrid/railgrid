@@ -151,6 +151,14 @@ type ScheduleStatus struct {
 	// permanent error (revoked credential, deleted agent).
 	// +optional
 	DisabledReason string `json:"disabledReason,omitempty"`
+
+	// Conditions follows the standard Kubernetes conditions pattern. The
+	// Validated condition reports whether the spec is usable as written —
+	// see conditions.go.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

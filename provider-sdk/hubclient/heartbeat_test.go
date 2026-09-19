@@ -122,6 +122,7 @@ func TestRunHeartbeatPostsVersionWithBearerAndStopsOnCancel(t *testing.T) {
 			Token:        "sa-token",
 			Interval:     10 * time.Millisecond,
 			Logger:       rec.logger(),
+			CanSend:      func() bool { return true },
 		})
 	}()
 
@@ -220,6 +221,7 @@ func TestRunHeartbeatLogsAuthRejection(t *testing.T) {
 			Version:      "0.1.0",
 			Interval:     time.Hour, // only the immediate beat
 			Logger:       rec.logger(),
+			CanSend:      func() bool { return true },
 		})
 	}()
 
@@ -271,7 +273,7 @@ func TestRunHeartbeatDisabledWithoutHubURL(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunHeartbeat(context.Background(), HeartbeatConfig{ProviderName: "edges", Logger: rec.logger()})
+		RunHeartbeat(context.Background(), HeartbeatConfig{ProviderName: "edges", Logger: rec.logger(), CanSend: func() bool { return true }})
 	}()
 	select {
 	case <-done:
@@ -349,6 +351,7 @@ func TestConfigFromEnvSkipsTokenResolutionWhenHeartbeatDisabled(t *testing.T) {
 	// The config stays usable: RunHeartbeat takes its disabled path on it.
 	rec := &recordingLogger{}
 	cfg.Logger = rec.logger()
+	cfg.CanSend = func() bool { return true }
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -386,6 +389,7 @@ func TestConfigFromEnvTrailingSlashPostsCleanPath(t *testing.T) {
 		t.Fatalf("HubURL = %q, want the trailing slash trimmed to %q", cfg.HubURL, srv.URL)
 	}
 	cfg.Interval = time.Hour // only the immediate beat
+	cfg.CanSend = func() bool { return true }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -394,5 +398,63 @@ func TestConfigFromEnvTrailingSlashPostsCleanPath(t *testing.T) {
 	beats := waitForBeats(t, got, 1)
 	if beats[0].path != "/api/providers/quickstart/heartbeat" {
 		t.Fatalf("path = %q, want no double slash", beats[0].path)
+	}
+}
+
+// A heartbeat with no readiness gate posts "healthy" whatever the provider's
+// watches are doing, and the hub records any beat as liveness — so the whole
+// gate is silently gone. RunHeartbeat refuses to run rather than lie.
+func TestRunHeartbeatRefusesToRunWithoutCanSend(t *testing.T) {
+	srv, got := heartbeatSink(t, http.StatusOK)
+	rec := &recordingLogger{}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunHeartbeat(context.Background(), HeartbeatConfig{
+			HubURL:       srv.URL,
+			ProviderName: "kuery",
+			Interval:     time.Millisecond,
+			Logger:       rec.logger(),
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunHeartbeat should return immediately without CanSend")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if n := len(got()); n != 0 {
+		t.Fatalf("got %d beats from an ungated heartbeat, want none", n)
+	}
+	logs := rec.joined()
+	for _, want := range []string{ErrNoReadinessGate.Error(), "CanSend", `"provider"="kuery"`, "stops reporting alive"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("missing %q in:\n%s", want, logs)
+		}
+	}
+}
+
+// The disabled path wins over the missing gate: a provider run without
+// RAILGRID_HUB_URL (tests, dry runs) must not be told to wire CanSend.
+func TestRunHeartbeatDisabledBeatsTheMissingGate(t *testing.T) {
+	rec := &recordingLogger{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunHeartbeat(context.Background(), HeartbeatConfig{ProviderName: "edges", Logger: rec.logger()})
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunHeartbeat should return immediately")
+	}
+	logs := rec.joined()
+	if !strings.Contains(logs, "heartbeat disabled") {
+		t.Fatalf("expected a disabled log line, got:\n%s", logs)
+	}
+	if strings.Contains(logs, ErrNoReadinessGate.Error()) {
+		t.Fatalf("a disabled heartbeat should not complain about CanSend:\n%s", logs)
 	}
 }

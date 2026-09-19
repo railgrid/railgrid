@@ -16,25 +16,42 @@ export function tenantHeaders(context: RailgridContext | null): Record<string, s
   return createKueryRequestContext(context).headers
 }
 
-export function useKueryApi(context: Ref<RailgridContext | null>): { api: Readonly<Ref<KueryApi | null>>; query: (spec: QuerySpec, signal?: AbortSignal) => Promise<QueryStatus> } {
+/**
+ * useKueryApi builds the query client for the current context.
+ *
+ * Every query is the run verb on a SavedView, so the client needs a view to
+ * run as. A caller that is showing a saved view passes its name; the default
+ * is the signed-in user's scratch view, which the playground creates with the
+ * kube client on first use. That is what keeps ad-hoc queries inside the
+ * authorization contract instead of beside it.
+ */
+export function useKueryApi(
+  context: Ref<RailgridContext | null>,
+  savedView?: Ref<string>,
+): { api: Readonly<Ref<KueryApi | null>>; query: (spec: QuerySpec, signal?: AbortSignal, view?: string) => Promise<QueryStatus> } {
   const requestContext = computed(() => createKueryRequestContext(context.value))
   const api = computed(() => {
     const request = requestContext.value
-    // The host-owned fetch injects Authorization itself, so it is sufficient
-    // auth on its own. Requiring the token as well would strand Kuery in
-    // "waiting for workspace context" once hosts stop exposing the deprecated
-    // railgridContext.token; the token gate applies only to older hosts that
-    // expose no fetch.
-    const authenticated = request.hasHostFetch || !!request.token
-    return request.basePath && authenticated
-      ? createKueryApi({ basePath: request.basePath, headers: request.headers, fetch: request.fetch })
+    const view = savedView?.value || ''
+    // request.ready is a transport-and-workspace check, never a token check:
+    // the host injects Authorization into its own fetch, and gating on the
+    // deprecated railgridContext.token would strand the portal the day a host
+    // stops exposing it.
+    return request.ready && view
+      ? createKueryApi({
+          basePath: request.basePath,
+          cluster: request.cluster,
+          savedView: view,
+          headers: request.headers,
+          fetch: request.fetch,
+        })
       : null
   })
   return {
     api,
-    query: async (spec, signal) => {
+    query: async (spec, signal, view) => {
       if (!api.value) throw new Error('Kuery is waiting for workspace context')
-      return api.value.query(spec, { signal })
+      return api.value.query(spec, { signal, savedView: view })
     },
   }
 }
@@ -46,6 +63,11 @@ export function errorMessage(error: unknown, recovery: string): string {
 }
 
 export function edgeName(cluster = ''): string { return cluster.split('/').pop() || cluster || '—' }
+
+/** notReady is the message a view that will not run shows instead of results. */
+export function notReady(reason: string): string {
+  return reason ? `This saved view will not run: ${reason}` : ''
+}
 
 export function resourceLabel(row: { object?: { kind?: string; metadata?: { namespace?: string; name?: string } } }): string {
   const object = row.object ?? {}

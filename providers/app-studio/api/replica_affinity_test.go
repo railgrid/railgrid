@@ -28,7 +28,7 @@ import (
 func affinityTestServer(t *testing.T, replicaID, addr string) (*Server, store.Store) {
 	t.Helper()
 	msgStore := store.NewMemoryStore()
-	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-1": testWorkspace("cluster-1", "org-1", "ws-1")}.lookup, store: msgStore}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-1": testWorkspace("cluster-1", "org-1", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, store: msgStore}
 	s.SetReplicaRouting(replicaID, addr, "internal-token")
 	return s, msgStore
 }

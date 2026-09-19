@@ -68,6 +68,21 @@ func runInitCmd(ctx context.Context) error {
 			{Resource: "serviceaccounts", Verbs: []string{"get", "create"}},
 			{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get", "create"}},
 			{Group: "rbac.authorization.k8s.io", Resource: "clusterrolebindings", Verbs: []string{"get", "create"}},
+			// Service-to-service invocation (api/s2s.go). A caller that is not
+			// a human — another provider, a job — presents its own
+			// ServiceAccount token instead of a user's, so the provider
+			// authenticates and authorizes it itself: TokenReview to resolve
+			// the identity, SubjectAccessReview to check it may run this agent,
+			// both on the APIExport virtual workspace scoped to the target
+			// cluster (kcp#4279 / kcp#4280).
+			//
+			// These are built-in kubernetes API groups, so they carry no
+			// IdentityHash: kcp only requires one for a claim on a non-built-in
+			// type served by another APIExport (see PermissionClaim in
+			// provider-sdk/install/install.go). Verb create only — a review is
+			// a POST of a question, there is nothing to get or list.
+			{Group: "authentication.k8s.io", Resource: "tokenreviews", Verbs: []string{"create"}},
+			{Group: "authorization.k8s.io", Resource: "subjectaccessreviews", Verbs: []string{"create"}},
 		},
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {

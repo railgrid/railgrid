@@ -24,6 +24,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
 func TestRunMainRoutesServeToProviderServer(t *testing.T) {
@@ -59,7 +61,7 @@ func TestRunMainRejectsUnknownCommand(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	h, err := newHandler(nil)
+	h, err := newHandler(nil, nil)
 	if err != nil {
 		t.Fatalf("newHandler: %v", err)
 	}
@@ -74,9 +76,9 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-func TestReadinessRequiresControllerButLivenessStaysProcessLevel(t *testing.T) {
-	health := newControllerHealth(true)
-	h, err := newHandler(nil, health)
+func TestReadinessReflectsVirtualWorkspaceHealthButLivenessStaysProcessLevel(t *testing.T) {
+	ready := &vwhealth.Readiness{}
+	h, err := newHandler(nil, vwhealth.Handler(ready))
 	if err != nil {
 		t.Fatalf("newHandler: %v", err)
 	}
@@ -87,46 +89,38 @@ func TestReadinessRequiresControllerButLivenessStaysProcessLevel(t *testing.T) {
 		t.Fatalf("GET /healthz status = %d, want %d", got, want)
 	}
 
-	readiness := httptest.NewRecorder()
-	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if got, want := readiness.Code, http.StatusServiceUnavailable; got != want {
-		t.Fatalf("GET /readyz while starting status = %d, want %d", got, want)
-	}
-	if body := readiness.Body.String(); !strings.Contains(body, `"controller":"starting"`) || !strings.Contains(body, `"status":"not_ready"`) {
-		t.Fatalf("GET /readyz while starting body = %q, want starting/not_ready", body)
-	}
-
-	health.markReady()
-	readiness = httptest.NewRecorder()
-	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if got, want := readiness.Code, http.StatusOK; got != want {
-		t.Fatalf("GET /readyz while running status = %d, want %d", got, want)
-	}
-
-	health.markFailed(errors.New("manager exited"))
-	readiness = httptest.NewRecorder()
-	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if got, want := readiness.Code, http.StatusServiceUnavailable; got != want {
-		t.Fatalf("GET /readyz after manager exit status = %d, want %d", got, want)
-	}
-	if body := readiness.Body.String(); !strings.Contains(body, `"controller":"failed"`) || !strings.Contains(body, "manager exited") {
-		t.Fatalf("GET /readyz after manager exit body = %q, want failure detail", body)
-	}
-}
-
-func TestRESTOnlyReadinessIsIntentional(t *testing.T) {
-	health := newControllerHealth(false)
-	h, err := newHandler(nil, health)
-	if err != nil {
-		t.Fatalf("newHandler: %v", err)
-	}
+	// Nothing attached: this replica is not leading, and its REST surface is
+	// serving, so it is ready.
 	readiness := httptest.NewRecorder()
 	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if got, want := readiness.Code, http.StatusOK; got != want {
-		t.Fatalf("GET /readyz in REST-only mode status = %d, want %d", got, want)
+		t.Fatalf("GET /readyz without controllers status = %d, want %d", got, want)
 	}
-	if body := readiness.Body.String(); !strings.Contains(body, `"controller":"rest-only"`) {
-		t.Fatalf("GET /readyz in REST-only mode body = %q, want rest-only controller", body)
+
+	detach := ready.Attach("controllers", checkerFunc(func() error {
+		return errors.New("not watching any tenant workspace yet")
+	}))
+	readiness = httptest.NewRecorder()
+	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if got, want := readiness.Code, http.StatusServiceUnavailable; got != want {
+		t.Fatalf("GET /readyz with unwatched controllers status = %d, want %d", got, want)
+	}
+	if body := readiness.Body.String(); !strings.Contains(body, `"status":"unready"`) || !strings.Contains(body, "not watching any tenant workspace") {
+		t.Fatalf("GET /readyz body = %q, want the controller reason", body)
+	}
+
+	// Liveness never follows readiness: the process is still serving.
+	liveness = httptest.NewRecorder()
+	h.ServeHTTP(liveness, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if got, want := liveness.Code, http.StatusOK; got != want {
+		t.Fatalf("GET /healthz while unready status = %d, want %d", got, want)
+	}
+
+	detach()
+	readiness = httptest.NewRecorder()
+	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if got, want := readiness.Code, http.StatusOK; got != want {
+		t.Fatalf("GET /readyz after the term ends status = %d, want %d", got, want)
 	}
 }
 
@@ -159,7 +153,7 @@ func TestPortalAssets(t *testing.T) {
 		t.Fatalf("component CSS = %v, want one content-hashed stylesheet", componentCSS)
 	}
 
-	h, err := newHandler(nil)
+	h, err := newHandler(nil, nil)
 	if err != nil {
 		t.Fatalf("newHandler: %v", err)
 	}

@@ -10,7 +10,6 @@ package mcpserver
 
 import (
 	"net/http"
-	"os"
 	"strings"
 )
 
@@ -36,27 +35,12 @@ type identity struct {
 // the server package via Deps composition; the reverse direction is
 // not needed).
 func identityFromRequest(r *http.Request) identity {
-	id := identity{
+	return identity{
 		tenant:    r.Header.Get("X-Railgrid-Tenant"),
 		clusterID: r.Header.Get("X-Railgrid-Cluster"),
 		user:      r.Header.Get("X-Railgrid-User"),
 		token:     bearerToken(r),
 	}
-	if os.Getenv("RAILGRID_DEV_ALLOW_TENANT_QUERY") == "true" {
-		if id.tenant == "" {
-			id.tenant = r.URL.Query().Get("tenant")
-		}
-		if id.clusterID == "" {
-			id.clusterID = r.URL.Query().Get("cluster")
-		}
-		if id.user == "" {
-			id.user = r.URL.Query().Get("user")
-		}
-		if id.token == "" {
-			id.token = r.URL.Query().Get("token")
-		}
-	}
-	return id
 }
 
 // bearerToken extracts the caller's token from the Authorization header.

@@ -108,12 +108,6 @@ type CatalogEntrySpec struct {
 	// +optional
 	Backend *ProviderBackend `json:"backend,omitempty"`
 
-	// VirtualWorkspace is an advanced opt-in for providers that need custom
-	// non-CRD verbs. Routed at /services/providers/{name}/vw/*. Not yet
-	// honored by the hub (Phase 5).
-	// +optional
-	VirtualWorkspace *ProviderVirtualWorkspace `json:"virtualWorkspace,omitempty"`
-
 	// APIExport declares the provider's kcp APIExport. Not yet honored by
 	// the hub (Phase 1B will wire it up).
 	// +optional
@@ -523,14 +517,6 @@ type ProviderBackend struct {
 	HealthPath string `json:"healthPath,omitempty"`
 }
 
-// ProviderVirtualWorkspace declares an optional kcp virtual workspace endpoint.
-type ProviderVirtualWorkspace struct {
-	// URL is the in-cluster address the hub reverse-proxies for
-	// /services/providers/{name}/vw/*.
-	// +kubebuilder:validation:MinLength=1
-	URL string `json:"url"`
-}
-
 // ProviderAPIExport declares the kcp APIExport the provider owns.
 // Distinct from kcp's apis.kcp.io APIExport CRD; this is the inline
 // declaration the catalog controller will use to materialise that CRD.
@@ -765,8 +751,6 @@ type ProviderEndpoints struct {
 	UI string `json:"ui,omitempty"`
 	// +optional
 	Backend string `json:"backend,omitempty"`
-	// +optional
-	VirtualWorkspace string `json:"virtualWorkspace,omitempty"`
 }
 
 // +kubebuilder:object:root=true

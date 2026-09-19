@@ -24,14 +24,16 @@ limitations under the License.
 //
 // Coverage is the provider-plumbing half of kuery: provisioning, init
 // bootstrap, the /api/providers DTO, the hub's backend + UI proxies, tenant
-// Enable via APIBinding with SavedView CRUD, Disable, and the query surfaces
-// that answer without a connected edge (/api/query-schema, /api/edges,
-// /api/status).
+// Enable via APIBinding with SavedView CRUD plus the reconciler's Ready
+// verdict, Disable, the readiness surface, and the query verb's GATES —
+// driven against the provider pod directly, because the proxy is not what
+// authorizes.
 //
 // It deliberately does NOT cover fleet queries over real objects: the
 // engagement controller syncs from edge clusters through the hub's
 // edges-proxy, which needs the kind-based harness the edgesconn suite uses.
-// /api/query is asserted only on its empty-fleet behaviour here.
+// Here a granted query would answer from an empty index, so the assertions
+// are on who is refused and with what status.
 //
 // Runs without kind/Helm/Dex, matching the other subprocess provider suites.
 package kueryprovider

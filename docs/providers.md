@@ -31,11 +31,11 @@ the how):
 | 3 | Provider workspace = `root:railgrid:providers:{name}`, **auto-created by hub** on `CatalogEntry` admission | Chart needs no kcp credentials |
 | 4 | Distribution = **one Helm chart per provider**, targets *host cluster only* | All kcp work owned by hub catalog controller |
 | 5 | Registration = **hybrid**: chart creates `CatalogEntry` shell; provider pod heartbeats every 30s (`POST /api/providers/{name}/heartbeat`, TTL 90s) | Declarative install + runtime liveness |
-| 6 | VW = **APIExport-only by default**; `spec.virtualWorkspace.url` is an opt-in escape hatch under `/services/providers/{name}/vw/*` | Most providers won't need a VW; lowers bar |
+| 6 | VW = **APIExport-only.** `spec.virtualWorkspace.url` is **removed** from the `CatalogEntry`: the hub never routed `/services/providers/{name}/vw/*`, so the field and its `/vw/*` story are gone rather than deprecated | Custom verbs belong on the data-plane grammar (`/{root}/clusters/{clusterID}/{resource}/{name}/{verb}`), not on a second transport |
 | 7 | Provider→kcp identity = SA `provider` in the provider's workspace; hub mints kubeconfig and writes it as Secret `railgrid-provider-kubeconfig` in the provider's host namespace; **24h token rotation** | Reuses existing exec-credential pattern from `pkg/server/proxy/proxy.go` |
 | 8 | Schema delivery = **inline** in `CatalogEntry.spec.apiExport.schemas[].body`; hub parses + applies | Solves chicken-and-egg of "chart can't apply to workspace that doesn't exist yet" |
 | 9 | PermissionClaim acceptance = **auto-accept-all** at Enable time, but ONLY for claims marked `tenantScoped: true`. Non-tenant-scoped claims refused unless admin sets `railgrid.ai/accept-untrusted-claims=true` on the `CatalogEntry` | Simplest safe default; per-claim toggles deferred to v2 |
-| 10 | Tenant Enable = **direct kcp `APIBinding` in the tenant workspace**. No `ProviderBinding` CRD — kcp-native. Catalog controller grants tenants `bind` verb on each provider's APIExport once the provider is Ready. Permission-claim safety enforced by `MaximalPermissionPolicy` on the APIExport (kcp). | Simpler, kcp-native; fewer moving parts. Audit/inventory queries fan out across tenant workspaces (acceptable). |
+| 10 | Tenant Enable = **a kcp `APIBinding` in the tenant workspace, created by the hub**. No `ProviderBinding` CRD — kcp-native. The portal never talks to kcp for this: it `POST`s the hub's Enable endpoint (`pkg/hub/restapi/providers_enable.go`), which checks workspace membership and that the provider's `dependencies` are already enabled, then creates the `APIBinding` **as kcp-admin**. Permission-claim safety enforced by `MaximalPermissionPolicy` on the APIExport (kcp). | Simpler, kcp-native; fewer moving parts. The hub's kcp user-proxy pre-checks the cluster path against the user's default workspace, so a user-credentialed create would 403 on every other workspace — the membership check moves into the Enable handler instead. Audit/inventory queries fan out across tenant workspaces (acceptable). |
 
 **Deferred (do NOT block phase 1):**
 
@@ -133,7 +133,8 @@ top-level workspace, no new vocabulary.
 │    - rebuilds proxy routing table; tracks heartbeats                  │
 │                                                                       │
 │  Tenants APIBind to provider APIExports DIRECTLY in their workspace   │
-│    - Portal calls kcp as the user to create the APIBinding            │
+│    - Portal POSTs the hub Enable endpoint; hub creates the APIBinding │
+│      as kcp-admin after a membership + dependency check               │
 │    - Catalog controller pre-grants tenants `bind` verb cluster-wide   │
 │    - Permission safety = MaximalPermissionPolicy on the APIExport     │
 └──────────────────────────────────────────────────────────────────────┘
@@ -424,11 +425,6 @@ spec:
     url: "http://cost-insights.cost-insights.svc.cluster.local:8080"
     healthPath: "/healthz"
 
-  # OPTIONAL: opt-in to serving a kcp virtual workspace for non-CRD verbs.
-  # Omit for v1 — only needed if provider needs custom resource verbs.
-  virtualWorkspace:
-    url: "http://cost-insights.cost-insights.svc.cluster.local:6443"
-
   # REQUIRED: the APIExport the provider owns. Hub creates the workspace,
   # applies the inline schema(s), then creates the APIExport.
   apiExport:
@@ -477,16 +473,32 @@ status:
     - type: Ready
 ```
 
-### Tenant Enable = direct kcp `APIBinding` (no second CRD)
+### Tenant Enable = a kcp `APIBinding` created by the hub (no second CRD)
 
-We deliberately do NOT ship a `ProviderBinding` CRD. Tenants enable a
-provider by creating a vanilla kcp `APIBinding` in their own workspace,
-pointing at the provider's `APIExport`. This is the kcp-native pattern;
-adding a second CRD would only re-wrap what `APIBinding` already does.
+We deliberately do NOT ship a `ProviderBinding` CRD. Enabling a provider
+means a vanilla kcp `APIBinding` in the tenant's own workspace, pointing at
+the provider's `APIExport`. This is the kcp-native pattern; adding a second
+CRD would only re-wrap what `APIBinding` already does.
+
+The **hub** creates it, not the portal. Clicking Enable `POST`s the hub's
+Enable endpoint (`pkg/hub/restapi/providers_enable.go`), which:
+
+1. checks the caller is a member of the target workspace;
+2. checks every provider named in `spec.dependencies` is already enabled
+   there (409 otherwise);
+3. reconciles the accepted permission claims against the provider's
+   declared set (verbs always come from the declaration, never the
+   request); and
+4. creates the `APIBinding` **as kcp-admin**.
+
+The portal never calls kcp for Enable. It cannot: the hub's kcp user-proxy
+pre-checks the cluster path against the user's default workspace and 403s
+every other workspace before the request reaches kcp, so the membership
+check the proxy would have done implicitly is done by this handler instead.
 
 ```yaml
 # Created in the tenant's workspace (e.g. root:railgrid:tenants:alice)
-# by the portal, calling kcp as the user when they click Enable.
+# by the hub's Enable endpoint, as kcp-admin.
 apiVersion: apis.kcp.io/v1alpha2
 kind: APIBinding
 metadata:
@@ -504,11 +516,13 @@ spec:
 
 **Why this works safely:**
 
-- **Tenants need `bind` verb on the provider's `APIExport`.** kcp doesn't
-  grant it by default. The hub's catalog controller pre-grants
-  `bind` cluster-wide for each provider once its `CatalogEntry`
-  reaches Ready (via a `ClusterRole` aggregated to the tenant identity).
-  Without this grant, the tenant's `APIBinding` create fails with 403.
+- **The binding is created as kcp-admin, after a membership check.** The
+  Enable handler is the authorization boundary: a caller who is not a member
+  of the target workspace never reaches the create. The catalog controller
+  still pre-grants tenants the `bind` verb on each provider's `APIExport`
+  once its `CatalogEntry` reaches Ready (a `ClusterRole` aggregated to the
+  tenant identity), so tenant-credentialed reads and deletes of their own
+  binding keep working.
 - **Permission claims are gated by kcp's `MaximalPermissionPolicy`** on
   each provider's `APIExport`. A tenant cannot accept a claim outside
   their workspace because the export's `MaximalPermissionPolicy` refuses.
@@ -662,9 +676,11 @@ Proxy behavior:
   absolute links.
 - Standard `httputil.ReverseProxy` with header sanitization.
 
-Note: if `spec.virtualWorkspace.url` is set, the backend proxy also
-recognizes a `/services/providers/{name}/vw/*` sub-path and routes it to
-the VW URL instead. This is the opt-in advanced path.
+Note: there is no `/services/providers/{name}/vw/*` sub-path. The backend
+proxy never recognized one, and `spec.virtualWorkspace.url` has been
+**removed** from the `CatalogEntry` type. Custom verbs go on the data-plane
+grammar instead — see
+[provider-connectivity-contract.md](./provider-connectivity-contract.md).
 
 ### 5. Catalog controller's RBAC + enable plumbing
 
@@ -726,7 +742,7 @@ Both become provider-aware.
 | `portal/src/router/providers.ts` | `registerProviderRoutes(bindings)` — idempotent `router.addRoute()` calls |
 | `portal/src/pages/ProvidersPage.vue` | The `/providers` catalog view (grid of cards, Enable/Disable) |
 | `portal/src/pages/ProviderFrame.vue` | Per-provider custom-element host; loads the SRI-pinned bundle, mounts `<railgrid-provider-{name}>`, pushes `railgridContext` (host fetch, tenant, theme, subPath), bubbles `railgrid-navigate` |
-| `portal/src/components/ProviderEnableDialog.vue` | Modal listing `permissionClaims` (read from `CatalogEntry.spec.apiExport.permissionClaims` via `/api/providers`); on confirm, the portal POSTs an `APIBinding` directly to kcp in the user's workspace with the claims marked `Accepted` |
+| `portal/src/components/ProviderEnableDialog.vue` | Modal listing `permissionClaims` (read from `CatalogEntry.spec.apiExport.permissionClaims` via `/api/providers`); on confirm, the portal POSTs the hub's Enable endpoint with the accepted claims, and the hub creates the `APIBinding` in the user's workspace as kcp-admin |
 | `portal/sdk/index.ts` (new package `@railgrid/provider-sdk`) | `useRailgrid()` composable for providers' UIs: token, user, tenant, theme, `onNavigate` |
 | `portal/sdk/package.json`, `tsconfig.json`, `README.md` | SDK packaging — publish to npm or include as workspace |
 
@@ -878,9 +894,16 @@ class MyProvider extends HTMLElement {
   connectedCallback() { this.render() }
   async load() {
     const fetch = providerFetch(this.#ctx)        // portalkit/tenant.ts
+    const cluster = this.#ctx!.tenant
+    // Bound CRs are read and written with the kube client over /clusters/{id},
+    // never through the provider's own backend.
+    const kube = createKubeClient({ fetch, cluster })  // portalkit/kube.ts
+    const things = await kube.list('example.railgrid.ai/v1alpha1', 'things')
+    // The backend is only for a Pillar 2 class — here, one data-plane verb
+    // on one of those bound objects.
     const base = serviceBase(this.#ctx?.basePath) // /services/providers/my-provider
-    const res = await fetch(base + '/api/things', { headers: tenantHeaders({}) })
-    // ...
+    await fetch(`${base}/dataplane/clusters/${cluster}/things/${things[0].metadata.name}/refresh`,
+                { method: 'POST' })
   }
   navigate(path: string) {
     this.dispatchEvent(new CustomEvent('railgrid-navigate', { bubbles: true, detail: { path } }))
@@ -893,6 +916,26 @@ Optional — a bundle that ignores `railgridContext` still renders; it just has 
 tenant scope, no theme, and no synced URL. Vendor `provider-sdk/portalkit/`
 into the portal (`make sync-portalkit`) rather than re-implementing the tenant
 header contract; see AGENTS.md §5.7.
+
+**No iframe, no `postMessage` bridge to the host.** The element renders into
+light DOM in the portal's own document; a provider that wraps itself in an
+iframe and talks to the host over `postMessage` is reimplementing the
+contract badly. Exactly **two** exceptions are sanctioned:
+
+1. **An OAuth popup posting its result to `window.opener`.** The browser
+   OAuth routes (Pillar 2 class (d)) open a popup for the identity provider;
+   on callback the popup `postMessage`s its result to the opener and closes.
+   The message crosses windows the provider owns at both ends — it is not a
+   bridge between the element and the host. Reference: code
+   `oauthgithub/oauth.go`.
+2. **A sandboxed iframe whose contents are *content*, not UI.** A preview of
+   a tenant's own generated application is untrusted content and belongs in a
+   sandboxed iframe, listed in the hub's CSP `frame-src`. Reference:
+   app-studio's preview surface. The iframe renders a document; it is not a
+   transport for the provider's own UI, and the host API is still
+   `railgridContext` + `providerFetch`.
+
+Anything else that reaches for `postMessage` or an iframe is a deviation.
 
 ### Deep-link behavior
 
@@ -1066,7 +1109,11 @@ A provider's backend (if it declares one) MUST:
   to the hub every 30s via the shared `provider-sdk/hubclient.RunHeartbeat`
   (not a local copy), authenticated as the provider's own service account
   (token from `hubclient.ResolveHubToken`: `RAILGRID_HUB_TOKEN`, else the
-  provider kubeconfig's bearer). An org-owned (BYO) provider MUST NOT beat:
+  provider kubeconfig's bearer). `HeartbeatConfig.CanSend` is **required**:
+  it is consulted before every beat, so a provider whose watches are dead
+  stops reporting alive. Wire it to the provider's readiness
+  (`vwhealth.Readiness.Check`, the same gate as `/readyz`); `RunHeartbeat`
+  refuses to start without it. An org-owned (BYO) provider MUST NOT beat:
   the endpoint is keyed by bare name and resolves only platform providers, so
   the beat is rejected and would in any case never mark it Ready. Its readiness
   comes from endpoint validity instead — see the heartbeat endpoint section.
@@ -1183,6 +1230,58 @@ Rotation is not revocation: it schedules the old credential's death, it does not
 hasten it. For a leaked credential, delete the retired Secret in the provider
 workspace by hand.
 
+### Re-accepting permission claims
+
+```
+POST /api/admin/providers/{name}/claims/reaccept             platform admin
+```
+
+Ships the migration AGENTS.md §5.1 demands whenever a provider **adds** a
+permission claim. Bringing `manifest.yaml`, the chart's `catalogentry.yaml` and
+the provider's `init_cmd.go` back into agreement updates the provider-side
+`APIExport` and nothing else: what the provider is actually allowed to touch in
+a tenant's workspace is the claim set on that tenant's own `APIBinding`, which
+the Enable flow wrote once and nobody revisits. Deploy code that *requires* the
+new claim without this step and every already-enabled tenant 403s, with the
+claim visible in the binding's `status.exportPermissionClaims` but absent from
+its `spec`.
+
+The endpoint walks every `APIBinding` in the tenant fleet whose
+`spec.reference.export` is this provider's export — across all Orgs and all
+their workspaces, including bindings that are not `Bound`, since a binding held
+out of Bound by a missing claim is exactly the one to fix — and rewrites
+`spec.permissionClaims` to the `tenantScoped` claims the provider's
+`CatalogEntry` declares today, each `Accepted`.
+
+Two things it will not do:
+
+- **It does not overturn a rejection.** A claim the tenant explicitly set to
+  `Rejected` stays `Rejected`. The migration propagates what the provider
+  declares; it does not manufacture consent.
+- **It does not re-pin identities.** A claim already on the binding keeps its
+  `identityHash` and selector, resolved against what that workspace binds when
+  it was enabled. Only genuinely new claims take their identity from the
+  export.
+
+Matching is on the export, not the provider name, so an Org self-hosting a
+provider of the same name is untouched — migrate that copy by re-Enabling it,
+or run the endpoint against the platform copy only. Claims the provider no
+longer declares are dropped: the target is the current `CatalogEntry`, not the
+union with history.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $RAILGRID_TOKEN" \
+  "$RAILGRID_HUB_URL/api/admin/providers/$NAME/claims/reaccept"
+# {"provider":"agents","claims":[...],"updated":12,"unchanged":3,"failed":[]}
+```
+
+`updated` counts bindings rewritten, `unchanged` those already correct, and
+`failed` names each `{org, workspace, binding, error}` that could not be
+migrated. A failing workspace does not abort the run — re-run the endpoint as
+the retry; a second pass over a migrated fleet reports everything `unchanged`.
+It refuses outright (400) when the provider declares no tenant-scoped claims,
+rather than stripping every tenant's grants.
+
 ## Security considerations
 
 - **Auth token forwarding** (backend proxy): the user's bearer token is
@@ -1255,9 +1354,9 @@ workspace by hand.
 |---|---|---|
 | 1 | `CatalogEntry` CRD + catalog controller (workspace + SA + Secret + schema apply) + registry + heartbeat endpoint + backend proxy | An example provider's chart installs, hub provisions everything, provider pod heartbeats, `/services/providers/example/*` reaches the backend |
 | 2 | UI proxy + `ProviderFrame.vue` + dynamic routes + providers store + AppLayout nav integration + CSP + dev proxy | A static "hello" provider UI loads inside the portal at `/providers/hello`, side nav shows it, theme + tenant context arrive on `railgridContext` |
-| 3 | Catalog controller adds RBAC grant (`ClusterRole` + binding for tenant identity) + `MaximalPermissionPolicy` apply on the provider's APIExport. Portal: EnableDialog + direct `APIBinding` create against kcp + nav filter to user's APIBindings + validation that bound CRs are reachable through the kcp proxy. | Users can enable/disable from the portal; an `APIBinding` lands in their workspace; provider CRs visible AND readable via `/clusters/{cluster}` kube REST. |
-| 4 | Provider SDK + example chart in `examples/provider-hello/` | Third party can copy the example and ship a working provider end-to-end |
-| 5 | Hardening: RBAC fuzz, cache-bust verification, e2e tests, optional `virtualWorkspace` opt-in, claim re-acceptance flow on chart upgrade | Ready to declare stable |
+| 3 | Catalog controller adds RBAC grant (`ClusterRole` + binding for tenant identity) + `MaximalPermissionPolicy` apply on the provider's APIExport. Portal: EnableDialog + the hub's Enable endpoint creating the `APIBinding` + nav filter to user's APIBindings + validation that bound CRs are reachable through the kcp proxy. | Users can enable/disable from the portal; an `APIBinding` lands in their workspace; provider CRs visible AND readable via `/clusters/{cluster}` kube REST. |
+| 4 | Provider SDK + example chart in `providers/quickstart/` | Third party can copy the example and ship a working provider end-to-end |
+| 5 | Hardening: RBAC fuzz, cache-bust verification, e2e tests, claim re-acceptance flow on chart upgrade | Ready to declare stable |
 
 ## Deferred items
 
@@ -1379,7 +1478,6 @@ place. The list below is descriptive, not prescriptive.
   the portal and filters the nav.
 - No validation of bound CRs through the kcp proxy.
 - No Helm example chart yet (phase 4).
-- No `virtualWorkspace` opt-in path (phase 5).
 
 ---
 
@@ -1414,7 +1512,7 @@ operations:
 
 1. With phase 1 deployed, install a stub `CatalogEntry` with a
    simple HTTP server behind `spec.ui.url` that serves a `main.js`
-   registering `<railgrid-provider-hello>` (see §"Provider element contract")
+   registering `<railgrid-provider-quickstart>` (see §"Provider element contract")
    and rendering `<h1>hello provider</h1>` plus whatever `railgridContext`
    it received.
 2. Open the portal in a browser. Side nav and `/providers` show the new
@@ -1455,7 +1553,17 @@ operations:
 
 ## Example: a minimal provider
 
-Tracked under `examples/provider-hello/` once phase 1 lands. Structure: one
-Go binary serving `/healthz` + `/api/hello` + a static `index.html`; one
-controller using `railgrid-provider-kubeconfig` to manage a `Greeting` CR;
-Helm chart from §"Provider author experience".
+The reference provider is [`providers/quickstart/`](../providers/quickstart/).
+There is no `examples/provider-hello/` — it was never written. Structure: one
+Go binary serving `/healthz` and `/readyz` plus one data-plane verb
+(`POST /dataplane/clusters/{id}/greetings/{name}/greet`, gated through
+`provider-sdk/dataplane`); one multicluster reconciler using
+`railgrid-provider-kubeconfig` to stamp status on the `Greeting` CR it exports,
+under `provider-sdk/leaderelection` with readiness from `provider-sdk/vwhealth`;
+the Helm chart from §"Provider author experience"; and a portal bundle
+registering `<railgrid-provider-quickstart>` plus
+`<railgrid-dashboard-tile-quickstart>`, which read and write Greetings with the
+portalkit kube client and call the verb through `providerFetch`.
+
+It is small enough to read end to end, and every piece of the contract appears
+exactly once. Start from [its README](../providers/quickstart/README.md).

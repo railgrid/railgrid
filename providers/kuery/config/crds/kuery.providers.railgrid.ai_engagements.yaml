@@ -1,0 +1,126 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: engagements.kuery.providers.railgrid.ai
+spec:
+  group: kuery.providers.railgrid.ai
+  names:
+    kind: Engagement
+    listKind: EngagementList
+    plural: engagements
+    shortNames:
+    - keng
+    singular: engagement
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.cluster
+      name: Cluster
+      type: string
+    - jsonPath: .spec.edge
+      name: Edge
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.owner
+      name: Owner
+      type: string
+    - jsonPath: .status.lastSeen
+      name: Last seen
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Engagement records that kuery syncs one tenant's edge, and which replica is
+          doing it. It is PROVIDER-PRIVATE: it lives in kuery's own workspace, `init`
+          installs it as a plain CRD (see the install package), and it is deliberately
+          not in the APIExport, so no tenant can bind, claim, read or write it.
+
+          It exists because this state used to be three columns on kuery's SQL
+          clusters table — the tenant label, the active/stale status, and the implied
+          lease owner — read back by the query path and swept by a one-minute timer.
+          Keeping it as an API object instead means the SQL index holds only synced
+          objects and is rebuildable from Engagements, the sweep is a reconcile driven
+          by the Lease watch rather than a ticker, and "who syncs what" is answerable
+          with kubectl against the provider workspace.
+
+          The name is derived deterministically from spec.cluster and spec.edge (see
+          engagement.EngagementName), so the record stays computable when the edge
+          object is already gone.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              EngagementSpec identifies the edge. Both members are immutable in practice:
+              a different pair is a different Engagement with a different name.
+            properties:
+              cluster:
+                description: |-
+                  Cluster is the tenant workspace's kcp logical-cluster ID — the tenant
+                  key everywhere in kuery. Never a workspace path.
+                maxLength: 63
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
+              edge:
+                description: Edge is the KubernetesCluster edge's name in that workspace.
+                maxLength: 253
+                type: string
+            required:
+            - cluster
+            - edge
+            type: object
+          status:
+            description: EngagementStatus is who syncs the edge and when they last
+              said so.
+            properties:
+              lastSeen:
+                description: |-
+                  LastSeen is when the owner last renewed. The stale sweep is a
+                  RequeueAfter relative to this, not a ticker.
+                format: date-time
+                type: string
+              message:
+                description: Message explains a non-Engaged phase.
+                maxLength: 1024
+                type: string
+              owner:
+                description: |-
+                  Owner is the replica identity holding the edge's Lease
+                  ("{hostname}_{pid}"), empty when nobody does.
+                maxLength: 253
+                type: string
+              phase:
+                description: Phase is the engagement's state; only Engaged is queryable.
+                enum:
+                - Pending
+                - Engaged
+                - Stale
+                - Disengaged
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

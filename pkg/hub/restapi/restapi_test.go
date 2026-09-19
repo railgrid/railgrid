@@ -24,6 +24,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -65,6 +67,14 @@ type fakeOps struct {
 	clearDeletionCalls     map[wsKey]int                // (org,ws) → count
 	clearDeletionConflicts map[wsKey]int                // conflicts to inject before a successful clear
 	clearDeletionRaceStamp map[wsKey]time.Time          // marker written by an injected clear race
+
+	// Admin claims migration (admin_provider_claims.go). bindingClaims is the
+	// claim set each binding currently holds, keyed "group/resource", so a
+	// re-accept can report "already correct" the way the real one does.
+	bindingClaims    map[wsKey][]string
+	reacceptCalls    map[wsKey]int
+	reacceptErr      map[wsKey]error
+	listForExportErr error
 }
 
 type wsKey struct{ Org, WS string }
@@ -86,6 +96,9 @@ func newFakeOps() *fakeOps {
 		clearDeletionCalls:     map[wsKey]int{},
 		clearDeletionConflicts: map[wsKey]int{},
 		clearDeletionRaceStamp: map[wsKey]time.Time{},
+		bindingClaims:          map[wsKey][]string{},
+		reacceptCalls:          map[wsKey]int{},
+		reacceptErr:            map[wsKey]error{},
 	}
 }
 
@@ -213,6 +226,63 @@ func (f *fakeOps) ListProviderAPIBindings(_ context.Context, orgUUID, wsUUID str
 		}
 	}
 	return out, nil
+}
+
+// ListProviderAPIBindingsForExport / ReacceptProviderAPIBindingClaims back the
+// admin claims migration (admin_provider_claims.go). The fake models the fleet
+// as the bindings recorded per workspace plus, per binding, the claim set the
+// tenant currently holds — enough to tell "rewritten" from "already correct"
+// and to make one workspace fail without touching the others.
+func (f *fakeOps) ListProviderAPIBindingsForExport(_ context.Context, exportPath, exportName string) ([]kcp.ProviderBindingRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listForExportErr != nil {
+		return nil, f.listForExportErr
+	}
+	var out []kcp.ProviderBindingRef
+	for key, bindings := range f.providerBindings {
+		for providerName, bindingName := range bindings {
+			if kcppaths.ProviderPath(providerName) != exportPath || providerName != exportName {
+				continue
+			}
+			out = append(out, kcp.ProviderBindingRef{
+				OrgUUID:       key.Org,
+				WorkspaceUUID: key.WS,
+				BindingName:   bindingName,
+			})
+		}
+	}
+	// Deterministic order: the handler's counts do not depend on it, but a
+	// test asserting on failed[] does.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].OrgUUID != out[j].OrgUUID {
+			return out[i].OrgUUID < out[j].OrgUUID
+		}
+		return out[i].WorkspaceUUID < out[j].WorkspaceUUID
+	})
+	return out, nil
+}
+
+func (f *fakeOps) ReacceptProviderAPIBindingClaims(_ context.Context, ref kcp.ProviderBindingRef, _, _ string, claims []kcp.ProviderClaim) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := wsKey{ref.OrgUUID, ref.WorkspaceUUID}
+	if err := f.reacceptErr[key]; err != nil {
+		return false, err
+	}
+	f.reacceptCalls[key]++
+	want := make([]string, 0, len(claims))
+	for _, c := range claims {
+		want = append(want, c.Group+"/"+c.Resource)
+	}
+	if reflect.DeepEqual(f.bindingClaims[key], want) {
+		return false, nil
+	}
+	if f.bindingClaims == nil {
+		f.bindingClaims = map[wsKey][]string{}
+	}
+	f.bindingClaims[key] = want
+	return true, nil
 }
 
 func (f *fakeOps) DeleteProviderAPIBinding(_ context.Context, orgUUID, wsUUID, providerName string) error {

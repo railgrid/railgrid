@@ -251,6 +251,7 @@ func TestReconcileAssistantThreadTurnCarriesFailureSummary(t *testing.T) {
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	threadID, turnID := "thread-reconcile-failures", "turn-reconcile-failures"

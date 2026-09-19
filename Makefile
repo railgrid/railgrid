@@ -1,4 +1,4 @@
-.PHONY: sync-portalkit verify-portalkit verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
+.PHONY: sync-portalkit verify-portalkit verify-provider-contract verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
 .PHONY: build-access-proxy docker-build-access-proxy
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin build-runner-linux
 .PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider
@@ -214,13 +214,14 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
 	./hack/apigen.sh --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
+	@rm -f providers/edges/config/kcp/apiexport-*.yaml  # apigen names the export after the group; init creates the real <name>.providers.railgrid.ai export
 	@for r in kubernetesclusters linuxservers macosservers workloads placements services addons; do \
 		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.railgrid.ai.yaml \
 		   providers/edges/deploy/chart/files/schemas/$$r.edges.railgrid.ai.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
-.PHONY: codegen-edges-provider build-edges-provider build-edges-provider-portal \
+.PHONY: codegen-quickstart-provider codegen-kuery-provider codegen-edges-provider build-edges-provider build-edges-provider-portal \
 	install-provider-edges init-provider-edges run-provider-edges uninstall-provider-edges docker-build-edges-provider
 
 ## --- edges provider dev lifecycle (install → init → run) --------------------
@@ -387,9 +388,38 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
 	./hack/apigen.sh --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
+	@rm -f providers/code/config/kcp/apiexport-*.yaml  # apigen names the export after the group; init creates the real <name>.providers.railgrid.ai export
 	@for r in connections repositories repositorycommits repositorycheckouts repositorybuildstatuses deploykeys collaborators packages; do \
 		cp providers/code/config/kcp/apiresourceschema-$$r.code.railgrid.ai.yaml \
 		   providers/code/deploy/chart/files/schemas/$$r.code.railgrid.ai.yaml; \
+	done
+	./hack/ensure-boilerplate.sh
+
+codegen-quickstart-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the quickstart provider's local API (+ chart schemas)
+	@mkdir -p providers/quickstart/config/crds providers/quickstart/config/kcp providers/quickstart/deploy/chart/files/schemas
+	cd providers/quickstart && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/quickstart/config/crds
+	./hack/apigen.sh --input-dir providers/quickstart/config/crds --output-dir providers/quickstart/config/kcp
+	@rm -f providers/quickstart/config/kcp/apiexport-*.yaml
+	@for r in greetings; do \
+		cp providers/quickstart/config/kcp/apiresourceschema-$$r.quickstart.providers.railgrid.ai.yaml \
+		   providers/quickstart/deploy/chart/files/schemas/$$r.quickstart.providers.railgrid.ai.yaml; \
+	done
+	./hack/ensure-boilerplate.sh
+
+codegen-kuery-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the kuery provider's local API (+ chart schemas)
+	@mkdir -p providers/kuery/config/crds providers/kuery/config/kcp providers/kuery/deploy/chart/files/schemas
+	cd providers/kuery && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/kuery/config/crds
+	./hack/apigen.sh --input-dir providers/kuery/config/crds --output-dir providers/kuery/config/kcp
+	@rm -f providers/kuery/config/kcp/apiexport-*.yaml
+	@for r in savedviews; do \
+		cp providers/kuery/config/kcp/apiresourceschema-$$r.kuery.providers.railgrid.ai.yaml \
+		   providers/kuery/deploy/chart/files/schemas/$$r.kuery.providers.railgrid.ai.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
@@ -400,6 +430,7 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./hack/apigen.sh --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
+	@rm -f providers/agents/config/kcp/apiexport-*.yaml  # apigen names the export after the group; init creates the real <name>.providers.railgrid.ai export
 	@for r in agents connections schedules triggers toolsets; do \
 		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.railgrid.ai.yaml \
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.railgrid.ai.yaml; \
@@ -413,6 +444,7 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/app-studio/config/crds
 	./hack/apigen.sh --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
+	@rm -f providers/app-studio/config/kcp/apiexport-*.yaml  # apigen names the export after the group; init creates the real <name>.providers.railgrid.ai export
 	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.railgrid.ai.yaml \
 	   providers/app-studio/deploy/chart/files/schemas/projects.ai.railgrid.ai.yaml
 	cp providers/app-studio/config/kcp/apiresourceschema-sessions.ai.railgrid.ai.yaml \
@@ -523,6 +555,10 @@ verify-portalkit: ## Verify vendored portalkit copies are in sync with the canon
 	@hack/sync-portalkit.sh --verify
 	@node --test provider-sdk/portalkit/dashboardtile.conformance.test.mjs provider-sdk/portalkit/kube.behavior.test.mjs
 	@$(MAKE) verify-agentkit
+
+verify-provider-contract: ## Verify provider manifests, claims and route classes match the provider contract
+	@node hack/verify-provider-contract.test.mjs
+	@node hack/verify-provider-contract.mjs
 
 verify-agentkit: ## Verify optional AgentKit style loading and conversation contracts
 	@node --test hack/verify-agentkit-dependencies.test.mjs
@@ -1054,6 +1090,7 @@ run-provider-quickstart: build-quickstart-provider ## Run the quickstart provide
 	RAILGRID_HUB_TOKEN=$(QUICKSTART_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=quickstart \
+	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 		$(BINDIR)/quickstart-provider
 
 ## Apply the quickstart CatalogEntry into root:railgrid:providers. Idempotent.
@@ -1437,7 +1474,7 @@ init-provider-quickstart: build-quickstart-provider ## Bootstrap quickstart APIE
 	@echo "Running quickstart-provider init (creates APIExport + endpoint slice + bind grant)"
 	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 	QUICKSTART_WORKSPACE_PATH=$(QUICKSTART_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=/nonexistent \
+	RAILGRID_SCHEMAS_DIR=providers/quickstart/deploy/chart/files/schemas \
 		$(BINDIR)/quickstart-provider init
 
 ## Delete the quickstart CatalogEntry + Provider. Deleting the Provider triggers
@@ -1531,11 +1568,12 @@ run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (
 	@echo "Starting kuery provider on :$(KUERY_PORT)"
 	@echo "  hub:   $(KUERY_HUB_URL)"
 	@echo "  token: $(KUERY_TOKEN)"
-	@if [ -f $(KUERY_RUNTIME_KUBECONFIG) ]; then \
-		echo "  engagement: $(KUERY_RUNTIME_KUBECONFIG)"; \
-	else \
-		echo "  engagement: DISABLED (run 'make init-provider-kuery' after install-provider-kuery)"; \
-	fi
+	@test -f $(KUERY_RUNTIME_KUBECONFIG) || { \
+		echo "provider kubeconfig not found at $(KUERY_RUNTIME_KUBECONFIG)"; \
+		echo "serve refuses to start without it: run 'make init-provider-kuery' after install-provider-kuery"; \
+		exit 1; \
+	}
+	@echo "  kubeconfig: $(KUERY_RUNTIME_KUBECONFIG)"
 	@# Dev always runs Postgres. Fall back to the local dev container DSN when
 	@# KUERY_STORE_DSN is unset (external Postgres overrides it).
 	STORE_DSN="$${KUERY_STORE_DSN:-$(KUERY_STORE_DSN)}"; \
@@ -1549,7 +1587,6 @@ run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=kuery \
 	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
-	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	KUERY_STORE_DRIVER=postgres \
 	KUERY_STORE_DSN="$$STORE_DSN" \
 		$(BINDIR)/kuery-provider
@@ -1707,10 +1744,8 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-br
 	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=infrastructure \
-	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
-	INFRASTRUCTURE_WORKSPACE_PATH=$${INFRASTRUCTURE_WORKSPACE_PATH:-$(INFRASTRUCTURE_WORKSPACE_PATH)} \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
-	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
+	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)} \
 	RAILGRID_APP_BASE_DOMAIN=$${RAILGRID_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
 	RAILGRID_GATEWAY_NAME=$${RAILGRID_GATEWAY_NAME:-cloudflare-tunnel} \
 	RAILGRID_GATEWAY_NAMESPACE=$${RAILGRID_GATEWAY_NAMESPACE:-cfgate-system} \
@@ -1732,7 +1767,6 @@ run-provider-infrastructure-operator: build-infrastructure-provider app-studio-p
 	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=infrastructure \
-	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_PROVIDER_KUBECONFIG=$${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} \
 	INFRASTRUCTURE_RUNTIME_KUBECONFIG=$${INFRASTRUCTURE_RUNTIME_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
@@ -2091,7 +2125,7 @@ uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry + Provi
 ## Uses the hub's admin kubeconfig to install CRDs, register APIExport
 ## schemas, apply the Templates CachedResource, mint a low-privilege
 ## ServiceAccount + token, and write a runtime kubeconfig that
-## run-provider-infrastructure picks up via INFRASTRUCTURE_KUBECONFIG.
+## run-provider-infrastructure passes to serve as RAILGRID_PROVIDER_KUBECONFIG.
 ##
 ## When KRO_KUBECONFIG is set, also seeds the kro cluster with a
 ## kro.run/cluster=true Secret pointing at this workspace's VW.
@@ -2138,7 +2172,6 @@ serve-provider-code: ## Run the already-built code provider
 	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=code \
-	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
 	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
@@ -2589,7 +2622,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
+verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
 
 # --- Helm chart packaging ---
 

@@ -490,13 +490,16 @@ func (c *Controller) finalize(ctx context.Context, tenantClient client.Client, t
 		// The runtime CR's delete event re-enters this path; the watch is
 		// (re)registered from the ref here because the Template may already
 		// be retired, in which case no reconcile of a live Instance did it.
+		// Registering the watch BEFORE waiting is what makes the wait
+		// event-driven: the teardown is on the far side of the seam, so it is
+		// watched rather than polled.
 		if _, err := c.cfg.Runtime.Resource(target.gvr).Namespace(ns).Get(ctx, target.name, metav1.GetOptions{}); err == nil {
 			if c.runtimeWatches != nil {
 				if _, werr := c.runtimeWatches.ensure(ctx, target.gvr, target.kind); werr != nil {
 					return ctrl.Result{}, werr
 				}
 			}
-			return ctrl.Result{RequeueAfter: resyncPeriod}, nil
+			return ctrl.Result{}, nil
 		} else if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("check runtime instance gone: %w", err)
 		}

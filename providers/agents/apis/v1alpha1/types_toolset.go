@@ -73,6 +73,18 @@ type ToolsetStatus struct {
 	// UsedBy counts the agents currently linking this toolset. Informational.
 	// +optional
 	UsedBy int32 `json:"usedBy,omitempty"`
+
+	// ObservedGeneration mirrors metadata.generation last reconciled.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions follows the standard Kubernetes conditions pattern. The
+	// Validated condition reports whether the spec is usable as written —
+	// see conditions.go.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

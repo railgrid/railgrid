@@ -1,0 +1,231 @@
+[
+  {
+    "id": "claude-3-5-haiku",
+    "family": "anthropic",
+    "label": "Claude 3.5 Haiku",
+    "contextWindow": 200000,
+    "inputPer1M": 0.8,
+    "outputPer1M": 4,
+    "vision": true,
+    "toolCall": true
+  },
+  {
+    "id": "claude-haiku-4-5",
+    "family": "anthropic",
+    "label": "Claude Haiku 4.5",
+    "contextWindow": 200000,
+    "inputPer1M": 1,
+    "outputPer1M": 5,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "claude-opus-4",
+    "family": "anthropic",
+    "label": "Claude Opus 4",
+    "contextWindow": 200000,
+    "inputPer1M": 15,
+    "outputPer1M": 75,
+    "vision": true,
+    "toolCall": true
+  },
+  {
+    "id": "claude-opus-4-1",
+    "family": "anthropic",
+    "label": "Claude Opus 4.1",
+    "contextWindow": 200000,
+    "inputPer1M": 15,
+    "outputPer1M": 75,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "claude-opus-4-5",
+    "family": "anthropic",
+    "label": "Claude Opus 4.5",
+    "contextWindow": 200000,
+    "inputPer1M": 5,
+    "outputPer1M": 25,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "claude-sonnet-4",
+    "family": "anthropic",
+    "label": "Claude Sonnet 4",
+    "contextWindow": 200000,
+    "inputPer1M": 3,
+    "outputPer1M": 15,
+    "vision": true,
+    "toolCall": true
+  },
+  {
+    "id": "claude-sonnet-4-5",
+    "family": "anthropic",
+    "label": "Claude Sonnet 4.5",
+    "contextWindow": 200000,
+    "inputPer1M": 3,
+    "outputPer1M": 15,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "gemini-2.5-flash",
+    "family": "google",
+    "label": "Gemini 2.5 Flash",
+    "contextWindow": 1000000,
+    "inputPer1M": 0.3,
+    "outputPer1M": 2.5,
+    "vision": true,
+    "toolCall": true
+  },
+  {
+    "id": "gemini-2.5-pro",
+    "family": "google",
+    "label": "Gemini 2.5 Pro",
+    "contextWindow": 1000000,
+    "inputPer1M": 1.25,
+    "outputPer1M": 10,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "gemini-3-pro",
+    "family": "google",
+    "label": "Gemini 3 Pro",
+    "contextWindow": 1000000,
+    "inputPer1M": 2,
+    "outputPer1M": 12,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "gpt-4.1",
+    "family": "openai",
+    "label": "GPT-4.1",
+    "contextWindow": 1000000,
+    "inputPer1M": 2,
+    "outputPer1M": 8,
+    "vision": true,
+    "toolCall": true
+  },
+  {
+    "id": "gpt-4.1-mini",
+    "family": "openai",
+    "label": "GPT-4.1 mini",
+    "contextWindow": 1000000,
+    "inputPer1M": 0.4,
+    "outputPer1M": 1.6,
+    "vision": true,
+    "toolCall": true
+  },
+  {
+    "id": "gpt-4.1-nano",
+    "family": "openai",
+    "label": "GPT-4.1 nano",
+    "contextWindow": 1000000,
+    "inputPer1M": 0.1,
+    "outputPer1M": 0.4,
+    "vision": true,
+    "toolCall": true
+  },
+  {
+    "id": "gpt-4o",
+    "family": "openai",
+    "label": "GPT-4o",
+    "contextWindow": 128000,
+    "inputPer1M": 2.5,
+    "outputPer1M": 10,
+    "vision": true,
+    "toolCall": true
+  },
+  {
+    "id": "gpt-4o-mini",
+    "family": "openai",
+    "label": "GPT-4o mini",
+    "contextWindow": 128000,
+    "inputPer1M": 0.15,
+    "outputPer1M": 0.6,
+    "vision": true,
+    "toolCall": true
+  },
+  {
+    "id": "gpt-5",
+    "family": "openai",
+    "label": "GPT-5",
+    "contextWindow": 400000,
+    "inputPer1M": 1.25,
+    "outputPer1M": 10,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "gpt-5-mini",
+    "family": "openai",
+    "label": "GPT-5 mini",
+    "contextWindow": 400000,
+    "inputPer1M": 0.25,
+    "outputPer1M": 2,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "gpt-5.1",
+    "family": "openai",
+    "label": "GPT-5.1",
+    "contextWindow": 400000,
+    "inputPer1M": 1.25,
+    "outputPer1M": 10,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "o1",
+    "family": "openai",
+    "label": "o1",
+    "contextWindow": 200000,
+    "inputPer1M": 15,
+    "outputPer1M": 60,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "o3",
+    "family": "openai",
+    "label": "o3",
+    "contextWindow": 200000,
+    "inputPer1M": 2,
+    "outputPer1M": 8,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "o3-mini",
+    "family": "openai",
+    "label": "o3-mini",
+    "contextWindow": 200000,
+    "inputPer1M": 1.1,
+    "outputPer1M": 4.4,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "id": "o4-mini",
+    "family": "openai",
+    "label": "o4-mini",
+    "contextWindow": 200000,
+    "inputPer1M": 1.1,
+    "outputPer1M": 4.4,
+    "toolCall": true,
+    "reasoning": true
+  }
+]

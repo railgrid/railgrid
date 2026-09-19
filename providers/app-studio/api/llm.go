@@ -52,7 +52,11 @@ import (
 )
 
 const (
-	projectLLMSecretName           = "railgrid-projects-llm"
+	// projectLLMCredentialKey is the only entry a model credential Secret
+	// has. Its name is derived from the model ID (the Studio reconciler owns
+	// LLMCredentialSecretName), so no coordination is needed between the
+	// client that writes a key and the runtime that reads it.
+	projectLLMCredentialKey        = "apiKey"
 	projectLLMSecretNamespace      = "default"
 	defaultProjectLLMProvider      = "openai-compatible"
 	defaultProjectLLMBaseURL       = "https://api.openai.com/v1"
@@ -390,91 +394,6 @@ type projectMCPTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
-}
-
-func (s *Server) getProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
-	}
-	registry, err := readProjectLLMRegistry(r.Context(), c)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, registry.view())
-}
-
-func (s *Server) patchProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
-	// The hub used to gate this on the railgrid "admin" membership role. The
-	// provider acts as the caller, so the workspace Secret's own RBAC is the
-	// authority: a non-admin caller's Update is rejected by the apiserver.
-	c, _, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
-	}
-	var req PatchProjectLLMSettingsRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	registry, err := readProjectLLMRegistry(r.Context(), c)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	model, found := registry.model("")
-	if !found {
-		model = projectLLMModelSettings{
-			ID:       projectLLMLegacyDefaultModelID,
-			Name:     defaultProjectLLMModel,
-			Settings: registry.Runtime,
-		}
-		registry.Models = append(registry.Models, model)
-		registry.DefaultModelID = model.ID
-	}
-	settings := model.Settings
-	if req.Provider != nil {
-		settings.Provider = strings.TrimSpace(*req.Provider)
-		if settings.Provider == "" {
-			settings.Provider = defaultProjectLLMProvider
-		}
-	}
-	if req.BaseURL != nil {
-		baseURL, err := normalizeLLMBaseURL(*req.BaseURL)
-		if err != nil {
-			writeProjectError(w, err)
-			return
-		}
-		settings.BaseURL = baseURL
-	}
-	if req.Model != nil {
-		settings.Model = strings.TrimSpace(*req.Model)
-		if settings.Model == "" {
-			writeProjectError(w, newValidationError("model cannot be empty"))
-			return
-		}
-	}
-	if req.APIKey != nil {
-		settings.APIKey = strings.TrimSpace(*req.APIKey)
-	}
-	if err := normalizeProjectLLMSettings(&settings); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	for i := range registry.Models {
-		if registry.Models[i].ID == model.ID {
-			registry.Models[i].Settings = settings
-			if strings.TrimSpace(registry.Models[i].Name) == "" || registry.Models[i].Name == defaultProjectLLMModel {
-				registry.Models[i].Name = settings.Model
-			}
-			break
-		}
-	}
-	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, registry.view())
 }
 
 func (s *Server) generateProjectAssistantStream(
@@ -2022,19 +1941,6 @@ func readProjectLLMSettings(ctx context.Context, c *asclient.Client) (projectLLM
 	return registry.selectedSettings("", "")
 }
 
-func writeProjectLLMSettings(ctx context.Context, c *asclient.Client, settings projectLLMSettings) error {
-	registry := projectLLMRegistry{
-		DefaultModelID: projectLLMLegacyDefaultModelID,
-		Models: []projectLLMModelSettings{{
-			ID:       projectLLMLegacyDefaultModelID,
-			Name:     settings.Model,
-			Settings: settings,
-		}},
-		Runtime: settings,
-	}
-	return writeProjectLLMRegistry(ctx, c, registry)
-}
-
 func defaultProjectLLMSettings() projectLLMSettings {
 	return projectLLMSettings{
 		Provider:             defaultProjectLLMProvider,
@@ -2265,30 +2171,6 @@ func (s projectLLMSettings) view() ProjectLLMSettingsView {
 		Model:      s.Model,
 		Configured: strings.TrimSpace(s.APIKey) != "",
 	}
-}
-
-func projectLLMSettingsSecret(settings projectLLMSettings) *unstructured.Unstructured {
-	data := map[string]interface{}{
-		"provider":            encodeSecretValue(settings.Provider),
-		"baseURL":             encodeSecretValue(settings.BaseURL),
-		"model":               encodeSecretValue(settings.Model),
-		"maxRetries":          encodeSecretValue(strconv.Itoa(settings.MaxRetries)),
-		"retryBackoffMS":      encodeSecretValue(strconv.FormatInt(settings.RetryBackoff.Milliseconds(), 10)),
-		"streamIdleTimeoutMS": encodeSecretValue(strconv.FormatInt(settings.StreamIdleTimeout.Milliseconds(), 10)),
-	}
-	if strings.TrimSpace(settings.APIKey) != "" {
-		data["apiKey"] = encodeSecretValue(settings.APIKey)
-	}
-	return &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "v1",
-		"kind":       "Secret",
-		"metadata": map[string]interface{}{
-			"name":      projectLLMSecretName,
-			"namespace": projectLLMSecretNamespace,
-		},
-		"type": "Opaque",
-		"data": data,
-	}}
 }
 
 func secretDataValue(secret *unstructured.Unstructured, key string) string {

@@ -4,14 +4,24 @@
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
 
 // Package actions serves caller-authorized, repository-bound provider actions.
+//
+// The route grammar, the two gates and the response envelope all come from
+// provider-sdk/dataplane: ParseRequest parses
+// /actions/clusters/{id}/repositories/{name}/{action}/v1, Gate proves the
+// caller can see the Repository and holds `create` on
+// repositories/{action}, and Serve bounds the body, the deadline and the
+// result. What stays here is what only this provider knows: pinning the
+// caller-visible Repository against the provider's own export read
+// (authority.go), resolving the Connection credential, and dispatching to a
+// git backend.
 package actions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,24 +29,90 @@ import (
 	"github.com/railgrid/provider-code/backend"
 	"github.com/railgrid/provider-code/tenant"
 	"github.com/railgrid/provider-sdk/actionwire"
+	"github.com/railgrid/provider-sdk/dataplane"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/klog/v2"
 )
 
-var segment = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,252}$`)
-var verbs = map[string]bool{"branches": true, "branch_head": true, "find_pull_request": true, "pull_request": true, "create_pull_request": true, "update_pull_request": true, "feedback": true, "comments": true, "add_comment": true, "reply_to_review": true, "prepare_snapshot": true, "publish_snapshot": true}
+// StageSnapshot is the one served verb that is not in the CatalogEntry: its
+// body carries a base64 git bundle far past the 1 MiB ceiling
+// CatalogEntry.spec.actions[].limits.maxInputBytes allows
+// (apis/providers/v1alpha1/actions.go). It is documented as the single
+// catalogue exception in docs/provider-actions.md, "Uncatalogued large-upload
+// verbs", and is gated exactly like every catalogued action.
+const StageSnapshot = "stage_snapshot"
 
+// MaxInputBytes bounds the stage_snapshot body: a 25 MiB decoded bundle plus
+// its base64 expansion and the surrounding JSON.
 const MaxInputBytes = 36 << 20
+
+// MaxOutputBytes is the declared output bound shared by every action.
 const MaxOutputBytes = 512 << 10
 
-type CallerFactory interface {
-	For(string, string) (dynamic.Interface, error)
+// actionTimeout is the declared timeoutSeconds of every catalogued action; it
+// bounds the upload, the backend call and the encode together.
+const actionTimeout = 180 * time.Second
+
+// served maps each action name to the limits its CatalogEntry declaration
+// states (manifest.yaml). An action missing from this map is not served, so
+// adding a catalogue entry and serving it are one edit.
+var served = map[string]dataplane.Limits{
+	"branches":            jsonAction(50),
+	"branch_head":         jsonAction(50),
+	"find_pull_request":   jsonAction(50),
+	"pull_request":        jsonAction(50),
+	"create_pull_request": jsonAction(50),
+	"update_pull_request": jsonAction(50),
+	"feedback":            jsonAction(2000),
+	"comments":            jsonAction(50),
+	"add_comment":         jsonAction(50),
+	"reply_to_review":     jsonAction(50),
+	"prepare_snapshot":    jsonAction(50),
+	"publish_snapshot":    jsonAction(50),
+	StageSnapshot: {
+		Timeout:        actionTimeout,
+		MaxInputBytes:  MaxInputBytes,
+		MaxOutputBytes: MaxOutputBytes,
+	},
 }
+
+func jsonAction(items int64) dataplane.Limits {
+	return dataplane.Limits{
+		Timeout:        actionTimeout,
+		MaxInputBytes:  64 << 10,
+		MaxOutputBytes: MaxOutputBytes,
+		MaxResultItems: items,
+	}
+}
+
+// snapshotActions share one memory admission slot: decoding, staging and
+// loading a bundle all hold it, including any git subprocess using it.
+var snapshotActions = map[string]bool{StageSnapshot: true, "prepare_snapshot": true, "publish_snapshot": true}
+
+// statusFor maps a typed action failure to its HTTP status. Every code here
+// is one this package produces; anything else is treated as a backend outcome
+// that did not settle.
+var statusFor = map[string]int{
+	"invalid_action_input":         http.StatusBadRequest,
+	"action_forbidden":             http.StatusForbidden,
+	"identity_conflict":            http.StatusConflict,
+	"unsupported_provider":         http.StatusUnprocessableEntity,
+	"unsupported_action":           http.StatusUnprocessableEntity,
+	"invalid_snapshot":             http.StatusUnprocessableEntity,
+	"snapshot_unavailable":         http.StatusUnprocessableEntity,
+	"upstream_outcome_unconfirmed": http.StatusBadGateway,
+}
+
+// Server serves the repository-bound action routes.
 type Server struct {
-	Caller        CallerFactory
+	// Caller builds the caller-scoped client both gates run through. It never
+	// carries the provider's own credential.
+	Caller dataplane.CallerFactory
+	// Authority resolves the provider's own view of a repository through its
+	// accepted APIExport, for pinning what gate 1 returned.
 	Authority     func(context.Context, string, string) (dynamic.Interface, error)
 	Backends      *backend.Registry
 	Credentials   tenant.CredentialResolver
@@ -45,7 +121,7 @@ type Server struct {
 	snapshotSlots chan struct{}
 }
 
-func New(caller CallerFactory, authority func(context.Context, string, string) (dynamic.Interface, error), backends *backend.Registry) *Server {
+func New(caller dataplane.CallerFactory, authority func(context.Context, string, string) (dynamic.Interface, error), backends *backend.Registry) *Server {
 	return &Server{Caller: caller, Authority: authority, Backends: backends, slots: make(chan struct{}, 8), snapshotSlots: make(chan struct{}, 1)}
 }
 
@@ -62,88 +138,114 @@ type Input struct {
 	Snapshot  *backend.Snapshot `json:"snapshot,omitempty"`
 	BundleRef string            `json:"bundleRef,omitempty"`
 }
-type Request struct {
-	RequestID string `json:"requestId,omitempty"`
-	Input     Input  `json:"input"`
-}
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "application/json")
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if r.Method != http.MethodPost || r.URL.RawPath != "" || len(parts) != 7 || parts[0] != "actions" || parts[1] != "clusters" || parts[3] != "repositories" || parts[6] != "v1" || (!verbs[parts[5]] && parts[5] != "stage_snapshot") {
+	logger := klog.FromContext(r.Context()).WithName("code-actions")
+	req, ok := dataplane.ParseRequest(dataplane.ActionsRoot, r)
+	if !ok {
+		dataplane.WriteError(w, dataplane.ErrBadPath)
+		return
+	}
+	limits, isServed := served[req.Verb]
+	if req.Resource != repositories.Resource || req.Component != "" || req.Version != "v1" || req.Tail != "" || !isServed {
 		http.NotFound(w, r)
 		return
 	}
-	cluster, name, action := parts[2], parts[4], parts[5]
-	if !segment.MatchString(cluster) || !segment.MatchString(name) || name == "." || name == ".." || cluster != r.Header.Get("X-Railgrid-Cluster") {
-		http.Error(w, "invalid repository action scope", http.StatusForbidden)
-		return
-	}
-	envelope := actionwire.New(r, "code", action, actionwire.ResourceRef{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository", Resource: "repositories", Name: name})
+	envelope := actionwire.New(r, "code", req.Verb, actionwire.ResourceRef{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository", Resource: repositories.Resource, Name: req.Name})
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-ID", envelope.RequestID)
-	fail := func(status int, code string, retryable bool) {
-		envelope.Failure(w, status, code, strings.ReplaceAll(code, "_", " "), retryable)
+	fail := func(status int, code string) {
+		envelope.Failure(w, status, code, strings.ReplaceAll(code, "_", " "), false)
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
-	defer cancel()
+
+	// Admission before either gate: a saturated process refuses work without
+	// reading a body or touching kcp.
 	select {
 	case s.slots <- struct{}{}:
 		defer func() { <-s.slots }()
 	default:
-		fail(http.StatusServiceUnavailable, "action_capacity_unavailable", false)
+		fail(http.StatusServiceUnavailable, "action_capacity_unavailable")
 		return
 	}
-	visible, err := s.authorize(ctx, r, cluster, name, action)
+
+	// The two gates, as the caller. The returned Repository is what resolve
+	// pins the provider's own read against.
+	visible, _, err := dataplane.Gate(r.Context(), r, s.Caller, repositories, req)
 	if err != nil {
-		fail(403, "action_forbidden", false)
+		// The detail stays provider-side; the caller learns only the status.
+		logger.V(3).Info("repository action refused", "action", req.Verb, "repository", req.Name, "err", err)
+		status := dataplane.StatusForAs(err, http.StatusForbidden)
+		fail(status, gateFailureCode(status))
 		return
 	}
-	// Snapshot decoding, staging and loading share one memory admission slot.
-	// Keep it until completion, including any Git subprocess using the bundle.
-	if action == "stage_snapshot" || action == "prepare_snapshot" || action == "publish_snapshot" {
+
+	if snapshotActions[req.Verb] {
 		select {
 		case s.snapshotSlots <- struct{}{}:
 			defer func() { <-s.snapshotSlots }()
 		default:
-			fail(http.StatusServiceUnavailable, "action_capacity_unavailable", false)
+			fail(http.StatusServiceUnavailable, "action_capacity_unavailable")
 			return
 		}
 	}
-	limit := int64(65536)
-	if action == "stage_snapshot" {
-		limit = MaxInputBytes
+
+	dataplane.Serve(w, r, envelope, limits, func(ctx context.Context, raw json.RawMessage) (any, *actionwire.Error) {
+		return s.run(ctx, r, req, visible, raw)
+	}, dataplane.WithErrorStatus(func(e *actionwire.Error) int {
+		if status, ok := statusFor[e.Code]; ok {
+			return status
+		}
+		return http.StatusBadGateway
+	}))
+}
+
+// gateFailureCode names a gate failure by the status it maps to, so the
+// envelope says as little as the body does.
+func gateFailureCode(status int) string {
+	switch status {
+	case http.StatusUnauthorized:
+		return "action_unauthenticated"
+	case http.StatusBadRequest:
+		return "invalid_action_route"
+	case http.StatusForbidden:
+		return "action_forbidden"
+	default:
+		return "action_unavailable"
 	}
-	request, err := readActionRequest(ctx, w, r, limit, 30*time.Second)
+}
+
+func wireError(code string) *actionwire.Error {
+	return &actionwire.Error{Code: code, Message: strings.ReplaceAll(code, "_", " "), Retryable: false}
+}
+
+// run is the executor dataplane.Serve calls once the gates have passed and the
+// body has been decoded to its "input" member.
+func (s *Server) run(ctx context.Context, r *http.Request, req dataplane.Request, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
+	in, err := decodeInput(raw)
 	if err != nil {
-		fail(400, "invalid_action_input", false)
-		return
+		return nil, wireError("invalid_action_input")
 	}
-	conn, repo, credential, err := s.resolve(ctx, cluster, name, visible, request.Input)
+	conn, repo, credential, err := s.resolve(ctx, req.ClusterID, req.Name, visible, in)
 	if err != nil {
-		fail(403, "action_forbidden", false)
-		return
+		return nil, wireError("action_forbidden")
 	}
 	implementation, ok := s.Backends.Get(string(conn.Spec.Provider))
 	if !ok {
-		fail(422, "unsupported_provider", false)
-		return
+		return nil, wireError("unsupported_provider")
 	}
 	collaboration, ok := implementation.(backend.Collaboration)
 	if !ok {
-		fail(422, "unsupported_action", false)
-		return
+		return nil, wireError("unsupported_action")
 	}
-	in := request.Input
 	var output any
-	switch action {
-	case "stage_snapshot":
-		output, err = s.stage(r, cluster, in)
+	switch req.Verb {
+	case StageSnapshot:
+		output, err = s.stage(r, req.ClusterID, in)
 	case "branches":
 		lister, ok := implementation.(backend.BranchLister)
 		if !ok {
-			fail(422, "unsupported_action", false)
-			return
+			return nil, wireError("unsupported_action")
 		}
 		output, err = lister.ListBranches(ctx, conn, credential, repo, in.Page)
 	case "branch_head":
@@ -169,15 +271,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "prepare_snapshot", "publish_snapshot":
 		publisher, ok := implementation.(backend.SnapshotPublisher)
 		if !ok || in.Snapshot != nil || in.BundleRef == "" {
-			fail(422, "invalid_snapshot", false)
-			return
+			return nil, wireError("invalid_snapshot")
 		}
-		snapshot, loadErr := s.loadSnapshot(r, cluster, in)
+		snapshot, loadErr := s.loadSnapshot(r, req.ClusterID, in)
 		if loadErr != nil {
-			fail(422, "snapshot_unavailable", false)
-			return
+			return nil, wireError("snapshot_unavailable")
 		}
-		if action == "prepare_snapshot" {
+		if req.Verb == "prepare_snapshot" {
 			err = publisher.VerifySnapshot(ctx, conn, credential, repo, snapshot)
 		} else {
 			err = publisher.PublishSnapshot(ctx, conn, credential, repo, snapshot, in.Branch, in.ExpectedHead)
@@ -186,48 +286,41 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if errors.Is(err, backend.ErrRepositoryIdentityConflict) {
-			fail(409, "identity_conflict", false)
-		} else {
-			fail(502, "upstream_outcome_unconfirmed", false)
+			return nil, wireError("identity_conflict")
 		}
-		return
+		return nil, wireError("upstream_outcome_unconfirmed")
 	}
-	encoded, err := envelope.Success(output)
-	if err != nil || len(encoded) > MaxOutputBytes {
-		fail(502, "result_limit", false)
-		return
-	}
-	_, _ = w.Write(encoded)
-}
-func (s *Server) authorize(ctx context.Context, r *http.Request, cluster, name, action string) (*unstructured.Unstructured, error) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if s.Caller == nil || s.Authority == nil || token == "" || token == r.Header.Get("Authorization") {
-		return nil, errors.New("repository action denied")
-	}
-	caller, err := s.Caller.For(cluster, token)
-	if err != nil {
-		return nil, errors.New("repository action denied")
-	}
-	visible, err := caller.Resource(repositories).Get(ctx, name, metav1.GetOptions{})
-	if err != nil || visible.GetDeletionTimestamp() != nil {
-		return nil, errors.New("repository action denied")
-	}
-	review, err := caller.Resource(schema.GroupVersionResource{Group: "authorization.k8s.io", Version: "v1", Resource: "selfsubjectaccessreviews"}).Create(ctx, &unstructured.Unstructured{Object: map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview", "spec": map[string]any{"resourceAttributes": map[string]any{"group": "code.railgrid.ai", "resource": "repositories", "name": name, "verb": "invoke", "subresource": action}}}}, metav1.CreateOptions{})
-	if err != nil {
-		return nil, errors.New("repository action denied")
-	}
-	allowed, _, _ := unstructured.NestedBool(review.Object, "status", "allowed")
-	if !allowed {
-		return nil, errors.New("repository action denied")
-	}
-	return visible, nil
+	return output, nil
 }
 
+// decodeInput reads the action's own input strictly: an unknown member is a
+// caller bug and is refused rather than ignored, the same way the envelope
+// around it is.
+func decodeInput(raw json.RawMessage) (Input, error) {
+	var in Input
+	if len(raw) == 0 || string(raw) == "null" {
+		return in, nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&in); err != nil {
+		return Input{}, err
+	}
+	if err := decoder.Decode(new(any)); err == nil {
+		return Input{}, errors.New("unexpected trailing action input")
+	}
+	return in, nil
+}
+
+// resolve pins what gate 1 returned against the provider's own read of the
+// Repository and its Connection, then loads the Connection credential. The
+// caller never reads a Secret; a replaced object, a changed spec or a
+// mismatched identity fails closed.
 func (s *Server) resolve(ctx context.Context, cluster, name string, visible *unstructured.Unstructured, input Input) (*api.Connection, *api.Repository, backend.Credential, error) {
 	fail := func() (*api.Connection, *api.Repository, backend.Credential, error) {
 		return nil, nil, backend.Credential{}, errors.New("repository action denied")
 	}
-	if input.RepositoryUID == "" || input.ConnectionUID == "" || string(visible.GetUID()) != input.RepositoryUID {
+	if s.Authority == nil || input.RepositoryUID == "" || input.ConnectionUID == "" || string(visible.GetUID()) != input.RepositoryUID {
 		return fail()
 	}
 	provider, err := s.Authority(ctx, cluster, name)

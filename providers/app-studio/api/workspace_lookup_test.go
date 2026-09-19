@@ -63,7 +63,7 @@ var defaultTestWorkspaces = staticWorkspaces{
 // org/workspace scope comes from kcp via the lookup, never from a header
 // value that merely looks like a workspace path.
 func TestIdentityScopeComesFromWorkspaceLookupNotHeaders(t *testing.T) {
-	s := &Server{tenantWorkspaces: testWorkspaceLookup("cluster-a", "org-a", "workspace-a")}
+	s := &Server{tenantWorkspaces: testWorkspaceLookup("cluster-a", "org-a", "workspace-a"), tenantActors: defaultTestActors.lookup}
 
 	r := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
 	r.Header.Set("X-Railgrid-Tenant", "cluster-a")

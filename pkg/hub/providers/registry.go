@@ -46,7 +46,7 @@ const HeartbeatTTL = 90 * time.Second
 const SweepInterval = 30 * time.Second
 
 // Provider is the in-memory record the proxies consult to route a request.
-// Fields are nil-able to reflect that UI/backend/VW are independently optional
+// Fields are nil-able to reflect that UI and backend are independently optional
 // in the source ProviderCatalogEntry.
 type Provider struct {
 	Name string
@@ -82,11 +82,7 @@ type Provider struct {
 	// deliberately never dialled directly by the hub.
 	BackendHealthRequired bool
 	BackendHealthy        bool
-	// VirtualWorkspaceURL is the provider-declared action transport target.
-	// Provider Actions append /actions/{name}/{version} to this URL; they never
-	// use BackendURL or a provider MCP endpoint.
-	VirtualWorkspaceURL *url.URL
-	Actions             []ProviderAction
+	Actions               []ProviderAction
 	// AssistantSkills contains only validated, provider-supplied inline App
 	// Studio packages. It intentionally carries no provider URL, credential, or
 	// runtime handle; the authenticated catalog API is the sole distribution

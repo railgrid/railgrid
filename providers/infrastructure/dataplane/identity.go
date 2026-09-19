@@ -18,7 +18,6 @@ package dataplane
 
 import (
 	"net/http"
-	"os"
 	"strings"
 )
 
@@ -38,15 +37,11 @@ type identity struct {
 }
 
 func identityFromRequest(r *http.Request) identity {
-	id := identity{
+	return identity{
 		tenant: r.Header.Get("X-Railgrid-Tenant"),
 		user:   r.Header.Get("X-Railgrid-User"),
 		token:  bearerToken(r),
 	}
-	if os.Getenv("RAILGRID_DEV_ALLOW_TENANT_QUERY") == "true" && id.token == "" {
-		id.token = r.URL.Query().Get("token")
-	}
-	return id
 }
 
 // bearerToken extracts the caller's token from the Authorization header.

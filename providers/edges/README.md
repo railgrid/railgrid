@@ -1,8 +1,9 @@
 # edges provider
 
-Connectivity core for railgrid. Owns `edges.railgrid.ai`: `KubernetesCluster` and
-`LinuxServer` edges, the agent reverse tunnel, `Service` connectors, and
-`Workload` / `Placement` scheduling.
+Connectivity core for railgrid. Owns `edges.railgrid.ai` and its seven kinds:
+the `KubernetesCluster`, `LinuxServer` and `MacOSServer` edges, the agent
+reverse tunnel, `Service` connectors, `Workload` / `Placement` scheduling, and
+`Addon` for per-edge add-on installs.
 
 An **edge** is a cluster or host you connect to railgrid. The agent you install
 there dials *out* to the platform and holds open a WebSocket reverse tunnel

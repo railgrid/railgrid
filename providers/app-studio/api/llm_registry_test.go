@@ -17,9 +17,6 @@ package api
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -36,11 +33,7 @@ func TestProjectLLMRegistryRoundTripsMultipleModelsAndDefault(t *testing.T) {
 			{ID: "gemini-fast", Name: "Gemini Fast", Settings: projectLLMSettings{Provider: projectLLMProviderGoogle, BaseURL: "https://generativelanguage.googleapis.com", Model: "gemini-test", APIKey: "google-key"}},
 		},
 	}
-	secret, err := projectLLMRegistrySecret(registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: secret})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry})
 	got, err := readProjectLLMRegistry(context.Background(), client)
 	if err != nil {
 		t.Fatal(err)
@@ -58,23 +51,6 @@ func TestProjectLLMRegistryRoundTripsMultipleModelsAndDefault(t *testing.T) {
 	view := got.view()
 	if view.DefaultModelID != "gemini-fast" || len(view.Models) != 2 || !view.Models[0].Default {
 		t.Fatalf("registry view = %#v, want default model first", view)
-	}
-}
-
-func TestProjectLLMRegistryReadsLegacySingleModelSecret(t *testing.T) {
-	legacy := defaultProjectLLMSettings()
-	legacy.Model = "legacy-model"
-	legacy.APIKey = "legacy-key"
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(legacy)})
-	registry, err := readProjectLLMRegistry(context.Background(), client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if registry.DefaultModelID != projectLLMLegacyDefaultModelID || len(registry.Models) != 1 {
-		t.Fatalf("legacy registry = %#v", registry)
-	}
-	if registry.Models[0].Settings.Model != "legacy-model" || registry.Models[0].Settings.APIKey != "legacy-key" {
-		t.Fatalf("legacy model = %#v", registry.Models[0])
 	}
 }
 
@@ -117,27 +93,6 @@ func TestProjectLLMRegistryFallbackDefaultSkipsModelsWithoutCredentials(t *testi
 	registry.DefaultModelID = "ready-z"
 	if got := configuredProjectLLMDefaultModelID(registry); got != "ready-z" {
 		t.Fatalf("configured default = %q, want ready-z", got)
-	}
-}
-
-func TestCreateProjectLLMModelRejectsMissingCredential(t *testing.T) {
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{})
-	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
-	request := httptest.NewRequest(http.MethodPost, "/api/projects/llm-settings/models", strings.NewReader(
-		`{"name":"GPT High","provider":"openai-compatible","baseURL":"https://api.openai.com/v1","model":"gpt-test"}`,
-	))
-	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
-	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
-	response := httptest.NewRecorder()
-
-	server.createProjectLLMModel(response, request)
-
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusBadRequest, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), "a credential is required to connect this model") {
-		t.Fatalf("body = %q, want actionable credential error", response.Body.String())
 	}
 }
 
@@ -184,11 +139,7 @@ func TestProjectLLMRegistryResolvesPinnedRevisionAfterPatchAndDelete(t *testing.
 	if _, err := registry.selectedModel("shared"); err == nil {
 		t.Fatal("deleted logical model remained selectable for a new run")
 	}
-	secret, err := projectLLMRegistrySecret(registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roundTripped, err := readProjectLLMRegistry(context.Background(), asclient.NewFromDynamic(projectSettingsDynamicClient{secret: secret}))
+	roundTripped, err := readProjectLLMRegistry(context.Background(), asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry}))
 	if err != nil {
 		t.Fatal(err)
 	}

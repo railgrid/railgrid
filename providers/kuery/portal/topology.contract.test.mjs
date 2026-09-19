@@ -4,9 +4,17 @@ import { test } from 'node:test'
 import ts from 'typescript'
 
 const graphSource = readFileSync(new URL('./src/graph.ts', import.meta.url), 'utf8')
+// graph.ts imports Cytoscape as a module (Vite bundles it; it is no longer a
+// runtime <script> tag reading a global), so the import is stubbed rather than
+// resolved: a data: URL has no package resolution, and the mountGraph tests
+// below want a fake instance anyway. The stub delegates to a global the test
+// sets, which is the same seam the old window.cytoscape assignment was.
+const cytoscapeStub = `data:text/javascript,${encodeURIComponent(
+  'export default function cytoscape(...args) { return globalThis.__kueryCytoscape(...args) }',
+)}`
 const graphModule = await import(`data:text/javascript,${encodeURIComponent(ts.transpileModule(graphSource, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-}).outputText)}`)
+}).outputText.replace(/ from ['"]cytoscape['"]/g, ` from '${cytoscapeStub}'`))}`)
 
 const member = (id, kind, name, namespace = '', cluster = 'org/edge-a') => ({
   id,
@@ -111,7 +119,7 @@ const discreteLayoutStub = () => {
 }
 
 test('mountGraph focuses the labeled container on pointer use and removes the listener on destroy', async () => {
-  const previousWindow = globalThis.window
+  const previousFactory = globalThis.__kueryCytoscape
   let focusCount = 0
   let destroyed = 0
   let pointerListener
@@ -130,8 +138,8 @@ test('mountGraph focuses the labeled container on pointer use and removes the li
   })
 
   try {
-    globalThis.window = { cytoscape: fakeCytoscape }
-    const handle = await graphModule.mountGraph(container, [], [], () => {}, '/cytoscape.min.js')
+    globalThis.__kueryCytoscape = fakeCytoscape
+    const handle = await graphModule.mountGraph(container, [], [], () => {})
     assert.equal(typeof pointerListener, 'function')
     pointerListener()
     assert.equal(focusCount, 1)
@@ -139,12 +147,12 @@ test('mountGraph focuses the labeled container on pointer use and removes the li
     assert.equal(pointerListener, undefined)
     assert.equal(destroyed, 1)
   } finally {
-    globalThis.window = previousWindow
+    globalThis.__kueryCytoscape = previousFactory
   }
 })
 
 test('graph additions enforce a hard node limit while retaining parallel relation edges', async () => {
-  const previousWindow = globalThis.window
+  const previousFactory = globalThis.__kueryCytoscape
   const stored = new Map([['root', { data: { id: 'root' } }]])
   const cy = {
     on: () => {},
@@ -161,8 +169,8 @@ test('graph additions enforce a hard node limit while retaining parallel relatio
   }
 
   try {
-    globalThis.window = { cytoscape: () => cy }
-    const handle = await graphModule.mountGraph({ addEventListener: () => {}, removeEventListener: () => {} }, [], [], () => {}, '/cytoscape.min.js')
+    globalThis.__kueryCytoscape = () => cy
+    const handle = await graphModule.mountGraph({ addEventListener: () => {}, removeEventListener: () => {} }, [], [], () => {})
     const added = handle.add([
       { data: { id: 'child', label: 'child' } },
       { data: { id: 'root>child:owners', source: 'root', target: 'child', rel: 'owners' } },
@@ -176,7 +184,7 @@ test('graph additions enforce a hard node limit while retaining parallel relatio
     assert.equal(stored.has('over-limit'), false)
     handle.destroy()
   } finally {
-    globalThis.window = previousWindow
+    globalThis.__kueryCytoscape = previousFactory
   }
 })
 
@@ -385,7 +393,7 @@ test('topology view keeps the force layout off the main thread and stoppable', (
 })
 
 test('mountGraph runs one layout at a time, reports activity, and stops a running layout on relayout and destroy', async () => {
-  const previousWindow = globalThis.window
+  const previousFactory = globalThis.__kueryCytoscape
   const layouts = []
   // An animated layout: run() returns without emitting layoutstop; the test
   // drives completion (or stop) by calling finish().
@@ -402,9 +410,9 @@ test('mountGraph runs one layout at a time, reports activity, and stops a runnin
   const activity = []
 
   try {
-    globalThis.window = { cytoscape: () => cy }
+    globalThis.__kueryCytoscape = () => cy
     const handle = await graphModule.mountGraph(
-      { addEventListener: () => {}, removeEventListener: () => {} }, [], [], () => {}, '/cytoscape.min.js',
+      { addEventListener: () => {}, removeEventListener: () => {} }, [], [], () => {},
       { name: 'cose', animate: true },
       { onLayout: (running, nodes) => activity.push([running, nodes]) },
     )
@@ -437,6 +445,6 @@ test('mountGraph runs one layout at a time, reports activity, and stops a runnin
     handle.destroy()
     assert.equal(layouts[3].stops, 1)
   } finally {
-    globalThis.window = previousWindow
+    globalThis.__kueryCytoscape = previousFactory
   }
 })

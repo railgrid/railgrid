@@ -17,32 +17,30 @@ package main
 import (
 	"errors"
 	"testing"
+
+	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
-func TestHeartbeatCanSendFollowsControllerReadiness(t *testing.T) {
-	if !heartbeatCanSend(nil) {
-		t.Fatal("heartbeat without a health dependency should remain compatible")
+// The hub records any received beat as liveness without inspecting it, so the
+// provider must go quiet whenever readiness is false and let the TTL mark it
+// stale. This is the gate runServe installs as hubclient.Config.CanSend.
+func TestHeartbeatCanSendFollowsReadiness(t *testing.T) {
+	ready := &vwhealth.Readiness{}
+	canSend := func() bool { return ready.Check() == nil }
+
+	if !canSend() {
+		t.Fatal("a replica that is not running controllers should keep heartbeating")
 	}
 
-	restOnly := newControllerHealth(false)
-	if !heartbeatCanSend(restOnly) {
-		t.Fatal("REST-only mode should continue heartbeating")
+	detach := ready.Attach("controllers", checkerFunc(func() error {
+		return errors.New("not watching any tenant workspace yet")
+	}))
+	if canSend() {
+		t.Fatal("a leader whose controllers are not watching must not heartbeat")
 	}
 
-	required := newControllerHealth(true)
-	if heartbeatCanSend(required) {
-		t.Fatal("starting required controller must not heartbeat")
-	}
-	required.markFailed(errors.New("manager exited"))
-	if heartbeatCanSend(required) {
-		t.Fatal("failed required controller must not heartbeat")
-	}
-	required.markReady()
-	if !heartbeatCanSend(required) {
-		t.Fatal("running required controller should heartbeat")
-	}
-	required.markStopped(errors.New("shutdown"))
-	if heartbeatCanSend(required) {
-		t.Fatal("stopped required controller must not heartbeat")
+	detach()
+	if !canSend() {
+		t.Fatal("heartbeats should resume once the term ends and nothing reports unready")
 	}
 }

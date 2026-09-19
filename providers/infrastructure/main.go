@@ -78,10 +78,11 @@ func reportedVersion() string {
 //	    APIExport virtual workspace. Exits when done.
 //
 //	infrastructure-provider serve  (default if no subcommand)
-//	    Runtime. Reads the minted kubeconfig from INFRASTRUCTURE_KUBECONFIG
-//	    (or the legacy INFRASTRUCTURE_CONTROLLER_KUBECONFIG fallback) and
-//	    starts the REST + portal + MCP server, plus the platform
-//	    controller manager. Does NOT need admin credentials.
+//	    Runtime. Reads the workspace-scoped kubeconfig `init` minted from
+//	    RAILGRID_PROVIDER_KUBECONFIG — the only source it accepts — and
+//	    starts the portal + MCP + data-plane server and the provider's
+//	    reconcilers. It never bootstraps and never runs with an admin
+//	    credential; without that kubeconfig it exits.
 //
 // The split lets dev clusters run init once (Makefile target) and
 // keeps the long-lived process scoped to the minted SA's grants.
@@ -140,13 +141,15 @@ func runInit() error {
 // runServe is the existing main loop, moved into its own function so
 // runInit can short-circuit without touching it.
 func runServe() {
-	// Load the provider's kcp connection once and share it: the controller
-	// manager uses it directly, and the MCP tenant client borrows only its
-	// host + TLS (every tenant request authenticates with the CALLER's own
-	// bearer token — no provider-wide identity). nil config => REST-only dev.
-	kcpConfig, kcpErr := loadControllerConfig()
-	if kcpErr != nil {
-		log.Printf("kcp config unavailable (%v); tenant MCP tools + controller manager disabled", kcpErr)
+	// Load the provider's kcp connection once and share it: the controllers
+	// use it directly, and the MCP tenant client borrows only its host + TLS
+	// (every tenant request authenticates with the CALLER's own bearer token
+	// — no provider-wide identity). There is no degraded mode: serve without
+	// the workspace-scoped provider kubeconfig would either serve nothing or
+	// reach for a credential it must not have, so it is a startup failure.
+	kcpConfig, err := loadControllerConfig()
+	if err != nil {
+		log.Fatalf("serve: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -154,10 +157,11 @@ func runServe() {
 	serveWithConfig(ctx, kcpConfig)
 }
 
-// serveWithConfig runs the HTTP/MCP server + controller manager + heartbeat
-// against the supplied kcp config, blocking until ctx is cancelled. The caller
-// owns ctx (runServe wires signals; the operator shares its own ctx with the
-// bootstrap loop). A nil kcpConfig keeps the REST-only/stub flow.
+// serveWithConfig runs the HTTP/MCP server + controllers + heartbeat against
+// the supplied kcp config, blocking until ctx is cancelled. The caller owns ctx
+// (runServe wires signals; the operator shares its own ctx with the bootstrap
+// reconciler) and owns resolving the config — it is always the provider's
+// workspace-scoped credential, never an admin one.
 func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -206,31 +210,28 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 	}
 
 	go func() {
-		log.Printf("infrastructure provider listening on :%s (tenant=%v mcp=true)", port, kcpConfig != nil)
+		log.Printf("infrastructure provider listening on :%s (mcp=true)", port)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server: %v", err)
 		}
 	}()
 
-	// Platform controller manager (PR A). Opt-in: when no kubeconfig
-	// is in scope the provider stays in REST-only mode, preserving the
-	// existing dev/stub flow while the new code lands.
-	if err := startControllerManager(ctx, kcpConfig); err != nil {
-		if errors.Is(err, errControllerDisabled) {
-			log.Printf("controller manager: disabled (no kubeconfig); set INFRASTRUCTURE_CONTROLLER_KUBECONFIG to enable")
-		} else {
-			log.Printf("controller manager: NOT started: %v", err)
-		}
+	// The provider's reconcilers: the Instance controller on the APIExport
+	// virtual workspace with the Template controller folded onto its local
+	// (provider-workspace) manager, both under one lease.
+	if err := startControllers(ctx, kcpConfig); err != nil {
+		log.Printf("controllers: NOT started: %v", err)
 	}
-
-	// Cross-tenant Application instance controller (fqdn stamp + OIDC
-	// client-secret bridge). Opt-in via RAILGRID_APP_BASE_DOMAIN + KRO_KUBECONFIG.
-	startInstanceController(ctx, kcpConfig)
 
 	hb, err := hubclient.ConfigFromEnv("infrastructure", reportedVersion())
 	if err != nil {
 		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}
+	// The hub records any received beat as liveness and ignores the body's
+	// status, so the beat itself has to carry the readiness: gate it on the
+	// same vwhealth state /readyz reports, so an unreachable virtual
+	// workspace stops the beat and the hub's TTL flips us to NotReady.
+	hb.CanSend = func() bool { return vwState.Check() == nil }
 	go hubclient.RunHeartbeat(ctx, hb)
 
 	<-ctx.Done()

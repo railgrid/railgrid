@@ -150,6 +150,17 @@ type WorkspaceOps interface {
 	// handler. NotFound is a no-op.
 	DeleteProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName string) error
 
+	// ListProviderAPIBindingsForExport walks the whole tenant fleet and
+	// returns every APIBinding of one APIExport, wherever it lives, and
+	// ReacceptProviderAPIBindingClaims rewrites one such binding's claim set
+	// to what the provider declares today. Together they are the claims
+	// migration AGENTS.md §5.1 requires: `init` updates the provider-side
+	// APIExport, and nothing else ever revisits the per-tenant bindings that
+	// decide what the provider may actually touch. See
+	// admin_provider_claims.go.
+	ListProviderAPIBindingsForExport(ctx context.Context, exportPath, exportName string) ([]kcp.ProviderBindingRef, error)
+	ReacceptProviderAPIBindingClaims(ctx context.Context, ref kcp.ProviderBindingRef, exportPath, exportName string, claims []kcp.ProviderClaim) (bool, error)
+
 	// EnsureProviderEdgeProxyGrant / RemoveProviderEdgeProxyGrant manage
 	// the ClusterRole/ClusterRoleBinding pair that lets a provider's SA
 	// (under its cluster-qualified identity) use the "proxy" verb on
@@ -405,6 +416,24 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// app_access.go and docs/app-studio-publishing.md.
 	r.HandleFunc("/{org}/workspaces/{ws}/app-access", h.listAppAccessGrants).Methods(http.MethodGet)
 	r.HandleFunc("/{org}/workspaces/{ws}/app-access/{binding}", h.revokeAppAccessGrant).Methods(http.MethodDelete)
+}
+
+// RegisterAdmin attaches the platform-admin routes this package owns. r is the
+// /api/admin subrouter, already gated by pkg/hub/admin's Middleware, so
+// reaching a handler here already proves the caller is a platform admin —
+// there is no per-tenant context and no role check to make.
+//
+// Effective routes:
+//
+//	POST /api/admin/providers/{name}/claims/reaccept   re-accept the provider's
+//	                                                   claims on every existing
+//	                                                   tenant APIBinding
+//
+// It lives here rather than in pkg/hub/admin because the work is the fleet-wide
+// twin of the per-workspace Enable flow next door in providers_enable.go: same
+// registry lookup, same kcp.ProviderClaim list, same Bootstrapper.
+func (h *Handler) RegisterAdmin(r *mux.Router) {
+	r.HandleFunc("/providers/{name}/claims/reaccept", h.reacceptProviderClaims).Methods(http.MethodPost)
 }
 
 // ===== shared helpers =====

@@ -89,6 +89,7 @@ func commitBinaryFixture(t *testing.T, advertise bool) (*Server, *codeBinaryHub,
 	}
 	server := NewWithWorkspace(nil, nil, workspaces, upstream.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	return server, hub, upstream, scope, image
 }
 

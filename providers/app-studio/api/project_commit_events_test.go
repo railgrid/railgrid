@@ -26,6 +26,7 @@ func TestProjectCommittedAppendsEventToLatestRunTurn(t *testing.T) {
 	memory := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memory, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "uid-demo"}
 	workspaceScope := workspace.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
 	commit := ProjectCommit{RepositoryRef: "demo-repo", CommitSHA: "0123456789abcdef", CommitURL: "https://github.example/commit/0123456", Branch: "main", Files: []string{"app.txt"}}

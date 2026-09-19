@@ -19,6 +19,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/channels"
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/internal/webhookpath"
 )
 
 // deliverToNotifyChannel best-effort delivers a synchronous run's output to the
@@ -51,33 +52,6 @@ func (s *Server) deliverToNotifyChannel(ctx context.Context, c *agentsclient.Cli
 	})
 }
 
-func (s *Server) listTriggers(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	list, err := c.Triggers().List(r.Context(), metav1.ListOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-// getTrigger returns one trigger in the same shape as a list item.
-func (s *Server) getTrigger(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	tr, err := c.Triggers().Get(r.Context(), r.PathValue("name"), metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, tr)
-}
-
 type createTriggerRequest struct {
 	Name          string            `json:"name"`
 	AgentRef      string            `json:"agentRef"`
@@ -89,24 +63,6 @@ type createTriggerRequest struct {
 	// ChannelRef routes this trigger's output to a named agent channel; empty
 	// means the agent's primary channel.
 	ChannelRef string `json:"channelRef,omitempty"`
-}
-
-func (s *Server) createTrigger(w http.ResponseWriter, r *http.Request) {
-	c, id, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req createTriggerRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := s.applyTriggerCreate(r.Context(), c, id.clusterID, &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
 }
 
 // applyTriggerCreate validates the request, creates the trigger, and mints its
@@ -145,18 +101,13 @@ func (s *Server) applyTriggerCreate(ctx context.Context, c *agentsclient.Client,
 	// only works once the background executor is running.
 	if clusterID != "" {
 		if token := s.webhookToken(clusterID, req.Name); token != "" {
-			out.Status.WebhookPath = webhookPath(clusterID, req.Name, token)
+			out.Status.WebhookPath = webhookpath.Join(clusterID, req.Name, token)
 			if updated, uerr := c.Triggers().UpdateStatus(ctx, out, metav1.UpdateOptions{}); uerr == nil {
 				out = updated
 			}
 		}
 	}
 	return out, nil
-}
-
-// webhookPath is the inbound URL a webhook-style trigger listens on.
-func webhookPath(clusterID, name, token string) string {
-	return "/services/providers/agents/webhooks/triggers/" + clusterID + "/" + name + "/" + token
 }
 
 // updateTriggerRequest patches an existing trigger. All fields are optional
@@ -169,24 +120,6 @@ type updateTriggerRequest struct {
 	Filter        *map[string]string `json:"filter,omitempty"`
 	Suspend       *bool              `json:"suspend,omitempty"`
 	ChannelRef    *string            `json:"channelRef,omitempty"`
-}
-
-func (s *Server) updateTrigger(w http.ResponseWriter, r *http.Request) {
-	c, id, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req updateTriggerRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := s.applyTriggerUpdate(r.Context(), c, id.clusterID, r.PathValue("name"), &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
 }
 
 // applyTriggerUpdate reads the trigger, applies the patch fields that are
@@ -232,7 +165,7 @@ func (s *Server) applyTriggerUpdate(ctx context.Context, c *agentsclient.Client,
 	switch {
 	case wantsWebhook && out.Status.WebhookPath == "" && clusterID != "":
 		if token := s.webhookToken(clusterID, name); token != "" {
-			out.Status.WebhookPath = webhookPath(clusterID, name, token)
+			out.Status.WebhookPath = webhookpath.Join(clusterID, name, token)
 			if updated, uerr := c.Triggers().UpdateStatus(ctx, out, metav1.UpdateOptions{}); uerr == nil {
 				out = updated
 			}
@@ -244,18 +177,6 @@ func (s *Server) applyTriggerUpdate(ctx context.Context, c *agentsclient.Client,
 		}
 	}
 	return out, nil
-}
-
-func (s *Server) deleteTrigger(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	if err := c.Triggers().Delete(r.Context(), r.PathValue("name"), metav1.DeleteOptions{}); err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // runTriggerNow fires a trigger's task immediately as the calling user with an

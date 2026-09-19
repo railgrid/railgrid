@@ -102,8 +102,10 @@ Tiltfile, not the pod-based `Tiltfile.cluster` flow.
 
 `make run-provider-code` auto-sources `providers/code/.env` (gitignored) so
 GitHub OAuth + other dev env reach the provider — copy `.env.example` to `.env`
-to enable "Connect with GitHub" locally. In dev, `RAILGRID_DEV_ALLOW_TENANT_QUERY=true`
-lets `?tenant=` / `?token=` stand in for the hub-injected identity headers.
+to enable "Connect with GitHub" locally. There is no identity bypass, in dev or
+anywhere else: every MCP and action request is identified by its
+`Authorization: Bearer` header and `X-Railgrid-Cluster`, so a local run goes
+through the hub proxy the same way a deployed one does.
 
 ## Connecting an account
 
@@ -129,25 +131,31 @@ verification/publication. No engineering scheduling or approval policy lives her
 POST an envelope `{ "input": { ... } }` to
 `/services/providers/code/actions/clusters/{cluster}/repositories/{name}/{action}/v1`.
 Every input includes `repository` (canonical owner/name), `repositoryUID`, and
-`connectionUID`. The caller needs Repository `get` and `invoke` on
-`repositories/<action>` for that resource name. Code resolves credentials through
-its provider export only after those checks, pins the recorded upstream repository
-ID, and rejects replacement or redirection. Tenant callers need no Secret access.
-Responses use the shared Provider Action envelope: `requestID`, provider/action
-identity, `resourceRef`, and exactly one of `result` or `error`. `X-Request-ID`
-supplies the correlation ID. The CatalogEntry advertises the eleven bounded
+`connectionUID`. The caller needs Repository `get` and `create` on the
+`repositories/<action>` subresource for that resource name. Code resolves
+credentials through its provider export only after those checks, pins the
+recorded upstream repository ID, and rejects replacement or redirection. Tenant
+callers need no Secret access. Responses use the shared Provider Action
+envelope: `requestID`, provider/action identity, `resourceRef`, and exactly one
+of `result` or `error`. `X-Request-ID` supplies the correlation ID.
+The CatalogEntry advertises the twelve bounded
 action schemas and their digests.
 
-Git bundles use a separate bounded upload: `stage_snapshot` at the same route
-shape, with its own `invoke` grant, accepts a snapshot containing `baseCommit`,
-`commit`, `tree`, and a base64 `bundle` (25 MiB decoded maximum). This supporting
-artifact endpoint is not advertised as a small JSON action. It returns a
-`bundleRef` scoped to tenant, caller credential, Repository UID, and Connection
-UID. Artifacts expire after one hour and are lazily removed during uploads;
-quotas bound each tenant to 16 artifacts and 256 MiB. Re-upload after expiration
-or credential rotation. The normal `prepare_snapshot` and `publish_snapshot`
-actions accept that handle, not inline bundles. The runtime needs Git and writable
-bundle storage; the image includes Git and uses the existing bundle volume.
+Git bundles use a separate bounded upload: `stage_snapshot`, at the same route
+shape and behind the same two gates, with its own `create` grant on
+`repositories/stage_snapshot`. It accepts a snapshot containing `baseCommit`,
+`commit`, `tree`, and a base64 `bundle` (25 MiB decoded maximum) and returns a
+`bundleRef` that `prepare_snapshot` and `publish_snapshot` name instead of an
+inline bundle. It is the provider's one **uncatalogued** verb: a body that
+large cannot be declared under `CatalogEntry.spec.actions[].limits`, which caps
+`maxInputBytes` at 1 MiB. The exception and the four conditions a verb must
+meet to claim it are in
+[docs/provider-actions.md](../../docs/provider-actions.md) §"Uncatalogued
+large-upload verbs"; the handle's scoping, TTL and quotas, and why the store is
+allowed to exist at all, are in
+[docs/code-provider-architecture.md](../../docs/code-provider-architecture.md)
+§9. The runtime needs Git and writable bundle storage; the image includes Git
+and uses the existing bundle volume.
 
 Publication verifies the public Runner single-parent snapshot format and uses
 an atomic Git expected-head lease. An empty `expectedHead` requires an absent
@@ -441,9 +449,8 @@ request accounting.
 | `RAILGRID_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
 | `CODE_KUBECONFIG` | (unset → controllers disabled) | kcp kubeconfig for the multicluster controller manager |
 | `CODE_WORKSPACE_PATH` | `root:railgrid:providers:code` | Workspace the APIExportEndpointSlice is ensured in |
-| `CODE_COMMIT_BUNDLE_DIR` | system temp dir | Directory for provider-owned RepositoryCommit source bundles; use shared storage before running multiple replicas |
+| `CODE_COMMIT_BUNDLE_DIR` | system temp dir | Directory for the transient RepositoryCommit source bundles and git snapshots ([architecture §9](../../docs/code-provider-architecture.md#9-transient-artifacts)); use shared storage before running multiple replicas |
 | `RAILGRID_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace the Connection credential Secret lives in |
-| `RAILGRID_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=`/`?token=` replace identity headers (dev only) |
 | `GITHUB_OAUTH_CLIENT_ID` | (unset → OAuth off) | GitHub OAuth App client ID |
 | `GITHUB_OAUTH_CLIENT_SECRET` | (unset) | GitHub OAuth App client secret |
 | `GITHUB_OAUTH_REDIRECT_URL` | (unset) | Absolute callback URL (must end in `/callback`); either the hub `/services/providers/code/oauth/github/callback` proxy route or the provider's own host. `/start` is derived from it |
@@ -496,12 +503,13 @@ imported repositories cannot be replaced through recovery. A name match is not
 evidence that Railgrid created a remote. This contract does not retroactively change
 repositories already attached before create-only intent was introduced.
 
-Action bodies must complete within 30 seconds, after repository read and invoke
-authorization. Each provider process admits eight actions, with at most one
+An action's body read, backend call and encode share one deadline: the
+`timeoutSeconds` its catalog entry declares (180 s), started after the two
+gates pass. Each provider process admits eight actions, with at most one
 snapshot action (stage, prepare, or publish) at a time to bound bundle memory.
 Excess concurrent requests receive HTTP 503 before body decoding. The chart
 default memory limit is 512 MiB to leave headroom for JSON buffers and Git.
 
 ### Branch discovery
 
-The read-only Repository-bound `branches/v1` action returns `branches` (up to 50 names) and `nextPage` (zero when complete). Supply the canonical repository, repository UID, connection UID, and an optional one-based `page`. Each page uses the caller's `repositories/branches` invoke permission and rechecks the registered repository against the Git host. No Git credentials are returned. Consumers must follow `nextPage` with their own bounded traversal and must not interpret a failed or partial read as an empty repository.
+The read-only Repository-bound `branches/v1` action returns `branches` (up to 50 names) and `nextPage` (zero when complete). Supply the canonical repository, repository UID, connection UID, and an optional one-based `page`. Each page uses the caller's `create` permission on the `repositories/branches` subresource and rechecks the registered repository against the Git host. No Git credentials are returned. Consumers must follow `nextPage` with their own bounded traversal and must not interpret a failed or partial read as an empty repository.

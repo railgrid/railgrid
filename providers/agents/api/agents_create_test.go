@@ -10,6 +10,7 @@ package api
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -79,18 +80,65 @@ func TestCreateAgentMCPSchemaHasLimits(t *testing.T) {
 	t.Fatal("create_agent not advertised")
 }
 
-// TestGetByNameRoutesExist guards GET /api/{schedules,triggers,toolsets}/{name}:
-// they used to answer 405 because only list/POST/PUT/DELETE were registered.
-// Without a tenant identity the handler refuses with 401 — the point is that
-// the method is routed, not rejected by the mux.
-func TestGetByNameRoutesExist(t *testing.T) {
-	s := newMCPTestServer(t)
-	h := s.Routes()
-	for _, path := range []string{"/api/schedules/x", "/api/triggers/x", "/api/toolsets/x"} {
+// TestObjectCRUDIsNotServed is the guard on the contract this backend now
+// keeps: Agent, Schedule, Connection, Toolset, Trigger and the model-credential
+// Secrets are bound APIs in the tenant's own workspace, so the provider serves
+// no CRUD for them at all. Every one of these has to be unrouted — a handler
+// that quietly came back would be a second writer the hub cannot authorize per
+// resource, which is the whole reason they went away.
+func TestObjectCRUDIsNotServed(t *testing.T) {
+	h := newMCPTestServer(t).Routes()
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/agents"}, {"POST", "/api/agents"},
+		{"GET", "/api/agents/x"}, {"PUT", "/api/agents/x"}, {"DELETE", "/api/agents/x"},
+		{"GET", "/api/schedules"}, {"POST", "/api/schedules"},
+		{"GET", "/api/schedules/x"}, {"PUT", "/api/schedules/x"}, {"DELETE", "/api/schedules/x"},
+		{"GET", "/api/connections"}, {"POST", "/api/connections"},
+		{"PUT", "/api/connections/x"}, {"DELETE", "/api/connections/x"},
+		{"GET", "/api/toolsets"}, {"POST", "/api/toolsets"},
+		{"GET", "/api/toolsets/x"}, {"PUT", "/api/toolsets/x"}, {"DELETE", "/api/toolsets/x"},
+		{"GET", "/api/triggers"}, {"POST", "/api/triggers"},
+		{"GET", "/api/triggers/x"}, {"PUT", "/api/triggers/x"}, {"DELETE", "/api/triggers/x"},
+		{"GET", "/api/credentials"}, {"POST", "/api/credentials"}, {"DELETE", "/api/credentials/x"},
+	} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
-		if rec.Code == 405 || rec.Code == 404 {
-			t.Errorf("GET %s → %d: not routed", path, rec.Code)
+		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s → %d: still served; CRUD belongs to kcp", tc.method, tc.path, rec.Code)
+		}
+	}
+}
+
+// TestVerbRoutesSurvive is its counterpart: the verbs that need the engine or a
+// server-held credential stay, and a refactor that deletes a route group must
+// not take them with it. Without a tenant identity they refuse — the point is
+// that the mux routes the method rather than rejecting it.
+func TestVerbRoutesSurvive(t *testing.T) {
+	h := newMCPTestServer(t).Routes()
+	for _, tc := range []struct{ method, path string }{
+		{"POST", "/api/agents/x/chat"},
+		{"GET", "/api/agents/x/sessions"},
+		{"GET", "/api/agents/x/messages"},
+		{"POST", "/api/agents/x/runs"},
+		{"POST", "/api/schedules/x/run"},
+		{"POST", "/api/triggers/x/run"},
+		{"POST", "/api/connections/x/test"},
+		{"POST", "/api/connections/x/enable-inbound"},
+		{"POST", "/api/connections/x/oauth/authorize"},
+		{"POST", "/api/credentials/x/test"},
+		{"POST", "/api/credentials/test"},
+		{"POST", "/api/credentials/discover"},
+		{"GET", "/api/capabilities"},
+		{"GET", "/api/catalog"},
+		{"GET", "/api/usage"},
+		{"GET", "/api/inbox"},
+		{"GET", "/api/runs"},
+		{"GET", "/api/whoami"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
+			t.Errorf("%s %s → %d: not routed", tc.method, tc.path, rec.Code)
 		}
 	}
 }

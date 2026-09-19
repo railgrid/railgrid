@@ -95,13 +95,11 @@ spec:
       - resource: secrets
         verbs: [get, list, watch]
         tenantScoped: true
-    # No static schemas. The hub catalog controller materializes an
-    # APIExport with empty spec.resources; the provider binary's
-    # startup adds the Template CRD entry itself (so it doesn't have
-    # to ship its CRD body in this manifest), and the Template
-    # controller adds per-template entries as operators apply
-    # Templates. Both paths reuse the same APIResourceSchema mint +
-    # APIExport upsert logic.
+    # No static schemas. The provider's own `init` installs the Template and
+    # Instance schemas and upserts the APIExport. The Template controller does
+    # NOT touch the APIExport: tenants author the single flattened Instance
+    # kind, so adding or changing a Template never changes the export's
+    # resource list (controller/template/controller.go).
   # Self-hosting: run Application Templates in your own cluster, so provisioned
   # workloads land there rather than on the platform. See docs/byo-providers.md.
   #

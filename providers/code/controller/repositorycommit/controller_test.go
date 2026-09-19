@@ -39,18 +39,69 @@ import (
 	codescheme "github.com/railgrid/provider-code/scheme"
 )
 
-func TestBundleArrivalTimedOut(t *testing.T) {
+func TestBundleArrivalBackoff(t *testing.T) {
 	now := time.Unix(100, 0)
-	if bundleArrivalTimedOut(nil, now) {
-		t.Fatal("nil start unexpectedly timed out")
+	if wait, waiting := bundleArrivalBackoff(nil, now); !waiting || wait != bundleArrivalTimeout {
+		t.Fatalf("nil start: wait=%s waiting=%v", wait, waiting)
 	}
-	recent := metav1.NewTime(now.Add(-bundleArrivalTimeout + time.Second))
-	if bundleArrivalTimedOut(&recent, now) {
-		t.Fatal("recent start unexpectedly timed out")
+	recent := metav1.NewTime(now.Add(-bundleArrivalTimeout + 5*time.Second))
+	if wait, waiting := bundleArrivalBackoff(&recent, now); !waiting || wait != 5*time.Second {
+		t.Fatalf("recent start: wait=%s waiting=%v", wait, waiting)
+	}
+	// The remaining wait is a backstop, never a spin: it is floored at a
+	// second even on the last moment before the deadline.
+	nearly := metav1.NewTime(now.Add(-bundleArrivalTimeout + time.Millisecond))
+	if wait, waiting := bundleArrivalBackoff(&nearly, now); !waiting || wait != time.Second {
+		t.Fatalf("nearly expired start: wait=%s waiting=%v", wait, waiting)
 	}
 	old := metav1.NewTime(now.Add(-bundleArrivalTimeout))
-	if !bundleArrivalTimedOut(&old, now) {
-		t.Fatal("old start did not time out")
+	if _, waiting := bundleArrivalBackoff(&old, now); waiting {
+		t.Fatal("old start did not stop waiting")
+	}
+}
+
+// TestBundleArrivalWakesWaitingCommit proves the wait is event-driven: a
+// commit that did not find its bundle registers as a waiter, and the store's
+// arrival notification enqueues exactly that commit when the bundle lands.
+func TestBundleArrivalWakesWaitingCommit(t *testing.T) {
+	store, err := commitbundle.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	arrivals := store.Notify(ctx)
+	waiters := &bundleWaiters{}
+	request := mcreconcile.Request{
+		ClusterName: multicluster.ClusterName("logical-cluster"),
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Name: "demo-commit"}},
+	}
+
+	ref, err := store.Put(ctx, "logical-cluster", []commitbundle.File{{Path: "index.html", Content: "<h1>demo</h1>"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiters.wait("logical-cluster", ref.Name, request)
+
+	select {
+	case arrival := <-arrivals:
+		if arrival.Scope != "logical-cluster" || arrival.Name != ref.Name {
+			t.Fatalf("unexpected arrival %+v", arrival)
+		}
+		woken := waiters.wake(arrival.Scope, arrival.Name)
+		if len(woken) != 1 || woken[0] != request {
+			t.Fatalf("arrival woke %+v", woken)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bundle arrival was not announced")
+	}
+	if woken := waiters.wake("logical-cluster", ref.Name); len(woken) != 0 {
+		t.Fatalf("waiter survived its wake-up: %+v", woken)
+	}
+	waiters.wait("logical-cluster", ref.Name, request)
+	waiters.forget("logical-cluster", ref.Name, request)
+	if woken := waiters.wake("logical-cluster", ref.Name); len(woken) != 0 {
+		t.Fatalf("forgotten waiter still enqueued: %+v", woken)
 	}
 }
 

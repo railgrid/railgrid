@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -57,6 +58,10 @@ const (
 	maxHeartbeatDrainBody = 64 << 10
 )
 
+// ErrNoReadinessGate is logged when RunHeartbeat is handed a config without a
+// CanSend. It is a sentinel so a provider's own tests can assert on it.
+var ErrNoReadinessGate = errors.New("HeartbeatConfig.CanSend is required")
+
 // HeartbeatConfig describes one provider's heartbeat to the hub.
 type HeartbeatConfig struct {
 	// HubURL is the hub base URL. Empty disables the heartbeat.
@@ -79,10 +84,16 @@ type HeartbeatConfig struct {
 	// Logger receives send failures and rejections. A zero Logger falls
 	// back to klog.
 	Logger logr.Logger
-	// CanSend, when set, is consulted before every beat and a false result
-	// skips that beat. Providers with a required controller use it so the
-	// hub's TTL marks them stale while the controller is not ready: the hub
-	// records any received beat as liveness and ignores the body's status.
+	// CanSend is REQUIRED: it is consulted before every beat and a false
+	// result skips that beat. The hub records any received beat as liveness
+	// and ignores the body's status, so a provider that beats unconditionally
+	// reports itself alive while its watches are dead. Gating the beat on the
+	// provider's own readiness lets the hub's TTL flip it to NotReady instead.
+	//
+	// A nil CanSend is a programming error: RunHeartbeat logs it and does not
+	// beat at all. Wire it to the same source as /readyz — vwhealth.Readiness's
+	// Check for a provider with a controller, an atomic readiness flag for a
+	// REST-only one.
 	CanSend func() bool
 }
 
@@ -124,10 +135,13 @@ func ConfigFromEnv(defaultName, version string) (HeartbeatConfig, error) {
 
 // RunHeartbeat POSTs to {HubURL}/api/providers/{ProviderName}/heartbeat once
 // immediately and then every Interval until ctx is done. It returns at once
-// when HubURL is empty. Failures are logged and the loop keeps going: losing
-// a beat only means the hub flips the provider to NotReady until the next
-// successful one. A 401 or 403 from the hub means the beat was not accepted
-// as the provider's own service account and is logged with what to fix.
+// when HubURL is empty, and equally at once when CanSend is nil: a heartbeat
+// with no readiness gate reports the provider alive whatever its watches are
+// doing, so refusing to run it is safer than running it ungated. Failures are
+// logged and the loop keeps going: losing a beat only means the hub flips the
+// provider to NotReady until the next successful one. A 401 or 403 from the
+// hub means the beat was not accepted as the provider's own service account
+// and is logged with what to fix.
 func RunHeartbeat(ctx context.Context, cfg HeartbeatConfig) {
 	log := cfg.Logger
 	if log.GetSink() == nil {
@@ -136,6 +150,11 @@ func RunHeartbeat(ctx context.Context, cfg HeartbeatConfig) {
 	log = log.WithName("heartbeat")
 	if cfg.HubURL == "" {
 		log.Info("heartbeat disabled (set " + EnvHubURL + " to enable)")
+		return
+	}
+	if cfg.CanSend == nil {
+		log.Error(ErrNoReadinessGate, "heartbeat not started: set HeartbeatConfig.CanSend to the provider's readiness (vwhealth.Readiness.Check, or the flag behind /readyz) so a provider whose watches are dead stops reporting alive",
+			"provider", cfg.ProviderName)
 		return
 	}
 	if cfg.Interval <= 0 {
@@ -160,7 +179,7 @@ func RunHeartbeat(ctx context.Context, cfg HeartbeatConfig) {
 	}
 
 	send := func() {
-		if cfg.CanSend != nil && !cfg.CanSend() {
+		if !cfg.CanSend() {
 			return
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))

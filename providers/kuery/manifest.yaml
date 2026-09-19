@@ -36,7 +36,12 @@ spec:
     indexPath: "/"
   backend:
     url: "http://localhost:8084"
-    healthPath: "/healthz"
+    # /readyz, not /healthz: readiness reports whether this provider can
+    # actually reach the APIExport virtual workspace it watches and, while a
+    # replica holds the controller lease, whether tenant workspaces are really
+    # being watched. /healthz answers "the process is up", which was true the
+    # whole time nothing reconciled.
+    healthPath: "/readyz"
 
   # Kuery's engagement controller opens BACKGROUND connections to the
   # tenant's edge clusters through the hub's edges-proxy (informer sync).

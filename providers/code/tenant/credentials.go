@@ -8,6 +8,14 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
+// Package tenant owns the code provider's tenant-facing credential model:
+// resolving a Connection's stored credential (PAT, GitHub App installation,
+// refreshed OAuth token) from a Secret in the tenant's own workspace, and
+// writing a renewed one back.
+//
+// It holds no client factory: every caller-scoped kcp client in this provider
+// comes from provider-sdk/dataplane, which drops the provider's own
+// credential and authenticates with the caller's bearer alone.
 package tenant
 
 import (

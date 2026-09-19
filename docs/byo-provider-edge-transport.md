@@ -174,6 +174,13 @@ So `Service` gains `spec.auth`:
 Services use. Keeping the default as `secret` means no existing Service changes
 meaning.
 
+Proven over a real tunnel in
+[test/e2e/suites/edgesconn/byo_provider_test.go](../test/e2e/suites/edgesconn/byo_provider_test.go):
+an `auth: passthrough` Service points at the suite's probe backend, which echoes
+the first 12 hex characters of SHA-256 over the `Authorization` header it
+received. The test recomputes that from the token it sent, so a substituted
+token — even one of the same length — fails the assertion.
+
 ### E-6 — The caller's kcp identity must survive the hop
 
 The hub backend proxy strips inbound `X-Railgrid-User` / `X-Railgrid-Tenant` /
@@ -184,6 +191,10 @@ headers already survive. This is a property to test, not code to write; it is
 listed because breaking it silently downgrades the provider's notion of who is
 calling.
 
+The test is the same one as E-5: the probe backend's identity route reports the
+three headers exactly as they arrived after the revdial hop, and the suite
+requires the user and tenant to be non-empty.
+
 ### E-7 — Streaming is not optional on this path
 
 The dataplane `log` verb is `stream: true` and the hub sets `FlushInterval: -1`
@@ -191,6 +202,22 @@ precisely so tailing works. The edges Service proxy builds a plain
 `httputil.ReverseProxy` with no flush interval, so responses buffer. Log tailing
 through an edge would appear to hang. Same for SSE and for the
 `aggregatingcrdversiondiscovery`-style long polls.
+
+The probe backend's stream route writes numbered chunks 150ms apart with an
+explicit flush between each, and the test records when each one arrives: a hop
+that buffered delivers them together at the end, which is invisible to any
+assertion that only compares the final body.
+
+> **The far end in E-5/E-6/E-7 is a fixture the suite owns**, not a provider:
+> [probe_backend_test.go](../test/e2e/suites/edgesconn/probe_backend_test.go),
+> an in-process HTTP server on `127.0.0.1` that the host-run agent dials. It was
+> the quickstart provider's `/api/hello` and `/api/stream` until those routes
+> were removed — they existed only for this test, and a provider backend serves
+> verbs rather than echo endpoints
+> ([providers/quickstart/README.md](../providers/quickstart/README.md), pillar
+> 2). What these three decisions measure is the transport, so the far end only
+> has to report what it received; keeping that as a route on the reference
+> provider made the contract the test's hostage.
 
 ## The request path
 

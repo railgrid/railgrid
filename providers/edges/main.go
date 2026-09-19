@@ -36,11 +36,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -345,10 +347,27 @@ func runServe(opts serveOptions) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// ready gates the heartbeat below. The hub records any beat it receives as
+	// liveness and ignores the body's status, so the provider must not beat
+	// before it can serve: the tunnel plane and the edge controller manager
+	// are started above, so binding the listener here is the last step.
+	//
+	// TODO(provider-contract-remediation §5): edges gains leader election and
+	// a vwhealth.Readiness over the APIExport virtual workspace; gate the beat
+	// on that Readiness and delete this flag — a flag set once at startup
+	// cannot notice the edge controllers dying.
+	var ready atomic.Bool
+
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", srv.Addr, err)
+	}
+	ready.Store(true)
+
 	errCh := make(chan error, 1)
 	go func() {
 		log.Info("edges provider listening", "port", port)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -358,6 +377,7 @@ func runServe(opts serveOptions) error {
 		log.Error(err, "resolving heartbeat token; beats will be unauthenticated")
 	}
 	hb.Logger = log
+	hb.CanSend = ready.Load
 	go hubclient.RunHeartbeat(ctx, hb)
 
 	select {
@@ -365,6 +385,7 @@ func runServe(opts serveOptions) error {
 	case err := <-errCh:
 		return err
 	}
+	ready.Store(false)
 	log.Info("shutting down")
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

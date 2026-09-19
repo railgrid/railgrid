@@ -5246,7 +5246,7 @@ async function saveProjectSettings() {
     selected.value?.name === projectName
   projectSettingsSaving.value = true
   try {
-    const updated = await api.patchProject(props.ctx, projectName, { displayName, description })
+    const updated = await api.updateProjectDetails(props.ctx, projectName, { displayName, description })
     if (!isCurrentSave()) return
     selected.value = updated
     const idx = projects.value.findIndex((item) => item.name === updated.name)
@@ -6275,12 +6275,13 @@ async function changeDevelopmentPreviewAccess(mode: string) {
   developmentPreviewAccessConverged.value = false
   developmentPreviewReadinessMessage.value = 'Updating preview access…'
   try {
-    const updated = await api.patchProject(props.ctx, project.name, {
-      sharing: {
-        preview: { mode: requested },
-        publishing: project.sharing?.publishing ?? { mode: 'private' },
-      },
-    })
+    // Preview visibility is a verb, not a field: POST /preview flips the mode
+    // AND reconciles the app-access grants behind it, which a bare write to
+    // spec.sharing.preview would leave stale. Re-read the view afterwards so
+    // the selected project carries the new policy.
+    await api.setPreviewAccess(props.ctx, project.name, requested)
+    if (selected.value?.name !== project.name) return
+    const updated = await api.getProject(props.ctx, project.name)
     if (selected.value?.name !== project.name) return
     selected.value = updated
     await authorizeDevelopmentPreview({ force: true })

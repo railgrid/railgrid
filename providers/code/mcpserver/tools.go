@@ -33,9 +33,6 @@ var (
 
 // tenantClient resolves a tenant-scoped dynamic client that acts AS THE CALLER.
 func tenantClient(deps Deps, ident identity) (dynamic.Interface, error) {
-	if ident.tenant == "" {
-		return nil, errors.New("no tenant identity on this request — bearer token did not resolve to a workspace")
-	}
 	if ident.clusterID == "" {
 		return nil, errors.New("no workspace cluster on this request (X-Railgrid-Cluster missing) — cannot address the tenant workspace by ID")
 	}

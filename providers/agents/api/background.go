@@ -42,15 +42,12 @@ package api
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +67,7 @@ import (
 	"github.com/railgrid/provider-agents/channels"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/executor"
+	"github.com/railgrid/provider-agents/internal/webhookpath"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -149,30 +147,24 @@ func (s *Server) StartBackground(ctx context.Context) {
 	log.Printf("background executor started (discovery/recovery interval %s)", interval)
 }
 
-// webhookKeyBytes resolves the webhook signing key: explicit env key, else
-// derived from the provider kubeconfig contents (stable across restarts).
+// webhookKeyBytes and webhookToken bind this Server's configuration to the
+// shared derivation in internal/webhookpath. The derivation itself lives there
+// because the Trigger reconciler mints the same URLs for writers that never
+// reach this layer, and the URL IS the credential: two copies that disagree by
+// a byte mint two different URLs for one trigger, and the one already pasted
+// into GitHub silently stops working. One implementation, one set of golden
+// vectors.
+//
+// These stay as methods rather than being inlined at the ~6 call sites because
+// the key resolution reads a file, and routing every caller through the Server
+// keeps that off the request path's mind.
 func (s *Server) webhookKeyBytes() []byte {
-	if s.cfg.WebhookKey != "" {
-		return []byte(s.cfg.WebhookKey)
-	}
-	if s.cfg.ProviderKubeconfig != "" {
-		if b, err := os.ReadFile(s.cfg.ProviderKubeconfig); err == nil {
-			sum := sha256.Sum256(append(b, []byte("railgrid-agents-webhook")...))
-			return sum[:]
-		}
-	}
-	return nil
+	return webhookpath.Key(s.cfg.WebhookKey, s.cfg.ProviderKubeconfig)
 }
 
 // webhookToken returns the HMAC token guarding a trigger's inbound URL.
 func (s *Server) webhookToken(clusterID, name string) string {
-	key := s.webhookKeyBytes()
-	if len(key) == 0 {
-		return ""
-	}
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(clusterID + "/" + name))
-	return hex.EncodeToString(mac.Sum(nil))[:32]
+	return webhookpath.Token(s.webhookKeyBytes(), clusterID, name)
 }
 
 // ---- virtual-workspace plumbing --------------------------------------------
@@ -654,6 +646,21 @@ func (b *background) scopeFor(ctx context.Context, clusterID, agentName string) 
 	return store.Scope{OrgUUID: "unmapped", WorkspaceUUID: clusterID, AgentName: agentName}
 }
 
+// PurgeAgentData removes a deleted Agent's rows from the provider store —
+// transcripts, runs, usage, inbox items. It is the teardown the
+// DELETE /api/agents/{name} handler used to do inline; that route is gone
+// (the object is written through kcp now), so the Agent reconciler's
+// finalizer calls this instead.
+//
+// It goes through scopeFor rather than reconstructing a scope from the
+// cluster name because scopeFor is also how the rows were WRITTEN, fallback
+// included: a run recorded before the tenant mapping existed lives under
+// {OrgUUID: "unmapped", WorkspaceUUID: clusterID}, and a purge scoped any
+// other way would walk straight past it.
+func (b *background) PurgeAgentData(ctx context.Context, clusterID, agentName string) error {
+	return b.server.store.DeleteAgentData(ctx, b.scopeFor(ctx, clusterID, agentName), agentName)
+}
+
 // recordOutcome updates the firing schedule's status counters (lastRunID,
 // consecutiveFailures, disable-after-N). Triggers record lastFired instead.
 func (b *background) recordOutcome(ctx context.Context, job executor.Job, runID string, runErr error) {
@@ -741,10 +748,6 @@ func (b *background) replyToChannelTarget(ctx context.Context, dyn dynamic.Inter
 	}); err != nil {
 		log.Printf("background: send via %q failed: %v", connName, err)
 	}
-}
-
-func truncate(s string, n int) string {
-	return safeTruncate(s, n)
 }
 
 // triggerFilterAllows evaluates a Trigger's filter against an inbound webhook

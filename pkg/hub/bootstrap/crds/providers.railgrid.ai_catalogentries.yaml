@@ -714,21 +714,6 @@ spec:
                 description: Version is the chart-declared version of the provider.
                 maxLength: 64
                 type: string
-              virtualWorkspace:
-                description: |-
-                  VirtualWorkspace is an advanced opt-in for providers that need custom
-                  non-CRD verbs. Routed at /services/providers/{name}/vw/*. Not yet
-                  honored by the hub (Phase 5).
-                properties:
-                  url:
-                    description: |-
-                      URL is the in-cluster address the hub reverse-proxies for
-                      /services/providers/{name}/vw/*.
-                    minLength: 1
-                    type: string
-                required:
-                - url
-                type: object
             required:
             - displayName
             type: object
@@ -813,8 +798,6 @@ spec:
                   backend:
                     type: string
                   ui:
-                    type: string
-                  virtualWorkspace:
                     type: string
                 type: object
               lastHeartbeat:

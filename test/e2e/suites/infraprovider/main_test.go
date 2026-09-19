@@ -196,7 +196,7 @@ func TestMain(m *testing.M) {
 		"RAILGRID_HUB_TOKEN="+staticToken,
 		"RAILGRID_HUB_INSECURE=true",
 		"RAILGRID_PROVIDER_NAME=infrastructure",
-		"INFRASTRUCTURE_KUBECONFIG="+mintedKubeconfig,
+		"RAILGRID_PROVIDER_KUBECONFIG="+mintedKubeconfig,
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog

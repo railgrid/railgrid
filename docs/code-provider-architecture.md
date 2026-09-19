@@ -1,9 +1,12 @@
 # Code provider: git repository management
 
-Status: **Historical design proposal.** Current package discovery and retry behavior
-is documented in [the Code provider README](../providers/code/README.md).
-The controller/backend ownership described below still applies; the original
-API inventory and staged-delivery list predate package discovery.
+Status: **Historical design proposal**, with two current sections. Package
+discovery and retry behavior are documented in
+[the Code provider README](../providers/code/README.md); the
+controller/backend ownership described below still applies, and the
+staged-delivery list in section 7 is history. Sections 2 and 9 describe the
+provider as it is today: the eight kinds it serves, and the two transient
+artifact stores it keeps outside kcp under the contract's Pillar 1 carve-out.
 Author: 2026-06-09
 Related: `providers/infrastructure/` (the standalone-provider pattern this is modeled on), `pkg/hub/providers/` (CatalogEntry provisioning), `docs/providers.md`, `docs/infrastructure-architecture.md`.
 
@@ -49,6 +52,16 @@ conditions/finalizers.
 | **Repository** | `connectionRef`, `name`, `owner?`, `visibility`, `description`, `defaultBranch`, `autoInit` | `htmlURL`, `cloneURL`, `sshURL`, `repoID`, conditions |
 | **DeployKey** | `repositoryRef`, `publicKey?` (BYO) or generate, `readOnly` | `keyID`, `secretRef` (generated private key) |
 | **Collaborator** | `repositoryRef`, `username`, `permission` (pull\|push\|admin) | conditions (e.g. `InvitationPending`) |
+| **RepositoryCommit** | `repositoryRef`, `branch`, `message`, `source.bundleRef` (name + digest) | `phase`, `commitSHA`, `commitURL`, `files`, conditions |
+| **RepositoryCheckout** | `repositoryRef`, `ref`, `paths` | `phase`, `resolvedCommit`, `files`, conditions |
+| **RepositoryBuildStatus** | `repositoryRef`, `commit`, `state`, `context`, `targetURL` | `phase`, conditions |
+| **Package** | discovered from the host; `repositoryRef`, `name`, `type`, `version` | `versions`, `lastCrawledAt`, conditions |
+
+The first four kinds are the v1 surface; RepositoryCommit, RepositoryCheckout,
+RepositoryBuildStatus and Package arrived with the MCP write tools, the runner
+flow and package discovery. **Eight kinds, eight `APIResourceSchema` bodies**
+(`deploy/chart/files/schemas/`), and **twelve catalogued actions** plus the one
+uncatalogued upload verb of section 9.
 
 DeployKey and Collaborator are **separate CRDs** (not arrays on Repository): one
 controller-per-kind with finalizers and per-item status, avoiding racy read-modify-write of a
@@ -116,7 +129,8 @@ Manifest specifics (the corrections vs infra):
 - `apiExport.permissionClaims`: `secrets` with verbs `[get, list, watch, create, update,
   patch, delete]`, `tenantScoped: true` (write verbs are needed for the DeployKey private-key
   Secret; infra only needed read).
-- `apiExport.schemas`: **NON-empty** — 4 inline `APIResourceSchema` bodies, applied by the hub
+- `apiExport.schemas`: **NON-empty** — eight inline `APIResourceSchema` bodies (one per
+  kind in section 2), applied by the hub
   with `storage: {crd: {}}`. Each body's `metadata.name` MUST follow the immutable
   content-versioned format `vYYMMDD-hash.<resource>.code.railgrid.ai` (required by the
   provisioner's `splitSchemaName`).
@@ -150,3 +164,47 @@ provider creates one (`code.providers.railgrid.ai`, referencing its APIExport at
 the `init` subcommand does the same for parity / out-of-band bootstrap. See
 `providers/code/install/endpointslice.go` (modeled on the infrastructure provider's
 `PlatformAPIExportEndpointSlice`).
+
+## 9. Transient artifacts
+
+Two on-disk stores sit beside the CRs, and both are the **transient artifacts**
+carve-out in [provider-connectivity-contract.md](./provider-connectivity-contract.md)
+§"Pillar 1 carve-outs" — an uploaded bundle may live on a PVC while the CR
+carries its reference and digest, provided it is consumed-and-deleted or swept
+on a fixed TTL and **nothing is lost if it is gone**. Neither store is ever the
+authority: the CR is.
+
+**Commit bundles** (`commitbundle/store.go`, `CODE_COMMIT_BUNDLE_DIR`). The MCP
+`commit_files` tool writes the files it was handed into a content-addressed
+bundle, then creates a `RepositoryCommit` whose `spec.source.bundleRef` carries
+only the bundle's name and digest — the bytes never enter an API object. The
+store is scoped by the tenant's kcp logical-cluster ID (`X-Railgrid-Cluster` on
+the MCP request, `req.ClusterName` in the reconciler: the same key on both
+sides). The RepositoryCommit controller reads the bundle, commits it, and
+deletes it; a commit that fails deletes it too. A `Put` announces the arrival
+in-process (`commitbundle.Notifier`), which is what wakes a controller that
+reached its RepositoryCommit before the bundle landed — the 30-second arrival
+bound is only the backstop for a bundle that never arrives. A one-hour sweeper
+(`DefaultSweepMaxAge`) reclaims what a crash orphaned. If the bundle is gone
+the commit fails and is retried by its author; nothing is unrecoverable, which
+is exactly the condition the carve-out sets. Running more than one replica
+without shared storage for this directory means a commit can land on a replica
+that cannot see its bundle.
+
+**Git snapshots** (`actions/snapshots.go`, under the same directory). The
+`stage_snapshot` verb accepts a git bundle and returns an opaque `bundleRef`
+scoped by tenant cluster, Repository UID, Connection UID and the caller's own
+credential, so a handle is useless to anyone else — and re-uploading after a
+credential rotation is expected, not a bug. Handles expire after an hour, are
+swept lazily on the next upload, and are bounded per tenant (16 artifacts,
+256 MiB). `prepare_snapshot` and `publish_snapshot` take the handle, never an
+inline bundle, and re-verify its digest before use.
+
+`stage_snapshot` is the provider's one **uncatalogued** verb: a 25 MiB body
+cannot be declared under `CatalogEntry.spec.actions[].limits.maxInputBytes`,
+which the CatalogEntry API caps at 1 MiB. It is served on the same
+`/actions/clusters/{id}/repositories/{name}/{verb}/v1` route and runs the same
+two gates as every catalogued action. The exception, and the four conditions a
+verb has to meet to claim it, are written down in
+[provider-actions.md](./provider-actions.md) §"Uncatalogued large-upload
+verbs".

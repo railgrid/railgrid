@@ -166,14 +166,26 @@ Environment variables consumed by the binary:
 
 ## Health and readiness
 
-`GET /healthz` is process liveness: it remains successful while a required
-controller is starting or retrying. `GET /readyz` is the provider readiness
-contract used by the CatalogEntry and Kubernetes readiness probe. In
-`required` mode it returns success only while the multicluster controller is
-running; startup, setup failure, retry, and unexpected controller exit remain
-not ready. In intentional `rest-only` mode it reports ready with that mode in
-the response. This separation keeps the process alive for recovery without
-advertising a provider whose reconciliation plane is unavailable.
+`GET /healthz` is process liveness and never follows readiness: the API
+server, the assistant supervisor and the replica-affinity forwarder keep
+serving whatever the controllers are doing.
+
+`GET /readyz` is `provider-sdk/vwhealth`: it reports whether this process can
+reach the `ai.railgrid.ai` APIExport virtual workspace, and — while this
+replica holds the `app-studio-controllers` Lease — whether the multicluster
+provider is actually watching tenant workspaces. A replica that is not leading
+has nothing attached and is ready on the probe alone, so a standby cannot wedge
+a rollout. A pod in `required` mode that resolved no provider kubeconfig stays
+unready, because there is nothing to probe with. The heartbeat is gated on the
+same answer: the hub records any received beat as liveness, so the provider
+goes quiet and lets the TTL mark it stale rather than staying green over
+controllers that are not running.
+
+The controllers themselves run under `provider-sdk/leaderelection`, rebuilt per
+term, so scaling the deployment past one replica keeps every Project, Session
+and Studio single-writer. See
+[`docs/app-studio-replica-awareness.md`](../../docs/app-studio-replica-awareness.md)
+for what is still project-affine.
 
 ## Local message history
 

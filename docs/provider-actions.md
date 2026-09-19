@@ -61,6 +61,43 @@ cap. Consent is not required. Its input schema permits only optional exact
 optional `truncated` flag. The declaration's schema digest is
 `sha256:9d466354d5434778c39c74123156aba76510128b0d48c5f521836770561ab853`.
 
+### Uncatalogued large-upload verbs
+
+One verb in the tree is served on the action grammar and gated exactly like a
+catalogued action, yet appears in no `CatalogEntry`: the code provider's
+`stage_snapshot`. It uploads a git bundle (25 MiB decoded, 36 MiB on the wire)
+and returns an opaque `bundleRef` that the catalogued `prepare_snapshot` and
+`publish_snapshot` then name in their own small inputs.
+
+It is uncatalogued because the catalog cannot describe it honestly.
+`limits.maxInputBytes` is capped at 1 MiB by the CatalogEntry API itself
+(`validateProviderActionLimits` in `apis/providers/v1alpha1/actions.go`, and
+the CRD's `maximum: 1048576`), and the hub fails a whole CatalogEntry closed
+when one declaration is malformed. Declaring 64 KiB for a 25 MiB upload would
+be a lie the hub compiles and App Studio pins a schema digest over; declaring
+25 MiB would be rejected, taking the provider's other twelve actions down with
+it. The honest declaration does not exist, so the verb is documented here
+instead of misdeclared there.
+
+The exception is narrow. A verb qualifies only when all four hold:
+
+1. it exists to carry a bounded artifact larger than the catalog's input
+   ceiling, and it returns a handle rather than the artifact;
+2. it runs the same two gates as any action — a real caller `GET` of the bound
+   resource, then an SSAR `create` on `{resource}/{verb}` — so RBAC still
+   authorizes it per verb and per object, and the same limits are enforced
+   server-side;
+3. what it stores is a transient artifact under the Pillar 1 carve-out in
+   [provider-connectivity-contract.md](./provider-connectivity-contract.md):
+   consumed-and-deleted or TTL-swept, and nothing is lost if it is gone;
+4. every catalogued action that consumes the handle *is* declared, so the part
+   of the flow a consumer binds to stays in the catalog.
+
+A verb that misses any of the four is catalogued or removed. The cost of the
+exception is real and intended: because it is not in the catalog, App Studio
+cannot grant it through a project binding, so only a caller whose workspace
+RBAC already allows `create` on `repositories/stage_snapshot` can invoke it.
+
 ## Project grants and audit
 
 An App Studio Project environment stores a provider reference as
@@ -110,7 +147,8 @@ generated server application
        strip + re-inject X-Railgrid-* identity hints, forward the bearer
   -> provider action handler (embedded virtual workspace)
        parse identity from the route; bearer is the only trust root
-       gate 1: SSAR get on the addressed resource, as the caller
+       reject when the path cluster differs from X-Railgrid-Cluster
+       gate 1: a real GET of the addressed resource, as the caller
        gate 2: SSAR create on {resource}/{action} — the verb grant — as the caller
        enforce the declared input schema, byte/result/time limits
        return the stable envelope with a bounded JSON result
@@ -123,6 +161,43 @@ authorized. A workload identity carries exactly the rules App Studio's grants
 materialized — granting an action *is* writing the RBAC rule, revoking it
 removes the rule. The subresource is an RBAC coordinate only; no API server
 serves it.
+
+### The verb is `create`
+
+Gate 2 is a `SelfSubjectAccessReview` for verb **`create`** on the virtual
+subresource `{resource}/{action}`, name-scoped to the addressed object. That
+one string is normative, in every provider, for every action. It is what the
+hub writes when it materializes a workload-identity grant
+(`pkg/hub/serviceaccounts/workload_identity.go`), so any other verb string
+silently breaks workload identities: the rule the hub wrote will never match
+the review the provider runs.
+
+`invoke` is **not** that string. It was a bug — a dialect that grew up in
+provider code and in the planner's `examples/consumer-rbac.yaml`, never in
+the hub, where it silently broke every workload identity, because the rule
+the hub wrote (`create`) could never match the review the provider ran
+(`invoke`). It is removed: no provider reviews it, and no RBAC grants it.
+
+### Gate 1 is a real GET, not a review
+
+Gate 1 is an actual `GET {resource}/{name}` issued with the caller's bearer
+against `/clusters/{clusterID}` — not a `SelfSubjectAccessReview` for `get`.
+It has to be, for two reasons: it proves visibility against the live object
+(a review can pass for an object that does not exist or is being deleted),
+and it *returns the object*, so the handler can pin the UID and the spec it
+is about to act on against its own provider-authority read. A handler that
+skips the GET and trusts a review has no object to pin and no way to notice
+a deletion in flight.
+
+### The path cluster must equal the header cluster
+
+The cluster ID appears twice: in the path (`/clusters/{clusterID}/...`) and
+in the `X-Railgrid-Cluster` header the hub re-injects. The **path wins**, and
+a request whose header is present and disagrees with the path is refused
+with `400` before either gate runs. The header is addressing and labelling
+only; authorization is never derived from it.
+
+### Limits and the envelope
 
 The provider enforces its own declared limits — it authored them, and the
 catalog's fail-closed validation guarantees the declaration is well-formed.

@@ -13,11 +13,13 @@
 // the primary practical justification for the provider (see
 // docs/kuery-provider-architecture.md in the railgrid repo).
 //
-// Mirrors the infrastructure provider's pattern: a stateless streamable
-// HTTP handler building a per-request server, so each caller's identity
-// (the tenant's kcp logical-cluster ID from X-Railgrid-Cluster) is closed over
-// in the tool handlers. All queries go through queryapi.ScopeToTenant — the
-// same choke point as the REST API.
+// Mirrors the infrastructure provider's pattern: a stateless streamable HTTP
+// handler building a per-request server, so each caller's request — its bearer
+// and the workspace the aggregate addressed — is closed over in the tool
+// handlers. Every tool call goes through queryapi.RunHandler.RunSavedView, the
+// same gated executor the REST verb uses, so an MCP caller is held to exactly
+// the same two gates as a browser: they must be able to see the SavedView they
+// name, and they must be granted the run verb on it.
 package mcpserver
 
 import (
@@ -28,13 +30,13 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/railgrid/kuery/pkg/engine"
+	"github.com/railgrid/provider-kuery/queryapi"
 )
 
-// Deps is what the MCP tools need: the embedded kuery engine. Tenant
-// scoping happens per request from the proxy-injected headers.
+// Deps is what the MCP tools need: the gated query executor. Not the engine —
+// no path to the store may skip the gates.
 type Deps struct {
-	Engine *engine.Engine
+	Runner *queryapi.RunHandler
 }
 
 // NewHandler returns the streamable-HTTP MCP handler to mount at /mcp
@@ -66,7 +68,10 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 			"Results come from a local index synced from connected " +
 			"edges; an edge that just connected may not be fully " +
 			"indexed yet. Tenant identity is taken from your bearer " +
-			"token — never ask the user for a tenant or workspace.",
+			"token — never ask the user for a tenant or workspace. " +
+			"Every query runs as the 'run' verb on a SavedView: pass " +
+			"savedView to use a specific one, or omit it to use your " +
+			"own scratch view.",
 	})
 
 	registerTools(srv, deps, r)

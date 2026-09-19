@@ -10,10 +10,10 @@ import {
 import { createKueryRequestContext, errorMessage, resourceLabel, useKueryApi } from '../kuery'
 import FormSelect from '../portalkit/FormSelect.vue'
 
-const props = defineProps<{ context: RailgridContext | null; edges: string[]; active: boolean }>()
+const props = defineProps<{ context: RailgridContext | null; edges: string[]; active: boolean; savedView: string }>()
 const emit = defineEmits<{ inspect: [row: ObjectResult] }>()
 const context = computed(() => props.context)
-const { api, query } = useKueryApi(context)
+const { api, query } = useKueryApi(context, computed(() => props.savedView))
 const rows = ref<ObjectResult[]>([])
 const loaded = ref(false)
 const loading = ref(false)
@@ -151,7 +151,7 @@ async function mount(): Promise<void> {
     },
   }
   try {
-    const handle = await mountGraph(graphHost.value, built.elements, themeStyle(graphHost.value), id => { if (generation === graphGeneration) void expand(id) }, `${(context.value?.basePath || '').replace(/\/?$/, '/')}cytoscape.min.js`, layoutConfig({ incremental: false, nodeCount }), hooks)
+    const handle = await mountGraph(graphHost.value, built.elements, themeStyle(graphHost.value), id => { if (generation === graphGeneration) void expand(id) }, layoutConfig({ incremental: false, nodeCount }), hooks)
     if (generation !== graphGeneration) return handle.destroy()
     graph = handle
     requestAnimationFrame(() => { if (generation === graphGeneration && graph === handle) handle.fit() })

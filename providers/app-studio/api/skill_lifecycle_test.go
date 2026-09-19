@@ -88,6 +88,7 @@ func TestProjectSkillLifecycleHTTPRoutesAndReload(t *testing.T) {
 	newRouter := func() *mux.Router {
 		server := NewWithWorkspace(proxy.Client(), nil, files, "", false)
 		server.tenantWorkspaces = defaultTestWorkspaces.lookup
+		server.tenantActors = defaultTestActors.lookup
 		router := mux.NewRouter()
 		server.Register(router)
 		return router
@@ -95,7 +96,7 @@ func TestProjectSkillLifecycleHTTPRoutesAndReload(t *testing.T) {
 	request := func(method, target, body string) *http.Request {
 		req := httptest.NewRequest(method, target, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer caller-token")
+		req.Header.Set("Authorization", "Bearer "+"alice-token")
 		req.Header.Set("X-Railgrid-User", "alice")
 		req.Header.Set("X-Railgrid-Tenant", "cluster-a")
 		req.Header.Set("X-Railgrid-Cluster", "cluster-a")

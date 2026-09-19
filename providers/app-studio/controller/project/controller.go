@@ -29,7 +29,8 @@ You may obtain a copy of the License at
 // Repository, an in-flight RepositoryCommit) are watched per tenant
 // workspace through package tenantwatch, and the HTTP/assistant layer
 // signals the reconciler through package reconcilesignal when a turn ends or
-// files change. A slow safety resync covers whatever an event missed.
+// files change. Nothing is polled: a reconcile happens because something
+// happened.
 package project
 
 import (
@@ -45,6 +46,7 @@ import (
 	"github.com/kcp-dev/sdk/apis/core"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -70,14 +72,10 @@ import (
 const (
 	// finalizer guards instance teardown on Project deletion.
 	finalizer = "ai.railgrid.ai/instances"
-	// resyncInterval is the safety net under the watches and signals: drift
-	// nothing announced (an event dropped while a watcher reconnected, a
-	// signal published before the controller subscribed) is noticed within
-	// this long.
-	resyncInterval = 10 * time.Minute
-	// identityRequeueInterval waits for the project ServiceAccount's token
-	// Secret to be populated by kcp's token controller — the one dependency
-	// that is neither watched nor signalled, and never takes long.
+	// identityRequeueInterval is a backoff, not a resync: it waits for the
+	// project ServiceAccount's token Secret to be populated by kcp's token
+	// controller — the one dependency that is neither watched nor signalled,
+	// and never takes long.
 	identityRequeueInterval = 5 * time.Second
 	// instanceConvergenceMaxAttempts bounds optimistic-concurrency recovery.
 	// A fresh GET/recompute is enough to absorb the provider's usual computed
@@ -381,12 +379,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		liveStatuses = append(liveStatuses, bindings.FoldEnvironment(env.spec, bindingStatuses))
 	}
 
-	// Mirror, touching only the environments the reconciler owns (other
-	// status fields — Phase, UpdatedAt, artifact-env entries — belong to the
-	// API layer).
+	// Mirror the environments the reconciler owns, and stamp the generation
+	// this pass observed, in one status write.
+	statusChanged := false
 	next := bindings.MergeEnvironmentStatuses(p.Status.Environments, liveStatuses)
 	if !environmentStatusesEqual(p.Status.Environments, next) {
 		p.Status.Environments = next
+		statusChanged = true
+	}
+	// UpdatedAt orders the project list, so it has to follow a spec change by
+	// ANY writer — the portal patching the Project directly, kubectl, the
+	// assistant — not only the ones that once passed through a REST facade
+	// that stamped it on the way past. kcp bumps metadata.generation on every
+	// spec write, so comparing it with the last generation we stamped is the
+	// whole mechanism; an empty Phase or UpdatedAt covers a Project created
+	// outside the API layer, which has neither.
+	if p.Status.ObservedGeneration != p.Generation || p.Status.Phase == "" || p.Status.UpdatedAt == nil {
+		now := metav1.Now()
+		p.Status.ObservedGeneration = p.Generation
+		p.Status.UpdatedAt = &now
+		p.Status.Phase = aiv1alpha1.ProjectPhaseReady
+		statusChanged = true
+	}
+	if statusChanged {
 		if err := c.Status().Update(ctx, &p); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -415,7 +430,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if instancesNeedRetry || commit.retry {
 		return ctrl.Result{Requeue: true}, nil
 	}
-	return ctrl.Result{RequeueAfter: resyncInterval}, nil
+	return ctrl.Result{}, nil
 }
 
 func isProjectDevelopmentBinding(environment string, binding aiv1alpha1.ProjectProviderBindingSpec) bool {

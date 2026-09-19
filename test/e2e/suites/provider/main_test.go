@@ -22,8 +22,10 @@ limitations under the License.
 // the sub-workspace + SA + provider-token), then `quickstart-provider init`
 // with the minted SA kubeconfig (APIExport + schemas + bind grant), then
 // serve. The tests exercise the full lifecycle: catalog provisioning, the
-// /api/providers and /ui|services/providers proxies, tenant Enable via
-// direct APIBinding, and heartbeat freshness.
+// /api/providers and /ui|services/providers proxies, tenant Enable via direct
+// APIBinding, the reconciler stamping status in two independent tenant
+// workspaces, the data-plane greet verb and its cross-workspace denial, and
+// heartbeat freshness.
 //
 // Runs without kind/Helm/Dex. Intentionally lighter-weight than the
 // standalone suite so iteration on the provider plumbing is fast.
@@ -51,12 +53,20 @@ import (
 
 // Suite-shared state populated by TestMain.
 var (
-	repoRoot     string
-	hubURL       string // http://127.0.0.1:<port>
-	kcpServer    string // https://127.0.0.1:<port> (admin kubeconfig)
-	adminToken   string // kcp admin token (from .kcp/admin.kubeconfig)
+	repoRoot   string
+	hubURL     string // http://127.0.0.1:<port>
+	kcpServer  string // https://127.0.0.1:<port> (admin kubeconfig)
+	adminToken string // kcp admin token (from .kcp/admin.kubeconfig)
+	// Two static tokens, so the suite has two distinct users and therefore two
+	// distinct tenant workspaces. That is what makes "workspace A's token
+	// cannot greet workspace B's Greeting" a real assertion rather than a
+	// self-comparison: each static token maps to its own kcp identity
+	// (pkg/hub/kcp/embedded.go writes one line per token into kcp's token auth
+	// file) and each user gets cluster-admin only in their own workspace.
 	staticToken  = "test:user-default"
+	secondToken  = "test:user-second"
 	providerPort string
+	providerURL  string // http://127.0.0.1:<providerPort>, addressed directly
 )
 
 const (
@@ -72,6 +82,7 @@ func TestMain(m *testing.M) {
 	providerPort = defaultPPort
 	hubURL = "http://127.0.0.1:" + hubPort
 	kcpServer = "https://127.0.0.1:" + kcpPort
+	providerURL = "http://127.0.0.1:" + providerPort
 
 	// Fail fast if a previous run left ports bound.
 	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
@@ -103,6 +114,7 @@ func TestMain(m *testing.M) {
 		"--listen-addr", ":"+hubPort,
 		"--data-dir", dataDir,
 		"--static-auth-token", staticToken,
+		"--static-auth-token", secondToken,
 	)
 	hubCmd.Stdout = hubLog
 	hubCmd.Stderr = hubLog
@@ -193,6 +205,11 @@ func TestMain(m *testing.M) {
 		"RAILGRID_HUB_URL="+hubURL,
 		"RAILGRID_HUB_TOKEN="+staticToken,
 		"RAILGRID_PROVIDER_NAME=quickstart",
+		// The same credential the chart mounts into the serve container: the
+		// controller manager watches tenant workspaces with it, and the
+		// data-plane verb borrows its host + CA (never its bearer) to build
+		// the per-request caller clients its two gates run through.
+		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog

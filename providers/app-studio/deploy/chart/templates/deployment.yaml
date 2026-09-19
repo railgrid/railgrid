@@ -1,9 +1,12 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
 {{- $actionsCABundleConfigMap := .Values.hub.actionsCABundleConfigMap.name -}}
-{{- if gt (int .Values.replicaCount) 1 -}}
-{{- fail "app-studio replicaCount > 1 is unsupported: the shared Playwright Browser is single-session and its session ownership is process-local" -}}
-{{- end -}}
-{{- if and (eq (default "off" .Values.assistant.runSandbox.mode) "force") (ne (int .Values.replicaCount) 1) -}}
+{{- /*
+  The controllers are leader-elected, so extra replicas are fine for them, and
+  workspace-touching work rides project affinity. Coding-sandbox claims are the
+  one remaining exception: they have no distributed CAS, so two replicas can
+  both believe they own a sandbox. Refuse only that combination.
+*/ -}}
+{{- if and (eq (default "off" .Values.assistant.runSandbox.mode) "force") (gt (int .Values.replicaCount) 1) -}}
 {{- fail "assistant.runSandbox.mode=force requires replicaCount=1 until coding sandbox claims have distributed CAS" -}}
 {{- end -}}
 apiVersion: apps/v1
@@ -16,7 +19,8 @@ spec:
   replicas: {{ .Values.replicaCount }}
   # The workspace's shared Playwright Browser is single-session and browser
   # ownership is process-local. Recreate prevents a rolling update from
-  # briefly running two provider pods against that browser.
+  # briefly running two provider pods against that browser; the controllers
+  # themselves are leader-elected and safe either way.
   strategy:
     type: Recreate
   selector:

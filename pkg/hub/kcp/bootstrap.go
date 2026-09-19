@@ -2124,6 +2124,206 @@ func providerNameFromExportPath(path, orgUUID string) (string, bool) {
 	return name, true
 }
 
+// ProviderBindingRef locates one provider APIBinding in the tenant fleet: the
+// (org, workspace) pair whose logical cluster holds it, plus its name. The
+// per-workspace reads already know where they are; a fleet-wide walk does not,
+// so the coordinates have to travel with the result.
+type ProviderBindingRef struct {
+	OrgUUID       string
+	WorkspaceUUID string
+	BindingName   string
+}
+
+// ListProviderAPIBindingsForExport returns every APIBinding in the tenant
+// fleet that binds exportPath/exportName — the cross-workspace counterpart to
+// ListProviderAPIBindings, which answers "what is enabled in THIS workspace".
+//
+// It exists for fleet-wide claim migrations (AGENTS.md §5.1: a provider's
+// permission claims live on its APIExport, but what a tenant actually granted
+// lives on that tenant's own APIBinding, in that tenant's own workspace, and
+// `init` never touches those). Two deliberate differences from the
+// per-workspace variant:
+//
+//   - No status.phase filter. A binding held out of Bound because it is
+//     missing a claim is exactly the one a claims migration has to reach.
+//   - Matching is on the export reference, not on the path-derived provider
+//     name, so an Org that self-hosts a provider under the same name as the
+//     platform one is not swept up by a migration of the platform copy.
+//
+// A workspace that cannot be listed is skipped rather than failing the walk:
+// one unreachable tenant must not hide the rest of the fleet from an operator.
+func (b *Bootstrapper) ListProviderAPIBindingsForExport(ctx context.Context, exportPath, exportName string) ([]ProviderBindingRef, error) {
+	if exportPath == "" || exportName == "" {
+		return nil, fmt.Errorf("ListProviderAPIBindingsForExport: exportPath and exportName are required")
+	}
+	orgs, err := b.ListOrgWorkspaces(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing Org Workspaces: %w", err)
+	}
+	var out []ProviderBindingRef
+	for _, orgUUID := range orgs {
+		// Unfiltered on purpose: this is lifecycle, not a tenant-facing view.
+		// The org-providers container holds no provider APIBindings, so it
+		// costs one empty List and keeps the walk honest if that ever changes.
+		workspaces, err := b.ListChildWorkspaces(ctx, orgUUID)
+		if err != nil {
+			klog.FromContext(ctx).Error(err, "skipping org while listing provider APIBindings", "org", orgUUID)
+			continue
+		}
+		for _, wsUUID := range workspaces {
+			wsClient, err := dynamic.NewForConfig(configForPath(b.config, childWorkspacePath(orgUUID, wsUUID)))
+			if err != nil {
+				return nil, fmt.Errorf("creating child workspace client for %s/%s: %w", orgUUID, wsUUID, err)
+			}
+			list, err := wsClient.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				klog.FromContext(ctx).Error(err, "skipping workspace while listing provider APIBindings", "org", orgUUID, "workspace", wsUUID)
+				continue
+			}
+			for i := range list.Items {
+				item := &list.Items[i]
+				path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
+				name, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
+				if path != exportPath || name != exportName {
+					continue
+				}
+				out = append(out, ProviderBindingRef{OrgUUID: orgUUID, WorkspaceUUID: wsUUID, BindingName: item.GetName()})
+			}
+		}
+	}
+	return out, nil
+}
+
+// ReacceptProviderAPIBindingClaims rewrites one binding's
+// spec.permissionClaims to `claims` — the provider's CatalogEntry claim set as
+// it stands today — accepting each one, and reports whether anything changed.
+//
+// This is the migration half of AGENTS.md §5.1. A provider that starts
+// requiring a newly-declared claim breaks every already-enabled tenant on
+// rollout, because `init` only updates the provider-side APIExport: the
+// tenant's binding keeps the claim set it accepted when it was enabled. Bound
+// or not, that binding is the object that decides what the provider is
+// actually allowed to touch.
+//
+// Two rules make re-running this safe:
+//
+//   - A claim the tenant EXPLICITLY REJECTED stays Rejected. Rejecting is a
+//     decision the tenant made about their own workspace; a migration
+//     propagates the provider's claim set, it does not overturn consent.
+//   - A claim already on the binding keeps its identityHash and selector.
+//     Those were resolved against what this workspace binds when it was
+//     enabled (see verifyClaimIdentities); re-deriving them from the export
+//     here could re-pin a workspace to a stale copy of a dependency. Only
+//     genuinely new claims take their identity from the export.
+//
+// Claims the provider no longer declares are dropped: the target is the
+// CatalogEntry's current set, not the union with history. ProviderClaim.Accepted
+// is ignored — the type is shared with the Enable flow, where a human ticked
+// each box; here the whole point is that the provider already declares them.
+func (b *Bootstrapper) ReacceptProviderAPIBindingClaims(
+	ctx context.Context,
+	ref ProviderBindingRef,
+	exportPath, exportName string,
+	claims []ProviderClaim,
+) (bool, error) {
+	if ref.OrgUUID == "" || ref.WorkspaceUUID == "" || ref.BindingName == "" {
+		return false, fmt.Errorf("ReacceptProviderAPIBindingClaims: org, workspace and binding name are required")
+	}
+	if len(claims) == 0 {
+		return false, fmt.Errorf("ReacceptProviderAPIBindingClaims: refusing to clear every permission claim on %s", ref.BindingName)
+	}
+	wsClient, err := dynamic.NewForConfig(configForPath(b.config, childWorkspacePath(ref.OrgUUID, ref.WorkspaceUUID)))
+	if err != nil {
+		return false, fmt.Errorf("creating child workspace client: %w", err)
+	}
+
+	key := func(group, resource string) string { return group + "/" + resource }
+	// Resolved at most once, and only when some claim is new to this binding:
+	// exportClaimIdentities polls for the provisioner to stamp a first-party
+	// claim's hash, which is wasted latency per binding when (as in the common
+	// migration) every new claim is a built-in type that carries none.
+	var identities map[string]string
+
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		u, err := wsClient.Resource(apiBindingGVR).Get(ctx, ref.BindingName, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Errorf("getting APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+		}
+		var binding apisv1alpha2.APIBinding
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &binding); err != nil {
+			return false, fmt.Errorf("decoding APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+		}
+		existing := make(map[string]apisv1alpha2.AcceptablePermissionClaim, len(binding.Spec.PermissionClaims))
+		for _, pc := range binding.Spec.PermissionClaims {
+			existing[key(pc.Group, pc.Resource)] = pc
+		}
+		if identities == nil {
+			for _, c := range claims {
+				if _, ok := existing[key(c.Group, c.Resource)]; ok {
+					continue
+				}
+				identities, err = b.exportClaimIdentities(ctx, exportPath, exportName, claims)
+				if err != nil {
+					return false, err
+				}
+				break
+			}
+		}
+
+		desired := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
+		for _, c := range claims {
+			entry := apisv1alpha2.AcceptablePermissionClaim{
+				ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
+					PermissionClaim: apisv1alpha2.PermissionClaim{
+						GroupResource: apisv1alpha2.GroupResource{Group: c.Group, Resource: c.Resource},
+						Verbs:         c.Verbs,
+						IdentityHash:  identities[key(c.Group, c.Resource)],
+					},
+					Selector: apisv1alpha2.PermissionClaimSelector{MatchAll: true},
+				},
+				State: apisv1alpha2.ClaimAccepted,
+			}
+			if prev, ok := existing[key(c.Group, c.Resource)]; ok {
+				entry.IdentityHash = prev.IdentityHash
+				entry.Selector = prev.Selector
+				if prev.State == apisv1alpha2.ClaimRejected {
+					entry.State = apisv1alpha2.ClaimRejected
+				}
+			}
+			desired = append(desired, entry)
+		}
+		if reflect.DeepEqual(binding.Spec.PermissionClaims, desired) {
+			return false, nil
+		}
+
+		// Set only spec.permissionClaims on the object as read, rather than
+		// re-serializing the decoded APIBinding: a round-trip through the typed
+		// struct would silently drop anything this build's kcp SDK does not
+		// know about.
+		items := make([]any, 0, len(desired))
+		for i := range desired {
+			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desired[i])
+			if err != nil {
+				return false, fmt.Errorf("encoding permission claim: %w", err)
+			}
+			items = append(items, raw)
+		}
+		if err := unstructured.SetNestedSlice(u.Object, items, "spec", "permissionClaims"); err != nil {
+			return false, fmt.Errorf("setting spec.permissionClaims: %w", err)
+		}
+		if _, err := wsClient.Resource(apiBindingGVR).Update(ctx, u, metav1.UpdateOptions{}); err == nil {
+			return true, nil
+		} else if !errors.IsConflict(err) {
+			return false, fmt.Errorf("updating APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+		} else {
+			lastErr = err
+		}
+	}
+	return false, fmt.Errorf("updating APIBinding %q in %s/%s after %d conflicts: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, maxAttempts, lastErr)
+}
+
 // DeleteProviderAPIBinding removes the named provider APIBinding from the
 // child workspace root:railgrid:tenants:{orgUUID}:{wsUUID}. NotFound is a no-op so
 // the Disable action is idempotent. Counterpart to EnsureProviderAPIBinding.

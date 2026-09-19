@@ -8,6 +8,7 @@ export interface KueryRequestContextInput {
   orgUUID?: string | null
   workspaceUUID?: string | null
   basePath?: string
+  user?: { email?: string; sub?: string } | null
 }
 
 /** Immutable request inputs captured before an async Kuery read starts. */
@@ -27,6 +28,22 @@ export interface KueryRequestContext {
   /** Excludes the bearer token so auth refresh does not remount shell views. */
   scopeIdentity: string
   token: string | null
+  /**
+   * The tenant workspace's kcp logical-cluster ID. Both the kube client and
+   * the query verb's path address by it, so a context without one can read
+   * nothing — see `ready`.
+   */
+  cluster: string
+  /** The signed-in user, used to name their scratch SavedView. */
+  user: string
+  /**
+   * True when this context can reach the provider at all: a host transport and
+   * a workspace. Deliberately NOT a token check — the host injects
+   * Authorization into its own fetch, and gating on the deprecated
+   * railgridContext.token would break every view the day a host stops
+   * exposing it.
+   */
+  ready: boolean
 }
 
 function present(value?: string | null): string | null {
@@ -44,18 +61,27 @@ export function createKueryRequestContext(context: KueryRequestContextInput | nu
   const token = present(context?.token)
   const orgUUID = present(context?.orgUUID)
   const workspaceUUID = present(context?.workspaceUUID)
-  const scopeIdentity = JSON.stringify([basePath, orgUUID, workspaceUUID])
-  const identity = JSON.stringify([basePath, token, orgUUID, workspaceUUID])
+  const cluster = present(context?.tenant) || ''
+  const user = present(context?.user?.email) || present(context?.user?.sub) || ''
+  const scopeIdentity = JSON.stringify([basePath, orgUUID, workspaceUUID, cluster])
+  const identity = JSON.stringify([basePath, token, orgUUID, workspaceUUID, cluster])
   const headers: Record<string, string> = {}
   if (orgUUID) headers['X-Railgrid-Org'] = orgUUID
   if (workspaceUUID) headers['X-Railgrid-Workspace'] = workspaceUUID
+  const hasHostFetch = typeof context?.fetch === 'function'
   return {
     basePath,
     fetch: providerFetch(context),
-    hasHostFetch: typeof context?.fetch === 'function',
+    hasHostFetch,
     headers,
     identity,
     scopeIdentity,
     token,
+    cluster,
+    user,
+    // An older host that exposes only the deprecated token still works: the
+    // portalkit fallback transport sets the bearer itself. What is NOT
+    // acceptable is treating the token's absence as "not signed in".
+    ready: !!basePath && !!cluster && (hasHostFetch || !!token),
   }
 }

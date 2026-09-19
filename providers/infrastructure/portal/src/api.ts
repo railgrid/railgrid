@@ -34,7 +34,6 @@ const TEMPLATES: KubeResourceRef = { group: GROUP, version: VERSION, resource: '
 // Field manager recorded on every server-side apply this portal performs.
 const FIELD_MANAGER = 'provider-infrastructure'
 
-let bearerToken: string | null = null
 let clusterName: string | null = null
 let contextGeneration = 0
 
@@ -52,16 +51,15 @@ export function isContextChangedError(error: unknown): boolean {
 
 interface RequestContext {
   generation: number
-  token: string | null
   tenant: string | null
 }
 
 function requestContext(): RequestContext {
-  return { generation: contextGeneration, token: bearerToken, tenant: clusterName }
+  return { generation: contextGeneration, tenant: clusterName }
 }
 
 function assertCurrentContext(expected: RequestContext): void {
-  if (expected.generation !== contextGeneration || expected.token !== bearerToken || expected.tenant !== clusterName) {
+  if (expected.generation !== contextGeneration || expected.tenant !== clusterName) {
     throw new ContextChangedError()
   }
 }
@@ -71,26 +69,25 @@ function assertCurrentContext(expected: RequestContext): void {
 export function setBasePath(_ctxBasePath?: string | null) {
   void _ctxBasePath
 }
-// setHostFetch installs the host-owned transport from railgridContext.fetch. The
-// host injects Authorization itself; bearerToken then only fences in-flight
-// requests, and providerFetch falls back to it on older hosts without fetch.
+// setHostFetch installs the host-owned transport from railgridContext.fetch —
+// the only credential this bundle has. The host injects Authorization and the
+// tenant headers itself, so the raw bearer never enters the bundle: nothing
+// here reads railgridContext.token, and a host that stops exposing it changes
+// nothing.
 let hostFetch: ProviderFetch | null = null
 export function setHostFetch(fetchImpl?: ProviderFetch | null) {
-  hostFetch = fetchImpl ?? null
-}
-function hubFetch(): ProviderFetch {
-  return providerFetch({ fetch: hostFetch, token: bearerToken })
-}
-export function setToken(token?: string | null) {
-  const next = token || null
-  if (next !== bearerToken) {
+  const next = fetchImpl ?? null
+  if (next !== hostFetch) {
     contextGeneration += 1
     // Template metadata is permissioned and may differ between callers even
-    // when they share a tenant path. Never reuse one caller's cache after an
-    // authentication-context change.
+    // when they share a tenant path. Never reuse one caller's cache across a
+    // transport swap — a new transport is a new authority.
     cachedTemplates = null
   }
-  bearerToken = next
+  hostFetch = next
+}
+function hubFetch(): ProviderFetch {
+  return providerFetch({ fetch: hostFetch })
 }
 export function setTenant(name?: string | null) {
   const next = name || null

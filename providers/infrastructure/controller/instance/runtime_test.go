@@ -133,28 +133,30 @@ func TestDesiredNetworkPhaseDoesNotOscillateDuringRuntimeRollout(t *testing.T) {
 }
 
 // The runtime CR is watched, so neither readiness nor the setup -> runtime
-// network transition is polled: with no lifecycle deadline pending only the
-// safety resync remains, regardless of the runtime generation's state.
-func TestInstanceRequeueAfterIsSafetyResyncWithoutLifecycleDeadline(t *testing.T) {
+// network transition is polled. With no lifecycle deadline pending there is
+// nothing left to wake up for: the reconciler asks for no requeue at all,
+// regardless of the runtime generation's state. A non-zero answer here would
+// be the blanket resync the contract forbids.
+func TestInstanceRequeueAfterIsZeroWithoutLifecycleDeadline(t *testing.T) {
 	tmpl := developmentTemplate()
-	created := metav1.Time{}
-	now := time.Time{}
+	now := time.Now()
+	created := metav1.NewTime(now.Add(-30 * time.Second))
 
 	if got := instanceRequeueAfter(now, created, tmpl,
-		runtimeForNetwork(3, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != resyncPeriod {
-		t.Fatalf("stale runtime requeue = %s, want safety resync %s", got, resyncPeriod)
+		runtimeForNetwork(3, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != 0 {
+		t.Fatalf("stale runtime requeue = %s, want no requeue", got)
 	}
 	if got := instanceRequeueAfter(now, created, tmpl,
-		runtimeForNetwork(3, 3, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != resyncPeriod {
-		t.Fatalf("current runtime requeue = %s, want safety resync %s", got, resyncPeriod)
+		runtimeForNetwork(3, 3, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != 0 {
+		t.Fatalf("current runtime requeue = %s, want no requeue", got)
 	}
-	if got := instanceRequeueAfter(now, created, nil, nil); got != resyncPeriod {
-		t.Fatalf("no-template requeue = %s, want safety resync %s", got, resyncPeriod)
+	if got := instanceRequeueAfter(now, created, nil, nil); got != 0 {
+		t.Fatalf("no-template requeue = %s, want no requeue", got)
 	}
 }
 
-// A development Instance's idle/max-lifetime deadline is still scheduled
-// exactly when it falls inside the resync window.
+// The one RequeueAfter that survives: a development Instance's computed
+// idle/max-lifetime deadline.
 func TestInstanceRequeueAfterHonorsLifecycleDeadline(t *testing.T) {
 	now := time.Now()
 	tmpl := developmentTemplate()

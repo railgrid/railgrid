@@ -60,7 +60,7 @@ func servePortalAsset(w http.ResponseWriter, _ *http.Request, distFS fs.FS, name
 		}
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	ct := mime.TypeByExtension(path.Ext(name))
 	if ct == "" {

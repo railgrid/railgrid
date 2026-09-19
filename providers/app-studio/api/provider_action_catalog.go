@@ -318,6 +318,8 @@ func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (provide
 		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
 	}
 	if id.user != "" {
+		// A display label for the downstream provider's logs. The identity
+		// that authorizes the call is the bearer this request carries.
 		req.Header.Set("X-Railgrid-User", id.user)
 	}
 	client := &http.Client{

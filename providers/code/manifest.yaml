@@ -7,8 +7,9 @@
 #
 # This CatalogEntry registers routing and references apiExport.name. The
 # provider's init command creates the APIExport, schemas, endpoint slice, and
-# bind grant from deploy/chart/files/schemas, including Connection, Repository,
-# RepositoryCommit, DeployKey, Collaborator, and Package resources.
+# bind grant from deploy/chart/files/schemas: the eight kinds Connection,
+# Repository, RepositoryCommit, RepositoryCheckout, RepositoryBuildStatus,
+# DeployKey, Collaborator, and Package.
 ---
 apiVersion: providers.railgrid.ai/v1alpha1
 kind: CatalogEntry
@@ -60,6 +61,11 @@ spec:
     namespace: "railgrid-provider-code"
     releaseName: "code"
     docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/code/deploy/chart/README.md"
+  # Twelve catalogued actions, all Repository-bound. The provider also serves
+  # stage_snapshot on the same route, deliberately uncatalogued: its 25 MiB
+  # body cannot be declared under limits.maxInputBytes, which the CatalogEntry
+  # API caps at 1 MiB. See docs/provider-actions.md, "Uncatalogued large-upload
+  # verbs" — keep this list and the served set in actions/server.go together.
   actions:
   - id: branches/v1
     displayName: List branches

@@ -22,8 +22,21 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/railgrid/provider-kuery/queryapi"
+	"github.com/railgrid/provider-kuery/index"
 )
+
+// The MCP tools do not talk to the engine. They go through
+// queryapi.RunHandler.RunSavedView, which is the same gated executor the REST
+// verb uses: the caller's bearer builds the client, a GET of the addressed
+// SavedView proves they can see it, and a SelfSubjectAccessReview for create
+// on savedviews/run proves they were granted the verb. Before this, these two
+// tools read the tenant out of a header and queried the store directly, which
+// meant an agent's grant on the kuery MCP endpoint was the only thing between
+// it and the whole fleet.
+//
+// An agent that has not been given a view to run gets its caller's scratch
+// view, created on first use with the caller's own credential — the same
+// object the portal playground uses, so one grant covers both.
 
 // queryInput is the kuery_query tool input: a raw kuery QuerySpec. Kept as
 // a generic JSON object (not a typed mirror) so the tool tracks kuery's spec
@@ -35,7 +48,11 @@ import (
 // a byte array failed to unmarshal — the tool was unusable. A map reflects
 // to {"type":"object"} and round-trips to the QuerySpec through json.
 type queryInput struct {
-	Spec map[string]any `json:"spec" jsonschema:"kuery QuerySpec as a JSON object. Key fields: filter.objects[] (groupKind{apiGroup,kind}, namespace, name, labels, categories), cluster.name (an EDGE name to restrict to one edge; omit for the whole fleet), limit, objects.object (sparse projection, e.g. {metadata:{name:true},spec:{replicas:true}}), objects.relations{} (owners, owners+, descendants, descendants+, references, selects, selected-by, linked, linked+, grouped), maxDepth."`
+	// SavedView names the SavedView to run the query as. Omitted, the caller's
+	// own scratch view is used (created on first use). Either way the query
+	// runs as a verb on a named object the caller must be granted.
+	SavedView string         `json:"savedView,omitempty" jsonschema:"optional: the SavedView to run this query as. Omit to use your own scratch view. The name must be one you are granted the 'run' verb on."`
+	Spec      map[string]any `json:"spec" jsonschema:"kuery QuerySpec as a JSON object. Key fields: filter.objects[] (groupKind{apiGroup,kind}, namespace, name, labels, categories), cluster.name (an EDGE name to restrict to one edge; omit for the whole fleet), limit, objects.object (sparse projection, e.g. {metadata:{name:true},spec:{replicas:true}}), objects.relations{} (owners, owners+, descendants, descendants+, references, selects, selected-by, linked, linked+, grouped), maxDepth."`
 }
 
 // querySpecFromInput converts the tool's generic spec object into kuery's
@@ -69,6 +86,7 @@ type queryOutput struct {
 
 // impactInput identifies one object to expand the declared blast radius of.
 type impactInput struct {
+	SavedView string `json:"savedView,omitempty" jsonschema:"optional: the SavedView to run this query as. Omit to use your own scratch view."`
 	Edge      string `json:"edge,omitempty" jsonschema:"edge (cluster) name the object lives on; omit if unique fleet-wide"`
 	Group     string `json:"group,omitempty" jsonschema:"API group, empty for core"`
 	Kind      string `json:"kind" jsonschema:"object kind, e.g. ConfigMap"`
@@ -112,12 +130,7 @@ var impactRelations = []string{"descendants+", "references", "selects", "selecte
 
 // edgeName strips the "{clusterID}/" prefix kuery records on a cluster key, so
 // the model sees the bare edge name it knows.
-func edgeName(cluster string) string {
-	if i := strings.LastIndex(cluster, "/"); i >= 0 {
-		return cluster[i+1:]
-	}
-	return cluster
-}
+func edgeName(cluster string) string { return index.EdgeOf(cluster) }
 
 // refOf flattens one related ObjectResult (projected with cluster + kind +
 // apiVersion + metadata) into an impactRef tagged with its relation.
@@ -167,15 +180,22 @@ func classifyImpact(anchor *v1alpha1.ObjectResult) (impactedBy, impacts, associa
 }
 
 func registerTools(srv *mcp.Server, deps Deps, r *http.Request) {
-	// Identity failures surface per call, not at registration: registration
-	// also serves tools/list, which must not fail for a caller that cannot be
-	// scoped — only a tools/call does.
-	ident, identErr := queryapi.IdentityFromRequest(r)
-	tenantFor := func() (string, error) {
-		if identErr != nil {
-			return "", identErr
+	// Authorization failures surface per call, never at registration:
+	// registration also serves tools/list, which must keep working for a
+	// caller who cannot run anything — only a tools/call is gated.
+	run := func(ctx context.Context, savedView string, spec *v1alpha1.QuerySpec) (*v1alpha1.QueryStatus, error) {
+		if deps.Runner == nil {
+			return nil, fmt.Errorf("kuery query surface is unavailable")
 		}
-		return ident.Cluster, nil
+		var query json.RawMessage
+		if spec != nil {
+			encoded, err := json.Marshal(spec)
+			if err != nil {
+				return nil, fmt.Errorf("encoding the query: %w", err)
+			}
+			query = encoded
+		}
+		return deps.Runner.RunSavedView(ctx, r, savedView, query)
 	}
 
 	safeRegister("kuery_query", func() {
@@ -189,16 +209,11 @@ func registerTools(srv *mcp.Server, deps Deps, r *http.Request) {
 			// recursive v1alpha1.ObjectResult and panic. 'any' keeps the structured
 			// output without the schema.
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, in queryInput) (*mcp.CallToolResult, any, error) {
-			tenant, err := tenantFor()
-			if err != nil {
-				return nil, nil, err
-			}
 			spec, err := querySpecFromInput(in.Spec)
 			if err != nil {
 				return nil, nil, err
 			}
-			queryapi.ScopeToTenant(spec, tenant)
-			status, err := deps.Engine.Execute(ctx, spec)
+			status, err := run(ctx, in.SavedView, spec)
 			if err != nil {
 				return nil, nil, fmt.Errorf("query failed: %w", err)
 			}
@@ -217,11 +232,7 @@ func registerTools(srv *mcp.Server, deps Deps, r *http.Request) {
 				"Coupling is DECLARED — ownerRefs, spec field references, label selectors, namespace membership — NOT runtime traffic or network policy, so a clean result is not proof nothing else depends on it at runtime. Each related object is returned with its kind/namespace/name/edge and the relation that linked it. Prefer this over per-edge kubectl for change-safety and root-cause questions that span edges.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, in impactInput) (*mcp.CallToolResult, impactOutput, error) {
-			tenant, err := tenantFor()
-			if err != nil {
-				return nil, impactOutput{}, err
-			}
-			out, err := runImpact(ctx, deps.Engine, tenant, in)
+			out, err := runImpact(ctx, run, in)
 			if err != nil {
 				return nil, impactOutput{}, err
 			}
@@ -275,15 +286,19 @@ func impactSpec(in impactInput) *v1alpha1.QuerySpec {
 	return spec
 }
 
-// runImpact executes the impact query for one object in the caller's tenant
-// (its kcp logical-cluster ID) and buckets the result by impact direction.
-func runImpact(ctx context.Context, eng *engine.Engine, tenant string, in impactInput) (impactOutput, error) {
+// queryRunner is the gated executor the tools run through — the same one the
+// REST verb uses. Taken as a function so the impact tool is testable without a
+// kcp API behind it.
+type queryRunner func(ctx context.Context, savedView string, spec *v1alpha1.QuerySpec) (*v1alpha1.QueryStatus, error)
+
+// runImpact executes the impact query for one object and buckets the result by
+// impact direction. Tenant scoping is the runner's job, not this function's:
+// it happens after the gates, from the caller's engaged-edge set.
+func runImpact(ctx context.Context, run queryRunner, in impactInput) (impactOutput, error) {
 	if in.Kind == "" || in.Name == "" {
 		return impactOutput{}, fmt.Errorf("kind and name are required")
 	}
-	spec := impactSpec(in)
-	queryapi.ScopeToTenant(spec, tenant)
-	status, err := eng.Execute(ctx, spec)
+	status, err := run(ctx, in.SavedView, impactSpec(in))
 	if err != nil {
 		return impactOutput{}, fmt.Errorf("impact query failed: %w", err)
 	}

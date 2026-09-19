@@ -36,14 +36,12 @@ data:
         indexPath: "/"
       backend:
         url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-        healthPath: "/healthz"
+        healthPath: "/readyz"
+      # No permissionClaims: the provider reconciles only the Greetings its
+      # own APIExport serves. Mirrors manifest.yaml and init_cmd.go — all
+      # three must change together.
       apiExport:
         name: "quickstart.providers.railgrid.ai"
-        # Demo-only claim so the Enable dialog has something to render.
-        permissionClaims:
-          - resource: configmaps
-            verbs: [get, list, watch]
-            tenantScoped: true
       # Lets an organization run its own copy of this provider (see
       # docs/byo-providers.md). The chart version is stamped from the release so
       # the instructions the hub generates pin the same version that published

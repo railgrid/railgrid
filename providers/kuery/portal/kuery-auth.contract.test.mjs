@@ -22,6 +22,8 @@ const { useKueryApi } = await vite.ssrLoadModule('/src/kuery.ts')
 test.after(() => vite.close())
 
 const basePath = '/ui/providers/kuery'
+const cluster = '1ngen6o0so3jwz2h'
+const savedView = ref('playground-0123456789ab')
 
 // The host injects Authorization into its own fetch, so a context carrying
 // fetch is fully authenticated even with no token. Gating on the token would
@@ -31,35 +33,39 @@ test('initialises against a host that exposes fetch and no token', async () => {
   const calls = []
   const hostFetch = (input, init) => {
     calls.push({ input, init })
-    return Promise.resolve(new Response('{}', { status: 200 }))
+    return Promise.resolve(new Response(JSON.stringify({ requestID: 'r', result: {} }), { status: 200 }))
   }
   const context = ref({
     basePath,
     fetch: hostFetch,
     token: null,
+    tenant: cluster,
     orgUUID: 'org-1',
     workspaceUUID: 'ws-1',
   })
 
-  const { api, query } = useKueryApi(context)
+  const { api, query } = useKueryApi(context, savedView)
   assert.notEqual(api.value, null, 'api must be created from ctx.fetch alone')
   await query({ limit: 1 })
   assert.equal(calls.length, 1, 'the query must go through the host transport')
-  assert.equal(calls[0].input, '/services/providers/kuery/api/query')
+  assert.equal(
+    calls[0].input,
+    `/services/providers/kuery/dataplane/clusters/${cluster}/savedviews/${savedView.value}/run`,
+  )
 })
 
 // Older hosts expose only the deprecated token; the portalkit fallback sets the
 // bearer itself, so those must keep working through the deprecation window.
 test('initialises against an older host that exposes only a token', () => {
-  const context = ref({ basePath, token: 'legacy-token', orgUUID: 'org-1', workspaceUUID: 'ws-1' })
-  assert.notEqual(useKueryApi(context).api.value, null)
+  const context = ref({ basePath, token: 'legacy-token', tenant: cluster, orgUUID: 'org-1', workspaceUUID: 'ws-1' })
+  assert.notEqual(useKueryApi(context, savedView).api.value, null)
 })
 
 // With neither transport nor token there is no way to authenticate, and the
 // "waiting for workspace context" state is still the correct one.
 test('stays uninitialised with neither fetch nor token', async () => {
-  const context = ref({ basePath, token: null, orgUUID: 'org-1', workspaceUUID: 'ws-1' })
-  const { api, query } = useKueryApi(context)
+  const context = ref({ basePath, token: null, tenant: cluster, orgUUID: 'org-1', workspaceUUID: 'ws-1' })
+  const { api, query } = useKueryApi(context, savedView)
   assert.equal(api.value, null)
   await assert.rejects(query({ limit: 1 }), /waiting for workspace context/)
 })
@@ -67,6 +73,18 @@ test('stays uninitialised with neither fetch nor token', async () => {
 // A host fetch cannot substitute for the base path: without it there is no
 // service URL to send the query to.
 test('stays uninitialised without a base path', () => {
-  const context = ref({ basePath: '', fetch: () => Promise.resolve(new Response('{}')), token: null })
-  assert.equal(useKueryApi(context).api.value, null)
+  const context = ref({ basePath: '', fetch: () => Promise.resolve(new Response('{}')), tenant: cluster, token: null })
+  assert.equal(useKueryApi(context, savedView).api.value, null)
+})
+
+// A query is a verb on a named object, so without a workspace to address or a
+// view to run there is nothing to send — and nothing is sent, rather than
+// something being guessed.
+test('stays uninitialised without a workspace or a saved view', () => {
+  const noCluster = ref({ basePath, fetch: () => Promise.resolve(new Response('{}')), token: null })
+  assert.equal(useKueryApi(noCluster, savedView).api.value, null)
+
+  const ready = ref({ basePath, fetch: () => Promise.resolve(new Response('{}')), tenant: cluster, token: null })
+  assert.equal(useKueryApi(ready, ref('')).api.value, null)
+  assert.equal(useKueryApi(ready).api.value, null)
 })

@@ -39,10 +39,6 @@ func (s *Server) getProjectAssistantApprovalMode(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
-	if strings.TrimSpace(id.user) == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "authenticated user is required")
-		return
-	}
 	preference, err := s.store.GetAssistantApprovalPreference(
 		r.Context(),
 		projectMessageScope(id.orgUUID, id.workspaceUUID, project),
@@ -61,10 +57,6 @@ func (s *Server) getProjectAssistantApprovalMode(w http.ResponseWriter, r *http.
 func (s *Server) patchProjectAssistantApprovalMode(w http.ResponseWriter, r *http.Request) {
 	_, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
-		return
-	}
-	if strings.TrimSpace(id.user) == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "authenticated user is required")
 		return
 	}
 	var request patchProjectAssistantApprovalModeRequest

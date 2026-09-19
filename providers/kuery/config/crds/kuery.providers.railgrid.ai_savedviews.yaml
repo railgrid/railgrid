@@ -1,0 +1,175 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: savedviews.kuery.providers.railgrid.ai
+spec:
+  group: kuery.providers.railgrid.ai
+  names:
+    kind: SavedView
+    listKind: SavedViewList
+    plural: savedviews
+    shortNames:
+    - sv
+    singular: savedview
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: Display
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.lastOpenedAt
+      name: Last opened
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          SavedView is a named, tenant-authored fleet query. It is kuery's only
+          exported kind, and it exists because a verb needs an object to hang off:
+          running a query is POST
+          /dataplane/clusters/{clusterID}/savedviews/{name}/run, which the hub
+          authorizes as "create savedviews/run on this name" for the caller's own
+          bearer. There is no un-named query route, so there is no query a tenant can
+          run that their RBAC does not cover — including the playground's, which runs
+          a per-user SavedView the portal creates with the kube client.
+
+          Cluster-scoped on purpose: the data-plane grammar addresses an object by
+          cluster and name with no namespace segment, and a namespaced kind could not
+          be reached through it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: SavedViewSpec is the user-authored view.
+            properties:
+              description:
+                description: Description explains what the view answers.
+                maxLength: 512
+                type: string
+              displayName:
+                description: DisplayName is the human-readable name shown in the portal.
+                maxLength: 128
+                type: string
+              query:
+                description: |-
+                  Query is the kuery QuerySpec this view runs, in the shape documented by
+                  docs/kuery-query-api.md and published as /query-schema.json under the
+                  portal assets.
+
+                  It is deliberately an opaque embedded object rather than a generated
+                  structural schema: QuerySpec is recursive (ObjectsSpec.relations values
+                  are RelationSpec, whose objects member is another ObjectsSpec), and
+                  controller-gen cannot render a recursive type as a CRD schema at all.
+                  The savedview reconciler validates it against the published JSON Schema
+                  instead and reports the result on the Ready condition, so an invalid
+                  query is a condition on the object rather than a surprise at run time.
+
+                  The cluster filter a caller writes here is advisory: the run verb
+                  rewrites it to the caller's own engaged edges before the engine sees it.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+            type: object
+          status:
+            description: SavedViewStatus is the observed state of a SavedView.
+            properties:
+              conditions:
+                description: |-
+                  Conditions carries Ready: whether spec.query is a query the engine
+                  accepts.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastOpenedAt:
+                description: |-
+                  LastOpenedAt is when the view was last run through the query verb. It is
+                  written by the run handler, not by the reconciler, and is how the portal
+                  sorts a tenant's views by recency.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the spec generation the conditions
+                  describe.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

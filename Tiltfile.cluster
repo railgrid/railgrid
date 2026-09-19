@@ -1817,7 +1817,7 @@ local_resource(
 # kubeconfig run-provider-infrastructure reads. Order:
 #   infrastructure-register  → creates the workspace
 #   infrastructure-init      → seeds the workspace + writes kubeconfig
-#   infrastructure (long-lived) → picks up INFRASTRUCTURE_KUBECONFIG
+#   infrastructure (long-lived) → serve mounts RAILGRID_PROVIDER_KUBECONFIG
 # Manual so devs control when re-bootstrap happens (it overwrites the
 # runtime kubeconfig and rotates the token).
 local_resource(

@@ -225,6 +225,9 @@ func (s *Server) listProjectAssistantAttachments(w http.ResponseWriter, r *http.
 	}
 	items := make([]attachmentReceiptResponse, 0, len(attachments))
 	for _, attachment := range attachments {
+		// ActorID was recorded from the uploader's SelfSubjectReview, and
+		// id.user comes from this caller's: the comparison is between two
+		// authenticated subjects, not between two header values.
 		if attachment.ActorID != id.user {
 			continue
 		}
@@ -236,10 +239,6 @@ func (s *Server) listProjectAssistantAttachments(w http.ResponseWriter, r *http.
 func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http.Request) {
 	c, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
-		return
-	}
-	if id.user == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "caller identity missing — the hub did not provide X-Railgrid-User")
 		return
 	}
 	if project.DeletionTimestamp != nil {
@@ -578,10 +577,6 @@ func (s *Server) getProjectAssistantAttachment(w http.ResponseWriter, r *http.Re
 func (s *Server) deleteProjectAssistantAttachment(w http.ResponseWriter, r *http.Request) {
 	_, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
-		return
-	}
-	if id.user == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "caller identity missing — the hub did not provide X-Railgrid-User")
 		return
 	}
 	attachmentStore, ok := s.projectAttachmentStore(w)

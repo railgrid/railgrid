@@ -1,11 +1,26 @@
-// ApiClient wraps the agents provider REST API.
+// ApiClient is the agents micro-frontend's single data entry point.
+//
+// It has two halves. Tenant OBJECTS — Agent, Schedule, Connection, Toolset,
+// Trigger and the model-credential Secrets — are bound APIs in the tenant's own
+// workspace, so they are read and written straight against kcp through
+// portalkit's kube client; that half lives in resources.ts and is delegated to
+// below. Everything else is a VERB the provider backend has to run because it
+// needs the engine, a server-held credential, or state that is not a kcp object
+// at all: chat, runs, events, capabilities, catalog, usage, inbox, the
+// connection test/enable-inbound/authorize actions, run-now on a schedule or
+// trigger, credential test/discover, whoami. Those stay on
+// /services/providers/agents/api/*.
+//
+// The method surface is the same either way, so a view does not have to know
+// which half it is calling.
 //
 // Tenant scope: the host pushes orgUUID/workspaceUUID on the RailgridContext, and
 // those win. portalkit/tenant.ts's localStorage copy is the fallback for the
 // (brief) window before the host has pushed a context.
 //
-// Every call carries the Bearer token plus the X-Railgrid-Org / X-Railgrid-Workspace
-// headers the hub's tenant middleware requires.
+// Every backend call carries the Bearer token plus the X-Railgrid-Org /
+// X-Railgrid-Workspace headers the hub's tenant middleware requires; every kcp
+// call carries the same token against /clusters/<tenant>.
 
 import type {
   Agent,
@@ -35,8 +50,10 @@ import type {
   UsageResponse,
 } from './types'
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
+import { Resources } from './resources'
 
 export type { Tenant }
+export { ResourceError } from './resources'
 
 // SSEEvent is one parsed frame from any of the provider's event streams.
 export interface SSEEvent<T = unknown> {
@@ -90,9 +107,13 @@ export class ApiError extends Error {
 
 export class ApiClient {
   private ctx: RailgridContext | null = null
+  // The kcp half. It is handed the same context so a workspace switch moves
+  // both halves at once.
+  private readonly resources = new Resources()
 
   setContext(ctx: RailgridContext | null): void {
     this.ctx = ctx
+    this.resources.setContext(ctx)
   }
 
   context(): RailgridContext | null {
@@ -192,10 +213,12 @@ export class ApiClient {
 
   // ---- entities ------------------------------------------------------------
 
-  listAgents = (): Promise<Agent[]> => this.list<Agent>('/api/agents')
-  createAgent = (body: AgentCreate): Promise<Agent> => this.send('POST', '/api/agents', body)
-  patchAgent = (name: string, body: AgentPatch): Promise<Agent> => this.send('PUT', `/api/agents/${enc(name)}`, body)
-  deleteAgent = (name: string): Promise<void> => this.send('DELETE', `/api/agents/${enc(name)}`)
+  // Objects: kcp. See resources.ts — the CRs are bound in the tenant's own
+  // workspace, so the provider backend has no business relaying CRUD for them.
+  listAgents = (): Promise<Agent[]> => this.resources.listAgents()
+  createAgent = (body: AgentCreate): Promise<Agent> => this.resources.createAgent(body)
+  patchAgent = (name: string, body: AgentPatch): Promise<Agent> => this.resources.patchAgent(name, body)
+  deleteAgent = (name: string): Promise<void> => this.resources.deleteAgent(name)
 
   listSessions = (agent: string): Promise<SessionMeta[]> => this.list<SessionMeta>(`/api/agents/${enc(agent)}/sessions`)
   deleteSession = (agent: string, session: string): Promise<void> =>
@@ -203,9 +226,11 @@ export class ApiClient {
   listMessages = (agent: string, session: string, limit = 200): Promise<TranscriptMessage[]> =>
     this.list<TranscriptMessage>(`/api/agents/${enc(agent)}/messages?session=${enc(session)}&limit=${limit}`)
 
-  listCredentials = (): Promise<Credential[]> => this.list<Credential>('/api/credentials')
-  saveCredential = (body: CredentialWrite): Promise<Credential> => this.send('POST', '/api/credentials', body)
-  deleteCredential = (name: string): Promise<void> => this.send('DELETE', `/api/credentials/${enc(name)}`)
+  // Model credentials are Secrets in the tenant workspace; test/discover need
+  // the key to reach the model endpoint, so they stay on the backend.
+  listCredentials = (): Promise<Credential[]> => this.resources.listCredentials()
+  saveCredential = (body: CredentialWrite): Promise<Credential> => this.resources.saveCredential(body)
+  deleteCredential = (name: string): Promise<void> => this.resources.deleteCredential(name)
   testCredential = (name: string): Promise<CredentialTestResult> => this.send('POST', `/api/credentials/${enc(name)}/test`)
   testCredentialDraft = (body: { provider: string; baseURL: string; model: string; apiKey: string; existingName?: string }): Promise<CredentialTestResult> => this.send('POST', '/api/credentials/test', body)
   discoverCredentialDraft = (body: { provider: string; baseURL: string; model: string; apiKey: string; existingName?: string }): Promise<CredentialTestResult> => this.send('POST', '/api/credentials/discover', body)
@@ -218,11 +243,21 @@ export class ApiClient {
     return { ...u, byAgent: u.byAgent ?? [], byModel: u.byModel ?? [], series: u.series ?? [] }
   }
 
-  listConnections = (): Promise<Connection[]> => this.list<Connection>('/api/connections')
-  createConnection = (body: ConnectionWrite): Promise<Connection> => this.send('POST', '/api/connections', body)
+  listConnections = (): Promise<Connection[]> => this.resources.listConnections()
+  // A connection may lean on an operator-configured OAuth app instead of the
+  // user pasting client credentials. Which apps exist is a property of the
+  // deployment, not of the workspace, so it is still a backend probe — read
+  // once per create and handed to the writer.
+  createConnection = async (body: ConnectionWrite): Promise<Connection> => {
+    let platformApps: Record<string, boolean> = {}
+    if ((body.auth ?? '').trim() === 'oauth') {
+      platformApps = (await this.oauthProviders()).providers ?? {}
+    }
+    return this.resources.createConnection(body, platformApps)
+  }
   patchConnection = (name: string, body: ConnectionWrite): Promise<Connection> =>
-    this.send('PUT', `/api/connections/${enc(name)}`, body)
-  deleteConnection = (name: string): Promise<void> => this.send('DELETE', `/api/connections/${enc(name)}`)
+    this.resources.patchConnection(name, body)
+  deleteConnection = (name: string): Promise<void> => this.resources.deleteConnection(name)
   testConnection = (name: string): Promise<unknown> => this.send('POST', `/api/connections/${enc(name)}/test`)
   enableInbound = (name: string): Promise<{ webhookURL: string; registered: boolean; note: string }> =>
     this.send('POST', `/api/connections/${enc(name)}/enable-inbound`, { publicBaseURL: location.origin })
@@ -237,22 +272,22 @@ export class ApiClient {
     return { ...c, providers: c.providers ?? [] }
   }
 
-  listToolsets = (): Promise<Toolset[]> => this.list<Toolset>('/api/toolsets')
-  createToolset = (body: ToolsetWrite): Promise<Toolset> => this.send('POST', '/api/toolsets', body)
-  patchToolset = (name: string, body: ToolsetWrite): Promise<Toolset> => this.send('PUT', `/api/toolsets/${enc(name)}`, body)
-  deleteToolset = (name: string): Promise<void> => this.send('DELETE', `/api/toolsets/${enc(name)}`)
+  listToolsets = (): Promise<Toolset[]> => this.resources.listToolsets()
+  createToolset = (body: ToolsetWrite): Promise<Toolset> => this.resources.createToolset(body)
+  patchToolset = (name: string, body: ToolsetWrite): Promise<Toolset> => this.resources.patchToolset(name, body)
+  deleteToolset = (name: string): Promise<void> => this.resources.deleteToolset(name)
 
-  listSchedules = (): Promise<Schedule[]> => this.list<Schedule>('/api/schedules')
-  createSchedule = (body: ScheduleCreate): Promise<Schedule> => this.send('POST', '/api/schedules', body)
-  patchSchedule = (name: string, body: SchedulePatch): Promise<Schedule> => this.send('PUT', `/api/schedules/${enc(name)}`, body)
-  deleteSchedule = (name: string): Promise<void> => this.send('DELETE', `/api/schedules/${enc(name)}`)
+  listSchedules = (): Promise<Schedule[]> => this.resources.listSchedules()
+  createSchedule = (body: ScheduleCreate): Promise<Schedule> => this.resources.createSchedule(body)
+  patchSchedule = (name: string, body: SchedulePatch): Promise<Schedule> => this.resources.patchSchedule(name, body)
+  deleteSchedule = (name: string): Promise<void> => this.resources.deleteSchedule(name)
   // Run-now is asynchronous: 202 + the runID to follow in Activity.
   runSchedule = (name: string): Promise<{ runID: string }> => this.send('POST', `/api/schedules/${enc(name)}/run`)
 
-  listTriggers = (): Promise<Trigger[]> => this.list<Trigger>('/api/triggers')
-  createTrigger = (body: TriggerCreate): Promise<Trigger> => this.send('POST', '/api/triggers', body)
-  patchTrigger = (name: string, body: TriggerPatch): Promise<Trigger> => this.send('PUT', `/api/triggers/${enc(name)}`, body)
-  deleteTrigger = (name: string): Promise<void> => this.send('DELETE', `/api/triggers/${enc(name)}`)
+  listTriggers = (): Promise<Trigger[]> => this.resources.listTriggers()
+  createTrigger = (body: TriggerCreate): Promise<Trigger> => this.resources.createTrigger(body)
+  patchTrigger = (name: string, body: TriggerPatch): Promise<Trigger> => this.resources.patchTrigger(name, body)
+  deleteTrigger = (name: string): Promise<void> => this.resources.deleteTrigger(name)
   runTrigger = (name: string): Promise<{ runID: string }> => this.send('POST', `/api/triggers/${enc(name)}/run`)
 
   listInbox = (): Promise<InboxItem[]> => this.list<InboxItem>('/api/inbox')

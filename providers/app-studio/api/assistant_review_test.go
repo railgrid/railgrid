@@ -87,11 +87,15 @@ func newAssistantReviewHTTPTest(t *testing.T) (*mux.Router, *store.MemoryStore, 
 	projectYAML := "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
-	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
+	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	if credential := projectLLMCredential(settings); credential != nil {
+		proxy.Add(secretGVR, credential)
+	}
 
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	engine := &initialProjectBootstrapCaptureEngine{requests: make(chan projectAssistantRunRequest, 1)}
 	server.assistantEngine = engine
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
@@ -104,7 +108,7 @@ func newAssistantReviewHTTPTest(t *testing.T) (*mux.Router, *store.MemoryStore, 
 func assistantReviewHTTPTestRequest(method, path, body string) *http.Request {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("Authorization", "Bearer "+"test-user-token")
 	request.Header.Set("X-Railgrid-User", "test-user")
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
@@ -159,6 +163,7 @@ func TestAssistantReviewRoutePersistsSeparateTerminalTurnAndReconcilesIdempotent
 
 	restarted := NewWithWorkspace(nil, messages, nil, "", false)
 	restarted.tenantWorkspaces = defaultTestWorkspaces.lookup
+	restarted.tenantActors = defaultTestActors.lookup
 	if err := restarted.reconcileProjectAssistantThreadTurn(context.Background(), scope, terminal); err != nil {
 		t.Fatal(err)
 	}

@@ -5,8 +5,7 @@
   "description": "Kuery provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle plus static assets the railgrid hub serves under /ui/providers/kuery/.",
   "type": "module",
   "scripts": {
-    "build": "vite build && npm run vendor-cytoscape && npm run vendor-codemirror",
-    "vendor-cytoscape": "node -e \"require('fs').copyFileSync('node_modules/cytoscape/dist/cytoscape.min.js','dist/cytoscape.min.js')\"",
+    "build": "vite build && npm run vendor-codemirror",
     "vendor-codemirror": "node vendor-codemirror.cjs",
     "dev": "vite",
     "test": "node --test --test-concurrency=1 *.test.mjs",
@@ -14,6 +13,7 @@
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "cytoscape": "^3.34.0",
     "lucide-vue-next": "^0.475.0",
     "vue": "^3.5.13"
   },
@@ -22,7 +22,6 @@
     "@types/cytoscape": "^3.21.9",
     "@vitejs/plugin-vue": "^5.2.1",
     "codemirror": "^5.65.16",
-    "cytoscape": "^3.34.0",
     "typescript": "^5.6.3",
     "vite": "^6.4.1",
     "vitest": "^3.2.7",

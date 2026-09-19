@@ -10,7 +10,6 @@ vi.mock('./api', () => ({
   isContextChangedError: vi.fn(() => false),
   setHostFetch: vi.fn(),
   setTenant: vi.fn(),
-  setToken: vi.fn(),
 }))
 
 function deferred<T>() {

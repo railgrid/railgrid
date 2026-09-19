@@ -889,6 +889,11 @@ func (s *Server) Run(ctx context.Context) error {
 				adminSub := router.PathPrefix("/api/admin").Subrouter()
 				adminSub.Use(admin.Middleware(adminResolver, adminChecker))
 				admin.NewHandler(adminSvc, userClient, providerRegistry).Register(adminSub)
+				// The fleet-wide provider-claims migration is the twin of the
+				// per-workspace Enable flow, so it lives with it in restapi and
+				// only borrows this subrouter's admin gate. See
+				// pkg/hub/restapi/admin_provider_claims.go.
+				apiHandler.RegisterAdmin(adminSub)
 				logger.Info("Admin routes registered at /api/admin/* (gated by --admin-users)")
 			}
 		}

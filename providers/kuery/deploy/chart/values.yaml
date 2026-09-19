@@ -1,9 +1,9 @@
 ## railgrid-kuery-provider values
-## Phase 1 skeleton: the provider serves a micro-frontend and a small
-## backend HTTP API, heartbeats the hub, and owns the SavedView APIExport.
-## Phase 2 adds the embedded kuery engine (edge informer sync into a local
-## store) — at which point this chart grows a PVC and the replica count
-## becomes fixed at 1 (SQLite store).
+## The provider serves a micro-frontend and a backend HTTP API, heartbeats
+## the hub, owns the SavedView APIExport, and runs the embedded kuery engine
+## (edge informer sync into a local store). With the default SQLite store the
+## chart mounts a PVC and pins the replica count to 1; with Postgres it
+## scales.
 
 # Container image. Build with: docker build -t IMAGE providers/kuery/
 image:
@@ -11,12 +11,18 @@ image:
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
-# Number of Deployment replicas. Phase 1 is stateless; Phase 2 introduces
-# the local store, which pins this to 1.
-# Safe to scale WITH store.driver=postgres: engagement is sharded across
-# replicas by per-edge Leases in the provider workspace, and queries/edge
-# listings are answered from the shared store on every replica. The template
-# refuses replicaCount > 1 with the default SQLite store.
+# Number of Deployment replicas. The local store pins this to 1 with the
+# default SQLite driver, and the template refuses replicaCount > 1 with it.
+#
+# Extra replicas with store.driver=postgres buy AVAILABILITY, not sync
+# throughput. Every replica serves queries, MCP and the portal from the shared
+# store and the shared Engagement records, so read capacity scales. The
+# controllers — edge engagement, the SavedView reconciler and the Engagement
+# reconciler — are singletons behind one Lease in the provider workspace, so
+# edge sync runs on the leader and a standby takes over within the lease
+# duration. (The per-edge Leases in engagement/claims.go still shard within a
+# term; they become useful again when the SDK grows a sharding primitive and
+# the sync half can run off-leader.)
 replicaCount: 1
 
 service:

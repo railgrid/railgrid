@@ -47,6 +47,8 @@ import type {
 import type { ProjectCreateReadiness } from './createReadiness'
 import type { PreviewBridgeSession } from './previewBridge'
 import { providerFetch, readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
+import { createKubeClient, type KubeResourceRef } from './portalkit/kube'
+import * as llmRegistry from './llmRegistry'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
 import {
   classifyProjectFileError,
@@ -117,6 +119,21 @@ function baseURL(ctx: RailgridContext | null): string {
   // org/workspace travel as X-Railgrid-Org / X-Railgrid-Workspace headers (see
   // request()); the hub resolves them to the workspace the provider acts on.
   return `${providerBase(ctx)}/api/projects`
+}
+
+// Project is a kcp CR on the workspace cluster, so a write to its spec is a
+// write to the API server — through the hub's kcp proxy, authorized against
+// the caller's workspace membership, validated by the CRD. The backend's
+// PATCH /api/projects/{p} facade re-implemented that with weaker validation
+// than the schema it was writing to, and is gone.
+const projectResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'projects' }
+
+function projectKubeClient(ctx: RailgridContext | null) {
+  const cluster = ctx?.tenant?.trim() ?? ''
+  if (!cluster) throw new Error('select an organization and workspace first')
+  // The host-owned transport injects Authorization; this module never handles
+  // the token. Same wiring the assistant resource pickers already use.
+  return createKubeClient({ fetch: providerFetch(ctx), cluster })
 }
 
 interface ProjectAPIRequestOptions {
@@ -1071,8 +1088,15 @@ export const api = {
     )
   },
 
+  // The model registry is Studio spec plus one Secret per model, both written
+  // with the kube client as the caller — see ./llmRegistry. These stay on the
+  // api object so every call site keeps one import; only where the data lives
+  // has changed.
+  //
+  // `configured` comes from the Studio reconciler's status.models[], not from
+  // a key the browser holds: the portal never reads credential material.
   async getLLMSettings(ctx: RailgridContext | null): Promise<ProjectLLMSettings> {
-    return request<ProjectLLMSettings>(ctx, 'GET', `${baseURL(ctx)}/llm-settings`)
+    return llmRegistry.getLLMSettings(ctx)
   },
 
   async discoverLLMModels(
@@ -1082,18 +1106,11 @@ export const api = {
     return request<ProjectLLMModelDiscovery>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/models/discover`, body)
   },
 
-  async patchLLMSettings(
-    ctx: RailgridContext | null,
-    body: { provider?: string; baseURL?: string; model?: string; apiKey?: string },
-  ): Promise<ProjectLLMSettings> {
-    return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings`, body)
-  },
-
   async createLLMModel(
     ctx: RailgridContext | null,
     body: { name: string; provider?: string; baseURL?: string; model: string; apiKey: string },
   ): Promise<ProjectLLMSettings> {
-    return request<ProjectLLMSettings>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/models`, body)
+    return llmRegistry.createLLMModel(ctx, body)
   },
 
   async testLLMConnection(
@@ -1111,15 +1128,15 @@ export const api = {
     modelID: string,
     body: { name?: string; provider?: string; baseURL?: string; model?: string; apiKey?: string },
   ): Promise<ProjectLLMSettings> {
-    return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings/models/${encodeURIComponent(modelID)}`, body)
+    return llmRegistry.patchLLMModel(ctx, modelID, body)
   },
 
   async deleteLLMModel(ctx: RailgridContext | null, modelID: string): Promise<ProjectLLMSettings> {
-    return request<ProjectLLMSettings>(ctx, 'DELETE', `${baseURL(ctx)}/llm-settings/models/${encodeURIComponent(modelID)}`)
+    return llmRegistry.deleteLLMModel(ctx, modelID)
   },
 
   async setDefaultLLMModel(ctx: RailgridContext | null, modelID: string): Promise<ProjectLLMSettings> {
-    return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings/default`, { modelID })
+    return llmRegistry.setDefaultLLMModel(ctx, modelID)
   },
 
   async getProject(ctx: RailgridContext | null, name: string): Promise<Project> {
@@ -1182,16 +1199,29 @@ export const api = {
     )
   },
 
-  async patchProject(
+  // updateProjectDetails writes spec.displayName / spec.description straight
+  // to the Project CR with a merge patch, then re-reads the project view.
+  //
+  // The re-read is not a round-trip we could skip: the view is a join the CR
+  // does not contain — live infrastructure instance status, the code
+  // provider's repository and commit ledger, the workspace source revision,
+  // the thumbnail. The CR is the authority for what we just wrote; the view
+  // is the authority for everything else about the project.
+  //
+  // Validation lives on the CRD: displayName is Required/MinLength=1/
+  // MaxLength=128, so an empty name is rejected by the API server rather than
+  // by a hand-written check. Sharing is NOT written here — preview visibility
+  // is POST /preview and publishing is POST/DELETE /publishing, both of which
+  // do more than set a field.
+  async updateProjectDetails(
     ctx: RailgridContext | null,
     name: string,
-    body: {
-      displayName?: string
-      description?: string
-      sharing?: Project['sharing']
-    },
+    details: { displayName: string; description?: string },
   ): Promise<Project> {
-    return request<Project>(ctx, 'PATCH', `${baseURL(ctx)}/${encodeURIComponent(name)}`, body)
+    await projectKubeClient(ctx).patch(projectResource, name, {
+      spec: { displayName: details.displayName, description: details.description ?? '' },
+    }, { type: 'merge' })
+    return api.getProject(ctx, name)
   },
 
   // deleteRepository opts in to deleting the Git repository App Studio

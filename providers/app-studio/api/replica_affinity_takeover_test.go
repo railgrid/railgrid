@@ -134,7 +134,7 @@ func TestRelinquishProjectClaimsHandsProjectsToSuccessor(t *testing.T) {
 
 	old.RelinquishProjectClaims(context.Background())
 
-	successor := &Server{tenantWorkspaces: old.tenantWorkspaces, store: msgStore}
+	successor := &Server{tenantWorkspaces: old.tenantWorkspaces, tenantActors: defaultTestActors.lookup, store: msgStore}
 	successor.SetReplicaRouting("replica-new", "10.0.0.2:8091", "internal-token")
 	local := 0
 	h := successor.ReplicaAffinity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { local++ }))

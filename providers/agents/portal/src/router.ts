@@ -161,6 +161,21 @@ export function syncHash(route: Route): void {
   writeHash(route, 'replace')
 }
 
+// routeForSubPath maps a host sub-nav selection onto a top-level menu.
+//
+// CatalogEntry.spec.ui.children declares the sidebar entries indented under
+// "Agents"; the portal composes each as /providers/agents/<builtinRoute> and
+// pushes the trailing segment back as railgridContext.subPath. This element
+// routes on its own hash, so the two have to be reconciled somewhere — here.
+// Only a segment that names a real top-level menu is honoured: an unknown one
+// means the host and this bundle disagree about what exists, and following it
+// would land the user on a blank page instead of leaving them where they are.
+export function routeForSubPath(subPath: string | undefined | null): MenuKey | null {
+  const segment = (subPath || '').replace(/^\/+|\/+$/g, '').split('/')[0]
+  if (!segment) return null
+  return MENUS.includes(segment as MenuKey) ? (segment as MenuKey) : null
+}
+
 // activeMenu is which nav tab lights up for a route (detail pages keep their
 // parent tab highlighted).
 export function activeMenu(route: Route): MenuKey {

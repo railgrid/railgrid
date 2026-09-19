@@ -30,11 +30,10 @@ import (
 func TestListHandlerIncludesActionDiscoveryMetadataWithoutTransportURLs(t *testing.T) {
 	reg := NewRegistry()
 	reg.Upsert(Provider{
-		Name:                "actions",
-		DisplayName:         "Actions",
-		EndpointsValid:      true,
-		BackendURL:          mustProviderURL(t, "https://provider.example/backend"),
-		VirtualWorkspaceURL: mustProviderURL(t, "https://provider.example/vw"),
+		Name:           "actions",
+		DisplayName:    "Actions",
+		EndpointsValid: true,
+		BackendURL:     mustProviderURL(t, "https://provider.example/backend"),
 		Actions: []ProviderAction{{
 			ID:          "mutate/v1",
 			Name:        "mutate",
@@ -116,9 +115,6 @@ func TestListHandlerIncludesActionDiscoveryMetadataWithoutTransportURLs(t *testi
 	}
 	if _, ok := item["backendURL"]; ok {
 		t.Error("provider discovery response exposed backendURL")
-	}
-	if _, ok := item["virtualWorkspaceURL"]; ok {
-		t.Error("provider discovery response exposed virtualWorkspaceURL")
 	}
 	skills, ok := item["assistantSkills"].([]any)
 	if !ok || len(skills) != 1 {

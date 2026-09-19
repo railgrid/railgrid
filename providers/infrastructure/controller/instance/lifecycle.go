@@ -49,9 +49,17 @@ func lifecycleDue(now time.Time, created metav1.Time, development *infrav1alpha1
 	return "", false
 }
 
-func lifecycleRequeueAfter(now time.Time, created metav1.Time, development *infrav1alpha1.TemplateDevelopment, runtimeObj *unstructured.Unstructured, fallback time.Duration) time.Duration {
+// lifecycleRequeueAfter returns how long until this Instance's next computed
+// lifecycle deadline — the earlier of its max lifetime and its idle timeout,
+// both derived from the Template's development block and the Instance's own
+// timestamps. This is the third sanctioned RequeueAfter in
+// docs/provider-connectivity-contract.md § "Pillar 1 carve-outs" ("waking at a
+// computed lifecycle deadline — a specific, derived time the object's own
+// spec/status implies"); it is deliberately NOT a fallback resync, so an
+// Instance with no deadline returns 0 and is next reconciled by an event.
+func lifecycleRequeueAfter(now time.Time, created metav1.Time, development *infrav1alpha1.TemplateDevelopment, runtimeObj *unstructured.Unstructured) time.Duration {
 	if development == nil || created.IsZero() {
-		return fallback
+		return 0
 	}
 	deadline := time.Time{}
 	if development.MaxLifetimeSeconds > 0 {
@@ -71,13 +79,18 @@ func lifecycleRequeueAfter(now time.Time, created metav1.Time, development *infr
 			deadline = idle
 		}
 	}
-	if deadline.IsZero() || !deadline.After(now) {
+	if deadline.IsZero() {
+		// The template declares no lifetime or idle limit for this Instance.
+		return 0
+	}
+	if !deadline.After(now) {
+		// The deadline has already passed; come straight back to expire it.
 		return time.Second
 	}
-	if wait := time.Until(deadline); wait > 0 && wait < fallback {
+	if wait := time.Until(deadline); wait > 0 {
 		return wait
 	}
-	return fallback
+	return time.Second
 }
 
 func runtimeReady(obj *unstructured.Unstructured) bool {

@@ -1,12 +1,15 @@
 nameOverride: ""
 fullnameOverride: ""
 
-# App Studio currently requires one provider replica. Each workspace has one
-# shared, single-session Playwright Browser, while the provider's browser
-# session ownership and serialization are process-local. Multiple replicas
-# could therefore invalidate or concurrently drive the same browser. The chart
-# rejects replicaCount > 1 and uses Recreate upgrades to prevent transient pod
-# overlap. See docs/app-studio-replica-awareness.md.
+# The controllers (Project / Session / Studio) are leader-elected on a Lease in
+# the provider workspace, so extra replicas never double-write a CR. Everything
+# that touches a project's workspace tree rides project affinity and peer
+# forwarding over internalPort instead. Two things are still serialized only
+# within one process and so still want one replica: the workspace's shared
+# single-session Playwright Browser (a default, not a guard — the chart renders
+# more), and coding-sandbox claims when assistant.runSandbox.mode=force (that
+# combination the chart still refuses, because those claims have no distributed
+# CAS). See docs/app-studio-replica-awareness.md.
 replicaCount: 1
 
 # internalPort carries peer-forwarded project requests between replicas.

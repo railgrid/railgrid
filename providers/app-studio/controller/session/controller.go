@@ -34,7 +34,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,11 +50,6 @@ import (
 	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
 	"github.com/railgrid/provider-app-studio/store"
 )
-
-// resyncInterval is the safety net under the signals: a transition whose
-// signal was published before this controller subscribed (or lost with the
-// process) is mirrored within this long.
-const resyncInterval = 10 * time.Minute
 
 // Reconciler projects store threads into Session CRs and purges the store
 // when a Session is deleted.
@@ -133,7 +127,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			return ctrl.Result{}, err
 		}
 	}
-	return ctrl.Result{RequeueAfter: resyncInterval}, nil
+	return ctrl.Result{}, nil
 }
 
 // projectStatus folds the store's thread + active turn into a status.

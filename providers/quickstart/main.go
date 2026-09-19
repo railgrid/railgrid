@@ -6,86 +6,49 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// quickstart is a minimal railgrid provider used to prove the platform's
-// extension surface end-to-end. It serves three groups of routes on the
-// same port:
+// quickstart is the reference railgrid provider: the smallest thing that
+// demonstrates all three pillars of the provider contract, written so it can be
+// copied. See README.md for the tour and docs/providers.md for the contract.
 //
-//   - /, /main.js, /icon.svg, /assets/* — the portal-side micro-frontend
-//     built by Vite from portal/src/* and embedded via portal/dist (see
-//     assets.go and portal/README.md). Mounted in the portal under
-//     /ui/providers/quickstart/.
-//   - /healthz, /api/hello — the provider's "backend HTTP API". Mounted
-//     via /services/providers/quickstart/.
-//
-// In production these two surfaces are split only by URL — a single
-// Service exposes the port and the CatalogEntry routes the same URL to
-// both the UI proxy and the backend proxy. For local dev, the binary
-// listens on PORT and the hub proxies in front.
+//	Pillar 1  One kcp API (Greeting, apis/v1alpha1), applied by this binary's
+//	          `init`, reconciled by one multicluster reconciler running under
+//	          leader election (controller_manager.go).
+//	Pillar 2  One data-plane verb,
+//	          POST /dataplane/clusters/{id}/greetings/{name}/greet, gated as the
+//	          caller through provider-sdk/dataplane (server/greet.go). Plus
+//	          /healthz and /readyz. Nothing else — no /api/*.
+//	Pillar 3  One custom element, <railgrid-provider-quickstart>, built by Vite
+//	          from portal/ and embedded here (assets.go).
 package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/vwhealth"
+
+	quickstartv1alpha1 "github.com/railgrid/provider-quickstart/apis/v1alpha1"
+	"github.com/railgrid/provider-quickstart/server"
 )
 
-type helloResponse struct {
-	Message     string    `json:"message"`
-	Provider    string    `json:"provider"`
-	ServedAt    time.Time `json:"servedAt"`
-	UserHeader  string    `json:"userHeader,omitempty"`
-	TokenLength int       `json:"tokenLength,omitempty"`
-
-	// TenantHeader and ClusterHeader complete the identity picture. Both carry
-	// the tenant workspace's kcp logical-cluster ID (the hub identifies a
-	// tenant by that ID, never by a workspace path). Together with UserHeader
-	// they are what a self-hosted copy of this provider proves when reached
-	// over an edge tunnel: the hub's injected identity survived the revdial
-	// hop rather than being dropped or rewritten somewhere in it
-	// (docs/byo-provider-edge-transport.md E-6).
-	TenantHeader  string `json:"tenantHeader,omitempty"`
-	ClusterHeader string `json:"clusterHeader,omitempty"`
-
-	// TokenFingerprint is the first 12 hex characters of SHA-256 over the
-	// Authorization header. TokenLength alone says a credential arrived; it
-	// cannot say WHOSE, and telling those apart is the whole point on the edge
-	// path — a Service configured auth=secret would substitute its own token
-	// and a length check could easily still pass. A caller that knows the token
-	// it sent can recompute this and assert the value reached the far end
-	// unchanged (E-5). Never the token itself: this is echoed over the same
-	// hop it is describing.
-	TokenFingerprint string `json:"tokenFingerprint,omitempty"`
-}
-
-// tokenFingerprint hashes an Authorization header value to a short, safely
-// echoable identifier. Empty in, empty out — an absent credential must not
-// produce a fingerprint that looks like a present one.
-func tokenFingerprint(authorization string) string {
-	if authorization == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(authorization))
-	return hex.EncodeToString(sum[:])[:12]
-}
+// heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
+const heartbeatVersion = "0.1.0"
 
 // Subcommands:
 //
 //	quickstart-provider init   — one-shot: apply APIResourceSchemas, APIExport,
-//	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    RAILGRID_PROVIDER_KUBECONFIG. See init_cmd.go.
+//	    APIExportEndpointSlice and the bind grant into the provider workspace
+//	    using RAILGRID_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	quickstart-provider serve  — runtime (default).
 func main() {
 	if len(os.Args) > 1 {
@@ -114,105 +77,59 @@ func runServe() {
 		port = "8081"
 	}
 
-	mux := http.NewServeMux()
-
-	// Health: gates Ready=true in the hub when wired via spec.backend.healthPath.
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-
-	// Sample backend API. Echoes which user header arrived (proves the hub
-	// forwarded Authorization) and how long the token was (without echoing
-	// the token itself).
-	mux.HandleFunc("/api/hello", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		resp := helloResponse{
-			Message:       "hello from the quickstart provider",
-			Provider:      "quickstart",
-			ServedAt:      time.Now().UTC(),
-			UserHeader:    r.Header.Get("X-Railgrid-User"),
-			TenantHeader:  r.Header.Get("X-Railgrid-Tenant"),
-			ClusterHeader: r.Header.Get("X-Railgrid-Cluster"),
-		}
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			resp.TokenLength = len(auth)
-			resp.TokenFingerprint = tokenFingerprint(auth)
-		}
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-
-	// Streaming probe. Writes numbered chunks with an explicit flush between
-	// each, so a caller can tell a streamed response from a buffered one by
-	// WHEN bytes arrive rather than only what they contain.
+	// The provider's own kcp credential, mounted by the chart from the Secret
+	// the hub minted. It is used for exactly two things: watching tenant
+	// workspaces through the APIExport virtual workspace (the controller
+	// manager), and lending its host + CA — never its bearer — to the
+	// per-request caller clients the data-plane verb acts through.
 	//
-	// This exists for the edge path. A self-hosted provider is reached through
-	// the agent's reverse tunnel, and a reverse proxy anywhere along it that
-	// buffers turns "tail my logs" into "hang until the process exits" — a
-	// failure that looks like a hung backend and is invisible to any test that
-	// only reads the body to EOF (docs/byo-provider-edge-transport.md E-7).
-	mux.HandleFunc("/api/stream", func(w http.ResponseWriter, r *http.Request) {
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-			return
-		}
-		chunks := 3
-		if n := r.URL.Query().Get("chunks"); n != "" {
-			if parsed, err := strconv.Atoi(n); err == nil && parsed > 0 && parsed <= 100 {
-				chunks = parsed
-			}
-		}
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		for i := 1; i <= chunks; i++ {
-			fmt.Fprintf(w, "chunk %d\n", i)
-			flusher.Flush()
-			select {
-			case <-r.Context().Done():
-				return
-			case <-time.After(150 * time.Millisecond):
-			}
-		}
-	})
+	// `init` is the only admin-credentialed step; serve never holds one.
+	providerConfig, configErr := loadProviderConfig()
+	if configErr != nil {
+		log.Printf("provider kubeconfig unavailable (%v); controllers and the greet verb are disabled", configErr)
+	}
 
-	// Static portal assets (main.js, icon.svg, /assets/*) come from the
-	// embedded Vite build output. The "/" fallback serves index.html so
-	// direct browser visits get the standalone debug page.
+	// Readiness is the provider's honest answer to "is this working": the
+	// virtual workspace is reachable AND, while this replica leads, tenant
+	// workspaces are actually being watched. It gates /readyz and the hub
+	// heartbeat — a provider must not report alive over dead watches.
+	vwState := &vwhealth.Readiness{}
+
+	// Credentials dropped: what survives is which server to talk to and how to
+	// verify it. Every data-plane request then authenticates with the CALLER's
+	// bearer, so the provider can never act as itself on that path by accident.
+	var callers dataplane.CallerFactory
+	if providerConfig != nil {
+		factory, err := dataplane.NewCallerFactory(providerConfig)
+		if err != nil {
+			log.Fatalf("data-plane caller factory: %v", err)
+		}
+		callers = factory
+	}
+
 	fileServer, distFS, err := portalHandler()
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// GET for full responses; HEAD for cache/preflight checks the
-		// browser may issue when loading <img> or <script> assets.
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		// /api/hello and /healthz are registered explicitly and won't get
-		// here. For anything else: try the embedded FS first (catches
-		// /main.js, /icon.svg, /assets/foo-abc.js). If that misses, serve
-		// the index.html fallback so a browser visit to e.g. /anything
-		// shows the debug page rather than 404.
-		clean := strings.TrimPrefix(r.URL.Path, "/")
-		if clean != "" {
-			if servePortalAsset(w, r, distFS, clean) {
-				return
-			}
-		}
-		// Index fallback. Reuse the http.FileServer so caching headers and
-		// Last-Modified are handled correctly. Clone the request so we
-		// can override URL.Path to "/" without mutating the caller's r.
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = "/"
-		fileServer.ServeHTTP(w, r2)
-	})
 
 	srv := &http.Server{
-		Addr:              ":" + port,
-		Handler:           logMiddleware(mux),
+		Addr: ":" + port,
+		Handler: server.New(server.Deps{
+			Callers:          callers,
+			Greetings:        quickstartv1alpha1.GreetingsResource,
+			Readiness:        vwhealth.Handler(vwState),
+			PortalFileServer: fileServer,
+			PortalFS:         distFS,
+			ServePortalAsset: servePortalAsset,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// Bind synchronously so "listening" is a fact before anything downstream
+	// is told the provider is up.
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		log.Fatalf("listen %s: %v", srv.Addr, err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -220,20 +137,33 @@ func runServe() {
 
 	go func() {
 		log.Printf("quickstart provider listening on :%s", port)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server: %v", err)
 		}
 	}()
 
-	// Heartbeat goroutine — POSTs to the hub every 30s so the catalog
-	// controller's TTL doesn't flip us to NotReady. Configured from
-	// RAILGRID_HUB_URL / RAILGRID_PROVIDER_NAME / RAILGRID_HUB_INSECURE and the
-	// provider SA token (see provider-sdk/hubclient); an empty RAILGRID_HUB_URL
-	// disables it (useful for tests / dry-run).
+	// Probe the APIExport virtual workspace on a loop. A nil config makes this
+	// a no-op, so a portal-only dev run still serves.
+	go vwhealth.Watch(ctx, providerConfig, endpointSliceName, vwState, vwhealth.DefaultInterval)
+
+	if err := startControllerManager(ctx, providerConfig, vwState); err != nil {
+		if errors.Is(err, errControllerDisabled) {
+			log.Printf("controller manager: disabled (no kubeconfig); set RAILGRID_PROVIDER_KUBECONFIG to enable")
+		} else {
+			log.Printf("controller manager: NOT started: %v", err)
+		}
+	}
+
+	// Heartbeat — POSTs to the hub so the catalog controller's TTL does not
+	// flip this provider to NotReady. The hub records any beat it receives as
+	// liveness and ignores the body, so CanSend is what makes the signal mean
+	// anything: hold the beat while readiness says the watches are dead, and
+	// the TTL turns the entry red on its own.
 	hb, err := hubclient.ConfigFromEnv("quickstart", heartbeatVersion)
 	if err != nil {
 		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}
+	hb.CanSend = func() bool { return vwState.Check() == nil }
 	go hubclient.RunHeartbeat(ctx, hb)
 
 	<-ctx.Done()
@@ -243,16 +173,4 @@ func runServe() {
 	if err := srv.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
-}
-
-// heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
-const heartbeatVersion = "0.1.0"
-
-func logMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
-		_ = fmt.Sprintf
-	})
 }

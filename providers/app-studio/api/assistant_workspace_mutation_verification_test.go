@@ -76,6 +76,7 @@ func TestProjectAssistantNoOpMutationDoesNotRequireDevelopmentSync(t *testing.T)
 	}
 	server := NewWithWorkspace(nil, nil, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	if server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{event}) {
 		t.Fatal("no-op mutation requested development/preview synchronization")
 	}

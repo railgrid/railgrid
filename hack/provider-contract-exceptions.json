@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "exceptions": [
+    {
+      "provider": "agents",
+      "check": "adhoc-rest",
+      "reason": "the whole agents surface is a flat /api/* REST API the hub cannot authorize per resource; it moves onto typed kinds and a cluster-scoped data plane in provider-contract-remediation \u00a78."
+    },
+    {
+      "provider": "app-studio",
+      "check": "adhoc-rest",
+      "reason": "app-studio serves its projects, threads and publishing flows as /api/* routes; they move onto typed kinds and the shared data-plane kit in provider-contract-remediation \u00a79."
+    }
+  ]
+}

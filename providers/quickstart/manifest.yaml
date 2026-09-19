@@ -42,7 +42,6 @@
 #     url                      Address proxied at /services/providers/<name>/*
 #                              (NOT for CRD traffic — CRs flow through kcp).
 #     healthPath               GET path that gates the BackendHealthy status.
-#   virtualWorkspace:        Advanced opt-in for custom non-CRD verbs (Phase 5).
 #   apiExport:               The provider's kcp APIExport.
 #     name                     Fully-qualified APIExport name tenants APIBind to.
 #     permissionClaims[]       Access the provider needs in tenant workspaces:
@@ -67,22 +66,23 @@ spec:
     url: "http://localhost:8081"
     indexPath: "/"
   backend:
+    # healthPath gates the hub's BackendHealthy. It points at /readyz, not
+    # /healthz: the hub should call this provider unhealthy when its watches
+    # are dead, not only when the process is gone.
     url: "http://localhost:8081"
-    healthPath: "/healthz"
-  # Provider-owned APIExport. The hub catalog controller materializes the
-  # sub-workspace root:railgrid:providers:quickstart, applies the inline
-  # APIResourceSchema(s), and creates an APIExport that tenants can bind
-  # to. Phase 3 will wire the tenant-side Enable flow.
+    healthPath: "/readyz"
+  # Provider-owned APIExport. The provider's own `init` applies the schemas,
+  # creates this APIExport and its APIExportEndpointSlice, and grants tenants
+  # the right to bind it; the hub's Enable flow then creates the APIBinding in
+  # the tenant's workspace after checking membership.
+  #
+  # No permissionClaims: this provider reconciles only the Greetings its own
+  # APIExport serves, so it needs no access in tenant workspaces beyond that.
+  # A claim added here must be added to init_cmd.go and
+  # deploy/chart/templates/catalogentry.yaml in the same change
+  # (hack/verify-provider-contract.mjs checks the three copies agree).
   apiExport:
     name: "quickstart.providers.railgrid.ai"
-    # Sample permission claim so the portal's Enable dialog has something to
-    # render. The quickstart provider does not actually read configmaps —
-    # this is purely for demonstration. Marked tenantScoped so the dialog
-    # pre-checks it as safe-to-accept.
-    permissionClaims:
-      - resource: configmaps
-        verbs: [get, list, watch]
-        tenantScoped: true
   # Self-hosting: lets an organization run its own copy of this provider in its
   # own cluster instead of using the platform's. The hub renders per-org install
   # instructions from these coordinates (see docs/byo-providers.md), so the

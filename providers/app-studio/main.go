@@ -48,6 +48,7 @@ import (
 	"github.com/railgrid/provider-app-studio/tenant"
 	"github.com/railgrid/provider-app-studio/workspace"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
@@ -246,8 +247,28 @@ func runServe() {
 	// subresources on the template instance, reached through the hub as the
 	// calling user. See docs/app-studio-template-sandboxes.md.
 
-	controllerHealth := newControllerHealth(controllerModeFromEnv() == controllerModeRequired)
-	handler, err := newHandler(apiServer, controllerHealth)
+	// Readiness is reachability of the APIExport virtual workspace, plus —
+	// while this replica holds the controller lease — whether the multicluster
+	// provider is actually watching tenant workspaces (see
+	// provider-sdk/vwhealth). A replica that is not leading has nothing
+	// attached and stays ready on the probe alone: its REST API, assistant
+	// supervisor and replica-affinity forwarder are serving regardless.
+	mode := controllerModeFromEnv()
+	kcpConfig, kcpErr := loadProviderConfig()
+	if kcpErr != nil {
+		kcpConfig = nil
+	}
+	vwState := &vwhealth.Readiness{}
+	if mode == controllerModeRequired && kcpConfig == nil {
+		// Fail closed: a pod told to run controllers that has no credential to
+		// run them with must not advertise readiness. Nothing else can notice
+		// this — the probe needs a config to probe with.
+		err := fmt.Errorf("controller mode is %q but no provider kubeconfig resolved: %w", mode, kcpErr)
+		log.Printf("%v", err)
+		vwState.Attach("controllers", checkerFunc(func() error { return err }))
+	}
+
+	handler, err := newHandler(apiServer, vwhealth.Handler(vwState))
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
@@ -264,8 +285,8 @@ func runServe() {
 		replicaAddr = podIP + ":" + internalPort
 	}
 	internalToken := ""
-	if cfg, cfgErr := loadProviderConfig(); cfgErr == nil && cfg != nil {
-		internalToken = cfg.BearerToken
+	if kcpConfig != nil {
+		internalToken = kcpConfig.BearerToken
 	}
 	if replicaAddr != "" && internalToken == "" {
 		log.Printf("replica forwarding disabled (provider credential has no bearer token); serving project requests locally")
@@ -310,26 +331,28 @@ func runServe() {
 		}()
 	}
 
-	// Beats are gated on controller readiness (heartbeatCanSend): the hub
-	// records any received beat as liveness, so a required controller that
-	// is starting, failed, or stopped must go quiet and let the TTL mark the
-	// provider stale.
+	// The hub records any received beat as liveness and never inspects its
+	// status, so hold beats while readiness says otherwise: the TTL then flips
+	// the catalog entry to NotReady instead of it staying green over a
+	// provider that cannot reach the tenant workspaces it serves.
+	go vwhealth.Watch(ctx, kcpConfig, endpointSliceName, vwState, vwhealth.DefaultInterval)
+
 	hb, err := hubclient.ConfigFromEnv("app-studio", heartbeatVersion)
 	if err != nil {
 		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}
-	hb.CanSend = func() bool { return heartbeatCanSend(controllerHealth) }
+	hb.CanSend = func() bool { return vwState.Check() == nil }
 	go hubclient.RunHeartbeat(ctx, hb)
 
-	// Deterministic lifecycle: the Project reconciler converges instances
-	// across every tenant workspace. Opt-in via RAILGRID_PROVIDER_KUBECONFIG.
-	//
-	// Started in a retry loop because ordering is not guaranteed: the
-	// provider frequently comes up before `init` has created its workspace,
-	// APIExport, and endpoint slice (fresh cluster, first deploy). The loop
-	// owns manager.Start synchronously, so setup failures and post-start exits
-	// both transition readiness and re-enter recovery.
-	go func() {
+	// Deterministic lifecycle: the Project, Session and Studio reconcilers
+	// converge state across every tenant workspace, behind a Lease in the
+	// provider workspace so only one replica writes. Opt-in via
+	// RAILGRID_PROVIDER_KUBECONFIG; the campaign itself retries forever, which
+	// is what covers a provider that comes up before `init` has created its
+	// workspace, APIExport and endpoint slice.
+	if mode == controllerModeRESTOnly {
+		log.Printf("controller manager disabled: explicit REST-only mode")
+	} else {
 		deps := controllerDeps{
 			Actions:     apiServer.ActionsRuntimeConfig(),
 			Workspace:   workspaces,
@@ -344,11 +367,10 @@ func runServe() {
 			SessionSignals: apiServer.SessionSignals(),
 			ProjectSignals: apiServer.ProjectSignals(),
 		}
-		start := func(startCtx context.Context, config *rest.Config, startDeps controllerDeps) error {
-			return startControllerManager(startCtx, config, startDeps, controllerHealth)
+		if err := startControllerManager(ctx, kcpConfig, deps, vwState); err != nil {
+			log.Printf("controller manager: NOT started: %v", err)
 		}
-		runControllerManager(ctx, controllerHealth, loadProviderConfig, start, deps, controllerRetryInterval)
-	}()
+	}
 
 	<-ctx.Done()
 	log.Printf("shutting down")
@@ -367,36 +389,18 @@ func runServe() {
 
 // newHandler builds the combined backend-API + portal handler. apiServer may be
 // nil (the portal still serves), which keeps the asset tests independent of the
-// kube/store wiring.
-func newHandler(apiServer *api.Server, healthStates ...*controllerHealth) (http.Handler, error) {
+// kube/store wiring. readiness may be nil, which serves /readyz as always ready.
+func newHandler(apiServer *api.Server, readiness http.Handler) (http.Handler, error) {
 	r := mux.NewRouter()
-	health := (*controllerHealth)(nil)
-	if len(healthStates) > 0 {
-		health = healthStates[0]
-	}
 
 	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
-	r.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		snapshot := health.snapshot()
-		if !health.ready() {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"status":     "not_ready",
-				"controller": string(snapshot.State),
-				"error":      snapshot.Error,
-			})
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"status":     "ready",
-			"controller": string(snapshot.State),
-		})
-	})
+	if readiness == nil {
+		readiness = vwhealth.Handler(&vwhealth.Readiness{})
+	}
+	r.Handle("/readyz", readiness).Methods(http.MethodGet)
 
 	if apiServer != nil {
 		apiServer.Register(r)

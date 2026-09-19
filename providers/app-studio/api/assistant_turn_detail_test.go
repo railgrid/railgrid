@@ -147,7 +147,7 @@ func TestGetProjectAssistantThreadTurnEnforcesThreadOwnership(t *testing.T) {
 
 func assistantTurnDetailHTTPTestRequest(method, path, user string) *http.Request {
 	request := httptest.NewRequest(method, path, nil)
-	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("Authorization", "Bearer "+user+"-token")
 	request.Header.Set("X-Railgrid-User", user)
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
@@ -167,6 +167,7 @@ func newAssistantTurnDetailServer(messages store.Store) *Server {
 	dynamicClient := dynamicfake.NewSimpleDynamicClient(scheme, project)
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.projectClientFor = func(identity) (*asclient.Client, error) {
 		return asclient.NewFromDynamic(dynamicClient), nil
 	}

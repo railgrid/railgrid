@@ -12,55 +12,41 @@ package mcpserver
 
 import (
 	"net/http"
-	"os"
 	"strings"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // identity is what each tool handler closes over so it can act on the caller's
-// behalf. tenant/clusterID/user come from the headers the hub backend proxy
-// injects after auth; token is the caller's own bearer token. Every kcp action
-// runs as this token — there is no provider-wide identity.
+// behalf. token is the caller's own bearer — every kcp action runs as it, and
+// there is no provider-wide identity and no query-string fallback, so no dev
+// bypass can ship in a release binary or leave a token in an access log.
 //
-// clusterID (X-Railgrid-Cluster) is the workspace's kcp logical-cluster ID. kcp
+// clusterID (X-Railgrid-Cluster) is the workspace's kcp logical-cluster ID,
+// injected by the hub backend proxy after it authenticates the request. kcp
 // MUST be addressed by ID (/clusters/<id>), never by a workspace path: the hub
 // proxy's membership gate rejects path-form /clusters/<root:...> with a 403.
-// tenant (X-Railgrid-Tenant) is the hub's tenant identity for the request — the
-// same cluster ID — kept as an opaque key for non-addressing uses (e.g. the
-// transient commit-bundle staging scope).
+// It is also the scope key for the transient commit-bundle staging store, the
+// same key the RepositoryCommit controller reconciles under (req.ClusterName).
+// user (X-Railgrid-User) is for labels and logs only; it is never a trust root.
 type identity struct {
-	tenant    string
 	clusterID string
 	user      string
 	token     string
 }
 
 func identityFromRequest(r *http.Request) identity {
-	id := identity{
-		tenant:    r.Header.Get("X-Railgrid-Tenant"),
-		clusterID: r.Header.Get("X-Railgrid-Cluster"),
-		user:      r.Header.Get("X-Railgrid-User"),
+	return identity{
+		clusterID: strings.TrimSpace(r.Header.Get(dataplane.HeaderCluster)),
+		user:      strings.TrimSpace(r.Header.Get(dataplane.HeaderUser)),
 		token:     bearerToken(r),
 	}
-	if os.Getenv("RAILGRID_DEV_ALLOW_TENANT_QUERY") == "true" {
-		if id.tenant == "" {
-			id.tenant = r.URL.Query().Get("tenant")
-		}
-		if id.clusterID == "" {
-			id.clusterID = r.URL.Query().Get("cluster")
-		}
-		if id.user == "" {
-			id.user = r.URL.Query().Get("user")
-		}
-		if id.token == "" {
-			id.token = r.URL.Query().Get("token")
-		}
-	}
-	return id
 }
 
 func bearerToken(r *http.Request) string {
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
+	token, _, _, err := dataplane.Identity(r)
+	if err != nil {
+		return ""
 	}
-	return ""
+	return token
 }

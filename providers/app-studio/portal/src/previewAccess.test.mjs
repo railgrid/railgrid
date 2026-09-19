@@ -48,8 +48,13 @@ test('persists Project preview intent and keeps the setting pending until observ
 
   assert.match(changeAccess, /developmentPreviewAccessConverged\.value = false/)
   assert.match(changeAccess, /developmentPreviewReadinessMessage\.value = 'Updating preview access…'/)
-  assert.match(changeAccess, /api\.patchProject[\s\S]*preview: \{ mode: requested \}/)
-  assert.match(changeAccess, /publishing: project\.sharing\?\.publishing/)
+  // Preview visibility goes through the verb, not a spec.sharing write: POST
+  // /preview also reconciles the app-access grants behind the policy, which a
+  // bare field write would leave stale. The view is re-read afterwards so the
+  // selected project carries the new policy.
+  assert.match(changeAccess, /api\.setPreviewAccess\(props\.ctx, project\.name, requested\)/)
+  assert.doesNotMatch(changeAccess, /api\.patchProject/)
+  assert.match(changeAccess, /await api\.getProject\(props\.ctx, project\.name\)/)
   assert.match(changeAccess, /authorizeDevelopmentPreview\(\{ force: true \}\)/)
   assert.match(app, /developmentPreviewAccessConverged\.value = authorization\.accessConverged/)
 })
