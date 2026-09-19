@@ -116,62 +116,114 @@ func boundProject() *aiv1alpha1.Project {
 	}
 }
 
-func ruleFor(rules []rbacv1.PolicyRule, group, resource string) (rbacv1.PolicyRule, bool) {
+// ruleFor finds the rule on (group, resource) with the given name scoping:
+// named=false is the unnamed collection half of a composition, named=true the
+// object half. Both exist on the same coordinate, and confusing them is the
+// whole failure mode this file guards.
+func ruleFor(rules []rbacv1.PolicyRule, group, resource string, named bool) (rbacv1.PolicyRule, bool) {
 	for _, rule := range rules {
-		if len(rule.APIGroups) == 1 && rule.APIGroups[0] == group &&
-			len(rule.Resources) == 1 && rule.Resources[0] == resource {
-			return rule, true
+		if len(rule.APIGroups) != 1 || rule.APIGroups[0] != group {
+			continue
 		}
+		if len(rule.Resources) != 1 || rule.Resources[0] != resource {
+			continue
+		}
+		if (len(rule.ResourceNames) > 0) != named {
+			continue
+		}
+		return rule, true
 	}
 	return rbacv1.PolicyRule{}, false
 }
 
+func verbs(rule rbacv1.PolicyRule) string { return strings.Join(rule.Verbs, ",") }
+
+func namesOf(rule rbacv1.PolicyRule) string { return strings.Join(rule.ResourceNames, ",") }
+
 // The rules are the contract with the hub's policy: anything outside the
 // admitted shapes refuses the WHOLE request, so each one is pinned here.
-func TestProjectIdentityRulesAreNameScopedAndReadOnlyOnForeignGroups(t *testing.T) {
+//
+// The two shapes a composition takes are the point. Kubernetes RBAC ignores
+// resourceNames on a collection request, so `create`, `list` and `watch` can
+// only ever be unnamed — bounded by the declared (group, resource) instead —
+// while every object verb is name-scoped to what this project is bound to.
+func TestProjectIdentityRulesCarryTheDeclaredComposition(t *testing.T) {
 	rules := projectIdentityRules(boundProject())
 
-	// Nothing on this provider's own group. A project acting as itself does
-	// not write Projects, and the reconciler that does holds the provider's
-	// own credential over the APIExport virtual workspace instead.
-	if rule, ok := ruleFor(rules, "ai.railgrid.ai", "projects"); ok {
+	// Nothing on this provider's own group. The Project is read and written
+	// over the APIExport virtual workspace, where this provider owns the kind.
+	if rule, ok := ruleFor(rules, "ai.railgrid.ai", "projects", false); ok {
 		t.Fatalf("the identity holds a rule on the provider's own group: %#v", rule)
 	}
-	mcp, ok := ruleFor(rules, "railgrid.ai", "mcpservers")
-	if !ok || mcp.Verbs[0] != "use" || mcp.ResourceNames[0] != "default" {
-		t.Fatalf("clause D MCP grant = %#v", mcp)
+	if rule, ok := ruleFor(rules, "ai.railgrid.ai", "projects", true); ok {
+		t.Fatalf("the identity holds a rule on the provider's own group: %#v", rule)
 	}
-	bindings, ok := ruleFor(rules, "apis.kcp.io", "apibindings")
-	if !ok || bindings.Verbs[0] != "get" || strings.Join(bindings.ResourceNames, ",") != "code,infrastructure" {
-		t.Fatalf("clause D APIBinding grant = %#v", bindings)
+
+	// Clause D: the aggregate's door, and where a dependency answers.
+	mcp, ok := ruleFor(rules, "railgrid.ai", "mcpservers", true)
+	if !ok || verbs(mcp) != "use" || namesOf(mcp) != "default" {
+		t.Fatalf("clause D MCP grant = %#v (ok=%v)", mcp, ok)
 	}
-	instances, ok := ruleFor(rules, infraAPIGroup, "instances")
-	if !ok || len(instances.Verbs) != 1 || instances.Verbs[0] != "get" {
-		t.Fatalf("clause B instance read = %#v", instances)
+	apibindings, ok := ruleFor(rules, "apis.kcp.io", "apibindings", true)
+	if !ok || verbs(apibindings) != "get" || namesOf(apibindings) != "code,infrastructure" {
+		t.Fatalf("clause D APIBinding grant = %#v (ok=%v)", apibindings, ok)
 	}
-	if strings.Join(instances.ResourceNames, ",") != "demo-dev,demo-prod" {
-		t.Fatalf("instances are not name-scoped to the project's own: %#v", instances.ResourceNames)
+
+	// Clause E: the composition, per dependency kind.
+	for _, tc := range []struct {
+		group          string
+		resource       string
+		collection     string
+		object         string
+		names          string
+		wantObjectRule bool
+	}{
+		{infraAPIGroup, "instances", "create,list,watch", "get,update,delete", "demo-dev,demo-prod", true},
+		{codeAPIGroup, "repositories", "create,list,watch", "get,update", "demo-repo", true},
+		// Repositories are never deleted: they hold user code and outlive the
+		// project, so no delete is asked for and none can be granted.
+		{codeAPIGroup, "repositorycommits", "list,watch", "", "", false},
+	} {
+		collection, ok := ruleFor(rules, tc.group, tc.resource, false)
+		if !ok || verbs(collection) != tc.collection {
+			t.Fatalf("%s collection rule = %#v (ok=%v), want verbs %s", tc.resource, collection, ok, tc.collection)
+		}
+		object, ok := ruleFor(rules, tc.group, tc.resource, true)
+		if ok != tc.wantObjectRule {
+			t.Fatalf("%s object rule present = %v, want %v", tc.resource, ok, tc.wantObjectRule)
+		}
+		if !ok {
+			continue
+		}
+		if verbs(object) != tc.object || namesOf(object) != tc.names {
+			t.Fatalf("%s object rule = %#v, want verbs %s on %s", tc.resource, object, tc.object, tc.names)
+		}
 	}
+
+	// Clause C: one create per declared data-plane verb, on the bound
+	// instances by name.
 	for _, verb := range instanceDataPlaneVerbs {
-		rule, ok := ruleFor(rules, infraAPIGroup, "instances/"+verb)
-		if !ok || len(rule.Verbs) != 1 || rule.Verbs[0] != "create" {
+		rule, ok := ruleFor(rules, infraAPIGroup, "instances/"+verb, true)
+		if !ok || verbs(rule) != "create" {
 			t.Fatalf("clause C rule for instances/%s = %#v (ok=%v)", verb, rule, ok)
 		}
-		if strings.Join(rule.ResourceNames, ",") != "demo-dev,demo-prod" {
+		if namesOf(rule) != "demo-dev,demo-prod" {
 			t.Fatalf("instances/%s is not name-scoped: %#v", verb, rule.ResourceNames)
 		}
 	}
-	repository, ok := ruleFor(rules, codeAPIGroup, "repositories")
-	if !ok || repository.Verbs[0] != "get" || repository.ResourceNames[0] != "demo-repo" {
-		t.Fatalf("clause B repository read = %#v", repository)
+
+	// Clause B and C on the Connection: read it, and ask it for a registry
+	// token. Nothing composes a Connection — nothing here writes one.
+	connection, ok := ruleFor(rules, codeAPIGroup, "connections", true)
+	if !ok || verbs(connection) != "get" || namesOf(connection) != "github-main" {
+		t.Fatalf("clause B connection read = %#v (ok=%v)", connection, ok)
 	}
-	mint, ok := ruleFor(rules, codeAPIGroup, "connections/mint_registry_token")
-	if !ok || mint.Verbs[0] != "create" || mint.ResourceNames[0] != "github-main" {
-		t.Fatalf("clause C registry-token action = %#v", mint)
+	mint, ok := ruleFor(rules, codeAPIGroup, "connections/mint_registry_token", true)
+	if !ok || verbs(mint) != "create" || namesOf(mint) != "github-main" {
+		t.Fatalf("clause C registry-token action = %#v (ok=%v)", mint, ok)
 	}
 
-	// Nothing may be a write on a foreign group, a wildcard, or unnamed: the
-	// hub refuses the whole request over any one of them.
+	// The invariants that hold across every rule, whatever clause admitted it.
 	for _, rule := range rules {
 		group := rule.APIGroups[0]
 		if group == "" {
@@ -182,34 +234,72 @@ func TestProjectIdentityRulesAreNameScopedAndReadOnlyOnForeignGroups(t *testing.
 				t.Fatalf("wildcard rule: %#v", rule)
 			}
 		}
-		if len(rule.ResourceNames) == 0 {
-			t.Fatalf("unnamed rule outside the provider's own group: %#v", rule)
-		}
-		if group != infraAPIGroup && group != codeAPIGroup {
+		if len(rule.ResourceNames) > 0 {
+			// A named rule may hold only object verbs: RBAC would ignore the
+			// names on anything else and grant the whole collection.
+			for _, verb := range rule.Verbs {
+				switch verb {
+				case "create":
+					// Only on a subresource, which is how the data plane spells
+					// "run this verb on this object".
+					if !strings.Contains(rule.Resources[0], "/") {
+						t.Fatalf("named create on a collection: %#v", rule)
+					}
+				case "list", "watch":
+					t.Fatalf("named %s authorizes nothing: %#v", verb, rule)
+				}
+			}
 			continue
 		}
+		// An unnamed rule is only ever the collection half of a declared
+		// composition on a dependency's group.
+		if group != infraAPIGroup && group != codeAPIGroup {
+			t.Fatalf("unnamed rule outside a composed dependency group: %#v", rule)
+		}
 		for _, verb := range rule.Verbs {
-			if strings.Contains(rule.Resources[0], "/") && verb != "create" {
-				t.Fatalf("only create is mintable on a subresource: %#v", rule)
-			}
-			if !strings.Contains(rule.Resources[0], "/") && verb != "get" {
-				t.Fatalf("only get is mintable on a foreign resource: %#v", rule)
+			switch verb {
+			case "create", "list", "watch":
+			default:
+				t.Fatalf("unnamed %s is not a collection verb: %#v", verb, rule)
 			}
 		}
 	}
 }
 
-// A project with nothing bound still reaches the aggregate and can still
-// resolve where its dependencies answer: neither is access to anything.
+// A project with no bindings still reaches the aggregate, can still resolve
+// where its dependencies answer, and can still watch the workspace for the
+// objects it is about to create. None of that is access to any object.
 func TestProjectIdentityRulesWithoutBindings(t *testing.T) {
 	rules := projectIdentityRules(&aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "empty", UID: "u"}})
-	if len(rules) != 2 {
-		t.Fatalf("rules = %#v, want only the MCP door and the bindings", rules)
-	}
 	for _, rule := range rules {
-		if rule.APIGroups[0] == infraAPIGroup || rule.APIGroups[0] == codeAPIGroup {
-			t.Fatalf("an unbound project holds nothing on a dependency: %#v", rule)
+		if len(rule.ResourceNames) == 0 {
+			continue
 		}
+		if rule.APIGroups[0] == infraAPIGroup || rule.APIGroups[0] == codeAPIGroup {
+			t.Fatalf("an unbound project names an object on a dependency: %#v", rule)
+		}
+	}
+	if _, ok := ruleFor(rules, infraAPIGroup, "instances", false); !ok {
+		t.Fatal("an unbound project cannot watch for the instance it is about to create")
+	}
+}
+
+// The RepositoryCommit read appears only while there is one to follow up, and
+// disappears again when it settles: restating the rules on every refresh is
+// what makes a grant shrink.
+func TestProjectIdentityRulesFollowThePendingCommit(t *testing.T) {
+	p := boundProject()
+	if _, ok := ruleFor(projectIdentityRules(p), codeAPIGroup, "repositorycommits", true); ok {
+		t.Fatal("a project with no pending commit holds a named commit read")
+	}
+	p.Annotations = map[string]string{pendingCommitAnnotation: "commit-1"}
+	rule, ok := ruleFor(projectIdentityRules(p), codeAPIGroup, "repositorycommits", true)
+	if !ok || verbs(rule) != "get" || namesOf(rule) != "commit-1" {
+		t.Fatalf("pending-commit read = %#v (ok=%v)", rule, ok)
+	}
+	delete(p.Annotations, pendingCommitAnnotation)
+	if _, ok := ruleFor(projectIdentityRules(p), codeAPIGroup, "repositorycommits", true); ok {
+		t.Fatal("the named commit read outlived the commit it was for")
 	}
 }
 
@@ -264,8 +354,9 @@ func TestReleaseIdentityRevokesAtTheHub(t *testing.T) {
 }
 
 // Without a hub there is no identity, and the reconciler says so by handing
-// back an empty token rather than failing: the claimed-VW fallback carries a
-// REST-only dev deployment.
+// back an empty token rather than failing. A REST-only dev deployment then
+// converges the Project itself and skips the cross-provider half, because
+// there is no other path to a dependency's objects.
 func TestIdentityTokenWithoutAHub(t *testing.T) {
 	r := &Reconciler{}
 	token, err := r.identityToken(context.Background(), "cluster-a", boundProject())

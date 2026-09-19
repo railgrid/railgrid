@@ -100,6 +100,25 @@ type Provider struct {
 	APIExportPath    string     // kcp workspace path hosting the APIExport (e.g. root:railgrid:providers:cost)
 	APIExportName    string     // APIExport name (e.g. cost.providers.railgrid.ai)
 	PermissionClaims []PermissionClaim
+	// APIGroups are the API groups this provider SERVES, read by the catalog
+	// reconciler from spec.resources[].group on the provider's own APIExport
+	// (apis.kcp.io/v1alpha2, named APIExportName, in APIExportPath) — deduped
+	// and sorted.
+	//
+	// It is deliberately a separate field from APIExportName rather than
+	// derived from it. The export is named after the provider
+	// (`edges.providers.railgrid.ai`); the kinds it serves are in a different
+	// group (`edges.railgrid.ai`), sometimes several groups, and the mapping
+	// between the two is a naming convention nobody enforces. The APIExport is
+	// the only thing that actually knows, so it is what is read.
+	//
+	// Everything that asks "which provider owns this API group" answers from
+	// here: the scoped-identity policy (pkg/hub/identity, clauses A, B, C and
+	// E) and composition admission below. Empty means the hub has not managed
+	// to read the export yet — a fail-closed state, not a permissive one: the
+	// policy refuses such a group with unknown_group, and the reconciler
+	// reports it as the APIGroupsUnknown condition on the CatalogEntry.
+	APIGroups []string
 	// SelfHosting carries the provider's own deployment recipe, from which the
 	// hub renders per-organization install instructions. Nil when the provider
 	// is platform-operated only.
@@ -182,6 +201,19 @@ type Provider struct {
 // gate provider enablement without coupling callers to CRD types.
 type Dependency struct {
 	Name string
+	// Composes mirrors CatalogEntry.spec.dependencies[].composes: the
+	// dependency's kinds this provider's reconcilers create and manage in the
+	// tenant workspace. Declaring one grants nothing — it is what the Enable
+	// dialog asks an admin to consent to, and what the scoped-identity policy
+	// measures a requested rule against (clause E).
+	Composes []Composition
+}
+
+// Composition is one composed kind of a dependency provider.
+type Composition struct {
+	Group    string
+	Resource string
+	Verbs    []string
 }
 
 // SelfHosting mirrors CatalogEntry.spec.selfHosting: how an organization runs
@@ -645,10 +677,17 @@ func cloneProviderAssistantSkills(in []ProviderAssistantSkill) []ProviderAssista
 
 func cloneProvider(p Provider) Provider {
 	p.Dependencies = append([]Dependency(nil), p.Dependencies...)
+	for i := range p.Dependencies {
+		p.Dependencies[i].Composes = append([]Composition(nil), p.Dependencies[i].Composes...)
+		for j := range p.Dependencies[i].Composes {
+			p.Dependencies[i].Composes[j].Verbs = append([]string(nil), p.Dependencies[i].Composes[j].Verbs...)
+		}
+	}
 	p.PermissionClaims = append([]PermissionClaim(nil), p.PermissionClaims...)
 	for i := range p.PermissionClaims {
 		p.PermissionClaims[i].Verbs = append([]string(nil), p.PermissionClaims[i].Verbs...)
 	}
+	p.APIGroups = append([]string(nil), p.APIGroups...)
 	p.Children = append([]NavChild(nil), p.Children...)
 	p.HubAccess = append([]providersv1alpha1.ProviderHubAccess(nil), p.HubAccess...)
 	p.Actions = append([]ProviderAction(nil), p.Actions...)

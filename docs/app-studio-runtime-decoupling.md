@@ -375,51 +375,123 @@ The worst a lie buys is a wasted hop.
 ## Addendum: two credentials, and which is which (19 September 2026)
 
 §9 Cut C.3.4. Getting this split wrong is the easiest mistake in the file, and
-the first cut of it made the mistake, so it is written down.
+two cuts of it made the mistake in opposite directions, so it is written down.
 
-**The provider reconciles as the provider.** Creating a project's bound
-`Instance`, converging the backing `Repository`, watching both, tearing them
-down on a finalizer — that is this provider's own background work. It runs as
-the provider's ServiceAccount through its **APIExport virtual workspace**, with
-tenant-scoped permission claims the workspace accepted at Enable
-(AGENTS.md §5.4). App Studio's `manifest.yaml` therefore claims
-`infrastructure.railgrid.ai/instances` (get/list/watch/create/update/delete),
-`code.railgrid.ai/repositories` (the same minus delete — repositories hold user
-code and outlive the project) and `code.railgrid.ai/repositorycommits`
-(read-only). The reconcilers use the multicluster manager's client for
-`req.ClusterName` and nothing else; there is no second client, no per-workspace
-token, and no watch machinery of App Studio's own — the kinds are claimed, so
-one wildcard informer per shard already serves them, and `builder.Watches` with
-a mapping function back to the owning Project is the whole of it. The
-`controller/tenantwatch` package that used to do this by hand is gone.
+**The split is by whose API surface the object lives on, not by who is
+acting.** That is the sentence to keep.
 
-Those are **first-party** claims, so each carries an `identityHash` pinning the
-exact APIExport that serves it, stamped at init from `RAILGRID_IDENTITY_HASHES`
-(chart value `apiExport.identityHashes`; see the chart README). That is the
-real cost of this design and it should be stated plainly: an APIExport pins one
-identity per claimed resource for **every** consuming workspace at once, so one
-App Studio installation serves workspaces bound to one copy of infrastructure
-and one copy of code. An organization self-hosting either runs its own App
-Studio with its own hashes.
+**This provider's OWN kinds ride its APIExport virtual workspace.** Project,
+Session, Studio — spec, status, finalizers, annotations — plus the Secrets it
+writes itself (the LLM model credentials and the promotion pull credential).
+The reconcilers read and write those with the multicluster manager's client for
+`req.ClusterName`, as the provider's ServiceAccount, with the tenant-scoped
+claims accepted at Enable (AGENTS.md §5.4). `secrets` is the ONLY permission
+claim App Studio has.
 
-**A project acts as itself with a scoped identity.** The hub-minted per-project
-identity (`controller/project/identity.go`) is not a reconciliation credential
-and never was one. It is what something acting *as the project*, with no human
-behind it, presents: `use` on the workspace's default `MCPServer`, `get` on the
-APIBindings that say where a dependency answers, `get` on the exact Instance,
-Repository and Connection the project is bound to, and `create` on the declared
-`instances/{verb}` subresources plus `connections/mint_registry_token`. The
-`get`s are not for this provider's own reads — those go over the virtual
-workspace — they are what **gate 1** on the serving side needs, since a
-data-plane verb is authorized by re-reading the addressed object as the caller
-before anything runs.
+**A DEPENDENCY's kinds ride the tenant workspace itself.** The bound
+`Instance`s, the backing `Repository`, an in-flight `RepositoryCommit`, the
+Studio's shared search and browser backends: all of it is reached at
+`{hub}/clusters/{cluster}` with a client built by
+`provider-sdk/tenantaccess`, authenticated as a hub-minted scoped identity —
+one per Project (`controller/project/identity.go`), one per Studio
+(`controller/studio/identity.go`).
 
-**The one place the two meet** is the commit. A `RepositoryCommit` is a pointer
-at a source bundle held in the Code provider's own store
-(`providers/code/commitbundle`), and only that provider can put bytes there, so
-App Studio asks for the commit through the Code provider's `commit_files` MCP
-tool — as the project identity, which is what the aggregate admits on `use` —
-and then follows the `RepositoryCommit` it created over the claimed, read-only
-watch. That is why the claim on `repositorycommits` is read-only and why the
-identity keeps its MCP grant: a claim would let this provider write the CR, but
-not the bundle it has to point at.
+### Why not a permission claim, which is the obvious answer
+
+It was tried, and it is the thing this whole document exists to avoid.
+
+A permission claim on a FIRST-PARTY (`*.railgrid.ai`) group must name the
+APIExport that serves it, by `identityHash`. An APIExport pins exactly one
+identity per claimed resource — for **every** consuming workspace at once. So
+the moment one org self-hosts infrastructure or code while another uses the
+platform copy, no single pin is correct, and kcp stops serving the claimed
+resources to whoever mismatches. Not with an error: it serves an empty list.
+A workspace bound to an org-owned dependency would watch nothing, create
+nothing, and report everything Pending forever, and the provider would have no
+way to tell that from a quiet tenant.
+
+The consequence shows up in operations, too: the hashes have to be read out of
+the dependency provider's workspace and passed to the chart at install
+(`apiExport.identityHashes`), `init` has to fail closed without them, and
+"self-host a dependency" turns into "run a second App Studio install". That
+value, its helper, its init env var and its README section are all deleted.
+
+Tenant-workspace RBAC has none of these properties. The workspace serves
+whichever copy it bound, authorization is the workspace's own RBAC on the
+identity's ClusterRole, and one App Studio install serves every mix.
+
+### What the identity may do, and who said so
+
+Not the provider, by itself. The CatalogEntry declares a **composition** per
+dependency — `spec.dependencies[].composes`, in `manifest.yaml` and the chart's
+copy identically — and the tenant accepts it at Enable alongside the claims.
+The hub's identity policy (clause E) admits a requested rule only when a
+declared composition covers it. `internal/crossprovider/composition.go` is the
+Go mirror of that declaration, and a test compares the two.
+
+App Studio declares:
+
+| dependency | resource | verbs |
+|---|---|---|
+| infrastructure | `infrastructure.railgrid.ai/instances` | get, list, watch, create, update, delete |
+| code | `code.railgrid.ai/repositories` | get, list, watch, create, update |
+| code | `code.railgrid.ai/repositorycommits` | get, list, watch |
+
+No `delete` on repositories: they hold user code and outlive the project. No
+`create` on repositorycommits: the CR is a POINTER at a source bundle held in
+the Code provider's own store (`providers/code/commitbundle`), and only that
+provider can put bytes there — see the commit path below.
+
+Each composition becomes **two** rules, because Kubernetes RBAC has two shapes
+and conflating them is how a grant silently authorizes nothing or everything:
+
+- **collection** (`create`, `list`, `watch`) — unnamed. RBAC does not apply
+  `resourceNames` to a collection request, so a named `list` authorizes
+  nothing at all. The bound is the declared `(group, resource)`.
+- **object** (`get`, `update`, `delete`) — always `resourceNames`-scoped, to
+  the exact objects this Project or Studio is bound to.
+
+So a project's identity carries, in full:
+
+- clause D — `use` on the workspace's default `MCPServer`, and `get` on the
+  `APIBinding`s named `infrastructure` and `code` (which say WHICH provider
+  serves each dependency here; a `get`, never a `list`);
+- clause E — unnamed `create`/`list`/`watch` on `instances`, `repositories`
+  and `repositorycommits`; named `get`/`update`/`delete` on its bound
+  instances, named `get`/`update` on its backing repository, and named `get`
+  on the `RepositoryCommit` it is currently following up (that last one
+  appears when the pending-commit pointer is written and disappears when it
+  settles — the rules are restated on every refresh, which is what makes a
+  grant shrink);
+- clause B — `get` on the named `Connection` it was created from;
+- clause C — `create` on `instances/{verb}` for the eight infrastructure
+  data-plane verbs this provider calls, and on
+  `connections/mint_registry_token`, all name-scoped.
+
+A Studio's identity is the instance composition and nothing else: unnamed
+`create`/`list`/`watch`, named `get`/`update`/`delete` on
+`app-studio-search` and `app-studio-browser`. It calls no MCP tool and
+resolves no data-plane coordinate, so it holds no clause D, B or C rule.
+
+Nothing anywhere is on this provider's own group: the Project is read and
+written over the virtual workspace, where this provider already owns the kind.
+
+### The watch is the same credential
+
+Because the virtual workspace does not serve the foreign kinds, the dependency
+watches cannot be `builder.Watches` on the manager. `controller/tenantwatch`
+holds one LIST/WATCH per tenant workspace per kind, dialled with the identity
+token, `Ensure`d by each reconcile that holds one and replaced when a 401/403
+proves the token in hand is dead. Events map back to the owning Project (by the
+project label, the repository claim label, or the `spec.repositoryRef` of a
+commit) or Studio (by its attribution label). Nothing is polled: the unnamed
+`list`/`watch` half of the composition is exactly what makes this legal.
+
+### The one place the credentials meet
+
+The commit. App Studio asks for it through the Code provider's `commit_files`
+MCP tool — as the project identity, which the aggregate admits on `use` of the
+workspace's `MCPServer` — because only that provider can store the source
+bundle the `RepositoryCommit` points at. It then follows the CR the tool
+created, by name, over the tenant client, and mirrors the pointer onto the
+Project over the virtual workspace. Two clients, one identity, in one function.

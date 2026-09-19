@@ -25,15 +25,18 @@ const (
 	providerName = "app-studio"
 )
 
-// The APIExport deliberately claims NO first-party (*.railgrid.ai) resources.
-// Such claims must pin the serving APIExport's identityHash, and an export
-// can pin exactly one identity per claimed resource — for every consuming
-// workspace at once. That breaks the moment one org self-hosts a dependency
-// (infrastructure, code) while others use the platform copy. Instead the
-// reconcilers act as per-project/per-studio identities MINTED BY THE HUB
-// (controller/project/identity.go) through each workspace's OWN bindings,
-// which reach whichever copy the workspace binds. The only claim left is on
-// Secrets, for the credential material this provider writes itself.
+// The APIExport deliberately claims NO first-party (*.railgrid.ai) resources,
+// and so needs no RAILGRID_IDENTITY_HASHES. Such a claim must pin the serving
+// APIExport's identityHash, and an export can pin exactly one identity per
+// claimed resource — for every consuming workspace at once. That breaks the
+// moment one org self-hosts a dependency (infrastructure, code) while others
+// use the platform copy. Instead the reconcilers act as per-project and
+// per-Studio identities MINTED BY THE HUB (controller/project/identity.go,
+// controller/studio/identity.go) inside each workspace, through that
+// workspace's OWN bindings, which reach whichever copy it enabled; what they
+// may do there is declared as manifest.yaml spec.dependencies[].composes and
+// accepted by the tenant at Enable. The only claim left is on Secrets, for
+// the credential material this provider writes itself.
 
 // runInitCmd applies the App Studio provider's in-workspace objects
 // (APIResourceSchemas, APIExport, APIExportEndpointSlice, bind grant) using the
@@ -53,13 +56,6 @@ func runInitCmd(ctx context.Context) error {
 	if kcpDir == "" {
 		kcpDir = "/etc/railgrid/kcp"
 	}
-	// Per-installation APIExport identity hashes for first-party claim groups,
-	// as "group=hash,group=hash". Empty for this provider: it claims only
-	// built-in types, which need no hash (see the package comment above).
-	identityHashes, err := sdkinstall.ParseIdentityHashes(os.Getenv("RAILGRID_IDENTITY_HASHES"))
-	if err != nil {
-		return err
-	}
 	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
 
 	// The per-project and per-Studio identities the reconcilers act as are
@@ -68,13 +64,12 @@ func runInitCmd(ctx context.Context) error {
 	// owning object goes (provider-sdk/identityclient). The one claim left is
 	// on Secrets — the credential material this provider writes itself —
 	// declared in manifest.yaml, which codegen stamps onto the APIExport this
-	// reads.
+	// reads. No IdentityHashes: there is no first-party claim to pin.
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:           config,
 		ExportName:       apiExportName,
 		WorkspacePath:    workspacePath,
 		KCPDir:           kcpDir,
-		IdentityHashes:   identityHashes,
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)

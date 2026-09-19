@@ -367,6 +367,74 @@ decide it has decided yet, so existing workspaces keep working; a decision
 acceptance. Rollout order: the hub first
 (the CatalogEntry schema gains `hubAccess`), then providers that declare it.
 
+### Composition — one provider building on another's kinds
+
+A product is rarely one provider. An App Studio project IS an infrastructure
+`Instance` plus a code `Repository`: App Studio's reconciler has to CREATE and
+MANAGE those objects, in the tenant's workspace, as part of doing its job.
+
+That is not something a provider may take for itself. It is declared, consented
+to, and minted:
+
+```yaml
+spec:
+  dependencies:
+    - name: infrastructure
+      composes:
+        - group: infrastructure.railgrid.ai
+          resource: instances
+          verbs: [get, list, watch, create, update, delete]
+    - name: code
+      composes:
+        - group: code.railgrid.ai
+          resource: repositories
+          verbs: [get, list, watch, create, update]
+        - group: code.railgrid.ai
+          resource: repositorycommits
+          verbs: [get, list, watch]
+```
+
+**Declaring grants nothing.** The catalog controller validates the declaration
+fail-closed — no wildcards, only ordinary Kubernetes verbs, and the group must
+be the one the named dependency actually exports — and a malformed entry drops
+the provider out of the registry rather than leaving a half-read declaration
+behind. The declaration is then projected into `/api/providers` so the Enable
+dialog and a consumer can read it.
+
+**Consent.** The Enable dialog renders one line per composed kind ("Create and
+manage Instances (infrastructure) in this workspace"). `POST
+…/providers/{name}/enable` carries the choice as
+`acceptedCompositions: [{provider, group, resource}]` — where `provider` is the
+DEPENDENCY whose kind is composed — and records it in the SAME `Grant` that
+holds hub access, as a capability named `compose:<group>/<resource>` at
+`workspace` scope. It is a workspace decision, so a workspace or org admin
+makes it; a member can still enable the provider and leaves every earlier
+decision standing. Disable deletes the grant. `GET …/providers/enabled` reports
+granted and pending compositions per provider, and a pending one is the visible
+cause of "enabled, but it never builds anything" — the Providers page offers
+*Review access*.
+
+**Enforcement.** Nothing is granted by the Grant itself. The composing
+provider's reconciler asks the hub for a scoped identity, and clause E of the
+identity policy admits a rule only when the composition is still declared, the
+verbs are a subset of the declared ones, the dependency's export is bound in
+that workspace, and the tenant accepted it — all re-checked on every mint. See
+[provider-connectivity-contract.md §"Scoped identities"](./provider-connectivity-contract.md#scoped-identities--asking-the-hub-instead-of-minting).
+
+**Why not a permission claim.** An APIExport permission claim on a first-party
+(`*.railgrid.ai`) group pins to one export's `identityHash` (AGENTS.md §5.7), so
+a provider holding one silently serves nothing the moment an Org self-hosts the
+dependency — which is exactly the case composition must keep working. A
+composition names the dependency by NAME and resolves through whatever export
+is bound in that workspace, and it lives in the tenant's own Grant, so the
+tenant can withdraw it.
+
+**Upgrade default.** Compositions follow `--provider-hub-access-platform-default`
+exactly as hub access does: a *platform* provider composes what it declares in a
+workspace where nobody entitled to decide has, so existing workspaces keep
+working; a recorded decision always wins, and an org-owned provider always needs
+an explicit acceptance.
+
 ### Provider assistant skills
 
 `CatalogEntry.spec.assistantSkills` is an inline, versioned package contract

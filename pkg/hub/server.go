@@ -869,10 +869,18 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("creating scoped identity binding checker: %w", err)
 			}
+			// Clause E reads the SAME Grant the Enable dialog writes, so a
+			// composition a tenant accepted (or declined) takes effect on the
+			// composing provider's next token refresh with nothing else to
+			// reconcile.
+			identityCompositions, err := identity.NewGrantCompositionChecker(kcpConfig, hubAccessGrants, providerRegistry, s.opts.ProviderHubAccessPlatformDefault)
+			if err != nil {
+				return fmt.Errorf("creating scoped identity composition checker: %w", err)
+			}
 			identityService := identity.New(identity.Options{
 				Records: userClient.ScopedIdentities(),
 				Clients: identityClients,
-				Policy:  identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings),
+				Policy:  identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings, identityCompositions),
 				Owners:  identityOwners,
 			})
 			// The sweep is what collects an identity whose holder stopped

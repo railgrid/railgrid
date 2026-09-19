@@ -26,42 +26,29 @@ helm upgrade --install app-studio oci://ghcr.io/railgrid/charts/railgrid-app-stu
   --set hub.url=https://railgrid.example.com \
   --set hub.publicURL=https://railgrid.example.com \
   --set providerKubeconfig.secretName=railgrid-provider-kubeconfig \
-  --set catalogEntry.enabled=true \
-  --set apiExport.identityHashes."infrastructure\.railgrid\.ai"=<hash> \
-  --set apiExport.identityHashes."code\.railgrid\.ai"=<hash>
+  --set catalogEntry.enabled=true
 ```
 
-## Dependency identity hashes
+## Dependencies
 
-App Studio's controllers reconcile two other providers' kinds — the
-Infrastructure provider's `Instance` and the Code provider's `Repository` and
-`RepositoryCommit` — as the provider's own ServiceAccount through its APIExport
-virtual workspace. That means its APIExport **claims** those kinds, and a claim
-on a first-party (`*.railgrid.ai`) group has to name the exact APIExport that
-serves it, by identity hash. `init` fails closed with the group it could not
-pin rather than publishing an export that claims something it cannot name.
+App Studio needs the Infrastructure and Code providers enabled in a workspace
+before it can be enabled there, and its reconcilers act on their objects —
+`Instance`, `Repository`, `RepositoryCommit` — inside that workspace. What it
+does to each is declared as a **composition** on the CatalogEntry
+(`spec.dependencies[].composes`), the tenant accepts it at Enable, and the hub
+mints a short-lived, per-Project/per-Studio identity carrying exactly those
+rules.
 
-Read each hash in the workspace that hosts the dependency's provider:
-
-```bash
-# root:railgrid:providers:infrastructure
-kubectl get apiexport infrastructure.providers.railgrid.ai \
-  -o jsonpath='{.status.identityHash}'
-
-# root:railgrid:providers:code
-kubectl get apiexport code.providers.railgrid.ai \
-  -o jsonpath='{.status.identityHash}'
-```
-
-On the platform the same values are listed under **Admin → root identities**.
-Pass them as `apiExport.identityHashes`; the chart renders them into the init
-container's `RAILGRID_IDENTITY_HASHES` as `group=hash,group=hash`.
-
-A hash identifies **one** APIExport, and an APIExport pins one identity per
-claimed resource for **every** consuming workspace at once. So an organization
-self-hosting infrastructure or code runs its own App Studio install with its
-own hashes — one install cannot serve workspaces bound to different copies of a
-dependency.
+Nothing here has to be configured, and in particular **no APIExport identity
+hashes**. An earlier cut of this chart took a permission claim on those
+first-party kinds instead, which meant pinning the serving APIExport's
+`identityHash` per installation — and because one export pins one identity for
+every consuming workspace at once, a single install could not serve a workspace
+that had bound its own copy of a dependency. Acting inside the workspace
+through the workspace's own `APIBinding`s has no such limit: it reaches
+whichever copy the tenant enabled, platform or self-hosted. If you are
+upgrading from a release that took `apiExport.identityHashes`, drop the value —
+it no longer exists.
 
 ## Values
 
@@ -86,9 +73,6 @@ dependency.
 | `catalogEntry.renderAsConfigMap` | `true` |  |
 | `catalogEntry.uiURL` | `""` |  |
 | `catalogEntry.backendURL` | `""` |  |
-| `apiExport.identityHashes` |  | Identity hashes of the dependency APIExports this provider claims kinds from. Required: `init` fails closed without them. See "Dependency identity hashes" above. |
-| `apiExport.identityHashes.infrastructure\.railgrid\.ai` | `""` | `status.identityHash` of the `infrastructure.providers.railgrid.ai` APIExport that serves this installation's Instances. |
-| `apiExport.identityHashes.code\.railgrid\.ai` | `""` | `status.identityHash` of the `code.providers.railgrid.ai` APIExport that serves this installation's Repositories. |
 | `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted by the platform admin via /bonkers (admin onboarding). Consumed by both the init container and the serve container. Key must be "kubeconfig". |
 | `providerKubeconfig.secretName` | `railgrid-provider-kubeconfig` |  |
 | `assistant` |  | Assistant chat behavior. |

@@ -55,6 +55,26 @@ type EnableProviderRequest struct {
 	// admin of this workspace or of the org. Omitted capabilities are not
 	// granted, and the decision is recorded either way.
 	AcceptedHubAccess []AcceptedHubAccess `json:"acceptedHubAccess,omitempty"`
+	// AcceptedCompositions lists the compositions
+	// (CatalogEntry.spec.dependencies[].composes) the user accepted: kinds of
+	// another provider this provider's reconcilers will create and manage in
+	// this workspace. Each must be declared, on the dependency it names.
+	// Accepting is a workspace decision, so a workspace or org admin makes
+	// it. Omitted compositions are declined, and the decision is recorded
+	// either way — the same rules hub access follows, in the same Grant.
+	AcceptedCompositions []AcceptedComposition `json:"acceptedCompositions,omitempty"`
+}
+
+// AcceptedComposition identifies one accepted composition by the dependency
+// it hangs off and the kind it composes. Verbs are never sent: they come from
+// the provider's declaration, read fresh every time the policy mints, so a
+// caller cannot widen one by asking.
+type AcceptedComposition struct {
+	// Provider is the DEPENDENCY whose kind is composed (the owner of Group),
+	// not the provider being enabled.
+	Provider string `json:"provider"`
+	Group    string `json:"group"`
+	Resource string `json:"resource"`
 }
 
 // AcceptedHubAccess identifies one accepted hub capability by its declared
@@ -80,6 +100,9 @@ type EnableProviderResponse struct {
 	BindingName string `json:"bindingName"`
 	// HubAccess is what was granted, when the provider declares any.
 	HubAccess []AcceptedHubAccess `json:"hubAccess,omitempty"`
+	// Compositions is what was granted of the provider's declared
+	// compositions, when it declares any.
+	Compositions []AcceptedComposition `json:"compositions,omitempty"`
 }
 
 // enableProvider handles POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable.
@@ -160,6 +183,17 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compositions: same discipline. Every accepted composition must be
+	// declared on the dependency it names, and the caller must be entitled to
+	// decide it. Checked before anything is created so a refused acceptance
+	// leaves the workspace untouched.
+	declaredCompositions := hubaccess.DeclaredCompositions(prov.Dependencies)
+	acceptedCompositions, status, msg := resolveAcceptedCompositions(declaredCompositions, req.AcceptedCompositions, tc.Role, tc.OrgRole)
+	if status != 0 {
+		writeStatus(w, status, http.StatusText(status), msg)
+		return
+	}
+
 	claims := make([]kcp.ProviderClaim, 0, len(prov.PermissionClaims))
 	for _, declared := range prov.PermissionClaims {
 		claims = append(claims, kcp.ProviderClaim{
@@ -226,9 +260,11 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	resp := EnableProviderResponse{BindingName: providerName}
 	if h.mgr.hubAccess != nil {
 		key := hubaccess.GrantKey{OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID}
-		if len(prov.HubAccess) > 0 {
+		if len(prov.HubAccess) > 0 || len(declaredCompositions) > 0 {
 			grant, err := h.mgr.hubAccess.Record(r.Context(), key, func(prev *tenancyv1alpha1.Grant) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
-				return mergeHubAccessDecisions(prov.HubAccess, acceptedHubAccess, prev, tc.Role, tc.OrgRole)
+				accepted, declined := mergeHubAccessDecisions(prov.HubAccess, acceptedHubAccess, prev, tc.Role, tc.OrgRole)
+				composedAccepted, composedDeclined := mergeCompositionDecisions(declaredCompositions, acceptedCompositions, prev, tc.Role, tc.OrgRole)
+				return append(accepted, composedAccepted...), append(declined, composedDeclined...)
 			}, tc.User)
 			if err != nil {
 				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
@@ -236,6 +272,13 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 			}
 			if grant != nil {
 				for _, g := range grant.Spec.Capabilities {
+					if group, resource, ok := hubaccess.ParseComposeCapability(g.Capability); ok {
+						resp.Compositions = append(resp.Compositions, AcceptedComposition{
+							Provider: dependencyFor(declaredCompositions, group, resource),
+							Group:    group, Resource: resource,
+						})
+						continue
+					}
 					resp.HubAccess = append(resp.HubAccess, AcceptedHubAccess{Capability: g.Capability, Scope: g.Scope})
 				}
 			}
@@ -302,6 +345,77 @@ func mergeHubAccessDecisions(declared []providersv1alpha1.ProviderHubAccess, acc
 		}
 	}
 	return outAccepted, outDeclined
+}
+
+// compositionKey is how an acceptance is looked up: the dependency plus the
+// kind, because two dependencies could in principle name the same resource.
+func compositionKey(provider, group, resource string) string {
+	return provider + "|" + group + "/" + resource
+}
+
+// resolveAcceptedCompositions validates the compositions a user accepted
+// against what the provider declares and what the user may decide. A non-zero
+// status refuses the request.
+func resolveAcceptedCompositions(declared []hubaccess.CompositionRequirement, accepted []AcceptedComposition, wsRole, orgRole string) (map[string]bool, int, string) {
+	out := make(map[string]bool, len(accepted))
+	for _, a := range accepted {
+		found := false
+		for _, d := range declared {
+			if d.Dependency == a.Provider && d.Group == a.Group && d.Resource == a.Resource {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, http.StatusBadRequest, fmt.Sprintf("this provider does not declare that it manages %s/%s from %s", a.Group, a.Resource, a.Provider)
+		}
+		if !hubaccess.MayDecideComposition(wsRole, orgRole) {
+			return nil, http.StatusForbidden, fmt.Sprintf("letting this provider manage %s/%s here requires a workspace or organization admin", a.Group, a.Resource)
+		}
+		out[compositionKey(a.Provider, a.Group, a.Resource)] = true
+	}
+	return out, 0, ""
+}
+
+// mergeCompositionDecisions combines this caller's choices with the stored
+// grant, exactly as mergeHubAccessDecisions does for hub access: a caller
+// entitled to decide accepts what they ticked and declines the rest, and one
+// who is not leaves every previous decision standing rather than silently
+// revoking it by enabling.
+func mergeCompositionDecisions(declared []hubaccess.CompositionRequirement, accepted map[string]bool, prev *tenancyv1alpha1.Grant, wsRole, orgRole string) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
+	var outAccepted []tenancyv1alpha1.GrantedCapability
+	var outDeclined []tenancyv1alpha1.CapabilityRef
+	mayDecide := hubaccess.MayDecideComposition(wsRole, orgRole)
+	for _, d := range declared {
+		if mayDecide {
+			if accepted[compositionKey(d.Dependency, d.Group, d.Resource)] {
+				outAccepted = append(outAccepted, hubaccess.GrantedComposition(d))
+			} else {
+				outDeclined = append(outDeclined, d.Ref())
+			}
+			continue
+		}
+		switch hubaccess.DecideComposition(prev, d) {
+		case hubaccess.Accepted:
+			outAccepted = append(outAccepted, hubaccess.GrantedComposition(d))
+		case hubaccess.Declined:
+			outDeclined = append(outDeclined, d.Ref())
+		}
+	}
+	return outAccepted, outDeclined
+}
+
+// dependencyFor names the dependency a recorded composition belongs to. A
+// grant can outlive the declaration that created it (the provider dropped the
+// dependency but the tenant's Grant still carries the acceptance), so an
+// unmatched entry reports no dependency rather than inventing one.
+func dependencyFor(declared []hubaccess.CompositionRequirement, group, resource string) string {
+	for _, d := range declared {
+		if d.Group == group && d.Resource == resource {
+			return d.Dependency
+		}
+	}
+	return ""
 }
 
 func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUUID string, dependencies []providers.Dependency) ([]string, error) {
@@ -419,6 +533,12 @@ type EnabledProviderDetail struct {
 	// which are in force and which it declares but nobody accepted yet.
 	// Absent when the provider declares none.
 	HubAccess *HubAccessState `json:"hubAccess,omitempty"`
+	// Compositions reports the same for the kinds of other providers this
+	// provider manages here. A pending composition is why a provider that
+	// looks enabled cannot create what it is for: its reconciler's identity
+	// is refused the rule (composition_not_granted), and re-enabling offers
+	// the consent again. Absent when the provider declares none.
+	Compositions *CompositionState `json:"compositions,omitempty"`
 	// DeletionBlocked is kcp's explanation of what is holding a terminating
 	// binding open — e.g. "Some content in the workspace has finalizers
 	// remaining: <finalizer> in 3 resource instances". A binding in this state
@@ -435,6 +555,18 @@ type HubAccessState struct {
 	// provider's catalog entry, or declined. Re-enabling offers them again.
 	Pending []AcceptedHubAccess `json:"pending,omitempty"`
 	// Implicit is true when at least one granted capability is in force only
+	// through the platform default (nobody entitled to decide it has yet).
+	Implicit bool `json:"implicit,omitempty"`
+}
+
+// CompositionState is one provider's composition standing in a workspace.
+type CompositionState struct {
+	// Granted are the compositions in force (declared and accepted).
+	Granted []AcceptedComposition `json:"granted,omitempty"`
+	// Pending are declared compositions nobody has accepted: new in the
+	// provider's catalog entry, or declined. Re-enabling offers them again.
+	Pending []AcceptedComposition `json:"pending,omitempty"`
+	// Implicit is true when at least one granted composition is in force only
 	// through the platform default (nobody entitled to decide it has yet).
 	Implicit bool `json:"implicit,omitempty"`
 }
@@ -540,6 +672,7 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 			Terminating:     binding.Terminating,
 			DeletionBlocked: binding.DeletionBlocked,
 			HubAccess:       h.hubAccessState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, provider),
+			Compositions:    h.compositionState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, provider),
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -578,6 +711,43 @@ func (h *Handler) hubAccessState(ctx context.Context, orgUUID, wsUUID, name stri
 		default:
 			state.Pending = append(state.Pending, entry)
 		}
+	}
+	return state
+}
+
+// compositionState reports which of the provider's declared compositions the
+// identity policy will admit in this workspace. Best-effort: a read failure
+// omits it, exactly as for hub access — a stale warning is recoverable, a
+// blank provider list is not.
+func (h *Handler) compositionState(ctx context.Context, orgUUID, wsUUID, name string) *CompositionState {
+	if h.mgr.hubAccess == nil || h.mgr.providers == nil {
+		return nil
+	}
+	prov, ok := h.mgr.providers.GetForOrg(orgUUID, name)
+	if !ok {
+		return nil
+	}
+	declared := hubaccess.DeclaredCompositions(prov.Dependencies)
+	if len(declared) == 0 {
+		return nil
+	}
+	grant, err := h.mgr.hubAccess.Get(ctx, hubaccess.GrantKey{OrgUUID: orgUUID, WorkspaceUUID: wsUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID})
+	if err != nil {
+		klog.FromContext(ctx).Error(err, "Reading provider composition grant", "org", orgUUID, "workspace", wsUUID, "provider", name)
+		return nil
+	}
+	state := &CompositionState{}
+	for _, d := range declared {
+		entry := AcceptedComposition{Provider: d.Dependency, Group: d.Group, Resource: d.Resource}
+		allowed, byDefault := hubaccess.ComposeAllowed(grant, d, prov.OrgUUID == "", h.mgr.hubAccessPlatformDefault)
+		if allowed {
+			state.Granted = append(state.Granted, entry)
+			if byDefault {
+				state.Implicit = true
+			}
+			continue
+		}
+		state.Pending = append(state.Pending, entry)
 	}
 	return state
 }

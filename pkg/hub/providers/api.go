@@ -102,6 +102,14 @@ type providerDTO struct {
 	// not declare an APIExport (UI/backend-only providers).
 	APIExportPath string `json:"apiExportPath,omitempty"`
 	APIExportName string `json:"apiExportName,omitempty"`
+	// APIGroups are the API groups this provider actually serves, as the hub
+	// read them from spec.resources[].group on its APIExport. They are what
+	// the scoped-identity policy resolves group ownership against, and they
+	// usually differ from apiExportName (`edges.providers.railgrid.ai` serves
+	// `edges.railgrid.ai`), so showing both is what makes a refused
+	// cross-provider rule diagnosable. Empty means the hub has not managed to
+	// read the export yet; see the CatalogEntry's APIGroupsUnknown condition.
+	APIGroups []string `json:"apiGroups,omitempty"`
 	// PermissionClaims mirror the CatalogEntry.spec.apiExport.permissionClaims.
 	// The portal shows these in the Enable confirmation dialog so users see
 	// what the provider's controllers will be able to access in their
@@ -196,6 +204,18 @@ type permissionClaimDTO struct {
 
 type dependencyDTO struct {
 	Name string `json:"name"`
+	// Composes mirrors CatalogEntry.spec.dependencies[].composes: the
+	// dependency's kinds this provider creates and manages in the tenant
+	// workspace. The Enable dialog renders one consent line per entry; none
+	// of it applies until a workspace or org admin accepts it.
+	Composes []compositionDTO `json:"composes,omitempty"`
+}
+
+// compositionDTO is one composed kind.
+type compositionDTO struct {
+	Group    string   `json:"group"`
+	Resource string   `json:"resource"`
+	Verbs    []string `json:"verbs,omitempty"`
 }
 
 // listResponse wraps the list to leave room for future fields (paging, etc.).
@@ -317,7 +337,15 @@ func listHandlerFunc(reg *Registry) http.Handler {
 			}
 			var dependencies []dependencyDTO
 			for _, d := range p.Dependencies {
-				dependencies = append(dependencies, dependencyDTO(d))
+				dependency := dependencyDTO{Name: d.Name}
+				for _, composition := range d.Composes {
+					dependency.Composes = append(dependency.Composes, compositionDTO{
+						Group:    composition.Group,
+						Resource: composition.Resource,
+						Verbs:    append([]string(nil), composition.Verbs...),
+					})
+				}
+				dependencies = append(dependencies, dependency)
 			}
 			actions := make([]providerActionDTO, 0, len(p.Actions))
 			for _, action := range p.Actions {
@@ -393,6 +421,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 				Dependencies:     dependencies,
 				APIExportPath:    p.APIExportPath,
 				APIExportName:    p.APIExportName,
+				APIGroups:        p.APIGroups,
 				PermissionClaims: claims,
 				EdgeProxyAccess:  p.EdgeProxyAccess,
 				HubAccess:        p.HubAccess,

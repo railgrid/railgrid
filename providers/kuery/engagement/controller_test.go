@@ -10,6 +10,8 @@ package engagement
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -19,19 +21,13 @@ import (
 	"gorm.io/datatypes"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
-	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpcore "github.com/kcp-dev/sdk/apis/core"
@@ -78,14 +74,19 @@ func TestEdgeProxyURL(t *testing.T) {
 }
 
 // TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity pins the data-path
-// credential: the per-workspace engagement SA token, never the provider SA
-// bearer. The provider SA's home is the provider workspace; the edges proxy
-// TokenReviews such a foreign SA in its home cluster, which the hub's kcp
-// proxy re-roots onto the edges provider's own workspace (doubled /clusters
-// path → 404 → 403). A workspace-issued token authenticates natively.
+// credential: the workspace's hub-minted engagement identity, never the
+// provider SA bearer. The provider SA's home is the provider workspace; the
+// edges proxy TokenReviews such a foreign SA in its home cluster, which the
+// hub's kcp proxy re-roots onto the edges provider's own workspace (doubled
+// /clusters path → 404 → 403). A token minted in the CONSUMER workspace
+// authenticates natively.
+//
+// The token is not pinned into the config either: it is resolved per request,
+// because an engaged edge's informers outlive any one TTL'd token.
 func TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity(t *testing.T) {
 	const published = "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/kubernetesclusters/edge-1/k8s"
-	cfg, err := edgeProxyConfig("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", published, "ws-sa-token", true)
+	identity := &staticCredential{token: "minted-token"}
+	cfg, err := edgeProxyConfig("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", published, identity, true)
 	if err != nil {
 		t.Fatalf("edgeProxyConfig: %v", err)
 	}
@@ -93,11 +94,11 @@ func TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity(t *testing.T) {
 	if want := "https://hub.example.com" + published; cfg.Host != want {
 		t.Fatalf("Host = %q, want %q", cfg.Host, want)
 	}
-	if cfg.BearerToken != "ws-sa-token" {
-		t.Fatalf("BearerToken = %q, want the workspace identity token", cfg.BearerToken)
+	if cfg.BearerToken != "" || cfg.BearerTokenFile != "" || cfg.AuthProvider != nil || cfg.ExecProvider != nil {
+		t.Fatal("the edgeproxy config must carry no standing credential: the identity supplies one per request")
 	}
-	if cfg.BearerTokenFile != "" || cfg.AuthProvider != nil || cfg.ExecProvider != nil {
-		t.Fatal("edgeproxy config must not carry provider-kubeconfig auth plumbing")
+	if cfg.WrapTransport == nil {
+		t.Fatal("the edgeproxy config carries no identity transport, so nothing would authenticate")
 	}
 	if !cfg.Insecure {
 		t.Fatal("insecure=true must carry over to the data path (RAILGRID_HUB_INSECURE)")
@@ -106,7 +107,24 @@ func TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity(t *testing.T) {
 		t.Fatalf("QPS/Burst = %v/%v, want 50/100", cfg.QPS, cfg.Burst)
 	}
 
-	strict, err := edgeProxyConfig("https://hub.example.com", "c", "e", published, "tok", false)
+	// The wrapper is what actually presents the identity.
+	recorded := ""
+	rt := cfg.WrapTransport(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		recorded = req.Header.Get("Authorization")
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
+	}))
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.Host, nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	if _, err := rt.RoundTrip(request); err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	if recorded != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the workspace identity's token", recorded)
+	}
+
+	strict, err := edgeProxyConfig("https://hub.example.com", "c", "e", published, identity, false)
 	if err != nil {
 		t.Fatalf("edgeProxyConfig (strict): %v", err)
 	}
@@ -115,76 +133,62 @@ func TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity(t *testing.T) {
 	}
 }
 
-// TestEngagementIdentityGrantsProxy keeps the identity in lockstep with the
-// edges proxy's delegated SAR: verb "proxy" on kubernetesclusters, bound to
-// the engagement SA, is what authorizes the per-edge data path. The grant is
-// a separately named, created object so it also lands in workspaces whose
-// identity role pre-dates it (kuery cannot update ClusterRoles there).
-func TestEngagementIdentityGrantsProxy(t *testing.T) {
-	scheme := runtime.NewScheme()
-	utilruntime.Must(corev1.AddToScheme(scheme))
-	utilruntime.Must(rbacv1.AddToScheme(scheme))
-	utilruntime.Must(apiskcpv1alpha2.AddToScheme(scheme))
+type roundTripperFunc func(*http.Request) (*http.Response, error)
 
-	// Pre-populated token Secret so EnsureIdentity returns without waiting
-	// on the (absent) token controller.
-	tokenSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: tenantaccess.TokenSecretName(engagementIdentityName), Namespace: tenantaccess.Namespace},
-		Type:       corev1.SecretTypeServiceAccountToken,
-		Data:       map[string][]byte{corev1.ServiceAccountTokenKey: []byte("ws-sa-token")},
-	}
-	cl := ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(tokenSecret).Build()
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-	c := &Controller{cfg: Config{APIExportName: "kuery.providers.railgrid.ai"}}
+// identityFor is what binds a reconcile to a credential. It is keyed on the
+// APIBinding's UID, so a workspace that disables and re-enables kuery gets a
+// new identity rather than inheriting the old one's grant.
+func TestIdentityForIsPerBinding(t *testing.T) {
+	const cluster = "btykuuy2789iyolq"
+	c := &Controller{identities: map[string]*workspaceIdentity{}}
+
 	binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Name: "kuery", UID: "b-1"}}
-	token, err := c.ensureIdentity(context.Background(), cl, binding)
-	if err != nil {
-		t.Fatalf("ensureIdentity: %v", err)
-	}
-	if token != "ws-sa-token" {
-		t.Fatalf("token = %q, want the Secret's token", token)
+	first := c.identityFor(binding, cluster)
+	if again := c.identityFor(binding, cluster); again != first {
+		t.Fatal("the same binding must reuse its identity, so its watch is not re-dialled")
 	}
 
-	// The identity's own role stays discovery-only.
-	identityRole := &rbacv1.ClusterRole{}
-	if err := cl.Get(context.Background(), client.ObjectKey{Name: engagementIdentityName}, identityRole); err != nil {
-		t.Fatalf("get identity ClusterRole: %v", err)
+	recreated := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Name: "kuery", UID: "b-2"}}
+	if next := c.identityFor(recreated, cluster); next == first {
+		t.Fatal("a recreated binding must not inherit its predecessor's identity")
 	}
-	for _, r := range identityRole.Rules {
-		if slices.Contains(r.Verbs, "proxy") || slices.Contains(r.Verbs, "*") {
-			t.Fatalf("identity role must not carry the data-path verb (it cannot be updated in old workspaces): %v", r.Verbs)
-		}
+}
+
+// A workspace that disables kuery has its identity revoked rather than left to
+// expire: the APIBinding is gone, so the token should stop working now.
+func TestDropClusterReleasesTheIdentity(t *testing.T) {
+	ctx := context.Background()
+	hub := &fakeIdentityHub{}
+	c := &Controller{
+		identityCache: newIdentityCache(hub.client(t)),
+		identities:    map[string]*workspaceIdentity{},
+		edgeWatches:   map[string]edgeWatch{},
+		engaged:       map[string]engagedEdge{},
+		registry: NewRegistryWithClient(ctrlfake.NewClientBuilder().
+			WithScheme(NewScheme()).
+			WithStatusSubresource(&kueryv1alpha1.Engagement{}).
+			Build()),
+	}
+	const cluster = "btykuuy2789iyolq"
+	identity := c.identityFor(&apiskcpv1alpha2.APIBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "kuery", UID: "b-1"},
+	}, cluster)
+	if _, err := identity.Token(ctx); err != nil {
+		t.Fatalf("token: %v", err)
 	}
 
-	// The separate grant carries exactly the data-plane coordinate the edges
-	// provider gates on — "create" on kubernetesclusters/k8s, never the
-	// retired wildcard "proxy" verb — bound to the engagement SA and owned by
-	// the binding so Disable revokes it.
-	grant := &rbacv1.ClusterRole{}
-	if err := cl.Get(context.Background(), client.ObjectKey{Name: edgeProxyGrantName}, grant); err != nil {
-		t.Fatalf("get grant ClusterRole: %v", err)
-	}
-	if len(grant.Rules) != 1 || !slices.Equal(grant.Rules[0].APIGroups, []string{"edges.railgrid.ai"}) ||
-		!slices.Equal(grant.Rules[0].Resources, []string{"kubernetesclusters/k8s"}) || !slices.Equal(grant.Rules[0].Verbs, []string{"create"}) {
-		t.Fatalf("grant rules = %+v, want exactly create on edges.railgrid.ai/kubernetesclusters/k8s", grant.Rules)
-	}
-	if len(grant.OwnerReferences) != 1 || grant.OwnerReferences[0].UID != "b-1" {
-		t.Fatalf("grant must be owned by the kuery APIBinding, got %+v", grant.OwnerReferences)
-	}
-	crb := &rbacv1.ClusterRoleBinding{}
-	if err := cl.Get(context.Background(), client.ObjectKey{Name: edgeProxyGrantName}, crb); err != nil {
-		t.Fatalf("get grant ClusterRoleBinding: %v", err)
-	}
-	if crb.RoleRef.Name != edgeProxyGrantName || len(crb.Subjects) != 1 ||
-		crb.Subjects[0].Kind != "ServiceAccount" || crb.Subjects[0].Name != engagementIdentityName || crb.Subjects[0].Namespace != tenantaccess.Namespace {
-		t.Fatalf("grant binding = %+v, want ClusterRole %s bound to SA %s/%s", crb, edgeProxyGrantName, tenantaccess.Namespace, engagementIdentityName)
-	}
+	c.dropCluster(ctx, cluster)
 
-	// Second pass on a workspace where everything already exists (the
-	// upgrade case) must be a no-op, not an error: nothing here needs the
-	// update verb kuery does not claim.
-	if _, err := c.ensureIdentity(context.Background(), cl, binding); err != nil {
-		t.Fatalf("ensureIdentity second pass: %v", err)
+	hub.mu.Lock()
+	deletes := len(hub.deletes)
+	hub.mu.Unlock()
+	if deletes != 1 {
+		t.Fatalf("deletes = %d, want the identity revoked on disable", deletes)
+	}
+	if len(c.identities) != 0 {
+		t.Fatalf("identities after dropCluster = %d, want 0", len(c.identities))
 	}
 }
 

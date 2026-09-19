@@ -69,7 +69,8 @@ func watchFixture(t *testing.T) (*Controller, *dynamicfake.FakeDynamicClient, *a
 		engaged:     map[string]engagedEdge{},
 		edgeWatches: map[string]edgeWatch{},
 		termCtx:     ctx,
-		tenantDynamicFor: func(string, string) (dynamic.Interface, error) {
+		identities:  map[string]*workspaceIdentity{},
+		tenantDynamicFor: func(string, credential) (dynamic.Interface, error) {
 			dials.Add(1)
 			return dyn, nil
 		},
@@ -121,7 +122,8 @@ func TestEdgeWatchRecordsEngagementsFromTheWatchAlone(t *testing.T) {
 	c, dyn, dials := watchFixture(t)
 	const cluster = "1ngen6o0so3jwz2h"
 
-	if err := c.ensureEdgeWatch(cluster, "token-1"); err != nil {
+	identity := &staticCredential{token: "token-1"}
+	if err := c.ensureEdgeWatch(cluster, identity); err != nil {
 		t.Fatalf("ensureEdgeWatch: %v", err)
 	}
 
@@ -151,18 +153,32 @@ func TestEdgeWatchRecordsEngagementsFromTheWatchAlone(t *testing.T) {
 	}
 	engagementPhase(t, c, cluster, "edge-1", kueryv1alpha1.EngagementPhaseDisengaged, "edge deleted")
 
-	// The same identity keeps its watch; a rotated token replaces it.
-	if err := c.ensureEdgeWatch(cluster, "token-1"); err != nil {
+	// Engaging an edge hands its name to the identity, so the next mint
+	// carries the named get and the named create on kubernetesclusters/k8s
+	// that the edges data plane's two gates check. Deleting it hands the name
+	// back, so the grant shrinks.
+	if !identity.saw("edge-1") {
+		t.Fatal("the engaged edge was never named to the workspace identity")
+	}
+	if !identity.forgot("edge-1") {
+		t.Fatal("a deleted edge must stop being named by the identity")
+	}
+
+	// The same identity keeps its watch — a rotated token no longer re-dials
+	// anything, because the identity refreshes the bearer underneath the
+	// connection. A different identity (the binding was recreated, so the
+	// credential is a different one) replaces the watch.
+	if err := c.ensureEdgeWatch(cluster, identity); err != nil {
 		t.Fatalf("ensureEdgeWatch again: %v", err)
 	}
 	if got := dials.Load(); got != 1 {
-		t.Fatalf("dials = %d, want 1 (same token reuses the watch)", got)
+		t.Fatalf("dials = %d, want 1 (the same identity reuses the watch)", got)
 	}
-	if err := c.ensureEdgeWatch(cluster, "token-2"); err != nil {
-		t.Fatalf("ensureEdgeWatch with a new token: %v", err)
+	if err := c.ensureEdgeWatch(cluster, &staticCredential{token: "token-2"}); err != nil {
+		t.Fatalf("ensureEdgeWatch with a new identity: %v", err)
 	}
 	if got := dials.Load(); got != 2 {
-		t.Fatalf("dials = %d, want 2 (new token re-dials)", got)
+		t.Fatalf("dials = %d, want 2 (a new identity re-dials)", got)
 	}
 
 	// Stopping the watch ends the work.
@@ -183,7 +199,7 @@ func TestDropClusterStopsWatchAndDisengagesRecords(t *testing.T) {
 	c, dyn, _ := watchFixture(t)
 	const cluster = "1ngen6o0so3jwz2h"
 
-	if err := c.ensureEdgeWatch(cluster, "token-1"); err != nil {
+	if err := c.ensureEdgeWatch(cluster, &staticCredential{token: "token-1"}); err != nil {
 		t.Fatalf("ensureEdgeWatch: %v", err)
 	}
 	if err := dyn.Tracker().Add(edgeObject("edge-1", false)); err != nil {
@@ -205,9 +221,9 @@ func TestEnsureEdgeWatchAfterTheTermIsANoop(t *testing.T) {
 	dialled := false
 	c := &Controller{
 		edgeWatches:      map[string]edgeWatch{},
-		tenantDynamicFor: func(string, string) (dynamic.Interface, error) { dialled = true; return nil, nil },
+		tenantDynamicFor: func(string, credential) (dynamic.Interface, error) { dialled = true; return nil, nil },
 	}
-	if err := c.ensureEdgeWatch("1ngen6o0so3jwz2h", "token"); err != nil {
+	if err := c.ensureEdgeWatch("1ngen6o0so3jwz2h", &staticCredential{token: "token"}); err != nil {
 		t.Fatalf("ensureEdgeWatch: %v", err)
 	}
 	if dialled || len(c.edgeWatches) != 0 {

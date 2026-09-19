@@ -18,8 +18,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
 
-	"github.com/railgrid/provider-sdk/tenantaccess"
-
 	kueryv1alpha1 "github.com/railgrid/provider-kuery/apis/v1alpha1"
 )
 
@@ -29,7 +27,15 @@ import (
 // for every consumer at once and breaks mixed platform/self-hosted edges
 // deployments (see the package comment and manifest.yaml). So each enabled
 // workspace gets its own watch, opened through the workspace's OWN edges
-// binding as the per-workspace engagement ServiceAccount.
+// binding as that workspace's hub-minted engagement identity.
+//
+// The identity's own rules are what make this watch legal: the composition
+// kuery's CatalogEntry declares on the edges dependency
+// (spec.dependencies[].composes) carries UNNAMED list and watch on
+// kubernetesclusters, which is the one shape a collection request can be
+// authorized by — RBAC does not apply resourceNames to a list or a watch.
+// Engaging an edge additionally needs it BY NAME, which is why every observed
+// edge is handed to the identity before anything dials it (identity.go).
 //
 // This watch is the authority on the workspace's edges. A freshly opened watch
 // replays every object as ADDED, so it IS the list — the reconciler does not
@@ -44,8 +50,8 @@ var edgeGVR = edgeGVK.GroupVersion().WithResource("kubernetesclusters")
 
 // edgeWatch is one workspace's running edge watch.
 type edgeWatch struct {
-	token  string
-	cancel context.CancelFunc
+	identity credential
+	cancel   context.CancelFunc
 }
 
 // edgeWatchBackoff bounds the retry delay after a failed watch dial.
@@ -55,22 +61,29 @@ const (
 )
 
 // tenantDynamic builds the dynamic client the edge watch uses: the
-// workspace's own API surface, as the engagement ServiceAccount.
+// workspace's own API surface, as the workspace's engagement identity.
 // tenantDynamicFor is a test seam.
-func (c *Controller) tenantDynamic(clusterName, token string) (dynamic.Interface, error) {
+func (c *Controller) tenantDynamic(clusterName string, identity credential) (dynamic.Interface, error) {
 	if c.tenantDynamicFor != nil {
-		return c.tenantDynamicFor(clusterName, token)
+		return c.tenantDynamicFor(clusterName, identity)
 	}
-	return tenantaccess.NewDynamicClient(c.hubBase, clusterName, token, c.cfg.ProviderConfig.Insecure)
+	cfg, err := tenantRESTConfig(c.hubBase, clusterName, identity, c.cfg.ProviderConfig.Insecure)
+	if err != nil {
+		return nil, err
+	}
+	return dynamic.NewForConfig(cfg)
 }
 
-// ensureEdgeWatch makes sure one edge watch runs for the workspace, as the
-// engagement identity token. A watch already running under the same token is
-// left alone; one under an older token is replaced.
-func (c *Controller) ensureEdgeWatch(tenantCluster, token string) error {
+// ensureEdgeWatch makes sure one edge watch runs for the workspace, as its
+// engagement identity. A watch already running under the same identity is left
+// alone; one under a superseded identity — the APIBinding was deleted and
+// recreated, so the credential is a different one — is replaced. Token
+// rotation is NOT a reason to re-dial any more: the identity refreshes the
+// bearer underneath the connection.
+func (c *Controller) ensureEdgeWatch(tenantCluster string, identity credential) error {
 	c.mu.Lock()
 	if existing, ok := c.edgeWatches[tenantCluster]; ok {
-		if existing.token == token {
+		if existing.identity == identity {
 			c.mu.Unlock()
 			return nil
 		}
@@ -84,7 +97,7 @@ func (c *Controller) ensureEdgeWatch(tenantCluster, token string) error {
 	}
 	c.mu.Unlock()
 
-	dyn, err := c.tenantDynamic(tenantCluster, token)
+	dyn, err := c.tenantDynamic(tenantCluster, identity)
 	if err != nil {
 		return err
 	}
@@ -94,10 +107,10 @@ func (c *Controller) ensureEdgeWatch(tenantCluster, token string) error {
 	if c.edgeWatches == nil {
 		c.edgeWatches = map[string]edgeWatch{}
 	}
-	c.edgeWatches[tenantCluster] = edgeWatch{token: token, cancel: cancel}
+	c.edgeWatches[tenantCluster] = edgeWatch{identity: identity, cancel: cancel}
 	c.mu.Unlock()
 
-	go c.runEdgeWatch(ctx, tenantCluster, token, dyn)
+	go c.runEdgeWatch(ctx, tenantCluster, identity, dyn)
 	return nil
 }
 
@@ -117,7 +130,7 @@ func (c *Controller) stopEdgeWatch(tenantCluster string) {
 // runEdgeWatch follows one workspace's KubernetesCluster edges until ctx ends,
 // re-dialing with backoff whenever the watch drops, and renews this replica's
 // claims on the edges it owns every renewInterval.
-func (c *Controller) runEdgeWatch(ctx context.Context, tenantCluster, token string, dyn dynamic.Interface) {
+func (c *Controller) runEdgeWatch(ctx context.Context, tenantCluster string, identity credential, dyn dynamic.Interface) {
 	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster)
 	renew := time.NewTicker(renewInterval)
 	defer renew.Stop()
@@ -137,14 +150,14 @@ func (c *Controller) runEdgeWatch(ctx context.Context, tenantCluster, token stri
 				// Keep the claims alive across a watch outage: the edges we
 				// already sync are still ours, and letting them expire would
 				// hand them to a peer that cannot see them either.
-				c.renewClaims(ctx, tenantCluster, token)
+				c.renewClaims(ctx, tenantCluster, identity)
 			case <-time.After(backoff):
 			}
 			backoff = min(backoff*2, edgeWatchMaxBackoff)
 			continue
 		}
 		backoff = edgeWatchMinBackoff
-		c.followEdgeWatch(ctx, stream, tenantCluster, token, renew.C)
+		c.followEdgeWatch(ctx, stream, tenantCluster, identity, renew.C)
 	}
 }
 
@@ -155,7 +168,8 @@ func (c *Controller) runEdgeWatch(ctx context.Context, tenantCluster, token stri
 func (c *Controller) followEdgeWatch(
 	ctx context.Context,
 	stream watch.Interface,
-	tenantCluster, token string,
+	tenantCluster string,
+	identity credential,
 	renew <-chan time.Time,
 ) {
 	defer stream.Stop()
@@ -165,7 +179,7 @@ func (c *Controller) followEdgeWatch(
 		case <-ctx.Done():
 			return
 		case <-renew:
-			c.renewClaims(ctx, tenantCluster, token)
+			c.renewClaims(ctx, tenantCluster, identity)
 		case evt, ok := <-stream.ResultChan():
 			// A ready event can win the select over a done context.
 			if !ok || ctx.Err() != nil {
@@ -185,6 +199,11 @@ func (c *Controller) followEdgeWatch(
 			name := object.GetName()
 			if evt.Type == watch.Deleted {
 				delete(connected, name)
+				// Drop the name from the identity's rules too: an edge that no
+				// longer exists is one this workspace's credential stops
+				// naming on its next refresh. RBAC written create-if-absent
+				// could never shrink; a re-stated rule set does.
+				identity.Forget(name)
 				c.forgetEdge(ctx, tenantCluster, name)
 				continue
 			}
@@ -201,14 +220,14 @@ func (c *Controller) followEdgeWatch(
 			if known && previous == now {
 				continue
 			}
-			c.observeEdge(ctx, tenantCluster, token, name, statusURL, now)
+			c.observeEdge(ctx, tenantCluster, identity, name, statusURL, now)
 		}
 	}
 }
 
 // observeEdge maps one edge's observed state onto the Engagement record and
 // this replica's sync.
-func (c *Controller) observeEdge(ctx context.Context, tenantCluster, token, edge, statusURL string, connected bool) {
+func (c *Controller) observeEdge(ctx context.Context, tenantCluster string, identity credential, edge, statusURL string, connected bool) {
 	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster, "edge", edge)
 	name := EngagementName(tenantCluster, edge)
 
@@ -232,7 +251,7 @@ func (c *Controller) observeEdge(ctx context.Context, tenantCluster, token, edge
 		}
 		return
 	}
-	c.claimAndEngage(ctx, tenantCluster, token, edge, statusURL)
+	c.claimAndEngage(ctx, tenantCluster, identity, edge, statusURL)
 }
 
 // forgetEdge handles an edge that is gone from the workspace entirely.
@@ -250,7 +269,7 @@ func (c *Controller) forgetEdge(ctx context.Context, tenantCluster, edge string)
 // claimAndEngage takes the edge's Lease if it is free, engages the edge when
 // it holds it, and records the result. Declining a foreign claim is the
 // sharding: exactly one replica syncs each edge.
-func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster, token, edge, statusURL string) {
+func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster string, identity credential, edge, statusURL string) {
 	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster, "edge", edge)
 	name := EngagementName(tenantCluster, edge)
 
@@ -265,7 +284,16 @@ func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster, token, e
 		c.dropLocal(ctx, StoreName(tenantCluster, edge), false)
 		return
 	}
-	if err := c.engage(ctx, tenantCluster, edge, statusURL, token); err != nil {
+	// This replica is about to talk to the edge, so the workspace's identity
+	// has to name it: the edges data plane's first gate is a real GET of the
+	// edge as the caller, and its second is create on kubernetesclusters/k8s
+	// for that name. Observing before the dial is what makes the token in hand
+	// the right one — the source is rebuilt on a changed edge set, so the
+	// engage below mints with this edge named rather than 403ing once first.
+	// An edge a peer holds is deliberately not observed: this replica has no
+	// business reading an edge it does not sync.
+	identity.Observe(edge)
+	if err := c.engage(ctx, tenantCluster, edge, statusURL, identity); err != nil {
 		logger.Error(err, "engaging edge")
 		if statusErr := c.registry.SetStatus(ctx, name, func(status *kueryv1alpha1.EngagementStatus) {
 			status.Phase = kueryv1alpha1.EngagementPhasePending
@@ -301,7 +329,7 @@ func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster, token, e
 // because the watch already owns that question. An edge a peer let expire is
 // picked up when the watch next re-dials or when the peer's own Engagement
 // goes Stale and the tenant's watch re-observes it.
-func (c *Controller) renewClaims(ctx context.Context, tenantCluster, token string) {
+func (c *Controller) renewClaims(ctx context.Context, tenantCluster string, identity credential) {
 	prefix := tenantCluster + "/"
 	c.mu.Lock()
 	edges := make([]engagedEdge, 0, len(c.engaged))
@@ -316,6 +344,6 @@ func (c *Controller) renewClaims(ctx context.Context, tenantCluster, token strin
 		if ctx.Err() != nil {
 			return
 		}
-		c.claimAndEngage(ctx, tenantCluster, token, edge.edgeName, edge.statusURL)
+		c.claimAndEngage(ctx, tenantCluster, identity, edge.edgeName, edge.statusURL)
 	}
 }

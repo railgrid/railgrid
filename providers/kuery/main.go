@@ -194,9 +194,15 @@ func runServe() {
 		ProviderConfig: providerCfg,
 		HubBaseURL:     os.Getenv("RAILGRID_HUB_URL"),
 		APIExportName:  apiExportName,
-		Sync:           kc.Sync,
-		Store:          kc.Store,
-		Readiness:      ready,
+		// The name the hub knows this provider by. It is what authenticates
+		// every identity request (the hub TokenReviews the provider's own
+		// bearer in the provider workspace and refuses a request that names
+		// anyone else) and what its policy measures the requested rules
+		// against — so it is the same name the heartbeat registers under.
+		ProviderName: envOr("RAILGRID_PROVIDER_NAME", "kuery"),
+		Sync:         kc.Sync,
+		Store:        kc.Store,
+		Readiness:    ready,
 	})
 	if err != nil {
 		log.Fatalf("engagement controller: %v", err)

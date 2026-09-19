@@ -17,17 +17,23 @@ You may obtain a copy of the License at
 // service) tears them down through the finalizer, the same shape the Project
 // reconciler uses for a project's own runtime.
 //
-// Instances are read, written and watched through the manager's client for
-// the request's cluster — the provider's own ServiceAccount over its APIExport
-// virtual workspace, which serves infrastructure.railgrid.ai Instances because
-// this provider's export claims them (manifest.yaml). The Studio holds no
-// identity of its own: nothing here acts as anything but the provider.
+// Two clients, the same split the Project reconciler makes: the Studio CR and
+// the model-credential Secrets ride the manager's client over this provider's
+// own APIExport virtual workspace, and the shared Instances ride a client on
+// the tenant workspace itself, as a hub-minted per-Studio scoped identity
+// (identity.go). The virtual workspace deliberately does not serve
+// infrastructure.railgrid.ai: claiming a first-party group pins one serving
+// APIExport identityHash for every consuming workspace at once, and a
+// workspace bound to an org-owned infrastructure provider would then be served
+// nothing. See docs/app-studio-runtime-decoupling.md.
 package studio
 
 import (
 	"context"
 	"fmt"
+	"log"
 	"slices"
+	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -37,18 +43,18 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
-	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	"github.com/railgrid/provider-sdk/tenantaccess"
+
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
+	"github.com/railgrid/provider-app-studio/internal/crossprovider"
+	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 )
 
 const (
@@ -69,47 +75,95 @@ const (
 	// inspection addresses.
 	BrowserInstanceName = "app-studio-browser"
 	// infraAPIGroup is the dependency group the Studio's shared backends live
-	// in. It is a FOREIGN group: everything the Studio identity holds on it is
-	// name-scoped.
-	infraAPIGroup = "infrastructure.railgrid.ai"
+	// in. It is a FOREIGN group: every object verb the Studio identity holds on
+	// it is name-scoped.
+	infraAPIGroup = crossprovider.InfrastructureAPIGroup
 )
 
 // Reconciler converges the workspace's shared services.
 type Reconciler struct {
 	Manager mcmanager.Manager
+	// HubBase / HubInsecure address the hub for the tenant-workspace client.
+	HubBase     string
+	HubInsecure bool
+	// Watches delivers Instance events from every tenant workspace (see
+	// package tenantwatch), through the same identity the writes use.
+	Watches *tenantwatch.Hub
+	// Identities mints the per-Studio identity this loop acts as inside the
+	// tenant workspace. Nil means there is no hub to ask (REST-only dev): the
+	// shared backends are then not converged and the Studio still reports its
+	// model registry.
+	Identities *scopedidentity.Cache
+	// TenantClientFor is a test seam for the workspace client: a client on the
+	// tenant's own API surface, authenticated as the Studio identity.
+	// Production leaves it nil and dials {HubBase}/clusters/{cluster}.
+	TenantClientFor func(clusterName, token string) (client.Client, error)
+	// noIdentityNotices remembers which Studios were already told about a
+	// missing hub, so a REST-only deployment logs once rather than every pass.
+	noIdentityNotices sync.Map
+}
+
+// tenantClient builds the client every Instance read and write goes through:
+// the tenant's own API surface, as the Studio identity. There is no
+// claimed-virtual-workspace fallback, because the virtual workspace does not
+// serve Instances — see the package comment.
+func (r *Reconciler) tenantClient(clusterName, token string) (client.Client, error) {
+	if r.TenantClientFor != nil {
+		return r.TenantClientFor(clusterName, token)
+	}
+	return tenantaccess.NewClient(r.HubBase, clusterName, token, r.HubInsecure)
+}
+
+// crossProviderAccess resolves the identity token and the workspace client the
+// shared backends need. A nil client with a nil error means there is no hub to
+// ask, and the caller skips that half rather than failing.
+func (r *Reconciler) crossProviderAccess(ctx context.Context, clusterName string, st *aiv1alpha1.Studio) (client.Client, error) {
+	token, err := r.identityToken(ctx, clusterName, st)
+	if err != nil {
+		return nil, fmt.Errorf("studio identity: %w", err)
+	}
+	if token == "" {
+		if _, told := r.noIdentityNotices.LoadOrStore(clusterName+"/"+st.Name, struct{}{}); !told {
+			log.Printf("WARNING app-studio studio %s: no hub identity service is configured (RAILGRID_HUB_URL), so the workspace's shared search and browser backends cannot be converged", st.Name)
+		}
+		return nil, nil
+	}
+	tc, err := r.tenantClient(clusterName, token)
+	if err != nil {
+		return nil, fmt.Errorf("tenant client: %w", err)
+	}
+	// The Studio identity may list and watch instances; the watcher starts
+	// once per cluster and is shared with the Project reconciler.
+	r.Watches.Ensure(clusterName, token, tenantwatch.InstancesGVR)
+	return tc, nil
 }
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
-	// Instances ride the manager's own wildcard informer: the export claims
-	// them, so readiness arrives as an event in every tenant workspace with no
-	// second watch machinery and nothing to resync.
-	instance := &unstructured.Unstructured{}
-	instance.SetGroupVersionKind(instanceGVK)
-	_, err := mcbuilder.ControllerManagedBy(mgr).
+	c, err := mcbuilder.ControllerManagedBy(mgr).
 		Named("app-studio-studio").
 		For(&aiv1alpha1.Studio{}).
-		Watches(instance, studiosForInstance()).
 		Build(r)
-	return err
+	if err != nil {
+		return err
+	}
+	if r.Watches != nil {
+		return c.MultiClusterWatch(r.Watches.Source(mapInstanceEvent, tenantwatch.InstancesGVR))
+	}
+	return nil
 }
 
-// instanceGVK is the claimed Instance kind the shared backends are.
-var instanceGVK = schema.GroupVersionKind{Group: infraAPIGroup, Version: "v1alpha1", Kind: "Instance"}
-
-// studiosForInstance names the Studio a shared instance belongs to, from the
+// mapInstanceEvent names the Studio a shared instance belongs to, from the
 // attribution label ensureInstance stamps. A project's instance carries a
 // different label and wakes nothing here.
-func studiosForInstance() mchandler.EventHandlerFunc {
-	return func(name multicluster.ClusterName, _ cluster.Cluster) mchandler.EventHandler {
-		return mchandler.ForCluster(handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
-			owner := obj.GetLabels()[studioLabel]
-			if owner == "" {
-				return nil
-			}
-			return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: owner}}}
-		}), name)
+func mapInstanceEvent(_ context.Context, _ client.Client, evt tenantwatch.Event) []types.NamespacedName {
+	if evt.Object == nil {
+		return nil
 	}
+	if owner := evt.Object.GetLabels()[studioLabel]; owner != "" {
+		return []types.NamespacedName{{Name: owner}}
+	}
+	return nil
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -138,13 +192,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	search, err := r.converge(ctx, c, &st, searchService(&st))
+	// The shared backends belong to the infrastructure provider the WORKSPACE
+	// bound, so they are converged inside that workspace as the Studio
+	// identity. Without one they are left alone; the model registry below is
+	// this provider's own Secrets and still reports.
+	tc, err := r.crossProviderAccess(ctx, string(req.ClusterName), &st)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	browser, err := r.converge(ctx, c, &st, browserService(&st))
-	if err != nil {
-		return ctrl.Result{}, err
+	var search, browser *aiv1alpha1.StudioServiceStatus
+	if tc != nil {
+		if search, err = r.converge(ctx, tc, &st, searchService(&st)); err != nil {
+			return ctrl.Result{}, err
+		}
+		if browser, err = r.converge(ctx, tc, &st, browserService(&st)); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	next := aiv1alpha1.StudioStatus{Search: search, Browser: browser}
@@ -157,7 +220,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// A broken model registry does NOT make the Studio pending: the shared
 	// search and browser backends are fine, and the workspace should not look
 	// half-provisioned because one model lost its credential. It is reported,
-	// not escalated.
+	// not escalated. Read over the virtual workspace as the provider — the
+	// credentials are Secrets this provider writes and claims itself.
 	llm := r.checkLLMRegistry(ctx, c, &st)
 	next.Conditions = append(next.Conditions, llm.condition)
 	next.Models = llm.models
@@ -327,14 +391,29 @@ func (r *Reconciler) finalize(ctx context.Context, c client.Client, st *aiv1alph
 		}
 	}
 	if anyRef {
-		for _, svc := range services {
-			if ref := svc.ref; ref != nil && ref.Resource != "" {
-				if err := r.deleteInstance(ctx, c, ref); err != nil {
-					return ctrl.Result{}, fmt.Errorf("deleting %s instance %s: %w", svc.name, ref.Name, err)
+		// Teardown rides the tenant-path client like every other instance
+		// write; blocking on the identity avoids releasing the finalizer over
+		// instances a claims-path 404 would have hidden.
+		tc, err := r.crossProviderAccess(ctx, clusterName, st)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if tc == nil {
+			log.Printf("app-studio studio %s: releasing the finalizer without teardown because no hub identity is configured", st.Name)
+		} else {
+			for _, svc := range services {
+				if ref := svc.ref; ref != nil && ref.Resource != "" {
+					if err := r.deleteInstance(ctx, tc, ref); err != nil {
+						return ctrl.Result{}, fmt.Errorf("deleting %s instance %s: %w", svc.name, ref.Name, err)
+					}
 				}
 			}
 		}
 	}
+	if err := r.releaseIdentity(ctx, clusterName, st); err != nil {
+		log.Printf("app-studio studio %s: releasing the studio identity: %v", st.Name, err)
+	}
+	r.noIdentityNotices.Delete(clusterName + "/" + st.Name)
 	controllerutil.RemoveFinalizer(st, aiv1alpha1.StudioFinalizer)
 	return ctrl.Result{}, c.Update(ctx, st)
 }

@@ -38,14 +38,20 @@ const (
 //     tenant-visible API. See the install package.
 //
 // kuery's APIExport (config/kcp/apiexport-kuery.providers.railgrid.ai.yaml,
-// generated from manifest.yaml) deliberately claims NO first-party
-// (*.railgrid.ai) resources. Such a claim must pin the serving APIExport's identityHash, and
-// an export can pin exactly one identity per claimed resource — for every
-// consuming workspace at once — which breaks the moment one org self-hosts
-// the edges provider while others use the platform copy. Edge discovery
-// instead acts as a per-workspace ServiceAccount through each workspace's
-// own edges binding (see engagement + provider-sdk/tenantaccess). Only
-// built-in types (no identityHash) are claimed, to provision that identity.
+// generated from manifest.yaml) carries NO permission claims at all.
+//
+// No first-party (*.railgrid.ai) claim, because such a claim must pin the
+// serving APIExport's identityHash and an export pins exactly one identity per
+// claimed resource — for every consuming workspace at once — which breaks the
+// moment one org self-hosts the edges provider while others use the platform
+// copy. What the engagement controller needs on an edge is declared as a
+// COMPOSITION instead (manifest.yaml spec.dependencies[].composes) and reached
+// through a hub-minted scoped identity acting inside each tenant workspace.
+//
+// And no built-in types either: those existed only to provision a
+// ServiceAccount, a ClusterRole, a binding and a token Secret by hand. A
+// provider does not mint identities, it asks the hub (engagement/identity.go,
+// provider-sdk/identityclient).
 func runInitCmd(ctx context.Context) error {
 	config, err := loadProviderConfig()
 	if err != nil {
@@ -62,8 +68,8 @@ func runInitCmd(ctx context.Context) error {
 		kcpDir = "/etc/railgrid/kcp"
 	}
 	// Per-installation APIExport identity hashes for first-party claim groups,
-	// as "group=hash,group=hash". Empty for this provider: it claims only
-	// built-in types, which need no hash.
+	// as "group=hash,group=hash". Empty for this provider: it claims nothing,
+	// so there is no hash to stamp.
 	identityHashes, err := sdkinstall.ParseIdentityHashes(os.Getenv("RAILGRID_IDENTITY_HASHES"))
 	if err != nil {
 		return err

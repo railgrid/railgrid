@@ -491,14 +491,67 @@ service, so a workload identity is recorded and collected like every other.
 ### What may be asked for
 
 Every rule is checked before anything is written, and one refused rule refuses
-the whole request. Three shapes are admitted:
+the whole request. Five shapes are admitted:
 
 | Clause | Shape | Name-scoped? |
 |---|---|---|
-| A — own group | any verb on resources of an API group the **requesting provider exports** | optional |
+| A — own group | any verb on resources of an API group the **requesting provider serves** | optional |
 | B — foreign read | `get` on resources of another provider's group, where that provider is **bound in the tenant workspace** | **required** |
 | C — foreign verb | `create` on `{resource}/{verb}`, where `{verb}` is **declared by that provider** for that resource — as a catalog action (`spec.actions`) or a data-plane verb (`spec.dataPlane.verbs`) | **required** |
 | D — platform | a fixed, closed allowlist every workspace-scoped identity needs to function at all | where the API allows it |
+| E — composition | CRUD on a kind of another provider that the requester **declares it composes** (`spec.dependencies[].composes`) and a workspace or org **admin accepted** in this workspace | `create`/`list`/`watch` **no**; `get`/`update`/`patch`/`delete` **required** |
+
+#### Who owns an API group
+
+Clauses A, B, C and E all turn on one question — *which provider serves this
+API group?* — and there is exactly one place that answers it: **`spec.resources[].group`
+on the provider's own APIExport**, read by the catalog controller out of the
+provider's workspace and published as `CatalogEntry.status.apiGroups` (and as
+`apiGroups` on `/api/providers`).
+
+It is **not** the APIExport's name, and the two are different for most
+providers:
+
+| Provider | `spec.apiExport.name` | groups it actually serves |
+|---|---|---|
+| `edges` | `edges.providers.railgrid.ai` | `edges.railgrid.ai` |
+| `infrastructure` | `infrastructure.providers.railgrid.ai` | `infrastructure.railgrid.ai` |
+| `code` | `code.providers.railgrid.ai` | `code.railgrid.ai` |
+| `app-studio` | `ai.railgrid.ai` | `ai.railgrid.ai` |
+| `kuery` | `kuery.providers.railgrid.ai` | `kuery.providers.railgrid.ai` |
+
+The export name is what a tenant's APIBinding references
+(`spec.reference.export.name`), and that is the only thing it is used for —
+`IsBound` keys on it, correctly. Everything that reasons about *groups* reads
+the list. An export may serve several groups, and a provider that mints
+schemas at runtime (infrastructure does: its generated export ships with no
+resources at all) only has them on the live object, so the file in the chart
+is not a substitute either.
+
+The read rides the CatalogEntry's normal reconcile rather than a watch: the
+catalog controller's clients are the `providers.railgrid.ai` APIExport virtual
+workspace, which serves `catalogentries` and nothing else, so APIExports are
+not watchable from there. A provider's `init` writes the export and then
+starts heartbeating, and a heartbeating entry reconciles every 30s; an entry
+whose groups are still unknown requeues on the same cadence until they resolve.
+
+Until the export can be read, the provider serves **no** group as far as the
+policy is concerned. Every rule naming one is refused with `unknown_group` —
+including the provider's own, under clause A — and the CatalogEntry carries
+`APIGroupsUnknown=True` saying why. Guessing the group from the export name is
+what this replaces: it made the edges agent's request for its own
+`edges.railgrid.ai` come back `unknown_group`, and it would have rejected
+kuery's and App Studio's `composes` declarations the moment their dependencies
+registered. A read that fails *after* one succeeded does not retract anything:
+`status.apiGroups` carries the last successful read across replicas and
+restarts.
+
+Clause E is evaluated **after D and before B/C**, so a rule on a kind the
+requester declared as a composition is always measured against that
+composition's verbs and the tenant's acceptance, never admitted by the weaker
+foreign-read clause because it happened to ask for `get`. A rule that mixes a
+composed kind with an ordinary foreign read is left to clause B: declaring a
+composition must never cost a provider access it already had.
 
 Clause D is a closed list, identical for every provider, checked **before**
 clause A so owning a group cannot widen it:
@@ -526,16 +579,79 @@ they want already knows the name, while a `list` would hand a background
 identity the full inventory of what a tenant has enabled.
 
 Everything else is refused with a code the caller sees: the core API group
-(Secrets above all — review X-4), every wildcard, any write on another
-provider's objects, any unnamed rule outside the caller's own group, and any
-verb the owning provider has not declared.
+(Secrets above all — review X-4), every wildcard, any unnamed rule outside the
+caller's own group, any verb the owning provider has not declared, and any
+write on another provider's objects **except** through clause E below, which a
+tenant admin has to accept first.
 
-`list` and `watch` on a **foreign** group are refused outright. Kubernetes RBAC
-does not apply `resourceNames` to collection requests, so "get/list/watch on
-named resources" cannot be expressed: the rule either authorizes nothing or
-authorizes reading every object of that kind in the workspace. A consumer that
-needs a collection reads it by name, or the owning provider publishes a list
-API of its own.
+Outside clause E, `list` and `watch` on a **foreign** group are refused
+outright. Kubernetes RBAC does not apply `resourceNames` to collection
+requests, so "get/list/watch on named resources" cannot be expressed: the rule
+either authorizes nothing or authorizes reading every object of that kind in
+the workspace. A consumer that needs a collection reads it by name, or the
+owning provider publishes a list API of its own — or declares a composition and
+is granted one.
+
+#### Clause E — composition
+
+A product is rarely one provider: an App Studio project IS an infrastructure
+`Instance` plus a code `Repository`, and App Studio's reconciler has to create
+and manage those objects in the tenant's workspace. Clause E is the only shape
+in this policy that writes another provider's objects, and every condition is
+re-checked on every mint:
+
+1. The requester's CatalogEntry declares `composes {group, resource}` on a
+   dependency **Q** (`spec.dependencies[].composes`, validated fail-closed by
+   the catalog controller: no wildcards, ordinary Kubernetes verbs only, and
+   the group must be one Q serves — checked against Q's `status.apiGroups`, and
+   skipped while Q is unregistered or its groups are still unknown, since
+   charts reconcile in no particular order).
+2. `group` really is a group Q serves, per the registry, right now.
+3. Q's export is **bound** in this tenant workspace.
+4. A workspace or org admin **accepted** the composition here — recorded as
+   `compose:<group>/<resource>` at `workspace` scope in the provider's `Grant`
+   (`pkg/hub/hubaccess`), written by the Enable dialog.
+5. Every requested verb is in the **declared** verb list.
+
+Refusals: `composition_not_declared`, `composition_not_granted`,
+`composition_verb_not_declared`, `composition_rule_shape`, plus
+`provider_not_bound` when Q is not enabled here.
+
+The shapes, and why they are what they are:
+
+| Verbs | `resourceNames` | Why |
+|---|---|---|
+| `create` | **must be absent** | a create request has no name yet, so a name-scoped `create` rule authorizes *nothing* |
+| `list`, `watch` | **must be absent** | RBAC does not apply `resourceNames` to collection requests |
+| `get`, `update`, `patch`, `delete` | **required** | the object exists and has a name, and a composing reconciler knows it — it created it |
+
+`list` and `watch` are refused outright on a foreign group under clause B and
+admitted here, and the difference is the whole argument for the clause. The
+holder is a ServiceAccount **inside one tenant workspace**, with a ClusterRole
+the hub wrote and reconciles; a list it authorizes returns the objects of that
+one workspace — the workspace whose admin accepted the composition, of a kind
+they accepted. Bounding a reconciler to a workspace is precisely what a scoped
+identity is for, so "every Instance in this workspace" is the intended scope,
+not an escape from one. A reconciler cannot work without a watch, and refusing
+it would push providers to poll by name or to take a permission claim, which is
+worse on every axis.
+
+**Why not a permission claim.** The other way a provider could reach a
+first-party group is an APIExport permission claim, and it is the wrong tool
+here. A claim on a `*.railgrid.ai` group pins to **one export's
+`identityHash`** (AGENTS.md §5.7), which is per-installation and stamped at
+`init`; the moment an Org self-hosts the dependency, every claim-holder is
+still pinned to the platform copy and kcp reports the binding as healthy while
+serving none of the claimed resources (this is what
+`GET …/providers/enabled` surfaces as `staleClaims`). A composition names the
+dependency by NAME and resolves through whatever export is bound in that
+workspace, so it survives a BYO swap. It is also revocable by the party who
+should hold that power: a claim lives in the consumer's own APIExport, a
+composition in the tenant's `Grant`, which Disable deletes.
+
+Compositions follow `--provider-hub-access-platform-default` exactly as hub
+access does — a platform provider composes what it declares where nobody
+entitled to decide has, an org-owned one always needs an explicit acceptance.
 
 ### What the hub guarantees
 
@@ -560,6 +676,10 @@ API of its own.
 - **Reconciled rules.** A record's rules are applied, not merely created: a
   narrowed grant shrinks the ClusterRole, and an out-of-band widening is
   reverted on the next sweep.
+- **A real group owner.** Group ownership is resolved from what each
+  provider's APIExport actually serves, never from its name, and a provider
+  whose export the hub has not read owns nothing. There is no shape in which a
+  guess about who serves a group produces a grant.
 
 ### The client
 
@@ -655,6 +775,8 @@ is not.
 | (2b) caller-token tenant factory | `providers/*/tenant/client.go` |
 | Scoped identity service | `pkg/hub/identity/` |
 | Scoped identity policy | `pkg/hub/identity/policy.go` |
+| Group ownership (registry → policy) | `pkg/hub/identity/policy.go` `RegistryCatalog.GroupOwner` |
+| APIExport → served groups | `pkg/hub/providers/provision.go` `ResolveAPIExportGroups` |
 | The single identity minter | `pkg/hub/serviceaccounts/scoped_identity.go` |
 | Scoped identity record | `apis/tenancy/v1alpha1/types_scoped_identity.go` |
 | Scoped identity routes | `pkg/hub/restapi/identities.go` |

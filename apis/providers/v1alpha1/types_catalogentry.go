@@ -17,6 +17,10 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+	"regexp"
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -458,6 +462,153 @@ type ProviderDependency struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
+
+	// Composes declares which of this dependency's kinds the declaring
+	// provider's reconcilers CREATE AND MANAGE inside the tenant workspace,
+	// and with which verbs. It is the machine-readable form of "App Studio
+	// builds a project out of an infrastructure Instance and a code
+	// Repository": one provider composing another provider's objects on the
+	// tenant's behalf, in the tenant's own workspace.
+	//
+	// Declaring grants NOTHING. A composition reaches a workspace only when a
+	// workspace or org admin accepted it in the Enable dialog, and only then
+	// will the hub's scoped-identity policy admit a rule for it (clause E,
+	// pkg/hub/identity/policy.go). A catalog update that adds or widens a
+	// composition is pending until someone accepts it again, so a provider
+	// cannot widen itself by shipping a new chart.
+	//
+	// It is deliberately NOT an APIExport permission claim. A first-party
+	// claim pins to one export's identityHash (AGENTS.md §5.7), so a provider
+	// holding one breaks the moment an Org self-hosts the dependency it
+	// claims — which is exactly the case composition has to keep working.
+	// +optional
+	// +listType=map
+	// +listMapKey=group
+	// +listMapKey=resource
+	// +kubebuilder:validation:MaxItems=16
+	Composes []ProviderComposition `json:"composes,omitempty"`
+}
+
+// ProviderCompositionVerb is one verb a composition may ask for. The set is
+// closed and holds only ordinary Kubernetes verbs: a composition is plain CRUD
+// on somebody else's kind, never a data-plane verb (those are clause C, and
+// they are declared by the OWNING provider, not by the consumer).
+// +kubebuilder:validation:Enum=get;list;watch;create;update;patch;delete
+type ProviderCompositionVerb string
+
+const (
+	CompositionVerbGet    ProviderCompositionVerb = "get"
+	CompositionVerbList   ProviderCompositionVerb = "list"
+	CompositionVerbWatch  ProviderCompositionVerb = "watch"
+	CompositionVerbCreate ProviderCompositionVerb = "create"
+	CompositionVerbUpdate ProviderCompositionVerb = "update"
+	CompositionVerbPatch  ProviderCompositionVerb = "patch"
+	CompositionVerbDelete ProviderCompositionVerb = "delete"
+)
+
+// ProviderComposition is one composed kind: a (group, resource) of the
+// dependency provider, with the verbs the composing reconciler needs on it.
+type ProviderComposition struct {
+	// Group is the API group the kind belongs to. It must be a group the
+	// dependency provider SERVES — one of the groups on spec.resources of that
+	// provider's APIExport, which the hub records as status.apiGroups. It is
+	// NOT the dependency's APIExport name: `code.providers.railgrid.ai` serves
+	// `code.railgrid.ai`. The hub checks it against the registry, and the
+	// identity policy checks it again before it mints anything.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Group string `json:"group"`
+
+	// Resource is the plural resource name, with no subresource: a
+	// composition is CRUD on the object itself.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Resource string `json:"resource"`
+
+	// Verbs are the verbs the reconciler needs. They bound what the policy
+	// will mint: a rule asking for a verb absent here is refused
+	// (composition_verb_not_declared).
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=7
+	Verbs []ProviderCompositionVerb `json:"verbs"`
+}
+
+// providerCompositionGroupPattern is a DNS-subdomain API group.
+var providerCompositionGroupPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+
+// providerCompositionVerbs is the closed verb vocabulary. It matches the
+// kubebuilder enum; the Go check exists because the hub also reads
+// CatalogEntries that were written before a schema update reached the server.
+var providerCompositionVerbs = map[ProviderCompositionVerb]struct{}{
+	CompositionVerbGet: {}, CompositionVerbList: {}, CompositionVerbWatch: {},
+	CompositionVerbCreate: {}, CompositionVerbUpdate: {}, CompositionVerbPatch: {},
+	CompositionVerbDelete: {},
+}
+
+// ValidateProviderCompositions checks a CatalogEntry's composition
+// declarations. Like the action and data-plane declarations it fails CLOSED:
+// one malformed entry rejects the whole provider rather than leaving a
+// half-read declaration behind, because a declaration is what an admin is
+// asked to consent to and what the identity policy measures a rule against.
+//
+// It checks shape only. That the group really belongs to the named dependency
+// is a registry question the catalog controller answers, and the identity
+// policy answers it once more at mint time.
+func ValidateProviderCompositions(dependencies []ProviderDependency) error {
+	for i, dep := range dependencies {
+		seen := make(map[string]struct{}, len(dep.Composes))
+		for j, composition := range dep.Composes {
+			if err := ValidateProviderComposition(composition); err != nil {
+				return fmt.Errorf("dependencies[%d] (%s).composes[%d]: %w", i, dep.Name, j, err)
+			}
+			key := composition.Group + "/" + composition.Resource
+			if _, ok := seen[key]; ok {
+				return fmt.Errorf("dependencies[%d] (%s).composes[%d]: duplicate composed resource %s", i, dep.Name, j, key)
+			}
+			seen[key] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// ValidateProviderComposition validates one composition independently of its
+// siblings.
+func ValidateProviderComposition(composition ProviderComposition) error {
+	if len(composition.Group) > 253 || !providerCompositionGroupPattern.MatchString(composition.Group) {
+		return fmt.Errorf("group must be a lowercase DNS subdomain naming the dependency's API group")
+	}
+	// A wildcard group would be a DNS-invalid string anyway; saying so
+	// explicitly keeps the refusal readable when somebody tries it.
+	if strings.ContainsAny(composition.Group, "*") {
+		return fmt.Errorf("group must not contain a wildcard")
+	}
+	if len(composition.Resource) > 63 || !providerDataPlaneResourcePattern.MatchString(composition.Resource) {
+		return fmt.Errorf("resource must be a lowercase DNS-like plural name with no subresource")
+	}
+	if len(composition.Verbs) == 0 {
+		return fmt.Errorf("at least one verb is required")
+	}
+	seen := make(map[ProviderCompositionVerb]struct{}, len(composition.Verbs))
+	for _, verb := range composition.Verbs {
+		if _, ok := providerCompositionVerbs[verb]; !ok {
+			return fmt.Errorf("verb %q is not one of get, list, watch, create, update, patch, delete", verb)
+		}
+		if _, ok := seen[verb]; ok {
+			return fmt.Errorf("duplicate verb %q", verb)
+		}
+		seen[verb] = struct{}{}
+	}
+	return nil
+}
+
+// CompositionVerbStrings renders a composition's verbs as plain strings, the
+// form RBAC and the identity policy work in.
+func CompositionVerbStrings(verbs []ProviderCompositionVerb) []string {
+	out := make([]string, 0, len(verbs))
+	for _, verb := range verbs {
+		out = append(out, string(verb))
+	}
+	return out
 }
 
 // ProviderUI declares a provider's micro-frontend target. Exactly one of
@@ -587,9 +738,17 @@ type ProviderDataPlaneVerb struct {
 // Distinct from kcp's apis.kcp.io APIExport CRD; this is the inline
 // declaration the catalog controller will use to materialise that CRD.
 type ProviderAPIExport struct {
-	// Name is the APIExport name (also the API group binding consumers
-	// reference). The APIExport itself, along with its APIResourceSchemas and
-	// bind grant, is created by the provider's own Helm `init` (see the
+	// Name is the APIExport name: what a tenant APIBinding references in
+	// spec.reference.export.name, and what the hub looks the export up by.
+	//
+	// It is NOT an API group. Most providers export
+	// `<provider>.providers.railgrid.ai` while serving kinds in
+	// `<provider>.railgrid.ai`, and one export may serve several groups.
+	// Anything that needs the groups reads them off the export itself; the hub
+	// publishes what it read as status.apiGroups.
+	//
+	// The APIExport itself, along with its APIResourceSchemas and bind grant,
+	// is created by the provider's own Helm `init` (see the
 	// railgrid-provider-sdk) — the hub only references it here for the portal
 	// Enable flow. Schemas are no longer embedded on the CatalogEntry.
 	// +kubebuilder:validation:MinLength=1
@@ -757,6 +916,27 @@ type CatalogEntryStatus struct {
 	// Differs from spec.version when a chart upgrade is in flight.
 	// +optional
 	ReportedVersion string `json:"reportedVersion,omitempty"`
+
+	// APIGroups are the API groups this provider actually serves, read by the
+	// catalog controller from spec.resources[].group on the provider's own
+	// APIExport in the provider workspace — deduped and sorted.
+	//
+	// It is NOT derivable from spec.apiExport.name. An APIExport is named
+	// `<provider>.providers.railgrid.ai` while the kinds it serves usually
+	// live in `<provider>.railgrid.ai`, and a provider may serve several
+	// groups from one export. Everything that has to answer "who owns this API
+	// group" — the scoped-identity policy's clause A/B/C/E, composition
+	// admission — keys on this list, so it is mirrored here to make the
+	// projection visible in `kubectl get catalogentry -o yaml` and in
+	// `/api/providers` rather than only in hub memory.
+	//
+	// Empty means the hub has not been able to read the export yet (the
+	// provider's `init` may not have run). It is a fail-closed state, reported
+	// as the APIGroupsUnknown condition: an unknown group is refused, not
+	// guessed.
+	// +optional
+	// +listType=atomic
+	APIGroups []string `json:"apiGroups,omitempty"`
 
 	// CredentialsRotatedAt is when the hub last issued a NEW workspace
 	// credential for this provider's ServiceAccount

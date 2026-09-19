@@ -26,6 +26,7 @@ package scopedidentity
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 
@@ -131,6 +132,23 @@ func (c *Cache) Invalidate(owner identityclient.Owner) {
 // source.
 func Key(owner identityclient.Owner) string {
 	return owner.ClusterID + "/" + owner.Kind + "/" + owner.Name + "/" + owner.UID
+}
+
+// Sorted returns names in a stable, deduplicated order. Rule sets are compared
+// by their rendering, so an unstable name order would re-mint an identity that
+// has not actually changed.
+func Sorted(names []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Fingerprint renders a rule set so two of them can be compared cheaply. It is

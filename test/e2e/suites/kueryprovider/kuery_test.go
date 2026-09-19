@@ -308,31 +308,17 @@ func TestACatalogProvisioning(t *testing.T) {
 		t.Errorf("APIExport spec.resources does not include savedviews.kuery.providers.railgrid.ai: %v", resources)
 	}
 
-	// The four built-in claims backing the per-workspace engagement
-	// ServiceAccount. manifest.yaml, the chart's catalogentry.yaml and
-	// init_cmd.go all have to agree; a claim dropped from the export is
-	// silently denied at reconcile, which is invisible until fleet sync
-	// quietly stops working.
+	// The export claims NOTHING, and that is the assertion. Kuery used to
+	// claim serviceaccounts, secrets, clusterroles and clusterrolebindings to
+	// mint a per-workspace ServiceAccount for itself; it now asks the hub for
+	// a scoped identity instead, and a claim on those types is a contract
+	// violation (docs/provider-connectivity-contract.md §"Scoped identities").
+	// A first-party claim would be worse still: it pins one identityHash for
+	// every consumer at once, which is exactly what an org-owned edges
+	// provider has to survive.
 	claims, _, _ := unstructured.NestedSlice(export.Object, "spec", "permissionClaims")
-	claimed := map[string]bool{}
-	for _, c := range claims {
-		m, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		group, _ := m["group"].(string)
-		resource, _ := m["resource"].(string)
-		claimed[group+"/"+resource] = true
-	}
-	for _, want := range []string{
-		"/serviceaccounts",
-		"/secrets",
-		"rbac.authorization.k8s.io/clusterroles",
-		"rbac.authorization.k8s.io/clusterrolebindings",
-	} {
-		if !claimed[want] {
-			t.Errorf("APIExport is missing permissionClaim %q (have %v)", want, claimed)
-		}
+	if len(claims) != 0 {
+		t.Errorf("APIExport carries permissionClaims %v; kuery must claim nothing", claims)
 	}
 
 	// maximalPermissionPolicy caps tenant access as well as provider access,
@@ -557,21 +543,10 @@ func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 
-	// Claims mirror manifest.yaml: the built-in types backing the
-	// per-workspace engagement ServiceAccount. A claim missing here is
-	// silently denied at reconcile, so the binding must carry all four.
-	claim := func(group, resource string) map[string]any {
-		c := map[string]any{
-			"resource": resource,
-			"verbs":    []any{"get", "list", "watch", "create"},
-			"selector": map[string]any{"matchAll": true},
-			"state":    "Accepted",
-		}
-		if group != "" {
-			c["group"] = group
-		}
-		return c
-	}
+	// No permissionClaims on the binding, because the export declares none:
+	// what kuery's engagement controller needs on an edge is a COMPOSITION
+	// (spec.dependencies[].composes) reached through a hub-minted scoped
+	// identity, not a claim served through this virtual workspace.
 	binding := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apis.kcp.io/v1alpha2",
 		"kind":       "APIBinding",
@@ -582,12 +557,6 @@ func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
 					"path": workspacePath,
 					"name": apiExportName,
 				},
-			},
-			"permissionClaims": []any{
-				claim("", "serviceaccounts"),
-				claim("", "secrets"),
-				claim("rbac.authorization.k8s.io", "clusterroles"),
-				claim("rbac.authorization.k8s.io", "clusterrolebindings"),
 			},
 		},
 	}}

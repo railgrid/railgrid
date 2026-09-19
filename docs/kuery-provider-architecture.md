@@ -120,9 +120,10 @@ kubernetesclusters/{n}/k8s` string is exactly what survived a grammar change in 
 provider it was copied from. Following the publication is contract 3, rule 5, and it is
 what lets a self-hosted edges copy under a different provider name work unchanged.
 
-The config authenticates as the workspace-local `railgrid-kuery` ServiceAccount the
-engagement controller provisions in that tenant (see "Edges data-plane authorization"
-below for why it is not the provider SA), wraps it in a controller-runtime `cluster.Cluster`,
+The config authenticates as the workspace's **hub-minted engagement identity** — resolved
+per request, because the token is TTL'd and the edge's informers outlive it (see "Edges
+data-plane authorization" below for why it is not the provider SA) — wraps it in a
+controller-runtime `cluster.Cluster`,
 and `Engage`s it into kuery's sync controller under the name `{clusterID}/{edgeName}`,
 where `clusterID` is the tenant workspace's kcp logical-cluster ID (taken from the kuery
 `APIBinding`'s `kcp.io/cluster` annotation, which must match the reconcile request). Kuery's
@@ -202,9 +203,9 @@ What the change buys:
 
 Nothing in the provider runs on a timer over a list any more:
 
-- The **APIBinding reconciler** notices a workspace enabling or disabling kuery. It provisions
-  that workspace's engagement identity and starts or stops its edge watch — and never lists
-  edges.
+- The **APIBinding reconciler** notices a workspace enabling or disabling kuery. It mints
+  (or refreshes) that workspace's engagement identity through the hub and starts or stops
+  its edge watch — and never lists edges.
 - The **per-workspace edge watch** is the authority on which edges exist and which are
   connected. A freshly opened watch replays every edge, so it *is* the list. It creates each
   Engagement, claims the edge's Lease, engages it, and renews both on one ticker.
@@ -241,11 +242,11 @@ single tenant query.
 
 Kuery's relationship to the **edge providers** also follows the platform
 [provider-isolation rule](./providers.md#provider-isolation-the-cross-provider-boundary):
-it consumes `KubernetesCluster` CRs (a tenant-scoped permission claim) and reaches the
-clusters through the edges provider's published **`kubernetesclusters/k8s` data-plane
-verb**, at the coordinate the edge itself publishes in `status.url`, as a workspace-local
-identity that must pass the edges provider's own two gates — it never holds a credential
-into an edge provider's backend.
+it reads `KubernetesCluster` CRs under a **declared composition** the tenant accepted (never
+a permission claim) and reaches the clusters through the edges provider's published
+**`kubernetesclusters/k8s` data-plane verb**, at the coordinate the edge itself publishes
+in `status.url`, as a workspace-local hub-minted identity that must pass the edges
+provider's own two gates — it never holds a credential into an edge provider's backend.
 
 ### MCP tools (the primary consumer)
 
@@ -312,28 +313,102 @@ registration) adds a network boundary and an auth surface for no benefit.
 During development, `go replace` against the kuery checkout works even with the monorepo
 submodule layout.
 
-### 2. Edges data-plane authorization — a per-workspace identity and one verb grant
+### 2. Edges data-plane authorization — a hub-minted identity per workspace
 
 Kuery needs a **long-lived credential for background watches**, so a forwarded user
-bearer is the wrong shape, and permission claims do not help: they grant access through
-the APIExport virtual workspace, not through another provider's data plane.
+bearer is the wrong shape, and permission claims do not help twice over: they grant
+access through the APIExport virtual workspace rather than through another provider's
+data plane, and a claim on a first-party (`*.railgrid.ai`) group has to pin the serving
+export's `identityHash` — one identity per claimed resource, for every consuming
+workspace at once (AGENTS.md §5.7). The moment an org self-hosts the edges provider,
+every claim-holder is pinned to the platform copy and is silently served nothing.
 
-**What it does.** For each workspace that enables kuery, the engagement controller
-provisions a workspace-local ServiceAccount, `railgrid-kuery`, through the built-in types
-it claims (`engagement/controller.go` `ensureIdentity`), with two grants:
+**What it does.** For each workspace that enables kuery, the engagement controller asks
+the **hub identity service** for a scoped identity (`provider-sdk/identityclient`,
+`engagement/identity.go`). Kuery writes no ServiceAccount, no ClusterRole, no binding and
+no token Secret, and holds **no permission claims at all** — a claim on
+`serviceaccounts` / `secrets` / `clusterroles` / `clusterrolebindings` is a contract
+violation, not a design choice
+([provider-connectivity-contract.md §"Scoped identities"](./provider-connectivity-contract.md)).
 
-- its own identity role: `get`/`list`/`watch` on `edges.railgrid.ai/kubernetesclusters`
-  — **discovery only**;
-- a separate `railgrid-kuery-edgeproxy` ClusterRole + binding carrying the data-plane
-  coordinate, exactly as the contract spells it:
+The **owner** is that workspace's **kuery `APIBinding`**. The hub re-reads the owner
+object in the tenant workspace before it mints anything
+(`pkg/hub/identity/attestation.go`), so the owner has to live there — kuery's own
+`Engagement` is provider-private and lives in kuery's workspace, where the probe would
+never find it. The binding is also exactly the right lifetime: it *is* "kuery is enabled
+here", it is cluster-scoped, its UID changes when it is recreated (so a re-enabled
+workspace never inherits the old credential), and Disable deletes it, at which point the
+hub's sweep collects the identity even if the controller never gets to call `Release`.
+
+The **rules** are three, in two of the policy's clauses
+(`pkg/hub/identity/policy.go`):
 
 ```yaml
+# clause E — composition, unnamed: the per-workspace edge watch.
 - apiGroups: ["edges.railgrid.ai"]
-  resources: ["kubernetesclusters/k8s"]   # {resource}/{verb}
+  resources: ["kubernetesclusters"]
+  verbs: ["list", "watch"]
+# clause E — composition, name-scoped: gate 1 is a real GET as the caller.
+- apiGroups: ["edges.railgrid.ai"]
+  resources: ["kubernetesclusters"]
+  resourceNames: ["<each engaged edge>"]
+  verbs: ["get"]
+# clause C — foreign verb: the data-plane coordinate, {resource}/{verb}.
+- apiGroups: ["edges.railgrid.ai"]
+  resources: ["kubernetesclusters/k8s"]
+  resourceNames: ["<each engaged edge>"]
   verbs: ["create"]
 ```
 
-That is the whole authorization story. The edges provider gates every request with the
+The split is RBAC's, not a preference: `resourceNames` do not apply to a collection
+request, so a name-scoped `list` authorizes nothing and an unnamed one is the only shape
+that works — which is precisely what clause E admits, bounded to the one workspace whose
+admin accepted the composition. Object verbs are always named.
+
+**What licenses those rules.** The CatalogEntry declares the composition, identically in
+`manifest.yaml` and the chart's `catalogentry.yaml`:
+
+```yaml
+dependencies:
+  - name: edges
+    composes:
+      - group: edges.railgrid.ai
+        resource: kubernetesclusters
+        verbs: ["get", "list", "watch"]
+```
+
+A workspace or org admin accepts it at Enable, and the hub re-checks **all** of it on
+every mint: the declaration bounds the verbs, the dependency must be the provider that
+actually exports the group, its export must be bound in that workspace, and the consent
+must still be there. `create` on `kubernetesclusters/k8s` is clause C, which the hub will
+only mint because the **edges provider itself declares** that verb on that resource
+(`providers/edges/manifest.yaml` `spec.dataPlane.verbs`) — a coordinate the hub can
+verify exists rather than one a consumer invented. Only `kubernetesclusters` is composed:
+`LinuxServer` and `MacOSServer` carry no Kubernetes API to sync and kuery does not engage
+them.
+
+`edges.railgrid.ai` is never claimed, so this survives an org running its own edges
+provider: a composition names the dependency by **name** and is resolved per workspace
+through whatever export is bound there.
+
+**The edge set is part of the credential.** The named halves list the edges this replica
+actually engages, so the rules change as the fleet does. The controller re-derives them
+on every `Token()` and rebuilds the token source when their fingerprint changes
+(`identity.go`), which means a re-mint **re-states** the whole rule set: an edge that
+disappears takes its grant with it. The old `tenantaccess.EnsureIdentity` could not do
+that — its rules were create-if-absent, so a grant never shrank and could never be
+widened either, which is why the data-plane grant had to be a second, separately named
+`railgrid-kuery-edgeproxy` object. Both objects are gone.
+
+**The token is never pinned into a config.** It is TTL'd (one hour by default, refreshed
+at 80% of its life), and an engaged edge's informers outlive it, so both the per-workspace
+edge watch and the per-edge edgeproxy `rest.Config` resolve the bearer **per request**
+through a wrapped transport. A `401` or `403` invalidates the source, so the next request
+re-`Ensure`s with the hub — the identity may have been revoked, or the composition
+withdrawn, and re-minting is how this loop finds out. Disable calls `Release`
+explicitly, so revocation does not wait out a TTL.
+
+That is the whole authorization story. The edges provider gates every request with its
 two gates — a real `GET` of the edge as the caller, then a `SelfSubjectAccessReview` for
 `create` on `{resource}/{verb}`, name-scoped
 (`providers/edges/internal/tunnel/grammar.go`). Kuery's identity passes them like any
@@ -347,12 +422,6 @@ manifest no longer sets it, because the Enable-time grant that flag asked for gr
 on the CatalogEntry type and the hub still materializes a — now per-verb — grant for any
 provider that sets it; no in-tree provider does.)
 
-The grant is a separate, created object rather than a verb on the identity's own role
-because kuery claims only `get`/`list`/`watch`/`create` on `clusterroles`, and a claim on
-an existing APIBinding is never widened — so the identity role cannot be updated in
-workspaces that were enabled before the grant existed, while a newly created object lands
-everywhere on the next reconcile (`tenantaccess.EnsureGrant`).
-
 **Why the identity is workspace-local, not the provider SA.** The provider SA's token is
 issued in `root:railgrid:providers:kuery`. The edges data plane TokenReviews a foreign SA
 in the SA's home cluster with its own credential, and the hub's kcp proxy
@@ -360,28 +429,23 @@ in the SA's home cluster with its own credential, and the hub's kcp proxy
 own workspace — so the review lands on a doubled
 `/clusters/{edges}/clusters/{kuery}/…/tokenreviews` path, kcp answers 404, and the edges
 provider answers 403. Every engage failed with `discovery failed … Forbidden`. A token
-issued in the **consumer** workspace authenticates natively through the edges APIExport
-virtual workspace instead — the same path edge-agent and delegated `railgrid-du-*` tokens
-take.
-
-> **Open contract debt.** Those `serviceaccounts` / `clusterroles` /
-> `clusterrolebindings` claims are the last thing standing between kuery and the
-> platform rule that **a provider does not mint identities, it asks the hub**
-> (`pkg/hub/identity`, `provider-sdk/identityclient`; see
-> [provider-connectivity-contract.md §"Scoped identities"](./provider-connectivity-contract.md)).
-> agents and edges have migrated and dropped theirs; kuery has not.
+minted **in the consumer workspace** — which is what the hub's identity service does —
+authenticates natively through the edges APIExport virtual workspace instead, the same
+path edge-agent and delegated `railgrid-du-*` tokens take.
 
 **Runtime properties.** The SAR runs once per proxied request and kuery's watches are
 long-lived streams, so it is one TokenReview + SAR per watch (re)establishment —
-negligible. Revocation self-heals: Disable deletes the APIBinding → the claimed
-`KubernetesCluster` watch dies → the engagement controller disengages and stands the
-`Engagement` down → its index rows are purged. Deleting the RBAC alone only cuts off
-established streams at reconnect.
+negligible. Revocation self-heals at three levels: Disable deletes the APIBinding → the
+controller releases the identity and the hub deletes its ServiceAccount, killing every
+outstanding token → the edge watch 401s and the engagements are stood down → the index
+rows are purged. Withdrawing the composition alone is enough on its own: the next refresh
+is refused and the credential lapses within one TTL.
 
 Rejected alternative: hub-minted provider tokens checked against a registry allowlist of
 enabled tenants (piggybacking on the proxy's static-token bypass). Simpler, but a bespoke
 authz path with a powerful bearer secret and no kcp-native audit trail — RBAC keeps "what
-can this provider touch" answerable with kubectl.
+can this provider touch" answerable with kubectl, and the `ScopedIdentity` record keeps
+"who asked for it, and when does it expire" answerable too.
 
 ### 3. Sync scale and defaults
 
@@ -402,17 +466,20 @@ Full-object sync of every edge through the tunnels is the cost center.
   ([kuery#3](https://github.com/railgrid/kuery/pull/3), merged 2026-06-11). The edge data
   path — **done**, but not as first designed: the hub-side Enable-time grant for the
   *provider* SA (`CatalogEntry.spec.edgeProxyAccess`) turned out not to be the credential
-  on this path at all. What ships is the per-workspace `railgrid-kuery` identity plus a
-  `create` on `kubernetesclusters/k8s` grant, against the coordinate the edge publishes in
-  `status.url` — see key decision 2.
+  on this path at all. What ships is a per-workspace **hub-minted** identity owned by the
+  tenant's kuery `APIBinding`, carrying the declared composition on `kubernetesclusters`
+  plus `create` on `kubernetesclusters/k8s` for the engaged edges, against the coordinate
+  the edge publishes in `status.url` — see key decision 2.
 - **Phase 1 — skeleton.** **Done.** Binary with `/healthz` + heartbeat, CatalogEntry with
   the SavedView schema, Helm chart, Makefile targets (`build-kuery-provider`,
   `run-provider-kuery`, `install-provider-kuery`, …). Visible in the portal catalog.
   Readiness later moved to `/readyz` (`provider-sdk/vwhealth`), which is what the
   CatalogEntry's `backend.healthPath` now points at.
 - **Phase 2 — data + MCP.** **Implemented** (providers/kuery: `core/`, `engagement/`,
-  `queryapi/`, `mcpserver/`). Engagement controller (watch Edges via permission claim
-  `edges.railgrid.ai` get/list/watch, tenantScoped) + embedded kuery sync +
+  `queryapi/`, `mcpserver/`). Engagement controller (watch Edges through each workspace's
+  own edges binding, under the declared `edges.railgrid.ai/kubernetesclusters`
+  composition — the design's permission claim was never viable, see key decision 2) +
+  embedded kuery sync +
   the tenant query surface + MCP tools (`kuery_query`, `kuery_impact`) into the
   aggregator. This is the value milestone: agents can query the fleet.
   Implementation notes vs. this design: tenant scoping is the `Engagement` set,

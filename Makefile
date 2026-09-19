@@ -1747,13 +1747,6 @@ APP_STUDIO_KCP_SERVER ?= https://localhost:6443
 APP_STUDIO_WORKSPACE_PATH ?= root:railgrid:providers:app-studio
 APP_STUDIO_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-provider.kubeconfig
 APP_STUDIO_KCP_DIR ?= providers/app-studio/deploy/chart/files
-# identityHash of the exports serving app-studio's claimed dependency kinds
-# (infrastructure.railgrid.ai instances; code.railgrid.ai repositories and
-# repositorycommits). Empty resolves them from the dependency provider
-# workspaces at init time, so run init-provider-infrastructure and
-# init-provider-code first.
-APP_STUDIO_INFRA_IDENTITY_HASH ?=
-APP_STUDIO_CODE_IDENTITY_HASH ?=
 APP_STUDIO_MANIFEST ?= providers/app-studio/manifest.yaml
 APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
 APP_STUDIO_DATABASE_URL ?=
@@ -2030,31 +2023,13 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 		"$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(APP_STUDIO_PROVIDER_KUBECONFIG)
 	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
-	@# app-studio's controllers reconcile infrastructure Instances and code
-	@# Repositories/RepositoryCommits through its own APIExport VW, so those
-	@# first-party claims must carry the identityHash of the export serving
-	@# each group. Resolved from the dependency provider workspaces; override
-	@# with APP_STUDIO_{INFRA,CODE}_IDENTITY_HASH.
-	@INFRA_HASH="$(APP_STUDIO_INFRA_IDENTITY_HASH)"; \
-	if [ -z "$$INFRA_HASH" ]; then \
-		INFRA_HASH=$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-			--server=$(APP_STUDIO_KCP_SERVER)/clusters/$(INFRASTRUCTURE_WORKSPACE_PATH) \
-			--insecure-skip-tls-verify \
-			get apiexport infrastructure.providers.railgrid.ai -o jsonpath='{.status.identityHash}'); \
-	fi; \
-	CODE_HASH="$(APP_STUDIO_CODE_IDENTITY_HASH)"; \
-	if [ -z "$$CODE_HASH" ]; then \
-		CODE_HASH=$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-			--server=$(APP_STUDIO_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
-			--insecure-skip-tls-verify \
-			get apiexport code.providers.railgrid.ai -o jsonpath='{.status.identityHash}'); \
-	fi; \
-	test -n "$$INFRA_HASH" -a -n "$$CODE_HASH" || { \
-		echo "identityHash missing: run 'make init-provider-infrastructure init-provider-code' first"; exit 1; }; \
+	@# app-studio claims no first-party resources: its reconcilers act in each
+	@# tenant workspace through hub-minted scoped identities (tenant-workspace
+	@# RBAC through the workspace's own bindings), which is what keeps a
+	@# workspace free to bind an org-owned infrastructure or code provider.
 	RAILGRID_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
 	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
 	RAILGRID_KCP_DIR=$(APP_STUDIO_KCP_DIR) \
-	RAILGRID_IDENTITY_HASHES="infrastructure.railgrid.ai=$$INFRA_HASH,code.railgrid.ai=$$CODE_HASH" \
 		$(BINDIR)/app-studio-provider init
 
 ## Delete the App Studio CatalogEntry. Useful while iterating on the chart.

@@ -11,18 +11,26 @@ every verb passes `provider-sdk/dataplane` gates, no provider mints identities,
 and `verify-provider-contract` runs with an empty exception registry.
 Not started: §3 and §7 (external repo), §9 Cut D.
 Open follow-ups recorded by the implementation:
-- A commit is required before `make codegen-agents-provider` and
+- A commit is required before `make codegen`, `make codegen-agents-provider` and
   `make codegen-edges-provider` can mint fresh APIResourceSchema names for the
   `Run` schema changes (PR 5) and the edges kind doc-comment fixes; apigen
   derives the name from HEAD and refuses to reuse one for changed content.
 - Code provider: a `repositories/commit` action (or verb) that accepts file
   contents, so App Studio can create a `RepositoryCommit` directly instead of
   through the `code__commit_files` MCP tool (§9 Cut C part 4 note).
-- Tiltfile: `app-studio` init must run after `infrastructure` and `code` init
-  (their exports' `status.identityHash` feeds `RAILGRID_IDENTITY_HASHES`).
-- kuery still holds `serviceaccounts`/`clusterroles`/`clusterrolebindings`
-  claims for its per-workspace edge-watch identity; move it to
-  `identityclient` (owner `Engagement`) when §6 PR 4's follow-up lands.
+- App Studio composition (§9 Cut C part 4) landed on hub-minted scoped
+  identities, not permission claims: first-party claims pin to one export's
+  `identityHash` and break org-owned providers (AGENTS.md §5.7). The hub
+  identity policy gained clause E (tenant-consented composition), declared as
+  `dependencies[].composes` on the CatalogEntry and accepted at Enable as a
+  `compose:<group>/<resource>` Grant; App Studio's only claim is `secrets`.
+- kuery's edge-watch identity is hub-minted (owner: the tenant's kuery
+  APIBinding; clause E read-only composition on `kubernetesclusters` plus
+  clause C `kubernetesclusters/k8s`); its export carries no claims at all.
+- Group ownership in the identity policy is resolved from each provider's
+  live APIExport `spec.resources[].group` (mirrored to
+  `CatalogEntry.status.apiGroups`), not from the export name; a provider whose
+  export is unreadable fails closed with `APIGroupsUnknown`.
 - Six providers still hold `secrets` claims (X-4); each manifest now names the
   Secrets it writes, but the claim is still resource-wide.
 When a phase merges, replace the branch name with the PR number; when a provider

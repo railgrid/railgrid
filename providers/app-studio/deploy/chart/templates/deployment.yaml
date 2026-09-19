@@ -60,13 +60,6 @@ spec:
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
             - name: RAILGRID_KCP_DIR
               value: /etc/railgrid/kcp
-            {{- with (include "appstudio.identityHashes" .) }}
-            # Pins the APIExports that serve the claimed dependency kinds
-            # (infrastructure Instances, code Repositories/RepositoryCommits).
-            # init refuses to publish the export without them.
-            - name: RAILGRID_IDENTITY_HASHES
-              value: {{ . | quote }}
-            {{- end }}
             {{- if $catalogEntryConfigMap }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)

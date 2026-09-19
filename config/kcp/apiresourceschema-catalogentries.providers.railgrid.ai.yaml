@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-91e6c6ad.catalogentries.providers.railgrid.ai
+  name: v260919-78822e7c.catalogentries.providers.railgrid.ai
 spec:
   group: providers.railgrid.ai
   names:
@@ -254,9 +254,17 @@ spec:
               properties:
                 name:
                   description: |-
-                    Name is the APIExport name (also the API group binding consumers
-                    reference). The APIExport itself, along with its APIResourceSchemas and
-                    bind grant, is created by the provider's own Helm `init` (see the
+                    Name is the APIExport name: what a tenant APIBinding references in
+                    spec.reference.export.name, and what the hub looks the export up by.
+
+                    It is NOT an API group. Most providers export
+                    `<provider>.providers.railgrid.ai` while serving kinds in
+                    `<provider>.railgrid.ai`, and one export may serve several groups.
+                    Anything that needs the groups reads them off the export itself; the hub
+                    publishes what it read as status.apiGroups.
+
+                    The APIExport itself, along with its APIResourceSchemas and bind grant,
+                    is created by the provider's own Helm `init` (see the
                     railgrid-provider-sdk) — the hub only references it here for the portal
                     Enable flow. Schemas are no longer embedded on the CatalogEntry.
                   minLength: 1
@@ -486,6 +494,83 @@ spec:
                 description: ProviderDependency references another provider that must
                   be enabled first.
                 properties:
+                  composes:
+                    description: |-
+                      Composes declares which of this dependency's kinds the declaring
+                      provider's reconcilers CREATE AND MANAGE inside the tenant workspace,
+                      and with which verbs. It is the machine-readable form of "App Studio
+                      builds a project out of an infrastructure Instance and a code
+                      Repository": one provider composing another provider's objects on the
+                      tenant's behalf, in the tenant's own workspace.
+
+                      Declaring grants NOTHING. A composition reaches a workspace only when a
+                      workspace or org admin accepted it in the Enable dialog, and only then
+                      will the hub's scoped-identity policy admit a rule for it (clause E,
+                      pkg/hub/identity/policy.go). A catalog update that adds or widens a
+                      composition is pending until someone accepts it again, so a provider
+                      cannot widen itself by shipping a new chart.
+
+                      It is deliberately NOT an APIExport permission claim. A first-party
+                      claim pins to one export's identityHash (AGENTS.md §5.7), so a provider
+                      holding one breaks the moment an Org self-hosts the dependency it
+                      claims — which is exactly the case composition has to keep working.
+                    items:
+                      description: |-
+                        ProviderComposition is one composed kind: a (group, resource) of the
+                        dependency provider, with the verbs the composing reconciler needs on it.
+                      properties:
+                        group:
+                          description: |-
+                            Group is the API group the kind belongs to. It must be a group the
+                            dependency provider SERVES — one of the groups on spec.resources of that
+                            provider's APIExport, which the hub records as status.apiGroups. It is
+                            NOT the dependency's APIExport name: `code.providers.railgrid.ai` serves
+                            `code.railgrid.ai`. The hub checks it against the registry, and the
+                            identity policy checks it again before it mints anything.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        resource:
+                          description: |-
+                            Resource is the plural resource name, with no subresource: a
+                            composition is CRUD on the object itself.
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                        verbs:
+                          description: |-
+                            Verbs are the verbs the reconciler needs. They bound what the policy
+                            will mint: a rule asking for a verb absent here is refused
+                            (composition_verb_not_declared).
+                          items:
+                            description: |-
+                              ProviderCompositionVerb is one verb a composition may ask for. The set is
+                              closed and holds only ordinary Kubernetes verbs: a composition is plain CRUD
+                              on somebody else's kind, never a data-plane verb (those are clause C, and
+                              they are declared by the OWNING provider, not by the consumer).
+                            enum:
+                            - get
+                            - list
+                            - watch
+                            - create
+                            - update
+                            - patch
+                            - delete
+                            type: string
+                          maxItems: 7
+                          minItems: 1
+                          type: array
+                      required:
+                      - group
+                      - resource
+                      - verbs
+                      type: object
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - group
+                    - resource
+                    x-kubernetes-list-type: map
                   name:
                     description: Name is the CatalogEntry metadata.name of the dependency
                       provider.
@@ -785,6 +870,29 @@ spec:
         status:
           description: CatalogEntryStatus defines the observed state of a CatalogEntry.
           properties:
+            apiGroups:
+              description: |-
+                APIGroups are the API groups this provider actually serves, read by the
+                catalog controller from spec.resources[].group on the provider's own
+                APIExport in the provider workspace — deduped and sorted.
+
+                It is NOT derivable from spec.apiExport.name. An APIExport is named
+                `<provider>.providers.railgrid.ai` while the kinds it serves usually
+                live in `<provider>.railgrid.ai`, and a provider may serve several
+                groups from one export. Everything that has to answer "who owns this API
+                group" — the scoped-identity policy's clause A/B/C/E, composition
+                admission — keys on this list, so it is mirrored here to make the
+                projection visible in `kubectl get catalogentry -o yaml` and in
+                `/api/providers` rather than only in hub memory.
+
+                Empty means the hub has not been able to read the export yet (the
+                provider's `init` may not have run). It is a fail-closed state, reported
+                as the APIGroupsUnknown condition: an unknown group is refused, not
+                guessed.
+              items:
+                type: string
+              type: array
+              x-kubernetes-list-type: atomic
             conditions:
               description: Conditions describe the current state of the provider.
               items:

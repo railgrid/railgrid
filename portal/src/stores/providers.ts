@@ -86,6 +86,33 @@ export interface ProviderDTO {
 
 export interface ProviderDependencyDTO {
   name: string
+  // Kinds of this dependency the provider creates and manages in the tenant
+  // workspace. Shown in the Enable dialog as its own consent line; nothing
+  // applies until a workspace or org admin accepts it there.
+  composes?: CompositionRequest[]
+}
+
+// CompositionRequest mirrors providersv1alpha1.ProviderComposition: one kind
+// of a dependency provider that this provider's reconcilers manage.
+export interface CompositionRequest {
+  group: string
+  resource: string
+  verbs?: string[]
+}
+
+// AcceptedComposition mirrors pkg/hub/restapi.AcceptedComposition. `provider`
+// is the DEPENDENCY whose kind is composed, not the provider being enabled.
+export interface AcceptedComposition {
+  provider: string
+  group: string
+  resource: string
+}
+
+// CompositionState mirrors pkg/hub/restapi.CompositionState.
+export interface CompositionState {
+  granted?: AcceptedComposition[]
+  pending?: AcceptedComposition[]
+  implicit?: boolean
 }
 
 // EnabledProviderDetail mirrors pkg/hub/restapi.EnabledProviderDetail — which
@@ -110,6 +137,11 @@ export interface EnabledProviderDetail {
   // The provider's hub capabilities here: in force, and declared but not yet
   // accepted. Absent when the provider requests none.
   hubAccess?: HubAccessState
+  // The kinds of other providers this one manages here: in force, and
+  // declared but not yet accepted. A pending composition is why a provider
+  // that looks enabled cannot create what it is for. Absent when it declares
+  // none.
+  compositions?: CompositionState
 }
 
 // StaleClaim mirrors pkg/hub/restapi.StaleClaim. kcp reports a binding with a
@@ -473,6 +505,14 @@ export const useProvidersStore = defineStore('providers', () => {
     return bindingsByProvider.value[name]?.hubAccess?.pending ?? []
   }
 
+  // Compositions an enabled provider declares that nobody here has accepted
+  // yet. Its reconcilers are refused the corresponding identity rules until
+  // an admin reviews them, so this is the visible cause of "enabled but it
+  // does not do anything".
+  function pendingCompositions(name: string): AcceptedComposition[] {
+    return bindingsByProvider.value[name]?.compositions?.pending ?? []
+  }
+
   function dependencyLabel(name: string): string {
     return byName(name)?.displayName ?? name
   }
@@ -670,7 +710,12 @@ export const useProvidersStore = defineStore('providers', () => {
   // the provider's declared claims — anything the user didn't accept
   // is sent to kcp as state=Rejected (which prevents the binding from
   // going Bound and surfaces the mismatch cleanly).
-  async function enable(p: ProviderDTO, accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[] = []): Promise<void> {
+  async function enable(
+    p: ProviderDTO,
+    accept: PermissionClaim[],
+    acceptHubAccess: AcceptedHubAccess[] = [],
+    acceptCompositions: AcceptedComposition[] = [],
+  ): Promise<void> {
     if (!p.apiExportPath || !p.apiExportName) {
       throw new Error(`${p.name}: provider declares no APIExport to bind`)
     }
@@ -691,6 +736,7 @@ export const useProvidersStore = defineStore('providers', () => {
     const body = {
       acceptedClaims: accept.map((c) => ({ group: c.group ?? '', resource: c.resource })),
       acceptedHubAccess: acceptHubAccess.map((h) => ({ capability: h.capability, scope: h.scope })),
+      acceptedCompositions: acceptCompositions.map((c) => ({ provider: c.provider, group: c.group, resource: c.resource })),
     }
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/enable`
 
@@ -840,6 +886,7 @@ export const useProvidersStore = defineStore('providers', () => {
     selfHostable,
     bindingsByProvider,
     pendingHubAccess,
+    pendingCompositions,
     hasAnyEnabled,
     isEnabled,
     isSelfManaged,

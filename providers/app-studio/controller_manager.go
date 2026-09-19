@@ -30,6 +30,7 @@ import (
 	"os"
 	"strings"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -40,6 +41,7 @@ import (
 	"github.com/railgrid/provider-sdk/apiexportprovider"
 	"github.com/railgrid/provider-sdk/identityclient"
 	"github.com/railgrid/provider-sdk/leaderelection"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 	"github.com/railgrid/provider-sdk/vwhealth"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
@@ -48,6 +50,7 @@ import (
 	"github.com/railgrid/provider-app-studio/controller/project"
 	"github.com/railgrid/provider-app-studio/controller/session"
 	"github.com/railgrid/provider-app-studio/controller/studio"
+	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
 	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
 	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 	appscheme "github.com/railgrid/provider-app-studio/scheme"
@@ -105,15 +108,30 @@ type controllerDeps struct {
 	ProjectSignals *reconcilesignal.Bus
 }
 
-// scopedIdentities builds the hub identity client the Project reconciler mints
-// each project's identity with. That identity is NOT how this provider
-// reconciles — its own ServiceAccount over the APIExport virtual workspace is
-// (AGENTS.md §5.4) — it is what a project acts as when it reaches the MCP
-// aggregate or calls a data-plane verb on its own instance.
+// dependencyWatches builds the per-workspace watch hub the Project and Studio
+// reconcilers share. Watches ride the tenant-path identity exactly as the
+// reconcilers' writes do, so they need the hub address; without one (REST-only
+// dev) there is no identity to watch with either and there are no watches.
+func dependencyWatches(deps controllerDeps) *tenantwatch.Hub {
+	if deps.HubBase == "" {
+		return nil
+	}
+	hubBase, insecure := deps.HubBase, deps.HubInsecure
+	return tenantwatch.NewHub(func(cluster, token string) (dynamic.Interface, error) {
+		return tenantaccess.NewDynamicClient(hubBase, cluster, token, insecure)
+	})
+}
+
+// scopedIdentities builds the hub identity client the Project and Studio
+// reconcilers mint each owner's identity with. It is how this provider reaches
+// a DEPENDENCY's objects — inside the tenant workspace, through the
+// workspace's own bindings — and also what a project's workload acts as when
+// it reaches the MCP aggregate or calls a data-plane verb on its own instance.
+// Its own kinds still ride its APIExport virtual workspace.
 //
 // A failure here is logged and degrades to nil rather than refusing to start:
-// a REST-only dev deployment has no hub to ask, and everything except the
-// commit path keeps converging without one.
+// a REST-only dev deployment has no hub to ask, and the Project and Studio
+// CRs still converge without one.
 func scopedIdentities(deps controllerDeps) *scopedidentity.Cache {
 	if deps.HubBase == "" {
 		return nil
@@ -216,6 +234,7 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 	}
 
 	identities := scopedIdentities(deps)
+	watches := dependencyWatches(deps)
 	if err := (&project.Reconciler{
 		Actions:     deps.Actions,
 		Workspace:   deps.Workspace,
@@ -225,6 +244,7 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 		Attachments: attachments,
 		HubBase:     deps.HubBase,
 		HubInsecure: deps.HubInsecure,
+		Watches:     watches,
 		Signals:     deps.ProjectSignals,
 		Identities:  identities,
 	}).SetupWithManager(mgr); err != nil {
@@ -233,7 +253,12 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 	if err := (&session.Reconciler{Store: deps.Store, Signals: deps.SessionSignals}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("session controller: %w", err)
 	}
-	if err := (&studio.Reconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&studio.Reconciler{
+		HubBase:     deps.HubBase,
+		HubInsecure: deps.HubInsecure,
+		Watches:     watches,
+		Identities:  identities,
+	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("studio controller: %w", err)
 	}
 

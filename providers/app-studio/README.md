@@ -62,10 +62,11 @@ can proceed independently. `PUT /api/projects/{project}/repository` accepts
 | API types | `apis/ai/v1alpha1/` — the `Project`, `Session`, and `Studio` CRD types (deepcopy generated) |
 | Typed client | `client/` — trimmed dynamic client for the Project resource |
 | Tenant client | `tenant/` — token-forwarding `ClientFactory` (host+TLS from the provider kubeconfig, caller token per request) |
+| Cross-provider reach | `internal/crossprovider/` — the dependency coordinates and the composition the reconcilers are granted; `controller/{project,studio}/identity.go` mint it, `controller/tenantwatch/` watches with it |
 | Message store | `store/` — Postgres + in-memory + envelope-encryption implementations |
 | Development runtime | `api/development_*` + `api/dataplane_client.go` — template-selected development instances, component-aware sync, restart/log/status calls, and edge-checked preview authorization |
 | Portal | `portal/` — the Vue micro-frontend (`<railgrid-provider-app-studio>`), embedded via `assets.go` |
-| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.railgrid.ai`) + Code and Infrastructure dependencies + Project/Session/Studio schemas + tenant-scoped Infrastructure, Code Repository, ServiceAccount, Secret, and RBAC claims |
+| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.railgrid.ai`) + Project/Session/Studio schemas + the Code and Infrastructure dependencies with what this provider composes from each + exactly one tenant-scoped permission claim, on `secrets` |
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
 | CI (mirror) | `.github/workflows/{image,chart}.yaml` — publish the image + chart to GHCR (run only in the mirror) |
 

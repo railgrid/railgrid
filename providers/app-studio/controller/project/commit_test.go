@@ -93,13 +93,15 @@ func TestCommitMessageStaysUnderRepositoryCommitLimit(t *testing.T) {
 	}
 }
 
-// commitTestEnv drives commitWorkspace against a fake hub MCP endpoint and
-// one fake client standing in for the manager's cluster client: the provider's
-// APIExport virtual workspace serves both its own Projects and the claimed
-// RepositoryCommits, so the reconciler reads and writes them through the same
-// handle. The commit itself is still asked for over MCP (only the Code
-// provider can store the source bundle a RepositoryCommit points at), so the
-// env also mints a project identity from a fake hub identity service.
+// commitTestEnv drives commitWorkspace against a fake hub MCP endpoint and a
+// fake client. Production splits that client in two — the Project rides this
+// provider's APIExport virtual workspace, the RepositoryCommit rides the
+// tenant workspace as the project identity — but a single fake holding both
+// stands in for the pair here; what the tests are about is the commit
+// protocol, not which socket each read goes down. The commit itself is asked
+// for over MCP (only the Code provider can store the source bundle a
+// RepositoryCommit points at), so the env also mints a project identity from
+// a fake hub identity service.
 type commitTestEnv struct {
 	t        *testing.T
 	ctx      context.Context
@@ -194,7 +196,11 @@ func (env *commitTestEnv) write(path, content string) {
 // commit runs one convergence pass and reports whether uncommitted work
 // remains (commitOutcome.dirty).
 func (env *commitTestEnv) commit() (bool, error) {
-	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	token, err := env.r.identityToken(env.ctx, clusterOf(env.project), env.project)
+	if err != nil {
+		env.t.Fatalf("project identity: %v", err)
+	}
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.c, token, env.project, env.repo)
 	return outcome.dirty, err
 }
 

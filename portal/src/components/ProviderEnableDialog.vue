@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { X, ShieldCheck, ShieldAlert, Loader2 } from 'lucide-vue-next'
-import type { ProviderDTO, PermissionClaim, HubAccessRequest, AcceptedHubAccess } from '@/stores/providers'
+import type { ProviderDTO, PermissionClaim, HubAccessRequest, AcceptedHubAccess, AcceptedComposition } from '@/stores/providers'
 
 const props = defineProps<{
   provider: ProviderDTO | null
@@ -20,8 +20,19 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   cancel: []
-  confirm: [accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[]]
+  confirm: [accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[], acceptCompositions: AcceptedComposition[]]
 }>()
+
+// A composition is one kind of ANOTHER provider that this provider's
+// reconcilers create and manage in this workspace. It is flattened out of
+// provider.dependencies[].composes[] so the list reads as one decision per
+// kind, which is how it is recorded and how it can be withdrawn.
+interface CompositionOption {
+  provider: string
+  group: string
+  resource: string
+  verbs: string[]
+}
 
 // One boolean per claim, indexed by claim key. tenantScoped claims default
 // to accepted; non-tenantScoped default to rejected so the user has to
@@ -40,11 +51,33 @@ const dismissTitle = computed(() => props.busy
 
 const claimKey = (c: PermissionClaim) => `${c.group ?? ''}/${c.resource}`
 const hubKey = (h: HubAccessRequest) => `${h.capability}/${h.scope}`
+const compositionKey = (c: CompositionOption) => `${c.provider}|${c.group}/${c.resource}`
+
+// Managing another provider's objects in this workspace is a workspace
+// decision, so a workspace admin is enough and an org admin can always make
+// it. The hub enforces the same rule; this only avoids offering a checkbox
+// that can only fail.
+function canAcceptComposition(): boolean {
+  return props.workspaceRole === 'admin' || props.orgRole === 'admin'
+}
+
+// A composition that can only read is described as reading. Anything else
+// creates or changes objects, and says so.
+function compositionLabel(c: CompositionOption): string {
+  const readOnly = c.verbs.every((v) => v === 'get' || v === 'list' || v === 'watch')
+  const kind = c.resource.charAt(0).toUpperCase() + c.resource.slice(1)
+  return readOnly
+    ? `Read ${kind} (${c.provider}) in this workspace`
+    : `Create and manage ${kind} (${c.provider}) in this workspace`
+}
 
 // One boolean per requested hub capability. Those the caller may accept
 // start accepted (the provider asks for them to work); the rest are shown
 // disabled with who can accept them.
 const acceptedHub = ref<Record<string, boolean>>({})
+
+// Same for compositions.
+const acceptedComposition = ref<Record<string, boolean>>({})
 
 function canAcceptHub(h: HubAccessRequest): boolean {
   if (h.scope === 'org') return props.orgRole === 'admin'
@@ -80,11 +113,34 @@ watch(
       nextHub[hubKey(h)] = canAcceptHub(h)
     }
     acceptedHub.value = nextHub
+    const nextComposition: Record<string, boolean> = {}
+    for (const c of compositionsOf(p)) {
+      nextComposition[compositionKey(c)] = canAcceptComposition()
+    }
+    acceptedComposition.value = nextComposition
   },
   { immediate: true },
 )
 
 const hubAccess = computed(() => props.provider?.hubAccess ?? [])
+
+function compositionsOf(p: ProviderDTO | null): CompositionOption[] {
+  const out: CompositionOption[] = []
+  for (const dependency of p?.dependencies ?? []) {
+    for (const c of dependency.composes ?? []) {
+      out.push({ provider: dependency.name, group: c.group, resource: c.resource, verbs: c.verbs ?? [] })
+    }
+  }
+  return out
+}
+
+const compositions = computed(() => compositionsOf(props.provider))
+
+function toggleComposition(c: CompositionOption) {
+  if (props.busy || !canAcceptComposition()) return
+  const k = compositionKey(c)
+  acceptedComposition.value = { ...acceptedComposition.value, [k]: !acceptedComposition.value[k] }
+}
 
 function toggleHub(h: HubAccessRequest) {
   if (props.busy || !canAcceptHub(h)) return
@@ -109,7 +165,12 @@ function onConfirm() {
   const acceptHub = hubAccess.value
     .filter((h) => canAcceptHub(h) && acceptedHub.value[hubKey(h)])
     .map((h) => ({ capability: h.capability, scope: h.scope }))
-  emit('confirm', accept, acceptHub)
+  const acceptCompositions = canAcceptComposition()
+    ? compositions.value
+        .filter((c) => acceptedComposition.value[compositionKey(c)])
+        .map((c) => ({ provider: c.provider, group: c.group, resource: c.resource }))
+    : []
+  emit('confirm', accept, acceptHub, acceptCompositions)
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -253,6 +314,42 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             connected to this workspace (background connections through the
             hub's edges-proxy). Removed when you disable the provider.
           </p>
+        </div>
+
+        <div v-if="compositions.length" class="mt-3">
+          <p class="mb-1.5 text-[11px] font-medium text-text-primary">Building on other providers</p>
+          <p class="mb-2 text-[10px] text-text-muted">
+            {{ provider.displayName }} builds what you ask for out of other providers' resources,
+            in this workspace only. It uses a credential the hub issues for each of your objects —
+            never a standing one of its own — and what you leave unchecked is declined.
+          </p>
+          <ul class="space-y-2">
+            <li
+              v-for="c in compositions"
+              :key="compositionKey(c)"
+              class="rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2"
+            >
+              <label class="k-checkbox-hit flex items-start gap-3" :class="canAcceptComposition() ? 'cursor-pointer' : 'cursor-not-allowed opacity-70'">
+                <input
+                  type="checkbox"
+                  class="k-checkbox mt-1"
+                  :checked="!!acceptedComposition[compositionKey(c)]"
+                  :disabled="busy || !canAcceptComposition()"
+                  @change="toggleComposition(c)"
+                />
+                <div class="min-w-0 flex-1">
+                  <span class="text-[11px] text-text-primary">{{ compositionLabel(c) }}</span>
+                  <p class="mt-0.5 font-mono text-[10px] text-text-muted">{{ c.group }}/{{ c.resource }}</p>
+                  <p class="mt-0.5 text-[10px] text-text-muted">
+                    Verbs: <span class="font-mono">{{ c.verbs.join(', ') || 'none' }}</span>
+                  </p>
+                  <p v-if="!canAcceptComposition()" class="mt-1 text-[10px] text-warning">
+                    Only a workspace or organization admin can decide this; enabling leaves it as it is.
+                  </p>
+                </div>
+              </label>
+            </li>
+          </ul>
         </div>
 
         <div v-if="hubAccess.length" class="mt-3">

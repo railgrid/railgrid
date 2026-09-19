@@ -33,9 +33,11 @@ What works today:
 - **Edge engagement** (`engagement/`): watches `Edge` objects across every
   tenant workspace that Enabled the provider (APIExport virtual
   workspace), and syncs each connected kubernetes edge through the hub's
-  edges-proxy as the workspace-local `railgrid-kuery` ServiceAccount the
-  controller provisions there (the `railgrid-kuery-edgeproxy` grant gives it
-  verb `proxy` on kubernetesclusters). Engaged clusters are keyed
+  edges-proxy as a **hub-minted scoped identity** owned by that workspace's
+  kuery `APIBinding` (`engagement/identity.go`): the declared composition on
+  `edges.railgrid.ai/kubernetesclusters` plus `create` on
+  `kubernetesclusters/k8s` for the edges it engages. This provider mints no
+  ServiceAccount and holds no RBAC-authoring claims. Engaged clusters are keyed
   `{clusterID}/{edgeName}` and labelled with their tenant, where the tenant
   key is the tenant workspace's **kcp logical-cluster ID** (read from the
   kuery `APIBinding`'s `kcp.io/cluster` annotation) — never a workspace
@@ -68,14 +70,17 @@ What works today:
   the declared blast radius of one object, grouped by relation. Edges and
   SavedViews are read with the **kube client** from the tenant's own
   workspace, not from this provider.
-- **Registration surface**: heartbeats, CatalogEntry (SavedView schema),
-  Helm chart. The APIExport claims **no** first-party
-  (`*.railgrid.ai`) resources — there is no `edges` claim. Such a claim would
-  have to pin one serving APIExport identity for every consuming workspace at
-  once, which breaks as soon as one org self-hosts `edges`. Edge discovery
-  acts as a per-workspace ServiceAccount through each workspace's own `edges`
-  binding instead (`init_cmd.go`, `engagement/`,
-  `provider-sdk/tenantaccess`).
+- **Registration surface**: heartbeats, CatalogEntry (SavedView schema,
+  and the `edges` dependency with the composition it declares on
+  `kubernetesclusters`), Helm chart. The APIExport carries **no permission
+  claims at all**. No first-party (`*.railgrid.ai`) claim, because one would
+  have to pin a single serving APIExport identity for every consuming
+  workspace at once, which breaks as soon as one org self-hosts `edges`; and
+  no `serviceaccounts`/`secrets`/`clusterroles`/`clusterrolebindings`, because
+  a provider does not mint identities, it asks the hub. Edge discovery acts as
+  a hub-minted identity through each workspace's own `edges` binding instead
+  (`init_cmd.go`, `engagement/identity.go`,
+  `provider-sdk/identityclient`).
 
 What lands next (see the design doc): an e2e suite asserting edge-object
 sync end to end with a real connected agent, and the Postgres chart option.
@@ -93,7 +98,7 @@ engagement/         edge watch → Engage/Disengage, Engagements, per-edge Lease
 queryapi/           the query verb: gates, engagement scoping, QuerySpec validation
 mcpserver/          kuery_query + kuery_impact, through the same gated executor
 assets.go           //go:embed of portal/dist
-manifest.yaml       CatalogEntry (SavedView schema; no first-party claims, no edgeProxyAccess)
+manifest.yaml       CatalogEntry (SavedView schema; the edges composition; no claims at all, no edgeProxyAccess)
 portal/             Vite + TS micro-frontend (custom element)
 deploy/chart/       Helm chart (host cluster only; PVC for the SQLite store)
 ```
@@ -217,11 +222,13 @@ creates a workspace for it in your organization, mints a credential scoped to
 that workspace alone, and generates the exact `helm` commands — under
 **Providers → Self-Hosting** in the portal.
 
-Nothing to fill in: kuery claims no first-party resources, so there is no
-identity hash to resolve. It reads through edges as a per-workspace
-ServiceAccount over each workspace's own `edges` binding, so self-hosting
-kuery usually means self-hosting `edges` as well — do that first and kuery
-will reach your own instance.
+Nothing to fill in: kuery claims nothing at all, so there is no identity hash
+to resolve. It reads through edges as a hub-minted identity over each
+workspace's own `edges` binding, so self-hosting kuery usually means
+self-hosting `edges` as well — do that first and kuery will reach your own
+instance. The composition kuery declares on `edges.railgrid.ai/kubernetesclusters`
+is resolved per workspace against whichever copy is bound there, so nothing
+about this changes when the copy is yours.
 
 Once installed, the provider registers itself and your workspaces enable it
 exactly like the platform copy. See

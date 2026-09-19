@@ -46,30 +46,6 @@ catalogEntry:
   uiURL: ""
   backendURL: ""
 
-# Dependency APIExport identity hashes.
-#
-# App Studio's controllers reconcile the Infrastructure provider's Instances
-# and the Code provider's Repositories/RepositoryCommits through its own
-# APIExport virtual workspace, which means its APIExport must CLAIM those
-# kinds — and a claim on a first-party group has to name the exact export that
-# serves it, by identity hash. Without them `init` fails closed rather than
-# publishing an export that claims a group it cannot name.
-#
-# Read each hash in the workspace that hosts the dependency's provider:
-#
-#   kubectl get apiexport infrastructure.providers.railgrid.ai \
-#     -o jsonpath='{.status.identityHash}'
-#   kubectl get apiexport code.providers.railgrid.ai \
-#     -o jsonpath='{.status.identityHash}'
-#
-# On the platform they are also listed under Admin → root identities. An org
-# self-hosting infrastructure or code passes ITS OWN hashes here, which is the
-# whole reason this is a value and not a constant.
-apiExport:
-  identityHashes:
-    infrastructure.railgrid.ai: ""
-    code.railgrid.ai: ""
-
 # Secret holding the workspace-admin kubeconfig minted by the platform admin
 # via /bonkers (admin onboarding). Consumed by both the init container and the
 # serve container. Key must be "kubeconfig".

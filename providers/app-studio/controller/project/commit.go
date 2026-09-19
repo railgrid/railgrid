@@ -86,23 +86,27 @@ type commitOutcome struct {
 // reconciler is following up (the durable record with the commit's content
 // digest and paths lives in the workspace ledger; see resolvePendingCommit).
 // It is what `kubectl get project -o yaml` shows while a commit is queued
-// behind a GitHub rate limit, and what the RepositoryCommit watch converges.
+// behind a GitHub rate limit, what the RepositoryCommit watch converges, and
+// the name the project identity is granted a `get` on while it is set
+// (identity.go).
 const pendingCommitAnnotation = "ai.railgrid.ai/pending-commit"
 
 // commitWorkspace pushes dirty workspace files to git when the project is
-// idle. c is the manager's client for this workspace — the provider's own
-// ServiceAccount over its APIExport virtual workspace — which reads and
-// writes the Project AND the claimed RepositoryCommits.
+// idle. Two clients, as everywhere in this package: c is the manager's client
+// over this provider's APIExport virtual workspace, which owns the Project and
+// is where the pending-commit pointer is written; tc is the tenant-workspace
+// client authenticated as the project identity, which is where a
+// RepositoryCommit is read. token is that same identity's bearer.
 //
 // Asking for the commit is the one thing here that is not a CR write, and
 // deliberately: a RepositoryCommit is a POINTER at a source bundle held in the
 // Code provider's own store (providers/code/commitbundle), and only that
 // provider can put bytes there. Its commit_files MCP tool stores the bundle
 // and creates the CR in one step, so this calls the tool and then follows the
-// CR it created — which is why this provider claims repositorycommits
-// read-only, and why the per-project identity keeps `use` on the workspace's
-// MCP aggregate.
-func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
+// CR it created — which is why the declared composition on repositorycommits
+// carries no create, and why the identity keeps `use` on the workspace's MCP
+// aggregate.
+func (r *Reconciler) commitWorkspace(ctx context.Context, c, tc client.Client, token string, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
 	if r.Workspace == nil || r.HubBase == "" {
 		return commitOutcome{}, nil // commit convergence not wired (REST-only dev)
 	}
@@ -144,7 +148,7 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 		return commitOutcome{dirty: true}, fmt.Errorf("read pending commit: %w", err)
 	}
 	if hasPending {
-		resolved, err := r.resolvePendingCommit(ctx, c, p, scope, pending)
+		resolved, err := r.resolvePendingCommit(ctx, c, tc, p, scope, pending)
 		if err != nil || !resolved {
 			return commitOutcome{dirty: true}, err
 		}
@@ -176,10 +180,6 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	// provider then authorizes the call as that identity rather than as this
 	// provider. No identity (no hub configured) means no commit path — the
 	// files stay dirty and are committed once there is one.
-	token, err := r.identityToken(ctx, clusterOf(p), p)
-	if err != nil {
-		return commitOutcome{dirty: true, retry: true}, fmt.Errorf("project identity for commit: %w", err)
-	}
 	mcp := hubmcp.NewClient(r.HubBase, clusterOf(p), token, r.HubInsecure)
 	if !mcp.Ready() {
 		return commitOutcome{dirty: true, retry: true}, nil
@@ -485,13 +485,17 @@ func (r *Reconciler) clearPendingCommit(ctx context.Context, c client.Client, p 
 // it is resolved: Succeeded (settled and announced) or Failed/gone (cleared,
 // so a fresh commit may be sent). A still-running commit stays recorded and
 // is re-read when its watch event arrives.
-func (r *Reconciler) resolvePendingCommit(ctx context.Context, c client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (bool, error) {
-	if c == nil {
+//
+// The read is tc — the tenant workspace, as the project identity, which holds
+// a named `get` on exactly this commit — while every write here is c, the
+// Project's own virtual workspace.
+func (r *Reconciler) resolvePendingCommit(ctx context.Context, c, tc client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (bool, error) {
+	if c == nil || tc == nil {
 		return false, nil
 	}
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(repositoryCommitGVK)
-	if err := c.Get(ctx, types.NamespacedName{Name: pending.Name}, obj); err != nil {
+	if err := tc.Get(ctx, types.NamespacedName{Name: pending.Name}, obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Printf("app-studio project %s: pending RepositoryCommit %s is gone; a fresh commit will be sent", scope.ProjectName, pending.Name)
 			return true, r.clearPendingCommit(ctx, c, p, scope)

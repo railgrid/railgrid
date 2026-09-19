@@ -34,9 +34,54 @@ spec:
   version: "0.1.0"
   category: "AI"
   iconURL: "/ui/providers/app-studio/icon.svg"
+  # Dependencies, and what this provider COMPOSES from each of them.
+  #
+  # `name` alone is the enable-time guard: the dependency must already be
+  # enabled in a tenant workspace before App Studio can be. `composes` is the
+  # second half — the (group, resource, verbs) this provider's own reconcilers
+  # need on that dependency's objects INSIDE the tenant workspace, which the
+  # tenant accepts at Enable and the hub's identity policy then admits into the
+  # scoped identities the reconcilers act as (clause E).
+  #
+  # It is deliberately NOT an apiExport.permissionClaim. A claim on a
+  # first-party (*.railgrid.ai) group must pin the serving APIExport's
+  # identityHash, and an export pins exactly ONE identity per claimed resource
+  # for every consuming workspace at once — so a workspace bound to an
+  # org-owned infrastructure or code provider is served nothing at all, and
+  # silently. Acting inside the workspace, through the workspace's own
+  # APIBindings, is authorized by that workspace's RBAC, which is true of
+  # whichever copy it bound. See docs/app-studio-runtime-decoupling.md.
+  #
+  # Two rule shapes, because Kubernetes RBAC has two: collection verbs
+  # (create/list/watch) take no resourceNames and are bounded by the declared
+  # resource, while object verbs (get/update/delete) are name-scoped to the
+  # objects one Project or Studio is bound to. What each verb is for:
+  #   instances          created for a project's bound environments and for the
+  #                      workspace's shared search/browser backends; converged
+  #                      on drift; deleted on the owner's finalizer; listed and
+  #                      watched so readiness arrives as an event.
+  #   repositories       created with autoInit and converged; NEVER deleted —
+  #                      they hold user code and outlive the project.
+  #   repositorycommits  listed, watched and read only: the CR is created by
+  #                      the Code provider's commit_files tool, because it is a
+  #                      pointer at a source bundle only that provider can
+  #                      store.
+  # Keep identical to deploy/chart/templates/catalogentry.yaml, and in step
+  # with internal/crossprovider/composition.go.
   dependencies:
     - name: infrastructure
+      composes:
+        - group: infrastructure.railgrid.ai
+          resource: instances
+          verbs: ["get", "list", "watch", "create", "update", "delete"]
     - name: code
+      composes:
+        - group: code.railgrid.ai
+          resource: repositories
+          verbs: ["get", "list", "watch", "create", "update"]
+        - group: code.railgrid.ai
+          resource: repositorycommits
+          verbs: ["get", "list", "watch"]
   ui:
     # Dev loopback port (PORT / Tiltfile run-provider-app-studio). 8085 to
     # avoid colliding with quickstart (8081) and kuery (8084).
@@ -53,18 +98,25 @@ spec:
 
   apiExport:
     name: "ai.railgrid.ai"
-    # Keep in sync with init_cmd.go (APIExport claims) and
-    # deploy/chart/templates/catalogentry.yaml — the hub writes these into the
-    # tenant APIBinding at Enable time; a claim missing here is silently
-    # denied at reconcile.
+    # Keep in sync with deploy/chart/templates/catalogentry.yaml — the hub
+    # writes these into the tenant APIBinding at Enable time; a claim missing
+    # here is silently denied at reconcile.
     permissionClaims:
-      # No serviceaccounts, clusterroles or clusterrolebindings: a provider
-      # does not mint identities, it asks the hub, and a claim on those types
-      # is a contract violation rather than a design choice
-      # (docs/provider-connectivity-contract.md §"Scoped identities"). What a
-      # project's WORKLOAD does as itself — reach the MCP aggregate, call a
-      # data-plane verb on its own instance — rides a hub-minted scoped
-      # identity (controller/project/identity.go).
+      # BUILT-IN TYPES ONLY. There is deliberately no first-party
+      # (*.railgrid.ai) claim here: such a claim has to pin the serving
+      # APIExport's identityHash, and one export pins one identity per claimed
+      # resource for EVERY consuming workspace at once, so a workspace bound to
+      # an org-owned infrastructure or code provider would be served nothing.
+      # What this provider's reconcilers need on a dependency is declared as a
+      # composition instead (spec.dependencies[].composes above) and reached
+      # through hub-minted scoped identities acting inside each tenant
+      # workspace (controller/project/identity.go,
+      # controller/studio/identity.go).
+      #
+      # No serviceaccounts, clusterroles or clusterrolebindings either: a
+      # provider does not mint identities, it asks the hub, and a claim on
+      # those types is a contract violation rather than a design choice
+      # (docs/provider-connectivity-contract.md §"Scoped identities").
       #
       # Secrets are the credential material this provider writes and reads
       # itself, all in the tenant workspace's "default" namespace:
@@ -80,49 +132,6 @@ spec:
       # credential (cross-provider-simplification §2.1).
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
-        tenantScoped: true
-      # The dependency kinds this provider's OWN controllers reconcile, served
-      # to them through its APIExport virtual workspace (AGENTS.md §5.4: a
-      # background controller acts as the provider ServiceAccount over the VW
-      # with accepted claims — a scoped identity is for what a WORKLOAD does as
-      # itself, not for the provider's own reconciliation).
-      #
-      # These are first-party groups, so each claim carries an identityHash
-      # pinning the exact APIExport that serves it. provider-sdk/install stamps
-      # it at init time from RAILGRID_IDENTITY_HASHES (the chart's
-      # apiExport.identityHashes value); init fails closed if one is missing.
-      # The consequence is the one these claims were avoided for: an export
-      # pins ONE identity per resource for every consuming workspace at once,
-      # so a tenant self-hosting infrastructure or code needs its own App Studio
-      # install with its own hashes (deploy/chart/README.md, "Dependency
-      # identity hashes").
-      #
-      # Verbs are what the controllers actually call, nothing wider:
-      #   instances          get/list/watch + create/update/delete —
-      #                      controller/project (bound environments) and
-      #                      controller/studio (search, browser) create them,
-      #                      converge them on drift and delete them on the
-      #                      owner's finalizer.
-      #   repositories       get/list/watch + create/update — created with
-      #                      autoInit and converged; NEVER deleted, they hold
-      #                      user code and outlive the project.
-      #   repositorycommits  get/list/watch only — the commit itself is created
-      #                      by the Code provider (its commit_files MCP tool
-      #                      writes the source bundle into its own store first,
-      #                      and the CR is only a pointer at that bundle); this
-      #                      provider follows the commit it asked for and wakes
-      #                      on its transitions.
-      - resource: instances
-        group: infrastructure.railgrid.ai
-        verbs: ["get", "list", "watch", "create", "update", "delete"]
-        tenantScoped: true
-      - resource: repositories
-        group: code.railgrid.ai
-        verbs: ["get", "list", "watch", "create", "update"]
-        tenantScoped: true
-      - resource: repositorycommits
-        group: code.railgrid.ai
-        verbs: ["get", "list", "watch"]
         tenantScoped: true
   # Data-plane verbs this provider serves, declared so the coordinate is
   # machine-readable. Declaring one grants and serves nothing: every call is

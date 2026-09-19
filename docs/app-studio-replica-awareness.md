@@ -159,9 +159,10 @@ the work is partitioned by project. Both premises are gone:
 
 So the controllers run under `provider-sdk/leaderelection.Run` on a Lease named
 `app-studio-controllers` in the provider workspace, rebuilt per term: a
-controller-runtime manager cannot be restarted, so it is constructed inside
-the term and dies with it. Losing the lease costs a controller pause, not a
-process restart.
+controller-runtime manager cannot be restarted, and neither can the
+`tenantwatch.Hub` the Project and Studio reconcilers share, so both are
+constructed inside the term and die with it. Losing the lease costs a
+controller pause, not a process restart.
 
 The 15 s manager restart loop is gone with it — the election's own campaign is
 the retry that covers a provider coming up before `init` has created its
@@ -170,15 +171,25 @@ reconcilers: the watches and the signal buses are the triggers, and no
 `RequeueAfter` is left on the identity path at all. The 5 s wait for a
 ServiceAccount token Secret went with the ServiceAccount — the hub mints the
 project and Studio identities synchronously
-(`controller/project/identity.go`), so there is no pending dependency to back
-off on, and a hub failure is an error the controller's own backoff retries.
+(`controller/project/identity.go`, `controller/studio/identity.go`), so there
+is no pending dependency to back off on, and a hub failure is an error the
+controller's own backoff retries.
 
-The dependency watches hold no credential of their own at all any more: the
-Instances, Repositories and RepositoryCommits this provider reconciles are
-claimed by its APIExport, so they arrive on the manager's own wildcard informer
-alongside Projects, under the same lease, for every tenant workspace at once.
-`controller/tenantwatch` — a second watch hub with a per-workspace token and a
-relist loop — is deleted.
+The dependency watches keep a credential of their own, and deliberately. The
+Instances, Repositories and RepositoryCommits this provider reconciles belong
+to whichever infrastructure and code provider each WORKSPACE bound, so they
+cannot ride the manager's wildcard informer: that informer rides this
+provider's APIExport virtual workspace, which would have to CLAIM those
+first-party kinds, and a first-party claim pins one serving `identityHash` for
+every consumer at once. `controller/tenantwatch` therefore keeps one LIST/WATCH
+per tenant workspace at `{hub}/clusters/{cluster}`, as the same hub-minted
+identity the reconcilers write with, started on the first reconcile that holds
+a token and replaced when a 401/403 proves the token in hand is dead. It is
+still watch-driven end to end: no resync, no relist timer, only a bounded
+backoff after an error.
+
+That the hub is per-term is why it is built in `runControllerManager` next to
+the manager — a stopped hub, like a stopped manager, is not restartable.
 
 ## What still requires affinity
 
