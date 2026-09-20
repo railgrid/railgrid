@@ -334,10 +334,11 @@ describe('connections', () => {
     // provider, including to unattended runs, which have no caller token to
     // borrow. The portal is the only writer of the model credential, so this
     // assertion is the whole guard.
+    type labelled = { metadata: { labels: Record<string, string> } }
     await resources.createConnection({ name: 'gh2', type: 'github', secret: 'ghp_x' })
-    expect(kcp.last('/secrets').body.metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
+    expect((kcp.last('/secrets').body as labelled).metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
     await resources.saveCredential({ name: 'primary', model: 'gpt-4o', apiKey: 'sk-x' })
-    expect(kcp.last('/secrets').body.metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
+    expect((kcp.last('/secrets').body as labelled).metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
   })
 
   it('refuses a signing secret on a connection that has no use for one', async () => {

@@ -29,8 +29,12 @@ COPY providers/kuery/go.mod providers/kuery/go.sum ./
 COPY provider-sdk/ /provider-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY providers/kuery/main.go providers/kuery/assets.go providers/kuery/init_cmd.go ./
+COPY providers/kuery/apis/ ./apis/
+COPY providers/kuery/controller/ ./controller/
 COPY providers/kuery/core/ ./core/
 COPY providers/kuery/engagement/ ./engagement/
+COPY providers/kuery/index/ ./index/
+COPY providers/kuery/install/ ./install/
 COPY providers/kuery/mcpserver/ ./mcpserver/
 COPY providers/kuery/queryapi/ ./queryapi/
 COPY --from=portal /portal/dist ./portal/dist

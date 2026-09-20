@@ -6279,7 +6279,9 @@ async function changeDevelopmentPreviewAccess(mode: string) {
     // AND reconciles the app-access grants behind it, which a bare write to
     // spec.sharing.preview would leave stale. Re-read the view afterwards so
     // the selected project carries the new policy.
-    await api.setPreviewAccess(props.ctx, project.name, requested)
+    // The verb's vocabulary is public | restricted; 'private' is this view's
+    // word for the same state.
+    await api.setPreviewAccess(props.ctx, project.name, requested === 'public' ? 'public' : 'restricted')
     if (selected.value?.name !== project.name) return
     const updated = await api.getProject(props.ctx, project.name)
     if (selected.value?.name !== project.name) return
