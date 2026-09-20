@@ -220,7 +220,7 @@ func webFetchWith(ctx context.Context, client *http.Client, raw string, maxChars
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	final := u
 	if resp.Request != nil && resp.Request.URL != nil {
@@ -303,7 +303,7 @@ func webSearch(ctx context.Context, d Deps, query string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if resp.StatusCode/100 != 2 {
 		return "", fmt.Errorf("search API HTTP %d: %s", resp.StatusCode, clip(string(raw), 300))

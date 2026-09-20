@@ -12,10 +12,10 @@ import { createKueryRequestContext, errorMessage, resourceLabel, useKueryApi } f
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 
-const props = defineProps<{ context: RailgridContext | null; anchor: ObjectResult }>()
+const props = defineProps<{ context: RailgridContext | null; anchor: ObjectResult; savedView: string }>()
 const emit = defineEmits<{ back: []; inspect: [row: ObjectResult] }>()
 const context = computed(() => props.context)
-const { api, query } = useKueryApi(context)
+const { api, query } = useKueryApi(context, computed(() => props.savedView))
 const result = ref<ObjectResult | null>(null)
 const loaded = ref(false)
 const loading = ref(false)
@@ -86,7 +86,7 @@ async function mount(): Promise<void> {
   if (!result.value || !graphHost.value || representation.value !== 'graph') return
   const current = generation; const built = buildElements(result.value)
   try {
-    const handle = await mountGraph(graphHost.value, built.elements, themeStyle(graphHost.value), id => { if (current !== generation) return; const row = built.nodeIndex[id]; if (row && id !== result.value?.id) emit('inspect', row) }, `${(context.value?.basePath || '').replace(/\/?$/, '/')}cytoscape.min.js`)
+    const handle = await mountGraph(graphHost.value, built.elements, themeStyle(graphHost.value), id => { if (current !== generation) return; const row = built.nodeIndex[id]; if (row && id !== result.value?.id) emit('inspect', row) })
     if (current !== generation) return handle.destroy()
     graph = handle; requestAnimationFrame(() => { if (current === generation && graph === handle) handle.fit() })
   } catch (reason) {

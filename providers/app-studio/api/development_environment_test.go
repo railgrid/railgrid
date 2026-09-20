@@ -12,7 +12,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -118,38 +117,20 @@ func TestProjectViewExposesImmutableIdentityAndDeletionState(t *testing.T) {
 	}
 }
 
-func TestApplyProjectPatchRequestPersistsSharing(t *testing.T) {
-	project := &aiv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
-		Spec:       defaultProjectSpec("todo", "Todo", "Tasks", nil),
-	}
-	changed, err := applyProjectPatchRequest(project, PatchProjectRequest{
-		Sharing: &aiv1alpha1.ProjectSharingSpec{
-			Preview: aiv1alpha1.ProjectPreviewSharingPolicy{
-				Mode: aiv1alpha1.ProjectSharingModeShared,
-			},
-			Publishing: aiv1alpha1.ProjectSharingPolicy{
-				Mode: aiv1alpha1.ProjectSharingModePublic,
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("applyProjectPatchRequest returned error: %v", err)
-	}
-	if !changed {
-		t.Fatal("changed = false, want true")
-	}
-	if got, want := project.Spec.Sharing.Preview.Mode, aiv1alpha1.ProjectSharingModePrivate; got != want {
-		t.Fatalf("preview sharing mode = %q, want %q", got, want)
-	}
-	if got, want := project.Spec.Sharing.Publishing.Mode, aiv1alpha1.ProjectSharingModePublic; got != want {
-		t.Fatalf("publishing sharing mode = %q, want %q", got, want)
+// defaultProjectSpec must not hand a new Project an exposed sharing policy:
+// a project is private until someone uses the preview or publishing verb.
+func TestDefaultProjectSpecStartsPrivate(t *testing.T) {
+	spec := defaultProjectSpec("todo", "Todo", "Tasks", nil)
+	got := effectiveProjectSharingSpec(spec.Sharing)
+	if got.Preview.Mode != aiv1alpha1.ProjectSharingModePrivate || got.Publishing.Mode != aiv1alpha1.ProjectSharingModePrivate {
+		t.Fatalf("default sharing = %+v, want private/private", got)
 	}
 }
 
 func TestProjectAssistantPreviewRefreshNeededUsesSuccessfulMutatingToolCalls(t *testing.T) {
 	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	if !server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
 		Name:   projectToolEditFile,
 		Status: "succeeded",
@@ -168,17 +149,4 @@ func TestProjectAssistantPreviewRefreshNeededUsesSuccessfulMutatingToolCalls(t *
 	}}) {
 		t.Fatal("preview refresh = true, want false after read-only tool")
 	}
-}
-
-type previewOverlayProbeEngine struct {
-	previewURL string
-}
-
-func (e *previewOverlayProbeEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	e.previewURL = projectAssistantRuntimePreviewURL(req.Project)
-	return projectAssistantRunResult{Content: "ok"}, nil
-}
-
-func (e *previewOverlayProbeEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, fmt.Errorf("unexpected resume")
 }

@@ -46,6 +46,7 @@ func TestEnsureProjectAttachmentAdmissionAddsScopeAndFinalizer(t *testing.T) {
 	client := asclient.NewFromDynamic(dynamicClient)
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	id := identity{orgUUID: "org", workspaceUUID: "workspace", user: "alice"}
 
 	admitted, err := server.ensureProjectAttachmentAdmission(ctx, client, id, project)
@@ -75,6 +76,7 @@ func TestEnsureProjectAttachmentAdmissionRejectsConflictingTenantMetadata(t *tes
 	client := asclient.NewFromDynamic(dynamicClient)
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	_, err := server.ensureProjectAttachmentAdmission(ctx, client, identity{orgUUID: "org", workspaceUUID: "workspace"}, project)
 	if !errors.Is(err, errProjectAttachmentScopeConflict) {
 		t.Fatalf("conflicting metadata error = %v, want scope conflict", err)
@@ -101,6 +103,7 @@ func TestEnsureProjectAttachmentAdmissionRetriesConflictWithFreshRead(t *testing
 	client := asclient.NewFromDynamic(dynamicClient)
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	if _, err := server.ensureProjectAttachmentAdmission(ctx, client, identity{orgUUID: "org", workspaceUUID: "workspace"}, project); err != nil {
 		t.Fatalf("ensureProjectAttachmentAdmission after conflict: %v", err)
 	}
@@ -119,6 +122,7 @@ func TestCreateProjectAssistantAttachmentRejectsMetadataWriteFailureBeforeStore(
 	client := asclient.NewFromDynamic(dynamicClient)
 	server := NewWithWorkspace(nil, attachments, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.projectClientFor = func(identity) (*asclient.Client, error) { return client, nil }
 	router := mux.NewRouter()
 	server.Register(router)
@@ -138,7 +142,7 @@ func TestCreateProjectAssistantAttachmentRejectsMetadataWriteFailureBeforeStore(
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"alice-token")
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "alice")
 	response := httptest.NewRecorder()

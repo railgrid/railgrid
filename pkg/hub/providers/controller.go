@@ -103,6 +103,34 @@ type CatalogReconciler struct {
 	// means "use the Provisioner"; it is a field so tests can observe the call
 	// without a live kcp.
 	sweepCredentials func(ctx context.Context, cluster string) (int, time.Time, error)
+
+	// resolveAPIGroups reads spec.resources[].group off a provider's APIExport.
+	// Nil means "use the Provisioner"; it is a field so tests can supply a fake
+	// export without a live kcp.
+	resolveAPIGroups func(ctx context.Context, workspacePath, exportName string) ([]string, error)
+}
+
+// ConditionAPIGroupsUnknown is set on a CatalogEntry whose provider declares an
+// APIExport that the hub cannot (yet) read the served API groups from.
+//
+// It is not folded into Ready. A provider with an unreadable export is still
+// routable, still discoverable, and its UI and backend still work; what it
+// cannot do is own an API group, so every scoped-identity rule naming one of
+// its groups is refused with unknown_group until the export is readable. That
+// is a narrow, silent failure without a condition to point at, which is exactly
+// why there is one.
+const ConditionAPIGroupsUnknown = "APIGroupsUnknown"
+
+// apiGroupResolver returns the APIExport group reader for this reconcile, or
+// nil when there is nothing to read with (registry-only mode).
+func (r *CatalogReconciler) apiGroupResolver() func(context.Context, string, string) ([]string, error) {
+	if r.resolveAPIGroups != nil {
+		return r.resolveAPIGroups
+	}
+	if r.prov == nil {
+		return nil
+	}
+	return r.prov.ResolveAPIExportGroups
 }
 
 // credentialSweeper returns the sweep to run for this reconcile, or nil when
@@ -154,12 +182,16 @@ type CatalogReconcilerOptions struct {
 	Provisioner []ProvisionerOption
 }
 
-// SetupCatalogWithManager wires the reconciler into a multicluster manager.
+// SetupCatalogWithManager wires the reconciler into a multicluster manager and
+// returns it, so the caller can hand it the hooks that only exist elsewhere in
+// the hub — notably the UI proxy's observed-bundle pin
+// (ProviderProxy.SetMainJSIntegrityObserver).
+//
 // kcpConfig is the admin rest.Config used only to RESOLVE each provider's
 // workspace cluster ID (read-only) for the Enable flow. Pass nil to run the
 // controller in registry-only mode (no kcp reads). The hub no longer
 // provisions providers — that moved to admin onboarding + provider Helm init.
-func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *rest.Config, opts CatalogReconcilerOptions) error {
+func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *rest.Config, opts CatalogReconcilerOptions) (*CatalogReconciler, error) {
 	r := &CatalogReconciler{
 		mgr:            mgr,
 		reg:            reg,
@@ -175,10 +207,13 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 	if kcpConfig != nil {
 		r.prov = NewProvisioner(kcpConfig, opts.Provisioner...)
 	}
-	return mcbuilder.ControllerManagedBy(mgr).
+	if err := mcbuilder.ControllerManagedBy(mgr).
 		Named("provider-catalog").
 		For(&providersv1alpha1.CatalogEntry{}).
-		Complete(r)
+		Complete(r); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // workspacePath returns the canonical kcp workspace path for a logical cluster,
@@ -330,9 +365,67 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
+	// Data-plane verbs gate what the scoped-identity service will mint on this
+	// provider's {resource}/{verb} coordinates, so a malformed declaration
+	// fails closed exactly as a malformed action does: the provider leaves the
+	// registry rather than keeping a stale, wider verb surface.
+	if dataPlaneErr := validateDataPlaneDeclaration(&entry); dataPlaneErr != nil {
+		r.reg.DeleteScoped(orgUUID, entry.Name)
+		now := metav1.NewTime(time.Now())
+		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
+		setCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidDataPlaneVerbs",
+			Message:            dataPlaneErr.Error(),
+			LastTransitionTime: now,
+			ObservedGeneration: entry.Generation,
+		})
+		if requeue, statusErr := updateStatusIfChanged(ctx, c, &entry, observedStatus); statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("updating invalid-data-plane status: %w", statusErr)
+		} else if requeue {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		logger.Info("Rejected invalid provider data-plane verb declarations", "error", dataPlaneErr.Error())
+		return ctrl.Result{}, nil
+	}
+
+	// Compositions gate what the scoped-identity service will mint on ANOTHER
+	// provider's kinds (clause E), so a malformed declaration fails closed the
+	// same way: the provider leaves the registry rather than keeping a stale,
+	// wider composition surface that an admin already consented to.
+	if compositionErr := r.validateCompositionDeclaration(orgUUID, &entry); compositionErr != nil {
+		r.reg.DeleteScoped(orgUUID, entry.Name)
+		now := metav1.NewTime(time.Now())
+		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
+		setCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidCompositions",
+			Message:            compositionErr.Error(),
+			LastTransitionTime: now,
+			ObservedGeneration: entry.Generation,
+		})
+		if requeue, statusErr := updateStatusIfChanged(ctx, c, &entry, observedStatus); statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("updating invalid-composition status: %w", statusErr)
+		} else if requeue {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		logger.Info("Rejected invalid provider composition declarations", "error", compositionErr.Error())
+		return ctrl.Result{}, nil
+	}
+
 	dependencies := make([]Dependency, 0, len(entry.Spec.Dependencies))
 	for _, dep := range entry.Spec.Dependencies {
-		dependencies = append(dependencies, Dependency{Name: dep.Name})
+		dependency := Dependency{Name: dep.Name}
+		for _, composition := range dep.Composes {
+			dependency.Composes = append(dependency.Composes, Composition{
+				Group:    composition.Group,
+				Resource: composition.Resource,
+				Verbs:    providersv1alpha1.CompositionVerbStrings(composition.Verbs),
+			})
+		}
+		dependencies = append(dependencies, dependency)
 	}
 
 	prov := Provider{
@@ -349,7 +442,6 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		// workspace, so there is no single path the recorder could assume.
 		CatalogEntryCluster: string(req.ClusterName),
 	}
-	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
 	prov.HubAccess = append([]providersv1alpha1.ProviderHubAccess(nil), entry.Spec.HubAccess...)
 
 	// An org-owned provider runs in the tenant's own cluster, so its data plane
@@ -422,12 +514,55 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			prov.APIExportPath = providersParentWorkspace + ":" + entry.Name
 		}
 		for _, c := range entry.Spec.APIExport.PermissionClaims {
-			prov.PermissionClaims = append(prov.PermissionClaims, PermissionClaim{
+			claim := PermissionClaim{
 				Group:        c.Group,
 				Resource:     c.Resource,
 				Verbs:        append([]string(nil), c.Verbs...),
 				TenantScoped: c.TenantScoped,
-			})
+			}
+			if c.Selector != nil {
+				claim.MatchLabels = copyLabels(c.Selector.MatchLabels)
+			}
+			prov.PermissionClaims = append(prov.PermissionClaims, claim)
+		}
+	}
+
+	// Which API groups this provider serves is READ from its APIExport, never
+	// inferred from the export's name. `edges.providers.railgrid.ai` serves
+	// `edges.railgrid.ai`; `ai.railgrid.ai` serves `ai.railgrid.ai`;
+	// `kuery.providers.railgrid.ai` serves its own name. The convention is not
+	// a rule and one export may serve several groups, so the only source that
+	// can be trusted is spec.resources[].group on the object itself.
+	//
+	// It is re-read on EVERY reconcile rather than watched. The catalog
+	// controller's clients are the providers.railgrid.ai APIExport virtual
+	// workspace, which serves catalogentries and nothing else — APIExports are
+	// not reachable there at all, so there is no cheap watch to take. Instead
+	// the read rides the reconciles this entry already gets: the provider's
+	// `init` writes the export and then its heartbeat, and a heartbeating
+	// provider re-reconciles every SweepInterval; an entry whose groups are
+	// still unknown requeues on the same cadence below until they resolve.
+	var apiGroupErr error
+	if prov.APIExportName != "" {
+		if resolve := r.apiGroupResolver(); resolve == nil {
+			apiGroupErr = fmt.Errorf("the hub has no kcp client to read APIExport %q with", prov.APIExportName)
+		} else if groups, err := resolve(ctx, prov.APIExportPath, prov.APIExportName); err != nil {
+			apiGroupErr = err
+		} else {
+			prov.APIGroups = groups
+		}
+		if apiGroupErr != nil {
+			// A read failure must not RETRACT groups the hub already resolved:
+			// an APIExport's group set does not change because kcp was briefly
+			// unreachable, and dropping it would revoke every consumer's
+			// cross-provider identity on the next refresh. status carries the
+			// last successful read — written by whichever replica managed it,
+			// and surviving a hub restart — so it is the fallback. Only a
+			// provider whose export has NEVER been read has no groups.
+			prov.APIGroups = append([]string(nil), entry.Status.APIGroups...)
+			logger.Info("WARNING could not read provider APIExport groups",
+				"export", prov.APIExportPath+":"+prov.APIExportName,
+				"lastKnown", prov.APIGroups, "err", apiGroupErr.Error())
 		}
 	}
 
@@ -465,6 +600,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 	prov.Actions = parsedActions
+	prov.DataPlaneVerbs = dataPlaneVerbsFor(entry.Spec.DataPlane)
 	seenSkillPackages := make(map[string]struct{}, len(entry.Spec.AssistantSkills))
 	var assistantSkillBytes int64
 	for _, skill := range entry.Spec.AssistantSkills {
@@ -543,14 +679,10 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			}
 		}
 	}
-	if entry.Spec.VirtualWorkspace != nil {
-		u, err := ParseURL(entry.Spec.VirtualWorkspace.URL)
-		if err != nil {
-			parseErrs = append(parseErrs, "virtualWorkspace.url: "+err.Error())
-		} else {
-			prov.VirtualWorkspaceURL = u
-		}
-	}
+	// There is no virtual-workspace endpoint to parse: spec.virtualWorkspace was
+	// removed from the CatalogEntry. The hub never routed
+	// /services/providers/{name}/vw/*; custom verbs belong on the data-plane
+	// grammar (docs/provider-connectivity-contract.md).
 
 	// If this CatalogEntry name matches a first-party provider that
 	// registered LocalUIAssets via BuiltinSpec, plumb the embedded FS into
@@ -581,7 +713,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// It opens no route — the proxies independently 404 when UIURL/BackendURL
 	// are nil — it only stops the portal from rendering the provider as broken.
 	prov.EndpointsValid = len(parseErrs) == 0 &&
-		(prov.UIURL != nil || prov.BackendURL != nil || prov.VirtualWorkspaceURL != nil ||
+		(prov.UIURL != nil || prov.BackendURL != nil ||
 			prov.BuiltinRoute != "" || prov.LocalUIAssets != nil || prov.APIExportName != "")
 
 	r.reg.Upsert(prov)
@@ -593,7 +725,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// APIExport, SA, or kubeconfig — that moved to admin onboarding
 	// (pkg/hub/admin) plus the provider's own Helm `init` (railgrid-provider-sdk).
 	// We only RESOLVE the provider workspace's logical cluster ID (read-only)
-	// so the Enable endpoint can build the edges-proxy RBAC subject.
+	// so the admin providers API can report where a provider lives.
 	switch {
 	case entry.Spec.APIExport == nil:
 		// No export to bind, so nothing needs the RBAC subject.
@@ -648,6 +780,36 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 	if prov.BackendURL != nil {
 		entry.Status.Endpoints.Backend = prov.BackendURL.String()
+	}
+	// Mirror the resolved projection so it is inspectable where an operator
+	// already looks — `kubectl get catalogentry -o yaml` — and so /api/providers
+	// can show which groups a provider actually owns. It doubles as the
+	// cross-replica and cross-restart carrier the read-failure path above falls
+	// back to.
+	entry.Status.APIGroups = append([]string(nil), prov.APIGroups...)
+	if prov.APIExportName == "" {
+		removeCondition(&entry.Status.Conditions, ConditionAPIGroupsUnknown)
+	} else {
+		groupsCondition := metav1.Condition{
+			Type:               ConditionAPIGroupsUnknown,
+			LastTransitionTime: now,
+			ObservedGeneration: entry.Generation,
+		}
+		if len(prov.APIGroups) > 0 {
+			groupsCondition.Status = metav1.ConditionFalse
+			groupsCondition.Reason = "APIGroupsResolved"
+			groupsCondition.Message = fmt.Sprintf("APIExport %s serves API groups: %s.",
+				prov.APIExportName, strings.Join(prov.APIGroups, ", "))
+		} else {
+			groupsCondition.Status = metav1.ConditionTrue
+			groupsCondition.Reason = "APIExportUnreadable"
+			groupsCondition.Message = fmt.Sprintf(
+				"The API groups APIExport %s serves could not be read, so no scoped identity may name them. %s",
+				prov.APIExportName, apiGroupsUnknownDetail(apiGroupErr))
+			logger.Info("Provider API groups are unknown; cross-provider rules naming them will be refused",
+				"export", prov.APIExportPath+":"+prov.APIExportName)
+		}
+		setCondition(&entry.Status.Conditions, groupsCondition)
 	}
 	entry.Status.UI = nil
 	if prov.MainJSIntegrity != "" {
@@ -715,7 +877,11 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	} else if requeue {
 		return ctrl.Result{Requeue: true}, nil
 	}
-	if prov.BackendHealthRequired || prov.HeartbeatRequired || edgeRouteErr != nil || credentialExpiryPending {
+	// An entry whose API groups are still unknown retries on the sweep cadence:
+	// the gap closes by itself once the provider's `init` has applied its
+	// APIExport, and nothing else would bring this entry back.
+	apiGroupsUnknown := prov.APIExportName != "" && len(prov.APIGroups) == 0
+	if prov.BackendHealthRequired || prov.HeartbeatRequired || edgeRouteErr != nil || credentialExpiryPending || apiGroupsUnknown {
 		return ctrl.Result{RequeueAfter: SweepInterval}, nil
 	}
 	if prov.MainJSIntegrity != "" || prov.LocalUIAssets != nil || (prov.UIURL != nil && prov.OrgUUID == "") {
@@ -807,6 +973,17 @@ func updateStatusIfChanged(
 	return false, nil
 }
 
+// apiGroupsUnknownDetail explains WHY the group list is empty, which is two
+// different situations an operator fixes differently: the export could not be
+// read at all, or it was read and declares no resources yet (its `init` has
+// applied the export but not the schemas).
+func apiGroupsUnknownDetail(err error) string {
+	if err != nil {
+		return "Reading it failed: " + err.Error()
+	}
+	return "The APIExport declares no resources yet; the provider's init may not have applied its schemas."
+}
+
 // urlString renders a *url.URL for logging, returning "" for nil (a nil
 // *url.URL panics klog's stringer).
 func urlString(u *url.URL) string {
@@ -840,4 +1017,102 @@ func removeCondition(conds *[]metav1.Condition, conditionType string) {
 			return
 		}
 	}
+}
+
+// validateDataPlaneDeclaration checks a CatalogEntry's data-plane verbs.
+//
+// Beyond shape, it enforces the one structural rule the hub can check here: a
+// provider declares verbs on resources its OWN APIExport serves, so declaring
+// any verb without declaring an APIExport is rejected. The hub cannot go
+// further at this layer — the CatalogEntry names the export but not the
+// resources it serves, and the APIResourceSchemas live in the provider's
+// workspace — so a verb on a resource the export does not actually serve is
+// caught where it matters instead: the coordinate is only ever granted
+// alongside a resourceNames-scoped rule on that same resource, which authorizes
+// nothing if the resource is not real.
+func validateDataPlaneDeclaration(entry *providersv1alpha1.CatalogEntry) error {
+	if err := providersv1alpha1.ValidateProviderDataPlane(entry.Spec.DataPlane); err != nil {
+		return err
+	}
+	if entry.Spec.DataPlane == nil || len(entry.Spec.DataPlane.Verbs) == 0 {
+		return nil
+	}
+	if entry.Spec.APIExport == nil || strings.TrimSpace(entry.Spec.APIExport.Name) == "" {
+		return fmt.Errorf("dataPlane.verbs requires spec.apiExport: a provider declares verbs on resources its own APIExport serves")
+	}
+	return nil
+}
+
+// validateCompositionDeclaration checks a CatalogEntry's composition
+// declarations: shape first, then the one thing the registry can answer —
+// that each composed group really is a group the named dependency SERVES.
+//
+// "Serves" is the dependency's APIGroups — read from its APIExport — and not
+// its APIExport NAME. Checking the name would reject every correct declaration
+// the platform ships: App Studio composes `infrastructure.railgrid.ai` and
+// `code.railgrid.ai`, while those providers' exports are named
+// `infrastructure.providers.railgrid.ai` and `code.providers.railgrid.ai`.
+//
+// A composition on a group somebody else serves would be a consent prompt that
+// reads "App Studio manages infrastructure Instances" while pointing at a
+// different provider's API, so it is refused outright.
+//
+// When the dependency is not in the registry yet — or is there but its API
+// groups have not been read yet — the group check is SKIPPED rather than
+// failed. Provider CatalogEntries arrive in no particular order and the hub
+// must not make a provider's readiness depend on which of two charts
+// reconciled first; nothing is granted by the gap, because the identity policy
+// resolves the group's owner again at mint time and refuses a composition
+// whose group the dependency does not serve.
+func (r *CatalogReconciler) validateCompositionDeclaration(orgUUID string, entry *providersv1alpha1.CatalogEntry) error {
+	if err := providersv1alpha1.ValidateProviderCompositions(entry.Spec.Dependencies); err != nil {
+		return err
+	}
+	for _, dep := range entry.Spec.Dependencies {
+		if len(dep.Composes) == 0 {
+			continue
+		}
+		if entry.Spec.APIExport == nil || strings.TrimSpace(entry.Spec.APIExport.Name) == "" {
+			return fmt.Errorf("dependencies[%s].composes requires spec.apiExport: only a provider with its own API surface reconciles objects in a tenant workspace", dep.Name)
+		}
+		if r.reg == nil {
+			continue
+		}
+		dependency, found := r.reg.GetForOrg(orgUUID, dep.Name)
+		if !found || len(dependency.APIGroups) == 0 {
+			continue
+		}
+		for _, composition := range dep.Composes {
+			if !containsString(dependency.APIGroups, composition.Group) {
+				return fmt.Errorf("dependencies[%s].composes: %s is not served by %s (it serves %s)",
+					dep.Name, composition.Group, dep.Name, strings.Join(dependency.APIGroups, ", "))
+			}
+		}
+	}
+	return nil
+}
+
+// containsString reports whether values holds want.
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// dataPlaneVerbsFor projects the declaration into the registry's flat form.
+func dataPlaneVerbsFor(dataPlane *providersv1alpha1.ProviderDataPlane) []ProviderDataPlaneVerb {
+	if dataPlane == nil || len(dataPlane.Verbs) == 0 {
+		return nil
+	}
+	verbs := make([]ProviderDataPlaneVerb, 0, len(dataPlane.Verbs))
+	for _, verb := range dataPlane.Verbs {
+		verbs = append(verbs, ProviderDataPlaneVerb{
+			Resource: verb.Resource, Verb: verb.Verb,
+			Description: verb.Description, Stream: verb.Stream, ReadOnly: verb.ReadOnly,
+		})
+	}
+	return verbs
 }

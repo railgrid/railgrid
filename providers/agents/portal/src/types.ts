@@ -74,12 +74,32 @@ export interface Agent {
   status?: { phase?: string; suspendedReason?: string }
 }
 
+/**
+ * Credential is the portal's view of a ModelCredential object.
+ *
+ * The API key is not on it and never was: the object points at a Secret
+ * (secretRef) and the key lives there. What IS new is the verdict — the
+ * provider's reconciler resolves the Secret and calls the endpoint, so
+ * `ready` is an observed fact rather than "somebody typed a key once", and
+ * `discovered` is what that endpoint actually served.
+ */
 export interface Credential {
   name: string
   provider?: string
   baseURL?: string
   model?: string
-  hasAPIKey?: boolean
+  /** The Secret holding the API key, in namespace default. */
+  secretRef?: string
+  /** The key inside that Secret. */
+  secretKey?: string
+  /** Ready condition: the Secret resolved AND the endpoint answered. */
+  ready?: boolean
+  /** SecretResolved condition on its own, so the UI can say which half failed. */
+  secretResolved?: boolean
+  /** The first unmet condition's message — what to fix. */
+  statusMessage?: string
+  /** status.models: the ids the endpoint served on the last successful probe. */
+  discovered?: string[]
 }
 
 export interface Schedule {
@@ -154,6 +174,44 @@ export interface InboxItem {
 
 export type RunPhase = 'Pending' | 'Running' | 'PendingApproval' | 'Succeeded' | 'Failed' | 'Aborted'
 export type RunClass = 'interactive' | 'background'
+
+/**
+ * KubeRun is the Run custom resource as kcp serves it — the projection of one
+ * agent execution. It carries the run's identity, phase, timings and cost; its
+ * transcript and step-level tool trace are Postgres rows reached through the
+ * `trace` verb (see providers/agents/apis/v1alpha1/types_run.go).
+ */
+export interface KubeRun {
+  apiVersion?: string
+  kind?: string
+  metadata: { name: string; creationTimestamp?: string; labels?: Record<string, string>; deletionTimestamp?: string }
+  spec: {
+    agentRef: string
+    trigger: string
+    sessionID?: string
+    parentRunRef?: string
+    sourceName?: string
+    idempotencyKey?: string
+    inputPreview?: string
+  }
+  status?: {
+    phase?: string
+    message?: string
+    owner?: string
+    startedAt?: string
+    finishedAt?: string
+    deadlineAt?: string
+    transcriptRef?: { sessionID?: string; messages?: number; toolCalls?: number }
+    usage?: {
+      inputTokens?: number
+      outputTokens?: number
+      usdMicros?: number
+      usd?: string
+      durationMS?: number
+      workedDurationMS?: number
+    }
+  }
+}
 
 export interface RunSummary {
   id: string
@@ -454,7 +512,13 @@ export interface CredentialWrite {
   name: string
   provider?: string
   baseURL?: string
+  /**
+   * The default model id. Optional on a first save: the endpoint has not been
+   * asked what it serves yet, and that question needs a saved credential to
+   * ask it of. An empty string clears it.
+   */
   model?: string
+  /** Write-only. Omitted on an edit that does not retype the key. */
   apiKey?: string
 }
 

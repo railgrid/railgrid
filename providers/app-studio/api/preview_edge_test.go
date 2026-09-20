@@ -37,7 +37,7 @@ func (c *previewEdgeObservedContext) Done() <-chan struct{} {
 // the success is cached briefly. The bounded cache avoids probe latency on
 // tight polls without hiding a later runtime restart or regression.
 func TestPreviewEdgeReadyGatesAndCaches(t *testing.T) {
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	probeErr := errors.New("tls handshake failure")
 	calls := 0
 	s.SetPreviewEdgeProbe(func(_ context.Context, _ string) error {
@@ -82,7 +82,7 @@ func TestPreviewEdgeReadyGatesAndCaches(t *testing.T) {
 }
 
 func TestPreviewEdgeReadyCoalescesConcurrentProbes(t *testing.T) {
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	const url = "https://demo-abc.apps.example.com"
 	var calls atomic.Int32
 	probeStarted := make(chan struct{})
@@ -133,7 +133,7 @@ func TestPreviewEdgeReadyCoalescesConcurrentProbes(t *testing.T) {
 }
 
 func TestPreviewEdgeReadyCoalescesFailureWithoutCachingIt(t *testing.T) {
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	const url = "https://demo-abc.apps.example.com"
 	probeErr := errors.New("edge is still provisioning")
 	var calls atomic.Int32
@@ -192,7 +192,7 @@ func TestPreviewEdgeReadyCoalescesFailureWithoutCachingIt(t *testing.T) {
 }
 
 func TestPreviewEdgeReadyCanceledWaiterDoesNotCancelSharedProbe(t *testing.T) {
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	const url = "https://demo-abc.apps.example.com"
 	var calls atomic.Int32
 	probeStarted := make(chan struct{})
@@ -243,7 +243,7 @@ func TestPreviewEdgeReadyCanceledWaiterDoesNotCancelSharedProbe(t *testing.T) {
 }
 
 func TestPreviewEdgeReadyDifferentURLsProbeIndependently(t *testing.T) {
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	const firstURL = "https://first.apps.example.com"
 	const secondURL = "https://second.apps.example.com"
 	firstStarted := make(chan struct{})
@@ -345,17 +345,17 @@ func TestPreviewEdgeProbeUsesConfiguredLocalInsecureTLS(t *testing.T) {
 	}))
 	defer preview.Close()
 
-	secureServer := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	secureServer := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	if secureServer.previewEdgeReady(context.Background(), preview.URL) {
 		t.Fatal("untrusted preview certificate must fail when insecure TLS is disabled")
 	}
 
-	hubInsecureServer := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, mcpInsecureSkipTLSVerify: true}
+	hubInsecureServer := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, mcpInsecureSkipTLSVerify: true}
 	if hubInsecureServer.previewEdgeReady(context.Background(), preview.URL) {
 		t.Fatal("internal hub TLS setting must not weaken external preview verification")
 	}
 
-	localDevServer := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, previewInsecureSkipTLSVerify: true}
+	localDevServer := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, previewInsecureSkipTLSVerify: true}
 	if !localDevServer.previewEdgeReady(context.Background(), preview.URL) {
 		t.Fatal("local insecure TLS setting should allow the self-signed preview edge")
 	}

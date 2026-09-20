@@ -27,8 +27,10 @@ spec:
       serviceAccountName: {{ include "kuery.serviceAccountName" . }}
       initContainers:
         # Bootstrap the provider workspace (schemas, APIExport, slice, bind
-        # grant) with the onboarded workspace-admin kubeconfig. No identity
-        # hashes: kuery claims no first-party resources — edge discovery acts
+        # grant) with the onboarded workspace-admin kubeconfig. The generated
+        # APIExport and its schemas are baked at /etc/railgrid/kcp (Dockerfile)
+        # and applied verbatim. No identity hashes: kuery claims no
+        # first-party resources — edge discovery acts
         # as a per-workspace ServiceAccount through each tenant's own edges
         # binding.
         - name: init
@@ -38,8 +40,8 @@ spec:
           env:
             - name: RAILGRID_PROVIDER_KUBECONFIG
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
-            - name: RAILGRID_SCHEMAS_DIR
-              value: /etc/railgrid/schemas
+            - name: RAILGRID_KCP_DIR
+              value: /etc/railgrid/kcp
             {{- if .Values.catalogEntry.enabled }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)
@@ -65,12 +67,16 @@ spec:
             - name: http
               containerPort: 8081
               protocol: TCP
+          # Liveness is deliberately NOT /readyz: a provider that cannot reach
+          # its virtual workspace is still serving queries from the store and
+          # still holding its engagements, so restarting it would take away the
+          # work it is still doing.
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 5
             periodSeconds: 20
           readinessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet: { path: /readyz, port: http }
             periodSeconds: 5
           env:
             - name: PORT

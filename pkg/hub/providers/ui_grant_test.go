@@ -170,7 +170,7 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	if got.Body.String() != orgBundleBody {
 		t.Errorf("bundle body = %q, want the org's bundle", got.Body.String())
 	}
-	wantPath := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/main.js"
+	wantPath := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy/main.js"
 	if f.edge.path != wantPath {
 		t.Errorf("edges provider saw path %q, want %q", f.edge.path, wantPath)
 	}
@@ -437,7 +437,7 @@ func TestUIGrantCarriesUIPathPrefix(t *testing.T) {
 	f.reg.Upsert(p)
 
 	_, grant := f.requestGrant(t, "infrastructure")
-	wantHash := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/ui/main.js"
+	wantHash := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy/ui/main.js"
 	if f.edge.path != wantHash {
 		t.Errorf("hash fetch path %q, want %q", f.edge.path, wantHash)
 	}
@@ -446,7 +446,7 @@ func TestUIGrantCarriesUIPathPrefix(t *testing.T) {
 	if got.Code != http.StatusOK {
 		t.Fatalf("status = %d (body %q)", got.Code, got.Body.String())
 	}
-	wantIcon := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/ui/icon.svg"
+	wantIcon := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy/ui/icon.svg"
 	if f.edge.path != wantIcon {
 		t.Errorf("asset path %q, want %q", f.edge.path, wantIcon)
 	}

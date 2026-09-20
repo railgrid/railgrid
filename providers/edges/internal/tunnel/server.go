@@ -27,9 +27,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/railgrid/provider-edges/internal/events"
 	"github.com/railgrid/provider-edges/internal/kcpurl"
 	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
+	"github.com/railgrid/provider-sdk/identityclient"
 	"github.com/railgrid/provider-sdk/revdial"
 )
 
@@ -47,7 +47,7 @@ type KindConfig struct {
 // authorizeFnType is the signature for the delegated authorization function.
 // Factored out as a type to allow injection in tests. The default is the
 // package-level authorize (auth.go).
-type authorizeFnType func(ctx context.Context, tenantCfg, kcpConfig *rest.Config, token, clusterName, verb, group, resource, name string) error
+type authorizeFnType func(ctx context.Context, tenantCfg, kcpConfig *rest.Config, token, clusterName, verb, group, resource, subresource, name string) error
 
 // TenantConfigGetter returns a *rest.Config scoped to the given kcp tenant
 // logical cluster, able to read/write the Edge resources (and their
@@ -136,14 +136,32 @@ type Server struct {
 	// through the hub. Empty disables URL stamping.
 	edgeProxyPublicPath string
 
-	// authorizeFn performs delegated authn/authz against kcp; injectable for tests.
+	// authorizeFn performs delegated authn/authz against kcp for the AGENT
+	// ingress class (f), where the credential is an edge ServiceAccount the
+	// provider must TokenReview itself because the request never passes
+	// through kcp. Injectable for tests.
 	authorizeFn authorizeFnType
 
-	// eventStore, when set, backs the read side of edge event tools (the UniFi
-	// Protect `events` MCP tool). The write side (the WebSocket subscribers) is
-	// driven by the service reconciler through the same store. Nil disables the
-	// events tool. Set via SetEventStore from the controller manager.
-	eventStore events.Store
+	// identities is the hub scoped-identity client this provider mints edge
+	// agent credentials through. Nil means the join path hands out no
+	// credential and the agent-token verb refuses: a provider that cannot ask
+	// the hub does NOT fall back to minting one itself, which is the whole
+	// point of review finding M7.
+	identities *identityclient.Client
+
+	// hubCAData is the hub's serving CA (PEM), handed to an agent in its
+	// enrolment bundle so it can verify the hub it was told to call.
+	hubCAData []byte
+
+	// tickets holds the short-lived, single-object WebSocket tickets the
+	// browser terminal presents as a Sec-WebSocket-Protocol subprotocol,
+	// because a browser cannot set Authorization on an upgrade. See ticket.go.
+	tickets *ticketStore
+
+	// gateFn runs the consumer data plane's two gates (class (a)), as the
+	// caller and with the caller's credential only. Nil means gateAsCaller,
+	// which is the only implementation outside tests.
+	gateFn gateFnType
 
 	// registry/replicaID/relayToken enable multi-replica tunnel routing (see
 	// EnableReplicaRouting). All nil/empty in single-replica mode.
@@ -159,9 +177,9 @@ type Server struct {
 // (the edge lifecycle reconciler's only liveness input), pickup paths stay
 // un-addressed and a tunnel held by another replica reports as absent. This
 // is the single-replica / no-POD_IP mode. Call once before serving.
-func (s *Server) EnableRegistry(reg *Registry) {
-	s.registry = reg
-	s.edgeConnManager.SetRegistry(reg, "")
+func (p *Server) EnableRegistry(reg *Registry) {
+	p.registry = reg
+	p.edgeConnManager.SetRegistry(reg, "")
 }
 
 // EnableReplicaRouting turns on multi-replica tunnel routing on top of the
@@ -170,33 +188,29 @@ func (s *Server) EnableRegistry(reg *Registry) {
 // internal listener (see InternalHandler) serves the relay + forwarded
 // pickups. relayToken is the shared provider bearer peers authenticate relays
 // with. Call once before serving.
-func (s *Server) EnableReplicaRouting(reg *Registry, relayToken string) {
-	s.registry = reg
-	s.replicaID = reg.ReplicaID()
-	s.relayToken = relayToken
-	s.edgeConnManager.SetRegistry(reg, relayToken)
+func (p *Server) EnableReplicaRouting(reg *Registry, relayToken string) {
+	p.registry = reg
+	p.replicaID = reg.ReplicaID()
+	p.relayToken = relayToken
+	p.edgeConnManager.SetRegistry(reg, relayToken)
 }
 
 // InternalHandler serves the pod-to-pod surface on the internal listener
 // (never mounted on the public Service): the tunnel relay and forwarded
 // revdial pickups.
-func (s *Server) InternalHandler() http.Handler {
+func (p *Server) InternalHandler() http.Handler {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return utilhttp.CheckSameOrAllowedOrigin(r, []url.URL{})
 		},
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc(relayPath, s.relayHandler())
+	mux.HandleFunc(relayPath, p.relayHandler())
 	// Forwarded pickups land here; the revdial dialer id in the query is the
 	// capability (same model as the public pickup path).
 	mux.Handle("/agent-pickup", revdial.ConnHandler(upgrader))
 	return mux
 }
-
-// SetEventStore wires the read side of the events tools to the store the event
-// subscribers write to. Called once from the controller manager after New.
-func (s *Server) SetEventStore(store events.Store) { s.eventStore = store }
 
 // Config carries the inputs for New. Kinds is required (>=1, all sharing a
 // group+version); everything else is optional (nil KCPConfig is allowed for
@@ -223,6 +237,9 @@ type Config struct {
 	AllowStaticTokenBypass bool
 	HubExternalURL         string
 	HubInternalURL         string
+	// HubCAData is the hub's serving CA bundle (PEM), travelling to agents in
+	// the enrolment bundle. Empty means "trust the system pool".
+	HubCAData []byte
 	// AllowUnverifiedSSHHostKey restores the legacy behaviour of opening SSH
 	// sessions to edges with no known host key without verifying the server
 	// (--allow-unverified-ssh-host-key). Never affects an edge whose key is
@@ -264,11 +281,13 @@ func New(cfg Config) (*Server, error) {
 		group:                     group,
 		version:                   version,
 		edgeConnManager:           NewConnManager(),
+		tickets:                   newTicketStore(),
 		kcpConfig:                 cfg.KCPConfig,
 		staticTokens:              tokenSet,
 		allowStaticTokenBypass:    cfg.AllowStaticTokenBypass,
 		hubExternalURL:            cfg.HubExternalURL,
 		hubInternalURL:            cfg.HubInternalURL,
+		hubCAData:                 cfg.HubCAData,
 		agentPickupPath:           cfg.AgentPickupPath,
 		edgeProxyPublicPath:       cfg.EdgeProxyPublicPath,
 		allowUnverifiedSSHHostKey: cfg.AllowUnverifiedSSHHostKey,
@@ -339,33 +358,39 @@ func (p *Server) gvrForResource(resource string) (gvr schema.GroupVersionResourc
 
 // Start launches background maintenance (the stale-tunnel sweeper). Call once;
 // the goroutine exits when stop is closed.
-func (s *Server) Start(stop <-chan struct{}) {
-	s.edgeConnManager.StartSweeper(stop)
+func (p *Server) Start(stop <-chan struct{}) {
+	p.edgeConnManager.StartSweeper(stop)
 }
 
 // ConnManager exposes the shared tunnel registry so the provider's edge
 // controllers can check whether a given edge tunnel is live.
-func (s *Server) ConnManager() *ConnManager { return s.edgeConnManager }
+func (p *Server) ConnManager() *ConnManager { return p.edgeConnManager }
 
-// AgentIngressHandler terminates agent reverse tunnels. Mounted (behind the hub
-// backend proxy) at /services/providers/edges/agent/. Path after
-// StripPrefix: /{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy
-// and /proxy (revdial pickup).
-func (s *Server) AgentIngressHandler() http.Handler {
-	return s.buildEdgeAgentProxyHandler()
+// AgentIngressHandler terminates agent reverse tunnels: Pillar 2 class (f).
+// Mounted (behind the hub backend proxy) at /services/providers/edges/agent/,
+// with the path UNMODIFIED — the grammar, not an http.ServeMux, decides what
+// ".." and "//" mean. It serves:
+//
+//	/agent/clusters/{cluster}/{resource}/{name}/proxy   control tunnel
+//	/agent/proxy                                        revdial pickup
+//	/agent/proxy/{replica}                              replica-addressed pickup
+func (p *Server) AgentIngressHandler() http.Handler {
+	return p.buildEdgeAgentProxyHandler()
 }
 
-// EdgeProxyHandler serves the consumer data-plane subresources. Mounted (behind
-// the hub backend proxy) at /services/providers/edges/edgeproxy/.
-// Path after StripPrefix: /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{k8s|ssh}.
-func (s *Server) EdgeProxyHandler() http.Handler {
-	return s.buildEdgesProxyHandler()
+// EdgeProxyHandler serves the consumer data plane: Pillar 2 class (a).
+// Mounted (behind the hub backend proxy) at
+// /services/providers/edges/dataplane/, with the path UNMODIFIED:
+//
+//	/dataplane/clusters/{cluster}/{resource}/{name}/{verb}[/{tail}]
+func (p *Server) EdgeProxyHandler() http.Handler {
+	return p.buildEdgesProxyHandler()
 }
 
 // ProviderMCPHandler serves the provider's AGGREGATE MCP endpoint. Mounted
 // (behind the hub backend proxy) at /services/providers/edges/mcp — the URL the
 // hub's MCP aggregate federates. Exposes kube tools across every connected
 // KubernetesCluster edge in the caller's tenant.
-func (s *Server) ProviderMCPHandler() http.Handler {
-	return s.buildProviderMCPHandler()
+func (p *Server) ProviderMCPHandler() http.Handler {
+	return p.buildProviderMCPHandler()
 }

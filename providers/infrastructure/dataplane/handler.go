@@ -27,42 +27,57 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/kro"
+	sdk "github.com/railgrid/provider-sdk/dataplane"
 )
 
-// PathPrefix is where the handler is mounted on the provider's serve mux. It is
-// reached through the hub backend proxy at
+// PathPrefix is where the handler is mounted on the provider's serve mux. It
+// is reached through the hub backend proxy at
 // /services/providers/infrastructure/dataplane/... with the caller's bearer
-// token forwarded as-is and X-Railgrid-* identity headers injected.
-const PathPrefix = "/dataplane/"
+// token forwarded as-is and X-Railgrid-* identity headers injected. The
+// spelling comes from provider-sdk/dataplane so there is one of it in the
+// tree.
+const PathPrefix = "/" + sdk.DataplaneRoot + "/"
 
-// InstanceGetter authorizes and fetches a workload instance AS THE CALLER. The
-// implementation builds a tenant-scoped client from (workspace, token) and does
-// a GET — so a 403/404 from the caller's RBAC is the access gate for the whole
-// data plane. No provider-wide credential is consulted here.
-type InstanceGetter interface {
-	Get(ctx context.Context, workspace, token, resource, name string) (*unstructured.Unstructured, error)
+// instancesGVR is the only resource this data plane serves. The flattened API
+// has a single tenant-facing kind, so every verb — instance-level and
+// component-level alike — is a virtual subresource of it, and gate 2 asks
+// about instances/{verb} in both forms: one grant covers
+// .../instances/{name}/{verb} and .../instances/{name}/components/{c}/{verb},
+// because a component is an addressing detail of the same object and not a
+// separate thing to grant.
+var instancesGVR = schema.GroupVersionResource{
+	Group:    "infrastructure.railgrid.ai",
+	Version:  "v1alpha1",
+	Resource: infrav1alpha1.InstancesResource,
 }
 
 // Handler serves a template's declared data-plane verbs as subresources on a
 // workload instance:
 //
-//	/dataplane/clusters/<ws>/<resource>/<name>/<verb>[/<caller-path...>]
+//	/dataplane/clusters/<id>/instances/<name>/<verb>[/<caller-path...>]
+//	/dataplane/clusters/<id>/instances/<name>/components/<c>/<verb>[/<caller-path...>]
 //
-// e.g. /dataplane/clusters/rgl3jcl2cfl3xa5p/simplewebapps/my-site-dev/components/app/log
+// e.g. /dataplane/clusters/rgl3jcl2cfl3xa5p/instances/my-site-dev/components/app/log
 //
-// It authorizes the caller against the instance, resolves the verb to a runtime
-// target via the template contract, and reverse-proxies to the runtime cluster
-// the provider owns. Consumers therefore never hold a runtime credential.
+// The grammar and both gates come from provider-sdk/dataplane: ParseRequest
+// owns the path (including every refusal the contract requires) and Gate runs
+// the caller's own GET of the Instance and the caller's own SSAR for `create`
+// on instances/{verb}. What stays here is what only this provider knows:
+// resolving the verb against the template contract the *authorized* Instance
+// names, confining it to the runtime namespace that Instance owns, and
+// reverse-proxying to the runtime cluster. Consumers therefore never hold a
+// runtime credential.
 type Handler struct {
-	instances   InstanceGetter
+	callers     sdk.CallerFactory
 	contracts   ContractGetter
 	development DevelopmentGetter
 	runtime     Runtime
 	executor    Executor
-	authorizer  ExecAuthorizer
 }
 
 // ActivityRecorder persists an accepted data-plane call on the runtime object
@@ -77,13 +92,11 @@ type ActivityRecorder interface {
 // the original three-argument NewHandler call sites.
 type HandlerOption func(*Handler)
 
-// WithExec wires the bounded persistent command executor and its explicit policy hook.
-// Both must be supplied for the /exec route to become available.
-func WithExec(executor Executor, authorizer ExecAuthorizer) HandlerOption {
-	return func(h *Handler) {
-		h.executor = executor
-		h.authorizer = authorizer
-	}
+// WithExec wires the bounded persistent command executor. Authorization is
+// not a separate hook any more: exec is gated exactly like every other verb,
+// by the caller's SSAR for `create` on instances/exec.
+func WithExec(executor Executor) HandlerOption {
+	return func(h *Handler) { h.executor = executor }
 }
 
 // WithDevelopmentGetter supplies the platform-owned development metadata used
@@ -96,8 +109,8 @@ func WithDevelopmentGetter(getter DevelopmentGetter) HandlerOption {
 // 503 (the serve process runs without a runtime/kcp config in dev). If the
 // contract getter also implements DevelopmentGetter it is used automatically
 // for exec calls.
-func NewHandler(instances InstanceGetter, contracts ContractGetter, runtime Runtime, options ...HandlerOption) *Handler {
-	h := &Handler{instances: instances, contracts: contracts, runtime: runtime}
+func NewHandler(callers sdk.CallerFactory, contracts ContractGetter, runtime Runtime, options ...HandlerOption) *Handler {
+	h := &Handler{callers: callers, contracts: contracts, runtime: runtime}
 	if getter, ok := contracts.(DevelopmentGetter); ok {
 		h.development = getter
 	}
@@ -109,49 +122,43 @@ func NewHandler(instances InstanceGetter, contracts ContractGetter, runtime Runt
 	return h
 }
 
-// request is the parsed addressing of a data-plane call.
-type request struct {
-	workspace  string
-	resource   string
-	name       string
-	component  string // empty for instance-level verbs
-	verb       string
-	callerPath string // remaining path beyond the verb (open-proxy tail)
-}
-
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.instances == nil || h.contracts == nil || h.runtime == nil {
+	if h == nil || h.callers == nil || h.contracts == nil || h.runtime == nil {
 		http.Error(w, "data plane unavailable on this provider", http.StatusServiceUnavailable)
 		return
 	}
+	logger := klog.FromContext(r.Context()).WithName("infrastructure-dataplane")
 
-	id := identityFromRequest(r)
-	if id.token == "" {
-		http.Error(w, "no bearer token — cannot act on the caller's behalf", http.StatusUnauthorized)
-		return
-	}
-
-	req, ok := parsePath(r.URL.Path)
+	req, ok := sdk.ParseRequest(sdk.DataplaneRoot, r)
 	if !ok {
-		http.Error(w, "bad data-plane path; want /dataplane/clusters/<ws>/<resource>/<name>/<verb>", http.StatusBadRequest)
+		sdk.WriteError(w, sdk.ErrBadPath)
 		return
 	}
-
 	// The flattened API serves exactly one instance resource; anything else
-	// is an address from the retired per-template era.
-	if req.resource != infrav1alpha1.InstancesResource {
-		http.Error(w, "unknown data-plane resource "+req.resource+"; instances is the only served resource", http.StatusNotFound)
+	// is an address from the retired per-template era. Answer it the way a
+	// denied request is answered, so the route set is not enumerable.
+	if req.Resource != instancesGVR.Resource {
+		sdk.WriteError(w, sdk.ErrDenied)
 		return
 	}
 
-	// 1. Authorize + fetch the instance as the caller. RBAC is the gate.
-	instance, err := h.instances.Get(r.Context(), req.workspace, id.token, req.resource, req.name)
+	// 1+2. Both gates, as the caller: a real GET of the Instance (visibility,
+	// and the authoritative object everything below is resolved from) and an
+	// SSAR for `create` on instances/{verb}. Every verb is gated, not just
+	// exec; a component verb collapses to the same subresource.
+	instance, _, err := sdk.Gate(r.Context(), r, h.callers, instancesGVR, req)
 	if err != nil {
-		writeKubeError(w, err)
+		// The detail stays provider-side; the caller learns only the status.
+		logger.V(3).Info("data-plane request refused", "verb", req.Verb, "component", req.Component, "instance", req.Name, "err", err)
+		sdk.WriteError(w, err)
 		return
 	}
+	// Gate has already accepted the credential, so this cannot fail. Only the
+	// bearer is taken: X-Railgrid-User is a display label the provider does
+	// not read, and nothing here is authorized from a header.
+	bearer, _, _, _ := sdk.Identity(r)
 
-	// 2. Resolve the data-plane contract of the instance's template. The
+	// 3. Resolve the data-plane contract of the instance's template. The
 	// template name comes from the instance the caller was just authorized
 	// on — never from a request field.
 	templateName, _, _ := unstructured.NestedString(instance.Object, "spec", "template")
@@ -164,7 +171,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "template "+templateName+" exposes no data plane", http.StatusNotFound)
 		return
 	}
-	expectedRuntimeNamespace := kro.RuntimeNamespace(req.workspace, instance.GetNamespace())
+	expectedRuntimeNamespace := kro.RuntimeNamespace(req.ClusterID, instance.GetNamespace())
 	if err := ValidateRuntimeNamespace(contract, instance, expectedRuntimeNamespace); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -173,26 +180,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Exec is a typed, fixed POST capability. It never falls through to the
 	// generic endpoint proxy, even if a template happens to declare an endpoint
 	// with the same verb or Upgrade=true.
-	if req.verb == "exec" {
-		h.serveExec(w, r, id, req, templateName, contract, instance)
+	if req.Verb == "exec" {
+		h.serveExec(w, r, bearer, req, templateName, contract, instance)
 		return
 	}
 
-	// 3+4. Method allowlist, then resolve the verb to a concrete runtime
+	// 4+5. Method allowlist, then resolve the verb to a concrete runtime
 	// target (namespace-confined). Component verbs differ only in lookup.
 	var target ResolvedTarget
-	if req.component != "" {
-		if !ComponentMethodAllowed(contract, req.component, req.verb, r.Method) {
-			http.Error(w, "method "+r.Method+" not allowed for verb "+req.component+"/"+req.verb, http.StatusMethodNotAllowed)
+	if req.Component != "" {
+		if !ComponentMethodAllowed(contract, req.Component, req.Verb, r.Method) {
+			http.Error(w, "method "+r.Method+" not allowed for verb "+req.Component+"/"+req.Verb, http.StatusMethodNotAllowed)
 			return
 		}
-		target, err = ResolveComponent(contract, instance, req.component, req.verb)
+		target, err = ResolveComponent(contract, instance, req.Component, req.Verb)
 	} else {
-		if !MethodAllowed(contract, req.verb, r.Method) {
-			http.Error(w, "method "+r.Method+" not allowed for verb "+req.verb, http.StatusMethodNotAllowed)
+		if !MethodAllowed(contract, req.Verb, r.Method) {
+			http.Error(w, "method "+r.Method+" not allowed for verb "+req.Verb, http.StatusMethodNotAllowed)
 			return
 		}
-		target, err = Resolve(contract, instance, req.verb)
+		target, err = Resolve(contract, instance, req.Verb)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -203,21 +210,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5a. A status verb is served straight from the instance status — no hop.
+	// 6a. A status verb is served straight from the instance status — no hop.
 	if target.FromStatus {
 		writeInstanceStatus(w, instance)
 		return
 	}
 
-	// 5b. Reverse-proxy to the runtime Service the provider owns. The public
+	// 6b. Reverse-proxy to the runtime Service the provider owns. The public
 	// preview HTTPRoute is created declaratively by the template's RGD, so
 	// there is no per-request route reconciliation gate here — this internal
 	// hop only needs the runtime Service.
-	serveProxy(w, r, h.runtime, target, req.callerPath)
+	serveProxy(w, r, h.runtime, target, req.Tail)
 }
 
-func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity, req request, templateName string, contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured) {
-	if req.component == "" {
+func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, bearer string, req sdk.Request, templateName string, contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured) {
+	if req.Component == "" {
 		http.Error(w, "exec is only available for a declared component", http.StatusNotFound)
 		return
 	}
@@ -225,16 +232,16 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 		http.Error(w, "exec requires POST", http.StatusMethodNotAllowed)
 		return
 	}
-	if req.callerPath != "" || r.URL.RawQuery != "" {
+	if req.Tail != "" || r.URL.RawQuery != "" {
 		http.Error(w, "exec does not accept a caller path or query", http.StatusBadRequest)
 		return
 	}
-	component, ok := contract.Components[req.component]
+	component, ok := contract.Components[req.Component]
 	if !ok || component.Exec == nil {
-		http.Error(w, "exec is not declared for component "+req.component, http.StatusNotFound)
+		http.Error(w, "exec is not declared for component "+req.Component, http.StatusNotFound)
 		return
 	}
-	if h.executor == nil || h.authorizer == nil {
+	if h.executor == nil {
 		http.Error(w, "exec is unavailable on this provider", http.StatusServiceUnavailable)
 		return
 	}
@@ -251,7 +258,7 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 		http.Error(w, "exec development contract is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	dev, err := h.development.DevelopmentFor(r.Context(), templateName, req.component)
+	dev, err := h.development.DevelopmentFor(r.Context(), templateName, req.Component)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -285,24 +292,9 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 	// Exec is routed to the live dev-agent control Service. The endpoint is
 	// deliberately not caller-selectable: resolve the platform-required sync
 	// endpoint and replace only its upstream path with the fixed /exec operation.
-	controlTarget, err := ResolveComponentExecTarget(contract, instance, req.component)
+	controlTarget, err := ResolveComponentExecTarget(contract, instance, req.Component)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	authorization := ExecAuthorization{
-		Workspace:   req.workspace,
-		Resource:    req.resource,
-		Name:        req.name,
-		Component:   req.component,
-		User:        id.user,
-		CallerToken: id.token,
-		Action:      reqBody.Action,
-		Request:     reqBody,
-		Instance:    instance,
-	}
-	if err := h.authorizer.AuthorizeExec(r.Context(), authorization); err != nil {
-		writeExecAuthorizationError(w, err)
 		return
 	}
 	if err := h.recordActivity(r.Context(), instance); err != nil {
@@ -312,16 +304,16 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 	launches := reqBody.Action == ExecActionStart || reqBody.Action == ExecActionRun
 	if launches && reqBody.SourceRevision == 0 && reqBody.SourceDigest == "" {
 		// Default to the revision the component has applied. It is resolved
-		// only after authorization so an unauthorized caller cannot make the
+		// only after the gates so an unauthorized caller cannot make the
 		// provider reach the runtime.
-		statusTarget, err := ResolveComponentStatusTarget(contract, instance, req.component)
+		statusTarget, err := ResolveComponentStatusTarget(contract, instance, req.Component)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
 		revision, digest, err := fetchComponentSource(r.Context(), h.runtime, statusTarget)
 		if errors.Is(err, errNoAppliedSource) {
-			http.Error(w, fmt.Sprintf("sourceRevision is required for %s: component %q reports no applied source revision — sync its workspace first (dev_sync, or POST .../components/%s/sync), wait for any dependency reload to finish, then retry; or pass sourceRevision and sourceDigest explicitly", reqBody.Action, req.component, req.component), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("sourceRevision is required for %s: component %q reports no applied source revision — sync its workspace first (dev_sync, or POST .../components/%s/sync), wait for any dependency reload to finish, then retry; or pass sourceRevision and sourceDigest explicitly", reqBody.Action, req.Component, req.Component), http.StatusBadRequest)
 			return
 		}
 		if err != nil {
@@ -331,15 +323,15 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 		reqBody.SourceRevision, reqBody.SourceDigest = revision, digest
 	}
 	call := ExecCall{
-		Workspace:        req.workspace,
-		Resource:         req.resource,
-		Name:             req.name,
-		Component:        req.component,
+		Workspace:        req.ClusterID,
+		Resource:         req.Resource,
+		Name:             req.Name,
+		Component:        req.Component,
 		Instance:         instance,
 		Capability:       component.Exec,
 		WorkingDir:       workingDir,
 		WorkspacePath:    strings.TrimSpace(dev.WorkspacePath),
-		CallerKey:        execCallerKey(id.token),
+		CallerKey:        execCallerKey(bearer),
 		RuntimeNamespace: runtimeNamespace,
 		ControlTarget:    controlTarget,
 		Request:          reqBody,
@@ -479,14 +471,6 @@ func (h *Handler) recordActivity(ctx context.Context, instance *unstructured.Uns
 	return recorder.RecordActivity(ctx, instance)
 }
 
-func writeExecAuthorizationError(w http.ResponseWriter, err error) {
-	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
-		writeKubeError(w, err)
-		return
-	}
-	http.Error(w, err.Error(), http.StatusForbidden)
-}
-
 func writeExecError(w http.ResponseWriter, err error) {
 	if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) || apierrors.IsConflict(err) {
 		writeKubeError(w, err)
@@ -516,63 +500,6 @@ func resolveExecWorkdir(requested, base string) (string, error) {
 		return "", fmt.Errorf("workdir: %w", err)
 	}
 	return relative, nil
-}
-
-// parsePath parses
-//
-//	/dataplane/clusters/<id>/<resource>/<name>/<verb>[/<tail...>]
-//	/dataplane/clusters/<id>/<resource>/<name>/components/<component>/<verb>[/<tail...>]
-//
-// The cluster segment is the workspace's kcp logical-cluster ID (the hub-injected
-// X-Railgrid-Cluster that app-studio puts in the URL), NOT a workspace path — the
-// instance getter addresses kcp by /clusters/<id>, which the hub proxy requires.
-// "components" is reserved as a verb name by the second form.
-func parsePath(p string) (request, bool) {
-	rest := strings.TrimPrefix(p, PathPrefix)
-	if rest == p {
-		return request{}, false
-	}
-	var ok bool
-	rest, ok = strings.CutPrefix(rest, "clusters/")
-	if !ok {
-		return request{}, false
-	}
-	parts := strings.SplitN(rest, "/", 4)
-	// parts: [ws, resource, name, verbAndTail]
-	if len(parts) < 4 {
-		return request{}, false
-	}
-	req := request{
-		workspace: strings.TrimSpace(parts[0]),
-		resource:  strings.TrimSpace(parts[1]),
-		name:      strings.TrimSpace(parts[2]),
-	}
-	verbAndTail := parts[3]
-	if trimmed, isComponent := strings.CutPrefix(verbAndTail, "components/"); isComponent {
-		seg := strings.SplitN(trimmed, "/", 3)
-		// seg: [component, verb, tail?]
-		if len(seg) < 2 {
-			return request{}, false
-		}
-		req.component = strings.TrimSpace(seg[0])
-		req.verb = strings.TrimSpace(seg[1])
-		if req.component == "" {
-			return request{}, false
-		}
-		if len(seg) == 3 {
-			req.callerPath = "/" + seg[2]
-		}
-	} else {
-		seg := strings.SplitN(verbAndTail, "/", 2)
-		req.verb = strings.TrimSpace(seg[0])
-		if len(seg) == 2 {
-			req.callerPath = "/" + seg[1]
-		}
-	}
-	if req.workspace == "" || req.resource == "" || req.name == "" || req.verb == "" {
-		return request{}, false
-	}
-	return req, true
 }
 
 // writeInstanceStatus returns the instance's status subobject as JSON.

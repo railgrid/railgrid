@@ -104,10 +104,6 @@ func (s *Server) projectDevelopmentRuntimeBinding(binding aiv1alpha1.ProjectProv
 	return binding, nil
 }
 
-func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, id identity) (*unstructured.Unstructured, error) {
-	return observeProjectProviderBinding(ctx, c, p, binding, id)
-}
-
 // observeProjectProviderBinding is intentionally GET-only. Keep the legacy
 // helper signature above for package-local callers while enforcing the
 // controller-only provider-resource write boundary.

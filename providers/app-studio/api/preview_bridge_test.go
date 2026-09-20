@@ -161,14 +161,14 @@ func TestPreviewBridgeStoreExpiresSessions(t *testing.T) {
 }
 
 func TestPreviewBridgeToolIsRemoved(t *testing.T) {
-	if projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).Has("get_preview_bridge_logs") {
+	if projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).Has("get_preview_bridge_logs") {
 		t.Fatal("legacy preview bridge tool is still registered")
 	}
 }
 
 func TestProjectAssistantMetricsRouteExposesSkillMetrics(t *testing.T) {
 	router := mux.NewRouter()
-	(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).Register(router)
+	(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).Register(router)
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -184,7 +184,7 @@ func TestProjectAssistantMetricsRouteExposesSkillMetrics(t *testing.T) {
 }
 
 func TestPreviewBridgeDisabledRouteReturnsControlledNotFound(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	router := mux.NewRouter()
 	server.Register(router)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/preview-bridge/sessions", strings.NewReader(`{}`))
@@ -241,6 +241,7 @@ spec:
 
 	server := NewWithWorkspace(proxy.Client(), nil, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	signer, err := newEphemeralPreviewBridgeCapabilitySigner()
 	if err != nil {
 		t.Fatal(err)
@@ -322,7 +323,7 @@ spec:
 
 func setPreviewBridgeTestHeaders(request *http.Request, actor, clusterID string) {
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("Authorization", "Bearer "+actor+"-token")
 	request.Header.Set("X-Railgrid-User", actor)
 	request.Header.Set("X-Railgrid-Tenant", clusterID)
 	request.Header.Set("X-Railgrid-Cluster", clusterID)

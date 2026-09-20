@@ -102,7 +102,7 @@ func TestInspectProjectDevelopmentPreviewReturnsTypedFailure(t *testing.T) {
 		},
 	}}
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		previewInspector: inspector,
 		previewInspectionResolveURL: func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
 			return "https://demo.preview.example/", nil
@@ -147,7 +147,7 @@ func TestInspectProjectDevelopmentPreviewRejectsUnsynchronizedMutation(t *testin
 	runState := &projectEinoAssistantRunState{}
 	runState.RecordSourceMutation()
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		previewInspector: inspector,
 		previewInspectionResolveURL: func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
 			return "https://demo.preview.example/", nil
@@ -171,7 +171,7 @@ func TestInspectProjectDevelopmentPreviewRejectsUnsynchronizedMutation(t *testin
 
 func TestProjectAssistantPreviewInspectionCapabilityFollowsHealth(t *testing.T) {
 	inspector := &fakeProjectAssistantPreviewInspector{}
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, previewInspector: inspector}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, previewInspector: inspector}
 	if !server.projectAssistantPreviewInspectionAvailable(context.Background(), identity{}) {
 		t.Fatal("healthy inspector capability was hidden")
 	}
@@ -204,7 +204,7 @@ func TestProjectAssistantEnhancedPreviewInspectionReturnsImageWithoutPersistingB
 		},
 	}}
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		previewInspector: inspector,
 		previewInspectionResolveURL: func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
 			return "https://demo.preview.example/", nil
@@ -288,7 +288,7 @@ func TestProjectAssistantEnhancedPreviewReportsUnsupportedVisionModel(t *testing
 		},
 	}}
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		previewInspector: inspector,
 		previewInspectionResolveURL: func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
 			return "https://demo.preview.example/", nil
@@ -320,7 +320,7 @@ func TestProjectAssistantEnhancedPreviewReportsUnsupportedVisionModel(t *testing
 }
 
 func TestProjectAssistantPreviewToolsAdvertiseScreenshotCapture(t *testing.T) {
-	registry := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).projectAssistantToolRegistry()
+	registry := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).projectAssistantToolRegistry()
 	for _, name := range []string{projectToolInspectDevelopmentPreview, projectToolInteractDevelopmentPreview} {
 		tool, ok := registry.Get(name)
 		if !ok {
@@ -334,7 +334,7 @@ func TestProjectAssistantPreviewToolsAdvertiseScreenshotCapture(t *testing.T) {
 }
 
 func TestProjectAssistantPreviewInteractionKeepsStandardPermissionTool(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	registered, ok := server.projectAssistantToolRegistry().Get(projectToolInteractDevelopmentPreview)
 	if !ok {
 		t.Fatal("preview interaction tool is not registered")

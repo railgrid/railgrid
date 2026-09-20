@@ -1,24 +1,24 @@
 // Cytoscape-backed impact graph for the kuery provider.
 //
-// Cytoscape (~145 kB gzip) is loaded LAZILY, only when someone opens the
-// graph view — the inventory table never pays for it. We can't use a bundler
-// dynamic import() for this: the portal build is IIFE library mode (see
-// vite.config.ts — the script tag runs before any module loader), and an
-// IIFE bundle is self-contained, so Rollup would inline the import into
-// main.js. Instead we vendor cytoscape.min.js as a static asset (copied into
-// dist/ by the build script) and inject it via a <script> tag on first use,
-// reading the window.cytoscape global it defines. `import type` below is
-// erased at build time, so this module pulls in zero Cytoscape bytes.
+// Cytoscape is an ordinary module import, so Vite bundles it and it is covered
+// by the build's integrity pinning like everything else. It used to be
+// vendored as cytoscape.min.js and injected with a runtime <script> tag,
+// reading the window.cytoscape global it defined. That bought laziness — the
+// inventory table never paid for the ~145 kB gzipped — at the price of
+// fetching and executing a script from a URL no hash covers, which is the one
+// thing a pinned bundle exists to prevent.
+//
+// The trade is smaller than it looks. The portal is an IIFE library build (see
+// vite.config.ts) with inlineDynamicImports set, so Rollup inlines a dynamic
+// import() into main.js regardless: the laziness was already notional and the
+// <script> tag bought only a second, unverified network fetch. The cost is
+// real and worth naming, though: main.js now carries Cytoscape for a visitor
+// who only ever opens the inventory table, which is most of them. The fix for
+// that, if it becomes one, is a separate entry point the host loads on demand
+// and the build still hashes — not a global an unverified script assigns.
 
-import type cytoscape from 'cytoscape'
+import cytoscape from 'cytoscape'
 import type { ObjectResult } from './api'
-
-// The UMD bundle assigns this global.
-declare global {
-  interface Window {
-    cytoscape?: typeof cytoscape
-  }
-}
 
 // Impact direction per relation, from the anchor's point of view. An edge is
 // always drawn so the arrow means "deleting source impacts target":
@@ -602,32 +602,10 @@ export function relationElements(anchorId: string, anchor: ObjectResult): BuildR
   return { elements, nodeIndex }
 }
 
-let _libPromise: Promise<typeof cytoscape> | null = null
-
-// loadCytoscape injects the vendored UMD bundle once and resolves to the
-// window.cytoscape global. Concurrent callers share one in-flight load.
-function loadCytoscape(libUrl: string): Promise<typeof cytoscape> {
-  if (window.cytoscape) return Promise.resolve(window.cytoscape)
-  if (_libPromise) return _libPromise
-  _libPromise = new Promise((resolve, reject) => {
-    const s = document.createElement('script')
-    s.src = libUrl
-    s.async = true
-    s.onload = () =>
-      window.cytoscape ? resolve(window.cytoscape) : reject(new Error('cytoscape global missing after load'))
-    s.onerror = () => {
-      _libPromise = null // allow a retry on the next graph open
-      reject(new Error(`failed to load ${libUrl}`))
-    }
-    document.head.appendChild(s)
-  })
-  return _libPromise
-}
-
-// mountGraph lazy-loads Cytoscape (from libUrl) and renders the impact graph
-// into container. onNodeTap fires for non-anchor nodes (the anchor is already
-// centered) so the caller can re-anchor. Returns a handle whose destroy()
-// tears down the instance and its listeners.
+// mountGraph renders the impact graph into container. onNodeTap fires for
+// non-anchor nodes (the anchor is already centered) so the caller can
+// re-anchor. Returns a handle whose destroy() tears down the instance and its
+// listeners.
 export interface GraphHooks {
   // onLayout reports layout activity: true when a layout starts, false when
   // it stops (finished or halted), with the node count it ran over. Discrete
@@ -640,13 +618,11 @@ export async function mountGraph(
   elements: cytoscape.ElementDefinition[],
   style: cytoscape.StylesheetStyle[],
   onNodeTap: (id: string) => void,
-  libUrl: string,
   // Loose object so callers can pass any built-in layout config (tree, radial,
   // circle, force) without importing Cytoscape's layout union; cast below.
   layout?: Record<string, unknown>,
   hooks?: GraphHooks,
 ): Promise<GraphHandle> {
-  const cytoscape = await loadCytoscape(libUrl)
   const cy = cytoscape({
     container,
     elements,

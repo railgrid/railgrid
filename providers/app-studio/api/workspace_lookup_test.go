@@ -59,37 +59,39 @@ var defaultTestWorkspaces = staticWorkspaces{
 	"cluster-1": testWorkspace("cluster-1", "org-1", "workspace-1"),
 }
 
-// The hub identifies a tenant by cluster ID in both headers; the
-// org/workspace scope comes from kcp via the lookup, never from a header
-// value that merely looks like a workspace path.
-func TestIdentityScopeComesFromWorkspaceLookupNotHeaders(t *testing.T) {
-	s := &Server{tenantWorkspaces: testWorkspaceLookup("cluster-a", "org-a", "workspace-a")}
+// The workspace a request acts in comes from the data-plane PATH — the value
+// both gates ran against — and its org/workspace scope comes from kcp. A
+// header that merely looks like a workspace path is not an identity and never
+// becomes one.
+func TestIdentityScopeComesFromThePathNotHeaders(t *testing.T) {
+	s := &Server{tenantWorkspaces: testWorkspaceLookup("cluster-a", "org-a", "workspace-a"), tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 
-	r := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
-	r.Header.Set("X-Railgrid-Tenant", "cluster-a")
-	r.Header.Set("X-Railgrid-Cluster", "cluster-a")
+	r := httptest.NewRequest(http.MethodGet, "/dataplane/clusters/cluster-a/projects/demo/view", nil)
+	r = r.WithContext(context.WithValue(r.Context(), dataPlaneClusterKey{}, "cluster-a"))
 	r.Header.Set("Authorization", "Bearer test-token")
 	id, ok := s.identityFromRequest(httptest.NewRecorder(), r)
 	if !ok || id.orgUUID != "org-a" || id.workspaceUUID != "workspace-a" || id.workspacePath != "root:railgrid:tenants:org-a:workspace-a" || id.workspaceErr != nil {
 		t.Fatalf("identity = %+v, want scope org-a/workspace-a from the lookup", id)
 	}
 
-	r = httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	// A forged X-Railgrid-Tenant cannot move the request: the gated path wins.
+	r = httptest.NewRequest(http.MethodGet, "/dataplane/clusters/cluster-a/projects/demo/view", nil)
+	r = r.WithContext(context.WithValue(r.Context(), dataPlaneClusterKey{}, "cluster-a"))
 	r.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:victim-org:victim-ws")
+	r.Header.Set("X-Railgrid-Cluster", "cluster-b")
 	r.Header.Set("Authorization", "Bearer test-token")
 	id, ok = s.identityFromRequest(httptest.NewRecorder(), r)
 	if !ok {
-		t.Fatal("a present tenant header must still authenticate")
+		t.Fatal("a gated request must authenticate")
 	}
-	if id.orgUUID != "" || id.workspaceUUID != "" || id.workspacePath != "" || id.workspaceErr == nil {
-		t.Fatalf("a path-shaped header produced scope %+v; the scope must come from kcp", id)
-	}
-	if id.clusterID != "root:railgrid:tenants:victim-org:victim-ws" {
-		t.Fatalf("clusterID = %q, want the tenant header echoed when X-Railgrid-Cluster is absent", id.clusterID)
+	if id.clusterID != "cluster-a" || id.orgUUID != "org-a" {
+		t.Fatalf("identity = %+v, want the cluster from the path", id)
 	}
 
+	// Nothing in the path and nothing in the header: there is no workspace to
+	// act in, so the request is refused rather than defaulted.
 	w := httptest.NewRecorder()
-	if _, ok := s.identityFromRequest(w, httptest.NewRequest(http.MethodGet, "/api/projects", nil)); ok || w.Code != http.StatusUnauthorized {
-		t.Fatalf("no tenant header = ok:%v code:%d, want 401", ok, w.Code)
+	if _, ok := s.identityFromRequest(w, httptest.NewRequest(http.MethodGet, "/", nil)); ok || w.Code != http.StatusUnauthorized {
+		t.Fatalf("no cluster = ok:%v code:%d, want 401", ok, w.Code)
 	}
 }

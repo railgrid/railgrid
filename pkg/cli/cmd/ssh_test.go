@@ -34,7 +34,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-const sshTestURL = "https://hub.example.com/services/providers/edges/edgeproxy/clusters/c1/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge/ssh"
+const sshTestURL = "https://hub.example.com/services/providers/edges/dataplane/clusters/c1/linuxservers/edge/ssh"
 
 // TestWSAuthFromRestCredentials covers the credential shapes a kubeconfig can
 // carry. The exec case is the one that regressed: reading config.BearerToken
@@ -146,7 +146,7 @@ func TestDescribeDialError(t *testing.T) {
 }
 
 func TestBuildSSHWebSocketURLAsksForStdin(t *testing.T) {
-	u, err := buildSSHWebSocketURL(nil, "https://hub.example.com/services/providers/edges/edgeproxy/clusters/c/apis/edges.railgrid.ai/v1alpha1/linuxservers/box/ssh", "uptime")
+	u, err := buildSSHWebSocketURL(nil, "https://hub.example.com/services/providers/edges/dataplane/clusters/c/linuxservers/box/ssh", "uptime")
 	if err != nil {
 		t.Fatal(err)
 	}

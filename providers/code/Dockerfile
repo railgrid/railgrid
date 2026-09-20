@@ -30,14 +30,14 @@ COPY --from=portal /portal/dist ./portal/dist
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/code-provider .
 
 # 3. Minimal runtime image. The portal assets are baked into the binary; the
-#    APIResourceSchemas the `init` subcommand applies are baked at
-#    /etc/railgrid/schemas (RAILGRID_SCHEMAS_DIR).
+#    The two declarative objects `init` applies — the generated
+#    APIExport and its APIResourceSchemas — are baked at /etc/railgrid/kcp (RAILGRID_KCP_DIR).
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates git \
     && addgroup -g 65532 nonroot \
     && adduser -D -u 65532 -G nonroot nonroot
 COPY --from=build /out/code-provider /code-provider
-COPY providers/code/deploy/chart/files/schemas /etc/railgrid/schemas
+COPY providers/code/deploy/chart/files /etc/railgrid/kcp
 EXPOSE 8083
 ENV PORT=8083
 USER nonroot:nonroot

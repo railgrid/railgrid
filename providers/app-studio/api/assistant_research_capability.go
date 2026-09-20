@@ -42,7 +42,7 @@ var projectAssistantResearchWordPattern = regexp.MustCompile(`[A-Za-z]+`)
 
 // projectAssistantResearchWords are the single words that, on their own, ask
 // for research. Each is matched with a typo budget, so "reseach", "resarch",
-// "reserach" and "investgate" all count. Inflections that describe an actor
+// "researhc" and "investgate" all count. Inflections that describe an actor
 // or an activity already under way — "researcher", "researching",
 // "investigating" — sit two or more edits away and stay out.
 var projectAssistantResearchWords = []string{

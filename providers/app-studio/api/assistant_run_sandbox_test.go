@@ -167,60 +167,6 @@ func TestProjectAssistantRunSandboxDirtyUsesRemoteCheckpointFence(t *testing.T) 
 		})
 	}
 }
-
-func TestProjectAssistantRunSandboxOwnerReferenceIsDurableAndRejectsCollision(t *testing.T) {
-	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop", UID: "project-uid"}}
-	instance := newRunSandboxTestInstance("cache", projectAssistantRunSandboxCacheStateCached, time.Now().UTC())
-	changed, err := ensureProjectAssistantRunSandboxOwner(instance, project)
-	if err != nil || !changed {
-		t.Fatalf("attach owner changed=%t err=%v", changed, err)
-	}
-	refs := instance.GetOwnerReferences()
-	if len(refs) != 1 || refs[0].Name != project.Name || refs[0].UID != project.UID || refs[0].Controller == nil || !*refs[0].Controller {
-		t.Fatalf("owner references = %#v", refs)
-	}
-	if changed, err := ensureProjectAssistantRunSandboxOwner(instance, project); err != nil || changed {
-		t.Fatalf("idempotent owner changed=%t err=%v", changed, err)
-	}
-	other := project.DeepCopy()
-	other.UID = "other-project-uid"
-	if _, err := ensureProjectAssistantRunSandboxOwner(instance, other); !errors.Is(err, errProjectAssistantRunSandboxConflict) {
-		t.Fatalf("owner collision error = %v, want conflict", err)
-	}
-}
-
-func TestDeleteProjectAssistantRunSandboxCacheDeletesExactLegacyCache(t *testing.T) {
-	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop", UID: "project-uid"}}
-	id := identity{orgUUID: "org", workspaceUUID: "ws"}
-	scope := projectWorkspaceScope(id, project)
-	name := projectAssistantRunSandboxName(scope, project, "legacy-run")
-	cache := newRunSandboxTestInstance(name, projectAssistantRunSandboxCacheStateCached, time.Now().UTC())
-	client := newRunSandboxTestClient(cache)
-	if err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).deleteProjectAssistantRunSandboxCache(context.Background(), client, id, project); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.Resource(runSandboxInstancesResource, "").Get(context.Background(), name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("deleted cache lookup = %v, want NotFound", err)
-	}
-}
-
-func TestDeleteProjectAssistantRunSandboxCacheRefusesNameCollision(t *testing.T) {
-	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop", UID: "project-uid"}}
-	id := identity{orgUUID: "org", workspaceUUID: "ws"}
-	name := projectAssistantRunSandboxName(projectWorkspaceScope(id, project), project, "")
-	collision := newRunSandboxTestInstance(name, projectAssistantRunSandboxCacheStateCached, time.Now().UTC())
-	annotations := collision.GetAnnotations()
-	delete(annotations, projectAssistantRunSandboxLabel)
-	collision.SetAnnotations(annotations)
-	client := newRunSandboxTestClient(collision)
-	if err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).deleteProjectAssistantRunSandboxCache(context.Background(), client, id, project); !errors.Is(err, errProjectAssistantRunSandboxConflict) {
-		t.Fatalf("collision delete error = %v, want conflict", err)
-	}
-	if _, err := client.Resource(runSandboxInstancesResource, "").Get(context.Background(), name, metav1.GetOptions{}); err != nil {
-		t.Fatalf("collision instance was deleted: %v", err)
-	}
-}
-
 func TestProjectAssistantRunSandboxNameReservesInfrastructureChildServiceBudget(t *testing.T) {
 	projects := []string{
 		"launch-readiness-sandbox-e2e",
@@ -328,6 +274,7 @@ func TestProjectAssistantSupervisorStopDeletesSuspendedSandboxAndAllowsFreshRun(
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "shop", ProjectUID: "project-uid"}
 	id := identity{orgUUID: scope.OrgUUID, workspaceUUID: scope.WorkspaceUUID}
 	now := time.Now().UTC()
@@ -419,7 +366,7 @@ func TestProjectAssistantInterruptedSandboxCleanupFailsClosedAndReleasesExactRun
 			annotations[projectAssistantRunSandboxCacheGeneration] = owner
 			instance.SetAnnotations(annotations)
 			client := newRunSandboxTestClient(instance)
-			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 			release, err := server.projectAssistantSandboxManager().acquire(projectAssistantRunSandboxTenantKey(id, workspace.Scope(scope)), name, run.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -512,7 +459,7 @@ func TestProjectAssistantRunSandboxReclaimsOnlyTerminalDurableOwner(t *testing.T
 			annotations[projectAssistantRunSandboxCacheGeneration] = "run-old"
 			instance.SetAnnotations(annotations)
 			client := newRunSandboxTestClient(instance)
-			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: messages}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: messages}
 
 			_, err := server.claimProjectAssistantRunSandboxInstance(context.Background(), client, scope, "cache", "run-new")
 			if tc.wantReclaim && err != nil {
@@ -540,7 +487,7 @@ func TestProjectAssistantRunSandboxSafeTerminalRetainsProjectCache(t *testing.T)
 	now := time.Now().UTC()
 	instance := newRunSandboxTestInstance("cache", projectAssistantRunSandboxCacheStateCached, now)
 	client := newRunSandboxTestClient(instance)
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	hardExpiry, err := server.claimProjectAssistantRunSandboxInstance(context.Background(), client, store.Scope{}, "cache", "run-2")
 	if err != nil {
 		t.Fatal(err)
@@ -587,7 +534,7 @@ func TestProjectAssistantRunSandboxUnsafeTerminalDeletesCache(t *testing.T) {
 	now := time.Now().UTC()
 	instance := newRunSandboxTestInstance("cache", projectAssistantRunSandboxCacheStateCached, now)
 	client := newRunSandboxTestClient(instance)
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	hardExpiry, err := server.claimProjectAssistantRunSandboxInstance(context.Background(), client, store.Scope{}, "cache", "run-3")
 	if err != nil {
 		t.Fatal(err)
@@ -623,7 +570,7 @@ func TestProjectAssistantRunSandboxSetupFailureDeletesClaimedCache(t *testing.T)
 	annotations[projectAssistantRunSandboxCacheGeneration] = "setup-run"
 	instance.SetAnnotations(annotations)
 	client := newRunSandboxTestClient(instance)
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	sandbox := &projectAssistantRunSandbox{
 		server: server,
 		id:     identity{orgUUID: "org", workspaceUUID: "ws"},
@@ -654,7 +601,7 @@ func TestProjectAssistantRunSandboxSuspensionPreservesDurableClaim(t *testing.T)
 	annotations[projectAssistantRunSandboxCacheGeneration] = "suspended-run"
 	instance.SetAnnotations(annotations)
 	client := newRunSandboxTestClient(instance)
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	sandbox := &projectAssistantRunSandbox{
 		server: server,
 		id:     identity{orgUUID: "org", workspaceUUID: "ws"},
@@ -719,7 +666,7 @@ func TestProjectAssistantRunSandboxFreshFollowUpClaimsAndRebasesProjectCache(t *
 	seedDigest := projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "main.go", Content: "package main\n"}})
 	fake := &sandboxClientFake{response: projectAssistantSandboxWorkspaceResponse{SourceRevision: 9, SourceDigest: seedDigest}}
 	server := &Server{
-		tenantWorkspaces:        defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		workspaces:              files,
 		hubBase:                 "https://hub.test",
 		runSandboxClientFactory: func(*Server) projectAssistantSandboxClient { return fake },
@@ -790,8 +737,8 @@ func TestProjectAssistantRunSandboxColdMultiMutationWarmFollowUpKeepsRemoteRevis
 	}
 	remote := &sandboxRevisionDomainFake{files: map[string]string{}}
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		workspaces:       files, hubBase: "https://hub.test",
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		workspaces: files, hubBase: "https://hub.test",
 		projectClientFor:        func(identity) (*asclient.Client, error) { return client, nil },
 		runSandboxClientFactory: func(*Server) projectAssistantSandboxClient { return remote },
 	}
@@ -854,7 +801,7 @@ func TestProjectAssistantRunSandboxQuotaEvictsOldestUnclaimedCache(t *testing.T)
 	oldest := newRunSandboxTestInstance("oldest", projectAssistantRunSandboxCacheStateCached, now.Add(-time.Hour))
 	newer := newRunSandboxTestInstance("newer", projectAssistantRunSandboxCacheStateCached, now.Add(-time.Minute))
 	client := newRunSandboxTestClient(oldest, newer)
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	if err := server.enforceProjectAssistantRunSandboxQuota(context.Background(), client, "incoming"); err != nil {
 		t.Fatal(err)
 	}
@@ -871,7 +818,7 @@ func TestProjectAssistantRunSandboxQuotaDoesNotEvictLocallyClaimedCache(t *testi
 	claimed := newRunSandboxTestInstance("claimed", projectAssistantRunSandboxCacheStateCached, now.Add(-time.Hour))
 	unclaimed := newRunSandboxTestInstance("unclaimed", projectAssistantRunSandboxCacheStateCached, now.Add(-time.Minute))
 	client := newRunSandboxTestClient(claimed, unclaimed)
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	release, err := server.projectAssistantSandboxManager().acquire("org/ws", "claimed", "run-active")
 	if err != nil {
 		t.Fatal(err)
@@ -1280,8 +1227,8 @@ func TestProjectAssistantRunSandboxCheckpointIsAtomicAndSyncs(t *testing.T) {
 	}
 	synced := make(chan string, 1)
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		workspaces:       files,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		workspaces: files,
 		developmentSyncAfterMutation: func(_ identity, _ *aiv1alpha1.Project, name string) error {
 			synced <- name
 			return nil
@@ -1383,7 +1330,7 @@ func TestProjectAssistantRunSandboxTerminalCheckpointDetachesInterruptedContext(
 
 func TestAttachProjectAssistantRunSandboxAllowsLegacyCheckpointWithoutSandbox(t *testing.T) {
 	t.Setenv(projectAssistantRunSandboxFlagEnv, "true")
-	sandbox, release, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).attachProjectAssistantRunSandbox(
+	sandbox, release, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).attachProjectAssistantRunSandbox(
 		context.Background(),
 		projectAssistantRunRequest{},
 		newProjectEinoAssistantRunState(),
@@ -1416,8 +1363,8 @@ func TestProjectAssistantRunSandboxCheckpointPersistsWithoutPreviewTemplate(t *t
 	oldDigest := projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "go.mod", Content: current.Content}})
 	syncCalled := make(chan struct{}, 1)
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		workspaces:       files,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		workspaces: files,
 		developmentSyncAfterMutation: func(identity, *aiv1alpha1.Project, string) error {
 			syncCalled <- struct{}{}
 			return nil
@@ -1498,6 +1445,7 @@ func TestProjectAssistantRunSandboxInspectionCheckpointsDirtyMutationBeforeBrows
 	id := identity{orgUUID: "org", workspaceUUID: "ws"}
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	var syncCalls int
 	server.developmentSyncAfterMutation = func(_ identity, _ *aiv1alpha1.Project, name string) error {
 		if name != projectActionWorkspaceSync {
@@ -1548,7 +1496,7 @@ func TestProjectAssistantRunSandboxInspectionCheckpointsDirtyMutationBeforeBrows
 }
 
 func TestProjectAssistantRunSandboxCheckpointIfDirtySkipsReadOnlyAndCleanRuns(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: workspace.NewFileStore(t.TempDir())}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: workspace.NewFileStore(t.TempDir())}
 	id := identity{orgUUID: "org", workspaceUUID: "ws"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "shop"
@@ -1594,7 +1542,7 @@ func TestProjectAssistantRunSandboxCheckpointConflictIsFailClosed(t *testing.T) 
 	state := newProjectEinoAssistantRunState()
 	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
 	state.RecordSourceMutation()
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: files}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: files}
 	fake := &sandboxClientFake{response: projectAssistantSandboxWorkspaceResponse{SourceRevision: 3, SourceDigest: "new", Changes: []projectAssistantSandboxWorkspaceChange{{Path: "main.go", Operation: string(workspace.ManagedFileReplace), Content: "new\n", ExpectedVersion: "sha256:old"}}}}
 	sandbox := &projectAssistantRunSandbox{
 		server: server, client: fake, scope: scope, runState: state,
@@ -1817,7 +1765,7 @@ func TestCodingSandboxPolicyFailsClosedAndMigratesLegacyBoolean(t *testing.T) {
 }
 
 func TestCodingSandboxOffSkipsInfrastructureBeforeRequestValidation(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, runSandboxConfig: CodingSandboxConfig{Mode: CodingSandboxModeOff}, runSandboxConfigured: true}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, runSandboxConfig: CodingSandboxConfig{Mode: CodingSandboxModeOff}, runSandboxConfigured: true}
 	sandbox, release, err := server.ensureProjectAssistantRunSandbox(context.Background(), projectAssistantRunRequest{}, nil)
 	if err != nil || sandbox != nil || release == nil {
 		t.Fatalf("off-mode ensure = sandbox %#v releaseNil=%t err=%v", sandbox, release == nil, err)
@@ -1882,7 +1830,7 @@ func TestCodingSandboxBYOResolverIsScopedAndFailsClosed(t *testing.T) {
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "uid-a"}
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-a"}
 	server := &Server{
-		tenantWorkspaces:     defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		runSandboxConfig:     CodingSandboxConfig{Mode: CodingSandboxModeBYOOnly, ReplicaCount: 1},
 		runSandboxConfigured: true,
 	}
@@ -1920,7 +1868,7 @@ func TestCodingSandboxOffAndForceDoNotCallBYOResolver(t *testing.T) {
 		{Mode: CodingSandboxModeOff, ReplicaCount: 1},
 		{Mode: CodingSandboxModeForce, DevelopmentMode: true, ReplicaCount: 1},
 	} {
-		server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, runSandboxConfig: config, runSandboxConfigured: true}
+		server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, runSandboxConfig: config, runSandboxConfigured: true}
 		server.codingSandboxResolver = func(context.Context, identity, workspace.Scope) (CodingSandboxEligibility, error) {
 			t.Fatalf("resolver called for mode %q", config.Mode)
 			return CodingSandboxEligibility{}, nil
@@ -1934,7 +1882,7 @@ func TestCodingSandboxOffAndForceDoNotCallBYOResolver(t *testing.T) {
 
 func TestAttachCodingSandboxRejectsProviderTransportGenerationMismatch(t *testing.T) {
 	server := &Server{
-		tenantWorkspaces:     defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		runSandboxConfig:     CodingSandboxConfig{Mode: CodingSandboxModeForce, DevelopmentMode: true, ReplicaCount: 1},
 		runSandboxConfigured: true,
 	}
@@ -2043,8 +1991,8 @@ func TestProjectAssistantDataPlaneSandboxClientUsesWorkerWorkspaceWire(t *testin
 		}
 	})
 	client := projectAssistantDataPlaneSandboxClient{server: &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		hubBase:          "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		hubBase: "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
 		sandboxDataPlaneClientFactory: func(time.Duration) *http.Client {
 			return &http.Client{Transport: sandboxRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				recorder := httptest.NewRecorder()
@@ -2142,8 +2090,8 @@ func TestProjectAssistantDataPlaneSandboxClientGrepSupportsFileAndDirectoryPaths
 		}
 	})
 	client := projectAssistantDataPlaneSandboxClient{server: &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		hubBase:          "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		hubBase: "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
 		sandboxDataPlaneClientFactory: func(time.Duration) *http.Client {
 			return &http.Client{Transport: sandboxRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				recorder := httptest.NewRecorder()
@@ -2194,8 +2142,8 @@ func TestProjectAssistantDataPlaneSandboxCheckpointWithNoChangesUsesDiffFence(t 
 		})
 	})
 	client := projectAssistantDataPlaneSandboxClient{server: &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		hubBase:          "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		hubBase: "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
 		sandboxDataPlaneClientFactory: func(time.Duration) *http.Client {
 			return &http.Client{Transport: sandboxRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				recorder := httptest.NewRecorder()

@@ -42,6 +42,7 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	client := asclient.NewFromDynamic(publishingTestDynamic(project))
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.projectClientFor = func(identity) (*asclient.Client, error) { return client, nil }
 	router := mux.NewRouter()
 	server.Register(router)
@@ -62,7 +63,7 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	upload := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
 	upload.Header.Set("Content-Type", writer.FormDataContentType())
 	upload.Header.Set("X-Railgrid-Tenant", "cluster")
-	upload.Header.Set("Authorization", "Bearer test-token")
+	upload.Header.Set("Authorization", "Bearer "+"alice-token")
 	upload.Header.Set("X-Railgrid-Cluster", "cluster")
 	upload.Header.Set("X-Railgrid-User", "alice")
 	response := httptest.NewRecorder()
@@ -89,7 +90,7 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 
 	request := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"bob-token")
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "bob")
 	response = httptest.NewRecorder()
@@ -100,7 +101,7 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 
 	request = httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"alice-token")
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "alice")
 	response = httptest.NewRecorder()
@@ -111,7 +112,7 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 
 	request = httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments", nil)
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"alice-token")
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "alice")
 	response = httptest.NewRecorder()
@@ -126,7 +127,7 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 
 	request = httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments", nil)
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"bob-token")
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "bob")
 	response = httptest.NewRecorder()
@@ -137,7 +138,7 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 
 	request = httptest.NewRequest(http.MethodDelete, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"bob-token")
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "bob")
 	response = httptest.NewRecorder()
@@ -148,7 +149,7 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 
 	request = httptest.NewRequest(http.MethodDelete, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"alice-token")
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "alice")
 	response = httptest.NewRecorder()
@@ -159,7 +160,7 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 
 	request = httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"alice-token")
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "alice")
 	response = httptest.NewRecorder()
@@ -175,7 +176,7 @@ func TestProjectAssistantAttachmentTurnAdmissionVerifiesAllBeforeBinding(t *test
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"}}
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-uid"}
 	memory := store.NewMemoryStore()
-	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster": testWorkspace("cluster", "org", "workspace")}.lookup, attachments: memory}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster": testWorkspace("cluster", "org", "workspace")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, attachments: memory}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	makeAttachment := func(id string, data []byte) projectAssistantAttachmentReceipt {
 		digest := sha256.Sum256(data)
@@ -225,7 +226,7 @@ func TestProjectAssistantStoreAttachmentReaderVerifiesScopedReceipt(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster": testWorkspace("cluster", "org", "workspace")}.lookup, attachments: memory}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster": testWorkspace("cluster", "org", "workspace")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, attachments: memory}
 	reader := server.projectAssistantAttachmentReader()
 	receipt := projectAssistantAttachmentReceipt{ID: created.ID, Filename: created.Filename, ContentType: created.ContentType, SizeBytes: created.SizeBytes, SHA256: created.SHA256, CreatedAt: created.CreatedAt}
 	read, err := reader.ReadAttachment(ctx, scope, receipt, "alice", 0, 64)
@@ -243,6 +244,7 @@ func TestProjectAssistantAttachmentHTTPStableClientIDIsIdempotentAndDeletable(t 
 	client := asclient.NewFromDynamic(publishingTestDynamic(project))
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.projectClientFor = func(identity) (*asclient.Client, error) { return client, nil }
 	router := mux.NewRouter()
 	server.Register(router)
@@ -271,7 +273,7 @@ func TestProjectAssistantAttachmentHTTPStableClientIDIsIdempotentAndDeletable(t 
 		request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
 		request.Header.Set("Content-Type", writer.FormDataContentType())
 		request.Header.Set("X-Railgrid-Tenant", "cluster")
-		request.Header.Set("Authorization", "Bearer test-token")
+		request.Header.Set("Authorization", "Bearer "+actor+"-token")
 		request.Header.Set("X-Railgrid-Cluster", "cluster")
 		request.Header.Set("X-Railgrid-User", actor)
 		response := httptest.NewRecorder()
@@ -312,7 +314,7 @@ func TestProjectAssistantAttachmentHTTPStableClientIDIsIdempotentAndDeletable(t 
 
 	request := httptest.NewRequest(http.MethodDelete, "/api/projects/demo/assistant/attachments/"+clientID, nil)
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"alice-token")
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "alice")
 	response := httptest.NewRecorder()
@@ -327,6 +329,7 @@ func TestProjectAssistantAttachmentHTTPAcceptsFileKind(t *testing.T) {
 	client := asclient.NewFromDynamic(publishingTestDynamic(project))
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.projectClientFor = func(identity) (*asclient.Client, error) { return client, nil }
 	router := mux.NewRouter()
 	server.Register(router)
@@ -348,7 +351,7 @@ func TestProjectAssistantAttachmentHTTPAcceptsFileKind(t *testing.T) {
 		request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
 		request.Header.Set("Content-Type", writer.FormDataContentType())
 		request.Header.Set("X-Railgrid-Tenant", "cluster")
-		request.Header.Set("Authorization", "Bearer test-token")
+		request.Header.Set("Authorization", "Bearer "+"alice-token")
 		request.Header.Set("X-Railgrid-Cluster", "cluster")
 		request.Header.Set("X-Railgrid-User", "alice")
 		response := httptest.NewRecorder()

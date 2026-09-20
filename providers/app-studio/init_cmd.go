@@ -19,17 +19,24 @@ import (
 
 const (
 	apiExportName = "ai.railgrid.ai"
+	// providerName is what this provider's CatalogEntry registers it as, and
+	// therefore how it names itself to the hub — in the heartbeat, and in the
+	// owner tuple of every identity it asks the hub to mint.
+	providerName = "app-studio"
 )
 
-// The APIExport deliberately claims NO first-party (*.railgrid.ai) resources.
-// Such claims must pin the serving APIExport's identityHash, and an export
-// can pin exactly one identity per claimed resource — for every consuming
-// workspace at once. That breaks the moment one org self-hosts a dependency
-// (infrastructure, code) while others use the platform copy. Instead the
-// reconcilers act as per-project/per-studio ServiceAccounts through each
-// workspace's OWN bindings (see package tenantaccess), which reach whichever
-// copy the workspace binds. Only built-in types (no identityHash) are
-// claimed, to provision those identities.
+// The APIExport deliberately claims NO first-party (*.railgrid.ai) resources,
+// and so needs no RAILGRID_IDENTITY_HASHES. Such a claim must pin the serving
+// APIExport's identityHash, and an export can pin exactly one identity per
+// claimed resource — for every consuming workspace at once. That breaks the
+// moment one org self-hosts a dependency (infrastructure, code) while others
+// use the platform copy. Instead the reconcilers act as per-project and
+// per-Studio identities MINTED BY THE HUB (controller/project/identity.go,
+// controller/studio/identity.go) inside each workspace, through that
+// workspace's OWN bindings, which reach whichever copy it enabled; what they
+// may do there is declared as manifest.yaml spec.dependencies[].composes and
+// accepted by the tenant at Enable. The only claim left is on Secrets, for
+// the credential material this provider writes itself.
 
 // runInitCmd applies the App Studio provider's in-workspace objects
 // (APIResourceSchemas, APIExport, APIExportEndpointSlice, bind grant) using the
@@ -45,45 +52,28 @@ func runInitCmd(ctx context.Context) error {
 	// bootstrap both the platform workspace and an org's self-hosted copy. Set
 	// the env var only to reference an export in a different workspace.
 	workspacePath := os.Getenv("APP_STUDIO_WORKSPACE_PATH")
-	schemasDir := os.Getenv("RAILGRID_SCHEMAS_DIR")
-	if schemasDir == "" {
-		schemasDir = "/etc/railgrid/schemas"
+	kcpDir := os.Getenv("RAILGRID_KCP_DIR")
+	if kcpDir == "" {
+		kcpDir = "/etc/railgrid/kcp"
 	}
 	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
 
-	// Per-project/per-studio ServiceAccount identity: instance and repository
-	// lifecycling (and repository commits) run in the reconcilers long after
-	// the request that caused them, so they act as an identity of their own
-	// rather than borrowing the user's bearer. The identity objects are
-	// built-in types — no identityHash needed — and the resulting token acts
-	// through the workspace's own bindings for everything first-party. Also:
-	// per-project LLM credentials ride Secrets.
-	claims := make([]sdkinstall.PermissionClaim, 0, 4)
-	claims = append(claims,
-		sdkinstall.PermissionClaim{Resource: "serviceaccounts", Verbs: []string{"get", "list", "watch", "create", "delete"}},
-		sdkinstall.PermissionClaim{Resource: "secrets", Verbs: []string{"get", "list", "watch", "create", "update", "delete"}},
-		sdkinstall.PermissionClaim{
-			Group:    "rbac.authorization.k8s.io",
-			Resource: "clusterroles",
-			Verbs:    []string{"get", "list", "watch", "create", "update", "delete"},
-		},
-		sdkinstall.PermissionClaim{
-			Group:    "rbac.authorization.k8s.io",
-			Resource: "clusterrolebindings",
-			Verbs:    []string{"get", "list", "watch", "create", "update", "delete"},
-		},
-	)
-
+	// The per-project and per-Studio identities the reconcilers act as are
+	// asked for, not minted here: the hub writes the ServiceAccount, the
+	// ClusterRole and the binding against a policy, and collects them when the
+	// owning object goes (provider-sdk/identityclient). The one claim left is
+	// on Secrets — the credential material this provider writes itself —
+	// declared in manifest.yaml, which codegen stamps onto the APIExport this
+	// reads. No IdentityHashes: there is no first-party claim to pin.
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:           config,
 		ExportName:       apiExportName,
 		WorkspacePath:    workspacePath,
-		SchemasDir:       schemasDir,
-		Claims:           claims,
+		KCPDir:           kcpDir,
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}
-	log.Printf("app-studio init: workspace bootstrapped (export=%s path=%s schemas=%s catalogEntry=%s claims=%d)", apiExportName, workspacePath, schemasDir, catalogEntryFile, len(claims))
+	log.Printf("app-studio init: workspace bootstrapped (export=%s path=%s kcpDir=%s catalogEntry=%s)", apiExportName, workspacePath, kcpDir, catalogEntryFile)
 	return nil
 }

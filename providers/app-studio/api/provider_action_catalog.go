@@ -31,11 +31,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/hubapi"
 	appskills "github.com/railgrid/provider-app-studio/skills"
 )
 
 const (
-	providerCatalogPath             = "/api/providers"
+	providerCatalogPath             = hubapi.ProviderCatalogPath
 	providerCatalogMaxResponseBytes = 4 << 20
 	providerCatalogCallTimeout      = 15 * time.Second
 )
@@ -318,6 +319,8 @@ func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (provide
 		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
 	}
 	if id.user != "" {
+		// A display label for the downstream provider's logs. The identity
+		// that authorizes the call is the bearer this request carries.
 		req.Header.Set("X-Railgrid-User", id.user)
 	}
 	client := &http.Client{

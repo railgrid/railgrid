@@ -499,7 +499,7 @@ test('guards project settings saves by serial, project, and context without stal
     'contextFingerprint === projectContextFingerprint(props.ctx)',
     'selected.value?.name === projectName',
   ]) assert.ok(save.includes(contract), contract)
-  const requestIndex = save.indexOf('await api.patchProject')
+  const requestIndex = save.indexOf('await api.updateProjectDetails')
   const responseGuardIndex = save.indexOf('if (!isCurrentSave()) return', requestIndex)
   const catchIndex = save.indexOf('} catch (e) {')
   const catchGuardIndex = save.indexOf('if (!isCurrentSave()) return', catchIndex)

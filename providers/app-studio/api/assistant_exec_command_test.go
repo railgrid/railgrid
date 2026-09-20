@@ -158,7 +158,7 @@ func TestProjectAssistantExecCommandSandboxPresentationPinsWorkspace(t *testing.
 		t.Fatalf("sandbox component enum = %#v, want [workspace]", component["enum"])
 	}
 
-	generated, err := info.ParamsOneOf.ToJSONSchema()
+	generated, err := info.ToJSONSchema()
 	if err != nil {
 		t.Fatalf("generate sandbox exec schema: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestProjectAssistantExecCommandMultiComponentPresentationRemainsGeneric(t *
 	if strings.Contains(info.Desc, "active per-run universal sandbox") || strings.Contains(info.Desc, `ALWAYS pass component="workspace"`) {
 		t.Fatalf("ordinary exec description was narrowed to run sandbox: %q", info.Desc)
 	}
-	generated, err := info.ParamsOneOf.ToJSONSchema()
+	generated, err := info.ToJSONSchema()
 	if err != nil {
 		t.Fatalf("generate project exec schema: %v", err)
 	}
@@ -373,8 +373,8 @@ func TestProjectAssistantExecSyncEvidenceBootstrapsFreshProject(t *testing.T) {
 	}
 	calls := make(chan string, 1)
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		workspaces:       files,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		workspaces: files,
 		developmentSyncAfterMutation: func(_ identity, _ *aiv1alpha1.Project, name string) error {
 			calls <- name
 			return nil

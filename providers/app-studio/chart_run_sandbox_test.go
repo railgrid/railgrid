@@ -56,22 +56,37 @@ func TestChartRunSandboxLegacyBooleanMigration(t *testing.T) {
 	}
 }
 
-func TestChartRejectsMultipleReplicasForSharedBrowser(t *testing.T) {
+// The controllers are leader-elected, so the chart no longer refuses a second
+// replica for the shared Playwright Browser — that is a default and an
+// operator's judgement now. Coding-sandbox claims are different: without
+// distributed CAS two replicas can both believe they own a sandbox, so that
+// one combination is still a hard refusal.
+func TestChartAcceptsMultipleReplicasExceptForcedRunSandbox(t *testing.T) {
 	helm, err := exec.LookPath("helm")
 	if err != nil {
 		t.Skip("helm is not installed")
 	}
-
-	output, err := exec.Command(
-		helm,
-		"template", "app-studio", "deploy/chart",
-		"--set", "replicaCount=2",
-		"--set", "workspace.emptyDir=true",
-	).CombinedOutput()
-	if err == nil {
-		t.Fatalf("helm template unexpectedly accepted replicaCount=2 with an emptyDir workspace")
+	render := func(values ...string) ([]byte, error) {
+		args := []string{"template", "app-studio", "deploy/chart"}
+		for _, value := range values {
+			args = append(args, "--set", value)
+		}
+		return exec.Command(helm, args...).CombinedOutput()
 	}
-	if !strings.Contains(string(output), "shared Playwright Browser is single-session and its session ownership is process-local") {
-		t.Fatalf("helm template must explain the shared-browser replica boundary: %v\n%s", err, output)
+
+	output, err := render("replicaCount=2", "workspace.emptyDir=true")
+	if err != nil {
+		t.Fatalf("helm template rejected replicaCount=2: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "replicas: 2") {
+		t.Fatalf("rendered deployment must carry replicas: 2:\n%s", output)
+	}
+
+	output, err = render("replicaCount=2", "assistant.runSandbox.mode=force", "workspace.emptyDir=true")
+	if err == nil {
+		t.Fatalf("helm template accepted replicaCount=2 with runSandbox.mode=force:\n%s", output)
+	}
+	if !strings.Contains(string(output), "coding sandbox claims have distributed CAS") {
+		t.Fatalf("helm template must explain the coding-sandbox claim boundary: %v\n%s", err, output)
 	}
 }

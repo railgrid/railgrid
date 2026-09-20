@@ -31,42 +31,58 @@ data:
       version: {{ .Chart.AppVersion | quote }}
       category: "Observability"
       iconURL: "/ui/providers/kuery/icon.svg"
+      # Kuery syncs the edges a tenant already has, so edges must be enabled
+      # here first — and `composes` is what its engagement controller is
+      # allowed to do with them, accepted by the tenant at Enable and measured
+      # again by the hub's identity policy (clause E) on every mint. Read-only:
+      # list and watch to learn which edges exist, get because the edges data
+      # plane's first gate is a real GET of the addressed edge as the caller.
+      # Mirrors manifest.yaml.
+      dependencies:
+        - name: edges
+          composes:
+            - group: edges.railgrid.ai
+              resource: kubernetesclusters
+              verbs: ["get", "list", "watch"]
       ui:
         url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
         indexPath: "/"
       backend:
         url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-        healthPath: "/healthz"
+        # /readyz, not /healthz: readiness reports whether this provider can
+        # actually reach the APIExport virtual workspace it watches and, while
+        # a replica holds the controller lease, whether tenant workspaces are
+        # really being watched. /healthz answers "the process is up", which was
+        # true the whole time nothing reconciled.
+        healthPath: "/readyz"
 
-      # Kuery's engagement controller opens BACKGROUND connections to the
-      # tenant's edge clusters through the hub's edges-proxy (informer sync).
-      # On Enable the hub grants the provider SA the "proxy" verb on edges in
-      # the tenant workspace; removed again on Disable.
-      edgeProxyAccess: true
+      # No edgeProxyAccess: kuery reaches each tenant's edges as a hub-minted
+      # identity owned by that workspace's kuery APIBinding, carrying the
+      # composition above plus `create` on kubernetesclusters/k8s for the edges
+      # it engages. Mirrors manifest.yaml.
 
       apiExport:
         name: "kuery.providers.railgrid.ai"
-        # Built-in types ONLY — deliberately no first-party (*.railgrid.ai)
-        # claims: those pin one APIExport identityHash for every consumer at
-        # once and break mixed platform/self-hosted deployments. Edge
-        # discovery acts as a per-workspace "railgrid-kuery" ServiceAccount
-        # through each workspace's own edges binding; these claims provision
-        # that identity.
-        permissionClaims:
-          - resource: serviceaccounts
-            verbs: [get, list, watch, create]
-            tenantScoped: true
-          - resource: secrets
-            verbs: [get, list, watch, create]
-            tenantScoped: true
-          - resource: clusterroles
-            group: rbac.authorization.k8s.io
-            verbs: [get, list, watch, create]
-            tenantScoped: true
-          - resource: clusterrolebindings
-            group: rbac.authorization.k8s.io
-            verbs: [get, list, watch, create]
-            tenantScoped: true
+        # NO permissionClaims AT ALL. No first-party (*.railgrid.ai) claim,
+        # because one pins a single APIExport identityHash for every consumer
+        # and breaks the moment an org self-hosts the edges provider — the
+        # composition above is how the engagement controller reaches an edge
+        # instead. And no serviceaccounts, secrets, clusterroles or
+        # clusterrolebindings: a provider does not mint identities, it asks the
+        # hub (docs/provider-connectivity-contract.md §"Scoped identities").
+      # Data-plane verbs this provider serves, declared so the coordinate is
+      # machine-readable. Declaring one grants and serves nothing: every call is
+      # still authorized by this provider's own caller-scoped SSAR on
+      # {resource}/{verb}. What the declaration buys is that the hub
+      # scoped-identity service can mint a capability for a verb it can verify
+      # exists (pkg/hub/identity/policy.go clause C), instead of consumers
+      # hardcoding a coordinate nobody validates.
+      dataPlane:
+        verbs:
+          - resource: savedviews
+            verb: run
+            description: "Run the saved view's query and return its result."
+            readOnly: true
       # Lets an organization run this provider in its own cluster
       # (docs/byo-providers.md). Keep manifest.yaml and
       # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the

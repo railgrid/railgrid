@@ -18,7 +18,6 @@ package workspace
 
 import (
 	"context"
-	"os"
 	"reflect"
 	"testing"
 )
@@ -51,15 +50,15 @@ func TestFileStoreUncommittedPathsPersistUnionClearAndProjectUIDIsolation(t *tes
 		t.Fatalf("union paths = %v, want %v", got, want)
 	}
 
-	reopened := NewFileStore(root)
-	got, err = reopened.UncommittedPaths(ctx, oldScope)
+	peer := peerReplica(store, root)
+	got, err = peer.UncommittedPaths(ctx, oldScope)
 	if err != nil {
 		t.Fatalf("UncommittedPaths after reopen: %v", err)
 	}
 	if want := []string{"package.json", "src/App.tsx", "src/theme.css"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("reopened paths = %v, want %v", got, want)
+		t.Fatalf("peer replica paths = %v, want %v", got, want)
 	}
-	got, err = reopened.UncommittedPaths(ctx, newScope)
+	got, err = peer.UncommittedPaths(ctx, newScope)
 	if err != nil {
 		t.Fatalf("UncommittedPaths recreated project: %v", err)
 	}
@@ -67,17 +66,17 @@ func TestFileStoreUncommittedPathsPersistUnionClearAndProjectUIDIsolation(t *tes
 		t.Fatalf("recreated project inherited paths: %v", got)
 	}
 
-	digest, err := reopened.WorkspaceDigest(ctx, oldScope, []string{"package.json", "src/App.tsx", "src/theme.css"})
+	digest, err := peer.WorkspaceDigest(ctx, oldScope, []string{"package.json", "src/App.tsx", "src/theme.css"})
 	if err != nil {
 		t.Fatalf("WorkspaceDigest for clear: %v", err)
 	}
-	if err := reopened.RecordCommitSettlement(ctx, oldScope, digest, []string{"package.json", "src/App.tsx", "src/theme.css"}); err != nil {
+	if err := peer.RecordCommitSettlement(ctx, oldScope, digest, []string{"package.json", "src/App.tsx", "src/theme.css"}); err != nil {
 		t.Fatalf("RecordCommitSettlement for clear: %v", err)
 	}
-	if reconciled, err := reopened.ReconcileCommitSettlement(ctx, oldScope); err != nil || !reconciled {
+	if reconciled, err := peer.ReconcileCommitSettlement(ctx, oldScope); err != nil || !reconciled {
 		t.Fatalf("ReconcileCommitSettlement for clear = %t, %v", reconciled, err)
 	}
-	got, err = reopened.UncommittedPaths(ctx, oldScope)
+	got, err = peer.UncommittedPaths(ctx, oldScope)
 	if err != nil {
 		t.Fatalf("UncommittedPaths after clear: %v", err)
 	}
@@ -140,13 +139,16 @@ func TestFileStoreSourceRevisionAdvancesForSourceMutationsOnly(t *testing.T) {
 	if got, _ := store.SourceRevision(ctx, scope); got != 4 {
 		t.Fatalf("revision after clearing dirty state = %d, want unchanged 4", got)
 	}
-	reopened := NewFileStore(store.Root())
-	if got, err := reopened.SourceRevision(ctx, scope); err != nil || got != 4 {
-		t.Fatalf("reopened source revision = %d, err=%v, want 4", got, err)
+	// A replica that has never seen this project's tree reads the same fence.
+	// That is the point of the ledger being control-plane state: before Cut
+	// D.3 this read 1, which is what let a moved project's syncs look stale.
+	peer := peerReplica(store, store.Root())
+	if got, err := peer.SourceRevision(ctx, scope); err != nil || got != 4 {
+		t.Fatalf("peer replica source revision = %d, err=%v, want 4", got, err)
 	}
 }
 
-func TestFileStoreCommitSettlementPersistsAndReconcilesAfterReopen(t *testing.T) {
+func TestFileStoreCommitSettlementIsVisibleToAnotherReplicaAndReconcilesThere(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	scope := Scope{
@@ -170,21 +172,19 @@ func TestFileStoreCommitSettlementPersistsAndReconcilesAfterReopen(t *testing.T)
 		t.Fatal(err)
 	}
 
-	reopened := NewFileStore(root)
-	_, settlementPath, err := reopened.commitSettlementPath(scope)
-	if err != nil {
+	// The receipt is on the project, not beside the tree, so a replica that
+	// only shares the tree sees it and can finish the settlement.
+	peer := peerReplica(store, root)
+	if _, _, ok, err := peer.PendingCommitSettlement(ctx, scope); err != nil || !ok {
+		t.Fatalf("settlement visible to peer = %t, err=%v", ok, err)
+	}
+	if reconciled, err := peer.ReconcileCommitSettlement(ctx, scope); err != nil || !reconciled {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(settlementPath); err != nil {
-		t.Fatalf("persisted settlement stat: %v", err)
+	if _, _, ok, err := peer.PendingCommitSettlement(ctx, scope); err != nil || ok {
+		t.Fatalf("settlement after reconcile = %t, err=%v, want cleared", ok, err)
 	}
-	if reconciled, err := reopened.ReconcileCommitSettlement(ctx, scope); err != nil || !reconciled {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(settlementPath); !os.IsNotExist(err) {
-		t.Fatalf("settlement after reconcile stat = %v, want removed", err)
-	}
-	got, err := reopened.UncommittedPaths(ctx, scope)
+	got, err := peer.UncommittedPaths(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,12 @@ func TestFileStoreCommitSettlementTracksDeletedPath(t *testing.T) {
 	}
 }
 
-func TestInitializeRepositorySourceSurvivesRestartAndDoesNotRequeueSettledFiles(t *testing.T) {
+// InitializeRepositorySource queues the whole working tree for the first
+// commit of a newly attached repository. Since §9 Cut D.3 it keeps no receipt
+// of its own — the receipt was a file on one replica's volume — so it is a
+// plain idempotent union, and what makes it once-only is the Project
+// annotation the reconciler clears (controller/project/commit.go).
+func TestInitializeRepositorySourceQueuesTheWholeTreeAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	store := NewFileStore(root)
@@ -291,33 +296,27 @@ func TestInitializeRepositorySourceSurvivesRestartAndDoesNotRequeueSettledFiles(
 	if err := store.ClearUncommittedPaths(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.InitializeRepositorySource(ctx, scope, "repo"); err != nil {
+	if err := store.InitializeRepositorySource(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	store = NewFileStore(root)
-	paths, err := store.UncommittedPaths(ctx, scope)
+	// Another replica sharing the ledger sees the queued tree.
+	peer := peerReplica(store, root)
+	paths, err := peer.UncommittedPaths(ctx, scope)
 	if err != nil || !reflect.DeepEqual(paths, []string{"app.txt"}) {
 		t.Fatalf("paths=%v err=%v", paths, err)
 	}
-	if err := store.ClearUncommittedPaths(ctx, scope); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "new.txt", Content: "later edit"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.AddUncommittedPaths(ctx, scope, []string{"new.txt"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.InitializeRepositorySource(ctx, scope, "repo"); err != nil {
+	// Running it again unions the same paths rather than duplicating them.
+	if err := store.InitializeRepositorySource(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
 	paths, err = store.UncommittedPaths(ctx, scope)
-	if err != nil || !reflect.DeepEqual(paths, []string{"new.txt"}) {
-		t.Fatalf("retry paths=%v err=%v", paths, err)
+	if err != nil || !reflect.DeepEqual(paths, []string{"app.txt"}) {
+		t.Fatalf("second pass paths=%v err=%v", paths, err)
 	}
+	// A recreated project is a different incarnation: its ledger is its own.
 	recreated := scope
 	recreated.ProjectUID = "new-uid"
-	if err := store.InitializeRepositorySource(ctx, recreated, "repo"); err != nil {
+	if err := store.InitializeRepositorySource(ctx, recreated); err != nil {
 		t.Fatal(err)
 	}
 	paths, err = store.UncommittedPaths(ctx, recreated)
@@ -326,6 +325,16 @@ func TestInitializeRepositorySourceSurvivesRestartAndDoesNotRequeueSettledFiles(
 	}
 	file, err := store.ReadFile(ctx, scope, ReadOptions{Path: "app.txt"})
 	if err != nil || file.Content != "before" {
-		t.Fatalf("restart lost source: %#v %v", file, err)
+		t.Fatalf("lost source: %#v %v", file, err)
 	}
+}
+
+// peerReplica returns a second FileStore over root sharing store's working-copy
+// ledger. That is exactly what a second App Studio replica is since §9 Cut D.3:
+// its own view of the tree, one control-plane ledger. These tests used to spell
+// it "reopened" and rely on the ledger being JSON the next process re-read.
+func peerReplica(store *FileStore, root string) *FileStore {
+	peer := NewFileStore(root)
+	peer.SetLedger(store.ledger)
+	return peer
 }

@@ -36,7 +36,7 @@ func TestProjectAssistantResearchPhraseRequested(t *testing.T) {
 		{"RESEARCH: swipe patterns", true},
 		{"do a deep reseach on docs page again", true},
 		{"resarch the competitors", true},
-		{"deep reserach please", true},
+		{"deep researhc please", true},
 		{"researh this", true},
 		{"run a few researches on pricing", true},
 		{"investigate the swipe UX market", true},
@@ -286,7 +286,7 @@ func (p *researchCapabilityDiscoveryPort) DiscoverMCP(context.Context, identity,
 }
 
 func TestProjectEinoAssistantRefreshToolDiscoveryActivatesResearchForSteeredMessage(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	port := &researchCapabilityDiscoveryPort{researchCapabilityFakePort{listAgentsResult: `{"agents":[{"name":"researcher","phase":"Ready"}]}`}}
 	req := projectAssistantRunRequest{
 		ToolPort:          port,

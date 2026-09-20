@@ -36,7 +36,7 @@ import (
 // acts as the resolving user (tenant client + edges token); the channel path
 // acts through the APIExport virtual workspace (no edges).
 type resumeDeps struct {
-	Creds         llm.SecretGetter
+	Creds         llm.CredentialResolver
 	CR            tools.CRAccess
 	EdgesEndpoint string
 	HubToken      string
@@ -134,7 +134,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	toolset, _, closeTools := s.buildToolset(ctx, tools.Deps{
 		Store: s.store, Scope: agentScope, Agent: agent, CR: rd.CR,
 		Secrets: rd.Creds, ConnSecretName: connectionSecretName, RunID: run.ID,
-		DataPlane: s.dataPlaneFor(tr),
+		DataPlane: s.dataPlaneFor(ctx, tr),
 	}, tr)
 	defer closeTools()
 
@@ -159,7 +159,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		CheckpointEvery:     checkpointEveryIterations,
 	}, approve, note, cb)
 	end := time.Now().UTC()
-	if err != nil {
+	// Same as a fresh run: a refusal about the model id names the credential
+	// to fix rather than reading like the resume broke.
+	if err = llm.ExplainChatCompletionsRefusal(err, credentialNameForPurpose(agent, llm.PurposeChat)); err != nil {
 		s.failResume(ctx, agentScope, run, err, tracker)
 		return
 	}
@@ -186,7 +188,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			stored.Checkpoint = ckJSON
 			stored.WorkedDurationMS = tracker.workedDurationMS()
 			stored.UpdatedAt = end
-			_ = s.store.SaveRun(ctx, agentScope, stored)
+			_ = s.saveRun(ctx, agentScope, stored)
 		}
 		s.appendTurnTerminal(ctx, agentScope, tr, run.SessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePendingApproval), "", "")
 		s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePendingApproval})

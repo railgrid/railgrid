@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { api, isContextChangedError, setTenant, setToken } from './api'
+import { api, isContextChangedError, setHostFetch, setTenant } from './api'
+import type { ProviderFetch } from './portalkit/tenant'
 
 const API_PREFIX = '/apis/infrastructure.railgrid.ai/v1alpha1'
 
@@ -144,13 +145,15 @@ function instanceList(items: unknown[], metadata: Record<string, unknown> = {}):
 }
 
 afterEach(() => {
+  // The host transport is module state: a test that installs one must not
+  // leave it in place for the next, which stubs the global fetch instead.
+  setHostFetch(null)
   vi.unstubAllGlobals()
 })
 describe('stable Instance API lifecycle contract', () => {
   it('hides platform-owned templates from the catalog but keeps direct lookup available', async () => {
     const tenant = 'platform-owned-catalog'
     setTenant(tenant)
-    setToken('platform-owned-token')
     const calls: KubeCall[] = []
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
@@ -173,7 +176,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('maps a missing template to TemplateNotFound and an unbound workspace to APIBindingMissing', async () => {
     const tenant = 'template-lookup-errors'
     setTenant(tenant)
-    setToken('template-lookup-token')
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
       if (isGet(req, tenant, 'templates') === 'missing') return namedNotFound('templates', 'missing')
@@ -190,7 +192,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('lists the stable Instances collection with UID/deletion metadata and identities', async () => {
     const tenant = 'list-contract'
     setTenant(tenant)
-    setToken('list-token')
     const calls: KubeCall[] = []
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
@@ -211,7 +212,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('exposes cursor pages and forwards only the requested continuation parameters', async () => {
     const tenant = 'instance-page-contract'
     setTenant(tenant)
-    setToken('instance-page-token')
     const first = instance()
     const second = instance({
       metadata: { ...instance().metadata, name: 'next', uid: 'next-uid' },
@@ -253,7 +253,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('cursor-walks all pages, preserves identities, and enriches only page-local view rows', async () => {
     const tenant = 'instance-page-walk'
     setTenant(tenant)
-    setToken('instance-page-walk-token')
     const first = instance()
     const second = instance({
       metadata: { ...instance().metadata, name: 'plain', uid: 'plain-uid', labels: { 'railgrid.ai/template': 'plain' } },
@@ -294,7 +293,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('walks identity pages without fetching templates or enriching off-page objects', async () => {
     const tenant = 'instance-identity-walk'
     setTenant(tenant)
-    setToken('instance-identity-walk-token')
     const calls: KubeCall[] = []
     const first = { metadata: { name: 'demo', uid: 'instance-uid' } }
     const second = { metadata: { name: 'next', uid: 'next-uid' } }
@@ -318,7 +316,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('reads an unbound workspace as an empty Instance list rather than an error', async () => {
     const tenant = 'instance-unbound'
     setTenant(tenant)
-    setToken('instance-unbound-token')
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
       if (isList(req, tenant, 'instances')) return typeNotFound()
@@ -332,7 +329,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('surfaces a forbidden Instance list as APIBindingMissing and other failures as HTTPError', async () => {
     const tenant = 'instance-list-errors'
     setTenant(tenant)
-    setToken('instance-list-errors-token')
     let status = 403
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
@@ -352,7 +348,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('rejects a repeated continuation token instead of returning partial list state', async () => {
     const tenant = 'instance-repeated-token'
     setTenant(tenant)
-    setToken('instance-repeated-token')
     let instanceListCalls = 0
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
@@ -371,7 +366,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('stops an unbounded cursor walk at the page safety cap', async () => {
     const tenant = 'instance-page-cap'
     setTenant(tenant)
-    setToken('instance-page-cap-token')
     let instanceListCalls = 0
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
@@ -400,7 +394,6 @@ describe('stable Instance API lifecycle contract', () => {
     for (const testCase of cases) {
       const tenant = `instance-malformed-${testCase.label}`
       setTenant(tenant)
-      setToken(`instance-malformed-${testCase.label}-token`)
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         if (isList(call(input, init), tenant, 'instances')) return testCase.body
         throw new Error('unexpected request')
@@ -417,7 +410,6 @@ describe('stable Instance API lifecycle contract', () => {
     ] as const) {
       const tenant = `instance-malformed-metadata-${label}`
       setTenant(tenant)
-      setToken(`instance-malformed-metadata-${label}-token`)
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         if (isList(call(input, init), tenant, 'instances')) return instanceList([instance()], metadata)
         throw new Error('unexpected request')
@@ -433,7 +425,6 @@ describe('stable Instance API lifecycle contract', () => {
     ] as const) {
       const itemTenant = `instance-malformed-item-${label}`
       setTenant(itemTenant)
-      setToken(`instance-malformed-item-${label}-token`)
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         if (isList(call(input, init), itemTenant, 'instances')) return instanceList([item])
         throw new Error('unexpected request')
@@ -445,7 +436,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('maps an already terminating Instance to Deleting without losing UID', async () => {
     const tenant = 'terminating'
     setTenant(tenant)
-    setToken('terminating-token')
     const terminating = instance({
       metadata: {
         uid: 'instance-uid',
@@ -473,7 +463,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('reads full detail metadata and values through a plain GET of the Instance', async () => {
     const tenant = 'detail-contract'
     setTenant(tenant)
-    setToken('detail-token')
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
       expect(req.method).toBe('GET')
@@ -493,7 +482,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('promotes the controller child-resource summary from status.children', async () => {
     const tenant = 'detail-children-contract'
     setTenant(tenant)
-    setToken('detail-children-token')
     const child = {
       apiVersion: 'apps/v1',
       kind: 'Deployment',
@@ -528,7 +516,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('does not let stale enrichment erase a deletion observed by the list', async () => {
     const tenant = 'stale-enrichment'
     setTenant(tenant)
-    setToken('stale-enrichment-token')
     const terminating = instance({
       metadata: {
         uid: 'instance-uid',
@@ -565,7 +552,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('does not merge same-name replacement data into the listed UID', async () => {
     const tenant = 'replacement-enrichment'
     setTenant(tenant)
-    setToken('replacement-enrichment-token')
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
       if (isList(req, tenant, 'instances')) return instanceList([instance()])
@@ -584,7 +570,6 @@ describe('stable Instance API lifecycle contract', () => {
 
   it('rejects a cursor page response after tenant authority changes', async () => {
     setTenant('old-page-authority')
-    setToken('old-page-token')
     let resolveFetch!: (response: Response) => void
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
       resolveFetch = resolve
@@ -599,7 +584,6 @@ describe('stable Instance API lifecycle contract', () => {
 
   it('rejects an in-flight response after tenant authority changes', async () => {
     setTenant('old-authority')
-    setToken('old-token')
     let resolveFetch!: (response: Response) => void
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
       resolveFetch = resolve
@@ -613,16 +597,18 @@ describe('stable Instance API lifecycle contract', () => {
     expect(isContextChangedError(new Error('unrelated'))).toBe(false)
   })
 
-  it('rejects an in-flight response after the caller re-authenticates', async () => {
-    setTenant('token-authority')
-    setToken('old-token')
+  // The bundle never sees the bearer, so re-authentication reaches it as a new
+  // host transport rather than a new token. It is still an authority change: a
+  // response fetched under the old one must not be committed.
+  it('rejects an in-flight response after the host swaps its transport', async () => {
+    setTenant('transport-authority')
     let resolveFetch!: (response: Response) => void
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
       resolveFetch = resolve
     })))
 
     const pending = api.getInstance('demo')
-    setToken('new-token')
+    setHostFetch(globalThis.fetch as ProviderFetch)
     resolveFetch(response(instance()))
 
     await expect(pending).rejects.toMatchObject({ reason: 'ContextChanged' })
@@ -630,7 +616,6 @@ describe('stable Instance API lifecycle contract', () => {
 
   it('refuses every read without a selected workspace', async () => {
     setTenant(null)
-    setToken('no-tenant-token')
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
 
@@ -643,7 +628,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('caches the template catalog per context and drops it when the context changes', async () => {
     const tenant = 'template-cache'
     setTenant(tenant)
-    setToken('template-cache-token')
     let templateLists = 0
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
@@ -663,7 +647,9 @@ describe('stable Instance API lifecycle contract', () => {
     await api.listInstancesPage()
     expect(templateLists).toBe(2)
 
-    setToken('template-cache-token-2')
+    // A new host transport is a new authority for the same tenant: template
+    // metadata is permissioned, so the cache must not survive it.
+    setHostFetch(globalThis.fetch as ProviderFetch)
     await api.listInstancesPage()
     expect(templateLists).toBe(3)
   })
@@ -671,7 +657,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('keeps createInstance on the server-side apply contract', async () => {
     const tenant = 'create-contract'
     setTenant(tenant)
-    setToken('create-token')
     let applied: KubeCall | undefined
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
@@ -698,7 +683,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('surfaces an unbound workspace on create as APIBindingMissing', async () => {
     const tenant = 'create-unbound'
     setTenant(tenant)
-    setToken('create-unbound-token')
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
       if (isList(req, tenant, 'templates')) return templateList()
@@ -715,7 +699,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('deletes through a plain DELETE of the named Instance', async () => {
     const tenant = 'delete-contract'
     setTenant(tenant)
-    setToken('delete-token')
     const calls: KubeCall[] = []
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
@@ -738,7 +721,6 @@ describe('stable Instance API lifecycle contract', () => {
   it('maps an exact stable Instance miss without hiding unrelated errors', async () => {
     const tenant = 'not-found'
     setTenant(tenant)
-    setToken('not-found-token')
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
       if (isGet(req, tenant, 'instances') === 'demo') return namedNotFound('instances', 'demo')

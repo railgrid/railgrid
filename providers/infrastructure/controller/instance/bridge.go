@@ -8,16 +8,24 @@
 
 package instance
 
-// Cross-cluster Secret bridging, carried over from the retired application
-// controller: the BYO OIDC client secret must land as a Secret beside the
-// oauth2-proxy pod on the runtime cluster WITHOUT sitting in the instance
-// values in clear text, and the per-instance registry pull Secret (minted
-// by App Studio at promote) must reach the runtime namespace's default
+// Cross-cluster Secret bridging: the BYO OIDC client secret must land as a
+// Secret beside the oauth2-proxy pod on the runtime cluster WITHOUT sitting in
+// the instance values in clear text, and the per-instance registry pull Secret
+// (minted by App Studio at promote) must reach the runtime namespace's default
 // ServiceAccount so production pods can pull the private image.
+//
+// Which tenant Secret each one is comes from a TYPED reference on the
+// Instance — spec.imagePullSecretRef and spec.oidcBridgeSecretRef — not from a
+// name this controller derives. The derived names ("<instance>-registry", the
+// well-known "cloud-credentials") coupled this provider to App Studio and to
+// every BYO tenant by a string nobody validated, which is finding M8 of
+// docs/provider-contract-review.md. A ref that names nothing is reported on
+// the Instance; it is never resolved by guessing.
 
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/kro"
 )
 
@@ -41,54 +50,79 @@ var (
 
 const (
 	// oidcClientSecretKey is the key the bridged Secret carries and the RGD's
-	// oauth2-proxy reads via secretKeyRef. BYO tenants put their client secret
-	// under this same key in their cloud-credentials Secret.
+	// oauth2-proxy reads via secretKeyRef. A BYO tenant puts their client
+	// secret under this key in the Secret spec.oidcBridgeSecretRef names.
 	oidcClientSecretKey = "oidc_client_secret"
 
-	// cloudCredentialsSecret is the well-known Secret a tenant maintains in
-	// their workspace; BYO mode reads oidcClientSecretKey out of it.
-	cloudCredentialsSecret = "cloud-credentials"
+	// dockerConfigKey is the key a kubernetes.io/dockerconfigjson Secret
+	// carries, and the only key the pull-secret bridge copies.
+	dockerConfigKey = ".dockerconfigjson"
 )
 
-// registryPullSecretName is the per-instance image-pull Secret: minted by App
-// Studio in the tenant workspace as "<instance>-registry" (dockerconfigjson)
-// and bridged under the same name into the runtime namespace.
-func registryPullSecretName(instance string) string { return instance + "-registry" }
+// runtimePullSecretName is the name the bridged pull Secret takes in the
+// RUNTIME namespace. That namespace belongs to this provider, so the name is
+// this provider's to choose and is derived from the instance; only the
+// TENANT-side name is a cross-provider fact, and that one comes from
+// spec.imagePullSecretRef.
+func runtimePullSecretName(instance string) string { return instance + "-registry" }
 
-// bridgeSecrets bridges whatever cross-cluster Secrets this instance needs:
-// the registry pull Secret whenever the tenant minted one, and the BYO OIDC
-// client secret when the exposure gate asked for it.
-func (c *Controller) bridgeSecrets(ctx context.Context, tenantClient client.Client, tenant string, inst *unstructured.Unstructured, bridgeOIDC bool) error {
-	hasPull, err := c.tenantHasPullSecret(ctx, tenantClient, inst.GetName())
-	if err != nil {
-		return fmt.Errorf("checking registry pull secret: %w", err)
-	}
-	if hasPull {
-		if err := c.bridgeRegistryPullSecret(ctx, tenantClient, tenant, inst.GetNamespace(), inst.GetName()); err != nil {
-			return fmt.Errorf("bridging registry pull secret: %w", err)
+// secretRefName reads a typed Secret reference off the Instance. An absent
+// ref, an absent name and a blank name are all "no reference".
+func secretRefName(inst *unstructured.Unstructured, field string) string {
+	name, _, _ := unstructured.NestedString(inst.Object, "spec", field, "name")
+	return strings.TrimSpace(name)
+}
+
+// bridgeSecrets bridges the cross-cluster Secrets this instance REFERENCES:
+// the registry pull Secret named by spec.imagePullSecretRef, and — when the
+// exposure gate asked for a BYO gate — the client secret named by
+// spec.oidcBridgeSecretRef.
+//
+// The returned condition is the Instance's SecretsBridged report. A reference
+// that names a Secret which does not exist, or which lacks the key the
+// reference is for, is a tenant-fixable configuration fault: it comes back as
+// a False condition, not an error, so the instance still converges and says
+// why rather than failing the whole reconcile in a retry loop.
+func (c *Controller) bridgeSecrets(ctx context.Context, tenantClient client.Client, tenant string, inst *unstructured.Unstructured, bridgeOIDC bool) (*conditionSpec, error) {
+	if pullRef := secretRefName(inst, "imagePullSecretRef"); pullRef != "" {
+		cond, err := c.bridgeRegistryPullSecret(ctx, tenantClient, tenant, inst.GetNamespace(), inst.GetName(), pullRef)
+		if err != nil || cond != nil {
+			return cond, err
 		}
 	}
 	if bridgeOIDC {
-		if err := c.bridgeBYOSecret(ctx, tenantClient, tenant, inst.GetNamespace(), inst.GetName()); err != nil {
-			return fmt.Errorf("bridging BYO OIDC client secret: %w", err)
+		oidcRef := secretRefName(inst, "oidcBridgeSecretRef")
+		if oidcRef == "" {
+			return secretsBridgedCondition(metav1.ConditionFalse, infrav1alpha1.ReasonBridgeSecretRefMissing,
+				"spec.values.oidc.mode is \"byo\" but spec.oidcBridgeSecretRef names no Secret — set it to the Secret in this workspace that holds your client secret under the key "+oidcClientSecretKey), nil
+		}
+		cond, err := c.bridgeBYOSecret(ctx, tenantClient, tenant, inst.GetNamespace(), inst.GetName(), oidcRef)
+		if err != nil || cond != nil {
+			return cond, err
 		}
 	}
-	return nil
+	return secretsBridgedCondition(metav1.ConditionTrue, infrav1alpha1.ReasonSecretsBridged, ""), nil
 }
 
-// bridgeBYOSecret reads oidc_client_secret out of the tenant's
-// cloud-credentials Secret and writes it into the runtime per-tenant
-// namespace as cloud-credentials-<name>, the name the RGD references.
-func (c *Controller) bridgeBYOSecret(ctx context.Context, tenantClient client.Client, tenant, srcNamespace, name string) error {
+// secretsBridgedCondition builds the Instance's SecretsBridged report.
+func secretsBridgedCondition(status metav1.ConditionStatus, reason, message string) *conditionSpec {
+	return &conditionSpec{condType: infrav1alpha1.ConditionInstanceSecretsBridged, status: status, reason: reason, message: message}
+}
+
+// bridgeBYOSecret reads oidc_client_secret out of the Secret
+// spec.oidcBridgeSecretRef names and writes it into the runtime per-tenant
+// namespace as cloud-credentials-<name>, the name the RGD references. A nil
+// condition means it was bridged.
+func (c *Controller) bridgeBYOSecret(ctx context.Context, tenantClient client.Client, tenant, srcNamespace, name, ref string) (*conditionSpec, error) {
 	src := &unstructured.Unstructured{}
 	src.SetGroupVersionKind(secretGVK)
-	key := types.NamespacedName{Namespace: c.cfg.CredentialsNamespace, Name: cloudCredentialsSecret}
+	key := types.NamespacedName{Namespace: c.cfg.CredentialsNamespace, Name: ref}
 	if err := tenantClient.Get(ctx, key, src); err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("tenant Secret %s/%s not found — create it with key %q before provisioning a BYO application",
-				c.cfg.CredentialsNamespace, cloudCredentialsSecret, oidcClientSecretKey)
+			return secretsBridgedCondition(metav1.ConditionFalse, infrav1alpha1.ReasonSecretRefNotFound,
+				fmt.Sprintf("spec.oidcBridgeSecretRef names Secret %s/%s, which does not exist", c.cfg.CredentialsNamespace, ref)), nil
 		}
-		return fmt.Errorf("reading tenant cloud-credentials: %w", err)
+		return nil, fmt.Errorf("reading OIDC bridge secret %s/%s: %w", c.cfg.CredentialsNamespace, ref, err)
 	}
 
 	// Secret.data values are base64 strings over the wire; pass them through
@@ -97,9 +131,13 @@ func (c *Controller) bridgeBYOSecret(ctx context.Context, tenantClient client.Cl
 	data, _, _ := unstructured.NestedStringMap(src.Object, "data")
 	encoded, ok := data[oidcClientSecretKey]
 	if !ok || encoded == "" {
-		return fmt.Errorf("tenant Secret %s/%s has no key %q", c.cfg.CredentialsNamespace, cloudCredentialsSecret, oidcClientSecretKey)
+		return secretsBridgedCondition(metav1.ConditionFalse, infrav1alpha1.ReasonSecretRefInvalid,
+			fmt.Sprintf("Secret %s/%s has no key %q", c.cfg.CredentialsNamespace, ref, oidcClientSecretKey)), nil
 	}
-	return c.writeBridgedSecret(ctx, tenant, srcNamespace, name, map[string]string{oidcClientSecretKey: encoded})
+	if err := c.writeBridgedSecret(ctx, tenant, srcNamespace, name, map[string]string{oidcClientSecretKey: encoded}); err != nil {
+		return nil, err
+	}
+	return nil, nil
 }
 
 // writeBridgedSecret upserts the per-instance Secret in the runtime per-tenant
@@ -162,49 +200,45 @@ func (c *Controller) deleteBridgedSecret(ctx context.Context, tenant, srcNamespa
 	return nil
 }
 
-// bridgeRegistryPullSecret reads the tenant's per-instance registry Secret
-// and, when present, bridges it into the runtime per-tenant namespace and
-// attaches it to that namespace's default ServiceAccount — so every pod
-// there can pull the private image, across all components and templates.
-func (c *Controller) bridgeRegistryPullSecret(ctx context.Context, tenantClient client.Client, tenant, srcNamespace, name string) error {
+// bridgeRegistryPullSecret reads the Secret spec.imagePullSecretRef names,
+// bridges it into the runtime per-tenant namespace and attaches it to that
+// namespace's default ServiceAccount — so every pod there can pull the
+// private image, across all components and templates. A nil condition means
+// it was bridged.
+//
+// A ref that names nothing is reported rather than ignored: an instance that
+// says it pulls from a private registry and silently does not is the failure
+// that shows up as ImagePullBackOff minutes later, on the runtime cluster the
+// tenant cannot see.
+func (c *Controller) bridgeRegistryPullSecret(ctx context.Context, tenantClient client.Client, tenant, srcNamespace, name, ref string) (*conditionSpec, error) {
 	src := &unstructured.Unstructured{}
 	src.SetGroupVersionKind(secretGVK)
-	key := types.NamespacedName{Namespace: c.cfg.CredentialsNamespace, Name: registryPullSecretName(name)}
+	key := types.NamespacedName{Namespace: c.cfg.CredentialsNamespace, Name: ref}
 	if err := tenantClient.Get(ctx, key, src); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil
+			return secretsBridgedCondition(metav1.ConditionFalse, infrav1alpha1.ReasonSecretRefNotFound,
+				fmt.Sprintf("spec.imagePullSecretRef names Secret %s/%s, which does not exist", c.cfg.CredentialsNamespace, ref)), nil
 		}
-		return fmt.Errorf("reading tenant registry secret: %w", err)
+		return nil, fmt.Errorf("reading image pull secret %s/%s: %w", c.cfg.CredentialsNamespace, ref, err)
 	}
 	// Secret .data is base64 over the wire; pass it through verbatim so the
 	// credential is never decoded into memory as plaintext.
 	data, _, _ := unstructured.NestedStringMap(src.Object, "data")
-	encoded, ok := data[".dockerconfigjson"]
+	encoded, ok := data[dockerConfigKey]
 	if !ok || encoded == "" {
-		return fmt.Errorf("tenant Secret %s/%s has no .dockerconfigjson", c.cfg.CredentialsNamespace, registryPullSecretName(name))
+		return secretsBridgedCondition(metav1.ConditionFalse, infrav1alpha1.ReasonSecretRefInvalid,
+			fmt.Sprintf("Secret %s/%s has no %s", c.cfg.CredentialsNamespace, ref, dockerConfigKey)), nil
 	}
 
 	ns := kro.RuntimeNamespace(tenant, srcNamespace)
-	secretName := registryPullSecretName(name)
+	secretName := runtimePullSecretName(name)
 	if err := c.writeRuntimePullSecret(ctx, ns, tenant, secretName, encoded); err != nil {
-		return err
+		return nil, err
 	}
-	return c.ensureDefaultSAImagePullSecret(ctx, ns, secretName)
-}
-
-// tenantHasPullSecret reports whether the tenant minted an "<instance>-registry"
-// Secret (i.e. the instance was promoted with a private image).
-func (c *Controller) tenantHasPullSecret(ctx context.Context, tenantClient client.Client, name string) (bool, error) {
-	src := &unstructured.Unstructured{}
-	src.SetGroupVersionKind(secretGVK)
-	err := tenantClient.Get(ctx, types.NamespacedName{Namespace: c.cfg.CredentialsNamespace, Name: registryPullSecretName(name)}, src)
-	if apierrors.IsNotFound(err) {
-		return false, nil
+	if err := c.ensureDefaultSAImagePullSecret(ctx, ns, secretName); err != nil {
+		return nil, err
 	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return nil, nil
 }
 
 // cleanupRegistryPullSecret removes the bridged pull Secret and detaches it from
@@ -212,7 +246,7 @@ func (c *Controller) tenantHasPullSecret(ctx context.Context, tenantClient clien
 // (the namespace may already be gone).
 func (c *Controller) cleanupRegistryPullSecret(ctx context.Context, tenant, srcNamespace, name string) error {
 	ns := kro.RuntimeNamespace(tenant, srcNamespace)
-	secretName := registryPullSecretName(name)
+	secretName := runtimePullSecretName(name)
 	if err := c.cfg.Runtime.Resource(secretGVR).Namespace(ns).Delete(ctx, secretName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete runtime pull secret: %w", err)
 	}

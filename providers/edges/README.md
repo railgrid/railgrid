@@ -1,8 +1,9 @@
 # edges provider
 
-Connectivity core for railgrid. Owns `edges.railgrid.ai`: `KubernetesCluster` and
-`LinuxServer` edges, the agent reverse tunnel, `Service` connectors, and
-`Workload` / `Placement` scheduling.
+Connectivity core for railgrid. Owns `edges.railgrid.ai` and its seven kinds:
+the `KubernetesCluster`, `LinuxServer` and `MacOSServer` edges, the agent
+reverse tunnel, `Service` connectors, `Workload` / `Placement` scheduling, and
+`Addon` for per-edge add-on installs.
 
 An **edge** is a cluster or host you connect to railgrid. The agent you install
 there dials *out* to the platform and holds open a WebSocket reverse tunnel
@@ -87,11 +88,24 @@ spec:
 
 ## Scaling
 
-The provider is horizontally scalable. Each agent holds exactly one control
+The provider is horizontally scalable, and the two planes scale differently.
+
+**Tunnel and data plane: every replica.** Each agent holds exactly one control
 connection; the replica that terminates it claims ownership in a `Lease`, and
 any other replica receiving a request relays it to the owner over a pod-to-pod
 internal port that is deliberately not on the Service. Agents treat the pickup
-path as opaque, so scaling needs no agent change.
+path as opaque, so scaling needs no agent change. The tenant-config resolver
+the tunnel needs (the provider's APIExport virtual workspace, engaged per
+tenant logical cluster) is a controller-free multicluster manager that runs on
+every replica and only ever reads.
+
+**Reconcilers: the leader only.** The token/RBAC/lifecycle/version
+reconcilers, the Workload scheduler and status aggregator, the Service
+discovery/validation reconcilers and the Addon publisher run under a `Lease`
+(`edges-controllers`, `default` namespace of the provider workspace) and are
+rebuilt on each leadership term, so every tenant CR has exactly one writer.
+A replica that is not leader keeps serving the tunnel, the data plane, MCP and
+the portal; `/readyz` reports the leader's watch state while it leads.
 
 ## Self-hosting
 

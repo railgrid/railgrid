@@ -361,7 +361,7 @@ func TestProjectEinoAssistantToolSearchReducesSchemasAndLoadsSelectedCapability(
 	legacyState.SetToolDiscovery(discovery)
 	legacyLifecycle := projectEinoAssistantLifecycleMiddleware(h.req, legacyState, h.server).(*projectEinoAssistantLifecycle)
 	legacyModel := &adk.ChatModelAgentState{}
-	if err := legacyLifecycle.refreshExecutableToolContext(context.Background(), legacyModel, &adk.ModelContext{}); err != nil {
+	if err := legacyLifecycle.refreshExecutableToolContext(context.Background(), legacyModel); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectEinoAssistantToolInfoPresence(t, legacyModel.ToolInfos, "mcp_database_query", true)
@@ -375,7 +375,7 @@ func TestProjectEinoAssistantToolSearchReducesSchemasAndLoadsSelectedCapability(
 	pocState.SetToolDiscovery(discovery)
 	pocLifecycle := projectEinoAssistantLifecycleMiddleware(h.req, pocState, h.server).(*projectEinoAssistantLifecycle)
 	pocModel := &adk.ChatModelAgentState{}
-	if err := pocLifecycle.refreshExecutableToolContext(context.Background(), pocModel, &adk.ModelContext{}); err != nil {
+	if err := pocLifecycle.refreshExecutableToolContext(context.Background(), pocModel); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectEinoAssistantToolInfoPresence(t, pocModel.ToolInfos, "mcp_database_query", false)
@@ -398,7 +398,7 @@ func TestProjectEinoAssistantToolSearchReducesSchemasAndLoadsSelectedCapability(
 	if err := pocState.ApplyDynamicToolSearchResult(string(result)); err != nil {
 		t.Fatal(err)
 	}
-	if err := pocLifecycle.refreshExecutableToolContext(context.Background(), pocModel, &adk.ModelContext{}); err != nil {
+	if err := pocLifecycle.refreshExecutableToolContext(context.Background(), pocModel); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectEinoAssistantToolInfoPresence(t, pocModel.ToolInfos, "mcp_database_query", true)
@@ -415,7 +415,7 @@ func TestProjectEinoAssistantToolSearchReducesSchemasAndLoadsSelectedCapability(
 	if err := pocState.ApplyDynamicToolSearchResult(string(commitResult)); err != nil {
 		t.Fatal(err)
 	}
-	if err := pocLifecycle.refreshExecutableToolContext(context.Background(), pocModel, &adk.ModelContext{}); err != nil {
+	if err := pocLifecycle.refreshExecutableToolContext(context.Background(), pocModel); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectEinoAssistantToolInfoPresence(t, pocModel.ToolInfos, projectToolCommitProjectFiles, true)

@@ -27,8 +27,10 @@ spec:
         # APIExportEndpointSlice, bind grant) using the SAME workspace-admin
         # kubeconfig the serve container runs with. The kubeconfig is minted by
         # the platform admin via /bonkers (admin onboarding) and supplied as the
-        # providerKubeconfig Secret. Schemas are baked into the image at
-        # /etc/railgrid/schemas (see Dockerfile). Idempotent.
+        # providerKubeconfig Secret. The two declarative objects init applies —
+        # the generated APIExport and the APIResourceSchemas it references — are
+        # baked into the image at /etc/railgrid/kcp (see Dockerfile) and applied
+        # verbatim. Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -36,8 +38,8 @@ spec:
           env:
             - name: RAILGRID_PROVIDER_KUBECONFIG
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
-            - name: RAILGRID_SCHEMAS_DIR
-              value: /etc/railgrid/schemas
+            - name: RAILGRID_KCP_DIR
+              value: /etc/railgrid/kcp
             {{- if .Values.catalogEntry.enabled }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)

@@ -20,7 +20,7 @@ import (
 // provider's data plane, exactly like a self-hosted search connection — the
 // user names the instance, never a URL carrying a cluster ID.
 func TestConnectMCPInstanceAddressing(t *testing.T) {
-	dp := DataPlane{HubBase: "https://hub.example.com/", ClusterID: "23qp2e0jwjeqwp2i", Token: "user-token"}
+	dp := DataPlane{HubBase: "https://hub.example.com/", ClusterID: "23qp2e0jwjeqwp2i", Token: "user-token", Provider: "infrastructure"}
 
 	t.Run("composes the verb root and appends nothing", func(t *testing.T) {
 		// The browser template pins /mcp as the endpoint's upstreamPath, so the

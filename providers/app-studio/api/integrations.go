@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -31,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 const (
@@ -622,23 +622,30 @@ type projectProviderActionInvokeRequest struct {
 	Input json.RawMessage `json:"input"`
 }
 
-// providerActionInvokeURL composes the data-plane action route on the target
-// provider's embedded virtual workspace, reached through the hub backend
-// proxy. The URL is the resource reference — cluster ID, resource, name, and
-// verb all live in the path, so the provider authorizes exactly what was
-// addressed and no identity travels in the body.
+// providerActionInvokeURL composes the action route on the target provider,
+// reached through the hub backend proxy. The URL is the resource reference —
+// cluster ID, resource, name, action and contract version all live in the
+// path, so the provider authorizes exactly what was addressed and no identity
+// travels in the body.
+//
+// provider is the name the tenant's own providerReference binding carries:
+// the integration was declared against a provider this workspace enabled, so
+// the coordinate comes from the Project CR, never from a constant here. The
+// path itself is rendered by dataplane.ProviderPath, the inverse of the
+// parser the serving provider uses, which is what keeps one spelling of the
+// grammar in the tree (cross-provider-simplification X-8).
 func providerActionInvokeURL(hubBase, provider, clusterID string, ref *aiv1alpha1.ProjectProviderResourceReference, action, version string) (string, error) {
-	for field, value := range map[string]string{
-		"provider": provider, "cluster": clusterID, "resource": ref.Resource, "resource name": ref.Name,
-		"action": action, "version": version,
-	} {
-		value = strings.TrimSpace(value)
-		if value == "" || value == "." || value == ".." || url.PathEscape(value) != value {
-			return "", fmt.Errorf("provider action %s is not path-safe", field)
-		}
+	route, err := dataplane.ProviderPath(provider, dataplane.ActionsRoot, dataplane.Request{
+		ClusterID: clusterID,
+		Resource:  strings.TrimSpace(ref.Resource),
+		Name:      strings.TrimSpace(ref.Name),
+		Verb:      strings.TrimSpace(action),
+		Version:   strings.TrimSpace(version),
+	})
+	if err != nil {
+		return "", fmt.Errorf("provider action %s/%s on %s/%s is not addressable: %w", action, version, ref.Resource, ref.Name, err)
 	}
-	return strings.TrimRight(hubBase, "/") + "/services/providers/" + provider +
-		"/actions/clusters/" + clusterID + "/" + ref.Resource + "/" + ref.Name + "/" + action + "/" + version, nil
+	return strings.TrimRight(hubBase, "/") + route, nil
 }
 
 func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, provider, action, version, schemaDigest string, ref *aiv1alpha1.ProjectProviderResourceReference, input json.RawMessage) (int, projectProviderActionEnvelope, error) {

@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,10 +36,6 @@ import (
 // APIExportName is the provider's APIExport (manifest.yaml spec.apiExport.name).
 const APIExportName = "infrastructure.providers.railgrid.ai"
 
-// requeueInterval re-runs each CR's reconcile periodically so the bootstrap +
-// kro release + serve Deployment self-heal even without a spec change.
-const requeueInterval = 2 * time.Minute
-
 // Reconciler reconciles InfrastructureProvider CRs.
 type Reconciler struct {
 	// Client reads CRs + referenced Secrets from the cluster the operator runs
@@ -54,6 +49,11 @@ type Reconciler struct {
 	// The operator applies it to the provider workspace (ui/backend URLs pointed
 	// at the serve Service) so the provider self-registers in the catalog.
 	CatalogEntryManifest []byte
+
+	// kcp watches the objects this reconciler applies into each CR's provider
+	// workspace (kcpwatch.go), so an edit or a delete there brings the CR back
+	// through Reconcile. Set by SetupWithManager; nil disables the watches.
+	kcp *kcpWatcher
 }
 
 // Reconcile drives one CR to its desired state.
@@ -62,7 +62,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	var cr v1alpha1.InfrastructureProvider
 	if err := r.Client.Get(ctx, req.NamespacedName, &cr); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			r.kcp.forget(req.NamespacedName)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
 	}
 	applyDefaults(&cr)
 	if err := validateCodingSandboxConfig(cr.Spec); err != nil {
@@ -132,6 +136,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	setCond(&cr, v1alpha1.ConditionBootstrapped, metav1.ConditionTrue, "Bootstrapped", "provider workspace reconciled")
 
+	// The workspace now has the kinds to watch. From here on, an edit or a
+	// delete of the CatalogEntry or a seed Template enqueues this CR — which is
+	// what replaces re-applying them on a tick.
+	if err := r.kcp.ensure(ctx, req.NamespacedName, providerCfg); err != nil {
+		return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "ProviderWorkspaceWatchFailed", err)
+	}
+
 	// 2. kro: ensure namespace, then helm release. kro runs single-cluster
 	// against the runtime cluster now (the instance controller bridges kcp →
 	// runtime), so no kcp-kubeconfig Secret is seeded — the runtime cluster
@@ -191,20 +202,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Client.Status().Update(ctx, &cr); err != nil {
 		log.Info("status update failed", "err", err.Error())
 	}
-	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	// Converged. Nothing is requeued: a change to the CR or to one of its
+	// Secrets arrives on the host cluster's watches, and a change to what this
+	// reconcile applied into the provider workspace arrives on the workspace
+	// watches registered above.
+	return ctrl.Result{}, nil
 }
 
-// fail records a failure condition + Error phase and requeues.
+// fail records a failure condition + Error phase and returns the cause, so
+// controller-runtime retries with its exponential backoff. The steps that fail
+// here are the ones nothing can watch — the kcp bootstrap, the kro helm release
+// and the serve rollout — and backing off a failed call is the second
+// sanctioned requeue in docs/provider-connectivity-contract.md § "Pillar 1
+// carve-outs". A fixed interval would be the third thing it forbids.
 func (r *Reconciler) fail(ctx context.Context, cr *v1alpha1.InfrastructureProvider, condType, reason string, cause error) (ctrl.Result, error) {
 	cause = withRuntimeAccessHint(condType, cause)
-	klog.FromContext(ctx).Error(cause, "reconcile step failed", "condition", condType, "reason", reason)
 	setCond(cr, condType, metav1.ConditionFalse, reason, cause.Error())
 	cr.Status.Phase = "Error"
 	cr.Status.ObservedGeneration = cr.Generation
 	if err := r.Client.Status().Update(ctx, cr); err != nil {
 		klog.FromContext(ctx).Info("status update failed", "err", err.Error())
 	}
-	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	return ctrl.Result{}, fmt.Errorf("%s/%s: %w", condType, reason, cause)
 }
 
 // runtimeAccessHint is appended to forbidden errors from the runtime-cluster
@@ -246,12 +265,22 @@ func (r *Reconciler) secretValue(ctx context.Context, ns string, ref v1alpha1.Se
 	return v, nil
 }
 
-// SetupWithManager registers the reconciler.
-func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+// SetupWithManager registers the reconciler on the host cluster: the CRs
+// themselves and the kubeconfig/token Secrets they reference. The objects on
+// the far side of the seam — the CatalogEntry and seed Templates in each CR's
+// own kcp workspace — are watched per CR once its kubeconfig resolves
+// (kcpwatch.go), which needs the controller handle, so this builds rather than
+// completes. ctx bounds those workspace caches.
+func (r *Reconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+	c, err := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.InfrastructureProvider{}).
 		Owns(&corev1.Secret{}).
-		Complete(r)
+		Build(r)
+	if err != nil {
+		return err
+	}
+	r.kcp = newKCPWatcher(ctx, c)
+	return nil
 }
 
 // Run builds a manager on the supplied config (the cluster the CRs live in) and
@@ -284,7 +313,7 @@ func Run(ctx context.Context, cfg *rest.Config, catalogEntryManifest []byte) err
 	if err != nil {
 		return fmt.Errorf("manager.New: %w", err)
 	}
-	if err := (&Reconciler{Client: mgr.GetClient(), RestConfig: cfg, CatalogEntryManifest: catalogEntryManifest}).SetupWithManager(mgr); err != nil {
+	if err := (&Reconciler{Client: mgr.GetClient(), RestConfig: cfg, CatalogEntryManifest: catalogEntryManifest}).SetupWithManager(ctx, mgr); err != nil {
 		return fmt.Errorf("setup reconciler: %w", err)
 	}
 	klog.FromContext(ctx).Info("infrastructure operator manager starting")

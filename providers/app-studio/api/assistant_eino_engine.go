@@ -1267,9 +1267,7 @@ func projectEinoAssistantInputMessages(ctx context.Context, req projectAssistant
 		return nil, err
 	}
 	input := make([]adk.Message, 0, len(messages))
-	for _, msg := range messages {
-		input = append(input, msg)
-	}
+	input = append(input, messages...)
 	return input, nil
 }
 

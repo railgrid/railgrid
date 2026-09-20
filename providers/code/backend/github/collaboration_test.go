@@ -9,11 +9,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	gh "github.com/google/go-github/v66/github"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	gh "github.com/google/go-github/v66/github"
 
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"

@@ -88,7 +88,10 @@ func projectThumbnailRequestMatches(left, right *projectThumbnailCaptureRequest)
 }
 
 func projectThumbnailCaptureKey(id identity, project *aiv1alpha1.Project) string {
-	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
+	return projectThumbnailCaptureKeyForScope(projectMessageScope(id.orgUUID, id.workspaceUUID, project))
+}
+
+func projectThumbnailCaptureKeyForScope(scope store.Scope) string {
 	return fmt.Sprintf("%s/%s/%s/%s", scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID)
 }
 
@@ -208,11 +211,14 @@ func (s *Server) projectThumbnailWorker(ctx context.Context, queue <-chan string
 	}
 }
 
-func (s *Server) forgetProjectThumbnailCapture(id identity, project *aiv1alpha1.Project) {
-	if s == nil || project == nil {
+// forgetProjectThumbnailCaptureScope drops a project's pending capture and
+// its failure record. It is called when the project is deleted: the entries
+// are keyed by project and nothing else evicts them.
+func (s *Server) forgetProjectThumbnailCaptureScope(scope store.Scope) {
+	if s == nil {
 		return
 	}
-	key := projectThumbnailCaptureKey(id, project)
+	key := projectThumbnailCaptureKeyForScope(scope)
 	s.mu.Lock()
 	delete(s.projectThumbnailCaptures, key)
 	delete(s.projectThumbnailFailures, key)

@@ -9,18 +9,16 @@
 package main
 
 import (
+	"bytes"
 	"embed"
-	"errors"
-	"io"
 	"io/fs"
-	"log"
-	"mime"
-	"net/http"
-	"path"
 	"strings"
+	"time"
+
+	"github.com/railgrid/provider-kuery/queryapi"
 )
 
-// portalFS embeds the Vite build output. The portal/ subdirectory holds a
+// portalFSEmbed embeds the Vite build output. The portal/ subdirectory holds a
 // standalone npm project (Vite + TypeScript); see portal/README.md.
 //
 // `all:` so dotfiles (.gitkeep) are bundled too — without that the embed
@@ -30,46 +28,63 @@ import (
 // before `go build`; the Makefile target chains the two.
 //
 //go:embed all:portal/dist
-var portalFS embed.FS
+var portalFSEmbed embed.FS
 
-// portalHandler serves portal/dist as static files. Returns the served
-// http.Handler and a sub-FS rooted at the dist directory so the index
-// fallback at "/" can read index.html without the "portal/dist/" prefix.
-func portalHandler() (http.Handler, fs.FS, error) {
-	distFS, err := fs.Sub(portalFS, "portal/dist")
+// portalFS returns the embedded bundle rooted at the dist directory, with the
+// QuerySpec JSON Schema overlaid onto it as a file.
+//
+// The schema is a static asset beside the bundle, not a route of its own: the
+// provider's closed route list has no class for "one more JSON document"
+// (docs/provider-connectivity-contract.md §"Pillar 2 route classes"), and the
+// hub's UI proxy already routes any path whose last segment contains a "." to
+// this binary, so /query-schema.json reaches the browser exactly like
+// cytoscape.min.js does. Overlaying it from the Go constant rather than
+// copying it into portal/public keeps one source of truth: the bytes the
+// savedview reconciler validates against are the bytes the editor completes
+// from.
+func portalFS() (fs.FS, error) {
+	dist, err := fs.Sub(portalFSEmbed, "portal/dist")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return http.FileServer(http.FS(distFS)), distFS, nil
+	return overlayFS{
+		FS:   dist,
+		name: strings.TrimPrefix(queryapi.SchemaPath, "/"),
+		data: []byte(queryapi.QuerySpecSchema),
+	}, nil
 }
 
-// servePortalAsset writes the file at name from distFS to w. Returns false
-// (and writes nothing) if the file isn't present, letting the caller fall
-// through to its own handling — typically the index fallback. Content-Type
-// is set from the path extension because http.FileServer's auto-sniff
-// doesn't apply when we're reading bytes ourselves.
-func servePortalAsset(w http.ResponseWriter, _ *http.Request, distFS fs.FS, name string) bool {
-	name = strings.TrimPrefix(name, "/")
-	if name == "" {
-		return false
-	}
-	f, err := distFS.Open(name)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("portal asset %s: %v", name, err)
-		}
-		return false
-	}
-	defer f.Close()
-
-	ct := mime.TypeByExtension(path.Ext(name))
-	if ct == "" {
-		ct = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "no-cache")
-	if _, err := io.Copy(w, f); err != nil {
-		log.Printf("portal asset %s write: %v", name, err)
-	}
-	return true
+// overlayFS serves one in-memory file in front of another fs.FS.
+type overlayFS struct {
+	fs.FS
+	name string
+	data []byte
 }
+
+func (o overlayFS) Open(name string) (fs.File, error) {
+	if name == o.name {
+		return &memFile{name: name, Reader: bytes.NewReader(o.data)}, nil
+	}
+	return o.FS.Open(name) //nolint:wrapcheck // pass the fs error through, including fs.ErrNotExist
+}
+
+// memFile is the overlaid file. Read comes from the embedded bytes.Reader.
+type memFile struct {
+	name string
+	*bytes.Reader
+}
+
+func (f *memFile) Stat() (fs.FileInfo, error) { return memInfo{name: f.name, size: f.Size()}, nil }
+func (f *memFile) Close() error               { return nil }
+
+type memInfo struct {
+	name string
+	size int64
+}
+
+func (i memInfo) Name() string       { return i.name }
+func (i memInfo) Size() int64        { return i.size }
+func (i memInfo) Mode() fs.FileMode  { return 0o444 }
+func (i memInfo) ModTime() time.Time { return time.Time{} }
+func (i memInfo) IsDir() bool        { return false }
+func (i memInfo) Sys() any           { return nil }

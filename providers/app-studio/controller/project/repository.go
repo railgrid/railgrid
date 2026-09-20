@@ -38,7 +38,11 @@ const projectRepositoryUIDAnnotation = "app-studio.ai.railgrid.ai/project-uid"
 // object (nil right after creation). Adopted repositories are NEVER
 // (re)created — the user imported an existing repo and its CR lifecycle is
 // theirs. Repositories are also deliberately NOT deleted on Project delete —
-// they hold user code; deletion only releases the claim (handler-side).
+// they hold user code; deletion only releases the claim (handler-side), which
+// is why the declared composition on repositories carries no delete.
+//
+// c is the tenant-workspace client, as the project identity: a Repository
+// belongs to the Code provider the WORKSPACE bound, whichever copy that is.
 func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *aiv1alpha1.Project) (*unstructured.Unstructured, error) {
 	b := p.Spec.Repository
 	if b == nil || strings.TrimSpace(b.RepositoryRef) == "" {

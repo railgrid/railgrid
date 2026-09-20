@@ -34,7 +34,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
-	corev1typed "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 )
 
@@ -122,15 +121,6 @@ type ProviderResourceScope struct {
 	Actions []string
 }
 
-// WorkloadIdentityToken is the short-lived capability returned by
-// EnsureWorkloadIdentity. ServiceAccountName is diagnostic metadata only; the
-// token is the sole credential returned to the caller.
-type WorkloadIdentityToken struct {
-	Token              string
-	ExpiresAt          time.Time
-	ServiceAccountName string
-}
-
 // WorkloadServiceAccountName returns the stable, DNS-safe ServiceAccount name
 // for a verified identity tuple. It is intentionally hash-only: tenant and
 // project names can contain information that should not be reflected in
@@ -152,57 +142,38 @@ func WorkloadIdentityRoleName(serviceAccountName string) string {
 	return serviceAccountName + workloadIdentityRoleSuffix
 }
 
-// EnsureWorkloadIdentity creates or reconciles the narrowly scoped workload
-// ServiceAccount and its GET-only RBAC, then mints a fresh audience-bound
-// TokenRequest. It deliberately does not call Create/IssueToken: those APIs
-// retain their legacy human-managed semantics and cluster-admin binding.
-func (m *Manager) EnsureWorkloadIdentity(ctx context.Context, orgUUID, wsUUID string, scope WorkloadIdentityScope) (*WorkloadIdentityToken, error) {
-	if err := validateWorkloadScope(scope); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(orgUUID) == "" || strings.TrimSpace(wsUUID) == "" {
-		return nil, fmt.Errorf("orgUUID and wsUUID are required")
-	}
-
-	cs, err := m.clientset(orgUUID, wsUUID)
-	if err != nil {
-		return nil, err
-	}
-
+// WorkloadIdentityShape returns the minter shape for a verified workload
+// scope: its deterministic name, its identity annotations, and the GET-only
+// Project/provider-resource rules derived from the Project environment.
+//
+// It is exported because the hub identity service drives BOTH attestation
+// modes through one minter (scoped_identity.go): this function is the
+// workload mode's shape, and nothing else computes it.
+func WorkloadIdentityShape(scope WorkloadIdentityScope) ScopedIdentityShape {
 	name := WorkloadServiceAccountName(scope)
-	_, err = ensureWorkloadServiceAccount(ctx, cs, name, scope)
-	if err != nil {
-		return nil, err
+	return ScopedIdentityShape{
+		ServiceAccount: name,
+		Annotations:    workloadIdentityAnnotations(scope),
+		// The five identity annotations are immutable for the account's
+		// lifetime; the scope marker is not, because it tracks the CURRENT
+		// grants and must follow an added, revoked or reactivated integration
+		// rather than bricking the runtime identity.
+		ImmutableAnnotations: []string{
+			AnnotationWorkloadIdentityTenantPath,
+			AnnotationWorkloadIdentityProject,
+			AnnotationWorkloadIdentityProjectUID,
+			AnnotationWorkloadIdentityEnvironment,
+			AnnotationWorkloadIdentityInstance,
+		},
+		Rules:    workloadIdentityRules(scope),
+		TokenTTL: WorkloadIdentityTokenTTL,
 	}
-	if err := ensureWorkloadRBAC(ctx, cs, name, scope); err != nil {
-		return nil, err
-	}
-
-	expirationSeconds := int64(WorkloadIdentityTokenTTL / time.Second)
-	request := &authnv1.TokenRequest{Spec: authnv1.TokenRequestSpec{
-		Audiences:         []string{WorkloadIdentityTokenAudience},
-		ExpirationSeconds: &expirationSeconds,
-	}}
-	issued, err := cs.CoreV1().ServiceAccounts(Namespace).CreateToken(ctx, name, request, metav1.CreateOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("issuing workload identity token: %w", err)
-	}
-	if strings.TrimSpace(issued.Status.Token) == "" || issued.Status.ExpirationTimestamp.IsZero() {
-		return nil, fmt.Errorf("workload identity token response was incomplete")
-	}
-	// A misbehaving API server must not turn this path into a longer-lived
-	// credential than policy allows. A shorter expiration is valid because
-	// cluster admission may cap TokenRequest TTLs.
-	if issued.Status.ExpirationTimestamp.After(time.Now().Add(WorkloadIdentityTokenTTL + time.Second)) {
-		return nil, fmt.Errorf("workload identity token exceeds maximum lifetime")
-	}
-
-	return &WorkloadIdentityToken{
-		Token:              issued.Status.Token,
-		ExpiresAt:          issued.Status.ExpirationTimestamp.Time,
-		ServiceAccountName: name,
-	}, nil
 }
+
+// There is deliberately no Manager.EnsureWorkloadIdentity any more. Minting a
+// workload identity without RECORDING it is exactly what left workload
+// identities uncollected, so the only way to obtain one is through
+// pkg/hub/identity's EnsureWorkload, which writes the ScopedIdentity first.
 
 // VerifyWorkloadServiceAccount performs online TokenReview validation in the
 // selected child workspace and verifies that the reviewed ServiceAccount is a
@@ -256,7 +227,10 @@ func VerifyWorkloadServiceAccountDetails(ctx context.Context, cfg *rest.Config, 
 	return review.Status.User.Username, sa, nil
 }
 
-func validateWorkloadScope(scope WorkloadIdentityScope) error {
+// ValidateWorkloadScope rejects a scope whose tuple is incomplete or whose
+// provider resources carry wildcards or malformed action names, so an RBAC
+// rule is never materialized from a shape the policy would not admit.
+func ValidateWorkloadScope(scope WorkloadIdentityScope) error {
 	for name, value := range map[string]string{
 		"tenantPath":  scope.TenantPath,
 		"project":     scope.Project,
@@ -293,42 +267,6 @@ func validateWorkloadScope(scope WorkloadIdentityScope) error {
 // workloadActionNameRE matches the name half of a CatalogEntry action ID
 // (the ID grammar is name/vN; RBAC carries the name only).
 var workloadActionNameRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
-
-func ensureWorkloadServiceAccount(ctx context.Context, cs kubernetes.Interface, name string, scope WorkloadIdentityScope) (*corev1.ServiceAccount, error) {
-	sas := cs.CoreV1().ServiceAccounts(Namespace)
-	sa, err := sas.Get(ctx, name, metav1.GetOptions{})
-	wantAnnotations := workloadIdentityAnnotations(scope)
-	if apierrors.IsNotFound(err) {
-		sa, err = sas.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   Namespace,
-			Labels:      map[string]string{LabelWorkloadIdentity: "true"},
-			Annotations: wantAnnotations,
-		}}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return nil, fmt.Errorf("creating workload ServiceAccount: %w", err)
-		}
-		if err == nil {
-			return sa, nil
-		}
-		sa, err = sas.Get(ctx, name, metav1.GetOptions{})
-	}
-	if err != nil {
-		return nil, fmt.Errorf("getting workload ServiceAccount: %w", err)
-	}
-	// The identity of the ServiceAccount is the five-field tuple (which also
-	// determines its hashed name). The scope marker, by contrast, is a
-	// snapshot of the CURRENT grants — it changes whenever an integration is
-	// added, revoked, or reactivated, and must reconcile on re-exchange so a
-	// grant change never bricks the runtime identity.
-	if sa.Labels[LabelWorkloadIdentity] != "true" || sa.Annotations[AnnotationWorkloadIdentityTenantPath] != wantAnnotations[AnnotationWorkloadIdentityTenantPath] {
-		return nil, fmt.Errorf("ServiceAccount %q is already bound to a different workload identity", name)
-	}
-	if err := reconcileWorkloadIdentityAnnotations(ctx, sas, sa, wantAnnotations); err != nil {
-		return nil, err
-	}
-	return sa, nil
-}
 
 func workloadIdentityAnnotations(scope WorkloadIdentityScope) map[string]string {
 	return map[string]string{
@@ -383,35 +321,13 @@ func verifyWorkloadServiceAccountAnnotations(ctx context.Context, sa *corev1.Ser
 	return nil
 }
 
-func reconcileWorkloadIdentityAnnotations(ctx context.Context, sas corev1typed.ServiceAccountInterface, sa *corev1.ServiceAccount, want map[string]string) error {
-	if sa.Annotations == nil {
-		sa.Annotations = map[string]string{}
-	}
-	changed := false
-	for key, value := range want {
-		// The five identity annotations are immutable for the SA's lifetime;
-		// the scope marker reconciles because it tracks the current grants.
-		if key != AnnotationWorkloadIdentityScope {
-			if existing, ok := sa.Annotations[key]; ok && existing != "" && existing != value {
-				return fmt.Errorf("ServiceAccount %q has conflicting workload annotation %q", sa.Name, key)
-			}
-		}
-		if sa.Annotations[key] != value {
-			sa.Annotations[key] = value
-			changed = true
-		}
-	}
-	if !changed {
-		return nil
-	}
-	if _, err := sas.Update(ctx, sa, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("reconciling workload ServiceAccount annotations: %w", err)
-	}
-	return nil
-}
-
-func ensureWorkloadRBAC(ctx context.Context, cs kubernetes.Interface, serviceAccount string, scope WorkloadIdentityScope) error {
-	roleName := WorkloadIdentityRoleName(serviceAccount)
+// workloadIdentityRules is the exact rule set a workload identity carries:
+// GET on its own Project, GET on each verified provider resource, and one
+// CREATE rule per granted action on that action's virtual subresource. The
+// owning provider enforces that coordinate with a caller-scoped SSAR, the
+// same pattern as the infrastructure data-plane exec verb. Materializing a
+// Project action grant IS writing this rule; revoking it removes the rule.
+func workloadIdentityRules(scope WorkloadIdentityScope) []rbacv1.PolicyRule {
 	wantRules := []rbacv1.PolicyRule{
 		{
 			APIGroups:     []string{workloadProjectGroup},
@@ -427,9 +343,6 @@ func ensureWorkloadRBAC(ctx context.Context, cs kubernetes.Interface, serviceAcc
 			APIGroups: []string{gv.Group}, Resources: []string{resource.Resource},
 			Verbs: []string{"get"}, ResourceNames: []string{resource.Name},
 		})
-		// One create rule per granted action, on the action's virtual
-		// subresource. The owning provider enforces this exact coordinate with
-		// a caller-scoped SSAR before serving the verb.
 		actions := append([]string(nil), resource.Actions...)
 		sort.Strings(actions)
 		for _, action := range actions {
@@ -442,38 +355,7 @@ func ensureWorkloadRBAC(ctx context.Context, cs kubernetes.Interface, serviceAcc
 	sort.Slice(providerRules, func(i, j int) bool {
 		return strings.Join(providerRules[i].APIGroups, "/")+"/"+providerRules[i].Resources[0]+"/"+providerRules[i].ResourceNames[0] < strings.Join(providerRules[j].APIGroups, "/")+"/"+providerRules[j].Resources[0]+"/"+providerRules[j].ResourceNames[0]
 	})
-	wantRules = append(wantRules, providerRules...)
-
-	roles := cs.RbacV1().ClusterRoles()
-	role, err := roles.Get(ctx, roleName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		role, err = roles.Create(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{
-			Name:   roleName,
-			Labels: map[string]string{LabelWorkloadIdentity: "true"},
-		}, Rules: wantRules}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating workload ClusterRole: %w", err)
-		}
-		if err != nil {
-			role, err = roles.Get(ctx, roleName, metav1.GetOptions{})
-		}
-	}
-	if err != nil {
-		return fmt.Errorf("getting workload ClusterRole: %w", err)
-	}
-	if !reflect.DeepEqual(role.Rules, wantRules) || role.Labels[LabelWorkloadIdentity] != "true" {
-		updated := role.DeepCopy()
-		updated.Rules = wantRules
-		if updated.Labels == nil {
-			updated.Labels = map[string]string{}
-		}
-		updated.Labels[LabelWorkloadIdentity] = "true"
-		if _, err := roles.Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("reconciling workload ClusterRole: %w", err)
-		}
-	}
-
-	return ensureWorkloadClusterRoleBinding(ctx, cs, roleName, roleName, serviceAccount)
+	return append(wantRules, providerRules...)
 }
 
 // ensureWorkloadClusterRoleBinding reconciles the hub-managed

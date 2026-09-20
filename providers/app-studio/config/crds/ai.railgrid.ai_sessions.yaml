@@ -84,12 +84,29 @@ spec:
               activeTurnStatus:
                 description: ActiveTurnStatus is the in-flight turn's state.
                 type: string
+              lastActivityAt:
+                description: |-
+                  LastActivityAt is when the conversation last moved — the newest of the
+                  thread's own update and its turns'. Retention is measured from here:
+                  the Session reconciler wakes at lastActivityAt + retention and purges
+                  that one conversation, so retention is a per-session deadline rather
+                  than a fleet-wide cutoff sweep.
+                format: date-time
+                type: string
               phase:
                 description: Phase mirrors the thread status (active, archived).
                 type: string
               title:
                 description: Title is the thread's display title.
                 type: string
+              turnCount:
+                description: |-
+                  TurnCount is how many turns the thread has recorded. It makes the size
+                  of a conversation visible from the control plane without reading the
+                  store.
+                format: int32
+                minimum: 0
+                type: integer
               updatedAt:
                 description: UpdatedAt is the thread's last store update the mirror
                   observed.

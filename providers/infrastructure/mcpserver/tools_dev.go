@@ -37,6 +37,7 @@ import (
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/kro"
+	sdkdataplane "github.com/railgrid/provider-sdk/dataplane"
 )
 
 const (
@@ -606,8 +607,13 @@ func callDataPlane(ctx context.Context, dp http.Handler, ident identity, method,
 		}
 	}
 	req.Header.Set("Authorization", "Bearer "+ident.token)
-	req.Header.Set("X-Railgrid-Tenant", ident.tenant)
-	req.Header.Set("X-Railgrid-User", ident.user)
+	// The hub injects both, and the data plane refuses a request whose path
+	// cluster disagrees with the header. Setting the header from the same
+	// clusterID that built the path keeps the replay identical to a real
+	// proxied call instead of relying on the header being absent.
+	req.Header.Set(sdkdataplane.HeaderCluster, ident.clusterID)
+	req.Header.Set(sdkdataplane.HeaderTenant, ident.tenant)
+	req.Header.Set(sdkdataplane.HeaderUser, ident.user)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

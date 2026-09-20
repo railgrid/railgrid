@@ -78,6 +78,16 @@ type ProviderTarget struct {
 	// Nil for a platform provider, which is dialled directly with the caller's
 	// bearer as before.
 	Transport http.RoundTripper
+
+	// Actions and Verbs are what this provider DECLARES in its validated
+	// CatalogEntry (spec.actions, spec.dataPlane.verbs), projected by
+	// RegistryEnumerator. They are coordinates the hub has admitted, never
+	// anything the provider said at runtime: they feed the
+	// railgrid://providers/capabilities resource and are the only thing a
+	// federated tool's _meta coordinate claim is resolved against
+	// (see capabilities.go).
+	Actions []DeclaredAction
+	Verbs   []DeclaredVerb
 }
 
 // ProviderEnumerator returns the live set of Ready providers exposing an MCP
@@ -340,6 +350,7 @@ func registerOneProxyTool(srv *mcp.Server, cli *providerMCPClient, p ProviderTar
 		Description: t.Description,
 		Annotations: t.Annotations,
 		InputSchema: t.InputSchema,
+		Meta:        toolCoordinateMeta(p, t),
 	}
 
 	srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -431,6 +442,11 @@ type discoveredTool struct {
 	Description string               `json:"description"`
 	InputSchema json.RawMessage      `json:"inputSchema"`
 	Annotations *mcp.ToolAnnotations `json:"annotations,omitempty"`
+	// Meta is the tool's own _meta. Only the provider's coordinate claim
+	// under the "railgrid" key is read from it, and only to be resolved
+	// against the registry; nothing here is forwarded verbatim
+	// (see toolCoordinateMeta).
+	Meta map[string]any `json:"_meta,omitempty"`
 }
 
 func (c *providerMCPClient) listTools(ctx context.Context, mcpURL string) ([]discoveredTool, error) {

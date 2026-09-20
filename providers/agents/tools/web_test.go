@@ -191,7 +191,7 @@ func TestDialGuard(t *testing.T) {
 // credential, authorized by the caller's own RBAC on the instance.
 func TestDataPlaneSearchRequest(t *testing.T) {
 	ctx := context.Background()
-	dp := DataPlane{HubBase: "https://hub.example.com", ClusterID: "23qp2e0jwjeqwp2i", Token: "user-token"}
+	dp := DataPlane{HubBase: "https://hub.example.com", ClusterID: "23qp2e0jwjeqwp2i", Token: "user-token", Provider: "infrastructure"}
 	instanceConn := func(cfg map[string]string) *agentsv1alpha1.Connection {
 		cfg["provider"] = "searxng"
 		return searchConn("search", agentsv1alpha1.ConnectionSpec{Config: cfg})

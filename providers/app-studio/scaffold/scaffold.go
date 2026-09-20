@@ -100,7 +100,8 @@ func fetchArchive(ctx context.Context, archiveURL string) ([]workspace.File, err
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", archiveURL, err)
 	}
-	defer resp.Body.Close()
+	// Close errors on a read-only response body are not actionable.
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetching %s: status %d", archiveURL, resp.StatusCode)
 	}
@@ -108,7 +109,9 @@ func fetchArchive(ctx context.Context, archiveURL string) ([]workspace.File, err
 	if err != nil {
 		return nil, fmt.Errorf("decompressing %s: %w", archiveURL, err)
 	}
-	defer gz.Close()
+	// The gzip reader is read-only; closing it cannot fail in a way the
+	// caller can act on.
+	defer func() { _ = gz.Close() }()
 
 	var (
 		files []workspace.File

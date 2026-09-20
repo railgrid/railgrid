@@ -18,11 +18,23 @@
 //     is ours to choose: a connection without one gets a fresh secret stored
 //     and the webhook Telegram currently has for the bot re-registered with
 //     it — no user action, no public-URL knowledge needed.
+//
 //   - OAuth token refresh. A connection whose refresh token is about to expire
 //     is renewed and requeued for the next expiry; nothing polls.
+//
 //   - Discord gateway bots. A discord connection carrying a bot token gets a
 //     live gateway session (opened by the Gateway, which keeps the socket map
 //     in-process); a removed connection or token closes it.
+//
+//   - The Validated condition: is the credential Secret this Connection needs
+//     actually there? api/connections.go applyConnectionCreate writes the
+//     Secret and then the Connection, in that order, so the pair arrived whole
+//     or not at all. A writer going straight to the kube API writes two
+//     objects with no transaction between them, and the half-finished case —
+//     a Connection whose Secret was never written, or was written without the
+//     one key its type cannot work without — is now reachable. Left unsaid it
+//     surfaces much later as a tool that quietly is not there, or a notify
+//     that goes nowhere; said here it is on the object the moment it happens.
 //
 // Status.Phase/Message for these concerns are written only here. The
 // reconciler runs on the leader replica, so there is exactly one gateway
@@ -38,6 +50,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -190,7 +203,127 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if conn.Spec.Auth == "oauth" && conn.Spec.OAuth != nil {
 		sooner(r.reconcileOAuth(ctx, logger, c, &conn))
 	}
+
+	// Last, and on the object as it now stands: the branches above may have
+	// just written the very key the verdict is about (a generated Telegram
+	// secret_token, a refreshed OAuth token), so re-reading here is what makes
+	// the condition agree with the Secret rather than with a stale copy of it.
+	if err := r.reconcileValidated(ctx, logger, c, req.NamespacedName); err != nil {
+		return result, err
+	}
 	return result, nil
+}
+
+// ---- the Validated condition ------------------------------------------------
+
+// reconcileValidated re-reads the Connection and records whether its
+// credential Secret holds what its type needs.
+//
+// The re-read is deliberate: the reconcile above writes status through the
+// copy it holds, and writing the condition through that same stale copy would
+// either lose those writes or conflict with them.
+func (r *Reconciler) reconcileValidated(ctx context.Context, logger klog.Logger, c client.Client, key types.NamespacedName) error {
+	var conn agentsv1alpha1.Connection
+	if err := c.Get(ctx, key, &conn); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	reason, message, err := credentialVerdict(ctx, c, &conn)
+	if err != nil {
+		// A failed read says nothing about the Secret; leave the condition as
+		// it stands rather than flagging a working connection.
+		logger.Error(err, "reading the credential Secret to validate; leaving the condition unchanged")
+		return nil
+	}
+	cond := metav1.Condition{
+		Type:               agentsv1alpha1.ConditionValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             agentsv1alpha1.ReasonValidated,
+		Message:            "the connection spec and its credential Secret are usable",
+		ObservedGeneration: conn.Generation,
+	}
+	if reason != "" {
+		cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, reason, message
+	}
+	if !meta.SetStatusCondition(&conn.Status.Conditions, cond) {
+		return nil
+	}
+	if err := c.Status().Update(ctx, &conn); err != nil {
+		if apierrors.IsConflict(err) {
+			return nil // the watch re-delivers the newer object
+		}
+		return err
+	}
+	return nil
+}
+
+// credentialTokenRequired lists the connection types that cannot do anything
+// at all without a token in their Secret.
+//
+// It is deliberately shorter than "every type with a Secret". An mcp or http
+// connection may target something unauthenticated; a websearch connection may
+// be a self-hosted SearXNG instance that takes no key; a discord connection
+// with no bot token is an ordinary outbound-only webhook notifier (the gateway
+// branch above treats it as exactly that). Flagging those would make the
+// condition noise, and a noisy condition is one nobody reads.
+var credentialTokenRequired = map[string]bool{
+	agentsv1alpha1.ConnectionTypeGitHub:   true,
+	agentsv1alpha1.ConnectionTypeTelegram: true,
+	agentsv1alpha1.ConnectionTypeSlack:    true,
+	agentsv1alpha1.ConnectionTypeSMTP:     true,
+}
+
+// credentialVerdict reports the first thing wrong with the connection, as
+// (reason, message). An error is a failed read, not a verdict.
+func credentialVerdict(ctx context.Context, c client.Client, conn *agentsv1alpha1.Connection) (reason, message string, err error) {
+	switch conn.Spec.Type {
+	case agentsv1alpha1.ConnectionTypeGitHub, agentsv1alpha1.ConnectionTypeMCP,
+		agentsv1alpha1.ConnectionTypeWebSearch, agentsv1alpha1.ConnectionTypeEdges,
+		agentsv1alpha1.ConnectionTypeHTTP,
+		agentsv1alpha1.ConnectionTypeTelegram, agentsv1alpha1.ConnectionTypeSlack,
+		agentsv1alpha1.ConnectionTypeSMTP, agentsv1alpha1.ConnectionTypeDiscord:
+	default:
+		return agentsv1alpha1.ReasonUnsupportedType,
+			fmt.Sprintf("spec.type %q is not a connection type this provider supports", conn.Spec.Type), nil
+	}
+	if conn.Spec.Type == agentsv1alpha1.ConnectionTypeEdges {
+		return "", "", nil // a marker connection; it carries no credentials by design
+	}
+	// An oauth connection's Secret is filled in by the Connect flow later, and
+	// the client credentials may come from a platform-wide OAuth app the
+	// reconciler cannot see. Its readiness is status.oauthConnected's job.
+	if conn.Spec.Auth == "oauth" {
+		return "", "", nil
+	}
+
+	var sec corev1.Secret
+	switch err := c.Get(ctx, credentialKey(conn.Name), &sec); {
+	case apierrors.IsNotFound(err):
+		if !credentialTokenRequired[conn.Spec.Type] {
+			return "", "", nil
+		}
+		return agentsv1alpha1.ReasonSecretMissing,
+			fmt.Sprintf("secret %q in namespace %q does not exist; a %s connection needs one holding its credential",
+				connsecret.Name(conn.Name), llm.SecretNamespace, conn.Spec.Type), nil
+	case err != nil:
+		return "", "", err
+	}
+	if credentialTokenRequired[conn.Spec.Type] && strings.TrimSpace(string(sec.Data["token"])) == "" {
+		return agentsv1alpha1.ReasonSecretIncomplete,
+			fmt.Sprintf("secret %q has no \"token\" key; a %s connection cannot authenticate without one",
+				connsecret.Name(conn.Name), conn.Spec.Type), nil
+	}
+	// Inbound Slack is verified with the app signing secret, which only the
+	// user can supply. The same fact already drives Phase/Message above; it is
+	// repeated as a condition so one place answers "is this connection
+	// usable" for every reader.
+	if conn.Spec.Type == agentsv1alpha1.ConnectionTypeSlack && conn.Status.WebhookPath != "" &&
+		strings.TrimSpace(string(sec.Data[connsecret.SigningSecretKey])) == "" {
+		return agentsv1alpha1.ReasonSecretIncomplete, connsecret.SigningSecretMissingMessage, nil
+	}
+	return "", "", nil
 }
 
 func (r *Reconciler) removeGateway(cluster, name string) {

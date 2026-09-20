@@ -164,8 +164,8 @@ func TestBackendProxyRoutesOrgProviderOverItsEdge(t *testing.T) {
 		t.Fatal("the edges provider was never called — the request did not take the tunnel")
 	}
 	// The edges provider strips /services/providers/edges, so its handler must
-	// see the edgeproxy path with the hub-owned Service named.
-	wantPrefix := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
+	// see the data-plane path with the hub-owned Service named.
+	wantPrefix := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy"
 	if got := rec.path; got != wantPrefix+"/dataplane/clusters/x/apps/demo/log" {
 		t.Errorf("edges provider saw path %q, want %q", got, wantPrefix+"/dataplane/clusters/x/apps/demo/log")
 	}
@@ -466,7 +466,7 @@ func TestBackendProxyAlwaysUsesThePlatformEdgesProvider(t *testing.T) {
 
 func TestEdgeProxyPathComposition(t *testing.T) {
 	route := &EdgeRoute{Cluster: testCluster, ServiceName: "provider-infrastructure"}
-	base := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
+	base := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy"
 
 	for _, tc := range []struct{ name, rest, want string }{
 		{"empty rest addresses the service root", "", base},

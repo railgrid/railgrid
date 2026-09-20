@@ -11,49 +11,131 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/railgrid/provider-agents/llm"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/llm"
 )
 
-type modelTestSecrets struct{ requested []string }
-
-func (s *modelTestSecrets) GetSecret(_ context.Context, namespace, name string) (*corev1.Secret, error) {
-	s.requested = append(s.requested, namespace+"/"+name)
-	return &corev1.Secret{Data: map[string][]byte{"provider": []byte("openai-compatible"), "baseURL": []byte("https://api.openai.com/v1"), "apiKey": []byte("stored-key"), "model": []byte("gpt-4o")}}, nil
+// credResolver is the pair a credential resolves through: the object, and the
+// Secret its spec.secretRef names. It records what was asked for, so a test
+// can prove the resolution followed the OBJECT rather than a name convention.
+type credResolver struct {
+	cred      *agentsv1alpha1.ModelCredential
+	secrets   map[string]*corev1.Secret
+	requested []string
 }
-func TestResolveCredentialDraftPreservesEndpointAuthority(t *testing.T) {
+
+func (r *credResolver) GetModelCredential(_ context.Context, name string) (*agentsv1alpha1.ModelCredential, error) {
+	r.requested = append(r.requested, "modelcredentials/"+name)
+	if r.cred == nil || r.cred.Name != name {
+		return nil, fmt.Errorf("model credential %q not found", name)
+	}
+	return r.cred, nil
+}
+
+func (r *credResolver) GetSecret(_ context.Context, namespace, name string) (*corev1.Secret, error) {
+	r.requested = append(r.requested, namespace+"/"+name)
+	if sec, ok := r.secrets[name]; ok {
+		return sec, nil
+	}
+	return nil, fmt.Errorf("secret %q not found", name)
+}
+
+// A credential's key comes from the Secret the OBJECT points at, under the key
+// the object names — not from a name convention and not from the object
+// itself. The old model stored the endpoint configuration in the Secret's own
+// keys under a fixed railgrid-agents-model-<name>, which is exactly what made
+// it unvalidatable; this asserts the indirection that replaced it.
+func TestLoadCredentialFollowsSecretRef(t *testing.T) {
 	for _, tt := range []struct {
-		name, endpoint, key string
-		wantError           bool
+		name       string
+		secretName string
+		secretKey  string
+		stored     map[string][]byte
+		wantKey    string
+		wantErr    bool
 	}{
-		{"same endpoint", "https://api.openai.com/v1/", "", false},
-		{"changed endpoint", "https://other.example/v1", "", true},
-		{"explicit new key", "https://other.example/v1", "replacement", false},
-		{"invalid endpoint", "file:///etc/passwd", "replacement", true},
+		{
+			name:       "default key",
+			secretName: "team-openai-key",
+			stored:     map[string][]byte{"apiKey": []byte("stored-key")},
+			wantKey:    "stored-key",
+		},
+		{
+			name:       "explicit key",
+			secretName: "team-openai-key",
+			secretKey:  "token",
+			stored:     map[string][]byte{"token": []byte("other-key"), "apiKey": []byte("wrong")},
+			wantKey:    "other-key",
+		},
+		{
+			name:       "key absent",
+			secretName: "team-openai-key",
+			stored:     map[string][]byte{"unrelated": []byte("x")},
+			wantErr:    true,
+		},
+		{
+			name:       "secret missing",
+			secretName: "not-written-yet",
+			wantErr:    true,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			secrets := &modelTestSecrets{}
-			got, err := resolveCredentialDraft(t.Context(), secrets, credentialDraft{ExistingName: "main", Profile: llm.Profile{BaseURL: tt.endpoint, Model: "changed-model", APIKey: tt.key}})
-			if (err != nil) != tt.wantError {
+			r := &credResolver{
+				cred: &agentsv1alpha1.ModelCredential{
+					ObjectMeta: metav1.ObjectMeta{Name: "main"},
+					Spec: agentsv1alpha1.ModelCredentialSpec{
+						Provider:  llm.ProviderOpenAICompatible,
+						BaseURL:   "https://api.openai.com/v1",
+						Model:     "gpt-4o",
+						SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: tt.secretName},
+						SecretKey: tt.secretKey,
+					},
+				},
+				secrets: map[string]*corev1.Secret{},
+			}
+			if tt.stored != nil {
+				r.secrets["team-openai-key"] = &corev1.Secret{Data: tt.stored}
+			}
+			got, err := llm.LoadCredential(t.Context(), r, "main")
+			if (err != nil) != tt.wantErr {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if err == nil && got.Model != "changed-model" {
-				t.Fatalf("draft model was not preserved: %#v", got)
+			if tt.wantErr {
+				return
 			}
-			if err == nil && tt.key == "" && got.APIKey != "stored-key" {
-				t.Fatal("stored key was not reused")
+			if got.APIKey != tt.wantKey {
+				t.Fatalf("api key = %q, want %q", got.APIKey, tt.wantKey)
 			}
-			if len(secrets.requested) > 0 && secrets.requested[0] != "default/railgrid-agents-model-main" {
-				t.Fatalf("wrong secret: %v", secrets.requested)
+			if got.Model != "gpt-4o" || got.BaseURL != "https://api.openai.com/v1" {
+				t.Fatalf("endpoint came from somewhere other than the object: %#v", got)
+			}
+			// The Secret is read in namespace default, under the name the
+			// OBJECT gave, which is the whole point of the indirection.
+			if want := "default/" + tt.secretName; !strings.Contains(strings.Join(r.requested, " "), want) {
+				t.Fatalf("resolution did not read %s: %v", want, r.requested)
 			}
 		})
 	}
 }
+
+// An unknown credential name is an error, not an empty profile that fails
+// later inside the model builder.
+func TestLoadCredentialUnknownName(t *testing.T) {
+	r := &credResolver{secrets: map[string]*corev1.Secret{}}
+	if _, err := llm.LoadCredential(t.Context(), r, "nope"); err == nil {
+		t.Fatal("expected an error for an unknown credential")
+	}
+}
+
 func TestVerifyCredentialModelTestsChatNotCatalog(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -87,6 +169,97 @@ func TestVerifyCredentialModelTestsChatNotCatalog(t *testing.T) {
 			}
 			if strings.Contains(result.Error, "private-key") {
 				t.Fatal("error exposed credential")
+			}
+		})
+	}
+}
+
+// A probe failure is recorded bounded and without the body verbatim: an
+// upstream can answer with megabytes, and it can echo the request headers the
+// key travelled in.
+func TestBoundedProbeError(t *testing.T) {
+	long := &llm.ProbeError{Status: 500, Msg: strings.Repeat("x", 4000)}
+	got := boundedProbeError(long)
+	if len(got) != maxProbeErrorLength {
+		t.Fatalf("bounded length = %d, want %d", len(got), maxProbeErrorLength)
+	}
+	if boundedProbeError(nil) != "" {
+		t.Fatal("nil error must render empty")
+	}
+}
+
+// The `test` verb's optional body is what lets the editor verify the model a
+// person just picked BEFORE it is saved. Previously the only thing that ever
+// exercised a pick was the first agent run, which is where gpt-5.3-codex's
+// 404 surfaced — in a chat window, long after the choice.
+func TestTestModelOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     string
+		want     string
+		wantCode int
+		wantMsg  string
+	}{
+		{name: "no body at all probes the saved model", body: ""},
+		{name: "empty object probes the saved model", body: `{}`},
+		{name: "blank model probes the saved model", body: `{"model":"   "}`},
+		{name: "a chat model overrides", body: `{"model":"gpt-4o-mini"}`, want: "gpt-4o-mini"},
+		{name: "a chat model is trimmed", body: `{"model":"  gpt-4o  "}`, want: "gpt-4o"},
+		{
+			name: "a responses-only model is refused by name",
+			body: `{"model":"gpt-5.3-codex"}`, wantCode: http.StatusBadRequest,
+			wantMsg: "not usable for chat",
+		},
+		{
+			name: "an embedding model is refused",
+			body: `{"model":"text-embedding-3-small"}`, wantCode: http.StatusBadRequest,
+			wantMsg: "not usable for chat",
+		},
+		{
+			name:     "a model id longer than the field allows is refused",
+			body:     `{"model":"` + strings.Repeat("a", maxTestModelID+1) + `"}`,
+			wantCode: http.StatusBadRequest, wantMsg: "too long",
+		},
+		{
+			name:     "an oversized body is refused before it is parsed",
+			body:     `{"model":"` + strings.Repeat("a", maxTestRequestBody) + `"}`,
+			wantCode: http.StatusBadRequest, wantMsg: "too large",
+		},
+		{
+			name: "a body that is not JSON is refused",
+			body: `model=gpt-4o`, wantCode: http.StatusBadRequest, wantMsg: "not valid JSON",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "/modelcredentials/main/test", strings.NewReader(tc.body))
+			got, ok := testModelOverride(w, r)
+			if tc.wantCode != 0 {
+				if ok {
+					t.Fatalf("expected the request to be refused, got override %q", got)
+				}
+				if w.Code != tc.wantCode {
+					t.Fatalf("status = %d, want %d", w.Code, tc.wantCode)
+				}
+				// Both shapes carry the sentence: `error` for a caller reading
+				// the verb's result, `message` for the portal's error reader.
+				var body rejectedTest
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if body.OK {
+					t.Fatal("a refused probe must report ok=false")
+				}
+				if !strings.Contains(body.Error, tc.wantMsg) || !strings.Contains(body.Message, tc.wantMsg) {
+					t.Fatalf("message %q / %q does not say %q", body.Error, body.Message, tc.wantMsg)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("request refused unexpectedly: %s", w.Body.String())
+			}
+			if got != tc.want {
+				t.Fatalf("override = %q, want %q", got, tc.want)
 			}
 		})
 	}

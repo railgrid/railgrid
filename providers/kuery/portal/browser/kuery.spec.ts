@@ -24,16 +24,41 @@ const inventory = {
   count: 1,
 }
 
+const testCluster = '1ngen6o0so3jwz2h'
+
+// The portal reads its edges and saved views straight from the workspace
+// through the hub's kcp proxy, and runs every query as the run verb on a named
+// SavedView. Both shapes are stubbed here the way the real endpoints answer.
+const edgeList = {
+  apiVersion: 'edges.railgrid.ai/v1alpha1',
+  kind: 'KubernetesClusterList',
+  metadata: {},
+  items: [{ apiVersion: 'edges.railgrid.ai/v1alpha1', kind: 'KubernetesCluster', metadata: { name: 'edge-a' }, status: { connected: true } }],
+}
+
+const savedViewList = {
+  apiVersion: 'kuery.providers.railgrid.ai/v1alpha1',
+  kind: 'SavedViewList',
+  metadata: {},
+  items: [],
+}
+
 async function mountKuery(page: Page, theme: 'dark' | 'light'): Promise<void> {
   await page.route('**/*', async route => {
     const path = new URL(route.request().url()).pathname
-    if (path.endsWith('/api/edges')) return route.fulfill({ json: { edges: ['edge-a'] } })
-    if (path.endsWith('/api/query-schema')) return route.fulfill({ json: { properties: { root: {}, objects: {}, filter: {} } } })
-    if (path.endsWith('/api/query')) {
-      const body = route.request().postDataJSON() as { root?: string; count?: boolean }
-      return route.fulfill({ json: body.root === 'clusters' ? topology : body.count ? inventory : inventory })
+    if (path.endsWith('/kubernetesclusters')) return route.fulfill({ json: edgeList })
+    if (path.endsWith('/savedviews')) return route.fulfill({ json: savedViewList })
+    // The scratch view: absent, then created by the shell.
+    if (/\/savedviews\/playground-[0-9a-f]+$/.test(path)) {
+      return route.fulfill({ status: 404, json: { kind: 'Status', status: 'Failure', reason: 'NotFound', code: 404 } })
     }
-    for (const name of ['cytoscape.min.js', 'codemirror.bundle.js', 'codemirror.bundle.css']) {
+    if (path.endsWith('/query-schema.json')) return route.fulfill({ json: { properties: { root: {}, objects: {}, filter: {} } } })
+    if (path.endsWith('/run')) {
+      const body = route.request().postDataJSON() as { input?: { query?: { root?: string; count?: boolean } } }
+      const query = body.input?.query ?? {}
+      return route.fulfill({ json: { requestID: 'r-1', result: query.root === 'clusters' ? topology : inventory } })
+    }
+    for (const name of ['codemirror.bundle.js', 'codemirror.bundle.css']) {
       if (path.endsWith(`/${name}`)) return route.fulfill({ path: asset(name) })
     }
     return route.abort()
@@ -64,11 +89,13 @@ async function mountKuery(page: Page, theme: 'dark' | 'light'): Promise<void> {
   await page.addScriptTag({ path: asset('main.js') })
   await page.locator('#kuery').evaluate((element, resolvedTheme) => {
     ;(element as HTMLElement & { railgridContext: unknown }).railgridContext = {
-      basePath: '/ui/providers/kuery/', token: 'test-token', orgUUID: 'org', workspaceUUID: 'workspace', theme: resolvedTheme,
+      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: testCluster,
+      user: { email: 'tester@railgrid.test' },
+      orgUUID: 'org', workspaceUUID: 'workspace', theme: resolvedTheme,
     }
   }, theme)
   await expect(page.getByRole('heading', { name: 'Fleet topology', exact: true })).toBeVisible()
-  await expect(page.getByText('1 edge engaged')).toBeVisible()
+  await expect(page.getByText('1 edge connected')).toBeVisible()
 }
 
 test('4K topology and playground use the available vertical workspace', async ({ page }, testInfo) => {
@@ -133,7 +160,22 @@ for (const viewport of [
 
 test('dashboard tile uses shared semantics while preserving escaping and navigation', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.route('**/api/edges', route => route.fulfill({ json: { edges: ['edge-<one>&'] } }))
+  // The tile lists SavedViews, so the escaping case lives on a view's display
+  // name rather than an edge name.
+  await page.route('**/kubernetesclusters', route => route.fulfill({ json: edgeList }))
+  await page.route('**/savedviews', route => route.fulfill({
+    json: {
+      apiVersion: 'kuery.providers.railgrid.ai/v1alpha1',
+      kind: 'SavedViewList',
+      metadata: {},
+      items: [{
+        apiVersion: 'kuery.providers.railgrid.ai/v1alpha1',
+        kind: 'SavedView',
+        metadata: { name: 'escaping' },
+        spec: { displayName: 'view-<one>&' },
+      }],
+    },
+  }))
   await page.setContent(`<!doctype html><html class="light"><head><base href="https://kuery.test/"></head><body>
     <railgrid-dashboard-tile-kuery id="tile"></railgrid-dashboard-tile-kuery>
   </body></html>`)
@@ -145,15 +187,17 @@ test('dashboard tile uses shared semantics while preserving escaping and navigat
       ;(window as typeof window & { tileNavigation?: unknown }).tileNavigation = (event as CustomEvent).detail
     })
     target.railgridContext = {
-      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: 'root:railgrid:tenant', orgUUID: 'org', workspaceUUID: 'workspace', theme: 'light',
+      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: '1ngen6o0so3jwz2h',
+      user: { email: 'tester@railgrid.test' },
+      orgUUID: 'org', workspaceUUID: 'workspace', theme: 'light',
     }
   })
 
-  const row = page.getByRole('button', { name: 'edge-<one>&' })
+  const row = page.getByRole('button', { name: 'view-<one>&' })
   await expect(row).toBeVisible()
   await expect(page.locator('.k-dashboard-tile')).toHaveCount(1)
   await expect(row).toHaveClass(/k-dashboard-tile__row/)
-  await expect(row).toHaveAttribute('data-edge', 'edge-<one>&')
+  await expect(row).toHaveAttribute('data-view', 'view-<one>&')
   expect(await page.locator('.k-dashboard-tile__list').evaluate(element => {
     const style = getComputedStyle(element)
     return { listStyle: style.listStyleType, margin: style.margin, padding: style.padding }

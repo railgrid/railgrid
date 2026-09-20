@@ -44,17 +44,17 @@ func newProjectAssistantHTTPToolPort(server *Server, request *http.Request) proj
 
 func (p projectAssistantHTTPToolPort) DiscoverMCP(ctx context.Context, id identity, settings projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	if p.server == nil || p.request == nil {
-		return nil, false, errors.New("App Studio tool transport is not configured")
+		return nil, false, errors.New("the App Studio tool transport is not configured")
 	}
 	return p.server.loadProjectMCPAssistantTools(p.request.WithContext(ctx), id, settings)
 }
 
 func (p projectAssistantHTTPToolPort) Invoke(ctx context.Context, tool projectAssistantTool, req projectAssistantToolCallRequest) (string, error) {
 	if p.request == nil {
-		return "", errors.New("App Studio tool transport is not configured")
+		return "", errors.New("the App Studio tool transport is not configured")
 	}
 	if tool == nil {
-		return "", errors.New("App Studio tool is required")
+		return "", errors.New("an App Studio tool is required")
 	}
 	req.HTTPRequest = p.request.WithContext(ctx)
 	return tool.Call(ctx, req)

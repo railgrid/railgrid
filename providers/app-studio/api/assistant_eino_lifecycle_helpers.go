@@ -184,14 +184,6 @@ func projectAssistantToolNameHasEffect(name string) bool {
 	return false
 }
 
-func projectEinoAssistantVerificationContentReady(content string) bool {
-	var result projectAssistantRuntimeVerificationResult
-	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &result); err != nil {
-		return false
-	}
-	return projectEinoAssistantRuntimeVerificationDisposition(result) == projectEinoAssistantVerificationReadyDisposition
-}
-
 func projectEinoAssistantTemplateBootstrapAllowed(project *aiv1alpha1.Project) bool {
 	return project != nil && (project.Spec.Template == nil || strings.TrimSpace(project.Spec.Template.Name) == "")
 }

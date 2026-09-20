@@ -186,6 +186,7 @@ func TestProjectEinoAssistantStableToolInfoOrderIsIndependentOfDiscoveryOrder(t 
 func TestProjectEinoAssistantLifecycleRefreshesModelAndExecutableToolSnapshotTogether(t *testing.T) {
 	server := New(nil, store.NewMemoryStore(), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	defer server.Shutdown(context.Background())
 	runState := newProjectEinoAssistantRunState()
 	req := projectAssistantRunRequest{
@@ -197,21 +198,19 @@ func TestProjectEinoAssistantLifecycleRefreshesModelAndExecutableToolSnapshotTog
 	runState.SetToolDiscovery(projectEinoAssistantToolDiscovery{MCPTools: []projectAssistantTool{toolV1}, Prompt: "alpha"})
 	lifecycle := projectEinoAssistantLifecycleMiddleware(req, runState, server).(*projectEinoAssistantLifecycle)
 	state := &adk.ChatModelAgentState{ToolInfos: []*schema.ToolInfo{{Name: "write_todos"}}}
-	if err := lifecycle.refreshExecutableToolContext(context.Background(), state, &adk.ModelContext{}); err != nil {
+	if err := lifecycle.refreshExecutableToolContext(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectEinoAssistantToolInfoPresence(t, state.ToolInfos, "write_todos", true)
 	assertProjectEinoAssistantToolInfoPresence(t, state.ToolInfos, "mcp_alpha", true)
 
 	runState.SetToolDiscovery(projectEinoAssistantToolDiscovery{MCPTools: []projectAssistantTool{toolV2}, Prompt: "beta"})
-	modelCtx := &adk.ModelContext{}
-	if err := lifecycle.refreshExecutableToolContext(context.Background(), state, modelCtx); err != nil {
+	if err := lifecycle.refreshExecutableToolContext(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectEinoAssistantToolInfoPresence(t, state.ToolInfos, "write_todos", true)
 	assertProjectEinoAssistantToolInfoPresence(t, state.ToolInfos, "mcp_alpha", false)
 	assertProjectEinoAssistantToolInfoPresence(t, state.ToolInfos, "mcp_beta", true)
-	assertProjectEinoAssistantToolInfoPresence(t, modelCtx.Tools, "mcp_beta", true)
 	if _, ok := projectEinoAssistantCurrentDynamicTool(server, req, runState, "mcp_alpha"); ok {
 		t.Fatal("withdrawn mcp_alpha remained executable")
 	}

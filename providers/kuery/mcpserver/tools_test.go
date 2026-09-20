@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -22,10 +21,18 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"gorm.io/datatypes"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/railgrid/kuery/apis/query/v1alpha1"
 	"github.com/railgrid/kuery/pkg/engine"
 	"github.com/railgrid/kuery/pkg/store"
 
-	"github.com/railgrid/provider-kuery/engagement"
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
+
+	kueryv1alpha1 "github.com/railgrid/provider-kuery/apis/v1alpha1"
+	"github.com/railgrid/provider-kuery/index"
+	"github.com/railgrid/provider-kuery/queryapi"
 )
 
 // TestQueryToolSpecSchemaIsObject guards the kuery_query input schema: the
@@ -149,7 +156,7 @@ func seedEngagedCluster(t *testing.T, s store.Store) {
 	now := time.Now()
 	if err := s.UpsertCluster(context.Background(), &store.ClusterModel{
 		Name: testCluster, Status: "active", LastSeen: now, EngagedAt: &now,
-		Labels: mustJSON(map[string]string{engagement.TenantLabel: testTenant}),
+		Labels: mustJSON(map[string]string{index.TenantLabel: testTenant}),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -204,11 +211,24 @@ func seedDeploymentTree(t *testing.T, s store.Store, namespace, name string) {
 	}
 }
 
+// directRunner is the executor without the gates: this test is about the
+// impact query's SHAPE, and standing up a fake workspace for each of its four
+// cases would only re-test what TestImpactViaMCPIsGated already pins.
+func directRunner(t *testing.T, eng *engine.Engine) queryRunner {
+	t.Helper()
+	return func(ctx context.Context, _ string, spec *v1alpha1.QuerySpec) (*v1alpha1.QueryStatus, error) {
+		if err := queryapi.ScopeToTenant(spec, testTenant, []string{testEdge}); err != nil {
+			return nil, err
+		}
+		return eng.Execute(ctx, spec)
+	}
+}
+
 // TestImpactFindsDeployment reproduces the console-dev report: a Deployment
-// that POST /api/query returns fine answered `found: false` from
-// kuery_impact. The impact lookup must find the same object the query route
-// finds — with and without the edge pinned — and expand its owned ReplicaSet
-// into the downstream list.
+// the query route returns fine answered `found: false` from kuery_impact. The
+// impact lookup must find the same object the query route finds — with and
+// without the edge pinned — and expand its owned ReplicaSet into the
+// downstream list.
 func TestImpactFindsDeployment(t *testing.T) {
 	s, eng := newTestEngine(t)
 	seedEngagedCluster(t, s)
@@ -224,7 +244,7 @@ func TestImpactFindsDeployment(t *testing.T) {
 		{"resource name", impactInput{Edge: testEdge, Kind: "deployments", Namespace: "fleet-pulse", Name: "fleet-pulse-edge"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := runImpact(context.Background(), eng, testTenant, tc.in)
+			out, err := runImpact(context.Background(), directRunner(t, eng), tc.in)
 			if err != nil {
 				t.Fatalf("runImpact: %v", err)
 			}
@@ -252,19 +272,65 @@ func TestImpactFindsDeployment(t *testing.T) {
 	}
 }
 
-// mcpSession connects an MCP client to the kuery handler with the identity
-// headers a hub path would inject (either may be empty to omit it).
-func mcpSession(t *testing.T, deps Deps, tenantHeader, clusterHeader string) (context.Context, *mcp.ClientSession) {
+// mcpFixture builds the MCP handler over the real gated executor: a fake
+// caller factory that makes one SavedView visible in one workspace to one
+// token and grants "run" on it.
+//
+// That is the whole point of the change these tests cover. The tools used to
+// read the tenant out of a header and query the store directly, so a grant on
+// the MCP endpoint was a grant over the entire fleet. Now every call is the
+// run verb on a named SavedView, and the two gates decide.
+type mcpFixture struct {
+	handler http.Handler
+	callers *conformance.FakeCallers
+}
+
+const (
+	mcpToken = "agent-token"
+	mcpView  = "agent-view"
+)
+
+func newMCPFixture(t *testing.T, eng *engine.Engine, engaged []string) *mcpFixture {
 	t.Helper()
-	h := NewHandler(deps)
+	views := kueryv1alpha1.SavedViewsResource
+	callers := &conformance.FakeCallers{
+		Cluster: testTenant,
+		Token:   mcpToken,
+		Objects: []*unstructured.Unstructured{{Object: map[string]any{
+			"apiVersion": kueryv1alpha1.SchemeGroupVersion.String(),
+			"kind":       "SavedView",
+			"metadata":   map[string]any{"name": mcpView},
+		}}},
+		ListKinds: map[schema.GroupVersionResource]string{views: "SavedViewList"},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Subresource == queryapi.RunVerb && a.Name == mcpView
+		},
+	}
+	runner := &queryapi.RunHandler{Engine: eng, Callers: callers, Engagements: engagedEdges(engaged)}
+	return &mcpFixture{handler: NewHandler(Deps{Runner: runner}), callers: callers}
+}
+
+// engagedEdges is a fixed engagement set, standing in for the Engagement
+// records in kuery's own workspace.
+type engagedEdges []string
+
+func (e engagedEdges) EngagedEdges(context.Context, string) ([]string, error) {
+	return []string(e), nil
+}
+
+// mcpSession connects an MCP client to the kuery handler with the credentials
+// a hub path would inject. An empty bearer or cluster omits that header.
+func mcpSession(t *testing.T, fixture *mcpFixture, bearer, clusterHeader string) (context.Context, *mcp.ClientSession) {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tenantHeader != "" {
-			r.Header.Set("X-Railgrid-Tenant", tenantHeader)
+		if bearer != "" {
+			r.Header.Set("Authorization", "Bearer "+bearer)
 		}
 		if clusterHeader != "" {
 			r.Header.Set("X-Railgrid-Cluster", clusterHeader)
 		}
-		h.ServeHTTP(w, r)
+		r.Header.Set("X-Railgrid-User", "agent@railgrid.test")
+		fixture.handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -279,12 +345,13 @@ func mcpSession(t *testing.T, deps Deps, tenantHeader, clusterHeader string) (co
 	return ctx, session
 }
 
-func callImpact(ctx context.Context, t *testing.T, session *mcp.ClientSession) (impactOutput, *mcp.CallToolResult) {
+func callImpact(ctx context.Context, t *testing.T, session *mcp.ClientSession, savedView string) (impactOutput, *mcp.CallToolResult) {
 	t.Helper()
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "kuery_impact",
-		Arguments: map[string]any{"edge": testEdge, "group": "apps", "kind": "Deployment", "namespace": "fleet-pulse", "name": "fleet-pulse-edge"},
-	})
+	arguments := map[string]any{"edge": testEdge, "group": "apps", "kind": "Deployment", "namespace": "fleet-pulse", "name": "fleet-pulse-edge"}
+	if savedView != "" {
+		arguments["savedView"] = savedView
+	}
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "kuery_impact", Arguments: arguments})
 	if err != nil {
 		t.Fatalf("kuery_impact: %v", err)
 	}
@@ -298,108 +365,77 @@ func callImpact(ctx context.Context, t *testing.T, session *mcp.ClientSession) (
 	return out, res
 }
 
-// TestImpactViaMCPClusterIdentity pins the identity contract for MCP calls,
-// which was the console-dev failure: the hub's MCP aggregate identifies the
-// caller by kcp logical-cluster ID, and kuery keys everything by that same
-// ID. A request carrying only X-Railgrid-Cluster is scoped correctly; a
-// workspace path in X-Railgrid-Tenant (with no cluster header) is an explicit
-// error naming the contract, never a silent empty result; a foreign cluster
-// ID sees nothing.
-func TestImpactViaMCPClusterIdentity(t *testing.T) {
+// TestImpactViaMCPIsGated is the security property: an MCP caller is held to
+// exactly the two gates a browser is. The bearer is what authorizes, the
+// cluster header only addresses, and neither an absent credential nor a
+// forged workspace nor an ungranted view gets an answer.
+func TestImpactViaMCPIsGated(t *testing.T) {
 	s, eng := newTestEngine(t)
 	seedEngagedCluster(t, s)
 	seedDeploymentTree(t, s, "fleet-pulse", "fleet-pulse-edge")
+	fixture := newMCPFixture(t, eng, []string{testEdge})
 
-	t.Run("X-Railgrid-Cluster only", func(t *testing.T) {
-		ctx, session := mcpSession(t, Deps{Engine: eng}, "", testTenant)
-		out, res := callImpact(ctx, t, session)
+	t.Run("a granted caller gets an answer", func(t *testing.T) {
+		ctx, session := mcpSession(t, fixture, mcpToken, testTenant)
+		out, res := callImpact(ctx, t, session, mcpView)
 		if res.IsError {
 			t.Fatalf("kuery_impact errored: %+v", res.Content)
 		}
 		if !out.Found {
-			t.Fatalf("Deployment not found with a cluster-ID identity: %s", out.Summary)
+			t.Fatalf("Deployment not found: %s", out.Summary)
 		}
 	})
 
-	t.Run("X-Railgrid-Cluster wins over a transitional path in X-Railgrid-Tenant", func(t *testing.T) {
-		ctx, session := mcpSession(t, Deps{Engine: eng}, "root:railgrid:tenants:org:ws", testTenant)
-		out, res := callImpact(ctx, t, session)
-		if res.IsError || !out.Found {
-			t.Fatalf("kuery_impact with both headers: error=%v found=%v: %+v", res.IsError, out.Found, res.Content)
+	t.Run("no bearer is refused", func(t *testing.T) {
+		ctx, session := mcpSession(t, fixture, "", testTenant)
+		if _, res := callImpact(ctx, t, session, mcpView); !res.IsError {
+			t.Fatalf("an unauthenticated call was answered: %+v", res.StructuredContent)
 		}
 	})
 
-	t.Run("path in X-Railgrid-Tenant is rejected with a clear message", func(t *testing.T) {
-		ctx, session := mcpSession(t, Deps{Engine: eng}, "root:railgrid:tenants:org:ws", "")
-		_, res := callImpact(ctx, t, session)
-		if !res.IsError {
-			t.Fatalf("expected an error for a path identity, got %+v", res.StructuredContent)
-		}
-		raw, _ := json.Marshal(res.Content)
-		for _, want := range []string{"X-Railgrid-Tenant", "workspace path", "X-Railgrid-Cluster"} {
-			if !strings.Contains(string(raw), want) {
-				t.Errorf("error content %s does not mention %q", raw, want)
-			}
+	t.Run("a forged foreign workspace is refused", func(t *testing.T) {
+		// The header is addressing, not authority: the caller's own bearer is
+		// what the gates run with, and it can see nothing in that workspace.
+		ctx, session := mcpSession(t, fixture, mcpToken, conformance.ForeignCluster)
+		if _, res := callImpact(ctx, t, session, mcpView); !res.IsError {
+			t.Fatalf("a foreign workspace was answered: %+v", res.StructuredContent)
 		}
 	})
 
-	t.Run("foreign cluster sees nothing", func(t *testing.T) {
-		ctx, session := mcpSession(t, Deps{Engine: eng}, "", "zzzforeign000000")
-		out, res := callImpact(ctx, t, session)
-		if res.IsError {
-			t.Fatalf("kuery_impact errored: %+v", res.Content)
-		}
-		if out.Found {
-			t.Fatalf("foreign tenant found another tenant's object: %+v", out)
+	t.Run("a view the caller is not granted is refused", func(t *testing.T) {
+		ctx, session := mcpSession(t, fixture, mcpToken, testTenant)
+		if _, res := callImpact(ctx, t, session, "somebody-elses-view"); !res.IsError {
+			t.Fatalf("an ungranted view was answered: %+v", res.StructuredContent)
 		}
 	})
 
-	t.Run("no identity is an error", func(t *testing.T) {
-		ctx, session := mcpSession(t, Deps{Engine: eng}, "", "")
-		_, res := callImpact(ctx, t, session)
-		if !res.IsError {
-			t.Fatalf("expected an error without identity, got %+v", res.StructuredContent)
+	t.Run("no workspace at all is refused", func(t *testing.T) {
+		ctx, session := mcpSession(t, fixture, mcpToken, "")
+		if _, res := callImpact(ctx, t, session, mcpView); !res.IsError {
+			t.Fatalf("a call with no workspace was answered: %+v", res.StructuredContent)
 		}
 	})
 }
 
-// TestImpactViaMCP drives kuery_impact through the real streamable-HTTP
-// handler with X-Railgrid-Tenant carrying the cluster ID (the hub's tenant
-// header once it, too, carries the ID), so the tool wiring (identity closure,
-// input decoding, structured output) is covered too.
-func TestImpactViaMCP(t *testing.T) {
+// TestQueryViaMCP drives kuery_query through the real streamable-HTTP handler,
+// so the tool wiring (input decoding, the gated executor, structured output)
+// is covered end to end.
+func TestQueryViaMCP(t *testing.T) {
 	s, eng := newTestEngine(t)
 	seedEngagedCluster(t, s)
 	seedDeploymentTree(t, s, "fleet-pulse", "fleet-pulse-edge")
+	fixture := newMCPFixture(t, eng, []string{testEdge})
+	ctx, session := mcpSession(t, fixture, mcpToken, testTenant)
 
-	ctx, session := mcpSession(t, Deps{Engine: eng}, testTenant, "")
-
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "kuery_impact",
-		Arguments: map[string]any{"edge": testEdge, "group": "apps", "kind": "Deployment", "namespace": "fleet-pulse", "name": "fleet-pulse-edge"},
-	})
-	if err != nil {
-		t.Fatalf("kuery_impact: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("kuery_impact returned error: %+v", res.Content)
-	}
-	raw, _ := json.Marshal(res.StructuredContent)
-	var out impactOutput
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatal(err)
-	}
-	if !out.Found {
-		t.Fatalf("not found via MCP: %s", out.Summary)
-	}
-
-	// And the object-shaped kuery_query spec now passes input validation.
 	qres, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name: "kuery_query",
-		Arguments: map[string]any{"spec": map[string]any{
-			"filter":  map[string]any{"objects": []any{map[string]any{"groupKind": map[string]any{"apiGroup": "apps", "kind": "Deployment"}}}},
-			"objects": map[string]any{"cluster": true, "object": map[string]any{"metadata": map[string]any{"name": true}}},
-		}},
+		Arguments: map[string]any{
+			"savedView": mcpView,
+			"spec": map[string]any{
+				"filter":  map[string]any{"objects": []any{map[string]any{"groupKind": map[string]any{"apiGroup": "apps", "kind": "Deployment"}}}},
+				"objects": map[string]any{"cluster": true, "object": map[string]any{"metadata": map[string]any{"name": true}}},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("kuery_query: %v", err)

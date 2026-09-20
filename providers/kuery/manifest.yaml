@@ -27,6 +27,31 @@ spec:
   version: "0.1.0"
   category: "Observability"
   iconURL: "/ui/providers/kuery/icon.svg"
+  # Kuery syncs the edges a tenant already has, so edges must be enabled here
+  # first — and `composes` is what its engagement controller is allowed to do
+  # with them, declared for the tenant to accept at Enable and measured again
+  # by the hub's identity policy (clause E) on every mint.
+  #
+  # Read-only, deliberately: kuery lists and watches the workspace's
+  # KubernetesClusters to learn which edges exist and which are connected, and
+  # gets the one it is about to engage because the edges data plane's first
+  # gate is a real GET of the addressed edge AS THE CALLER. It never creates,
+  # updates or deletes an edge.
+  #
+  # LinuxServer and MacOSServer are absent because kuery does not engage them:
+  # they carry no Kubernetes API to sync (engagement/controller.go edgeGVK).
+  #
+  # This is NOT a permission claim, and that is the whole point: a claim on a
+  # first-party (*.railgrid.ai) group pins one APIExport identityHash for every
+  # consumer at once, so an org running its own edges provider would be served
+  # nothing (AGENTS.md §5.7). A composition is resolved per workspace through
+  # whatever export is bound there, and the tenant can revoke it.
+  dependencies:
+    - name: edges
+      composes:
+        - group: edges.railgrid.ai
+          resource: kubernetesclusters
+          verbs: ["get", "list", "watch"]
   ui:
     # Dev loopback port (KUERY_PORT / Tiltfile run-provider-kuery). Must be
     # 8084, not 8081 — quickstart owns 8081, and the hub reverse-proxies the
@@ -36,37 +61,51 @@ spec:
     indexPath: "/"
   backend:
     url: "http://localhost:8084"
-    healthPath: "/healthz"
+    # /readyz, not /healthz: readiness reports whether this provider can
+    # actually reach the APIExport virtual workspace it watches and, while a
+    # replica holds the controller lease, whether tenant workspaces are really
+    # being watched. /healthz answers "the process is up", which was true the
+    # whole time nothing reconciled.
+    healthPath: "/readyz"
 
-  # Kuery's engagement controller opens BACKGROUND connections to the
-  # tenant's edge clusters through the hub's edges-proxy (informer sync).
-  # This flag asks the hub to grant the provider SA the "proxy" verb on
-  # edges in the tenant workspace when the tenant clicks Enable; the
-  # Enable dialog surfaces the request. Removed again on Disable.
-  edgeProxyAccess: true
-
+  # No edgeProxyAccess. Kuery's engagement controller reaches each tenant's
+  # edges as a hub-minted identity owned by that workspace's kuery APIBinding,
+  # carrying the composition above plus `create` on the data-plane coordinate
+  # kubernetesclusters/k8s for the edges it engages. The Enable-time
+  # edges-proxy grant this flag used to ask for was never the credential on
+  # that path — it grants the PROVIDER SA, which the edges data plane cannot
+  # authenticate across workspaces anyway (see engagement/controller.go).
   apiExport:
     name: "kuery.providers.railgrid.ai"
-    # Built-in types ONLY — deliberately no first-party (*.railgrid.ai) claims:
-    # those pin one APIExport identityHash for every consumer at once and
-    # break mixed platform/self-hosted deployments. Edge discovery acts as a
-    # per-workspace "railgrid-kuery" ServiceAccount through each workspace's own
-    # edges binding; these claims provision that identity.
-    permissionClaims:
-      - resource: serviceaccounts
-        verbs: [get, list, watch, create]
-        tenantScoped: true
-      - resource: secrets
-        verbs: [get, list, watch, create]
-        tenantScoped: true
-      - resource: clusterroles
-        group: rbac.authorization.k8s.io
-        verbs: [get, list, watch, create]
-        tenantScoped: true
-      - resource: clusterrolebindings
-        group: rbac.authorization.k8s.io
-        verbs: [get, list, watch, create]
-        tenantScoped: true
+    # NO permissionClaims AT ALL.
+    #
+    # No first-party (*.railgrid.ai) claim, because such a claim pins one
+    # APIExport identityHash for every consumer at once and breaks the moment
+    # an org self-hosts the edges provider. What the engagement controller
+    # needs on an edge is declared as a composition instead
+    # (spec.dependencies[].composes above) and reached through a hub-minted
+    # scoped identity acting inside each tenant workspace
+    # (engagement/identity.go).
+    #
+    # And no serviceaccounts, secrets, clusterroles or clusterrolebindings
+    # either: a provider does not mint identities, it asks the hub, and a claim
+    # on those types is a contract violation rather than a design choice
+    # (docs/provider-connectivity-contract.md §"Scoped identities"). Kuery
+    # writes no Secret of its own — the only one it ever touched was the legacy
+    # ServiceAccount token the hub now issues and expires for it.
+  # Data-plane verbs this provider serves, declared so the coordinate is
+  # machine-readable. Declaring one grants and serves nothing: every call is
+  # still authorized by this provider's own caller-scoped SSAR on
+  # {resource}/{verb}. What the declaration buys is that the hub
+  # scoped-identity service can mint a capability for a verb it can verify
+  # exists (pkg/hub/identity/policy.go clause C), instead of consumers
+  # hardcoding a coordinate nobody validates.
+  dataPlane:
+    verbs:
+      - resource: savedviews
+        verb: run
+        description: "Run the saved view's query and return its result."
+        readOnly: true
   # Lets an organization run this provider in its own cluster
   # (docs/byo-providers.md). Keep manifest.yaml and
   # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the

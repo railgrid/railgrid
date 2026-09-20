@@ -145,160 +145,6 @@ func TestHubServerURL(t *testing.T) {
 	}
 }
 
-func TestEdgeAgentProxyPath(t *testing.T) {
-	tests := []struct {
-		name        string
-		cluster     string
-		edgeName    string
-		subresource string
-		want        string
-	}{
-		{
-			name:        "proxy subresource",
-			cluster:     "abc123",
-			edgeName:    "my-edge",
-			subresource: "proxy",
-			want:        "/services/agent-proxy/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/proxy",
-		},
-		{
-			name:        "status subresource",
-			cluster:     "root:railgrid:user-default",
-			edgeName:    "edge-1",
-			subresource: "status",
-			want:        "/services/agent-proxy/root:railgrid:user-default/apis/railgrid.ai/v1alpha1/edges/edge-1/status",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := EdgeAgentProxyPath(tt.cluster, tt.edgeName, tt.subresource)
-			if got != tt.want {
-				t.Errorf("EdgeAgentProxyPath(%q, %q, %q) = %q, want %q",
-					tt.cluster, tt.edgeName, tt.subresource, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestEdgeAgentProxyURL(t *testing.T) {
-	tests := []struct {
-		name        string
-		hubBase     string
-		cluster     string
-		edgeName    string
-		subresource string
-		want        string
-	}{
-		{
-			name:        "standard proxy URL",
-			hubBase:     "https://hub:9443",
-			cluster:     "abc123",
-			edgeName:    "my-edge",
-			subresource: "proxy",
-			want:        "https://hub:9443/services/agent-proxy/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/proxy",
-		},
-		{
-			name:        "hub base with trailing slash",
-			hubBase:     "https://hub:9443/",
-			cluster:     "abc123",
-			edgeName:    "my-edge",
-			subresource: "proxy",
-			want:        "https://hub:9443/services/agent-proxy/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/proxy",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := EdgeAgentProxyURL(tt.hubBase, tt.cluster, tt.edgeName, tt.subresource)
-			if got != tt.want {
-				t.Errorf("EdgeAgentProxyURL(%q, %q, %q, %q) = %q, want %q",
-					tt.hubBase, tt.cluster, tt.edgeName, tt.subresource, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestEdgeProxyPath(t *testing.T) {
-	tests := []struct {
-		name        string
-		cluster     string
-		edgeName    string
-		subresource string
-		want        string
-	}{
-		{
-			name:        "k8s subresource",
-			cluster:     "abc123",
-			edgeName:    "my-edge",
-			subresource: "k8s",
-			want:        "/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/k8s",
-		},
-		{
-			name:        "ssh subresource",
-			cluster:     "abc123",
-			edgeName:    "my-edge",
-			subresource: "ssh",
-			want:        "/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/ssh",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := EdgeProxyPath(tt.cluster, tt.edgeName, tt.subresource)
-			if got != tt.want {
-				t.Errorf("EdgeProxyPath(%q, %q, %q) = %q, want %q",
-					tt.cluster, tt.edgeName, tt.subresource, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestEdgeProxyURL(t *testing.T) {
-	tests := []struct {
-		name        string
-		hubBase     string
-		cluster     string
-		edgeName    string
-		subresource string
-		want        string
-	}{
-		{
-			name:        "k8s URL",
-			hubBase:     "https://hub:9443",
-			cluster:     "abc123",
-			edgeName:    "my-edge",
-			subresource: "k8s",
-			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/k8s",
-		},
-		{
-			name:        "ssh URL",
-			hubBase:     "https://hub:9443",
-			cluster:     "abc123",
-			edgeName:    "server-1",
-			subresource: "ssh",
-			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/server-1/ssh",
-		},
-		{
-			name:        "hub base with trailing slash",
-			hubBase:     "https://hub:9443/",
-			cluster:     "abc123",
-			edgeName:    "my-edge",
-			subresource: "k8s",
-			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge/k8s",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := EdgeProxyURL(tt.hubBase, tt.cluster, tt.edgeName, tt.subresource)
-			if got != tt.want {
-				t.Errorf("EdgeProxyURL(%q, %q, %q, %q) = %q, want %q",
-					tt.hubBase, tt.cluster, tt.edgeName, tt.subresource, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestEdgeProviderCoordinates(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -324,7 +170,7 @@ func TestEdgeProviderCoordinates(t *testing.T) {
 
 func TestProviderAgentProxyURLUsesMacOSResource(t *testing.T) {
 	got := ProviderAgentProxyURL("https://hub:9443/", "macos", "root:railgrid:tenant", "mac-mini", "proxy")
-	want := "https://hub:9443/services/providers/edges/agent/root:railgrid:tenant/apis/edges.railgrid.ai/v1alpha1/macosservers/mac-mini/proxy"
+	want := "https://hub:9443/services/providers/edges/agent/clusters/root:railgrid:tenant/macosservers/mac-mini/proxy"
 	if got != want {
 		t.Fatalf("ProviderAgentProxyURL() = %q, want %q", got, want)
 	}
@@ -415,12 +261,6 @@ func TestExternalizeURL(t *testing.T) {
 }
 
 func TestConstants(t *testing.T) {
-	if PathPrefixAgentProxy != "/services/agent-proxy" {
-		t.Errorf("PathPrefixAgentProxy = %q, want %q", PathPrefixAgentProxy, "/services/agent-proxy")
-	}
-	if PathPrefixEdgesProxy != "/services/edges-proxy" {
-		t.Errorf("PathPrefixEdgesProxy = %q, want %q", PathPrefixEdgesProxy, "/services/edges-proxy")
-	}
 	if PathPrefixMCPServer != "/services/mcpserver" {
 		t.Errorf("PathPrefixMCPServer = %q, want %q", PathPrefixMCPServer, "/services/mcpserver")
 	}

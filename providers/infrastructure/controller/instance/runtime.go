@@ -298,7 +298,7 @@ func (c *Controller) backfillRuntimeNamespaceLabels(ctx context.Context, ns *uns
 // changed. When runtimeObj is nil (validation failure, template missing) the
 // previously mirrored fields are preserved so a running instance's status
 // isn't wiped by a bad spec edit. Returns whether the instance is Ready.
-func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Client, inst *unstructured.Unstructured, tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured, valid, oidc *conditionSpec) (bool, error) {
+func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Client, inst *unstructured.Unstructured, tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured, valid *conditionSpec, extra ...*conditionSpec) (bool, error) {
 	prevStatus, _, _ := unstructured.NestedMap(inst.Object, "status")
 
 	var next map[string]any
@@ -318,8 +318,10 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 	prevConds, _ := prevStatus["conditions"].([]any)
 	conds = stampConditionObservedGeneration(conds, "Ready", inst.GetGeneration())
 	conds = upsertCondition(conds, prevConds, valid, inst.GetGeneration())
-	if oidc != nil {
-		conds = upsertCondition(conds, prevConds, oidc, inst.GetGeneration())
+	for _, cond := range extra {
+		if cond != nil {
+			conds = upsertCondition(conds, prevConds, cond, inst.GetGeneration())
+		}
 	}
 	next["conditions"] = conds
 
@@ -490,13 +492,16 @@ func (c *Controller) finalize(ctx context.Context, tenantClient client.Client, t
 		// The runtime CR's delete event re-enters this path; the watch is
 		// (re)registered from the ref here because the Template may already
 		// be retired, in which case no reconcile of a live Instance did it.
+		// Registering the watch BEFORE waiting is what makes the wait
+		// event-driven: the teardown is on the far side of the seam, so it is
+		// watched rather than polled.
 		if _, err := c.cfg.Runtime.Resource(target.gvr).Namespace(ns).Get(ctx, target.name, metav1.GetOptions{}); err == nil {
 			if c.runtimeWatches != nil {
 				if _, werr := c.runtimeWatches.ensure(ctx, target.gvr, target.kind); werr != nil {
 					return ctrl.Result{}, werr
 				}
 			}
-			return ctrl.Result{RequeueAfter: resyncPeriod}, nil
+			return ctrl.Result{}, nil
 		} else if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("check runtime instance gone: %w", err)
 		}

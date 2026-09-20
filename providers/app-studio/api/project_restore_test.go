@@ -63,6 +63,7 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 	commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 	workspaces := workspace.NewFileStore(t.TempDir())
+	bindTestProjectLedgerTo(workspaces, client)
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "stale.txt", Content: "remove\n"}); err != nil {
 		t.Fatal(err)
@@ -80,10 +81,10 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 
 	var syncs atomic.Int32
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
-		store:            store.NewMemoryStore(),
-		workspaces:       workspaces,
-		hubBase:          upstream.URL,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		store:      store.NewMemoryStore(),
+		workspaces: workspaces,
+		hubBase:    upstream.URL,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return client, nil
 		},
@@ -179,6 +180,8 @@ func TestRestoreProjectWorkspaceKeepsSkippedFiles(t *testing.T) {
 			commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 			client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 			workspaces := workspace.NewFileStore(t.TempDir())
+			bindTestProjectLedgerTo(workspaces, client)
+			bindTestProjectLedgerTo(workspaces, client)
 			scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 			if _, err := workspaces.PutFile(ctx, scope, workspace.PutOptions{Path: "public/logo.png", Data: logo}); err != nil {
 				t.Fatal(err)
@@ -202,7 +205,7 @@ func TestRestoreProjectWorkspaceKeepsSkippedFiles(t *testing.T) {
 			}, nil)
 			defer upstream.Close()
 			server := &Server{
-				tenantWorkspaces:             staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
+				tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 				store:                        store.NewMemoryStore(),
 				workspaces:                   workspaces,
 				hubBase:                      upstream.URL,
@@ -241,6 +244,7 @@ func TestRestoreProjectWorkspaceRejectsMutationDuringCheckout(t *testing.T) {
 	commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 	workspaces := workspace.NewFileStore(t.TempDir())
+	bindTestProjectLedgerTo(workspaces, client)
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "app.txt", Content: "before\n"}); err != nil {
 		t.Fatal(err)
@@ -260,10 +264,10 @@ func TestRestoreProjectWorkspaceRejectsMutationDuringCheckout(t *testing.T) {
 	defer upstream.Close()
 
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
-		store:            store.NewMemoryStore(),
-		workspaces:       workspaces,
-		hubBase:          upstream.URL,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		store:      store.NewMemoryStore(),
+		workspaces: workspaces,
+		hubBase:    upstream.URL,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return client, nil
 		},
@@ -286,6 +290,7 @@ func TestRestoreProjectWorkspaceRejectsStaleHistorySelectionBeforeCheckout(t *te
 	commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 	workspaces := workspace.NewFileStore(t.TempDir())
+	bindTestProjectLedgerTo(workspaces, client)
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "app.txt", Content: "newer edit\n"}); err != nil {
 		t.Fatal(err)
@@ -295,9 +300,9 @@ func TestRestoreProjectWorkspaceRejectsStaleHistorySelectionBeforeCheckout(t *te
 		t.Fatal(err)
 	}
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
-		store:            store.NewMemoryStore(),
-		workspaces:       workspaces,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		store:      store.NewMemoryStore(),
+		workspaces: workspaces,
 		// No hubBase is deliberate: a stale request must fail before checkout.
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 	}
@@ -400,6 +405,7 @@ func TestRestoreProjectWorkspaceAcceptsQuotedSourceRevision(t *testing.T) {
 	commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 	workspaces := workspace.NewFileStore(t.TempDir())
+	bindTestProjectLedgerTo(workspaces, client)
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "stale.txt", Content: "remove\n"}); err != nil {
 		t.Fatal(err)
@@ -414,7 +420,7 @@ func TestRestoreProjectWorkspaceAcceptsQuotedSourceRevision(t *testing.T) {
 	}, nil)
 	defer upstream.Close()
 	server := &Server{
-		tenantWorkspaces:             staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:                        store.NewMemoryStore(),
 		workspaces:                   workspaces,
 		hubBase:                      upstream.URL,

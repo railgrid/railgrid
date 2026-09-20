@@ -25,10 +25,17 @@ const (
 )
 
 // runInitCmd bootstraps the provider's APIExport into its workspace: it applies
-// the KubernetesCluster + LinuxServer + MacOSServer APIResourceSchemas from
-// RAILGRID_SCHEMAS_DIR, creates the edges.providers.railgrid.ai APIExport referencing
-// them, the endpoint slice, and the bind grant. Tenants that bind this export get
-// all three edge kinds.
+// the APIResourceSchemas from RAILGRID_KCP_DIR, then the generated
+// edges.providers.railgrid.ai APIExport that references them, the endpoint
+// slice, and the bind grant. Tenants that bind this export get every edge kind.
+//
+// The APIExport MUST DECLARE the same permission claims the CatalogEntry
+// advertises (and tenants accept on Enable) — otherwise kcp marks the
+// APIBinding's claims "unexpected/invalid", the core types never surface in the
+// APIExport virtual workspace, and the RBAC reconciler's Owns(&Secret{})
+// informer fails ("no matches for kind Secret") so the cluster never engages.
+// That is now structural rather than a rule to remember: both come from
+// manifest.yaml, codegen writes the export, and init applies it as-is.
 func runInitCmd(ctx context.Context) error {
 	log := klog.Background().WithName("edges-init")
 
@@ -42,39 +49,25 @@ func runInitCmd(ctx context.Context) error {
 	// bootstrap both the platform workspace and an org's self-hosted copy. Set
 	// the env var only to reference an export in a different workspace.
 	workspacePath := os.Getenv("EDGES_WORKSPACE_PATH")
-	schemasDir := os.Getenv("RAILGRID_SCHEMAS_DIR")
-	if schemasDir == "" {
-		schemasDir = "/etc/railgrid/schemas"
+	kcpDir := os.Getenv("RAILGRID_KCP_DIR")
+	if kcpDir == "" {
+		kcpDir = "/etc/railgrid/kcp"
+	}
+	// Per-installation APIExport identity hashes for first-party claim groups,
+	// as "group=hash,group=hash". Empty for this provider: it claims only
+	// built-in types, which need no hash.
+	identityHashes, err := sdkinstall.ParseIdentityHashes(os.Getenv("RAILGRID_IDENTITY_HASHES"))
+	if err != nil {
+		return err
 	}
 	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
-		Config:        config,
-		ExportName:    apiExportName,
-		WorkspacePath: workspacePath,
-		SchemasDir:    schemasDir,
-		// The APIExport MUST DECLARE the same permission claims the CatalogEntry
-		// advertises (and tenants accept on Enable) — otherwise kcp marks the
-		// APIBinding's claims "unexpected/invalid" and the core types never
-		// surface in the APIExport virtual workspace, so the RBAC reconciler's
-		// Owns(&Secret{}) informer fails ("no matches for kind Secret") and the
-		// cluster never engages. These are the tenant-workspace objects the
-		// token/RBAC/lifecycle reconcilers create per edge. Built-in types →
-		// empty Group + no IdentityHash. Verbs MUST match the CatalogEntry.
-		Claims: []sdkinstall.PermissionClaim{
-			{Resource: "namespaces", Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
-			{Resource: "serviceaccounts", Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
-			{Resource: "secrets", Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
-			{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
-			{Group: "rbac.authorization.k8s.io", Resource: "clusterrolebindings", Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
-			// Delegated authn/authz for the data plane (kcp#4279 / kcp#4280): the
-			// provider validates presented tokens and authorizes the resolved
-			// identity against the consumer workspace via the APIExport virtual
-			// workspace. Non-persisted built-in review APIs — no identityHash.
-			// MUST match the CatalogEntry claims (manifest.yaml).
-			{Group: "authentication.k8s.io", Resource: "tokenreviews", Verbs: []string{"create"}},
-			{Group: "authorization.k8s.io", Resource: "subjectaccessreviews", Verbs: []string{"create"}},
-		},
+		Config:           config,
+		ExportName:       apiExportName,
+		WorkspacePath:    workspacePath,
+		KCPDir:           kcpDir,
+		IdentityHashes:   identityHashes,
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)

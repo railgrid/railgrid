@@ -9,9 +9,15 @@ the embedded build output.
 ## Layout
 
 - `src/main.ts` — entry script the portal loads as a one-shot `<script>`.
-  Registers the `<railgrid-provider-quickstart>` custom element.
-- `src/element.ts` — the element class itself. Renders in light DOM so
-  the portal's CSS custom properties cascade in.
+  Registers `<railgrid-provider-quickstart>` and the optional
+  `<railgrid-dashboard-tile-quickstart>`.
+- `src/element.ts` — the provider page. Lists and creates Greetings with
+  `portalkit/kube.ts createKubeClient` over `/clusters/{id}`, and calls the
+  provider's one data-plane verb through `providerFetch`. Renders in light DOM
+  so the portal's CSS custom properties cascade in.
+- `src/tile.ts` — the dashboard card, built on `portalkit/dashboardtile.ts`.
+- `src/portalkit/` — vendored copy of `provider-sdk/portalkit`. Never edit it:
+  edit the canonical copy and run `make sync-portalkit`.
 - `src/style.css` — element styles, namespaced under the tag name and
   attached once as a `<style>` in `<head>`.
 - `public/icon.svg` — provider tile icon shown in the portal side-nav.
@@ -25,6 +31,7 @@ npm install
 npm run dev       # vite dev server with HMR
 npm run build     # produce dist/
 npm run typecheck # tsc --noEmit
+npm test          # layout + data-path assertions (node --test)
 ```
 
 The Go binary embeds `dist/`, so a full rebuild is:

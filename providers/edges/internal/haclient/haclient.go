@@ -53,9 +53,6 @@ const (
 	SvcPolicyWarn    = "warn"
 )
 
-// svcTargetHeader is the internal spelling used throughout this package.
-const svcTargetHeader = SvcTargetHeader
-
 // IsHostNotAllowed reports whether resp is the agent refusing to dial the
 // target (403 with X-Railgrid-Svc-Policy: enforce), as opposed to a 403 from
 // the service. See pkg/agent/tunnel/svc.go.

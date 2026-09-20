@@ -47,12 +47,23 @@ type identity struct {
 // table.
 type workspaceLookup func(ctx context.Context, clusterID, token string) (tenantaccess.Workspace, error)
 
-// identityFromRequest extracts and validates the tenant context. It writes a
-// 401 and returns ok=false when the tenant header is missing. Workspace
-// resolution is best-effort here: handlers that need the org/workspace scope
-// check it (requireClient) and report the resolution error, so an endpoint
-// that only needs the cluster ID keeps working when the lookup is unavailable.
+// identityFromRequest returns the tenant context for this request.
+//
+// On a data-plane verb the router has already resolved it from the PATH and
+// stashed it (see dataplane.go), which is what lets a caller with no
+// hub-injected identity headers — another provider's ServiceAccount, a job —
+// use the same handlers as a signed-in user. Everything else (the MCP
+// transport, the OAuth callback) still reads the hub's headers.
+//
+// It writes a 401 and returns ok=false when there is no tenant context at all.
+// Workspace resolution is best-effort here: handlers that need the
+// org/workspace scope check it (requireClient) and report the resolution
+// error, so an endpoint that only needs the cluster ID keeps working when the
+// lookup is unavailable.
 func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool) {
+	if gate, ok := gateFrom(r.Context()); ok {
+		return gate.identity, true
+	}
 	id := identity{
 		tenant:    strings.TrimSpace(r.Header.Get("X-Railgrid-Tenant")),
 		clusterID: strings.TrimSpace(r.Header.Get("X-Railgrid-Cluster")),
@@ -74,6 +85,13 @@ func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (id
 // resolveWorkspace fills the org/workspace scope of id from kcp. A missing
 // lookup (no hub URL configured) or a failed one leaves the scope empty and
 // records why in id.workspaceErr.
+//
+// A failed kcp read falls back to the cluster→workspace mapping this provider
+// recorded the last time a caller who COULD read it came through. That is what
+// makes a service identity usable on the data plane: it holds `create` on
+// agents/run and `get` on the agent, and has no business also holding a read
+// on the workspace's LogicalCluster just so its transcripts land in the right
+// Postgres rows.
 func (s *Server) resolveWorkspace(ctx context.Context, id *identity) {
 	if s == nil || s.workspaces == nil {
 		id.workspaceErr = errNoWorkspaceLookup
@@ -85,10 +103,23 @@ func (s *Server) resolveWorkspace(ctx context.Context, id *identity) {
 	}
 	ws, err := s.workspaces(ctx, id.clusterID, id.token)
 	if err != nil {
+		if ref, ok, refErr := s.tenantRef(ctx, id.clusterID); refErr == nil && ok {
+			id.orgUUID, id.workspaceUUID = ref.OrgUUID, ref.WorkspaceUUID
+			return
+		}
 		id.workspaceErr = err
 		return
 	}
 	id.workspacePath, id.orgUUID, id.workspaceUUID = ws.Path, ws.OrgUUID, ws.WorkspaceUUID
+}
+
+// tenantRef reads the recorded cluster→workspace mapping, tolerating a Server
+// assembled without a store (unit tests of the header plumbing alone).
+func (s *Server) tenantRef(ctx context.Context, clusterID string) (store.TenantRef, bool, error) {
+	if s.store == nil {
+		return store.TenantRef{}, false, nil
+	}
+	return s.store.GetTenantRef(ctx, clusterID)
 }
 
 // errNoWorkspaceLookup is the workspaceErr when there is nothing to ask: no

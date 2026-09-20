@@ -327,11 +327,9 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, triggerSummary{}, err
 		}
-		req := createTriggerRequest{
-			Name: in.Name, AgentRef: in.AgentRef, Source: in.Source,
-			ConnectionRef: in.ConnectionRef, Filter: in.Filter, Task: in.Task,
-			Suspend: in.Suspend, ChannelRef: in.ChannelRef,
-		}
+		// Field-for-field mirror of createTriggerRequest (only the jsonschema
+		// tags differ), so the conversion keeps the two in lockstep.
+		req := createTriggerRequest(in)
 		t, err := s.applyTriggerCreate(ctx, c, s.mcpIdentity(ctx, r).clusterID, &req)
 		if err != nil {
 			return nil, triggerSummary{}, err
@@ -390,10 +388,9 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, toolsetSummary{}, err
 		}
-		req := toolsetRequest{
-			Name: in.Name, DisplayName: in.DisplayName, Description: in.Description,
-			Families: in.Families, Connections: in.Connections, RequireApproval: in.RequireApproval,
-		}
+		// Field-for-field mirror of toolsetRequest (only the jsonschema tags
+		// differ), so the conversion keeps the two in lockstep.
+		req := toolsetRequest(in)
 		ts, err := applyToolsetCreate(ctx, c, &req)
 		if err != nil {
 			return nil, toolsetSummary{}, err
@@ -536,7 +533,10 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, credentialSummary{}, err
 		}
-		return nil, credentialSummary{Name: cred.Name, Provider: cred.Provider, Model: cred.Model, HasAPIKey: cred.HasAPIKey}, nil
+		// Ready is deliberately absent here: the reconciler has not seen the
+		// object yet, and claiming readiness a moment before anything verified
+		// it is the mistake hasAPIKey used to make.
+		return nil, credentialSummary{Name: cred.Name, Provider: cred.Provider, BaseURL: cred.BaseURL, Model: cred.Model}, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -550,7 +550,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			return nil, deletedOutput{}, err
 		}
 		name := strings.TrimSpace(in.Name)
-		if err := c.DeleteSecret(ctx, llm.SecretNamespace, llm.CredentialSecretName(name)); err != nil {
+		if err := deleteCredential(ctx, c, name); err != nil {
 			return nil, deletedOutput{}, err
 		}
 		return nil, deletedOutput{Deleted: name}, nil
@@ -559,7 +559,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "test_model_credential",
 		Title:       "Test a model credential",
-		Description: "Health-check a model credential by listing the models its endpoint serves. Returns latency and, on success, the available model ids.",
+		Description: "Health-check a model credential by listing the models its endpoint serves. Returns latency and, on success, the chat-capable model ids (the endpoint's speech, embedding, image and responses-only models are filtered out — this provider runs agents on Chat Completions).",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in nameInput) (*mcp.CallToolResult, testResultOutput, error) {
 		c, err := s.mcpClient(r)
@@ -570,7 +570,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, testResultOutput{OK: false, Error: "credential not configured: " + err.Error()}, nil
 		}
-		models, latency, perr := probeOpenAIModels(ctx, profile.BaseURL, profile.APIKey)
+		models, latency, perr := llm.DiscoverModels(ctx, profile.BaseURL, profile.APIKey)
 		if perr != nil {
 			return nil, testResultOutput{OK: false, LatencyMS: latency.Milliseconds(), Error: perr.Error()}, nil
 		}
@@ -590,12 +590,12 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			Families: toolFamilyDocs,
 			Note:     "core is always granted and cannot be removed.",
 		}
-		// Best-effort, cache-only: the aggregate endpoint knows which railgrid
-		// providers an interactive run reaches without any grant. Probing it
-		// live would put a network round-trip inside a discovery call, so an
-		// empty list here means "not probed recently", not "nothing enabled".
-		if cached, hit := s.capabilities.get(s.mcpIdentity(ctx, r).clusterID); hit {
-			out.Providers = cached.Providers
+		// Best-effort: the workspace's MCPServer already publishes which railgrid
+		// providers its aggregate endpoint reaches, so this is one cached read
+		// of a bound object rather than a live MCP probe inside a discovery
+		// call. An empty list means "could not tell", not "nothing enabled".
+		if providers := s.federatedProviders(ctx, s.mcpIdentity(ctx, r)); len(providers) > 0 {
+			out.Providers = providers
 			out.Note += " The listed providers are reachable in interactive runs via the hub's aggregate endpoint, with no tool grant needed."
 		}
 		return nil, out, nil

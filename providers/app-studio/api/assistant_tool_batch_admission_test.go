@@ -479,18 +479,6 @@ func projectEinoAssistantToolCallForAdmissionTest(id, name, arguments string) sc
 	}
 }
 
-func projectEinoAssistantDistinctReadCallsForAdmissionTest(count int) []schema.ToolCall {
-	calls := make([]schema.ToolCall, count)
-	for index := range calls {
-		calls[index] = projectEinoAssistantToolCallForAdmissionTest(
-			fmt.Sprintf("read-%d", index),
-			projectToolReadFile,
-			fmt.Sprintf(`{"file_path":"src/file-%d.ts"}`, index),
-		)
-	}
-	return calls
-}
-
 type projectEinoAssistantTimeoutTestModel struct {
 	mode string
 }

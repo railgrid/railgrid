@@ -29,6 +29,27 @@ helm upgrade --install app-studio oci://ghcr.io/railgrid/charts/railgrid-app-stu
   --set catalogEntry.enabled=true
 ```
 
+## Dependencies
+
+App Studio needs the Infrastructure and Code providers enabled in a workspace
+before it can be enabled there, and its reconcilers act on their objects —
+`Instance`, `Repository`, `RepositoryCommit` — inside that workspace. What it
+does to each is declared as a **composition** on the CatalogEntry
+(`spec.dependencies[].composes`), the tenant accepts it at Enable, and the hub
+mints a short-lived, per-Project/per-Studio identity carrying exactly those
+rules.
+
+Nothing here has to be configured, and in particular **no APIExport identity
+hashes**. An earlier cut of this chart took a permission claim on those
+first-party kinds instead, which meant pinning the serving APIExport's
+`identityHash` per installation — and because one export pins one identity for
+every consuming workspace at once, a single install could not serve a workspace
+that had bound its own copy of a dependency. Acting inside the workspace
+through the workspace's own `APIBinding`s has no such limit: it reaches
+whichever copy the tenant enabled, platform or self-hosted. If you are
+upgrading from a release that took `apiExport.identityHashes`, drop the value —
+it no longer exists.
+
 ## Values
 
 | Key | Default | Notes |

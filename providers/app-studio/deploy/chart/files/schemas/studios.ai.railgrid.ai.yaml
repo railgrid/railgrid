@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260809-dbe6b457.studios.ai.railgrid.ai
+  name: v260919-91e6c6ad.studios.ai.railgrid.ai
 spec:
   group: ai.railgrid.ai
   names:
@@ -84,6 +84,125 @@ spec:
                   - large
                   type: string
               type: object
+            llm:
+              description: |-
+                LLM is the workspace's model registry: which models the assistant may
+                use, and where each one's credential lives. It belongs on the Studio
+                for the same reason Search and Browser do — there is exactly one per
+                workspace and every project addresses it.
+
+                Credentials are NOT here. Each model names a Secret holding only its
+                own apiKey, so editing one model never requires reading another's key,
+                and listing models touches no Secret at all.
+              properties:
+                defaultModel:
+                  description: |-
+                    DefaultModel is the id of the model the assistant uses when a request
+                    names none. It must be an active (non-archived) entry; the reconciler
+                    reports DefaultModelMissing when it is not.
+                  maxLength: 63
+                  type: string
+                models:
+                  description: |-
+                    Models holds every configuration, active and archived. Archived entries
+                    are revision history: a model can be rolled back to one, and a run
+                    pinned to a revisionID keeps resolving after the model is edited.
+                  items:
+                    description: StudioLLMModel is one model configuration revision.
+                    properties:
+                      archived:
+                        description: |-
+                          Archived marks a superseded revision: kept for rollback and for runs
+                          pinned to it, never offered as a choice.
+                        type: boolean
+                      baseURL:
+                        description: BaseURL overrides the provider's default endpoint.
+                        maxLength: 2048
+                        type: string
+                      id:
+                        description: |-
+                          ID is the logical model a person picks. Revisions of the same model
+                          share it, so exactly one of them may be active at a time.
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                        type: string
+                      model:
+                        description: Model is the provider's own model identifier,
+                          e.g. gpt-5.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name is what the model is called in the UI.
+                        maxLength: 80
+                        minLength: 1
+                        type: string
+                      provider:
+                        description: Provider selects the wire protocol (openai, anthropic,
+                          google, ...).
+                        maxLength: 63
+                        type: string
+                      revisionID:
+                        description: |-
+                          RevisionID identifies this revision uniquely across the registry. It is
+                          what a long-running assistant turn pins, so editing a model cannot
+                          change the model a resumable run comes back to.
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                      secretRef:
+                        description: |-
+                          SecretRef names the Secret holding this model's credential, in the
+                          Studio's own namespace, under the key "apiKey". Revisions of one model
+                          normally share it. A model without one is configured but unusable, and
+                          the reconciler says so.
+                        properties:
+                          name:
+                            description: Name of the Secret. Its "apiKey" entry is
+                              the credential.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    required:
+                    - id
+                    - model
+                    - name
+                    - revisionID
+                    type: object
+                  maxItems: 200
+                  type: array
+                  x-kubernetes-list-map-keys:
+                  - revisionID
+                  x-kubernetes-list-type: map
+                runtime:
+                  description: Runtime carries the request-shaping settings shared
+                    by every model.
+                  properties:
+                    maxRetries:
+                      description: MaxRetries bounds automatic retries of a failed
+                        model call.
+                      format: int32
+                      maximum: 10
+                      minimum: 0
+                      type: integer
+                    retryBackoffMS:
+                      description: RetryBackoffMS is the delay between those retries.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    streamIdleTimeoutMS:
+                      description: |-
+                        StreamIdleTimeoutMS ends a stream that has produced nothing for this
+                        long.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                  type: object
+              type: object
             search:
               description: Search configures the workspace's web-search backend.
               properties:
@@ -136,6 +255,99 @@ spec:
                   description: Resource is the instance's plural resource.
                   type: string
               type: object
+            conditions:
+              description: |-
+                Conditions carries workspace-level assertions the reconciler makes and
+                no schema can. The workspace's LLM registry is a plain Opaque Secret —
+                it has no CRD, so nothing validates it on write — and it used to be
+                reachable only through App Studio handlers that checked it on the way
+                past. Now that it is edited directly, the checks live here instead, as
+                LLMRegistryValid: the registry is still wrong in exactly the same ways,
+                but the workspace can see that it is.
+              items:
+                description: Condition contains details for one aspect of the current
+                  state of this API Resource.
+                properties:
+                  lastTransitionTime:
+                    description: |-
+                      lastTransitionTime is the last time the condition transitioned from one status to another.
+                      This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      message is a human readable message indicating details about the transition.
+                      This may be an empty string.
+                    maxLength: 32768
+                    type: string
+                  observedGeneration:
+                    description: |-
+                      observedGeneration represents the .metadata.generation that the condition was set based upon.
+                      For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                      with respect to the current state of the instance.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  reason:
+                    description: |-
+                      reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                      Producers of specific condition types may define expected values and meanings for this field,
+                      and whether the values are considered a guaranteed API.
+                      The value should be a CamelCase string.
+                      This field may not be empty.
+                    maxLength: 1024
+                    minLength: 1
+                    pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                    type: string
+                  status:
+                    description: status of the condition, one of True, False, Unknown.
+                    enum:
+                    - "True"
+                    - "False"
+                    - Unknown
+                    type: string
+                  type:
+                    description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                    maxLength: 316
+                    pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                    type: string
+                required:
+                - lastTransitionTime
+                - message
+                - reason
+                - status
+                - type
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - type
+              x-kubernetes-list-type: map
+            models:
+              description: |-
+                Models reports, per registry model, whether its credential Secret is
+                actually present and non-empty. This is how a client learns that a
+                model is usable WITHOUT reading any Secret: the reconciler looks, and
+                publishes one boolean. Nothing here is derived from the key's value.
+              items:
+                description: StudioLLMModelStatus is the observed usability of one
+                  active model.
+                properties:
+                  configured:
+                    description: |-
+                      Configured is true when the referenced Secret exists and carries a
+                      non-empty apiKey.
+                    type: boolean
+                  id:
+                    description: ID matches spec.llm.models[].id.
+                    maxLength: 63
+                    type: string
+                required:
+                - id
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - id
+              x-kubernetes-list-type: map
             phase:
               description: Phase is Ready when every enabled service is Ready.
               type: string

@@ -79,6 +79,9 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	cmd := exec.CommandContext(agentCtx, a.bin, args...)
 	cmd.Dir = a.workDir
+	// The agent persists issued credentials under $HOME/.railgrid keyed by edge
+	// name; an isolated HOME keeps one run's credential out of the next.
+	cmd.Env = append(os.Environ(), "HOME="+a.workDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	a.cmd = cmd
@@ -204,6 +207,9 @@ func (a *TokenAgent) Start(ctx context.Context) error {
 
 	cmd := exec.CommandContext(agentCtx, a.bin, args...)
 	cmd.Dir = a.workDir
+	// The agent persists issued credentials under $HOME/.railgrid keyed by edge
+	// name; an isolated HOME keeps one run's credential out of the next.
+	cmd.Env = append(os.Environ(), "HOME="+a.workDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	a.cmd = cmd

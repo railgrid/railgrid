@@ -14,7 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package http provides HTTP utility functions.
+// Package wsutil holds the HTTP helpers the edges provider needs where it
+// accepts WebSocket upgrades from agents: checking a request's Origin header
+// against the server's own host plus an explicit allow list, and the ASCII
+// case-folded host comparison (RFC 4790) that check is built on. Both are
+// adapted from github.com/gorilla/websocket.
 package wsutil
 
 import (

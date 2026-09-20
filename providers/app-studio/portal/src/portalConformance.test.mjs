@@ -104,7 +104,8 @@ test('replaces the stable project-card fallback with authenticated commit screen
   // host-owned fetch (portalkit providerFetch), which injects credentials.
   assert.match(api, /providerFetch\(ctx\)\(path, \{/)
   assert.doesNotMatch(api, /tenantHeaders\(\{ token: /)
-  assert.match(api, /getProjectThumbnail[\s\S]*\/thumbnail/)
+  // The thumbnail is a data-plane verb on the project, not a path suffix.
+  assert.match(api, /getProjectThumbnail[\s\S]*projectURL\(ctx, name, 'thumbnail'\)/)
 })
 
 test('uses the canonical status badge recipe without a provider-local restatement', () => {

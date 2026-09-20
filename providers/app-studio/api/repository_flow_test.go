@@ -32,7 +32,6 @@ import (
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components"
 	einomodel "github.com/cloudwego/eino/components/model"
-	einotool "github.com/cloudwego/eino/components/tool"
 	einoschema "github.com/cloudwego/eino/schema"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,12 +73,6 @@ func TestDNS1123LabelWithSuffix(t *testing.T) {
 func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 	if projectMCPToolAllowed("code__commit_files") {
 		t.Fatal("code__commit_files should not be directly model-callable")
-	}
-	if !projectMCPCommitToolAvailable("code__commit_files") {
-		t.Fatal("code__commit_files should be discoverable as the internal commit bridge target")
-	}
-	if projectMCPCommitToolAvailable("other__commit_files") {
-		t.Fatal("commit bridge should only be detected from the Code provider")
 	}
 	for _, name := range []string{
 		"code__commit_files",
@@ -275,12 +268,17 @@ func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing
 			t.Fatalf("method = %q, want tools/list", envelope.Method)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}},{"name":"code__read_repository_file","description":"Read files","inputSchema":{"type":"object"}},{"name":"infrastructure__list_templates","description":"List templates","inputSchema":{"type":"object","properties":{"cloud":{"type":"string"}}}},{"name":"infrastructure__describe_template","description":"Describe template","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}},{"name":"infrastructure__provision","description":"Provision template","inputSchema":{"type":"object","required":["template","name"],"properties":{"template":{"type":"string"},"name":{"type":"string"},"values":{"type":"object"}}}},{"name":"databricks__list_tables","description":"List tables","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import table","inputSchema":{"type":"object"}},{"name":"infrastructure__delete_instance","description":"Delete instance","inputSchema":{"type":"object"}}]}}`)
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}},{"name":"code__read_repository_file","description":"Read files","inputSchema":{"type":"object"}},{"name":"infrastructure__list_templates","description":"List templates","inputSchema":{"type":"object","properties":{"cloud":{"type":"string"}}}},{"name":"infrastructure__describe_template","description":"Describe template","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}},{"name":"infrastructure__provision","description":"Provision template","inputSchema":{"type":"object","required":["template","name"],"properties":{"template":{"type":"string"},"name":{"type":"string"},"values":{"type":"object"}}}},{"name":"databricks__list_tables","description":"List tables","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import table","inputSchema":{"type":"object"}},{"name":"infrastructure__delete_instance","description":"Delete instance","inputSchema":{"type":"object"}}]}}`)
 	}))
 	defer mcp.Close()
 
 	server := NewWithWorkspace(nil, nil, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+	// The commit tool is offered because this workspace BINDS a Code
+	// provider — the capability is the repositories/commit/v1 action now, not
+	// a code__ entry in the aggregate's catalogue.
+	server.tenantProviders = testProviders(testCommitProvider)
 	tools, err := server.loadProjectMCPTools(
 		httptest.NewRequest(http.MethodPost, "/", nil),
 		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
@@ -329,19 +327,21 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 			t.Fatalf("method = %q, want tools/list", envelope.Method)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit workspace files","inputSchema":{"type":"object"}}]}}`)
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit workspace files","inputSchema":{"type":"object"}}]}}`)
 	}))
 	defer mcp.Close()
 
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+	server.tenantProviders = testProviders(testCommitProvider)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
 	id := identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
 	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
 	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "ship the demo"); err != nil {
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
@@ -405,19 +405,20 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 			t.Fatalf("method = %q, want tools/list", envelope.Method)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"databricks__list_tables","description":"List imported tables","inputSchema":{"type":"object"}},{"name":"databricks__describe_table","description":"Describe a table ref","inputSchema":{"type":"object"}},{"name":"databricks__query_table","description":"Query a table ref","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import a table ref","inputSchema":{"type":"object"}}]}}`)
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"databricks__list_tables","description":"List imported tables","inputSchema":{"type":"object"}},{"name":"databricks__describe_table","description":"Describe a table ref","inputSchema":{"type":"object"}},{"name":"databricks__query_table","description":"Query a table ref","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import a table ref","inputSchema":{"type":"object"}}]}}`)
 	}))
 	defer mcp.Close()
 
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
 	id := identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
 	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
 	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "Can you query the sales.orders table and show me its columns?"); err != nil {
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
@@ -940,20 +941,6 @@ func TestSummarizeProjectToolResultEinoGrepFormats(t *testing.T) {
 	}
 }
 
-func assertProjectAssistantMetadataDoesNotContain(t *testing.T, metadata map[string]any, forbidden ...string) {
-	t.Helper()
-	raw, err := json.Marshal(metadata)
-	if err != nil {
-		t.Fatalf("marshal metadata: %v", err)
-	}
-	payload := string(raw)
-	for _, value := range forbidden {
-		if strings.Contains(payload, value) {
-			t.Fatalf("assistant metadata leaked %q in %s", value, payload)
-		}
-	}
-}
-
 func TestProjectToolCallResultStatusCommitFilesPending(t *testing.T) {
 	result := `{"name":"demo-commit","phase":"Pending","files":["index.html"]}`
 	if got := projectToolCallResultStatus("code__commit_files", result); got != "running" {
@@ -970,7 +957,7 @@ func TestProjectToolCallResultStatusCommitFilesPending(t *testing.T) {
 func TestCallProjectMCPToolTreatsIsErrorAsFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"create RepositoryCommit: the server could not find the requested resource"}],"isError":true}}`)
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"create RepositoryCommit: the server could not find the requested resource"}],"isError":true}}`)
 	}))
 	defer server.Close()
 
@@ -997,6 +984,7 @@ func TestProjectLocalToolRunsCreateFile(t *testing.T) {
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
 	server := NewWithWorkspace(nil, nil, workspaces, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 
 	tool, ok := server.projectAssistantToolRegistry().Get(projectToolCreateFile)
 	if !ok {
@@ -1022,17 +1010,6 @@ type chatCompletionRequest struct {
 	Messages   []chatMessage
 	Tools      []chatTool
 	ToolChoice string
-}
-
-type chatStreamingCall struct {
-	Index        int
-	ID           string
-	Type         string
-	ExtraContent map[string]any
-	Function     struct {
-		Name      string
-		Arguments string
-	}
 }
 
 type repositoryFlowEinoModelStep struct {
@@ -1142,39 +1119,6 @@ func projectTestToolChoice(choice *einoschema.ToolChoice, toolCount int) string 
 	return ""
 }
 
-func projectEinoToolCallFromStreamingForTest(call chatStreamingCall) einoschema.ToolCall {
-	index := call.Index
-	extra := map[string]any(nil)
-	if len(call.ExtraContent) > 0 {
-		extra = map[string]any{}
-		for key, value := range call.ExtraContent {
-			extra[key] = value
-		}
-	}
-	toolType := strings.TrimSpace(call.Type)
-	if toolType == "" {
-		toolType = "function"
-	}
-	return einoschema.ToolCall{
-		Index: &index,
-		ID:    call.ID,
-		Type:  toolType,
-		Function: einoschema.FunctionCall{
-			Name:      call.Function.Name,
-			Arguments: call.Function.Arguments,
-		},
-		Extra: extra,
-	}
-}
-
-func projectEinoToolCallsFromStreamingForTest(calls []chatStreamingCall) []einoschema.ToolCall {
-	out := make([]einoschema.ToolCall, 0, len(calls))
-	for _, call := range calls {
-		out = append(out, projectEinoToolCallFromStreamingForTest(call))
-	}
-	return out
-}
-
 func setProjectAssistantModelForTest(server *Server, model einomodel.BaseChatModel) {
 	server.mu.Lock()
 	defer server.mu.Unlock()
@@ -1184,50 +1128,6 @@ func setProjectAssistantModelForTest(server *Server, model einomodel.BaseChatMod
 			return model, nil
 		},
 		newTools: newProjectEinoAssistantToolsFactory(server),
-	}
-}
-
-func setProjectAssistantModelWithReadyVerificationForTest(server *Server, model einomodel.BaseChatModel) {
-	setProjectAssistantModelWithVerificationResultForTest(server, model, `{"status":"ready"}`)
-}
-
-func setProjectAssistantModelWithVerificationResultForTest(server *Server, model einomodel.BaseChatModel, result string) {
-	baseTools := newProjectEinoAssistantToolsFactory(server)
-	verifyTool := projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{
-			Name:        projectToolVerifyDevelopmentRuntime,
-			Description: "Verify the development runtime.",
-			Parameters:  json.RawMessage(`{"type":"object"}`),
-			Risk:        projectAssistantToolRiskRead,
-		},
-		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
-			return result, nil
-		},
-	}
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	server.assistantEngine = projectEinoAssistantEngine{
-		server: server,
-		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
-			return model, nil
-		},
-		newTools: func(ctx context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
-			tools, err := baseTools(ctx, req, state)
-			if err != nil {
-				return nil, err
-			}
-			filtered := make([]einotool.BaseTool, 0, len(tools))
-			for _, tool := range tools {
-				info, err := tool.Info(ctx)
-				if err != nil {
-					return nil, err
-				}
-				if projectToolBaseName(info.Name) != projectToolVerifyDevelopmentRuntime {
-					filtered = append(filtered, tool)
-				}
-			}
-			return append(filtered, newProjectEinoAssistantServerTool(server, verifyTool, req, state)), nil
-		},
 	}
 }
 
@@ -1310,6 +1210,7 @@ func TestUpdateProjectAssistantPermissionMessageRemovesCompletedUnknownAction(t 
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := testProjectMessageScope("org-a", "ws-1", "demo")
 	messageID := "msg-assistant"
 	runID := "run-1"
@@ -1356,10 +1257,11 @@ func TestUpdateProjectAssistantPermissionMessageRemovesCompletedUnknownAction(t 
 
 func TestResumeProjectAssistantRunAnswersFollowUpAndUpdatesMessage(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	var resumedModelInput []*einoschema.Message
 	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
 		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
@@ -1508,10 +1410,11 @@ func TestResumeProjectAssistantRunAnswersFollowUpAndUpdatesMessage(t *testing.T)
 
 func TestResumeProjectAssistantRunRejectsEmptyFollowUpBeforeClaimingRun(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
 		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
 			ID:   "call-follow-up",
@@ -1588,10 +1491,11 @@ func TestResumeProjectAssistantRunRejectsEmptyFollowUpBeforeClaimingRun(t *testi
 
 func TestResumeProjectAssistantRunClearsStaleFollowUpInterruptWhenRunAlreadyClaimed(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -1840,13 +1744,13 @@ func TestGenerateProjectAssistantStreamRejectsUnverifiedCommitProjectFiles(t *te
 		w.Header().Set("Content-Type", "application/json")
 		switch envelope.Method {
 		case "tools/list":
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
 		case "tools/call":
 			commitCalls++
 			if envelope.Params.Name != "code__commit_files" {
 				t.Fatalf("unexpected MCP tool call: %#v", envelope)
 			}
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["index.html"],"commitSHA":"abcdef1234567890"}}}`)
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["index.html"],"commitSHA":"abcdef1234567890"}}}`)
 		default:
 			t.Fatalf("unexpected MCP request method %q", envelope.Method)
 		}
@@ -1876,164 +1780,6 @@ func TestGenerateProjectAssistantStreamRejectsUnverifiedCommitProjectFiles(t *te
 	}
 	if len(requests) != 2 {
 		t.Fatalf("LLM request count = %d, want denial result followed by a report", len(requests))
-	}
-}
-
-func TestCommitProjectWorkspaceFilesReportsProviderFailure(t *testing.T) {
-	var commitCalls int
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope struct {
-			Method string `json:"method"`
-			Params struct {
-				Name string `json:"name"`
-			} `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Fatalf("decode MCP request: %v", err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if envelope.Method != "tools/call" {
-			t.Fatalf("unexpected MCP request method %q", envelope.Method)
-		}
-		commitCalls++
-		if envelope.Params.Name != "code__commit_files" {
-			t.Fatalf("unexpected MCP tool call: %#v", envelope)
-		}
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"RepositoryCommit failed: bundle not found"}]}}`)
-	}))
-	defer mcp.Close()
-
-	workspaces := workspace.NewFileStore(t.TempDir())
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{Path: "index.html", Content: "hello\n"}})
-	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
-	server.tenantWorkspaces = defaultTestWorkspaces.lookup
-	_, err := server.commitProjectWorkspaceFiles(
-		context.Background(),
-		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
-		scope,
-		nil,
-		"demo-repo",
-		mcp.URL,
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		map[string]any{"repositoryRef": "demo-repo", "paths": []any{"index.html"}, "message": "Initial app"},
-	)
-	if err == nil || !strings.Contains(err.Error(), "bundle not found") {
-		t.Fatalf("commitProjectWorkspaceFiles error = %v, want commit failure", err)
-	}
-	if commitCalls != 1 {
-		t.Fatalf("commit call count = %d, want 1", commitCalls)
-	}
-}
-
-func TestCommitProjectWorkspaceFilesSendsDeletedPaths(t *testing.T) {
-	var gotFiles []map[string]string
-	var gotDeletePaths []string
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope struct {
-			Method string `json:"method"`
-			Params struct {
-				Name      string `json:"name"`
-				Arguments struct {
-					Files       []map[string]string `json:"files"`
-					DeletePaths []string            `json:"deletePaths"`
-				} `json:"arguments"`
-			} `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Fatal(err)
-		}
-		if envelope.Method != "tools/call" || envelope.Params.Name != "code__commit_files" {
-			t.Fatalf("unexpected MCP request: %#v", envelope)
-		}
-		gotFiles = envelope.Params.Arguments.Files
-		gotDeletePaths = envelope.Params.Arguments.DeletePaths
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["src/new.ts","src/old.ts"],"commitSHA":"abcdef"}}}`)
-	}))
-	defer mcp.Close()
-
-	ctx := context.Background()
-	workspaces := workspace.NewFileStore(t.TempDir())
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{
-		{Path: "src/old.ts", Content: "old\n"},
-		{Path: "src/new.ts", Content: "new\n"},
-	})
-	readOld, err := workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: "src/old.ts"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := workspaces.DeleteFile(ctx, scope, workspace.DeleteOptions{Path: "src/old.ts", ExpectedVersion: readOld.Version}); err != nil {
-		t.Fatal(err)
-	}
-	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
-	server.tenantWorkspaces = defaultTestWorkspaces.lookup
-	if _, err := server.commitProjectWorkspaceFiles(
-		ctx,
-		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
-		scope,
-		nil,
-		"demo-repo",
-		mcp.URL,
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		map[string]any{"repositoryRef": "demo-repo", "paths": []any{"src/old.ts", "src/new.ts"}},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDeletePaths, []string{"src/old.ts"}) {
-		t.Fatalf("deletePaths = %v", gotDeletePaths)
-	}
-	if len(gotFiles) != 1 || gotFiles[0]["path"] != "src/new.ts" || gotFiles[0]["content"] != "new\n" {
-		t.Fatalf("files = %#v", gotFiles)
-	}
-}
-
-func TestCommitProjectWorkspaceFilesRejectsRepositoryMismatch(t *testing.T) {
-	var sawCommit bool
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope struct {
-			Method string `json:"method"`
-			Params struct {
-				Name string `json:"name"`
-			} `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Fatalf("decode MCP request: %v", err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		switch envelope.Method {
-		case "tools/list":
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
-		case "tools/call":
-			sawCommit = true
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["index.html"],"commitSHA":"abcdef1234567890"}}}`)
-		default:
-			t.Fatalf("unexpected MCP request method %q", envelope.Method)
-		}
-	}))
-	defer mcp.Close()
-
-	workspaces := workspace.NewFileStore(t.TempDir())
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{Path: "index.html", Content: "hello\n"}})
-	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
-	server.tenantWorkspaces = defaultTestWorkspaces.lookup
-	_, err := server.commitProjectWorkspaceFiles(
-		context.Background(),
-		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
-		scope,
-		nil,
-		"demo-repo",
-		mcp.URL,
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		map[string]any{"repositoryRef": "other-repo", "paths": []any{"index.html"}, "message": "Initial app"},
-	)
-	if sawCommit {
-		t.Fatal("commit_project_files reached provider-code for a repository outside the Project binding")
-	}
-	if err == nil || !strings.Contains(err.Error(), "does not match this Project") {
-		t.Fatalf("commitProjectWorkspaceFiles error = %v, want deterministic repository mismatch failure", err)
 	}
 }
 
@@ -2141,7 +1887,7 @@ func runProjectAssistantStreamWithModelAndPrompt(t *testing.T, model *repository
 		Model:    "test-model",
 		APIKey:   "test-key",
 	}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
 	messages := store.NewMemoryStore()
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	if err := appendProjectUserMessage(context.Background(), messages, scope, prompt); err != nil {
@@ -2163,6 +1909,8 @@ func runProjectAssistantStreamWithModelAndPrompt(t *testing.T, model *repository
 	}, seedFiles)
 	server := NewWithWorkspace(nil, messages, workspaces, hubBase, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+	server.tenantProviders = testProviders(testCommitProvider)
 	setProjectAssistantModelForTest(server, model)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
@@ -2190,18 +1938,34 @@ func decodeProjectAssistantRunAudit(t *testing.T, raw []byte) projectAssistantRu
 }
 
 type projectSettingsDynamicClient struct {
-	secret *unstructured.Unstructured
+	settings projectLLMSettings
+	// registry, when set, replaces settings: it seeds a multi-model registry
+	// rather than the single-model one settings implies.
+	registry *projectLLMRegistry
+}
+
+func (c projectSettingsDynamicClient) resolved() projectLLMRegistry {
+	if c.registry != nil {
+		return *c.registry
+	}
+	return projectLLMRegistry{
+		DefaultModelID: testLLMModelID,
+		Runtime:        c.settings,
+		Models: []projectLLMModelSettings{{
+			ID: testLLMModelID, RevisionID: "rev-" + testLLMModelID, Name: c.settings.Model, Settings: c.settings,
+		}},
+	}
 }
 
 func (c projectSettingsDynamicClient) Resource(gvr k8sschema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
-	return projectSettingsDynamicResource{gvr: gvr, secret: c.secret}
+	return projectSettingsDynamicResource{gvr: gvr, registry: c.resolved()}
 }
 
 type projectSettingsDynamicResource struct {
 	dynamic.ResourceInterface
 	gvr       k8sschema.GroupVersionResource
 	namespace string
-	secret    *unstructured.Unstructured
+	registry  projectLLMRegistry
 }
 
 func (r projectSettingsDynamicResource) Namespace(namespace string) dynamic.ResourceInterface {
@@ -2209,66 +1973,18 @@ func (r projectSettingsDynamicResource) Namespace(namespace string) dynamic.Reso
 	return r
 }
 
+// Get serves the two objects the registry is now assembled from: the Studio
+// holding spec.llm, and the named model's own credential Secret.
 func (r projectSettingsDynamicResource) Get(_ context.Context, name string, _ metav1.GetOptions, _ ...string) (*unstructured.Unstructured, error) {
-	if r.gvr == secretGVR && r.namespace == projectLLMSecretNamespace && name == projectLLMSecretName && r.secret != nil {
-		return r.secret.DeepCopy(), nil
+	if r.gvr == studioResource.GVR && name == aiv1alpha1.StudioName {
+		return projectLLMRegistryStudio(r.registry), nil
+	}
+	if r.gvr == secretGVR && r.namespace == projectLLMSecretNamespace {
+		if credential, ok := projectLLMRegistryCredentials(r.registry)[name]; ok {
+			return credential, nil
+		}
 	}
 	return nil, apierrors.NewNotFound(k8sschema.GroupResource{Group: r.gvr.Group, Resource: r.gvr.Resource}, name)
-}
-
-func TestCommitProjectWorkspaceFilesBoundsPayloadBeforeProviderCode(t *testing.T) {
-	var sawMCP bool
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		sawMCP = true
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer mcp.Close()
-	workspaces := workspace.NewFileStore(t.TempDir())
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
-	server.tenantWorkspaces = defaultTestWorkspaces.lookup
-
-	tooManyPaths := make([]any, 0, projectCommitProjectFilesMax+1)
-	for i := 0; i < projectCommitProjectFilesMax+1; i++ {
-		tooManyPaths = append(tooManyPaths, fmt.Sprintf("src/file-%03d.txt", i))
-	}
-	if _, err := server.commitProjectWorkspaceFiles(
-		context.Background(),
-		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
-		scope,
-		nil,
-		"demo",
-		mcp.URL,
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		map[string]any{"repositoryRef": "demo", "paths": tooManyPaths},
-	); err == nil || !strings.Contains(err.Error(), "too many paths") {
-		t.Fatalf("too many paths error = %v, want bounded path count", err)
-	}
-
-	count := projectCommitProjectFilesMaxSize/workspace.MaxWriteBytes + 1
-	files := make([]workspace.File, 0, count)
-	paths := make([]any, 0, count)
-	for i := 0; i < count; i++ {
-		path := fmt.Sprintf("src/large-%03d.txt", i)
-		files = append(files, workspace.File{Path: path, Content: strings.Repeat("x", workspace.MaxWriteBytes)})
-		paths = append(paths, path)
-	}
-	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, files)
-	if _, err := server.commitProjectWorkspaceFiles(
-		context.Background(),
-		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
-		scope,
-		nil,
-		"demo",
-		mcp.URL,
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		map[string]any{"repositoryRef": "demo", "paths": paths},
-	); err == nil || !strings.Contains(err.Error(), "payload is too large") {
-		t.Fatalf("payload size error = %v, want bounded aggregate size", err)
-	}
-	if sawMCP {
-		t.Fatal("commit_project_files called provider-code after local bounds failure")
-	}
 }
 
 func TestProjectMCPTimeoutFitsLongRunningOperations(t *testing.T) {
@@ -2438,7 +2154,7 @@ func TestProjectRepositoryViewPreservesCommitListFailure(t *testing.T) {
 	if view.CommitsError == "" {
 		t.Fatal("commit-list failure is not exposed to the History UI")
 	}
-	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).checkpointCI(view, projectCheckpointStateDone)
+	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).checkpointCI(view, projectCheckpointStateDone)
 	if cp.State != projectCheckpointStateError || cp.Reason != "Could not read repository commit history." {
 		t.Fatalf("checkpoint = %#v, want commit-history error", cp)
 	}
@@ -2448,7 +2164,7 @@ func TestCheckpointCIReportsOnlyVerifiedSourceState(t *testing.T) {
 	view := &ProjectRepositoryView{
 		Commits: []ProjectRepositoryCommitView{{Phase: "Succeeded", CommitSHA: "abc123"}},
 	}
-	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).checkpointCI(view, projectCheckpointStateDone)
+	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).checkpointCI(view, projectCheckpointStateDone)
 	if cp.Key != projectCheckpointCI || cp.Label != "Source" || cp.State != projectCheckpointStateDone {
 		t.Fatalf("checkpoint = %#v, want compatible ci key with done Source label", cp)
 	}
@@ -2497,22 +2213,6 @@ func codeObjectGetter(objects ...*unstructured.Unstructured) codeResourceGetter 
 		return nil, apierrors.NewNotFound(k8sschema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, name)
 	}
 }
-
-type failingProjectStreamResponseWriter struct {
-	header http.Header
-}
-
-func (w *failingProjectStreamResponseWriter) Header() http.Header {
-	return w.header
-}
-
-func (w *failingProjectStreamResponseWriter) Write([]byte) (int, error) {
-	return 0, errors.New("stream write failed")
-}
-
-func (w *failingProjectStreamResponseWriter) WriteHeader(int) {}
-
-func (w *failingProjectStreamResponseWriter) Flush() {}
 
 func codeObjectLister(objects ...*unstructured.Unstructured) codeResourceLister {
 	return func(_ context.Context, gvr k8sschema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {

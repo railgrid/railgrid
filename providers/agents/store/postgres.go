@@ -17,7 +17,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	// Registers the "postgres" database/sql driver that OpenPostgres names. The
+	// import used to ride along with a pq.Array call; when that call went, so
+	// did the driver, and the provider failed at startup with "unknown driver".
+	_ "github.com/lib/pq"
 )
 
 // PostgresStore is the durable production Store. Schema is created/updated by
@@ -263,7 +266,7 @@ func (p *PostgresStore) ListMessages(ctx context.Context, scope Scope, sessionID
 	if err != nil {
 		return Page{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var items []Message
 	for rows.Next() {
 		m, err := scanMessage(rows, scope.AgentName)
@@ -296,7 +299,7 @@ func (p *PostgresStore) LoadRecentMessages(ctx context.Context, scope Scope, ses
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var items []Message
 	for rows.Next() {
 		m, err := scanMessage(rows, scope.AgentName)
@@ -350,7 +353,7 @@ func (p *PostgresStore) ListSessions(ctx context.Context, scope Scope, limit int
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Session
 	for rows.Next() {
 		var s Session
@@ -545,7 +548,7 @@ func (p *PostgresStore) ListRuns(ctx context.Context, scope Scope, limit int) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Run
 	for rows.Next() {
 		run, err := scanRun(rows)
@@ -601,7 +604,7 @@ func (p *PostgresStore) QueryRuns(ctx context.Context, scope Scope, q RunQuery) 
 	if err != nil {
 		return RunPage{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Run
 	for rows.Next() {
 		run, err := scanRun(rows)
@@ -707,7 +710,7 @@ func (p *PostgresStore) ListMemories(ctx context.Context, scope Scope, limit int
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Memory
 	for rows.Next() {
 		var m Memory
@@ -797,7 +800,7 @@ func (p *PostgresStore) ListInbox(ctx context.Context, scope Scope, state InboxI
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []InboxItem
 	for rows.Next() {
 		var it InboxItem
@@ -869,7 +872,7 @@ func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID st
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ToolCall
 	for rows.Next() {
 		var tc ToolCall
@@ -1000,43 +1003,6 @@ func (p *PostgresStore) FindRunByIdempotencyKey(ctx context.Context, scope Scope
 
 // ---- recovery -------------------------------------------------------------------------
 
-func (p *PostgresStore) ListUnfinishedRuns(ctx context.Context, phases []RunPhase, updatedBefore time.Time, limit int) ([]ScopedRun, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	names := make([]string, 0, len(phases))
-	for _, ph := range phases {
-		names = append(names, string(ph))
-	}
-	// Cross-tenant by design (see the Store interface): a restart has to find
-	// stranded work it has no request scope for.
-	qs := `
-		SELECT org_uuid, workspace_uuid, ` + runColumns + `
-		FROM agents_runs WHERE updated_at < $1`
-	args := []any{updatedBefore.UTC()}
-	if len(names) > 0 {
-		qs += ` AND phase = ANY($2)`
-		args = append(args, pq.Array(names))
-	}
-	qs += fmt.Sprintf(` ORDER BY updated_at ASC LIMIT %d`, limit)
-	rows, err := p.db.QueryContext(ctx, qs, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ScopedRun
-	for rows.Next() {
-		var sc Scope
-		run, err := scanScopedRun(rows, &sc)
-		if err != nil {
-			return nil, err
-		}
-		sc.AgentName = run.AgentName
-		out = append(out, ScopedRun{Scope: sc, Run: run})
-	}
-	return out, rows.Err()
-}
-
 // ---- teardown -------------------------------------------------------------------------
 
 func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentName string) error {
@@ -1049,6 +1015,33 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// DeleteRunData removes one run's rows. See Store.DeleteRunData for why usage
+// is not among them.
+func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID string) error {
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(runID) == "" {
+		return fmt.Errorf("run ID is required")
+	}
+	// Messages and tool calls first: a crash between statements must leave the
+	// run row behind as the thing that still points at them, never orphans
+	// nothing points at.
+	for _, table := range []string{"agents_messages", "agents_tool_calls"} {
+		if _, err := p.db.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND run_id=$4`, table),
+			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
+			return err
+		}
+	}
+	if _, err := p.db.ExecContext(ctx,
+		`DELETE FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
+		return err
 	}
 	return nil
 }

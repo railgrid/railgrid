@@ -265,6 +265,7 @@ func TestProjectAssistantSupervisorReservationProtectsFreshDurableRunUntilAttach
 	supervisor := newProjectAssistantSupervisor(context.Background(), memoryStore)
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.assistantSupervisor = supervisor
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	release, err := supervisor.Reserve(scope)
@@ -298,6 +299,7 @@ func TestProjectAssistantReconcilesOrphanedConversationRun(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	stale := store.AssistantRun{ID: "run-stale", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-stale", UserMessageID: "user-stale", ActiveMessageID: "assistant-stale", Revision: 1, CreatedAt: now, UpdatedAt: now}
@@ -332,6 +334,7 @@ func TestProjectAssistantReconcilesOrphanedCanonicalTurn(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	thread := store.AssistantThread{ID: "thread-orphaned", ActorID: "test-user", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now}
@@ -438,6 +441,7 @@ func TestProjectAssistantReconcileTargetsRequestedRunWithoutInterruptingNewerRun
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	oldRun := store.AssistantRun{ID: "run-old", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusCompleted, ActiveMessageID: "assistant-old", CreatedAt: now, UpdatedAt: now, Revision: 1}
@@ -1117,6 +1121,7 @@ func TestResumedAssistantSegmentPublishesTerminalMessageAndRunAtomically(t *test
 	state := &projectAssistantDurableMetadataState{status: "Writing files", toolCalls: []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolEditFile, Status: "succeeded"}}}
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	if err := server.persistProjectAssistantDurableMetadata(context.Background(), accumulator, workspace.Scope{}, state, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1238,6 +1243,7 @@ func TestDoubleSnapshotPersistenceFailureDetachesRunForRecoveryAndUnblocksProjec
 	supervisor := newProjectAssistantSupervisor(context.Background(), failing)
 	server := NewWithWorkspace(nil, failing, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.assistantSupervisor = supervisor
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
@@ -1316,11 +1322,15 @@ func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testi
 	projectYAML := "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
-	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
+	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	if credential := projectLLMCredential(settings); credential != nil {
+		proxy.Add(secretGVR, credential)
+	}
 
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	if err := messages.CreateProjectBootstrapPermit(context.Background(), scope, "test-user", projectInitialBootstrapPromptDigest("build a todo app")); err != nil {
 		t.Fatal(err)
@@ -1334,7 +1344,7 @@ func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testi
 		createAssistantThreadForHTTPTest(t, messages, scope, threadID, "test-user")
 		request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/"+threadID+"/turns", strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Authorization", "Bearer caller-token")
+		request.Header.Set("Authorization", "Bearer "+"test-user-token")
 		request.Header.Set("X-Railgrid-User", "test-user")
 		request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 		request.Header.Set("X-Railgrid-Cluster", "cluster-a")
@@ -1386,6 +1396,7 @@ func TestProjectAssistantRunStartInitialBootstrapSeesTranscriptAfterReservation(
 	observingStore := &reservationObservingStore{Store: messages, scope: scope}
 	server := NewWithWorkspace(nil, observingStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	observingStore.supervisor = server.projectAssistantSupervisor()
 	now := time.Now().UTC()
 	if err := messages.AppendMessage(context.Background(), scope, store.Message{ID: "prior-user", Role: "user", ActorID: "test-user", Content: "already started", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -1413,6 +1424,7 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
@@ -1426,7 +1438,7 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 	router := mux.NewRouter()
 	server.Register(router)
 	request := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/threads/thread-1/events", nil)
-	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("Authorization", "Bearer "+"test-user-token")
 	request.Header.Set("X-Railgrid-User", "test-user")
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
@@ -1460,6 +1472,7 @@ func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{
@@ -1481,7 +1494,7 @@ func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 	server.Register(router)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns/run-pending/interrupt", strings.NewReader(`{"clientRequestID":"stop-1"}`))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("Authorization", "Bearer "+"test-user-token")
 	request.Header.Set("X-Railgrid-User", "test-user")
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
@@ -1503,6 +1516,7 @@ func TestProjectAssistantThreadMirrorPublishesPendingApproval(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{
@@ -1635,11 +1649,15 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
-	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
+	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	if credential := projectLLMCredential(settings); credential != nil {
+		proxy.Add(secretGVR, credential)
+	}
 
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	firstPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
 		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress"},
 	}}
@@ -1655,7 +1673,7 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	server.Register(router)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns", strings.NewReader(`{"content":"finish the plan","clientUserMessageID":"plan-request","collaborationMode":" Plan "}`))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("Authorization", "Bearer "+"test-user-token")
 	request.Header.Set("X-Railgrid-User", "test-user")
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
@@ -1723,7 +1741,10 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
-	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
+	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	if credential := projectLLMCredential(settings); credential != nil {
+		proxy.Add(secretGVR, credential)
+	}
 
 	tests := []struct {
 		name        string
@@ -1741,6 +1762,7 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 			memoryStore := store.NewMemoryStore()
 			server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 			server.tenantWorkspaces = defaultTestWorkspaces.lookup
+			server.tenantActors = defaultTestActors.lookup
 			server.assistantEngine = terminalStartRouteEngine{err: tt.err}
 			scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 			createAssistantThreadForHTTPTest(t, memoryStore, scope, "thread-1", "test-user")
@@ -1748,7 +1770,7 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 			server.Register(router)
 			request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns", strings.NewReader(`{"content":"answer this","clientUserMessageID":"terminal-request","collaborationMode":"default"}`))
 			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("Authorization", "Bearer caller-token")
+			request.Header.Set("Authorization", "Bearer "+"test-user-token")
 			request.Header.Set("X-Railgrid-User", "test-user")
 			request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 			request.Header.Set("X-Railgrid-Cluster", "cluster-a")
@@ -1784,11 +1806,15 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
-	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
+	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	if credential := projectLLMCredential(settings); credential != nil {
+		proxy.Add(secretGVR, credential)
+	}
 
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	latestPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
 		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed"},
 		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
@@ -1818,7 +1844,7 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	server.Register(router)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns/run-1/input", strings.NewReader(`{"requestID":"follow-up-1","answer":"Continue with the plan."}`))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("Authorization", "Bearer "+"test-user-token")
 	request.Header.Set("X-Railgrid-User", "test-user")
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
@@ -1892,13 +1918,6 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	}
 }
 
-type blockingStartRouteEngine struct {
-	entered  chan struct{}
-	finished chan struct{}
-}
-
-type replyStartRouteEngine struct{ chunk, reply string }
-
 type planStartRouteEngine struct {
 	plans     []projectAssistantPlanSnapshot
 	published chan struct{}
@@ -1922,10 +1941,6 @@ type reservationObservingStore struct {
 	observedReservation bool
 }
 
-type failingResumeRouteEngine struct {
-	cause error
-}
-
 func (s *reservationObservingStore) ListMessages(ctx context.Context, scope store.Scope, limit int, cursor string) (store.Page, error) {
 	if scope == s.scope {
 		if s.supervisor == nil || !s.supervisor.reserved(scope) {
@@ -1943,13 +1958,6 @@ func (e *initialProjectBootstrapCaptureEngine) StreamProjectAssistant(_ context.
 
 func (*initialProjectBootstrapCaptureEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
 	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-func (e replyStartRouteEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	if e.chunk != "" {
-		req.StreamCallbacks.OnChunk(e.chunk)
-	}
-	return projectAssistantRunResult{Content: e.reply}, nil
 }
 
 func (e *planStartRouteEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
@@ -1984,20 +1992,6 @@ func (e *planResumeRouteEngine) ResumeProjectAssistant(_ context.Context, req pr
 	}, nil
 }
 
-func (failingResumeRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected stream")
-}
-
-func (e failingResumeRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, e.cause
-}
-
-func (replyStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-type failingStartRouteEngine struct{}
-
 type terminalStartRouteEngine struct{ err error }
 
 func (e terminalStartRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
@@ -2005,25 +1999,6 @@ func (e terminalStartRouteEngine) StreamProjectAssistant(context.Context, projec
 }
 
 func (terminalStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-func (failingStartRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("expected failure")
-}
-
-func (failingStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-func (e *blockingStartRouteEngine) StreamProjectAssistant(ctx context.Context, _ projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	close(e.entered)
-	<-ctx.Done()
-	close(e.finished)
-	return projectAssistantRunResult{}, context.Cause(ctx)
-}
-
-func (*blockingStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
 	return projectAssistantRunResult{}, errors.New("unexpected resume")
 }
 

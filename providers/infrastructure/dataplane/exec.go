@@ -132,30 +132,6 @@ func execCallerKey(token string) string {
 	return fmt.Sprintf("%x", sum[:])
 }
 
-// ExecAuthorization is the explicit policy hook called after the caller has
-// successfully GET-authorized the instance and before execution starts. An
-// implementation may enforce tenant/user policy, quotas, approvals, or an
-// allowlist that is intentionally outside the Template contract.
-type ExecAuthorization struct {
-	Workspace string
-	Resource  string
-	Name      string
-	Component string
-	User      string
-	// CallerToken is the bearer used for the instance GET and is supplied only
-	// to the policy hook, never to an Executor or runtime request.
-	CallerToken string
-	Action      ExecAction
-	Request     ExecRequest
-	Instance    *unstructured.Unstructured
-}
-
-// ExecAuthorizer is deliberately separate from Executor. The executor owns
-// runtime mechanics; the authorizer owns caller/policy decisions.
-type ExecAuthorizer interface {
-	AuthorizeExec(context.Context, ExecAuthorization) error
-}
-
 // Executor starts, polls, and cancels isolated command runs. Each method must
 // honor ctx cancellation. Implementations deduplicate starts by
 // ExecCall.IdempotencyKey and retain bounded runtime records across worker

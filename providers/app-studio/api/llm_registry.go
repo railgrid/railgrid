@@ -16,25 +16,21 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/mux"
 	"github.com/railgrid/provider-sdk/modelcatalog"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
@@ -83,17 +79,6 @@ type PatchProjectLLMModelRequest struct {
 
 type SetDefaultProjectLLMModelRequest struct {
 	ModelID string `json:"modelID"`
-}
-
-type projectLLMStoredModel struct {
-	ID         string `json:"id"`
-	RevisionID string `json:"revisionID,omitempty"`
-	Archived   bool   `json:"archived,omitempty"`
-	Name       string `json:"name"`
-	Provider   string `json:"provider"`
-	BaseURL    string `json:"baseURL"`
-	Model      string `json:"model"`
-	APIKey     string `json:"apiKey,omitempty"`
 }
 
 type projectLLMModelSettings struct {
@@ -166,17 +151,6 @@ func (r projectLLMRegistry) selectedSettings(id, revisionID string) (projectLLMS
 	settings.RetryBackoff = r.Runtime.RetryBackoff
 	settings.StreamIdleTimeout = r.Runtime.StreamIdleTimeout
 	return settings, nil
-}
-
-func (r projectLLMRegistry) selectedModelID(requested string) (string, error) {
-	model, ok := r.model(requested)
-	if !ok {
-		return "", newValidationError("selected model configuration was not found")
-	}
-	if strings.TrimSpace(model.Settings.APIKey) == "" {
-		return "", newValidationError("selected model configuration does not have a credential")
-	}
-	return model.ID, nil
 }
 
 func (r projectLLMRegistry) selectedModel(requested string) (projectLLMModelSettings, error) {
@@ -254,13 +228,6 @@ func projectLLMModelID(value string) string {
 	return value
 }
 
-func projectLLMLegacyRevision(item projectLLMStoredModel) string {
-	item.RevisionID = ""
-	raw, _ := json.Marshal(item)
-	sum := sha256.Sum256(raw)
-	return "legacy-" + hex.EncodeToString(sum[:16])
-}
-
 func normalizeProjectLLMModel(model *projectLLMModelSettings, runtime projectLLMSettings) error {
 	name, err := normalizeProjectLLMModelName(model.Name)
 	if err != nil {
@@ -310,145 +277,77 @@ func configuredProjectLLMDefaultModelID(registry projectLLMRegistry) string {
 	return firstConfiguredProjectLLMModelID(registry.Models)
 }
 
+// readProjectLLMRegistry assembles the workspace's model registry from the
+// Studio's spec.llm plus, for each model that names one, its own credential
+// Secret.
+//
+// The registry used to be a single Opaque Secret holding every model AND every
+// key, which meant any read of the model list was a read of all credentials.
+// Now the list is typed spec on an object anyone in the workspace may read,
+// and a key is fetched only for the model about to be used. Callers get the
+// same projectLLMRegistry they always did — the split is in where the parts
+// come from, not in what the assistant runtime sees.
 func readProjectLLMRegistry(ctx context.Context, c *asclient.Client) (projectLLMRegistry, error) {
 	registry := defaultProjectLLMRegistry()
-	secret, err := c.Resource(secretResource, projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
+	st, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return registry, nil
 	}
 	if err != nil {
 		return registry, err
 	}
-	applyProjectLLMRuntimeSecretValues(&registry.Runtime, secret)
-	if raw := secretDataValue(secret, "models"); raw != "" {
-		var stored []projectLLMStoredModel
-		if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-			return registry, fmt.Errorf("decode model registry: %w", err)
-		}
-		seenRevisions := map[string]struct{}{}
-		activeIDs := map[string]struct{}{}
-		for _, item := range stored {
-			if strings.TrimSpace(item.RevisionID) == "" {
-				item.RevisionID = projectLLMLegacyRevision(item)
-			}
-			model := projectLLMModelSettings{ID: item.ID, RevisionID: item.RevisionID, Archived: item.Archived, Name: item.Name, Settings: projectLLMSettings{
-				Provider: item.Provider, BaseURL: item.BaseURL, Model: item.Model, APIKey: item.APIKey,
-			}}
-			if err := normalizeProjectLLMModel(&model, registry.Runtime); err != nil {
-				return registry, err
-			}
-			if _, exists := seenRevisions[model.RevisionID]; exists {
-				return registry, fmt.Errorf("model registry contains duplicate revision %q", model.RevisionID)
-			}
-			seenRevisions[model.RevisionID] = struct{}{}
-			if !model.Archived {
-				if _, exists := activeIDs[model.ID]; exists {
-					return registry, fmt.Errorf("model registry contains duplicate active id %q", model.ID)
-				}
-				activeIDs[model.ID] = struct{}{}
-			}
-			registry.Models = append(registry.Models, model)
-		}
-		registry.DefaultModelID = strings.TrimSpace(secretDataValue(secret, "defaultModelID"))
-		if _, ok := registry.model(registry.DefaultModelID); !ok {
-			registry.DefaultModelID = ""
-			for _, model := range registry.Models {
-				if !model.Archived {
-					registry.DefaultModelID = model.ID
-					break
-				}
-			}
-		}
+
+	var studio aiv1alpha1.Studio
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(st.Object, &studio); err != nil {
+		return registry, fmt.Errorf("decode studio: %w", err)
+	}
+	spec := studio.Spec.LLM
+	if spec == nil {
 		return registry, nil
 	}
 
-	legacy := registry.Runtime
-	if v := secretDataValue(secret, "provider"); v != "" {
-		legacy.Provider = v
-	}
-	if v := secretDataValue(secret, "baseURL"); v != "" {
-		legacy.BaseURL = v
-	}
-	if v := secretDataValue(secret, "model"); v != "" {
-		legacy.Model = v
-	}
-	legacy.APIKey = secretDataValue(secret, "apiKey")
-	if err := normalizeProjectLLMSettings(&legacy); err != nil {
-		return registry, err
-	}
-	registry.DefaultModelID = projectLLMLegacyDefaultModelID
-	legacyStored := projectLLMStoredModel{ID: projectLLMLegacyDefaultModelID, Name: legacy.Model, Provider: legacy.Provider, BaseURL: legacy.BaseURL, Model: legacy.Model, APIKey: legacy.APIKey}
-	registry.Models = []projectLLMModelSettings{{ID: projectLLMLegacyDefaultModelID, RevisionID: projectLLMLegacyRevision(legacyStored), Name: legacy.Model, Settings: legacy}}
-	return registry, nil
-}
-
-func applyProjectLLMRuntimeSecretValues(settings *projectLLMSettings, secret *unstructured.Unstructured) {
-	if v := secretDataValue(secret, "maxRetries"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 && parsed <= 10 {
-			settings.MaxRetries = parsed
-			settings.MaxRetriesConfigured = true
+	applyProjectLLMRuntimeSpec(&registry.Runtime, spec.Runtime)
+	// One Secret read per distinct model, not per revision: revisions of a
+	// model share its credential, and a registry with deep history would
+	// otherwise re-read the same Secret dozens of times per request.
+	keys := map[string]string{}
+	for _, item := range spec.Models {
+		name := ""
+		if item.SecretRef != nil {
+			name = strings.TrimSpace(item.SecretRef.Name)
 		}
-	}
-	if v := secretDataValue(secret, "retryBackoffMS"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-			settings.RetryBackoff = time.Duration(parsed) * time.Millisecond
+		if name == "" {
+			continue
 		}
-	}
-	if v := secretDataValue(secret, "streamIdleTimeoutMS"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-			settings.StreamIdleTimeout = time.Duration(parsed) * time.Millisecond
+		if _, done := keys[name]; done {
+			continue
 		}
+		key, err := readProjectLLMCredential(ctx, c, name)
+		if err != nil {
+			return registry, err
+		}
+		keys[name] = key
 	}
-}
 
-func writeProjectLLMRegistry(ctx context.Context, c *asclient.Client, registry projectLLMRegistry) error {
-	secret, err := projectLLMRegistrySecret(registry)
-	if err != nil {
-		return err
-	}
-	existing, err := c.Resource(secretResource, projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = c.Resource(secretResource, projectLLMSecretNamespace).Create(ctx, secret, metav1.CreateOptions{})
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	secret.SetResourceVersion(existing.GetResourceVersion())
-	_, err = c.Resource(secretResource, projectLLMSecretNamespace).Update(ctx, secret, metav1.UpdateOptions{})
-	return err
-}
-
-func projectLLMRegistrySecret(registry projectLLMRegistry) (*unstructured.Unstructured, error) {
-	if len(registry.Models) > projectLLMMaxStoredRevisions {
-		return nil, newValidationError("model configuration revision history is full")
-	}
-	stored := make([]projectLLMStoredModel, 0, len(registry.Models))
-	seenRevisions := map[string]struct{}{}
-	activeIDs := map[string]struct{}{}
-	activeCount := 0
-	for index := range registry.Models {
-		model := registry.Models[index]
+	for _, item := range spec.Models {
+		model := projectLLMModelSettings{
+			ID: item.ID, RevisionID: item.RevisionID, Archived: item.Archived, Name: item.Name,
+			Settings: projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, Model: item.Model},
+		}
+		if item.SecretRef != nil {
+			model.Settings.APIKey = keys[strings.TrimSpace(item.SecretRef.Name)]
+		}
 		if err := normalizeProjectLLMModel(&model, registry.Runtime); err != nil {
-			return nil, err
+			return registry, err
 		}
-		if _, exists := seenRevisions[model.RevisionID]; exists {
-			return nil, newValidationError("model configuration revisions must be unique")
-		}
-		seenRevisions[model.RevisionID] = struct{}{}
-		if !model.Archived {
-			activeCount++
-			if _, exists := activeIDs[model.ID]; exists {
-				return nil, newValidationError("active model configuration IDs must be unique")
-			}
-			activeIDs[model.ID] = struct{}{}
-		}
-		registry.Models[index] = model
-		stored = append(stored, projectLLMStoredModel{ID: model.ID, RevisionID: model.RevisionID, Archived: model.Archived, Name: model.Name, Provider: model.Settings.Provider, BaseURL: model.Settings.BaseURL, Model: model.Settings.Model, APIKey: model.Settings.APIKey})
+		registry.Models = append(registry.Models, model)
 	}
-	if activeCount > projectLLMMaxModels {
-		return nil, newValidationError("at most 20 model configurations are supported")
-	}
+
+	// Structural faults (duplicate revisions, a default naming nothing) are
+	// the Studio reconciler's to report, on status.conditions, where they
+	// stay visible instead of failing whichever request happened to read
+	// next. Here we only need a default that resolves.
+	registry.DefaultModelID = strings.TrimSpace(spec.DefaultModel)
 	if _, ok := registry.model(registry.DefaultModelID); !ok {
 		registry.DefaultModelID = ""
 		for _, model := range registry.Models {
@@ -458,83 +357,35 @@ func projectLLMRegistrySecret(registry projectLLMRegistry) (*unstructured.Unstru
 			}
 		}
 	}
-	raw, err := json.Marshal(stored)
-	if err != nil {
-		return nil, err
-	}
-	data := map[string]interface{}{
-		"models":              encodeSecretValue(string(raw)),
-		"defaultModelID":      encodeSecretValue(registry.DefaultModelID),
-		"maxRetries":          encodeSecretValue(strconv.Itoa(registry.Runtime.MaxRetries)),
-		"retryBackoffMS":      encodeSecretValue(strconv.FormatInt(registry.Runtime.RetryBackoff.Milliseconds(), 10)),
-		"streamIdleTimeoutMS": encodeSecretValue(strconv.FormatInt(registry.Runtime.StreamIdleTimeout.Milliseconds(), 10)),
-	}
-	if selected, ok := registry.model(""); ok {
-		data["provider"] = encodeSecretValue(selected.Settings.Provider)
-		data["baseURL"] = encodeSecretValue(selected.Settings.BaseURL)
-		data["model"] = encodeSecretValue(selected.Settings.Model)
-		if strings.TrimSpace(selected.Settings.APIKey) != "" {
-			data["apiKey"] = encodeSecretValue(selected.Settings.APIKey)
-		}
-	}
-	return &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "v1",
-		"kind":       "Secret",
-		"metadata": map[string]interface{}{
-			"name":      projectLLMSecretName,
-			"namespace": projectLLMSecretNamespace,
-		},
-		"type": "Opaque",
-		"data": data,
-	}}, nil
+	return registry, nil
 }
 
-func (s *Server) createProjectLLMModel(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
+// readProjectLLMCredential reads one model's key. A Secret that is absent or
+// has no apiKey yields "", which reads downstream as "not configured" — the
+// same state a model has before anyone enters a key, and the state the
+// reconciler reports as SecretMissing/SecretIncomplete.
+func readProjectLLMCredential(ctx context.Context, c *asclient.Client, name string) (string, error) {
+	secret, err := c.Resource(secretResource, projectLLMSecretNamespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return "", nil
 	}
-	var request CreateProjectLLMModelRequest
-	if !decodeStrictJSON(w, r, &request) {
-		return
-	}
-	registry, err := readProjectLLMRegistry(r.Context(), c)
 	if err != nil {
-		writeProjectError(w, err)
-		return
+		return "", err
 	}
-	if len(registry.view().Models) >= projectLLMMaxModels {
-		writeProjectError(w, newValidationError("at most 20 model configurations are supported"))
-		return
+	return secretDataValue(secret, projectLLMCredentialKey), nil
+}
+
+func applyProjectLLMRuntimeSpec(settings *projectLLMSettings, runtime aiv1alpha1.StudioLLMRuntime) {
+	if runtime.MaxRetries != nil && *runtime.MaxRetries >= 0 && *runtime.MaxRetries <= 10 {
+		settings.MaxRetries = int(*runtime.MaxRetries)
+		settings.MaxRetriesConfigured = true
 	}
-	name, err := normalizeProjectLLMModelName(request.Name)
-	if err != nil {
-		writeProjectError(w, err)
-		return
+	if runtime.RetryBackoffMS != nil && *runtime.RetryBackoffMS > 0 {
+		settings.RetryBackoff = time.Duration(*runtime.RetryBackoffMS) * time.Millisecond
 	}
-	id := projectLLMModelID(name)
-	if _, exists := registry.model(id); exists {
-		writeProjectError(w, newValidationError("a model configuration with this name already exists"))
-		return
+	if runtime.StreamIdleTimeoutMS != nil && *runtime.StreamIdleTimeoutMS > 0 {
+		settings.StreamIdleTimeout = time.Duration(*runtime.StreamIdleTimeoutMS) * time.Millisecond
 	}
-	model := projectLLMModelSettings{ID: id, RevisionID: uuid.NewString(), Name: name, Settings: projectLLMSettings{
-		Provider: request.Provider, BaseURL: request.BaseURL, Model: request.Model, APIKey: strings.TrimSpace(request.APIKey),
-	}}
-	if err := normalizeProjectLLMModel(&model, registry.Runtime); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	if err := validateProjectLLMModelCredential(model); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	registry.Models = append(registry.Models, model)
-	registry.DefaultModelID = configuredProjectLLMDefaultModelID(registry)
-	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, registry.view())
 }
 
 func (s *Server) testProjectLLMConnection(w http.ResponseWriter, r *http.Request) {
@@ -601,138 +452,4 @@ func writeProjectLLMConnectionTestError(w http.ResponseWriter, err error) {
 	default:
 		writeStatus(w, http.StatusBadGateway, "BadGateway", connectionErr.Error())
 	}
-}
-
-func (s *Server) patchProjectLLMModel(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
-	}
-	var request PatchProjectLLMModelRequest
-	if !decodeStrictJSON(w, r, &request) {
-		return
-	}
-	registry, err := readProjectLLMRegistry(r.Context(), c)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	id := strings.TrimSpace(muxVar(r, "model"))
-	index := -1
-	for i := range registry.Models {
-		if !registry.Models[i].Archived && registry.Models[i].ID == id {
-			index = i
-			break
-		}
-	}
-	if index < 0 {
-		writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
-		return
-	}
-	model := registry.Models[index]
-	if request.Name != nil {
-		model.Name, err = normalizeProjectLLMModelName(*request.Name)
-		if err != nil {
-			writeProjectError(w, err)
-			return
-		}
-	}
-	if request.Provider != nil {
-		model.Settings.Provider = strings.TrimSpace(*request.Provider)
-	}
-	if request.BaseURL != nil {
-		model.Settings.BaseURL = strings.TrimSpace(*request.BaseURL)
-	}
-	if request.Model != nil {
-		model.Settings.Model = strings.TrimSpace(*request.Model)
-	}
-	if request.APIKey != nil {
-		model.Settings.APIKey = strings.TrimSpace(*request.APIKey)
-	}
-	if err := normalizeProjectLLMModel(&model, registry.Runtime); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	if err := validateProjectLLMModelCredential(model); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	registry.Models[index].Archived = true
-	model.RevisionID = uuid.NewString()
-	model.Archived = false
-	registry.Models = append(registry.Models, model)
-	registry.DefaultModelID = configuredProjectLLMDefaultModelID(registry)
-	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, registry.view())
-}
-
-func (s *Server) deleteProjectLLMModel(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
-	}
-	registry, err := readProjectLLMRegistry(r.Context(), c)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	id := strings.TrimSpace(muxVar(r, "model"))
-	found := false
-	for index := range registry.Models {
-		if !registry.Models[index].Archived && registry.Models[index].ID == id {
-			found = true
-			registry.Models[index].Archived = true
-			break
-		}
-	}
-	if !found {
-		writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
-		return
-	}
-	registry.DefaultModelID = configuredProjectLLMDefaultModelID(registry)
-	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, registry.view())
-}
-
-func (s *Server) setDefaultProjectLLMModel(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
-	}
-	var request SetDefaultProjectLLMModelRequest
-	if !decodeStrictJSON(w, r, &request) {
-		return
-	}
-	registry, err := readProjectLLMRegistry(r.Context(), c)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	model, found := registry.model(request.ModelID)
-	if !found {
-		writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
-		return
-	}
-	if strings.TrimSpace(model.Settings.APIKey) == "" {
-		writeProjectError(w, newValidationError("the default model must have a credential"))
-		return
-	}
-	registry.DefaultModelID = model.ID
-	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, registry.view())
-}
-
-// muxVar is kept tiny so the registry module does not leak URL routing into
-// its persistence helpers.
-func muxVar(r *http.Request, key string) string {
-	return mux.Vars(r)[key]
 }

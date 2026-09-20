@@ -102,16 +102,19 @@ type providerDTO struct {
 	// not declare an APIExport (UI/backend-only providers).
 	APIExportPath string `json:"apiExportPath,omitempty"`
 	APIExportName string `json:"apiExportName,omitempty"`
+	// APIGroups are the API groups this provider actually serves, as the hub
+	// read them from spec.resources[].group on its APIExport. They are what
+	// the scoped-identity policy resolves group ownership against, and they
+	// usually differ from apiExportName (`edges.providers.railgrid.ai` serves
+	// `edges.railgrid.ai`), so showing both is what makes a refused
+	// cross-provider rule diagnosable. Empty means the hub has not managed to
+	// read the export yet; see the CatalogEntry's APIGroupsUnknown condition.
+	APIGroups []string `json:"apiGroups,omitempty"`
 	// PermissionClaims mirror the CatalogEntry.spec.apiExport.permissionClaims.
 	// The portal shows these in the Enable confirmation dialog so users see
 	// what the provider's controllers will be able to access in their
 	// workspace before they accept.
 	PermissionClaims []permissionClaimDTO `json:"permissionClaims,omitempty"`
-	// EdgeProxyAccess mirrors CatalogEntry.spec.edgeProxyAccess. Shown in
-	// the Enable confirmation dialog: enabling such a provider grants its
-	// ServiceAccount proxied access to the workspace's edge clusters (verb
-	// "proxy" on edges) for background connections.
-	EdgeProxyAccess bool `json:"edgeProxyAccess,omitempty"`
 	// HubAccess mirrors CatalogEntry.spec.hubAccess: hub REST capabilities
 	// the provider requests, each with the reason the Enable dialog shows.
 	// None applies until the tenant accepts it.
@@ -126,6 +129,13 @@ type providerDTO struct {
 	// only discovery and consent policy metadata; provider transport URLs and
 	// credentials are intentionally not exposed here.
 	Actions []providerActionDTO `json:"actions,omitempty"`
+	// DataPlaneVerbs is the provider's declared data-plane verb surface:
+	// which verbs it serves on which of its own resources. Like Actions it is
+	// discovery metadata only — declaring a verb grants nothing, and the
+	// provider still authorizes every call with its own SSAR — but it is what
+	// a consumer reads to learn the {resource}/{verb} coordinate it needs
+	// granted, instead of hardcoding one.
+	DataPlaneVerbs []providerDataPlaneVerbDTO `json:"dataPlaneVerbs,omitempty"`
 	// AssistantSkills contains validated inline App Studio packages. This
 	// response is their only distribution surface; no provider runtime URL or
 	// credential is projected into this shape.
@@ -185,10 +195,28 @@ type permissionClaimDTO struct {
 	Resource     string   `json:"resource"`
 	Verbs        []string `json:"verbs,omitempty"`
 	TenantScoped bool     `json:"tenantScoped,omitempty"`
+	// MatchLabels mirrors the claim's selector. Absent means the claim covers
+	// every object of that resource in the workspace; present means it reaches
+	// only the objects carrying these labels. The Enable dialog shows the
+	// difference, because "this provider may read your Secrets" and "this
+	// provider may read the Secrets it wrote" are not the same consent.
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
 }
 
 type dependencyDTO struct {
 	Name string `json:"name"`
+	// Composes mirrors CatalogEntry.spec.dependencies[].composes: the
+	// dependency's kinds this provider creates and manages in the tenant
+	// workspace. The Enable dialog renders one consent line per entry; none
+	// of it applies until a workspace or org admin accepts it.
+	Composes []compositionDTO `json:"composes,omitempty"`
+}
+
+// compositionDTO is one composed kind.
+type compositionDTO struct {
+	Group    string   `json:"group"`
+	Resource string   `json:"resource"`
+	Verbs    []string `json:"verbs,omitempty"`
 }
 
 // listResponse wraps the list to leave room for future fields (paging, etc.).
@@ -302,6 +330,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 					Resource:     c.Resource,
 					Verbs:        append([]string(nil), c.Verbs...),
 					TenantScoped: c.TenantScoped,
+					MatchLabels:  copyLabels(c.MatchLabels),
 				})
 			}
 			var children []navChildDTO
@@ -310,7 +339,15 @@ func listHandlerFunc(reg *Registry) http.Handler {
 			}
 			var dependencies []dependencyDTO
 			for _, d := range p.Dependencies {
-				dependencies = append(dependencies, dependencyDTO(d))
+				dependency := dependencyDTO{Name: d.Name}
+				for _, composition := range d.Composes {
+					dependency.Composes = append(dependency.Composes, compositionDTO{
+						Group:    composition.Group,
+						Resource: composition.Resource,
+						Verbs:    append([]string(nil), composition.Verbs...),
+					})
+				}
+				dependencies = append(dependencies, dependency)
 			}
 			actions := make([]providerActionDTO, 0, len(p.Actions))
 			for _, action := range p.Actions {
@@ -386,11 +423,12 @@ func listHandlerFunc(reg *Registry) http.Handler {
 				Dependencies:     dependencies,
 				APIExportPath:    p.APIExportPath,
 				APIExportName:    p.APIExportName,
+				APIGroups:        p.APIGroups,
 				PermissionClaims: claims,
-				EdgeProxyAccess:  p.EdgeProxyAccess,
 				HubAccess:        p.HubAccess,
 				Builtin:          isBuiltin,
 				Actions:          actions,
+				DataPlaneVerbs:   dataPlaneVerbDTOs(p.DataPlaneVerbs),
 				AssistantSkills:  assistantSkills,
 				// Only platform providers are offered for self-hosting: an
 				// org-owned entry IS someone's self-hosted copy already, and
@@ -415,4 +453,25 @@ func listHandlerFunc(reg *Registry) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(listResponse{Items: items, Categories: cats})
 	})
+}
+
+// providerDataPlaneVerbDTO is one declared data-plane verb as the catalog API
+// publishes it.
+type providerDataPlaneVerbDTO struct {
+	Resource    string `json:"resource"`
+	Verb        string `json:"verb"`
+	Description string `json:"description,omitempty"`
+	Stream      bool   `json:"stream,omitempty"`
+	ReadOnly    bool   `json:"readOnly,omitempty"`
+}
+
+func dataPlaneVerbDTOs(verbs []ProviderDataPlaneVerb) []providerDataPlaneVerbDTO {
+	if len(verbs) == 0 {
+		return nil
+	}
+	out := make([]providerDataPlaneVerbDTO, 0, len(verbs))
+	for _, verb := range verbs {
+		out = append(out, providerDataPlaneVerbDTO(verb))
+	}
+	return out
 }

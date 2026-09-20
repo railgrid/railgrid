@@ -21,10 +21,10 @@ package main
 //
 // One process does both halves:
 //
-//  1. A continuous, self-healing reconcile loop that ensures the provider
+//  1. A watch-driven, self-healing reconciler that ensures the provider
 //     workspace bootstrap (CRDs, APIExport, CachedResource, EndpointSlice,
-//     APIExportEndpointSlice, schemas, seed Templates) and seeds kro's
-//     kcp-kubeconfig Secret on the runtime cluster — every step idempotent.
+//     APIExportEndpointSlice, schemas, seed Templates) — every step
+//     idempotent, re-run when one of those objects changes, never on a tick.
 //  2. The serve loop (HTTP/MCP/controller manager) on the provider kubeconfig.
 //
 // No ServiceAccount minting, no runtime-kubeconfig Secret relay: the provider
@@ -55,11 +55,15 @@ import (
 //go:embed manifest.yaml
 var catalogEntryManifest []byte
 
-// operatorReconcileInterval is how often the bootstrap reconcile re-runs.
-// Every step is idempotent, so this is purely a self-healing cadence —
-// e.g. it re-seeds kro if the Secret is deleted, or finishes APIExport
-// wiring once a slow CachedResource identityHash settles.
-const operatorReconcileInterval = 60 * time.Second
+// Backoff bounds for a failed bootstrap pass. This is the "backing off a
+// failed call" requeue of docs/provider-connectivity-contract.md § "Pillar 1
+// carve-outs" — the only timer left in operator mode. A successful pass arms
+// no timer at all: what re-runs it is an event on the objects it applied
+// (operator.WatchProviderWorkspace).
+const (
+	bootstrapRetryMin = 2 * time.Second
+	bootstrapRetryMax = 5 * time.Minute
+)
 
 // runOperator is the entrypoint for `infrastructure operator`.
 func runOperator() error {
@@ -85,27 +89,23 @@ func runOperator() error {
 		}
 	}
 
-	// Skip the controller manager's own bootstrap path: the reconcile loop
-	// below owns all the install steps.
-	if os.Getenv("INFRASTRUCTURE_KUBECONFIG") == "" {
-		if p := os.Getenv("INFRASTRUCTURE_PROVIDER_KUBECONFIG"); p != "" {
-			_ = os.Setenv("INFRASTRUCTURE_KUBECONFIG", p)
-		}
-	}
+	// Serve reads exactly one kubeconfig name. Operator mode hands it the
+	// config it already resolved, so nothing is bridged through the
+	// environment here.
 
-	// Reconcile loop runs in the background; serve blocks in the foreground.
-	// Leader-elected so multi-replica deployments run one bootstrap loop at a
-	// time: every step is idempotent, but two replicas applying the same
-	// objects on independent tickers is pure conflict churn.
+	// The bootstrap reconciler runs in the background; serve blocks in the
+	// foreground. Leader-elected so multi-replica deployments run one
+	// reconciler at a time: every step is idempotent, but two replicas
+	// applying the same objects is pure conflict churn.
 	go func() {
 		if err := leaderelection.Run(ctx, leaderelection.Options{
 			Config:    providerCfg,
 			Namespace: leaderelection.DefaultNamespace,
 			Name:      bootstrapLeaseName,
 		}, func(termCtx context.Context) {
-			runBootstrapLoop(termCtx, providerCfg, runtimeCfg, providerKubeconfig)
+			runBootstrapReconciler(termCtx, providerCfg, runtimeCfg, providerKubeconfig)
 		}); err != nil {
-			log.Printf("operator: bootstrap leader election failed; bootstrap loop is not running: %v", err)
+			log.Printf("operator: bootstrap leader election failed; bootstrap reconciler is not running: %v", err)
 		}
 	}()
 
@@ -114,29 +114,62 @@ func runOperator() error {
 	return nil
 }
 
-// runBootstrapLoop reconciles the provider-workspace bootstrap (and kro seed)
-// immediately, then on operatorReconcileInterval, until ctx is cancelled. A
-// failed pass is logged and retried on the next tick — the whole point of the
-// loop vs. a one-shot init.
-func runBootstrapLoop(ctx context.Context, providerCfg, runtimeCfg *rest.Config, providerKubeconfig []byte) {
-	reconcile := func() {
-		if err := bootstrapOnce(ctx, providerCfg, runtimeCfg, providerKubeconfig); err != nil {
-			log.Printf("operator: bootstrap reconcile failed (will retry in %s): %v", operatorReconcileInterval, err)
-			return
+// runBootstrapReconciler converges the provider-workspace bootstrap once, then
+// re-converges it on events rather than on a tick: as soon as the first pass
+// succeeds, the objects it applied (the CatalogEntry, the seed Templates) are
+// watched in the provider workspace, and any add, update or delete there
+// triggers another pass. A failed pass is retried with exponential backoff —
+// the one sanctioned timer here — and a success resets it.
+//
+// This is the env-driven twin of the CRD operator's Reconcile: same steps, same
+// event sources, no InfrastructureProvider CR to hang them off.
+func runBootstrapReconciler(ctx context.Context, providerCfg, runtimeCfg *rest.Config, providerKubeconfig []byte) {
+	// Buffered depth 1: a burst of events while a pass is running collapses
+	// into exactly one follow-up pass, which is all a level-driven reconcile
+	// needs.
+	trigger := make(chan struct{}, 1)
+	poke := func() {
+		select {
+		case trigger <- struct{}{}:
+		default:
 		}
-		log.Printf("operator: bootstrap reconcile OK")
 	}
 
-	reconcile()
-	ticker := time.NewTicker(operatorReconcileInterval)
-	defer ticker.Stop()
+	watching := false
+	backoff := bootstrapRetryMin
+	var retry <-chan time.Time
+	poke()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			reconcile()
+		case <-trigger:
+		case <-retry:
 		}
+		retry = nil
+
+		if err := bootstrapOnce(ctx, providerCfg, runtimeCfg, providerKubeconfig); err != nil {
+			log.Printf("operator: bootstrap reconcile failed (retry in %s): %v", backoff, err)
+			retry = time.After(backoff)
+			if backoff *= 2; backoff > bootstrapRetryMax {
+				backoff = bootstrapRetryMax
+			}
+			continue
+		}
+		backoff = bootstrapRetryMin
+
+		if !watching {
+			// Registered only after the first success, because the kinds it
+			// watches are installed by the pass itself.
+			if err := operator.WatchProviderWorkspace(ctx, providerCfg, poke); err != nil {
+				log.Printf("operator: provider workspace watch failed (retry in %s): %v", backoff, err)
+				retry = time.After(backoff)
+				continue
+			}
+			watching = true
+			log.Printf("operator: watching provider workspace for drift")
+		}
+		log.Printf("operator: bootstrap reconcile OK")
 	}
 }
 

@@ -64,7 +64,7 @@ func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: mcp.URL}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 	req.Header.Set("Authorization", "Bearer caller-token")
@@ -105,8 +105,8 @@ func TestDeclaredWorkflowPathIsPassedAsWorkflowFileName(t *testing.T) {
 		template,
 	)
 	s := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		hubBase:          mcp.URL,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		hubBase: mcp.URL,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return asclient.NewFromDynamic(dynamicClient), nil
 		},
@@ -150,8 +150,8 @@ func TestDeclaredWorkflowErrorDoesNotFallBackToCompatibilityNames(t *testing.T) 
 		template,
 	)
 	s := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		hubBase:          mcp.URL,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		hubBase: mcp.URL,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return asclient.NewFromDynamic(dynamicClient), nil
 		},
@@ -206,7 +206,7 @@ func TestProjectBuildWorkflowUsesCanonicalWithoutLegacyFallback(t *testing.T) {
 			}))
 			t.Cleanup(mcp.Close)
 
-			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: mcp.URL}
+			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
 			p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 			req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 			req.Header.Set("Authorization", "Bearer caller-token")
@@ -260,7 +260,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnStatusError(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: mcp.URL}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 	req.Header.Set("Authorization", "Bearer caller-token")
@@ -312,7 +312,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnRebuildError(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: mcp.URL}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodPost, "/rebuild", nil)
 	req.Header.Set("Authorization", "Bearer caller-token")
@@ -334,7 +334,7 @@ func TestObserveProjectBuildRunSingleflightsAndCachesExactCommit(t *testing.T) {
 	calls := 0
 	started := make(chan struct{})
 	release := make(chan struct{})
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectBuildRunResolver: func(_ context.Context, _ identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectBuildRunResolver: func(_ context.Context, _ identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
 		mu.Lock()
 		calls++
 		if calls == 1 {
@@ -378,7 +378,7 @@ func TestObserveProjectBuildRunSingleflightsAndCachesExactCommit(t *testing.T) {
 func TestObserveProjectBuildRunCacheScopesClusterIdentity(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectBuildRunResolver: func(_ context.Context, id identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectBuildRunResolver: func(_ context.Context, id identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
@@ -410,7 +410,7 @@ func TestObserveProjectBuildRunCacheIncludesDeclaredWorkflowIdentity(t *testing.
 	workflowPath := ".github/workflows/build.yaml"
 	calls := 0
 	s := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			obj := applicationTemplateObject()
 			_ = unstructured.SetNestedField(obj.Object, workflowPath, "spec", "development", "build", "workflowPath")
@@ -447,7 +447,7 @@ func TestObserveProjectBuildRunCacheIncludesDeclaredWorkflowIdentity(t *testing.
 func TestObserveProjectBuildRunDegradesTemplateFetchFailure(t *testing.T) {
 	resolverCalled := false
 	s := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return nil, fmt.Errorf("template catalog unavailable")
 		},
@@ -470,7 +470,7 @@ func TestObserveProjectBuildRunDegradesTemplateFetchFailure(t *testing.T) {
 }
 
 func TestObserveProjectBuildRunDegradesLookupFailureWithoutChangingArtifacts(t *testing.T) {
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectBuildRunResolver: func(context.Context, identity, *aiv1alpha1.Project, *http.Request, string) (*projectBuildRunObservation, error) {
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectBuildRunResolver: func(context.Context, identity, *aiv1alpha1.Project, *http.Request, string) (*projectBuildRunObservation, error) {
 		return nil, fmt.Errorf("github unavailable")
 	}}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
@@ -641,7 +641,7 @@ func TestResolveProjectComponentImagesKeepsPackagesBoundToProjectRepository(t *t
 	project := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
 		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
 	}}
-	images, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).resolveProjectComponentImages(
+	images, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).resolveProjectComponentImages(
 		context.Background(),
 		asclient.NewFromScope(scope),
 		project,

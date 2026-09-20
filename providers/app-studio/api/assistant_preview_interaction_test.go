@@ -150,6 +150,8 @@ func TestInteractProjectDevelopmentPreviewCheckpointsDirtySandboxBeforeBrowser(t
 	id := identity{clusterID: "cluster", token: "token", orgUUID: "org", workspaceUUID: "ws"}
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "http://sandbox.test", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+	server.tenantProviders = defaultTestProviders
 	var syncCalls int
 	server.developmentSyncAfterMutation = func(_ identity, _ *aiv1alpha1.Project, name string) error {
 		if name != projectActionWorkspaceSync {
@@ -223,6 +225,8 @@ func TestInteractProjectDevelopmentPreviewFailsClosedOnCheckpointConflict(t *tes
 	id := identity{clusterID: "cluster", token: "token", orgUUID: "org", workspaceUUID: "ws"}
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "http://sandbox.test", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+	server.tenantProviders = defaultTestProviders
 	fakeSandbox := &sandboxClientFake{response: projectAssistantSandboxWorkspaceResponse{SourceRevision: revision + 1, SourceDigest: "new"}}
 	sandbox := &projectAssistantRunSandbox{
 		server: server, client: fakeSandbox, id: id, project: project, scope: scope, runState: state,

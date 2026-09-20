@@ -24,11 +24,12 @@ import (
 	"strings"
 	"testing"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	sdk "github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
 )
 
 const (
@@ -36,22 +37,45 @@ const (
 	testNamespace = "tenant-a-default"
 )
 
-type fakeInstanceGetter struct {
-	instance *unstructured.Unstructured
-	err      error
+// callerToken is the only bearer the fake caller factory treats as the
+// tenant's caller; anything else sees an empty workspace, which is how
+// "workspace A's token cannot reach workspace B" is observable here.
+const callerToken = "caller-token"
 
-	gotWorkspace string
-	gotToken     string
-	gotResource  string
-	gotName      string
+// asInstance restamps a template fixture as the flattened Instance kind. That
+// is the only resource the data plane serves, so it is the only GVR the
+// caller's client answers gate 1 on.
+func asInstance(object *unstructured.Unstructured) *unstructured.Unstructured {
+	out := object.DeepCopy()
+	out.SetAPIVersion(instancesGVR.Group + "/" + instancesGVR.Version)
+	out.SetKind("Instance")
+	return out
 }
 
-func (f *fakeInstanceGetter) Get(_ context.Context, ws, token, resource, name string) (*unstructured.Unstructured, error) {
-	f.gotWorkspace, f.gotToken, f.gotResource, f.gotName = ws, token, resource, name
-	if f.err != nil {
-		return nil, f.err
+// callersIn builds the caller factory the handler runs both gates through.
+// deny names the verbs gate 2 refuses; everything else on instances/* is
+// granted, so a routing test exercises routing rather than RBAC.
+func callersIn(cluster string, deny []string, objects ...*unstructured.Unstructured) *conformance.FakeCallers {
+	refused := map[string]bool{}
+	for _, verb := range deny {
+		refused[verb] = true
 	}
-	return f.instance, nil
+	visible := make([]*unstructured.Unstructured, 0, len(objects))
+	for _, object := range objects {
+		visible = append(visible, asInstance(object))
+	}
+	return &conformance.FakeCallers{
+		Cluster:   cluster,
+		Token:     callerToken,
+		Objects:   visible,
+		ListKinds: map[schema.GroupVersionResource]string{instancesGVR: "InstanceList"},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == sdk.SSARVerb &&
+				a.Group == instancesGVR.Group &&
+				a.Resource == instancesGVR.Resource &&
+				a.Subresource != "" && !refused[a.Subresource]
+		},
+	}
 }
 
 type fakeContractGetter struct {
@@ -91,14 +115,20 @@ func (f *fakeRuntime) ControlToken(_ context.Context, namespace, name string) (s
 	return f.token, nil
 }
 
-func newTestHandler(t *testing.T, ig *fakeInstanceGetter, rt *fakeRuntime) *Handler {
+func newTestHandler(t *testing.T, callers sdk.CallerFactory, rt Runtime) *Handler {
 	t.Helper()
-	return NewHandler(ig, &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
+	return NewHandler(callers, &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
+}
+
+// runnerCallers is the common fixture: one visible Instance in testWorkspace
+// with every verb granted.
+func runnerCallers() *conformance.FakeCallers {
+	return callersIn(testWorkspace, nil, runnerInstance(testNamespace))
 }
 
 func doRequest(h *Handler, method, target string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, target, nil)
-	req.Header.Set("Authorization", "Bearer caller-token")
+	req.Header.Set("Authorization", "Bearer "+callerToken)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -118,9 +148,8 @@ func TestHandlerProxiesControlVerb(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	ig := &fakeInstanceGetter{instance: runnerInstance(testNamespace)}
 	rt := &fakeRuntime{host: upstream.URL, token: "control-secret-token"}
-	rec := doRequest(newTestHandler(t, ig, rt), http.MethodGet, dataplaneURL("log"))
+	rec := doRequest(newTestHandler(t, runnerCallers(), rt), http.MethodGet, dataplaneURL("log"))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
@@ -138,13 +167,6 @@ func TestHandlerProxiesControlVerb(t *testing.T) {
 	if gotAuth != "" {
 		t.Errorf("caller Authorization leaked to runtime: %q", gotAuth)
 	}
-	// Authz used the path workspace + caller token.
-	if ig.gotWorkspace != testWorkspace || ig.gotToken != "caller-token" {
-		t.Errorf("authz used ws=%q token=%q, want %s/caller-token", ig.gotWorkspace, ig.gotToken, testWorkspace)
-	}
-	if ig.gotResource != "instances" || ig.gotName != testNamespace {
-		t.Errorf("authz used resource=%q name=%q", ig.gotResource, ig.gotName)
-	}
 	if rt.gotTokenName != testNamespace+"-control" || rt.gotTokenNamespace != testNamespace {
 		t.Errorf("control token read from %s/%s, want %s/%s-control", rt.gotTokenNamespace, rt.gotTokenName, testNamespace, testNamespace)
 	}
@@ -157,7 +179,7 @@ func TestHandlerProxyVerbAppendsCallerPath(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: upstream.URL})
+	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: upstream.URL})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("proxy")+"/assets/app.js")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -181,7 +203,7 @@ func TestHandlerProxyVerbPreservesQueryString(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: upstream.URL})
+	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: upstream.URL})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("proxy")+"/search?q=ada+lovelace&format=json")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -202,7 +224,7 @@ func TestHandlerProxiesSandboxPreviewWithoutRouteGate(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: upstream.URL})
+	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: upstream.URL})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("proxy")+"/assets/app.js")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -213,7 +235,7 @@ func TestHandlerProxiesSandboxPreviewWithoutRouteGate(t *testing.T) {
 }
 
 func TestHandlerStatusVerbServedFromCR(t *testing.T) {
-	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: "http://unused"})
+	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("status"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -225,7 +247,7 @@ func TestHandlerStatusVerbServedFromCR(t *testing.T) {
 
 func TestHandlerRecordsActivityAfterAuthorization(t *testing.T) {
 	rt := &activityRuntime{fakeRuntime: &fakeRuntime{host: "http://unused"}}
-	h := NewHandler(&fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
+	h := NewHandler(runnerCallers(), &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
 	rec := doRequest(h, http.MethodGet, dataplaneURL("status"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
@@ -237,7 +259,7 @@ func TestHandlerRecordsActivityAfterAuthorization(t *testing.T) {
 
 func TestHandlerFailsClosedWhenActivityMarkerCannotBeWritten(t *testing.T) {
 	rt := &activityRuntime{fakeRuntime: &fakeRuntime{host: "http://unused"}, err: context.DeadlineExceeded}
-	h := NewHandler(&fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
+	h := NewHandler(runnerCallers(), &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
 	rec := doRequest(h, http.MethodGet, dataplaneURL("status"))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503 (body %q)", rec.Code, rec.Body.String())
@@ -248,7 +270,7 @@ func TestHandlerFailsClosedWhenActivityMarkerCannotBeWritten(t *testing.T) {
 }
 
 func TestHandlerRejectsMissingToken(t *testing.T) {
-	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: "http://unused"})
+	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: "http://unused"})
 	req := httptest.NewRequest(http.MethodGet, dataplaneURL("log"), nil) // no Authorization
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -257,26 +279,85 @@ func TestHandlerRejectsMissingToken(t *testing.T) {
 	}
 }
 
-func TestHandlerForwardsAuthzDenial(t *testing.T) {
-	denied := apierrors.NewForbidden(schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "sandboxrunners"}, testNamespace, nil)
-	h := newTestHandler(t, &fakeInstanceGetter{err: denied}, &fakeRuntime{host: "http://unused"})
-	rec := doRequest(h, http.MethodGet, dataplaneURL("log"))
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", rec.Code)
+// A gate failure is a 404 whichever gate refused and whatever the underlying
+// Kubernetes status was. A caller that may not use a verb must not be able to
+// tell an object that exists from one that does not: the whole point of the
+// contract's non-disclosing default.
+func TestHandlerDeniesWithoutDisclosure(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		callers *conformance.FakeCallers
+		path    string
+	}{
+		{
+			name:    "no such instance",
+			callers: callersIn(testWorkspace, nil),
+			path:    dataplaneURL("log"),
+		},
+		{
+			name:    "instance belongs to another workspace",
+			callers: callersIn("otherworkspace", nil, runnerInstance(testNamespace)),
+			path:    dataplaneURL("log"),
+		},
+		{
+			name:    "verb is not granted",
+			callers: callersIn(testWorkspace, []string{"log"}, runnerInstance(testNamespace)),
+			path:    dataplaneURL("log"),
+		},
+		{
+			name:    "resource is not served",
+			callers: runnerCallers(),
+			path:    PathPrefix + "clusters/" + testWorkspace + "/sandboxrunners/" + testNamespace + "/log",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHandler(t, tc.callers, &fakeRuntime{host: "http://unused"})
+			rec := doRequest(h, http.MethodGet, tc.path)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 (body %q)", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), testNamespace) {
+				t.Errorf("denial body names the object: %q", rec.Body.String())
+			}
+		})
 	}
 }
 
-func TestHandlerForwardsNotFound(t *testing.T) {
-	missing := apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "sandboxrunners"}, testNamespace)
-	h := newTestHandler(t, &fakeInstanceGetter{err: missing}, &fakeRuntime{host: "http://unused"})
-	rec := doRequest(h, http.MethodGet, dataplaneURL("log"))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
+// Gate 2 is per verb, not per object: granting one verb must not carry any
+// other verb on the same instance, and a component verb collapses onto the
+// instance-level subresource so one grant covers both spellings.
+func TestHandlerGatesEveryVerbSeparately(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer upstream.Close()
+
+	callers := callersIn(testWorkspace, []string{"restart"}, runnerInstance(testNamespace))
+	h := newTestHandler(t, callers, &fakeRuntime{host: upstream.URL})
+
+	if rec := doRequest(h, http.MethodPost, dataplaneURL("sync")); rec.Code != http.StatusOK {
+		t.Fatalf("granted sync: status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	if rec := doRequest(h, http.MethodPost, dataplaneURL("restart")); rec.Code != http.StatusNotFound {
+		t.Fatalf("ungranted restart: status = %d, want 404", rec.Code)
+	}
+}
+
+// A request whose path cluster disagrees with the hub-injected header is
+// self-contradictory: the path wins, and the request is refused outright
+// rather than served against either reading.
+func TestHandlerRefusesClusterHeaderMismatch(t *testing.T) {
+	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: "http://unused"})
+	req := httptest.NewRequest(http.MethodGet, dataplaneURL("log"), nil)
+	req.Header.Set("Authorization", "Bearer "+callerToken)
+	req.Header.Set(sdk.HeaderCluster, "someotherworkspc")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
 
 func TestHandlerMethodNotAllowed(t *testing.T) {
-	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: "http://unused"})
+	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodPost, dataplaneURL("log")) // log is GET-only
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
@@ -286,7 +367,7 @@ func TestHandlerMethodNotAllowed(t *testing.T) {
 func TestHandlerNamespaceEscapeIsConflict(t *testing.T) {
 	instance := runnerInstance(testNamespace)
 	unstructured.SetNestedField(instance.Object, "kube-system", "status", "controlServiceRef", "namespace") //nolint:errcheck
-	h := newTestHandler(t, &fakeInstanceGetter{instance: instance}, &fakeRuntime{host: "http://unused"})
+	h := newTestHandler(t, callersIn(testWorkspace, nil, instance), &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("log"))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", rec.Code)
@@ -294,7 +375,7 @@ func TestHandlerNamespaceEscapeIsConflict(t *testing.T) {
 }
 
 func TestHandlerUnknownVerb(t *testing.T) {
-	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: "http://unused"})
+	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("exec"))
 	// exec is a reserved component-only capability and never falls through to
 	// the generic endpoint method resolver.
@@ -320,9 +401,8 @@ func TestHandlerProxiesComponentVerb(t *testing.T) {
 	defer upstream.Close()
 
 	ns := "ws-default"
-	ig := &fakeInstanceGetter{instance: applicationInstance(ns)}
 	rt := &fakeRuntime{host: upstream.URL, token: "control-secret-token"}
-	h := NewHandler(ig, &fakeContractGetter{contract: applicationContract()}, rt)
+	h := NewHandler(callersIn("ws", nil, applicationInstance(ns)), &fakeContractGetter{contract: applicationContract()}, rt)
 
 	rec := doRequest(h, http.MethodPost, PathPrefix+"clusters/ws/instances/shop/components/backend/sync")
 	if rec.Code != http.StatusOK {
@@ -349,48 +429,33 @@ func TestHandlerProxiesComponentVerb(t *testing.T) {
 	}
 }
 
-func TestParsePath(t *testing.T) {
-	for _, tc := range []struct {
-		path string
-		want request
-		ok   bool
-	}{
-		{
-			path: PathPrefix + "clusters/root:railgrid:orgs:acme/sandboxrunners/r1/log",
-			want: request{workspace: "root:railgrid:orgs:acme", resource: "sandboxrunners", name: "r1", verb: "log"},
-			ok:   true,
+// The grammar and both gates are the SDK's, so the contract's own suite is
+// what proves this provider serves them: granted verb 200, missing bearer
+// 401, header/path cluster mismatch 400, foreign cluster denied, ungranted
+// verb denied, malformed path 400. It runs against the real handler, which is
+// exactly what serve.New mounts under /dataplane/.
+func TestDataPlaneConformance(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer upstream.Close()
+
+	// "restart" is the verb the fake refuses; "sync" is the one it grants.
+	callers := callersIn(testWorkspace, []string{"restart"}, runnerInstance(testNamespace))
+	h := newTestHandler(t, callers, &fakeRuntime{host: upstream.URL})
+
+	conformance.Test(t, h, conformance.Fixtures{
+		Callers:     callers,
+		GrantedPath: dataplaneURL("sync"),
+		DeniedPath:  dataplaneURL("restart"),
+		MalformedPaths: []string{
+			PathPrefix + "clusters/" + testWorkspace + "/instances/../" + testNamespace + "/sync",
+			PathPrefix + "clusters/" + testWorkspace + "/instances//" + testNamespace + "/sync",
+			PathPrefix + "clusters/root:railgrid:orgs:acme/instances/" + testNamespace + "/sync",
+			PathPrefix + "clusters/" + testWorkspace + "/instances/" + testNamespace + "/components/sync",
 		},
-		{
-			path: PathPrefix + "clusters/ws/sandboxrunners/r1/proxy/assets/app.js",
-			want: request{workspace: "ws", resource: "sandboxrunners", name: "r1", verb: "proxy", callerPath: "/assets/app.js"},
-			ok:   true,
-		},
-		{
-			path: PathPrefix + "clusters/ws/applications/shop/components/backend/sync",
-			want: request{workspace: "ws", resource: "applications", name: "shop", component: "backend", verb: "sync"},
-			ok:   true,
-		},
-		{
-			path: PathPrefix + "clusters/ws/applications/shop/components/frontend/log/tail",
-			want: request{workspace: "ws", resource: "applications", name: "shop", component: "frontend", verb: "log", callerPath: "/tail"},
-			ok:   true,
-		},
-		{path: PathPrefix + "clusters/ws/sandboxrunners/r1", ok: false},               // no verb
-		{path: "/other/clusters/ws/sandboxrunners/r1/log", ok: false},                 // wrong prefix
-		{path: PathPrefix + "ws/sandboxrunners/r1/log", ok: false},                    // required clusters segment
-		{path: PathPrefix + "clusters//sandboxrunners/r1/log", ok: false},             // empty ws
-		{path: PathPrefix + "clusters/ws/applications/shop/components/", ok: false},   // no component
-		{path: PathPrefix + "clusters/ws/applications/shop/components/be", ok: false}, // component without verb
-	} {
-		got, ok := parsePath(tc.path)
-		if ok != tc.ok {
-			t.Errorf("parsePath(%q) ok = %v, want %v", tc.path, ok, tc.ok)
-			continue
-		}
-		if ok && got != tc.want {
-			t.Errorf("parsePath(%q) = %+v, want %+v", tc.path, got, tc.want)
-		}
-	}
+		// A data-plane verb is a proxy, not an action: it has no actionwire
+		// envelope and no {"input": …} body to decode strictly.
+		SkipStrictBody: true,
+	})
 }
 
 func TestDataPlaneFromTemplate(t *testing.T) {

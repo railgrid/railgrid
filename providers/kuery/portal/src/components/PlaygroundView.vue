@@ -4,13 +4,14 @@ import { Play } from 'lucide-vue-next'
 
 import type { RailgridContext } from '../element'
 import type { QuerySpec } from '../api'
-import { createKueryRequestContext, errorMessage, serviceBase, useKueryApi } from '../kuery'
+import { errorMessage, serviceBase, useKueryApi } from '../kuery'
 import { collectSchemaWords, createEditor, EXAMPLES, loadCodeMirror, type EditorHandle } from '../playground'
 import FormSelect from '../portalkit/FormSelect.vue'
 
-const props = defineProps<{ context: RailgridContext | null; active: boolean }>()
+const props = defineProps<{ context: RailgridContext | null; active: boolean; savedView: string }>()
 const context = computed(() => props.context)
-const { api, query } = useKueryApi(context)
+const savedView = computed(() => props.savedView)
+const { api, query } = useKueryApi(context, computed(() => props.savedView))
 const editorHost = ref<HTMLElement | null>(null)
 const fallback = ref(false)
 const documentText = ref(JSON.stringify(EXAMPLES[0].spec, null, 2))
@@ -33,10 +34,10 @@ async function mountEditor(): Promise<void> {
   schemaController?.abort(); schemaController = new AbortController()
   try {
     let words: string[] = []
-    // Schema hints are a hub request like any other: go through the
-    // context-owned transport so the host injects Authorization.
-    const request = createKueryRequestContext(context.value)
-    try { const response = await request.fetch(`${request.basePath}/api/query-schema`, { credentials: 'same-origin', headers: request.headers, signal: schemaController.signal }); if (response.ok) words = collectSchemaWords(await response.json()) } catch { words = [] }
+    // The QuerySpec schema is a static asset beside the bundle, not a tenant
+    // route — the provider serves exactly one of those. Fetch it the same way
+    // the CodeMirror bundle below is fetched.
+    try { const response = await fetch(`${uiBase}query-schema.json`, { credentials: 'same-origin', signal: schemaController.signal }); if (response.ok) words = collectSchemaWords(await response.json()) } catch { words = [] }
     const factory = await loadCodeMirror(`${uiBase}codemirror.bundle.js`, `${uiBase}codemirror.bundle.css`)
     if (current !== generation || !editorHost.value) return
     editor = createEditor(factory, editorHost.value, documentText.value, words); editor.refresh()
@@ -74,6 +75,6 @@ onBeforeUnmount(() => { controller?.abort(); schemaController?.abort(); generati
       <section aria-labelledby="query-editor-label"><h3 id="query-editor-label" class="kuery-workbench-title">QuerySpec editor</h3><div v-if="editorError" class="kuery-inline-error" role="status">{{ editorError }}</div><textarea v-if="fallback" v-model="documentText" class="pg-fallback" aria-labelledby="query-editor-label" spellcheck="false" /><div v-else ref="editorHost" class="pg-editor" role="group" aria-labelledby="query-editor-label" /></section>
       <section aria-labelledby="query-results-label"><h3 id="query-results-label" class="kuery-workbench-title">Query results</h3><p class="kuery-sr-only" role="status" aria-live="polite">{{ resultStatus }}</p><pre class="pg-result" :class="{ error: !!error }">{{ error || result || '// Results appear here after you run a query.' }}</pre></section>
     </div>
-    <details class="pg-docs"><summary>API and access</summary><p>Programmatic clients can POST the same QuerySpec to <code>{{ serviceBase(context) }}/api/query</code> with an OIDC bearer token. The hub scopes every request to the selected workspace.</p></details>
+    <details class="pg-docs"><summary>API and access</summary><p>A query is the <code>run</code> verb on a SavedView. This editor runs your own scratch view, <code>{{ savedView || '…' }}</code>; programmatic clients POST <code>{"input": {"query": …}}</code> to <code>{{ serviceBase(context) }}/dataplane/clusters/&lt;workspace&gt;/savedviews/&lt;name&gt;/run</code> with an OIDC bearer token. You must be able to see the view and be granted <code>run</code> on it, so what you can query is exactly what your workspace RBAC allows.</p></details>
   </section>
 </template>

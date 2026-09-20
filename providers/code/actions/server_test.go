@@ -12,14 +12,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
 	"github.com/railgrid/provider-sdk/actionwire"
+	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	ktesting "k8s.io/client-go/testing"
@@ -70,18 +74,25 @@ func TestRepositoryActionAuthorityAndReplacementFences(t *testing.T) {
 	}
 }
 func testRepositoryActionAuthority(t *testing.T, actionName string) {
-	for _, kind := range []string{"allowed", "denied", "repository replaced", "connection replaced", "spec changed", "tenant mismatch"} {
+	for _, kind := range []string{"allowed", "invoke only", "denied", "repository replaced", "connection replaced", "spec changed", "tenant mismatch"} {
 		t.Run(kind, func(t *testing.T) {
+			// Gate 2 checks `create` on repositories/<action> and nothing else:
+			// "invoke only" holds the retired grant and must be denied.
+			grants := map[string]bool{"create": kind != "denied" && kind != "invoke only", "invoke": kind == "invoke only"}
+			checked := map[string]bool{}
+			succeeds := kind == "allowed"
 			repo := &api.Repository{TypeMeta: metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository"}, ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo-uid"}, Spec: api.RepositorySpec{ConnectionRef: "git", Name: "product"}, Status: api.RepositoryStatus{RepoID: "123"}}
 			conn := &api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "git", UID: "conn-uid"}, Spec: api.ConnectionSpec{Provider: api.ProviderGitHub, Type: api.CredentialTypePAT, Owner: "example", SecretRef: api.LocalSecretReference{Name: "git-key"}}}
 			caller := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), actionObject(t, repo))
 			caller.PrependReactor("create", "selfsubjectaccessreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
 				object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured)
 				attrs, _, _ := unstructured.NestedMap(object.Object, "spec", "resourceAttributes")
-				if attrs["group"] != "code.railgrid.ai" || attrs["resource"] != "repositories" || attrs["name"] != "product" || attrs["verb"] != "invoke" || attrs["subresource"] != actionName {
+				if attrs["group"] != "code.railgrid.ai" || attrs["resource"] != "repositories" || attrs["name"] != "product" || attrs["subresource"] != actionName {
 					t.Fatalf("incorrect permission: %#v", attrs)
 				}
-				return true, &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"allowed": kind != "denied"}}}, nil
+				verb, _ := attrs["verb"].(string)
+				checked[verb] = true
+				return true, &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"allowed": grants[verb]}}}, nil
 			})
 			if kind == "repository replaced" {
 				repo.UID = "new-repo"
@@ -99,7 +110,7 @@ func testRepositoryActionAuthority(t *testing.T, actionName string) {
 			if err := registry.Register(backendFake); err != nil {
 				t.Fatal(err)
 			}
-			server := New(callerFixture{client: caller, t: t}, func(_ context.Context, cluster, name string) (dynamic.Interface, error) {
+			server := New(callerFixture{client: caller, t: t}, func(_ context.Context, cluster string, _ schema.GroupVersionResource, name string) (dynamic.Interface, error) {
 				if cluster != "tenant-id" || name != "product" {
 					t.Fatal("export crossed binding")
 				}
@@ -115,31 +126,44 @@ func testRepositoryActionAuthority(t *testing.T, actionName string) {
 			}
 			response := httptest.NewRecorder()
 			server.ServeHTTP(response, request)
-			var envelope actionwire.Envelope
-			if kind != "tenant mismatch" {
-				if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
-					t.Fatal(err)
-				}
-				if envelope.RequestID != "sdk-request" || envelope.Provider != "code" || envelope.Action != actionName || envelope.ActionVersion != "v1" || envelope.ResourceRef.Name != "product" || envelope.ResourceRef.Kind != "Repository" || envelope.ResourceRef.Resource != "repositories" || envelope.ResourceRef.APIVersion != "code.railgrid.ai/v1alpha1" {
-					t.Fatalf("invalid wire identity: %+v", envelope)
-				}
-				if kind == "allowed" {
-					expected := `{"head":"1111111111111111111111111111111111111111"}`
-					if actionName == "branches" {
-						expected = `{"branches":["main","release/v1"],"nextPage":0}`
-					}
-					if string(envelope.Result) != expected || envelope.Error != nil {
-						t.Fatalf("invalid result: %+v", envelope)
-					}
-				} else if envelope.Error == nil || envelope.Error.Message == "" || len(envelope.Result) != 0 {
-					t.Fatalf("invalid failure: %+v", envelope)
-				}
+			if kind != "tenant mismatch" && !checked["create"] {
+				t.Fatal("gate 2 did not check verb create")
 			}
-			if kind == "allowed" {
+			if checked["invoke"] {
+				t.Fatal("gate 2 still checks the retired verb invoke")
+			}
+			var envelope actionwire.Envelope
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.RequestID != "sdk-request" || envelope.Provider != "code" || envelope.Action != actionName || envelope.ActionVersion != "v1" || envelope.ResourceRef.Name != "product" || envelope.ResourceRef.Kind != "Repository" || envelope.ResourceRef.Resource != "repositories" || envelope.ResourceRef.APIVersion != "code.railgrid.ai/v1alpha1" {
+				t.Fatalf("invalid wire identity: %+v", envelope)
+			}
+			if succeeds {
+				expected := `{"head":"1111111111111111111111111111111111111111"}`
+				if actionName == "branches" {
+					expected = `{"branches":["main","release/v1"],"nextPage":0}`
+				}
+				if string(envelope.Result) != expected || envelope.Error != nil {
+					t.Fatalf("invalid result: %+v", envelope)
+				}
+			} else if envelope.Error == nil || envelope.Error.Message == "" || len(envelope.Result) != 0 {
+				t.Fatalf("invalid failure: %+v", envelope)
+			}
+			switch {
+			case succeeds:
 				if response.Code != 200 || backendFake.calls != 1 {
 					t.Fatalf("status=%d calls=%d body=%s", response.Code, backendFake.calls, response.Body.String())
 				}
-			} else {
+			case kind == "tenant mismatch":
+				// The path is authoritative and a header that disagrees with
+				// it is a self-contradictory request, not a denial
+				// (docs/provider-actions.md, "The path cluster must equal the
+				// header cluster").
+				if response.Code != 400 || backendFake.calls != 0 {
+					t.Fatalf("cluster mismatch status=%d calls=%d", response.Code, backendFake.calls)
+				}
+			default:
 				if response.Code != 403 || backendFake.calls != 0 {
 					t.Fatalf("denial status=%d calls=%d", response.Code, backendFake.calls)
 				}
@@ -149,7 +173,7 @@ func testRepositoryActionAuthority(t *testing.T, actionName string) {
 					t.Fatal("caller used to read credentials")
 				}
 			}
-			if kind != "allowed" {
+			if !succeeds {
 				for _, action := range provider.Actions() {
 					if action.GetResource().Resource == "secrets" {
 						t.Fatal("denied or changed binding reached credential lookup")
@@ -179,4 +203,133 @@ func (f *backendFixture) ListBranches(_ context.Context, conn *api.Connection, c
 		f.t.Fatal("branch listing lost repository binding")
 	}
 	return &backend.BranchPage{Branches: []string{"main", "release/v1"}}, nil
+}
+
+// TestRepositoryActionsConformance drives the real handler through the shared
+// data-plane contract suite: granted verb 200, missing bearer 401,
+// path/header cluster mismatch 400, foreign cluster denied, ungranted verb
+// denied, malformed path 400, oversized input 413, unknown input field 400.
+func TestRepositoryActionsConformance(t *testing.T) {
+	const cluster = "tenant-id"
+	repo := &api.Repository{TypeMeta: metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository"}, ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo-uid"}, Spec: api.RepositorySpec{ConnectionRef: "git", Name: "product"}, Status: api.RepositoryStatus{RepoID: "123"}}
+	conn := &api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "git", UID: "conn-uid"}, Spec: api.ConnectionSpec{Provider: api.ProviderGitHub, Type: api.CredentialTypePAT, Owner: "example", SecretRef: api.LocalSecretReference{Name: "git-key"}}}
+	secret := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "git-key", "namespace": "default"}, "data": map[string]any{"token": base64.StdEncoding.EncodeToString([]byte("provider-secret"))}}}
+	provider := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), actionObject(t, repo), actionObject(t, conn), secret)
+
+	callers := &conformance.FakeCallers{
+		Cluster:   cluster,
+		Token:     "caller-token",
+		Objects:   []*unstructured.Unstructured{actionObject(t, repo)},
+		ListKinds: map[schema.GroupVersionResource]string{repositories: "RepositoryList"},
+		// Only branch_head is granted; every other subresource is the
+		// suite's "ungranted verb".
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == dataplane.SSARVerb && a.Resource == "repositories" && a.Subresource == "branch_head"
+		},
+	}
+	registry := backend.NewRegistry()
+	if err := registry.Register(&backendFixture{t: t}); err != nil {
+		t.Fatal(err)
+	}
+	server := New(callers, func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error) {
+		return provider, nil
+	}, registry)
+
+	conformance.Test(t, server, conformance.Fixtures{
+		Callers:     callers,
+		GrantedPath: "/actions/clusters/" + cluster + "/repositories/product/branch_head/v1",
+		DeniedPath:  "/actions/clusters/" + cluster + "/repositories/product/branches/v1",
+		MalformedPaths: []string{
+			"/actions/clusters/" + cluster + "/repositories/../branch_head/v1",
+			"/actions/clusters/" + cluster + "/repositories/product//v1",
+		},
+		Body:          `{"input":{"repository":"example/product","repositoryUID":"repo-uid","connectionUID":"conn-uid","branch":"main"}}`,
+		MaxInputBytes: 64 << 10,
+		// A repository-bound action answers a denial with 403: gate 1 already
+		// proved the caller can see the object, so 404 would only confuse.
+		DeniedStatus:   403,
+		ExpectEnvelope: true,
+	})
+}
+
+// A grant is per (resource, action). mint_registry_token is bound to a
+// Connection, so a caller who may run every repository action still cannot
+// mint a pull credential, and vice versa — which is the whole reason the
+// credential moved behind an action instead of staying a Secret read.
+func TestConnectionActionIsGatedSeparatelyFromRepositoryActions(t *testing.T) {
+	const cluster = "tenant-id"
+	conn := &api.Connection{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Connection"},
+		ObjectMeta: metav1.ObjectMeta{Name: "git", UID: "conn-uid"},
+		Spec:       api.ConnectionSpec{Provider: api.ProviderGitHub, Type: api.CredentialTypePAT, Owner: "example", SecretRef: api.LocalSecretReference{Name: "git-key"}},
+		Status:     api.ConnectionStatus{Login: "example"},
+	}
+	secret := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata": map[string]any{"name": "git-key", "namespace": "default"},
+		"data":     map[string]any{"token": base64.StdEncoding.EncodeToString([]byte("provider-secret"))},
+	}}
+	provider := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), actionObject(t, conn), secret)
+
+	newServer := func(allow func(conformance.Attributes) bool) (*Server, *conformance.FakeCallers) {
+		callers := &conformance.FakeCallers{
+			Cluster:   cluster,
+			Token:     "caller-token",
+			Objects:   []*unstructured.Unstructured{actionObject(t, conn)},
+			ListKinds: map[schema.GroupVersionResource]string{connections: "ConnectionList"},
+			Allow:     allow,
+		}
+		registry := backend.NewRegistry()
+		if err := registry.Register(&backendFixture{t: t}); err != nil {
+			t.Fatal(err)
+		}
+		return New(callers, func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error) {
+			return provider, nil
+		}, registry), callers
+	}
+
+	path := "/actions/clusters/" + cluster + "/connections/git/" + MintRegistryToken + "/v1"
+	body := `{"input":{"connectionUID":"conn-uid"}}`
+
+	// A repositories/* grant does not reach a connections/* subresource.
+	repoOnly, callers := newServer(func(a conformance.Attributes) bool {
+		return a.Verb == dataplane.SSARVerb && a.Resource == "repositories"
+	})
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+callers.Token)
+	request.Header.Set(dataplane.HeaderCluster, cluster)
+	recorder := httptest.NewRecorder()
+	repoOnly.ServeHTTP(recorder, request)
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("a repositories grant minted a registry token: %s", recorder.Body.String())
+	}
+
+	// The matching grant does, and what comes back is a pull credential for
+	// the connection's registry — never the Connection's own Secret contents
+	// under some other name.
+	granted, callers := newServer(func(a conformance.Attributes) bool {
+		return a.Verb == dataplane.SSARVerb && a.Resource == "connections" && a.Subresource == MintRegistryToken
+	})
+	request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+callers.Token)
+	request.Header.Set(dataplane.HeaderCluster, cluster)
+	recorder = httptest.NewRecorder()
+	granted.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("granted mint: got %d, body %s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Result RegistryTokenOutput `json:"result"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v (body %s)", err, recorder.Body.String())
+	}
+	if envelope.Result.Registry != "ghcr.io" || envelope.Result.Username != "example" || envelope.Result.Token == "" {
+		t.Fatalf("registry credential = %#v", envelope.Result)
+	}
+	// A PAT cannot be narrowed by any GitHub API, so the action says so
+	// rather than implying a least-privilege token it did not issue.
+	if envelope.Result.Scoped {
+		t.Fatal("a PAT-backed credential was reported as scoped")
+	}
 }

@@ -17,8 +17,15 @@ limitations under the License.
 package tunnel
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/rest"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // newServiceView builds a serviceView the way fetchService would decode one.
@@ -121,71 +128,95 @@ func TestServiceViewSetSvcHeaders(t *testing.T) {
 	}
 }
 
-func TestParseServicePath(t *testing.T) {
-	s := testServer("/services/providers/edges/edgeproxy")
-
+// The Service routes are the shared grammar now, parsed by
+// provider-sdk/dataplane rather than by a hand-rolled splitter. What this
+// pins is the provider's half: which {resource}/{verb} pairs it serves, and
+// that the old dialect no longer parses at all.
+func TestServiceRouteGrammar(t *testing.T) {
 	cases := []struct {
-		name                             string
-		path                             string
-		wantOK                           bool
-		cluster, obj, subresource, wantR string
+		name             string
+		path             string
+		wantOK           bool
+		cluster, obj     string
+		verb, tail       string
+		wantVerbUnserved bool
 	}{
 		{
-			name:        "proxy subresource, no trailing path",
-			path:        "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/services/ha-box-home-assistant/proxy",
-			wantOK:      true,
-			cluster:     "abc",
-			obj:         "ha-box-home-assistant",
-			subresource: "proxy",
-			wantR:       "",
+			name:    "proxy verb, no trailing path",
+			path:    "/" + DataPlaneRoot + "/clusters/abc/services/ha-box-home-assistant/proxy",
+			wantOK:  true,
+			cluster: "abc", obj: "ha-box-home-assistant", verb: "proxy",
 		},
 		{
-			name:        "proxy subresource with trailing service path",
-			path:        "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/services/ha/proxy/api/services/cover/open_cover",
-			wantOK:      true,
-			cluster:     "abc",
-			obj:         "ha",
-			subresource: "proxy",
-			wantR:       "/api/services/cover/open_cover",
+			name:    "proxy verb with a trailing service path",
+			path:    "/" + DataPlaneRoot + "/clusters/abc/services/ha/proxy/api/services/cover/open_cover",
+			wantOK:  true,
+			cluster: "abc", obj: "ha", verb: "proxy", tail: "api/services/cover/open_cover",
 		},
 		{
-			name:        "mcp subresource",
-			path:        "/clusters/xyz/apis/edges.railgrid.ai/v1alpha1/services/ha/mcp",
-			wantOK:      true,
-			cluster:     "xyz",
-			obj:         "ha",
-			subresource: "mcp",
-			wantR:       "",
+			name:    "mcp verb",
+			path:    "/" + DataPlaneRoot + "/clusters/xyz/services/ha/mcp",
+			wantOK:  true,
+			cluster: "xyz", obj: "ha", verb: "mcp",
 		},
 		{
-			name:   "connectable kind is not an edgeservice path",
-			path:   "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/linuxservers/srv/ssh",
-			wantOK: false,
+			name:    "ticket verb",
+			path:    "/" + DataPlaneRoot + "/clusters/xyz/services/ha/ticket",
+			wantOK:  true,
+			cluster: "xyz", obj: "ha", verb: "ticket",
 		},
 		{
-			name:   "wrong group",
-			path:   "/clusters/abc/apis/other.group/v1alpha1/services/ha/proxy",
+			name:    "a connectable kind parses, and serves its own verbs",
+			path:    "/" + DataPlaneRoot + "/clusters/abc/linuxservers/srv/ssh",
+			wantOK:  true,
+			cluster: "abc", obj: "srv", verb: "ssh",
+		},
+		{
+			name:             "a verb this provider does not serve is refused",
+			path:             "/" + DataPlaneRoot + "/clusters/abc/services/ha/k8s",
+			wantOK:           true,
+			cluster:          "abc",
+			obj:              "ha",
+			verb:             "k8s",
+			wantVerbUnserved: true,
+		},
+		{
+			name:   "the old apis/{group}/{version} dialect no longer parses",
+			path:   "/" + DataPlaneRoot + "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/services/ha/proxy",
 			wantOK: false,
 		},
 		{
 			name:   "too short",
-			path:   "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/services/ha",
+			path:   "/" + DataPlaneRoot + "/clusters/abc/services/ha",
+			wantOK: false,
+		},
+		{
+			name:   "a traversal segment is refused, not cleaned",
+			path:   "/" + DataPlaneRoot + "/clusters/abc/services/../ha/proxy",
+			wantOK: false,
+		},
+		{
+			name:   "a workspace path is not a cluster ID",
+			path:   "/" + DataPlaneRoot + "/clusters/root:railgrid:tenants:a/services/ha/proxy",
 			wantOK: false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cluster, name, sub, rest, ok := s.parseServicePath(tc.path)
+			req, ok := dataplane.ParsePath(DataPlaneRoot, tc.path)
 			if ok != tc.wantOK {
-				t.Fatalf("parseServicePath(%q) ok=%v, want %v", tc.path, ok, tc.wantOK)
+				t.Fatalf("ParsePath(%q) ok=%v, want %v", tc.path, ok, tc.wantOK)
 			}
 			if !tc.wantOK {
 				return
 			}
-			if cluster != tc.cluster || name != tc.obj || sub != tc.subresource || rest != tc.wantR {
-				t.Fatalf("parseServicePath(%q) = (%q,%q,%q,%q), want (%q,%q,%q,%q)",
-					tc.path, cluster, name, sub, rest, tc.cluster, tc.obj, tc.subresource, tc.wantR)
+			if req.ClusterID != tc.cluster || req.Name != tc.obj || req.Verb != tc.verb || req.Tail != tc.tail {
+				t.Fatalf("ParsePath(%q) = %+v, want cluster=%q name=%q verb=%q tail=%q",
+					tc.path, req, tc.cluster, tc.obj, tc.verb, tc.tail)
+			}
+			if served := verbServed(req.Resource, req.Verb); served == tc.wantVerbUnserved {
+				t.Fatalf("verbServed(%q, %q) = %v", req.Resource, req.Verb, served)
 			}
 		})
 	}
@@ -236,5 +267,90 @@ func TestApplyServiceAuth(t *testing.T) {
 				t.Fatalf("Authorization = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestReadServiceTokenReadsTheSecretAsTheProvider pins WHO reads a Service's
+// auth Secret: the provider, through its own APIExport virtual workspace
+// (tenantConfigFor), after the caller has passed both gates — never the caller.
+//
+// It used to be read with the caller's bearer, which no hub-minted identity
+// can ever satisfy: the hub's identity policy does not mint core-group `get`
+// on secrets, so a workload identity (a factory runner dispatch, kuery) 403'd
+// on every Service that had a credential attached, while a human's token
+// worked. The Secret is edges-owned — the portal writes it labelled
+// railgrid.ai/owner: edges — so it sits inside this provider's label-scoped
+// `secrets` claim and its own virtual workspace serves it.
+//
+// The confused-deputy protection is unchanged and is asserted here too: the
+// Secret's namespace/name come from the gated Service's spec (svc, decoded
+// from the object gate 1 read as the caller), never from the request, so the
+// provider can only ever unwrap the credential attached to a Service the
+// caller was just authorized to use.
+func TestReadServiceTokenReadsTheSecretAsTheProvider(t *testing.T) {
+	var gotAuth, gotPath string
+	reads := 0
+	kcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads++
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		// data.token is base64("svc-token").
+		_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"Secret",` +
+			`"metadata":{"name":"railgrid-edges-svc-ha","namespace":"railgrid-system",` +
+			`"labels":{"railgrid.ai/owner":"edges"}},` +
+			`"data":{"token":"c3ZjLXRva2Vu"}}`))
+	}))
+	defer kcp.Close()
+
+	// kcpConfig is what the caller-scoped client would have been built from
+	// (userClusterConfig re-roots it and swaps in the caller's bearer). It
+	// points at an unroutable host on purpose: a read that still went as the
+	// caller would fail here rather than quietly pass.
+	s := &Server{kcpConfig: &rest.Config{Host: "https://caller-path.invalid", BearerToken: "provider-sa"}}
+	s.SetTenantConfigGetter(func(_ context.Context, cluster string) (*rest.Config, error) {
+		return &rest.Config{Host: kcp.URL + "/clusters/" + cluster, BearerToken: "provider-vw"}, nil
+	})
+
+	svc := newServiceView(linuxServerKind, "ha-box", "", "", 8123)
+	svc.Spec.AuthSecretRef = &corev1.SecretReference{Namespace: "railgrid-system", Name: "railgrid-edges-svc-ha"}
+
+	token, err := s.readServiceToken(context.Background(), "tenant-a", svc)
+	if err != nil {
+		t.Fatalf("readServiceToken() error = %v, want nil", err)
+	}
+	if token != "svc-token" {
+		t.Errorf("token = %q, want %q", token, "svc-token")
+	}
+	if reads != 1 {
+		t.Fatalf("secret reads = %d, want exactly 1 (on the provider virtual workspace)", reads)
+	}
+	if got, want := gotAuth, "Bearer provider-vw"; got != want {
+		t.Errorf("Authorization on the secret read = %q, want %q — the Secret must be read as the provider, not the caller", got, want)
+	}
+	// The path proves both the tenant the read was scoped to and that the
+	// coordinates came from the gated Service's spec.
+	if got, want := gotPath, "/clusters/tenant-a/api/v1/namespaces/railgrid-system/secrets/railgrid-edges-svc-ha"; got != want {
+		t.Errorf("secret read path = %q, want %q", got, want)
+	}
+}
+
+// A Service with no spec.authSecretRef is proxy-only: there is nothing to
+// unwrap, and the provider must not touch kcp at all for it.
+func TestReadServiceTokenSkipsKCPWithoutASecretRef(t *testing.T) {
+	calls := 0
+	s := &Server{}
+	s.SetTenantConfigGetter(func(_ context.Context, _ string) (*rest.Config, error) {
+		calls++
+		return &rest.Config{Host: "https://unused.invalid"}, nil
+	})
+
+	token, err := s.readServiceToken(context.Background(), "tenant-a",
+		newServiceView(linuxServerKind, "ha-box", "", "", 8123))
+	if err != nil || token != "" {
+		t.Fatalf("readServiceToken() = %q, %v; want \"\", nil", token, err)
+	}
+	if calls != 0 {
+		t.Errorf("tenant config resolved %d times, want 0 for a secret-less service", calls)
 	}
 }

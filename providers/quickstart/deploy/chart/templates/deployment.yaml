@@ -24,8 +24,9 @@ spec:
       serviceAccountName: {{ include "quickstart.serviceAccountName" . }}
       initContainers:
         # Bootstrap the provider workspace (schemas, APIExport, slice, bind
-        # grant) with the onboarded workspace-admin kubeconfig. Schemas baked at
-        # /etc/railgrid/schemas (Dockerfile). Idempotent.
+        # grant) with the onboarded workspace-admin kubeconfig. The generated
+        # APIExport and its schemas are baked at /etc/railgrid/kcp (Dockerfile)
+        # and applied verbatim. Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -33,8 +34,8 @@ spec:
           env:
             - name: RAILGRID_PROVIDER_KUBECONFIG
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
-            - name: RAILGRID_SCHEMAS_DIR
-              value: /etc/railgrid/schemas
+            - name: RAILGRID_KCP_DIR
+              value: /etc/railgrid/kcp
             {{- if .Values.catalogEntry.enabled }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)
@@ -64,8 +65,12 @@ spec:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 5
             periodSeconds: 20
+          # Liveness is /healthz ("the process is up"); readiness is /readyz
+          # ("tenant workspaces are actually being watched"). Keep them
+          # different: restarting a provider whose virtual workspace is
+          # unreachable takes away the work it is still doing.
           readinessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet: { path: /readyz, port: http }
             periodSeconds: 5
           env:
             - name: PORT
@@ -85,11 +90,22 @@ spec:
                   name: {{ .Values.hub.tokenSecretRef.name }}
                   key: {{ .Values.hub.tokenSecretRef.key }}
             {{- end }}
+            # The serve container needs the same kubeconfig the init container
+            # used, for two things: the multicluster controller manager watches
+            # tenant workspaces through the APIExport virtual workspace, and the
+            # data-plane verb borrows this config's host + CA (never its bearer)
+            # to build per-request clients that authenticate as the CALLER.
+            - name: RAILGRID_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
+          volumeMounts:
+            - name: railgrid-provider-kubeconfig
+              mountPath: /var/run/secrets/railgrid
+              readOnly: true
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
         # Required: the workspace-admin kubeconfig minted via /bonkers (admin
-        # onboarding), consumed by the init container.
+        # onboarding). Both the init container and the serve container mount it.
         - name: railgrid-provider-kubeconfig
           secret:
             secretName: {{ .Values.providerKubeconfig.secretName }}

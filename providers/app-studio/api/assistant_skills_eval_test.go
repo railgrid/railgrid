@@ -54,7 +54,7 @@ func TestEvaluationSkillDisclosureAndAuthorityBoundaries(t *testing.T) {
 		t.Fatalf("prompt omitted the authority boundary: %q", prompt)
 	}
 
-	registry := projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup})
+	registry := projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders})
 	loadSpec, ok := registry.Spec(projectToolLoadSkill)
 	if !ok || loadSpec.Risk != projectAssistantToolRiskRead || !loadSpec.ParallelSafe {
 		t.Fatalf("load_skill is not an ordinary parallel read tool: %#v, found=%v", loadSpec, ok)
@@ -249,6 +249,8 @@ func newEvaluationSkillRouter(t *testing.T) (*mux.Router, *workspace.FileStore) 
 	files := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(proxy.Client(), nil, files, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+	bindTestProjectLedger(t, files, proxy.Client(), "cluster-a", "alice-token")
 	router := mux.NewRouter()
 	server.Register(router)
 	return router, files
@@ -257,7 +259,7 @@ func newEvaluationSkillRouter(t *testing.T) (*mux.Router, *workspace.FileStore) 
 var evaluationSkillRequest = func(method, target, body string) *http.Request {
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer caller-token")
+	req.Header.Set("Authorization", "Bearer "+"alice-token")
 	req.Header.Set("X-Railgrid-User", "alice")
 	req.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	req.Header.Set("X-Railgrid-Cluster", "cluster-a")

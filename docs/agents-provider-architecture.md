@@ -52,10 +52,14 @@ and tools are edited inside the agent, next to a live chat playground.
   (port 8087), Helm chart, `init` bootstrap, portal micro-frontend.
 - **Chat** — streaming (SSE) single-turn conversations on the Eino engine, with
   transcript + resumable run records in the store (in-memory backend; see gaps).
-- **Named model credentials** — created once, each its own Secret
-  (`railgrid-agents-model-<name>`), listed/created/deleted on the Models tab and
-  assigned/reassigned per agent. This is what an agent uses to reach its
-  provider (OpenAI-compatible today).
+- **Named model credentials** — a `ModelCredential` object per endpoint,
+  referencing the tenant Secret that holds the key; listed/created/deleted on
+  the Models tab and assigned/reassigned per agent. This is what an agent uses
+  to reach its provider (OpenAI-compatible today). A reconciler resolves the
+  Secret and calls `GET {baseURL}/models`, so `status.conditions` — not a
+  button somebody pressed once — is what says whether the credential works,
+  and `status.models` — the **chat-capable subset** of what the endpoint
+  served — is what the portal's model picker offers.
 - **Schedules / Triggers / Connections CRUD** — full create/list/delete of the
   `AgentSchedule`, `AgentTrigger`, and `Connection` CRs from their tabs.
 - **Run now / Fire now** — execute a schedule's or trigger's task as the
@@ -134,15 +138,21 @@ and tools are edited inside the agent, next to a live chat playground.
   with the **exact arguments the user saw** (one approval = one call, bound to
   its run); denying feeds a refusal observation back so the model can react.
   Resumed runs that hit another gate check-point again.
-- **Runs API + traces** — `GET /api/runs` (filters: agent, class, phase,
-  trigger, session, parent; cursor-paged) and `GET /api/runs/{id}` returning the
-  step-level trace (each tool call's args, result, outcome, duration — secrets
-  redacted), pending-approval state, and delegated children.
-  `POST /api/runs/{id}/cancel` aborts a live run; `spec.limits.timeoutSeconds`
-  bounds every run.
-- **Server-push events** — `GET /api/events` (SSE) streams run phase changes and
-  inbox activity per workspace, so the portal reflects background work without
+- **Runs API + traces** — runs are objects: listing them, reading one and
+  watching one are kube calls (Pillar 1), narrowed server-side by the
+  `agents.railgrid.ai/agent` label. What is not on the object is the `trace`
+  verb: `GET …/runs/{id}/trace` returns the step-level trace (each tool call's
+  args, result, outcome, duration — secrets redacted), the answer,
+  pending-approval state and delegated children. `POST …/runs/{id}/cancel`
+  aborts a live run and `GET …/runs/{id}/wait` long-polls one to a settled
+  phase, for a caller with no watch to hold.
+- **Server-push events** — the `events` verb (SSE) streams one agent's run phase
+  changes and inbox activity, so the portal reflects background work without
   polling.
+- **Durable background execution** — an unattended run survives a restart: the
+  request is a `Run` object, not a job in memory, and the leader claims and
+  executes it whenever it comes back. There is no periodic tick anywhere in the
+  provider; virtual-workspace endpoints are rediscovered on demand.
 - **Long-term memory injection** — saved notes are injected into every run's
   system context (bounded by `spec.memory.maxNotes`), so recall no longer
   depends on the model choosing to call `memory_list`.
@@ -280,10 +290,22 @@ The [Milestones](#milestones) section lists the full plan.
    periodically) the provider probes the hub catalog for `infrastructure`
    (workspace + compute runner) and for tenant `MCPServer` resources (edge
    tools). Absent → those tool families and runners simply don't register.
-4. **Everything an agent can do, the API can do.** Chat, run-on-demand,
-   schedules, connections, memory, files, notifications — all are REST +
-   APIExport resources first; the portal, channels, and the agent's own
-   self-management tools sit on top.
+4. **Objects are kcp; the backend serves verbs.** `Agent`, `Schedule`,
+   `Connection`, `Toolset`, `Trigger` and the tenant's credential Secrets are
+   bound APIs in the tenant's own workspace, so every reader and writer —
+   the portal, `kubectl`, another provider, the agent's own self-management
+   MCP tools — goes to kcp for them. The provider's own HTTP surface carries
+   only what kcp cannot answer: a chat turn, a run and its cancellation, a
+   connection test, an OAuth authorize, a webhook delivery. This is the
+   provider contract's Pillar 2/3 split, and it replaced an earlier rule
+   ("all are REST first") that had the provider relaying CRUD the hub could
+   not authorize per resource.
+
+   The consequence is that **there are two writers and no gatekeeper between
+   them.** Anything that must be true of a stored object regardless of who
+   wrote it is a reconciler's `Validated` condition, not a check in a
+   request handler; a handler-side check is a convenience for whoever is
+   typing, and is mirrored in the portal for the same reason.
 5. **Trigger-scoped trust.** What an agent may do depends on who is watching.
    Interactive chat can unlock risky tools behind approvals; scheduled,
    heartbeat, and wakeup runs default to read-only + notify-first. This is
@@ -296,19 +318,75 @@ The [Milestones](#milestones) section lists the full plan.
 |---|---|
 | `Agent` | The persistent assistant: persona/system prompt, model profile refs (per purpose: `chat`, `background`, `compaction`), memory policy, tool grants (connection refs + toolset refs + built-in families) with per-trigger policy, limits (max tool turns, per-run timeout), **budget** (rolling token/USD cap), **`channels`** (named messaging bindings, one primary), **`autonomy`** (`suggest`/`ask`/`auto` — enforced at toolset assembly), and **`delegates`** (agent names this agent may spawn as sub-agents) |
 | `Connection` | A named credential to an external system: `type` (`github`, `mcp`, `websearch`, `http`, `telegram`, `slack`, `smtp`), **`auth`** (`secret` default, or `oauth`), `secretRef` to a tenant-workspace Secret, non-secret config (base URL, allowed hosts, channel/chat IDs). For `auth: oauth`, an `oauth` block (provider, scopes) and a provider-run callback mint + refresh the token into the Secret. Connections turn tool families and channels on per agent |
+| `ModelCredential` | A named model endpoint an agent runs on: `provider` (`openai-compatible` / `openai`), `baseURL`, a default `model` id, `secretRef` → the tenant Secret holding the API key, and `secretKey` (default `apiKey`). Status is the source of truth: `SecretResolved` (the Secret exists, carries the key, and is labelled `railgrid.ai/owner: agents`), `Reachable` (`GET {baseURL}/models` answered), `Ready` (both), plus `models` (the ids the endpoint served, ≤500), `lastProbeTime` and a bounded `lastProbeError`. Agents name one in `spec.models[purpose]` and `spec.modelFallbacks` |
 | `AgentSchedule` | Time-based firing. `type: cron \| wakeup \| heartbeat`; cron spec (5-field) + **`timeZone`** (IANA name, like `CronJob.spec.timeZone`; default UTC) + task prompt (cron) or standing checklist ref (heartbeat) + `agentRef` + retry policy + `suspend`. Status: `nextRun`, `lastRun`, `consecutiveFailures`, `disabledReason` |
 | `AgentTrigger` | Event-based firing — the non-time half of automation. `spec.source` (`webhook`, `channel`, `email`, `github`, `connection`) + `connectionRef` + `filter` (source-specific match: header/signature, message regex, event type, label) + `task` + `agentRef` + `suspend`. Webhook sources get a hub-routed inbound endpoint; connection sources subscribe to a Connection's event stream. Status: `lastFired`, `consecutiveFailures`, `disabledReason` |
 | `Toolset` | A shareable bundle of tool grants (families, connections, approval rules) many agents can link, so wiring is written once |
 | `AgentSkill` *(post-v1)* | Markdown instructions + required connection types + tool grants, attachable to agents. Later: shareable across tenants via the catalog — the ClawHub analog, which a single-user OpenClaw cannot do |
 
-**Runs are deliberately not a CRD.** A run's transcript, step-level tool trace,
-and resume checkpoint live in the provider's Postgres and are served over
-`/api/runs`; a Run CRD existed briefly, was never instantiated, and only created
-room for the schema and the execution reality to drift.
+| `Run` | One execution of an Agent: the identity the platform authorizes, lists, watches and garbage-collects it by. `spec` (agentRef, trigger, sessionID, parentRunRef, sourceName, idempotencyKey, a bounded inputPreview) is written once and never edited; `status` (phase, message, owner, startedAt/finishedAt/deadlineAt, transcriptRef, usage) is the provider's alone. The object's NAME is the run id |
 
-Tenant-facing permission claim: `secrets` (tenant-scoped), under this
-provider's own names: `railgrid-agents-llm` (model profiles — see Runner) and
-`railgrid-agents-conn-<name>` (one per Connection).
+**A Run is a projection, not the record.** The transcript, the step-level tool
+trace and the resume checkpoint stay in Postgres, keyed by the object's name —
+high churn, unbounded, and of no interest to an API server. What is on the
+object is what a tenant needs to ASK about a run without the provider relaying
+it: which agent, what started it, what phase, when, and what it cost. That
+split is the projection carve-out.
+
+Nobody writes a Run's spec but the provider: a Run is the record of something
+that happened, so "create a Run to start a run" would be a second way to start
+work, racing the `run` verb that already exists. Deleting one is ordinary and
+meaningful — it is how a tenant discards a run — and the finalizer turns that
+into a purge of the rows behind it. An ownerReference to the Agent means
+deleting an agent garbage-collects its runs, and each one's finalizer purges
+its own rows on the way out.
+
+**Inbox items stay Postgres-only,** under the same carve-out, and deliberately:
+an inbox item is a pause in a run, it has the lifetime of that run, and giving
+it a CR of its own would mean a second object whose deletion semantics have to
+be kept in step with the run's for no gain in what a tenant can authorize.
+They are addressed as verbs on the agent that raised them
+(`agents/{n}/inbox`, `agents/{n}/inbox-resolve/{id}`), which is the object a
+tenant can actually grant approval rights over.
+
+Tenant-facing permission claim: `secrets` (tenant-scoped), and nothing else.
+Three names, all under this provider's own prefixes:
+
+| Secret | Written by | Why the provider touches it |
+|---|---|---|
+| whatever a `ModelCredential`'s `spec.secretRef` names (this provider's own writers default it to `railgrid-agents-model-<name>`) | the tenant (portal, kube client) | read, to call the model on the tenant's behalf — by the ModelCredential reconciler and by unattended runs |
+| `railgrid-agents-conn-<name>` | **the provider** | the OAuth callback stores access + refresh tokens; the Connection reconciler generates the Telegram `secret_token` / Slack signing secret that make an inbound webhook verifiable |
+
+There are no `serviceaccounts` / `clusterroles` / `clusterrolebindings` claims:
+an agent's unattended identity is **minted by the hub**, scoped to the exact
+Instances that agent references, and TTL'd — the provider never writes RBAC
+into a tenant's workspace. There are no `tokenreviews` / `subjectaccessreviews`
+claims either: service callers use the same data-plane verbs and the same two
+gates as everyone else, so the provider runs no reviews of its own.
+
+**Per-agent identity.** An interactive run acts as the human driving it. An
+unattended one asks the hub for an identity of its own
+(`provider-sdk/identityclient`), with rules built from what the agent actually
+references:
+
+- `get` on the **named** Instances its Connections and Toolsets point at, and
+  `create` on those instances' declared `{resource}/{verb}` subresources —
+  which is how the data plane expresses "may exec/proxy this one";
+- `get` on the workspace's APIBinding for the instance API group and `use` on
+  its default `MCPServer`: the two objects the provider reads on the agent's
+  behalf to find out *where* to send a call. An agent wired to nothing still
+  gets these, because resolving an endpoint is not access to anything.
+
+What that replaced is worth stating, because it was the sharpest edge in the
+provider: a ServiceAccount the provider wrote into the tenant's workspace with
+its own claimed credentials, holding a ClusterRole that granted `get`+`list` on
+*every* resource in `infrastructure.railgrid.ai`, with a token that never
+expired and rules that were create-if-absent so a grant never shrank. That
+token, read out of the workspace, reached any instance there — including a
+browser instance holding live logins the agent was never wired to. The rules
+are now re-stated on every refresh, so removing a Connection removes the access
+it carried, and the Agent's purge finalizer revokes the identity outright
+rather than waiting out a TTL.
 
 ### Autonomy and the approvals inbox
 
@@ -325,8 +403,8 @@ than executing: the engine unwinds the loop, the api layer serializes the
 conversation and the un-executed calls into the run's `checkpoint`, parks the
 run in `PendingApproval`, and writes an **inbox item** carrying the run ID and
 the exact requested arguments. The inbox is a single cross-agent queue of
-pending approvals and agent questions, surfaced at `/api/inbox` and in
-Activity, and pushed to the agent's primary channel.
+pending approvals and agent questions, surfaced per agent by the `inbox` verb,
+merged in Activity, and pushed to the agent's primary channel.
 
 Resolving it (portal button or channel `/approve`) **resumes the checkpointed
 run in place**: the run is claimed (so a double-approve can't run it twice),
@@ -346,6 +424,123 @@ with a scoped task, streams its result back, and counts its usage against the
 parent's budget. Eino's ADK/DeepAgent provides the sub-agent primitive; the
 provider adds the run lineage and budget rollup. Depth and fan-out are bounded
 by provider limits to keep a delegation tree from runaway spend.
+
+## The route surface
+
+Everything a tenant can ask this provider to DO is one shape:
+
+```
+/services/providers/agents/dataplane/clusters/{clusterID}/{resource}/{name}/{verb}[/{tail}]
+```
+
+`provider-sdk/serve` assembles the server from the closed list of Pillar 2
+route classes, so the layout is not this provider's to invent:
+
+| Path | Class | What |
+|---|---|---|
+| `/healthz`, `/readyz` | (c) | liveness; virtual-workspace readiness |
+| `/mcp`, `/mcp/sse` | (b) | the MCP projection the hub's aggregate federates |
+| `/dataplane/…` | (a) | every tenant verb, gated as the caller |
+| `/oauth/callback`, `/oauth/providers` | (d) | the browser OAuth popup flow |
+| `/webhooks/triggers/…`, `/webhooks/channels/…` | (g) | signed inbound hooks |
+| everything else | — | the portal bundle |
+
+There is no `/api/*` and no `/s2s/*`. `serve.New` refuses to register the
+first; the second was deleted rather than moved, and why is the interesting
+part.
+
+### The verbs
+
+| Resource | Verb | Method | Notes |
+|---|---|---|---|
+| `agents` | `chat` | POST | one assistant turn, streamed (SSE) |
+| `agents` | `run` | POST | start an unattended run |
+| `agents` | `sessions` | GET | list chat sessions |
+| `agents` | `session` | DELETE | `…/session/{sessionID}` — erase one transcript |
+| `agents` | `messages` | GET | one session's transcript |
+| `agents` | `usage` | GET | this agent's cost/token/latency rollups |
+| `agents` | `inbox` | GET | this agent's pending approvals and questions |
+| `agents` | `inbox-resolve` | POST | `…/inbox-resolve/{itemID}` |
+| `agents` | `events` | GET | this agent's activity, streamed (SSE) |
+| `modelcredentials` | `test` | POST | probe the credential with a real chat round-trip; optional body `{"model": "<id>"}` probes that chat-capable id instead of the saved one |
+| `modelcredentials` | `discover` | POST | list the chat-capable ids the credential's endpoint serves, and refresh its status |
+| `runs` | `trace` | GET | the run's step trace and answer (Postgres) |
+| `runs` | `wait` | GET | block until the run settles |
+| `runs` | `cancel` | POST | ask a run in flight to stop |
+| `connections` | `test` | POST | send a test message |
+| `connections` | `enable-inbound` | POST | register the inbound webhook |
+| `connections` | `authorize` | POST | start the OAuth flow |
+| `schedules` | `run` | POST | fire now |
+| `triggers` | `run` | POST | fire now |
+
+Every one of them is declared in `spec.dataPlane.verbs` on the CatalogEntry, in
+`manifest.yaml` and the chart's copy. A Go test compares the two files
+textually and both against the route table, because a verb that is served but
+not declared cannot be granted to a workload identity, and one that is declared
+but not served mints a capability whose calls 404.
+
+### Why the service-to-service route is gone
+
+`POST /s2s/clusters/{c}/agents/{n}/runs` existed because the rest of the
+provider assumed a human: the hub authenticates the caller, resolves their
+workspace and injects `X-Railgrid-*` headers, and that chain runs on a User CR
+and a Membership. A caller with neither had no way in, so the provider grew its
+own authentication (TokenReview against the token's home cluster), its own
+authorization (SubjectAccessReview on an invented `agents/delegate`
+subresource), a cluster→workspace map in Postgres to find the tenant, and a
+review client built from the provider's own kubeconfig.
+
+None of that is needed once the route carries the cluster in the PATH. A
+ServiceAccount presenting its own bearer passes the same two gates a human
+does — `get` on the agent, `create` on `agents/run` — evaluated by the tenant's
+own RBAC in the tenant's own workspace. So the bespoke route, the
+`agents/delegate` SAR, the `agents_tenants` lookup and the review client were
+all deleted, and the `tokenreviews` / `subjectaccessreviews` permission claims
+exist only until §8 PR 6 finishes retiring the last user of them.
+
+Two things follow that are worth stating:
+
+- **Who may start a run is not whose identity it runs with.** A run started
+  through `agents/{n}/run` executes as the AGENT, through the APIExport virtual
+  workspace, exactly as a scheduled run does — so authorizing a caller to start
+  a run never lends the agent that caller's reach. Only `chat`, which is
+  interactive and holds a stream open for a person, runs as the caller.
+- **The org/workspace scope still has to come from somewhere.** It is read from
+  kcp as the caller, as before; when that read is refused — a service identity
+  minted for one verb has no business also holding a read on the workspace's
+  `LogicalCluster` — the provider falls back to the cluster→workspace mapping
+  it recorded the last time someone who could read it came through.
+
+### What was dropped rather than moved
+
+- **`/api/whoami`** — a debugging echo of the headers. The headers it echoed
+  are no longer what addresses a request.
+- **`/api/capabilities`** — "which providers can an agent here reach?". The
+  provider used to answer it by dialling the hub's aggregate MCP endpoint and
+  splitting tool names. The hub's own reconciler already computes it and writes
+  it to `MCPServer.status.federatedProviders`, so the portal reads the object
+  (Pillar 1) and the MCP discovery tool reads it through the same cached path.
+- **`/api/catalog`** — the curated model catalog: compiled-in prices and
+  context windows with no tenant content in them. It ships as a bundle asset
+  (`portal/public/model-catalog.json`, regenerated by
+  `go run ./internal/gencatalog`), and a Go test fails if it drifts from
+  `llm.Catalog()` — the only way a user gets quoted one price and billed at
+  another.
+- **The hardcoded aggregate-MCP path.** `edgesEndpoint` composed
+  `<hub>/services/mcpserver/<cluster>/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp`
+  — the hub's routing shape restated in a provider that has no business knowing
+  it. It reads `MCPServer.status.URL` now.
+- **The hardcoded infrastructure data-plane path.** `tools/tools.go` built
+  `/services/providers/infrastructure/dataplane/clusters/…` by hand, which
+  hardcodes both another provider's name and the grammar. It now derives a
+  candidate provider name from the Instance API group (its first label — the
+  convention the hub follows when naming a provider's APIBinding), GETs that
+  one named binding in the tenant's workspace, checks it really exports the
+  group, and builds the URL with `dataplane.ProviderPath`. The candidate is a
+  guess; the binding is the answer, and a mismatch is refused rather than
+  turned into a URL for the wrong provider. A named `get` rather than a list on
+  purpose: it is a grant an agent's own scoped identity can hold, so an
+  unattended run resolves this for itself.
 
 ## Storage (own, Postgres)
 
@@ -412,11 +607,42 @@ the virtual workspace is reachable *and* being watched.
   are watched too, so an OAuth callback or a pasted secret re-triggers at
   once. Status `Ready`/`Error` for these concerns is written only here.
 - `controller/agent` — stamps `phase: Ready` on agents that have none.
+- `controller/run` — the durable queue for unattended work, plus each run's
+  deadline and the purge of its store rows on delete.
+
+  **The object is the queue.** A schedule fire, a trigger webhook or an inbound
+  channel message writes a Pending `Run` and returns; nothing is enqueued in
+  memory. This reconciler claims one by writing `status.owner` through the
+  status subresource, and optimistic concurrency settles the race — a loser
+  sees a conflict and drops the run rather than executing it twice. Two things
+  the in-process channel could not do follow directly: a restart loses nothing
+  (the watch re-delivers every Pending Run, so unclaimed work is picked up by
+  definition), and a saturated pool no longer refuses an inbound delivery with
+  503 + Retry-After, because a write that returns is the end of the producer's
+  responsibility.
+
+  Because only the leader reconciles, an owner that is not this process is a
+  previous leader: a run still unstarted under one past `ClaimGrace` is
+  re-claimed, and one left *executing* is handed to the recovery policy in
+  `api/recover.go` — resume from its checkpoint, or close it honestly and tell
+  whoever was waiting. `status.attempt` caps both, so a run that kills whatever
+  picks it up is closed instead of taking the provider down on every restart.
+
+  A run a person is watching is never claimed here: it executes on the replica
+  that served their request and carries no unattended delivery kind. That is
+  the one distinction keeping a chat turn from being charged twice. The deadline is `status.startedAt` plus the agent's
+  `spec.limits.timeoutSeconds` (default 30m, capped at 2h), written on the
+  object when the run starts and then requeued to wake at exactly that instant
+  — the sanctioned computed-deadline `RequeueAfter`, not a poll standing in for
+  a watch. It reports the timeout rather than killing the run: the executor
+  holds the run's context and is what stops it, and the two meet at the durable
+  cancel flag the engine reads between tool rounds. The limit is read once, when
+  the run starts, so editing an agent cannot shorten work already in flight.
 - Timezone-aware cron (`timeZone`, DST included), one-shot wakeups, quiet
   heartbeats; immediate disable with `disabledReason` on permanent errors (bad
   cron, missing runAt) and after 5 consecutive failed runs; per-job watchdog
   timeout in the executor.
-- Cancellation is durable: `POST /api/runs/{id}/cancel` sets
+- Cancellation is durable: `POST …/runs/{id}/cancel` sets
   `cancel_requested` on the run row, which the engine checks between tool
   rounds on whichever replica is executing, a queued job checks before
   starting, and the recovery sweep honours instead of resuming.
@@ -459,11 +685,57 @@ type Runner interface {
 - `Agent.spec.runner: auto | eino | claude-code` — `auto` picks `eino`
   unless the task is marked long-running and `claude-code` is available.
 
-**Model profiles.** `railgrid-agents-llm` holds a small list of named profiles
-(provider, baseURL, model, key) instead of one entry. Agents map purposes to
-profiles: `chat` (strong), `background` (cheap — heartbeats, wakeups,
-summarization), `compaction`. BYO OpenAI-compatible or Gemini, per tenant,
-provider-agnostic.
+**Model profiles.** Each endpoint is a `ModelCredential` object; the key stays
+in the Secret it points at. Agents map purposes to credential names: `chat`
+(strong), `background` (cheap — heartbeats, wakeups, summarization),
+`compaction`, plus an ordered `spec.modelFallbacks`. BYO OpenAI-compatible,
+per tenant, provider-agnostic.
+
+The credential model was a Secret named by convention
+(`railgrid-agents-model-<name>`, with the endpoint stuffed into its own keys)
+until the kind landed. Two things were wrong with it and both were structural.
+Nothing could validate it: a Secret has no status, so "is this key still good?"
+had no answer on any object and every run rediscovered the failure for itself.
+And the data-plane grammar addresses an OBJECT, so the probe verbs had to hang
+off an Agent — which meant the first thing anyone does in a new workspace,
+connect a model, had nothing to be addressed at. The portal papered over that
+with an "untestable" notice and asked the user to type a model ID from memory.
+A kind fixes both at once: the reconciler says what is true
+(`SecretResolved` / `Reachable` / `Ready`, and the model ids the endpoint
+serves), and `modelcredentials/{name}/test` and `.../discover` are verbs on the
+thing being asked about.
+
+**Discovery is curated, and the pick is proved before it is saved.** An
+endpoint answers `GET /models` with everything the account can reach; OpenAI's
+answer is ~130 ids, most of which are not chat models at all (speech,
+transcription, embeddings, images, realtime, moderation) and several of which
+are chat-shaped but served only on `/v1/responses` — `*-codex`, `*-pro`,
+`*-deep-research`, `computer-use-*`. `llm.BuildModel` speaks Chat Completions
+and nothing else, so offering that list raw is offering a trap: the model
+saves, and the failure arrives on the first turn as the provider's 404 "This
+model is not supported in the v1/chat/completions endpoint." So
+`llm.FilterChatModels` (a documented deny-list of id tokens, overruled by an
+exact catalog id so `gemini-2.5-pro` survives the `-pro` rule) runs inside
+`llm.DiscoverModels` — the one call the reconciler and the `discover` verb
+share, which is what keeps `status.models` and the verb's answer the same list
+rather than two. Catalog-known ids come first in catalog order, then the rest
+alphabetically, and the portal groups on that split.
+
+Curation narrows the list; it does not prove anything. That is what the `test`
+verb's optional `{"model": "<id>"}` body is for: the editor probes the model a
+person just picked, with the endpoint and key still taken from the saved object
+and its Secret, and "Save changes" stays disabled until it answers. A save that
+only rotates the key is unaffected — nothing new is being claimed about the
+model. And when a run does fail this way anyway (a model retired between the
+probe and the run), `llm.ExplainChatCompletionsRefusal` keeps the provider's
+sentence and adds which credential owns the model id.
+
+**Agents report their credentials.** The Agent reconciler resolves every name
+in `spec.models` and `spec.modelFallbacks` and sets
+`ModelCredentialsReady`, naming the offending credentials. It is a condition of
+its own rather than another `Validated` reason because a rotated key leaves the
+agent's spec perfectly correct — the agent is right and the model is
+unreachable, and a reader has to be able to tell those apart.
 
 **Budgets.** Every run records usage into `agents_usage`; each turn checks
 the agent's rolling window against `spec.budget`. On breach: suspend
@@ -534,8 +806,45 @@ cross-agent **Inbox**. This keeps per-agent config inside the agent and shared
 secrets outside it, mirroring app-studio. (Vite + `railgrid.ready`/`railgrid.context`
 handshake; streaming chat with tool-call rows + approval prompts.)
 
+**How the portal reads and writes.** The micro-frontend has two data paths,
+and `portal/src/api.ts` is the single entry point to both. Objects go to kcp
+through portalkit's kube client (`portal/src/resources.ts`,
+`createKubeClient({ fetch: providerFetch(ctx), cluster: ctx.tenant })`):
+creates are a plain `create` so a duplicate name is still a 409, edits are JSON
+merge patches — which replace list and map fields wholesale, matching what the
+Go patch helpers did — and Secrets are server-side applied. Verbs go to
+`/services/providers/agents/dataplane/clusters/{cluster}/…`, addressed by the
+same `ctx.tenant` cluster ID the kube half uses, so both halves move together
+on a workspace switch. The read shapes did not change in the move: the deleted
+CRUD handlers returned the raw CRs, so the portal's `Agent`, `Schedule`,
+`Connection`, `Toolset` and `Trigger` types were already the Kubernetes
+objects.
+
+Because the grammar addresses an object, the feeds that have no object of their
+own — inbox, usage, the event stream — are per-agent verbs, and `api.ts` fans
+out over the agents the caller can see and merges. That is the honest shape: a
+caller sees exactly the agents they may see. Activity is no longer among them —
+a run IS an object, so the feed is a kube list with a label selector and the
+provider serves no route for it at all.
+
+Two consequences worth stating plainly. A model credential's Secret now reaches
+the browser on a list, exactly as `kubectl get secret` would for the same user
+in the same workspace — the key is the user's own and the provider no longer
+stands between them; `listCredentials` projects it away immediately and no view
+ever sees it. And a `Trigger`'s `status.webhookPath` is minted by the Trigger
+reconciler rather than by whoever created the object, because the token is an
+HMAC the provider keys and the browser must never hold.
+
+**Sidebar sub-nav.** `CatalogEntry.spec.ui.children` declares Agents, Activity
+and Connections. The portal composes each as `/providers/agents/<builtinRoute>`
+and pushes the trailing segment back as `railgridContext.subPath`, which
+`portal/src/router.ts` (`routeForSubPath`) maps onto this element's own hash
+route. Schedules and triggers are deliberately not children: they are edited on
+an agent's Automation tab, not as a workspace-level collection, so there is no
+route to point a sidebar entry at.
+
 **OAuth connections.** For `auth: oauth` Connections the portal starts the flow
-at `/api/connections/{name}/oauth/authorize` (redirect to the provider, e.g.
+with the `authorize` verb on the Connection (redirect to the provider, e.g.
 GitHub App / Google / Slack). The provider's callback
 `/services/providers/agents/oauth/callback` exchanges the code, stores the
 refresh token in the connection Secret + `agents_oauth`, and refreshes before
@@ -589,9 +898,15 @@ providers/agents/
   manifest.yaml      # CatalogEntry (dev loopback URL, own port)
   apis/v1alpha1/     # Agent, Connection, AgentSchedule, AgentTrigger,
                      # AgentRun (+AgentSkill)
-  api/               # REST handlers: chat SSE, agents, runs, schedules,
-                     # triggers, inbox, connections, oauth callback, budgets,
-                     # files proxy
+  api/               # dataplane.go is the whole route table; the rest are the
+                     # verb handlers it dispatches to (NOT object CRUD — see
+                     # design rule 4): chat SSE, run, runs, sessions, messages,
+                     # usage, inbox, events on an agent; test/discover on a
+                     # model credential;
+                     # test/enable-inbound/authorize on a connection; run on a
+                     # schedule or trigger. Plus the OAuth callback, the signed
+                     # webhooks, and the MCP tools, which are the one place the
+                     # apply*Create/apply*Update builders still run
   channels/          # telegram/, slack/: webhook verify, inbound routing,
                      # outbound delivery, approval round-trips
   triggers/          # event sources (webhook/channel/email/github/connection),
@@ -632,8 +947,9 @@ reflect the 2026-07-12 state (see [Implementation status](#implementation-status
    Boots against a bare hub.
 2. ◑ **Chat + store** — eino runner, SSE chat, messages/runs in the store.
    **Done** except: Postgres backend (in-memory only), tool approvals in chat
-   (needs the tool loop), at-rest encryption. Model creds became *named
-   credentials* (own Secret each), not the single `railgrid-agents-llm`.
+   (needs the tool loop), at-rest encryption. Model creds became the
+   `ModelCredential` kind — one object per endpoint, referencing the Secret
+   that holds its key — not a single shared Secret.
 3. ✅ **Scheduler** — CRUD + tab + Run now, and **autonomous firing** via the
    Schedule reconciler + background executor: timezone-aware
    cron/wakeup/heartbeat, optimistic status claims, watchdog timeout,

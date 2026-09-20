@@ -19,20 +19,32 @@ import (
 	"github.com/railgrid/provider-agents/store"
 )
 
-// listInbox returns the cross-agent approvals + questions queue for the
-// workspace. Filter with ?state=pending (default: all).
+// listInboxItems returns one agent's approvals + questions queue — the `inbox`
+// verb on that agent. Filter with ?state=pending (default: all).
+//
+// It is per-agent because the grammar addresses an object, and an inbox item's
+// object is the agent that raised it: a caller who may approve one agent's tool
+// call has not thereby been granted the others'. A workspace-wide view is the
+// portal's job, over the agents it can see.
 func (s *Server) listInboxItems(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
+	agent := r.PathValue("name")
 	state := store.InboxItemState(strings.TrimSpace(r.URL.Query().Get("state")))
 	items, err := s.store.ListInbox(r.Context(), store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID}, state)
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	writeList(w, items)
+	mine := make([]store.InboxItem, 0, len(items))
+	for _, item := range items {
+		if item.AgentName == agent {
+			mine = append(mine, item)
+		}
+	}
+	writeList(w, mine)
 }
 
 type resolveInboxRequest struct {
@@ -78,7 +90,10 @@ func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id
 	return s.store.ResolveInboxItem(ctx, scope, id, state, response, now)
 }
 
-// resolveInboxItem records the user's decision on an approval or question.
+// resolveInboxItem records the user's decision on an approval or question. It
+// is the `inbox-resolve` verb on the agent, with the item id in the tail:
+// POST …/agents/{name}/inbox-resolve/{itemID}.
+//
 // Resolving an approval bound to a paused run resumes it in place: approve
 // executes the gated call with the exact requested arguments, deny feeds the
 // refusal back to the model.
@@ -105,7 +120,15 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wsScope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID}
-	item, err := s.resolveInboxDecision(r.Context(), wsScope, r.PathValue("id"), state, req.Response, time.Now().UTC())
+	itemID := r.PathValue("tail")
+	// The item id is a tail segment, not an object the gates saw, so the agent
+	// it belongs to is checked against the one that WAS gated — before anything
+	// is mutated.
+	if existing, gerr := s.store.GetInboxItem(r.Context(), wsScope, itemID); gerr != nil || existing.AgentName != r.PathValue("name") {
+		writeStatus(w, http.StatusNotFound, "NotFound", "no such inbox item on this agent")
+		return
+	}
+	item, err := s.resolveInboxDecision(r.Context(), wsScope, itemID, state, req.Response, time.Now().UTC())
 	if err != nil {
 		if _, ok := errors.AsType[*requestError](err); ok {
 			writeUpdateError(w, err)
@@ -123,7 +146,7 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	if item.Kind == store.InboxKindApproval && item.RunID != "" && state != store.InboxStateAnswered {
 		rd := resumeDeps{
 			Creds: c, CR: clientCR{c},
-			EdgesEndpoint: s.edgesEndpoint(id.clusterID), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+			EdgesEndpoint: s.aggregateMCPEndpoint(r.Context(), id), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
 			ClusterID: id.clusterID,
 		}
 		go s.resumeApprovedRun(wsScope, item, rd, state == store.InboxStateApproved, req.Response)

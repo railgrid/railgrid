@@ -156,7 +156,7 @@ func TestSyncProjectDevelopmentTargetReportsSkippedFiles(t *testing.T) {
 		APIVersion:   "infrastructure.railgrid.ai/v1alpha1",
 		Components:   map[string]projectTemplateComponent{"web": {WorkspacePath: "web"}, "api": {WorkspacePath: "api"}},
 	}
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: hub.URL, workspaces: workspaces}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: hub.URL, workspaces: workspaces}
 
 	raw, err := server.syncProjectDevelopmentTarget(ctx, client, id, project, target)
 	if err != nil {

@@ -53,7 +53,7 @@ func TestSanitizeAssistantThreadTitleBoundsAndNormalizesModelOutput(t *testing.T
 }
 
 func TestAssistantThreadTitleGeneratorUsesServerSeam(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, assistantThreadTitleGenerator: func(_ context.Context, _ *asclient.Client, prompt string) (string, error) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, assistantThreadTitleGenerator: func(_ context.Context, _ *asclient.Client, prompt string) (string, error) {
 		return "Summarize " + prompt + " request", nil
 	}}
 	// The seam is intentionally exercised through the sanitizer boundary; the
@@ -84,7 +84,7 @@ func TestAssistantThreadTitleEligibilityUsesCanonicalUserItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: memory}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: memory}
 	if !server.assistantThreadTitleNeedsGeneration(context.Background(), scope, thread) {
 		t.Fatal("new untitled thread should be eligible")
 	}
@@ -109,8 +109,8 @@ func TestStartAssistantThreadTitleGenerationPersistsStreamedUpdate(t *testing.T)
 	}
 	generated := make(chan struct{})
 	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup,
-		store:            memory,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		store: memory,
 		assistantThreadTitleGenerator: func(_ context.Context, _ *asclient.Client, prompt string) (string, error) {
 			if prompt != "build a compact thread pane" {
 				t.Errorf("title prompt = %q", prompt)

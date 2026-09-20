@@ -40,7 +40,7 @@ func projectAssistantSandboxTargetFromTemplate(info projectTemplateInfo, name st
 	return projectDevelopmentSyncTargetInfo{
 		EnvironmentName:    projectAssistantRunSandboxEnvironment,
 		BindingName:        projectAssistantRunSandboxBinding,
-		Provider:           infraDataPlaneProvider,
+		Provider:           infraDependencyName,
 		ResourceName:       name,
 		Resource:           projectAssistantRunSandboxResource,
 		Kind:               projectAssistantRunSandboxKind,
@@ -692,8 +692,7 @@ func (s *Server) cleanupInterruptedProjectAssistantRunSandbox(ctx context.Contex
 	if sandboxCheckpoint == nil {
 		return nil
 	}
-	metadata := projectAssistantRunSandboxMetadata{}
-	metadata = sandboxCheckpoint.Metadata
+	metadata := sandboxCheckpoint.Metadata
 	if strings.TrimSpace(metadata.RunID) == "" || strings.TrimSpace(metadata.RunID) != strings.TrimSpace(run.ID) {
 		return fmt.Errorf("%w: interrupted sandbox run identity does not match", errProjectAssistantRunSandboxConflict)
 	}
@@ -943,15 +942,6 @@ func projectAssistantSandboxChanges(changes []projectAssistantSandboxWorkspaceCh
 		out = append(out, workspace.ManagedFileChange{Path: path, Operation: op, Content: change.Content, ExpectedVersion: change.ExpectedVersion})
 	}
 	return out, nil
-}
-
-func projectAssistantSandboxChangesJSON(changes []workspace.ManagedFileChange) []projectAssistantSandboxWorkspaceChange {
-	out := make([]projectAssistantSandboxWorkspaceChange, 0, len(changes))
-	for _, change := range changes {
-		out = append(out, projectAssistantSandboxWorkspaceChange{Path: change.Path, Operation: string(change.Operation), Content: change.Content, ExpectedVersion: change.ExpectedVersion})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out
 }
 
 // checkpoint atomically applies only worker-returned bounded changes.  The

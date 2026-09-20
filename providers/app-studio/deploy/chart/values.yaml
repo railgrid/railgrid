@@ -1,12 +1,33 @@
 nameOverride: ""
 fullnameOverride: ""
 
-# App Studio currently requires one provider replica. Each workspace has one
-# shared, single-session Playwright Browser, while the provider's browser
-# session ownership and serialization are process-local. Multiple replicas
-# could therefore invalidate or concurrently drive the same browser. The chart
-# rejects replicaCount > 1 and uses Recreate upgrades to prevent transient pod
-# overlap. See docs/app-studio-replica-awareness.md.
+# The controllers (Project / Session / Studio) are leader-elected on a Lease in
+# the provider workspace, so extra replicas never double-write a CR. Since §9
+# Cut D.3 a project's working-copy LEDGER — its source revision, its
+# uncommitted paths, the commit in flight and the settlement receipt — lives in
+# `Project.status.workspace` rather than in files beside the tree, so no
+# replica holds authority over a project any more. What each replica holds is a
+# CACHE of the working tree, and project affinity + peer forwarding over
+# internalPort keep a project's edits on one replica because that is cheap, not
+# because it is required: a replica that finds no tree, or a tree older than
+# the ledger's revision, rebuilds it from the last commit rather than serving
+# an empty workspace.
+#
+# Two things are still serialized only within one process, and both are
+# unchanged by Cut D.3:
+#
+#   1. The workspace's shared single-session Playwright Browser. One browser
+#      per WORKSPACE, owned and serialized inside one App Studio process, while
+#      project affinity can place two projects of the same workspace on
+#      different replicas. This is why replicaCount defaults to 1 and why the
+#      Deployment keeps `strategy: Recreate` (deployment.yaml) — an upgrade
+#      must not transiently run two pods against that browser. It is a default
+#      and a rollout strategy, not a guard: the chart renders more replicas.
+#   2. Coding-sandbox claims with assistant.runSandbox.mode=force. Those have
+#      no distributed CAS, so two replicas can both believe they own a sandbox.
+#      That one combination the chart still refuses outright.
+#
+# See docs/app-studio-replica-awareness.md.
 replicaCount: 1
 
 # internalPort carries peer-forwarded project requests between replicas.
@@ -119,7 +140,22 @@ store:
     name: ""
     key: database-url
   inMemoryMessageStore: false
-  # Retention window understood by Go's time.ParseDuration, e.g. "720h".
+  # Conversation retention, understood by Go's time.ParseDuration, e.g. "720h".
+  # Empty keeps conversations indefinitely.
+  #
+  # SEMANTIC CHANGE (remediation §9 Cut D.2): this is now a PER-CONVERSATION
+  # deadline, not a fleet-wide cutoff sweep. The Session reconciler requeues
+  # each Session at status.lastActivityAt + messageRetention and deletes it;
+  # the Session's finalizer purges the thread. So:
+  #   - a conversation is measured from its own last activity, not from the
+  #     age of individual message rows;
+  #   - a conversation with an in-flight turn never expires while that turn
+  #     runs;
+  #   - the whole conversation goes at once, transcript and all, instead of
+  #     older messages being trimmed out from under a thread that is still
+  #     open;
+  #   - expiry is the controller leader's work, so it happens once per fleet.
+  # Draft attachments are NOT covered by this: see attachmentDraftRetention.
   messageRetention: ""
   # Explicit draft uploads expire after this duration; retained receipts have
   # no expiry and are removed with their Project.
@@ -136,11 +172,32 @@ store:
 # App Studio project workspaces. The provider stores checked-out/generated
 # project files here so the agent can list, read, search, and later mutate them.
 #
-# Project source must survive provider pod replacement, including projects
-# without Git. Use the default PVC or an existingClaim. Explicit emptyDir=true
-# is suitable only for disposable development: replacing the pod loses files.
-# Before upgrading an ephemeral installation, migrate its workspace tree to
-# the PVC as described in README.md; changing this value does not copy data.
+# The workspace volume holds the working TREE and nothing else. Since §9 Cut
+# D.3 it is a cache, not authority: the ledger that says which paths are
+# uncommitted and what revision the working copy is at is on the project's own
+# status, so a replica that loses this volume rebuilds the tree from the last
+# RepositoryCommit and knows exactly what was still dirty. Losing it costs the
+# UNCOMMITTED BYTES themselves — git cannot return what was never committed —
+# not the provider's idea of where the project is.
+#
+# That makes the choice a real one:
+#
+#   - The default PVC (or an existingClaim) keeps uncommitted edits across pod
+#     replacement, and is still required for a project with NO repository yet,
+#     whose tree has nothing to be rebuilt from.
+#   - emptyDir=true is now a supportable production choice for installations
+#     where every project has a repository and losing in-flight edits on a pod
+#     replacement is acceptable: the reconciler commits a dirty workspace as
+#     soon as the project goes idle, so the window is short.
+#
+# accessModes stays ReadWriteOnce: the default deployment is one replica (see
+# replicaCount above, and the shared Playwright Browser behind it), and a RWO
+# claim is what every storage class serves. Multiple replicas want emptyDir, or
+# a ReadWriteMany class if uncommitted edits must survive a pod move — NOT a
+# shared RWO claim.
+#
+# Before upgrading an ephemeral installation to a PVC, migrate its workspace
+# tree as described in README.md; changing this value does not copy data.
 workspace:
   path: /var/lib/railgrid-app-studio/workspaces
   existingClaim: ""

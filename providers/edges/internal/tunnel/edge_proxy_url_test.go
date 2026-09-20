@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 func testServer(edgeProxyPublicPath string) *Server {
@@ -40,7 +42,7 @@ func testServer(edgeProxyPublicPath string) *Server {
 }
 
 func TestEdgeProxyStatusURL(t *testing.T) {
-	const base = "/services/providers/edges/edgeproxy"
+	const base = "/services/providers/edges/" + DataPlaneRoot
 	s := testServer(base)
 
 	cases := []struct {
@@ -55,14 +57,14 @@ func TestEdgeProxyStatusURL(t *testing.T) {
 			gvr:     s.kinds["kubernetesclusters"].GVR,
 			cluster: "11tcw27t4rdtnacy",
 			obj:     "dev-edge-kube-1",
-			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/dev-edge-kube-1/k8s",
+			want:    base + "/clusters/11tcw27t4rdtnacy/kubernetesclusters/dev-edge-kube-1/k8s",
 		},
 		{
 			name:    "linux server maps to ssh subresource",
 			gvr:     s.kinds["linuxservers"].GVR,
 			cluster: "11tcw27t4rdtnacy",
 			obj:     "dev-edge-srv-1",
-			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/linuxservers/dev-edge-srv-1/ssh",
+			want:    base + "/clusters/11tcw27t4rdtnacy/linuxservers/dev-edge-srv-1/ssh",
 		},
 		{
 			name:    "macOS server has no consumer data-plane URL",
@@ -83,18 +85,21 @@ func TestEdgeProxyStatusURL(t *testing.T) {
 				return
 			}
 
-			// The CLI externalizes status.URL against the hub host, then the
-			// hub backend proxy strips /services/providers/edges and the
-			// provider mux strips /edgeproxy — leaving the path parseEdgesProxyPath
-			// must accept. Assert that round-trip so the inverse pair can't drift.
-			stripped := strings.TrimPrefix(got, base)
-			cluster, resource, name, subresource, ok := s.parseEdgesProxyPath(stripped)
+			// The CLI externalizes status.URL against the hub host; the hub
+			// backend proxy then strips /services/providers/edges and hands
+			// the provider the rest verbatim, which is exactly what
+			// dataplane.ParsePath must accept. Assert that round-trip so the
+			// inverse pair cannot drift.
+			stripped := strings.TrimPrefix(got, "/services/providers/edges")
+			parsed, ok := dataplane.ParsePath(DataPlaneRoot, stripped)
 			if !ok {
-				t.Fatalf("parseEdgesProxyPath(%q) failed to parse the URL this Server produced", stripped)
+				t.Fatalf("ParsePath(%q) failed to parse the URL this Server produced", stripped)
 			}
-			if cluster != tc.cluster || resource != tc.gvr.Resource || name != tc.obj {
-				t.Fatalf("round-trip mismatch: got cluster=%q resource=%q name=%q sub=%q",
-					cluster, resource, name, subresource)
+			if parsed.ClusterID != tc.cluster || parsed.Resource != tc.gvr.Resource || parsed.Name != tc.obj {
+				t.Fatalf("round-trip mismatch: got %+v", parsed)
+			}
+			if !verbServed(parsed.Resource, parsed.Verb) {
+				t.Fatalf("status.URL names verb %q, which this provider does not serve", parsed.Verb)
 			}
 		})
 	}

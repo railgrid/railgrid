@@ -364,9 +364,11 @@ func projectEinoAssistantShouldRetryModelError(err error) bool {
 		errors.Is(err, syscall.EPIPE) {
 		return true
 	}
+	// net.Error.Temporary is deprecated and ill-defined: the transient cases it
+	// covered are the timeouts and the reset/broken-pipe errors already matched
+	// above, so a timeout is the whole remaining signal.
 	var networkError net.Error
-	return errors.As(err, &networkError) &&
-		(networkError.Timeout() || networkError.Temporary())
+	return errors.As(err, &networkError) && networkError.Timeout()
 }
 
 // projectEinoAssistantContextWindowExceeded reports the provider variants we

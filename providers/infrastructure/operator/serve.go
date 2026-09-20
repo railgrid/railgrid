@@ -26,8 +26,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/install"
 	"github.com/railgrid/provider-infrastructure/networkpolicy"
 )
 
@@ -44,8 +46,14 @@ const (
 // token) into the runtime cluster and create-or-updates the provider serve
 // Deployment + Service there, with the image/replicas/port from the CR. The
 // serve container runs `infrastructure-provider serve`, reading the provider
-// kubeconfig (INFRASTRUCTURE_KUBECONFIG) for its controllers and the runtime
-// kubeconfig (KRO_KUBECONFIG) for the kro backend.
+// kubeconfig (RAILGRID_PROVIDER_KUBECONFIG — the only one serve accepts) for
+// its controllers and its heartbeat, and the runtime kubeconfig
+// (KRO_KUBECONFIG) for the kro backend.
+//
+// The replicated provider kubeconfig is workspace-scoped before it is written:
+// serve is never told to retarget a root-scoped credential at a workspace, so
+// whatever the CR was given, what reaches serve already terminates at
+// /clusters/<providerWorkspace>.
 func EnsureProviderServe(
 	ctx context.Context,
 	cs kubernetes.Interface,
@@ -61,7 +69,11 @@ func EnsureProviderServe(
 
 	name := cr.Name
 	providerSecret := name + "-provider-kubeconfig"
-	if err := upsertOpaqueSecret(ctx, cs, ServeNamespace, providerSecret, "kubeconfig", providerKubeconfig); err != nil {
+	serveKubeconfig, err := workspaceScopedKubeconfig(providerKubeconfig, cr.Spec.ProviderWorkspace)
+	if err != nil {
+		return fmt.Errorf("scope provider kubeconfig to workspace %q: %w", cr.Spec.ProviderWorkspace, err)
+	}
+	if err := upsertOpaqueSecret(ctx, cs, ServeNamespace, providerSecret, "kubeconfig", serveKubeconfig); err != nil {
 		return fmt.Errorf("replicate provider kubeconfig: %w", err)
 	}
 
@@ -82,23 +94,13 @@ func EnsureProviderServe(
 	env := []corev1.EnvVar{
 		{Name: "PORT", Value: fmt.Sprintf("%d", port)},
 		{Name: "RAILGRID_PROVIDER_NAME", Value: "infrastructure"},
-		{Name: "INFRASTRUCTURE_KUBECONFIG", Value: providerKubeconfigMount},
-		// The hub-minted provider kubeconfig is also the heartbeat credential:
-		// the SDK resolves its bearer from RAILGRID_HUB_TOKEN, else from the
-		// kubeconfig at RAILGRID_PROVIDER_KUBECONFIG (provider-sdk/hubclient
-		// token.go). Every Helm-installed provider sets the latter; without it
-		// serve beats unauthenticated, a hub enforcing heartbeat auth answers
-		// 401, and the provider is marked stale within a few minutes.
+		// The one kubeconfig serve reads, and also its heartbeat credential:
+		// the SDK resolves the beat's bearer from RAILGRID_HUB_TOKEN, else
+		// from the kubeconfig at RAILGRID_PROVIDER_KUBECONFIG
+		// (provider-sdk/hubclient token.go). Without it serve beats
+		// unauthenticated, a hub enforcing heartbeat auth answers 401, and the
+		// provider is marked stale within a few minutes.
 		{Name: "RAILGRID_PROVIDER_KUBECONFIG", Value: providerKubeconfigMount},
-	}
-	if cr.Spec.ProviderWorkspace != "" {
-		// The mounted kubeconfig may be root-scoped (the supplied-admin flow,
-		// where spec.providerWorkspace is set; hub-minted kubeconfigs are
-		// already workspace-scoped and leave it empty). Without this, serve's
-		// controllers watch the root cluster, where the platform kinds don't
-		// exist — the Template cache never syncs and instances never
-		// reconcile or finalize.
-		env = append(env, corev1.EnvVar{Name: "INFRASTRUCTURE_WORKSPACE_PATH", Value: cr.Spec.ProviderWorkspace})
 	}
 	if cr.Spec.Hub.URL != "" {
 		env = append(env, corev1.EnvVar{Name: "RAILGRID_HUB_URL", Value: cr.Spec.Hub.URL})
@@ -391,4 +393,31 @@ func ensureServeService(ctx context.Context, cs kubernetes.Interface, name strin
 	default:
 		return err
 	}
+}
+
+// workspaceScopedKubeconfig rewrites every cluster entry's server so it
+// terminates at /clusters/<workspacePath>, and returns the re-serialized
+// kubeconfig. An already workspace-scoped kubeconfig (the hub-minted one, which
+// leaves spec.providerWorkspace empty) is returned unchanged, as is one handed
+// in with no workspace to scope it to.
+//
+// This is where the supplied-root-kubeconfig flow is reconciled with serve
+// having exactly one credential and no retarget hint: the operator, which
+// already knows the workspace, does the scoping once, on the copy it writes.
+func workspaceScopedKubeconfig(raw []byte, workspacePath string) ([]byte, error) {
+	if workspacePath == "" {
+		return raw, nil
+	}
+	cfg, err := clientcmd.Load(raw)
+	if err != nil {
+		return nil, err
+	}
+	for _, cluster := range cfg.Clusters {
+		host, err := install.RetargetHostToWorkspace(cluster.Server, workspacePath)
+		if err != nil {
+			return nil, err
+		}
+		cluster.Server = host
+	}
+	return clientcmd.Write(*cfg)
 }

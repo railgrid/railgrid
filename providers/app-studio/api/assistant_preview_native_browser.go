@@ -302,15 +302,6 @@ func projectAssistantNativeBrowserSafetyErrorAt(stage string, err error) error {
 	return &projectAssistantNativeBrowserSafetyError{Stage: stage, Err: err}
 }
 
-func projectAssistantNativeBrowserReadObservation(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "browser_navigate", "browser_navigate_back", "browser_navigate_forward", "browser_snapshot", "browser_take_screenshot", "browser_wait_for":
-		return true
-	default:
-		return false
-	}
-}
-
 func projectAssistantNativeBrowserInteraction(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "browser_click", "browser_drag", "browser_fill_form", "browser_handle_dialog", "browser_hover", "browser_press_key", "browser_resize", "browser_select_option", "browser_type":
@@ -434,7 +425,7 @@ func cloneProjectMCPTools(tools []projectMCPTool) []projectMCPTool {
 
 func (p projectAssistantHTTPToolPort) DiscoverBrowser(ctx context.Context, id identity, _ projectLLMSettings) ([]projectAssistantTool, error) {
 	if p.server == nil || p.request == nil {
-		return nil, errors.New("App Studio browser transport is not configured")
+		return nil, errors.New("the App Studio browser transport is not configured")
 	}
 	ref, ok := p.server.resolveBrowserDataPlaneRef(ctx, id)
 	if !ok {

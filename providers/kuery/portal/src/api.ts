@@ -7,12 +7,19 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 /**
- * Framework-neutral client for the Kuery HTTP API.
+ * Framework-neutral client for the Kuery query verb.
  *
- * The portal is mounted as a custom element, but the query contract is useful
- * to every view in that element. Keeping request construction and response
- * metadata here means a Vue view does not need to know about the wire format
- * (or make assumptions about an opaque cursor).
+ * There is one route: POST
+ * {base}/dataplane/clusters/{clusterID}/savedviews/{name}/run. A query is a
+ * verb on a SavedView the caller must be able to see and must be granted the
+ * verb on, which is why every call needs a cluster and a view name. The
+ * playground's ad-hoc queries are not an exception: they run a per-user
+ * scratch SavedView, created with the kube client, with the query supplied as
+ * the request's input override.
+ *
+ * The response is an actionwire envelope; this module unwraps it so a Vue view
+ * still sees a QueryStatus and does not need to know the wire format (or make
+ * assumptions about an opaque cursor).
  */
 
 export type RootKind = 'objects' | 'clusters'
@@ -110,7 +117,7 @@ export interface CursorResult {
   pageSize?: number
 }
 
-/** Raw QueryStatus JSON as returned by POST /api/query. */
+/** Raw QueryStatus JSON, unwrapped from the run verb's envelope. */
 export interface QueryStatus<T extends ObjectResult = ObjectResult> {
   objects?: T[]
   cursor?: CursorResult
@@ -140,6 +147,8 @@ export type InventoryPage = QueryPage<ObjectResult>
 
 export interface QueryRequestOptions {
   signal?: AbortSignal
+  /** Run a different SavedView than the client's default for this call. */
+  savedView?: string
 }
 
 export type HeaderSource = HeadersInit | (() => HeadersInit)
@@ -147,10 +156,35 @@ export type HeaderSource = HeadersInit | (() => HeadersInit)
 export interface KueryApiOptions {
   /** The provider service base, normally /services/providers/kuery. */
   basePath: string
-  /** Caller-supplied auth/tenant headers from the host context. */
+  /**
+   * The tenant workspace's kcp logical-cluster ID (railgridContext.tenant).
+   * It addresses the request; the caller's bearer is what authorizes it.
+   */
+  cluster: string
+  /**
+   * The SavedView every query runs as. Views own their own queries; a query
+   * passed to query() overrides the saved one for that call.
+   */
+  savedView: string
+  /** Caller-supplied tenant headers from the host context. */
   headers?: HeaderSource
   /** Injectable fetch makes the adapter usable in tests and non-browser hosts. */
   fetch?: typeof globalThis.fetch
+}
+
+/** The actionwire envelope the run verb answers with. */
+interface RunEnvelope {
+  result?: unknown
+  error?: { code?: string; message?: string; retryable?: boolean }
+}
+
+/**
+ * runPath is the one tenant route. Every segment is encoded: a view name is
+ * caller-authored and must not be able to escape its slot.
+ */
+export function runPath(basePath: string, cluster: string, savedView: string): string {
+  const base = basePath.replace(/\/+$/, '')
+  return `${base}/dataplane/clusters/${encodeURIComponent(cluster)}/savedviews/${encodeURIComponent(savedView)}/run`
 }
 
 export interface InventoryFilters {
@@ -310,11 +344,15 @@ export class KueryApiError extends Error {
 
 export class KueryApi {
   private readonly basePath: string
+  private readonly cluster: string
+  private readonly savedView: string
   private readonly headerSource?: HeaderSource
   private readonly fetchImpl: typeof globalThis.fetch
 
   constructor(options: KueryApiOptions) {
     this.basePath = options.basePath.replace(/\/+$/, '')
+    this.cluster = options.cluster
+    this.savedView = options.savedView
     this.headerSource = options.headers
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis)
   }
@@ -324,22 +362,33 @@ export class KueryApi {
     headers.set('Accept', 'application/json')
     headers.set('Content-Type', 'application/json')
 
-    const response = await this.fetchImpl(`${this.basePath}/api/query`, {
+    const response = await this.fetchImpl(runPath(this.basePath, this.cluster, options.savedView || this.savedView), {
       method: 'POST',
       headers,
-      body: JSON.stringify(spec),
+      // The verb takes {"input": …} and nothing else; an omitted query runs
+      // the view as saved, which is not what an explicit call wants.
+      body: JSON.stringify({ input: { query: spec } }),
       signal: options.signal,
     })
     const body = await response.text()
-    if (!response.ok) throw new KueryApiError(response.status, body, response.statusText)
 
     let parsed: unknown
     try {
       parsed = body ? JSON.parse(body) : {}
     } catch {
+      if (!response.ok) throw new KueryApiError(response.status, body, response.statusText)
       throw new Error('kuery returned an invalid JSON response')
     }
-    return decodeQueryStatus(parsed)
+
+    // A refused request may be answered by the gates (a plain status body) or
+    // by the executor (an envelope carrying the reason). Prefer the envelope's
+    // message: it is the one that says what to change.
+    const envelope = isRecord(parsed) ? (parsed as RunEnvelope) : null
+    if (envelope?.error) {
+      throw new KueryApiError(response.ok ? 422 : response.status, envelope.error.message || '', envelope.error.code || response.statusText)
+    }
+    if (!response.ok) throw new KueryApiError(response.status, body, response.statusText)
+    return decodeQueryStatus(envelope?.result ?? {})
   }
 
   async inventoryPage(request: InventoryPageRequest, options: QueryRequestOptions = {}): Promise<InventoryPage> {

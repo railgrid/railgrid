@@ -1255,3 +1255,23 @@ func attachmentAAD(scope Scope, attachment Attachment) []byte {
 }
 
 var _ AttachmentStore = (*encryptedStore)(nil)
+
+// WatchAssistantThreadEvents delegates to the wrapped store. The signal
+// carries no payload, so there is nothing to decrypt.
+func (s *encryptedStore) WatchAssistantThreadEvents(ctx context.Context, scope Scope, threadID string) (<-chan struct{}, func(), error) {
+	watcher, ok := s.inner.(AssistantThreadEventWatcher)
+	if !ok {
+		return nil, nil, errors.New("wrapped store does not push assistant thread events")
+	}
+	return watcher.WatchAssistantThreadEvents(ctx, scope, threadID)
+}
+
+// AssistantThreadActivity delegates: counts and timestamps are never
+// encrypted.
+func (s *encryptedStore) AssistantThreadActivity(ctx context.Context, scope Scope, threadID string) (AssistantThreadActivity, error) {
+	reader, ok := s.inner.(AssistantThreadActivityReader)
+	if !ok {
+		return AssistantThreadActivity{}, errors.New("wrapped store does not report assistant thread activity")
+	}
+	return reader.AssistantThreadActivity(ctx, scope, threadID)
+}

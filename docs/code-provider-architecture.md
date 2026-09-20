@@ -1,9 +1,12 @@
 # Code provider: git repository management
 
-Status: **Historical design proposal.** Current package discovery and retry behavior
-is documented in [the Code provider README](../providers/code/README.md).
-The controller/backend ownership described below still applies; the original
-API inventory and staged-delivery list predate package discovery.
+Status: **Historical design proposal**, with two current sections. Package
+discovery and retry behavior are documented in
+[the Code provider README](../providers/code/README.md); the
+controller/backend ownership described below still applies, and the
+staged-delivery list in section 7 is history. Sections 2 and 9 describe the
+provider as it is today: the eight kinds it serves, and the two transient
+artifact stores it keeps outside kcp under the contract's Pillar 1 carve-out.
 Author: 2026-06-09
 Related: `providers/infrastructure/` (the standalone-provider pattern this is modeled on), `pkg/hub/providers/` (CatalogEntry provisioning), `docs/providers.md`, `docs/infrastructure-architecture.md`.
 
@@ -49,6 +52,16 @@ conditions/finalizers.
 | **Repository** | `connectionRef`, `name`, `owner?`, `visibility`, `description`, `defaultBranch`, `autoInit` | `htmlURL`, `cloneURL`, `sshURL`, `repoID`, conditions |
 | **DeployKey** | `repositoryRef`, `publicKey?` (BYO) or generate, `readOnly` | `keyID`, `secretRef` (generated private key) |
 | **Collaborator** | `repositoryRef`, `username`, `permission` (pull\|push\|admin) | conditions (e.g. `InvitationPending`) |
+| **RepositoryCommit** | `repositoryRef`, `branch`, `message`, `source.bundleRef` (name + digest) | `phase`, `commitSHA`, `commitURL`, `files`, conditions |
+| **RepositoryCheckout** | `repositoryRef`, `ref`, `paths` | `phase`, `resolvedCommit`, `files`, conditions |
+| **RepositoryBuildStatus** | `repositoryRef`, `commit`, `state`, `context`, `targetURL` | `phase`, conditions |
+| **Package** | discovered from the host; `repositoryRef`, `name`, `type`, `version` | `versions`, `lastCrawledAt`, conditions |
+
+The first four kinds are the v1 surface; RepositoryCommit, RepositoryCheckout,
+RepositoryBuildStatus and Package arrived with the MCP write tools, the runner
+flow and package discovery. **Eight kinds, eight `APIResourceSchema` bodies**
+(`deploy/chart/files/schemas/`), and **twelve catalogued actions** plus the one
+uncatalogued upload verb of section 9.
 
 DeployKey and Collaborator are **separate CRDs** (not arrays on Repository): one
 controller-per-kind with finalizers and per-item status, avoiding racy read-modify-write of a
@@ -116,7 +129,8 @@ Manifest specifics (the corrections vs infra):
 - `apiExport.permissionClaims`: `secrets` with verbs `[get, list, watch, create, update,
   patch, delete]`, `tenantScoped: true` (write verbs are needed for the DeployKey private-key
   Secret; infra only needed read).
-- `apiExport.schemas`: **NON-empty** — 4 inline `APIResourceSchema` bodies, applied by the hub
+- `apiExport.schemas`: **NON-empty** — eight inline `APIResourceSchema` bodies (one per
+  kind in section 2), applied by the hub
   with `storage: {crd: {}}`. Each body's `metadata.name` MUST follow the immutable
   content-versioned format `vYYMMDD-hash.<resource>.code.railgrid.ai` (required by the
   provisioner's `splitSchemaName`).
@@ -150,3 +164,163 @@ provider creates one (`code.providers.railgrid.ai`, referencing its APIExport at
 the `init` subcommand does the same for parity / out-of-band bootstrap. See
 `providers/code/install/endpointslice.go` (modeled on the infrastructure provider's
 `PlatformAPIExportEndpointSlice`).
+
+## 9. Transient artifacts
+
+Two on-disk stores sit beside the CRs, and both are the **transient artifacts**
+carve-out in [provider-connectivity-contract.md](./provider-connectivity-contract.md)
+§"Pillar 1 carve-outs" — an uploaded bundle may live on a PVC while the CR
+carries its reference and digest, provided it is consumed-and-deleted or swept
+on a fixed TTL and **nothing is lost if it is gone**. Neither store is ever the
+authority: the CR is.
+
+**Commit bundles** (`commitbundle/store.go`, `CODE_COMMIT_BUNDLE_DIR`). One
+executor (`commitexec.Create`) writes the files it was handed into a
+content-addressed bundle, then creates a `RepositoryCommit` whose
+`spec.source.bundleRef` carries only the bundle's name and digest — the bytes
+never enter an API object. Two surfaces call it and neither owns it: the
+`repositories/commit/v1` action, which is the contract surface and is
+authorized by the two gates, and the MCP `commit_files` tool, which is a
+projection of the same executor for interactive clients. The store is scoped by
+the tenant's kcp logical-cluster ID (`X-Railgrid-Cluster` on the MCP request,
+the path cluster on an action, `req.ClusterName` in the reconciler: the same
+key on all three sides). The RepositoryCommit controller reads the bundle, commits it, and
+deletes it; a commit that fails deletes it too. A `Put` announces the arrival
+in-process (`commitbundle.Notifier`), which is what wakes a controller that
+reached its RepositoryCommit before the bundle landed — the 30-second arrival
+bound is only the backstop for a bundle that never arrives. A one-hour sweeper
+(`DefaultSweepMaxAge`) reclaims what a crash orphaned. If the bundle is gone
+the commit fails and is retried by its author; nothing is unrecoverable, which
+is exactly the condition the carve-out sets. Running more than one replica
+without shared storage for this directory means a commit can land on a replica
+that cannot see its bundle.
+
+**Git snapshots** (`actions/snapshots.go`, under the same directory). The
+`stage_snapshot` verb accepts a git bundle and returns an opaque `bundleRef`
+scoped by tenant cluster, Repository UID, Connection UID and the caller's own
+credential, so a handle is useless to anyone else — and re-uploading after a
+credential rotation is expected, not a bug. Handles expire after an hour, are
+swept lazily on the next upload, and are bounded per tenant (16 artifacts,
+256 MiB). `prepare_snapshot` and `publish_snapshot` take the handle, never an
+inline bundle, and re-verify its digest before use.
+
+**Staged commit bundles** (`actions/commit.go`). `commit/v1` is catalogued and
+therefore bounded at the CatalogEntry's 1 MiB input ceiling, which is smaller
+than a generated application. A caller with more than that uploads the file
+list through `stage_commit_bundle`, which writes it into the commit-bundle
+store above under the request's cluster scope and returns the
+`bundleRef`/`bundleDigest` pair; `commit` then names the handle instead of
+inline `files`, re-reads it digest-verified, and creates the same
+`RepositoryCommit`. A staged bundle nobody commits is reclaimed by the same
+one-hour sweeper as any other orphan.
+
+`stage_snapshot` and `stage_commit_bundle` are the provider's only
+**uncatalogued** verbs: a 25 MiB or 48 MiB body cannot be declared under
+`CatalogEntry.spec.actions[].limits.maxInputBytes`, which the CatalogEntry API
+caps at 1 MiB. Both are served on the same
+`/actions/clusters/{id}/repositories/{name}/{verb}/v1` route and run the same
+two gates as every catalogued action. The exception, and the four conditions a
+verb has to meet to claim it, are written down in
+[provider-actions.md](./provider-actions.md) §"Uncatalogued large-upload
+verbs".
+
+---
+
+## `commit` — writing files without a git host round-trip
+
+Added 20 September 2026
+([provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§9 Cut D.1; it closes the "code provider: a `repositories/commit` action"
+follow-up recorded on that plan).
+
+```
+POST /actions/clusters/{id}/repositories/{name}/commit/v1
+POST /actions/clusters/{id}/repositories/{name}/stage_commit_bundle/v1   (uncatalogued)
+```
+
+**Why it exists.** A consumer that generates code — App Studio, above all —
+needs to put file contents somewhere only this provider can write, and then
+have a `RepositoryCommit` point at them. Until now the only way to do that was
+the `commit_files` MCP tool, which meant a background reconciler had to reach
+the tenant's MCP aggregate, hold `use` on an `MCPServer`, and parse a tool's
+prose error to learn the name of the object it had just created. None of that
+is the data-plane contract; all of it was load-bearing.
+
+**Shape.** Input is `{repositoryUID, message?, branch?, files[]}` or
+`{repositoryUID, message?, branch?, bundleRef, bundleDigest}`; output is
+`{commit: {name, uid}}`. `repositoryUID` pins what gate 1 returned against this
+provider's own read through its APIExport, exactly as every other repository
+action does — there is simply no Connection and no credential to resolve,
+because the verb never reaches a git host.
+
+**Who writes the CR.** The provider, through its own export client, after the
+two gates have passed. The caller proves it may commit (`get` on the
+Repository, `create` on `repositories/commit`) and does not additionally need
+`create` on `repositorycommits` in its own workspace — which is the point: a
+consumer composes this provider's behaviour through a declared verb, not
+through RBAC on a foreign kind. App Studio's project identity therefore gained
+one clause-C rule and kept its read-only composition on `repositorycommits`.
+
+**What it is not.** It is not synchronous in effect: it is declared
+`executionMode: async` because the commit lands when the controller applies it,
+and the result names the object to watch rather than a SHA. A consumer that
+needs the outcome watches the `RepositoryCommit`; App Studio's project
+reconciler already did exactly that for the rate-limited case, and now does it
+for every commit.
+
+---
+
+## `mint_registry_token` — the one Connection-bound action
+
+Added 19 September 2026
+([provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§9 Cut C.3).
+
+```
+POST /actions/clusters/{id}/connections/{name}/mint_registry_token/v1
+```
+
+Every other action this provider serves is bound to a `Repository`. This one is
+bound to a `Connection`, because what it hands out is derived from the
+Connection's credential and nothing else.
+
+**Why it exists.** A container image built from a tenant's repository lives in
+that repository's package registry, and a workload cluster needs a credential
+to pull it. That credential used to be made by App Studio: it read this
+provider's `Connection` Secret and re-minted the raw token into a
+`dockerconfigjson` (`api/project_promote.go`). Two things were wrong with it.
+The consumer had to hold the credential that can also **push code** in order to
+produce one that only needs to **pull**; and it had to know that "the Code
+provider keeps a git token under `spec.secretRef`", which is a coupling by
+Secret layout rather than by contract
+([cross-provider-simplification.md](./cross-provider-simplification.md) §2.1).
+
+**What it returns.** `{registry, username, token, expiresAt?, scoped}` — a pull
+credential and what is known about it. Never the Connection's own credential
+under another name.
+
+For a **GitHub App** connection the token is a fresh installation token
+requested with `permissions: {packages: read}` and about an hour to live
+(`tenant/registry_token.go`, `RegistryPullPermissions`). That is the narrowest
+credential GitHub will issue, and it matters because a pull secret sits on a
+runtime cluster for as long as the workload does.
+
+For a **PAT or OAuth** connection there is no narrowing API. The stored token
+is returned with `scoped: false` and no expiry, and the action says so rather
+than implying a least-privilege credential it did not issue. A consumer that
+requires a genuinely scoped pull secret can refuse an unscoped one. The
+credential still never leaves this provider's control path, and the consumer
+still never reads the Secret.
+
+**Authorization** is the ordinary pair: gate 1 GETs the `Connection` as the
+caller, gate 2 asks for `create` on `connections/mint_registry_token` scoped to
+its name. A grant on `repositories/*` does not reach it and vice versa — the
+point of moving the credential behind an action rather than leaving it a Secret
+read (`actions/server_test.go`,
+`TestConnectionActionIsGatedSeparatelyFromRepositoryActions`). The caller then
+pins what it saw with `connectionUID`, and this provider re-reads the
+Connection through its own APIExport before opening the Secret, so a Connection
+deleted and recreated under the same name between the two reads fails closed.
+
+It is catalogued `readOnly: true`: it mints a credential but changes nothing
+about the Connection, the repository or the registry.

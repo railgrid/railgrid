@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/kcp-dev/sdk/apis/core"
@@ -155,9 +156,8 @@ var (
 // kubeconfig minted from this SA's token.
 const ProviderSAName = "provider"
 
-// ProviderSANamespace is the namespace ProviderSAName lives in. The
-// Enable-time edge-proxy grant derives the SA's qualified identity from
-// this tuple, so it must stay in lockstep with EnsureProviderSA.
+// ProviderSANamespace is the namespace ProviderSAName lives in. It must stay
+// in lockstep with EnsureProviderSA, which is what actually creates the SA.
 const ProviderSANamespace = "default"
 
 // ProviderTokenSecretSuffix is appended to the SA name to form the
@@ -826,8 +826,8 @@ func EncodeKubeconfig(kc []byte) string {
 // EnsureProviderWorkspace creates root:railgrid:providers/{name} if it does not
 // exist and waits for it to reach phase Ready. Idempotent. Returns the
 // workspace's logical cluster ID (Workspace.spec.cluster) — the cluster name
-// kcp embeds in the provider SA's token claims, which the Enable-time
-// edges-proxy grant needs to build the qualified RBAC subject.
+// kcp embeds in the provider SA's token claims, recorded in the registry and
+// reported by the admin providers API.
 func (p *Provisioner) EnsureProviderWorkspace(ctx context.Context, name string) (string, error) {
 	parent, err := p.clientFor(providersParentWorkspace)
 	if err != nil {
@@ -889,6 +889,74 @@ func (p *Provisioner) ResolveAPIExportIdentityHash(ctx context.Context, workspac
 	return hash, nil
 }
 
+// ResolveAPIExportGroups returns the API groups an APIExport serves, read from
+// spec.resources[].group on the live object in the provider's workspace,
+// deduped and sorted.
+//
+// This is the ONE authoritative answer to "which API groups does this provider
+// serve". The CatalogEntry names the export but not its groups, and the two
+// differ for most providers (`edges.providers.railgrid.ai` exports
+// `edges.railgrid.ai`), so nothing downstream may infer one from the other.
+//
+// It reads the LIVE object rather than the generated apiexport.yaml on purpose:
+// spec.resources has several writers. The provider's `init` applies what
+// apigen produced, and some providers add entries at runtime — the
+// infrastructure provider ships an export with no resources at all and mints
+// its APIResourceSchemas and its Templates CachedResource from the operator
+// (see provider-sdk/install.ApplyAPIExport's merge). Only the object in the
+// workspace has all of them.
+//
+// An export that exists but serves nothing yields an empty list and no error:
+// that is a real state (init has applied the export but not yet its schemas),
+// and it is fail-closed downstream.
+func (p *Provisioner) ResolveAPIExportGroups(ctx context.Context, workspacePath, exportName string) ([]string, error) {
+	if workspacePath == "" || exportName == "" {
+		return nil, fmt.Errorf("ResolveAPIExportGroups: workspacePath and exportName are required")
+	}
+	cl, err := p.clientFor(workspacePath)
+	if err != nil {
+		return nil, err
+	}
+	export, err := cl.Resource(apiExportGVR).Get(ctx, exportName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting APIExport %s in %s: %w", exportName, workspacePath, err)
+	}
+	return APIExportGroups(export), nil
+}
+
+// APIExportGroups projects spec.resources[].group off an APIExport into a
+// deduped, sorted list. Exported so the catalog reconciler's tests can build
+// the same projection from a fake export without a live kcp.
+func APIExportGroups(export *unstructured.Unstructured) []string {
+	if export == nil {
+		return nil
+	}
+	resources, _, err := unstructured.NestedSlice(export.Object, "spec", "resources")
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	groups := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		entry, ok := resource.(map[string]any)
+		if !ok {
+			continue
+		}
+		// A resource with no group is a core-group type. A provider cannot
+		// serve the core group through its own export, and admitting "" here
+		// would make the empty API group look owned — which the identity
+		// policy refuses outright anyway (review X-4). Drop it.
+		group, _ := entry["group"].(string)
+		if group == "" || seen[group] {
+			continue
+		}
+		seen[group] = true
+		groups = append(groups, group)
+	}
+	sort.Strings(groups)
+	return groups
+}
+
 // ResolveClusterPath returns the canonical kcp workspace path of a logical
 // cluster (e.g. root:railgrid:tenants:<org>:providers:<name>), read from the
 // kcp.io/path annotation kcp stamps on the cluster's LogicalCluster object when
@@ -923,8 +991,8 @@ func (p *Provisioner) ResolveClusterPath(ctx context.Context, clusterID string) 
 // ResolveWorkspaceCluster returns the logical cluster ID of the provider's
 // sub-workspace (root:railgrid:providers/{name}), read-only. Returns "" (no error)
 // when the workspace does not exist yet — i.e. the provider has not been
-// onboarded. The catalog reconciler feeds this into the registry so the Enable
-// endpoint can build the edges-proxy RBAC subject without the hub provisioning
+// onboarded. The catalog reconciler feeds this into the registry so the admin
+// providers API can report a provider's workspace without the hub provisioning
 // anything.
 func (p *Provisioner) ResolveWorkspaceCluster(ctx context.Context, name string) (string, error) {
 	parent, err := p.clientFor(providersParentWorkspace)

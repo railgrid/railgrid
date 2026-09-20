@@ -96,6 +96,47 @@ type InstanceSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:XPreserveUnknownFields
 	Values *runtime.RawExtension `json:"values,omitempty"`
+
+	// ImagePullSecretRef names the Secret in the tenant's credentials
+	// namespace that holds a kubernetes.io/dockerconfigjson credential for
+	// the instance's private image. The instance controller bridges it into
+	// the runtime namespace and attaches it to that namespace's default
+	// ServiceAccount, so every pod of every component can pull.
+	//
+	// It is a typed reference because the alternative is a naming
+	// convention: this provider used to look for "<instance>-registry" and
+	// App Studio used to mint exactly that name, which coupled the two
+	// providers by a string neither of them validated
+	// (docs/provider-contract-review.md M8). A producer now says which
+	// Secret it wrote, and an unset ref means "this instance pulls from a
+	// public registry" — never "guess a name and see".
+	// +optional
+	ImagePullSecretRef *SecretReference `json:"imagePullSecretRef,omitempty"`
+
+	// OIDCBridgeSecretRef names the Secret in the tenant's credentials
+	// namespace that holds the BYO OIDC client secret, under the key
+	// "oidc_client_secret". The instance controller bridges that one key
+	// into the runtime namespace for the template's oauth2-proxy, so the
+	// client secret never sits in spec.values in clear text.
+	//
+	// Required when spec.values.oidc.mode is "byo"; an instance that asks
+	// for a BYO gate without naming its Secret reports OIDCConfigured=False
+	// rather than falling back to a well-known name.
+	// +optional
+	OIDCBridgeSecretRef *SecretReference `json:"oidcBridgeSecretRef,omitempty"`
+}
+
+// SecretReference names a Secret in the tenant workspace's credentials
+// namespace (the provider's RAILGRID_CREDENTIALS_NAMESPACE). Only the name is
+// carried: the namespace is the provider's, not the caller's, so a reference
+// cannot be pointed at a Secret the caller could not otherwise reach.
+type SecretReference struct {
+	// Name is the Secret's metadata.name.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	Name string `json:"name"`
 }
 
 // InstanceStatus is the observed state: a platform-guaranteed baseline plus
@@ -171,6 +212,14 @@ const (
 	// against the Template's schema (structural + defaults + CEL). False
 	// means the instance is not synced to the runtime cluster.
 	ConditionInstanceValid = "Valid"
+
+	// ConditionInstanceSecretsBridged reports whether every Secret the
+	// instance's typed cross-provider references name was found in the
+	// tenant's credentials namespace and bridged to the runtime. False means
+	// a reference points at nothing: the controller reports it instead of
+	// falling back to a derived name, because a guessed name that happens to
+	// exist is how the wrong credential reaches a workload.
+	ConditionInstanceSecretsBridged = "SecretsBridged"
 )
 
 // Reason strings for ConditionInstanceValid and the mirrored baseline.
@@ -181,6 +230,19 @@ const (
 	// ReasonTemplateNotFound marks an Instance whose spec.template names no
 	// catalog Template.
 	ReasonTemplateNotFound = "TemplateNotFound"
+
+	// ReasonSecretsBridged marks an instance whose referenced Secrets were
+	// all found and bridged (including the case where it references none).
+	ReasonSecretsBridged = "Bridged"
+	// ReasonSecretRefNotFound marks an instance whose imagePullSecretRef or
+	// oidcBridgeSecretRef names a Secret that does not exist.
+	ReasonSecretRefNotFound = "SecretRefNotFound"
+	// ReasonSecretRefInvalid marks a referenced Secret that exists but does
+	// not carry the key the reference is for.
+	ReasonSecretRefInvalid = "SecretRefInvalid"
+	// ReasonBridgeSecretRefMissing marks an instance that asked for a BYO
+	// OIDC gate without naming the Secret its client secret lives in.
+	ReasonBridgeSecretRefMissing = "BridgeSecretRefMissing"
 )
 
 // FinalizerInstanceRuntime guards the runtime-cluster state an Instance owns

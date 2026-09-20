@@ -11,10 +11,10 @@ import { age, edgeName, errorMessage, resourceLabel, useKueryApi } from '../kuer
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import type { ResourceTableChange, TableFilterDefinition } from '../portalkit/table'
 
-const props = defineProps<{ context: RailgridContext | null; edges: string[] }>()
+const props = defineProps<{ context: RailgridContext | null; edges: string[]; savedView: string }>()
 const emit = defineEmits<{ inspect: [row: ObjectResult] }>()
 const context = computed(() => props.context)
-const { api } = useKueryApi(context)
+const { api } = useKueryApi(context, computed(() => props.savedView))
 const pager = ref(createInventoryPager(50))
 const rows = ref<Array<Record<string, unknown>>>([])
 const loaded = ref(false)

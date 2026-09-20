@@ -22,7 +22,10 @@ test('provider page and dashboard consumers coordinate versioned bootstrap reloa
     // it to the shared loader — neither builds the script URL itself.
     assert.match(source, /import \{ resolveProviderBundle \} from '@\/providers\/providerBundle'/)
     assert.match(source, /await resolveProviderBundle\((?:entry\.value|props\.provider), authFetch\)/)
-    assert.match(source, /await loadProviderScript\(name, version, document, undefined, bundle\)/)
+    // Plus the refreshIntegrity hook: one pinned retry when a bundle rebuilt
+    // at an unchanged version leaves this page's pin describing bytes the hub
+    // no longer serves.
+    assert.match(source, /await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\),\s*\}\)/)
     assert.doesNotMatch(source, /document\.createElement\('script'\)/)
   }
   assert.match(frame, /invalidateProviderScript\(name, version\)/)

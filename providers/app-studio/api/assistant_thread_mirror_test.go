@@ -117,6 +117,7 @@ func TestProjectAssistantThreadSnapshotDoesNotAdvanceStateOnAppendFailure(t *tes
 	failing := &failingAssistantThreadProjectionStore{Store: inner, appendFailures: 1}
 	server := NewWithWorkspace(nil, failing, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	if _, err := inner.CreateAssistantThread(context.Background(), scope, store.AssistantThread{ID: "thread-mirror", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
@@ -158,6 +159,7 @@ func TestProjectAssistantThreadSnapshotTracksSteeringActiveMessage(t *testing.T)
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-steering-segments", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
@@ -255,6 +257,7 @@ func TestProjectAssistantThreadSnapshotScopesReusedActionIDPerSegment(t *testing
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-steering-actions", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
@@ -311,6 +314,7 @@ func TestProjectAssistantThreadSnapshotMirrorsImageModelInputWithoutDuplicateAft
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-image-model-input", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
@@ -416,6 +420,7 @@ func TestProjectAssistantThreadSnapshotMirrorsApprovedBrowserActionsWithoutDiscl
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-browser-actions", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
@@ -550,6 +555,7 @@ func TestProjectAssistantThreadSnapshotMirrorsAcceptedProgressAsTypedCommentary(
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-commentary", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
@@ -612,6 +618,7 @@ func TestProjectAssistantThreadSnapshotCompletesPartialCommentaryAfterMirrorRest
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	threadID := "thread-commentary-restart"
@@ -693,6 +700,7 @@ func TestProjectAssistantThreadMirrorRetriesTransientProjectionFailure(t *testin
 	failing := &failingAssistantThreadProjectionStore{Store: inner, appendFailures: 1}
 	server := NewWithWorkspace(nil, failing, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	if _, err := inner.CreateAssistantThread(context.Background(), scope, store.AssistantThread{ID: "thread-retry", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
@@ -719,6 +727,7 @@ func TestProjectAssistantThreadMirrorDoesNotReloadDurableHistoryPerSnapshot(t *t
 	failing := &failingAssistantThreadProjectionStore{Store: inner}
 	server := NewWithWorkspace(nil, failing, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	if _, err := inner.CreateAssistantThread(context.Background(), scope, store.AssistantThread{ID: "thread-cache", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
@@ -742,6 +751,7 @@ func TestLoadAssistantThreadMirrorStateRetriesTransientReadFailure(t *testing.T)
 	failing := &failingAssistantThreadProjectionStore{Store: inner, listFailures: 1}
 	server := NewWithWorkspace(nil, failing, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	if _, err := inner.CreateAssistantThread(context.Background(), scope, store.AssistantThread{ID: "thread-load-retry", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
@@ -759,6 +769,7 @@ func TestLoadAssistantThreadMirrorStateRetriesTransientReadFailure(t *testing.T)
 func TestAssistantThreadProjectionLockIsReclaimed(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	release := server.acquireAssistantThreadProjectionLock(scope, "thread-lock", "turn-lock")
 	if len(server.assistantProjectionLocks) != 1 {
@@ -775,6 +786,7 @@ func TestAssistantThreadMirrorReattachesAfterRestartAndCompletesWaitingExec(t *t
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	threadID := "thread-restart-mirror"
@@ -969,6 +981,7 @@ func TestProjectAssistantThreadMirrorReconcilesAmbiguousAppendCommit(t *testing.
 	failing := &failingAssistantThreadProjectionStore{Store: inner, appendAfterCommitFailures: 1, reloadFailuresAfterAppend: 1}
 	server := NewWithWorkspace(nil, failing, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	if _, err := inner.CreateAssistantThread(context.Background(), scope, store.AssistantThread{ID: "thread-ambiguous", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
@@ -998,6 +1011,7 @@ func TestProjectAssistantThreadMirrorReconcilesAmbiguousTerminalCommit(t *testin
 	failing := &failingAssistantThreadProjectionStore{Store: inner, saveAfterCommitFailures: 1}
 	server := NewWithWorkspace(nil, failing, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	if _, err := inner.CreateAssistantThread(context.Background(), scope, store.AssistantThread{ID: "thread-terminal-ambiguous", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
@@ -1039,6 +1053,7 @@ func TestReconcileOrphanedAssistantTurnResolvesPendingApproval(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	threadID := "thread-orphaned-approval"
@@ -1100,6 +1115,7 @@ func TestReconcileProjectAssistantThreadTurnClosesStaleSteeredMessage(t *testing
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	threadID := "thread-reload-steering"
@@ -1174,6 +1190,7 @@ func TestProjectAssistantThreadSnapshotClosesStaleMessageAfterTerminalReload(t *
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	threadID := "thread-terminal-reload"
@@ -1311,6 +1328,7 @@ func TestProjectAssistantStartFailureCompensatesAndRepairsCanonicalTurn(t *testi
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-repair", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
@@ -1361,6 +1379,7 @@ func TestProjectAssistantStartFailureDoesNotProjectImageReceipt(t *testing.T) {
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	receipt := attachmentReceiptForTest("image-start-failure", "screen.png", "image/png", []byte("image bytes"))
 	startErr := errors.New("provider turn startup failed")
@@ -1420,6 +1439,7 @@ func TestProjectAssistantThreadSnapshotRetryDoesNotDuplicateTerminalEvents(t *te
 	failing := &failingAssistantThreadProjectionStore{Store: inner, saveFailures: 1}
 	server := NewWithWorkspace(nil, failing, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	if _, err := inner.CreateAssistantThread(context.Background(), scope, store.AssistantThread{ID: "thread-terminal", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil); err != nil {

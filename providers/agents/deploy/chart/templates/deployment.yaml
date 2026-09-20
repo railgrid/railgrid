@@ -29,8 +29,9 @@ spec:
       {{- end }}
       initContainers:
         # Bootstrap the provider workspace (schemas, APIExport, slice, bind
-        # grant) with the onboarded workspace-admin kubeconfig. Schemas baked at
-        # /etc/railgrid/schemas (Dockerfile). Idempotent.
+        # grant) with the onboarded workspace-admin kubeconfig. The generated
+        # APIExport and its schemas are baked at /etc/railgrid/kcp (Dockerfile)
+        # and applied verbatim. Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -38,8 +39,8 @@ spec:
           env:
             - name: RAILGRID_PROVIDER_KUBECONFIG
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
-            - name: RAILGRID_SCHEMAS_DIR
-              value: /etc/railgrid/schemas
+            - name: RAILGRID_KCP_DIR
+              value: /etc/railgrid/kcp
             {{- if $catalogEntryConfigMap }}
             - name: RAILGRID_CATALOGENTRY_FILE
               value: /etc/railgrid/catalogentry/catalogentry.yaml

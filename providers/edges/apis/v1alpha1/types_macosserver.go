@@ -22,6 +22,19 @@ import (
 	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 )
 
+// TODO(provider-contract-remediation §5.3): the route strings in the kind doc
+// comments below are the RETIRED dialect. What the provider serves now is
+//
+//	/services/providers/edges/agent/clusters/{cluster}/{resource}/{name}/proxy
+//	/services/providers/edges/dataplane/clusters/{cluster}/{resource}/{name}/{verb}
+//
+// The wording is not corrected in place because a kind's doc comment IS its
+// APIResourceSchema description, and hack/apigen.sh refuses a schema content
+// change that cannot bump the schema's immutable name — which it derives from
+// the git commit, and this change is not committed yet. Fix the wording in the
+// same commit that lands this work and re-run `make codegen-edges-provider`;
+// the name bumps and the description follows.
+
 // +genclient
 // +genclient:nonNamespaced
 // +kubebuilder:subresource:status

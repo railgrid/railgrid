@@ -29,6 +29,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -597,4 +598,364 @@ func TestCatalogReconcilerSurvivesASweepFailure(t *testing.T) {
 	if _, ok := reg.Get("cost"); !ok {
 		t.Fatal("provider dropped out of the registry because a credential sweep failed")
 	}
+}
+
+// TestCatalogReconcilerRejectsCompositionOnAForeignGroup: a provider may only
+// declare that it composes kinds of a group the named dependency actually
+// serves. Pointing a composition at somebody else's group would make the
+// Enable dialog describe one provider's API while the grant reached another's.
+//
+// The dependency here has the shape every real provider has — an export named
+// after the provider, kinds in a different group — so the check cannot pass by
+// comparing the two names.
+func TestCatalogReconcilerRejectsCompositionOnAForeignGroup(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{
+		Name:          "code",
+		APIExportName: "code.providers.railgrid.ai",
+		APIGroups:     []string{"code.railgrid.ai"},
+	})
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-studio-composer"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "App Studio",
+			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
+			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "app-studio.railgrid.ai"},
+			Dependencies: []providersv1alpha1.ProviderDependency{{
+				Name: "code",
+				Composes: []providersv1alpha1.ProviderComposition{{
+					Group: "infrastructure.railgrid.ai", Resource: "instances",
+					Verbs: []providersv1alpha1.ProviderCompositionVerb{"create"},
+				}},
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "app-studio-composer")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, ok := reg.Get("app-studio-composer"); ok {
+		t.Fatal("a composition on a group the dependency does not serve must not enter the registry")
+	}
+	var updated providersv1alpha1.CatalogEntry
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app-studio-composer"}, &updated); err != nil {
+		t.Fatalf("get updated entry: %v", err)
+	}
+	if len(updated.Status.Conditions) != 1 || updated.Status.Conditions[0].Reason != "InvalidCompositions" {
+		t.Fatalf("conditions = %#v, want Ready=False/InvalidCompositions", updated.Status.Conditions)
+	}
+}
+
+// A wildcard is refused on shape alone, with no registry lookup involved.
+func TestCatalogReconcilerRejectsWildcardComposition(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "wildcard-composer"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "Wildcard",
+			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
+			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "wildcard.railgrid.ai"},
+			Dependencies: []providersv1alpha1.ProviderDependency{{
+				Name: "infrastructure",
+				Composes: []providersv1alpha1.ProviderComposition{{
+					Group: "infrastructure.railgrid.ai", Resource: "*",
+					Verbs: []providersv1alpha1.ProviderCompositionVerb{"create"},
+				}},
+			}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).WithObjects(entry).Build()
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "wildcard-composer")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, ok := reg.Get("wildcard-composer"); ok {
+		t.Fatal("a wildcard composition must not enter the registry")
+	}
+}
+
+// A composition without an APIExport of the provider's own is refused: only a
+// provider with its own API surface has reconcilers to compose with.
+func TestCatalogReconcilerRejectsCompositionWithoutOwnExport(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "exportless-composer"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "Exportless",
+			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
+			Dependencies: []providersv1alpha1.ProviderDependency{{
+				Name: "infrastructure",
+				Composes: []providersv1alpha1.ProviderComposition{{
+					Group: "infrastructure.railgrid.ai", Resource: "instances",
+					Verbs: []providersv1alpha1.ProviderCompositionVerb{"create"},
+				}},
+			}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).WithObjects(entry).Build()
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "exportless-composer")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, ok := reg.Get("exportless-composer"); ok {
+		t.Fatal("a composition without spec.apiExport must not enter the registry")
+	}
+}
+
+// The happy path: a valid declaration reaches the registry and the API, verbs
+// and all, so a consumer reads what to ask for instead of guessing.
+func TestCatalogReconcilerProjectsCompositions(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{
+		Name:          "infrastructure",
+		APIExportName: "infrastructure.providers.railgrid.ai",
+		APIGroups:     []string{"infrastructure.railgrid.ai"},
+	})
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "valid-composer"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "Valid",
+			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
+			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "valid.railgrid.ai"},
+			Dependencies: []providersv1alpha1.ProviderDependency{{
+				Name: "infrastructure",
+				Composes: []providersv1alpha1.ProviderComposition{{
+					Group: "infrastructure.railgrid.ai", Resource: "instances",
+					Verbs: []providersv1alpha1.ProviderCompositionVerb{"get", "list", "watch", "create", "update", "delete"},
+				}},
+			}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).WithObjects(entry).Build()
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "valid-composer")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	prov, ok := reg.Get("valid-composer")
+	if !ok || len(prov.Dependencies) != 1 || len(prov.Dependencies[0].Composes) != 1 {
+		t.Fatalf("registry entry = %#v, want one dependency with one composition", prov.Dependencies)
+	}
+	composition := prov.Dependencies[0].Composes[0]
+	if composition.Group != "infrastructure.railgrid.ai" || composition.Resource != "instances" || len(composition.Verbs) != 6 {
+		t.Fatalf("composition = %#v", composition)
+	}
+}
+
+// fakeAPIExport builds the object the hub reads a provider's served groups
+// out of: an apis.kcp.io/v1alpha2 APIExport whose spec.resources name the
+// schemas it serves, each tagged with the group the kinds live in.
+func fakeAPIExport(name string, resources ...[2]string) *unstructured.Unstructured {
+	entries := make([]any, 0, len(resources))
+	for _, resource := range resources {
+		entries = append(entries, map[string]any{
+			"group":   resource[0],
+			"name":    resource[1],
+			"schema":  "v260919-abcdef12." + resource[1] + "." + resource[0],
+			"storage": map[string]any{"crd": map[string]any{}},
+		})
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apis.kcp.io/v1alpha2",
+		"kind":       "APIExport",
+		"metadata":   map[string]any{"name": name},
+		"spec":       map[string]any{"resources": entries},
+	}}
+}
+
+// TestAPIExportGroupsProjectsServedGroups: the projection is the whole source
+// of truth for "who owns this API group", so it dedupes, sorts, and refuses to
+// let a core-group entry make the empty group look owned.
+func TestAPIExportGroupsProjectsServedGroups(t *testing.T) {
+	export := fakeAPIExport("edges.providers.railgrid.ai",
+		[2]string{"edges.railgrid.ai", "kubernetesclusters"},
+		[2]string{"edges.railgrid.ai", "linuxservers"},
+		[2]string{"addons.edges.railgrid.ai", "addons"},
+		[2]string{"", "configmaps"},
+	)
+	got := APIExportGroups(export)
+	want := []string{"addons.edges.railgrid.ai", "edges.railgrid.ai"}
+	if len(got) != len(want) {
+		t.Fatalf("APIExportGroups = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("APIExportGroups = %v, want %v", got, want)
+		}
+	}
+	if len(APIExportGroups(nil)) != 0 {
+		t.Fatal("a nil export must project to no groups, not to an owned one")
+	}
+}
+
+// TestCatalogReconcilerReadsAPIGroupsFromTheAPIExport is the bug this field
+// exists for: the edges provider's APIExport is named
+// edges.providers.railgrid.ai and its kinds live in edges.railgrid.ai. Nothing
+// may infer one from the other, so the reconciler reads the export and records
+// what it actually serves.
+func TestCatalogReconcilerReadsAPIGroupsFromTheAPIExport(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "edges"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "Edges",
+			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "edges.providers.railgrid.ai"},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	var askedPath, askedExport string
+	r := &CatalogReconciler{
+		mgr: testfakes.NewManager(c), reg: reg, noKCP: true,
+		resolveAPIGroups: func(_ context.Context, workspacePath, exportName string) ([]string, error) {
+			askedPath, askedExport = workspacePath, exportName
+			return APIExportGroups(fakeAPIExport(exportName,
+				[2]string{"edges.railgrid.ai", "kubernetesclusters"},
+				[2]string{"edges.railgrid.ai", "linuxservers"},
+			)), nil
+		},
+	}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "edges")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if askedExport != "edges.providers.railgrid.ai" || askedPath != kcppaths.ProvidersParent+":edges" {
+		t.Fatalf("read APIExport %q in %q, want the declared export in the provider workspace", askedExport, askedPath)
+	}
+	prov, ok := reg.Get("edges")
+	if !ok {
+		t.Fatal("expected edges in the registry")
+	}
+	if len(prov.APIGroups) != 1 || prov.APIGroups[0] != "edges.railgrid.ai" {
+		t.Fatalf("APIGroups = %v, want [edges.railgrid.ai] — the group the export SERVES, not its name", prov.APIGroups)
+	}
+	if prov.APIExportName != "edges.providers.railgrid.ai" {
+		t.Fatalf("APIExportName = %q, want the export's own name kept alongside the groups", prov.APIExportName)
+	}
+
+	var updated providersv1alpha1.CatalogEntry
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "edges"}, &updated); err != nil {
+		t.Fatalf("get updated entry: %v", err)
+	}
+	if len(updated.Status.APIGroups) != 1 || updated.Status.APIGroups[0] != "edges.railgrid.ai" {
+		t.Fatalf("status.apiGroups = %v, want the resolved projection mirrored for the portal and /api/providers", updated.Status.APIGroups)
+	}
+	if condition := findCondition(updated.Status.Conditions, ConditionAPIGroupsUnknown); condition == nil || condition.Status != metav1.ConditionFalse {
+		t.Fatalf("APIGroupsUnknown = %#v, want False once the export was read", condition)
+	}
+}
+
+// An unreadable APIExport leaves the provider owning NO group. Nothing is
+// guessed from the export name, the gap is visible as a condition, and the
+// entry comes back to try again.
+func TestCatalogReconcilerReportsUnknownAPIGroups(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "edges"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "Edges",
+			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "edges.providers.railgrid.ai"},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	r := &CatalogReconciler{
+		mgr: testfakes.NewManager(c), reg: reg, noKCP: true,
+		resolveAPIGroups: func(context.Context, string, string) ([]string, error) {
+			return nil, fmt.Errorf("APIExport not found")
+		},
+	}
+	res, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "edges"))
+	if err != nil {
+		t.Fatalf("an unreadable APIExport must not fail the reconcile: %v", err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("unknown API groups did not schedule a retry; nothing else would bring this entry back")
+	}
+	prov, ok := reg.Get("edges")
+	if !ok {
+		t.Fatal("an unreadable export must not take the provider out of the registry; only its group ownership is withheld")
+	}
+	if len(prov.APIGroups) != 0 {
+		t.Fatalf("APIGroups = %v, want none: an unreadable export owns nothing", prov.APIGroups)
+	}
+	var updated providersv1alpha1.CatalogEntry
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "edges"}, &updated); err != nil {
+		t.Fatalf("get updated entry: %v", err)
+	}
+	condition := findCondition(updated.Status.Conditions, ConditionAPIGroupsUnknown)
+	if condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("APIGroupsUnknown = %#v, want True so the gap is visible", condition)
+	}
+	if !strings.Contains(condition.Message, "APIExport not found") {
+		t.Fatalf("condition message %q does not say why the export could not be read", condition.Message)
+	}
+}
+
+// A read that fails after one succeeded must not RETRACT the groups: an
+// export's group set does not change because kcp blinked, and dropping it
+// would refuse every consumer's cross-provider rule on the next refresh.
+// status carries the last successful read across replicas and restarts.
+func TestCatalogReconcilerKeepsLastKnownAPIGroupsOnAReadFailure(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "edges"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "Edges",
+			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "edges.providers.railgrid.ai"},
+		},
+		Status: providersv1alpha1.CatalogEntryStatus{APIGroups: []string{"edges.railgrid.ai"}},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	r := &CatalogReconciler{
+		mgr: testfakes.NewManager(c), reg: reg, noKCP: true,
+		resolveAPIGroups: func(context.Context, string, string) ([]string, error) {
+			return nil, fmt.Errorf("connection refused")
+		},
+	}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "edges")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	prov, ok := reg.Get("edges")
+	if !ok {
+		t.Fatal("expected edges in the registry")
+	}
+	if len(prov.APIGroups) != 1 || prov.APIGroups[0] != "edges.railgrid.ai" {
+		t.Fatalf("APIGroups = %v, want the last successful read kept across a transient failure", prov.APIGroups)
+	}
+}
+
+func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
 }

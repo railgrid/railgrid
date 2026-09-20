@@ -26,7 +26,7 @@ import (
 func TestProjectAssistantApprovalModeIsCapturedPerRun(t *testing.T) {
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: messages}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: messages}
 	scope := store.Scope{
 		OrgUUID:       "org-a",
 		WorkspaceUUID: "workspace-a",
@@ -62,7 +62,7 @@ func TestProjectAssistantApprovalModeIsCapturedPerRun(t *testing.T) {
 func TestProjectAssistantApprovalModeDefaultsToOnRequest(t *testing.T) {
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: messages}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: messages}
 	scope := store.Scope{
 		OrgUUID:       "org-a",
 		WorkspaceUUID: "workspace-a",

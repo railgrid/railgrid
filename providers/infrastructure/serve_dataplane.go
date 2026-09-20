@@ -9,24 +9,16 @@
 package main
 
 import (
-	"context"
 	"log"
 	"os"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/railgrid/provider-infrastructure/dataplane"
-	"github.com/railgrid/provider-infrastructure/tenant"
+	sdkdataplane "github.com/railgrid/provider-sdk/dataplane"
 )
-
-// instanceGroupVersion is the group/version of every per-template instance CRD;
-// the resource (plural) comes from the request path.
-var instanceGroupVersion = schema.GroupVersion{Group: "infrastructure.railgrid.ai", Version: "v1alpha1"}
 
 // buildDataPlaneHandler wires the data-plane subresource handler for serve.
 // Returns nil (the handler then reports 503) when the provider has no kcp config
@@ -60,7 +52,15 @@ func buildDataPlaneHandler(kcpConfig *rest.Config) *dataplane.Handler {
 		return nil
 	}
 
-	factory := tenant.NewClientFactory(kcpConfig)
+	// The data plane's only credential is the caller's own bearer: the SDK
+	// factory keeps the provider kubeconfig's host and CA and drops every way
+	// of authenticating as the provider, so a request with no token fails
+	// rather than silently acting as the platform.
+	callers, err := sdkdataplane.NewCallerFactory(kcpConfig)
+	if err != nil {
+		log.Printf("data plane: disabled (caller factory: %v)", err)
+		return nil
+	}
 	options := []dataplane.HandlerOption{}
 	// Persistent component execution is the only executor: a dedicated worker
 	// container owns lifecycle state while sharing the component PVC/toolchain.
@@ -68,12 +68,12 @@ func buildDataPlaneHandler(kcpConfig *rest.Config) *dataplane.Handler {
 	if execErr != nil {
 		log.Printf("data plane exec: disabled: %v", execErr)
 	} else {
-		options = append(options, dataplane.WithExec(executor, dataplane.NewCallerExecAuthorizer(factory)))
+		options = append(options, dataplane.WithExec(executor))
 	}
 
 	log.Printf("data plane: enabled (runtime cluster: %s)", src)
 	return dataplane.NewHandler(
-		&tenantInstanceGetter{factory: factory},
+		callers,
 		dataplane.NewTemplateContractGetter(providerDyn),
 		runtime,
 		options...,
@@ -96,20 +96,4 @@ func loadDataPlaneRuntimeConfig() (*rest.Config, string) {
 		return cfg, "in-cluster"
 	}
 	return nil, ""
-}
-
-// tenantInstanceGetter authorizes and fetches a workload instance as the caller.
-// The instance CRs are cluster-scoped in the tenant's kcp workspace, so the GET
-// is namespaceless. A 403/404 from the caller's RBAC is the data-plane gate.
-type tenantInstanceGetter struct {
-	factory *tenant.ClientFactory
-}
-
-func (g *tenantInstanceGetter) Get(ctx context.Context, workspace, token, resource, name string) (*unstructured.Unstructured, error) {
-	dyn, err := g.factory.For(workspace, token)
-	if err != nil {
-		return nil, err
-	}
-	gvr := instanceGroupVersion.WithResource(resource)
-	return dyn.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 }

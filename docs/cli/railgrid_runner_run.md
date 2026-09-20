@@ -27,11 +27,13 @@ railgrid runner run [flags]
 ### Options
 
 ```
+      --claude-allowed-tool strings     Claude Code tool pattern granted for every turn, e.g. 'Bash(git *)' (repeatable)
       --claude-binary string            Claude Code executable (default "claude")
       --claude-credential-file string   Absolute owner-only file holding the Claude Code credential (required with --harness=claude)
       --claude-credential-kind string   How to inject the Claude Code credential: oauth-token or api-key
       --claude-home string              Runner-owned CLAUDE_CONFIG_DIR directory (default <state-dir>/claude-home)
       --claude-model string             Model for Claude Code turns (empty uses the account default)
+      --claude-permission-mode string   What Claude Code may do without asking: acceptEdits (default; file edits in the worktree) or bypassPermissions (every tool, for sandboxed hosts)
       --codex-binary string             Codex executable (default "codex")
       --codex-home string               Runner-owned CODEX_HOME directory (default <state-dir>/codex-home)
       --config string                   Path to the JSON runner enrollment/configuration file

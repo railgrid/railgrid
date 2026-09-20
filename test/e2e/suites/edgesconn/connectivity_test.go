@@ -290,7 +290,18 @@ func grantEdgeProxy(t *testing.T, tenant dynamic.Interface) {
 	name := "railgrid:provider:edges:edgeproxy"
 	rules := []any{
 		map[string]any{"nonResourceURLs": []any{"/"}, "verbs": []any{"access"}},
-		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{"kubernetesclusters", "linuxservers"}, "verbs": []any{"get", "list", "watch", "proxy"}},
+		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{"kubernetesclusters", "linuxservers"}, "verbs": []any{"get", "list", "watch"}},
+		// The data-plane gate authorizes `create` on the {resource}/{verb}
+		// COORDINATE, not the old wildcard `proxy` on the kind: the
+		// provider-contract remediation replaced one verb covering k8s, ssh,
+		// service proxy and MCP with the declared coordinates in
+		// spec.dataPlane.verbs. A grant of `proxy` authorizes nothing now.
+		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{
+			"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp", "kubernetesclusters/ticket",
+			"linuxservers/k8s", "linuxservers/ssh", "linuxservers/ticket",
+			"services/proxy", "services/mcp", "services/ticket",
+		}, "verbs": []any{"create"}},
+		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{"services"}, "verbs": []any{"get", "list", "watch"}},
 		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{"kubernetesclusters/status", "linuxservers/status"}, "verbs": []any{"get", "update", "patch"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "verbs": []any{"get", "list", "watch", "create", "update"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"namespaces"}, "verbs": []any{"get", "create"}},
@@ -373,6 +384,11 @@ func startAgent(t *testing.T, edgeName, joinToken, tenantWS string, extra ...str
 	cmd := exec.Command(railgridBin, args...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
+	// The agent persists the credential it is issued under $HOME/.railgrid,
+	// keyed by edge name. Give every agent its own HOME so a credential saved
+	// by an earlier run (another hub, another tenant cluster, same edge name)
+	// is never adopted here.
+	cmd.Env = append(os.Environ(), "HOME="+logDir)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start agent: %v", err)

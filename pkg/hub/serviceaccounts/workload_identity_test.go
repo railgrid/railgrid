@@ -28,7 +28,7 @@ import (
 )
 
 func TestEnsureWorkloadIdentityIsDeterministicScopedAndShortLived(t *testing.T) {
-	m, cs := managerFor(t)
+	_, cs := managerFor(t)
 	defer resetTestClientset()
 
 	scope := WorkloadIdentityScope{
@@ -57,13 +57,15 @@ func TestEnsureWorkloadIdentityIsDeterministicScopedAndShortLived(t *testing.T) 
 		}}, nil
 	})
 
-	first, err := m.EnsureWorkloadIdentity(context.Background(), "org", "workspace", scope)
+	// The workload shape now goes through the single hub minter; the shape
+	// itself (name, annotations, rules, TTL) is what this test pins.
+	first, err := EnsureScopedIdentity(context.Background(), cs, WorkloadIdentityShape(scope))
 	if err != nil {
-		t.Fatalf("EnsureWorkloadIdentity: %v", err)
+		t.Fatalf("EnsureScopedIdentity: %v", err)
 	}
-	second, err := m.EnsureWorkloadIdentity(context.Background(), "org", "workspace", scope)
+	second, err := EnsureScopedIdentity(context.Background(), cs, WorkloadIdentityShape(scope))
 	if err != nil {
-		t.Fatalf("EnsureWorkloadIdentity (repeat): %v", err)
+		t.Fatalf("EnsureScopedIdentity (repeat): %v", err)
 	}
 	if first.ServiceAccountName != second.ServiceAccountName || first.ServiceAccountName != WorkloadServiceAccountName(scope) {
 		t.Fatalf("service account name not deterministic: first=%q second=%q", first.ServiceAccountName, second.ServiceAccountName)
@@ -124,7 +126,7 @@ func TestWorkloadServiceAccountNameChangesWhenProjectUIDChanges(t *testing.T) {
 }
 
 func TestEnsureWorkloadIdentityRejectsTokenExpiryBeyondPolicy(t *testing.T) {
-	m, cs := managerFor(t)
+	_, cs := managerFor(t)
 	defer resetTestClientset()
 	cs.PrependReactor("create", "serviceaccounts/token", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		return true, &authnv1.TokenRequest{Status: authnv1.TokenRequestStatus{
@@ -132,14 +134,14 @@ func TestEnsureWorkloadIdentityRejectsTokenExpiryBeyondPolicy(t *testing.T) {
 			ExpirationTimestamp: metav1.NewTime(time.Now().Add(WorkloadIdentityTokenTTL + 2*time.Second)),
 		}}, nil
 	})
-	_, err := m.EnsureWorkloadIdentity(context.Background(), "org", "workspace", WorkloadIdentityScope{
+	_, err := EnsureScopedIdentity(context.Background(), cs, WorkloadIdentityShape(WorkloadIdentityScope{
 		TenantPath:  "root:railgrid:tenants:org:workspace",
 		Project:     "project",
 		ProjectUID:  "project-uid",
 		Environment: "development",
 		Instance:    "project-dev",
-	})
+	}))
 	if err == nil {
-		t.Fatal("EnsureWorkloadIdentity accepted a token beyond the maximum lifetime")
+		t.Fatal("EnsureScopedIdentity accepted a token beyond the maximum lifetime")
 	}
 }

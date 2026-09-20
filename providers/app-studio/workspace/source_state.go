@@ -16,48 +16,48 @@ limitations under the License.
 
 package workspace
 
+// Working-copy state.
+//
+// Everything in this file that is AUTHORITY — the dirty-path set, the source
+// revision, the commit in flight, the settlement receipt — goes through the
+// Ledger (ledger.go), which is backed by the project's own CR. What stays here
+// is what is genuinely about the local tree: whether it exists, and what its
+// bytes digest to.
+//
+// Before §9 Cut D.3 all of it was JSON beside the tree on a ReadWriteOnce
+// volume. A replica that did not have that volume read "no dirty paths" and
+// "revision 1", which is indistinguishable from a clean project at its initial
+// revision — so a second replica could push an empty file list to a dev
+// sandbox and a moved project could have its fence restart below what the
+// agent had already seen.
+
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"sort"
 )
 
-const (
-	workspaceSourceStateFile      = "source-state.json"
-	workspaceSourceRevisionFile   = "source-revision.json"
-	workspaceCommitSettlementFile = "commit-settlement.json"
-)
-
-type workspaceSourceState struct {
-	UncommittedPaths []string `json:"uncommittedPaths"`
-}
-
-// workspaceSourceRevision is deliberately separate from source-state.json:
-// repository settlement may clear the dirty-path set, but the development
-// data-plane still needs a monotonic revision to reject stale syncs.
-type workspaceSourceRevision struct {
-	Revision uint64 `json:"revision"`
-}
-
-type workspaceCommitSettlement struct {
-	WorkspaceDigest string   `json:"workspaceDigest"`
-	Paths           []string `json:"paths"`
-}
-
-// RetainsSource reports whether this project incarnation has a local tree at
-// least as current as the last revision recorded by its owner. An empty tree
-// counts: its files may have been deliberately deleted. Revision metadata alone
-// does not count, since adoption can seed a floor before any source is hydrated.
-func (s *FileStore) RetainsSource(ctx context.Context, scope Scope, floor uint64) (bool, error) {
+// RetainsSource reports whether THIS replica's tree is the one the project is
+// actually at: the directory exists, and its local revision tag
+// (tree_revision.go) has caught up with the ledger's revision. An empty tree
+// counts, because its files may have been deliberately deleted.
+//
+// Before §9 Cut D.3 this compared a pod-local revision file against the
+// project claim's recorded floor. Both are gone as a fence: the ledger is one
+// number every replica reads, and what varies per replica is only how far this
+// directory's bytes have got. A tree with no tag is unknown, and unknown is
+// stale — the rebuild is cheap and serving five-edits-old source is not.
+func (s *FileStore) RetainsSource(ctx context.Context, scope Scope) (bool, error) {
+	if s == nil {
+		return false, errors.New("project workspace store is not configured")
+	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -78,7 +78,48 @@ func (s *FileStore) RetainsSource(ctx context.Context, scope Scope, floor uint64
 		return false, fmt.Errorf("workspace source is not a directory")
 	}
 	revision, err := s.sourceRevision(ctx, scope)
-	return revision >= floor, err
+	if err != nil {
+		return false, err
+	}
+	local, err := s.localTreeRevision(scope)
+	if err != nil {
+		return false, err
+	}
+	return local >= revision, nil
+}
+
+// HasSourceTree reports whether this replica holds a materialized tree for the
+// project at all. It is the question the hydration path asks: a replica that
+// has no tree must rebuild it from the last commit plus the ledger's dirty
+// set, not serve an empty workspace.
+func (s *FileStore) HasSourceTree(ctx context.Context, scope Scope) (bool, error) {
+	if s == nil {
+		return false, errors.New("project workspace store is not configured")
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	dir, err := s.scopeDir(scope)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("workspace source is not a directory")
+	}
+	entries, err := s.allFiles(ctx, dir, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(entries) > 0, nil
 }
 
 // UncommittedPaths returns the project source paths changed by App Studio
@@ -106,44 +147,38 @@ func (s *FileStore) AddUncommittedPaths(ctx context.Context, scope Scope, paths 
 }
 
 // addUncommittedPaths is the lock-free implementation used by callers that
-// already hold mutationMu. Keeping the source-state update in the same
-// critical section as a whole-tree replacement prevents a concurrent commit
-// from observing only part of the restored path set.
+// already hold mutationMu. Keeping the ledger update in the same critical
+// section as a whole-tree replacement prevents a concurrent commit from
+// observing only part of the restored path set.
 func (s *FileStore) addUncommittedPaths(ctx context.Context, scope Scope, paths []string) ([]string, error) {
-	current, err := s.uncommittedPaths(ctx, scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return nil, err
 	}
-	pathSet := make(map[string]struct{}, len(current)+len(paths))
-	for _, path := range current {
-		pathSet[path] = struct{}{}
-	}
+	clean := make([]string, 0, len(paths))
 	for _, raw := range paths {
-		clean, err := cleanProjectPath(raw)
+		path, err := cleanProjectPath(raw)
 		if err != nil {
 			return nil, err
 		}
-		pathSet[clean] = struct{}{}
+		clean = append(clean, path)
 	}
-	merged := sortedWorkspaceSourcePaths(pathSet)
-	if len(merged) == 0 {
-		return nil, nil
+	if len(clean) == 0 {
+		record, err := ledger.Read(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		return record.UncommittedPaths, nil
 	}
-	dir, statePath, err := s.sourceStatePath(scope)
+	record, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		before := len(record.UncommittedPaths)
+		record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), clean...))
+		return len(record.UncommittedPaths) != before, nil
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("record uncommitted paths: %w", err)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create workspace source state directory: %w", err)
-	}
-	raw, err := json.Marshal(workspaceSourceState{UncommittedPaths: merged})
-	if err != nil {
-		return nil, fmt.Errorf("encode workspace source state: %w", err)
-	}
-	if err := writeFileAtomically(dir, statePath, raw, 0o600, false); err != nil {
-		return nil, fmt.Errorf("persist workspace source state: %w", err)
-	}
-	return merged, nil
+	return record.UncommittedPaths, nil
 }
 
 // SourceRevision returns the durable source revision for this project
@@ -159,60 +194,106 @@ func (s *FileStore) SourceRevision(ctx context.Context, scope Scope) (uint64, er
 }
 
 func (s *FileStore) sourceRevision(ctx context.Context, scope Scope) (uint64, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	_, revisionPath, err := s.sourceRevisionPath(scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return 0, err
 	}
-	raw, err := os.ReadFile(revisionPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		return 1, nil
-	}
+	record, err := ledger.Read(ctx, scope)
 	if err != nil {
 		return 0, fmt.Errorf("read workspace source revision: %w", err)
 	}
-	var state workspaceSourceRevision
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return 0, fmt.Errorf("decode workspace source revision: %w", err)
-	}
-	if state.Revision == 0 {
+	if record.SourceRevision == 0 {
 		return 1, nil
 	}
-	return state.Revision, nil
+	return record.SourceRevision, nil
 }
 
+// bumpSourceRevision advances the working copy's revision by one. It runs
+// inside the mutation critical section on purpose: the revision a reader gets
+// back must never describe a tree state that has not been written yet, and
+// ReplaceTree's expected-revision check is a read-modify-write over the same
+// value.
 func (s *FileStore) bumpSourceRevision(ctx context.Context, scope Scope) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	dir, revisionPath, err := s.sourceRevisionPath(scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return err
 	}
-	current, err := s.sourceRevision(ctx, scope)
+	record, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		if record.SourceRevision == 0 {
+			record.SourceRevision = 1
+		}
+		record.SourceRevision++
+		return true, nil
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("advance workspace source revision: %w", err)
 	}
-	raw, err := json.Marshal(workspaceSourceRevision{Revision: current + 1})
-	if err != nil {
-		return fmt.Errorf("encode workspace source revision: %w", err)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create workspace source revision directory: %w", err)
-	}
-	if err := writeFileAtomically(dir, revisionPath, raw, 0o600, false); err != nil {
-		return fmt.Errorf("persist workspace source revision: %w", err)
-	}
+	s.tagLocalTree(scope, record.SourceRevision)
 	return nil
 }
 
+// tagLocalTree records which revision this replica's bytes are at
+// (tree_revision.go). It is a cache tag, never authority, so a failure to
+// write it is logged-by-omission rather than failing a mutation whose bytes
+// are already durable: the cost is a rebuild the next time the project is
+// adopted here.
+func (s *FileStore) tagLocalTree(scope Scope, revision uint64) {
+	if revision == 0 {
+		return
+	}
+	_ = s.setLocalTreeRevision(scope, revision)
+}
+
+// advanceAndRecord advances the source revision and unions paths into the
+// dirty set in ONE ledger update, so no crash can leave a revision that moved
+// beside a dirty set that did not. expected, when non-nil, is re-checked
+// against the ledger inside that update: it is the compare of the whole-tree
+// replacement's compare-and-swap, and the only place it can be enforced
+// against a writer on another replica.
+func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected *uint64, paths []string, committed bool) (uint64, error) {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return 0, err
+	}
+	clean := make([]string, 0, len(paths))
+	for _, raw := range paths {
+		path, err := cleanProjectPath(raw)
+		if err != nil {
+			return 0, err
+		}
+		clean = append(clean, path)
+	}
+	record, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		current := record.SourceRevision
+		if current == 0 {
+			current = 1
+		}
+		if expected != nil && *expected != current {
+			return false, fmt.Errorf("%w: expected %d, current %d", ErrSourceRevisionConflict, *expected, current)
+		}
+		record.SourceRevision = current + 1
+		if committed {
+			// The incoming bytes ARE the repository's, so these paths are
+			// clean — including any that were dirty before, whose local edits
+			// this replacement has just overwritten.
+			record.UncommittedPaths = removeLedgerPaths(record.UncommittedPaths, clean)
+		} else {
+			record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), clean...))
+		}
+		return true, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	s.tagLocalTree(scope, record.SourceRevision)
+	return record.SourceRevision, nil
+}
+
 // EnsureSourceRevisionFloor raises the durable source revision to at least
-// floor. Replica adoption seeds it from the project claim's revision so the
-// monotonic fence the infrastructure agent enforces survives the project
-// moving between replicas — a fence restarting at 1 on a new owner would make
-// every subsequent sync look stale. Never lowers the local revision.
+// floor. It survives from the file-backed ledger because adoption still seeds
+// a floor from the project claim; with the revision on the CR the two agree by
+// construction, so this is now a no-op in the common case and a repair for a
+// claim that ran ahead of a status write. Never lowers the revision.
 func (s *FileStore) EnsureSourceRevisionFloor(ctx context.Context, scope Scope, floor uint64) error {
 	if s == nil {
 		return errors.New("project workspace store is not configured")
@@ -222,26 +303,18 @@ func (s *FileStore) EnsureSourceRevisionFloor(ctx context.Context, scope Scope, 
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	current, err := s.sourceRevision(ctx, scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return err
 	}
-	if current >= floor {
-		return nil
-	}
-	dir, revisionPath, err := s.sourceRevisionPath(scope)
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(workspaceSourceRevision{Revision: floor})
-	if err != nil {
-		return fmt.Errorf("encode workspace source revision: %w", err)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create workspace source revision directory: %w", err)
-	}
-	if err := writeFileAtomically(dir, revisionPath, raw, 0o600, false); err != nil {
-		return fmt.Errorf("persist workspace source revision: %w", err)
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		if record.SourceRevision >= floor {
+			return false, nil
+		}
+		record.SourceRevision = floor
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("raise workspace source revision floor: %w", err)
 	}
 	return nil
 }
@@ -254,15 +327,18 @@ func (s *FileStore) ClearUncommittedPaths(ctx context.Context, scope Scope) erro
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, statePath, err := s.sourceStatePath(scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(statePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("clear workspace source state: %w", err)
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		if len(record.UncommittedPaths) == 0 {
+			return false, nil
+		}
+		record.UncommittedPaths = nil
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("clear uncommitted paths: %w", err)
 	}
 	return nil
 }
@@ -280,7 +356,7 @@ func (s *FileStore) RemoveUncommittedPaths(ctx context.Context, scope Scope, pat
 }
 
 func (s *FileStore) removeUncommittedPaths(ctx context.Context, scope Scope, paths []string) error {
-	current, err := s.uncommittedPaths(ctx, scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -292,50 +368,42 @@ func (s *FileStore) removeUncommittedPaths(ctx context.Context, scope Scope, pat
 		}
 		remove[clean] = struct{}{}
 	}
-	remaining := make(map[string]struct{}, len(current))
-	for _, path := range current {
-		if _, ok := remove[path]; !ok {
-			remaining[path] = struct{}{}
-		}
-	}
-	if len(remaining) == 0 {
-		_, statePath, err := s.sourceStatePath(scope)
-		if err != nil {
-			return err
-		}
-		if err := os.Remove(statePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("clear workspace source state: %w", err)
-		}
+	if len(remove) == 0 {
 		return nil
 	}
-	dir, statePath, err := s.sourceStatePath(scope)
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(workspaceSourceState{UncommittedPaths: sortedWorkspaceSourcePaths(remaining)})
-	if err != nil {
-		return fmt.Errorf("encode workspace source state: %w", err)
-	}
-	if err := writeFileAtomically(dir, statePath, raw, 0o600, false); err != nil {
-		return fmt.Errorf("persist workspace source state: %w", err)
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		remaining := make([]string, 0, len(record.UncommittedPaths))
+		for _, path := range record.UncommittedPaths {
+			if _, ok := remove[path]; !ok {
+				remaining = append(remaining, path)
+			}
+		}
+		if len(remaining) == len(record.UncommittedPaths) {
+			return false, nil
+		}
+		record.UncommittedPaths = remaining
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("clear committed paths: %w", err)
 	}
 	return nil
 }
 
 // RecordCommitSettlement durably records the local cleanup still required
 // after a repository commit has already succeeded. This receipt lets a later
-// process repair source-state.json without repeating the external commit.
+// process — on any replica — repair the dirty set without repeating the
+// external commit.
 func (s *FileStore) RecordCommitSettlement(ctx context.Context, scope Scope, workspaceDigest string, paths []string) error {
 	if s == nil {
 		return errors.New("project workspace store is not configured")
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
 		return err
 	}
-	digest := workspaceDigest
-	if digest == "" {
+	if workspaceDigest == "" {
 		return errors.New("commit settlement workspace digest is required")
 	}
 	pathSet := make(map[string]struct{}, len(paths))
@@ -349,18 +417,11 @@ func (s *FileStore) RecordCommitSettlement(ctx context.Context, scope Scope, wor
 	if len(pathSet) == 0 {
 		return errors.New("commit settlement paths are required")
 	}
-	dir, settlementPath, err := s.commitSettlementPath(scope)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create workspace commit settlement directory: %w", err)
-	}
-	raw, err := json.Marshal(workspaceCommitSettlement{WorkspaceDigest: digest, Paths: sortedWorkspaceSourcePaths(pathSet)})
-	if err != nil {
-		return fmt.Errorf("encode workspace commit settlement: %w", err)
-	}
-	if err := writeFileAtomically(dir, settlementPath, raw, 0o600, false); err != nil {
+	settled := sortedWorkspaceSourcePaths(pathSet)
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		record.Settlement = &CommitSettlement{WorkspaceDigest: workspaceDigest, Paths: settled}
+		return true, nil
+	}); err != nil {
 		return fmt.Errorf("persist workspace commit settlement: %w", err)
 	}
 	return nil
@@ -373,79 +434,87 @@ func (s *FileStore) PendingCommitSettlement(ctx context.Context, scope Scope) (s
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return "", nil, false, err
-	}
-	_, settlementPath, err := s.commitSettlementPath(scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return "", nil, false, err
 	}
-	raw, err := os.ReadFile(settlementPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil, false, nil
-	}
+	record, err := ledger.Read(ctx, scope)
 	if err != nil {
 		return "", nil, false, fmt.Errorf("read workspace commit settlement: %w", err)
 	}
-	var settlement workspaceCommitSettlement
-	if err := json.Unmarshal(raw, &settlement); err != nil {
-		return "", nil, false, fmt.Errorf("decode workspace commit settlement: %w", err)
+	if record.Settlement == nil {
+		return "", nil, false, nil
 	}
-	pathSet := make(map[string]struct{}, len(settlement.Paths))
-	for _, rawPath := range settlement.Paths {
+	pathSet := make(map[string]struct{}, len(record.Settlement.Paths))
+	for _, rawPath := range record.Settlement.Paths {
 		clean, err := cleanProjectPath(rawPath)
 		if err != nil {
 			return "", nil, false, fmt.Errorf("invalid workspace commit settlement: %w", err)
 		}
 		pathSet[clean] = struct{}{}
 	}
-	if settlement.WorkspaceDigest == "" || len(pathSet) == 0 {
+	if record.Settlement.WorkspaceDigest == "" || len(pathSet) == 0 {
 		return "", nil, false, errors.New("invalid workspace commit settlement")
 	}
-	return settlement.WorkspaceDigest, sortedWorkspaceSourcePaths(pathSet), true, nil
+	return record.Settlement.WorkspaceDigest, sortedWorkspaceSourcePaths(pathSet), true, nil
 }
 
 // ReconcileCommitSettlement clears committed paths and the matching receipt in
-// one workspace mutation critical section. The caller must first verify that
-// the current file bundle still has the receipt's digest.
+// one ledger update. The digest the receipt carries is verified against the
+// current bundle first, so an edit made after the commit left stays dirty.
+//
+// The verification reads the local tree: a replica that does not hold the
+// tree cannot settle, and correctly declines rather than clearing a dirty set
+// it cannot check. The receipt stays on the CR for whichever replica can.
 func (s *FileStore) ReconcileCommitSettlement(ctx context.Context, scope Scope) (bool, error) {
 	if s == nil {
 		return false, errors.New("project workspace store is not configured")
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	_, settlementPath, err := s.commitSettlementPath(scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return false, err
 	}
-	raw, err := os.ReadFile(settlementPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
+	record, err := ledger.Read(ctx, scope)
 	if err != nil {
 		return false, fmt.Errorf("read workspace commit settlement for reconciliation: %w", err)
 	}
-	var settlement workspaceCommitSettlement
-	if err := json.Unmarshal(raw, &settlement); err != nil {
-		return false, fmt.Errorf("decode workspace commit settlement for reconciliation: %w", err)
+	if record.Settlement == nil {
+		return false, nil
 	}
-	currentDigest, err := s.workspaceDigest(ctx, scope, settlement.Paths)
+	currentDigest, err := s.workspaceDigest(ctx, scope, record.Settlement.Paths)
 	if err != nil {
 		return false, fmt.Errorf("verify workspace commit settlement: %w", err)
 	}
-	if settlement.WorkspaceDigest != currentDigest {
+	if record.Settlement.WorkspaceDigest != currentDigest {
 		return false, nil
 	}
-	if err := s.removeUncommittedPaths(ctx, scope, settlement.Paths); err != nil {
-		return false, err
+	settled := make(map[string]struct{}, len(record.Settlement.Paths))
+	for _, path := range record.Settlement.Paths {
+		settled[path] = struct{}{}
 	}
-	if err := os.Remove(settlementPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, fmt.Errorf("clear workspace commit settlement: %w", err)
+	digest := record.Settlement.WorkspaceDigest
+	applied := false
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		if record.Settlement == nil || record.Settlement.WorkspaceDigest != digest {
+			// Another writer settled it between the read and this update.
+			return false, nil
+		}
+		remaining := make([]string, 0, len(record.UncommittedPaths))
+		for _, path := range record.UncommittedPaths {
+			if _, ok := settled[path]; !ok {
+				remaining = append(remaining, path)
+			}
+		}
+		record.UncommittedPaths = remaining
+		record.Settlement = nil
+		applied = true
+		return true, nil
+	}); err != nil {
+		return false, fmt.Errorf("settle committed paths: %w", err)
 	}
-	return true, nil
+	return applied, nil
 }
 
 // WorkspaceDigest binds an ordered path set to its current contents, text and
@@ -529,26 +598,16 @@ func (s *FileStore) digestWorkspaceFile(ctx context.Context, scope Scope, hash i
 }
 
 func (s *FileStore) uncommittedPaths(ctx context.Context, scope Scope) ([]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	_, statePath, err := s.sourceStatePath(scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := os.ReadFile(statePath)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
+	record, err := ledger.Read(ctx, scope)
 	if err != nil {
-		return nil, fmt.Errorf("read workspace source state: %w", err)
+		return nil, fmt.Errorf("read uncommitted paths: %w", err)
 	}
-	var state workspaceSourceState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return nil, fmt.Errorf("decode workspace source state: %w", err)
-	}
-	pathSet := make(map[string]struct{}, len(state.UncommittedPaths))
-	for _, rawPath := range state.UncommittedPaths {
+	pathSet := make(map[string]struct{}, len(record.UncommittedPaths))
+	for _, rawPath := range record.UncommittedPaths {
 		clean, err := cleanProjectPath(rawPath)
 		if err != nil {
 			return nil, fmt.Errorf("invalid workspace source state: %w", err)
@@ -556,30 +615,6 @@ func (s *FileStore) uncommittedPaths(ctx context.Context, scope Scope) ([]string
 		pathSet[clean] = struct{}{}
 	}
 	return sortedWorkspaceSourcePaths(pathSet), nil
-}
-
-func (s *FileStore) sourceStatePath(scope Scope) (string, string, error) {
-	dir, err := s.snapshotProjectDir(scope)
-	if err != nil {
-		return "", "", err
-	}
-	return dir, filepath.Join(dir, workspaceSourceStateFile), nil
-}
-
-func (s *FileStore) sourceRevisionPath(scope Scope) (string, string, error) {
-	dir, err := s.snapshotProjectDir(scope)
-	if err != nil {
-		return "", "", err
-	}
-	return dir, filepath.Join(dir, workspaceSourceRevisionFile), nil
-}
-
-func (s *FileStore) commitSettlementPath(scope Scope) (string, string, error) {
-	dir, err := s.snapshotProjectDir(scope)
-	if err != nil {
-		return "", "", err
-	}
-	return dir, filepath.Join(dir, workspaceCommitSettlementFile), nil
 }
 
 func sortedWorkspaceSourcePaths(pathSet map[string]struct{}) []string {
@@ -591,24 +626,21 @@ func sortedWorkspaceSourcePaths(pathSet map[string]struct{}) []string {
 	return paths
 }
 
-// InitializeRepositorySource queues the complete source tree once for an
-// explicitly attached repository. The receipt lives with project metadata,
-// outside the public file tree, and survives provider restarts.
-func (s *FileStore) InitializeRepositorySource(ctx context.Context, scope Scope, repositoryRef string) error {
+// InitializeRepositorySource queues the complete source tree for an explicitly
+// attached repository, so a project whose files predate its repository gets a
+// first commit carrying all of them.
+//
+// It no longer keeps its own receipt: the receipt was a file on the workspace
+// volume, and the union it performs is idempotent anyway. What makes it
+// once-only is the Project annotation the caller stamps, which the reconciler
+// removes after this returns — one durable record instead of two that could
+// disagree across replicas.
+func (s *FileStore) InitializeRepositorySource(ctx context.Context, scope Scope) error {
+	if s == nil {
+		return errors.New("project workspace store is not configured")
+	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	dir, _, err := s.sourceStatePath(scope)
-	if err != nil {
-		return err
-	}
-	receipt := filepath.Join(dir, "initial-repository")
-	raw, err := os.ReadFile(receipt)
-	if err == nil && string(raw) == repositoryRef {
-		return nil
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	tree, err := s.scopeDir(scope)
 	if err != nil {
 		return err
@@ -618,13 +650,14 @@ func (s *FileStore) InitializeRepositorySource(ctx context.Context, scope Scope,
 		paths = append(paths, file.Path)
 		return nil
 	}); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		return err
 	}
-	if _, err := s.addUncommittedPaths(ctx, scope, paths); err != nil {
-		return err
+	if len(paths) == 0 {
+		return nil
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return writeFileAtomically(dir, receipt, []byte(repositoryRef), 0o600, false)
+	_, err = s.addUncommittedPaths(ctx, scope, paths)
+	return err
 }

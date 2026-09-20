@@ -60,6 +60,33 @@ func ResolveHubToken() (string, error) {
 	return TokenFromKubeconfig(path)
 }
 
+// ResolveProviderIdentityToken returns the bearer a provider presents where
+// the hub must attest that the caller IS this provider's own service account,
+// e.g. POST /api/identities (provider-sdk/identityclient). The order is the
+// reverse of ResolveHubToken on purpose:
+//
+//  1. the bearer inside the kubeconfig at RAILGRID_PROVIDER_KUBECONFIG, which
+//     the hub minted for this provider's ServiceAccount and is that identity
+//     by construction;
+//  2. RAILGRID_HUB_TOKEN, only when no provider kubeconfig is configured.
+//
+// RAILGRID_HUB_TOKEN is an operator override that dev setups fill with a
+// USER's static token so heartbeats keep flowing; the hub tolerates that for a
+// heartbeat and refuses it for an identity mint (wrong_identity). Preferring
+// the kubeconfig means a provider never asks for identities as somebody else.
+func ResolveProviderIdentityToken() (string, error) {
+	if path := strings.TrimSpace(os.Getenv(EnvProviderKubeconfig)); path != "" {
+		token, err := TokenFromKubeconfig(path)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(token) != "" {
+			return token, nil
+		}
+	}
+	return strings.TrimSpace(os.Getenv(EnvHubToken)), nil
+}
+
 // TokenFromKubeconfig loads the kubeconfig at path and returns the bearer
 // token its current context resolves to (inline or via a token file).
 func TokenFromKubeconfig(path string) (string, error) {

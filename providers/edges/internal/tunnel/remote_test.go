@@ -135,18 +135,18 @@ func TestPickupRouterDispatch(t *testing.T) {
 
 	// Without a registry every pickup is local (single-replica mode).
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/replica-a?revdial.dialer=abc", nil))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/agent/proxy/replica-a?revdial.dialer=abc", nil))
 	if localHits != 1 || rec.Code != http.StatusTeapot {
 		t.Fatalf("self pickup: hits=%d code=%d, want local dispatch", localHits, rec.Code)
 	}
 	rec = httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/replica-b?revdial.dialer=abc", nil))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/agent/proxy/replica-b?revdial.dialer=abc", nil))
 	if localHits != 2 {
 		t.Fatal("registry-less router must serve every pickup locally")
 	}
 
 	rec = httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/", nil))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/agent/proxy/", nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty replica segment = %d, want 400", rec.Code)
 	}

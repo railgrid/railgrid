@@ -20,8 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +80,7 @@ func newProjectAssistantV2ToolHarnessWithApprovalMode(t *testing.T, requestID st
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, messages, workspaces, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "test-project-uid-demo"}}
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "alice"}
 	scope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
@@ -875,7 +874,12 @@ func TestTemplateSelectionInvalidatesExecutionPlanAndRepairsLegacyAuthority(t *t
 	}
 }
 
-func TestEinoV2CommitSettlementClearsCompleteDirtyBundleAtToolBoundary(t *testing.T) {
+// TestEinoV2CommitLeavesSettlementToTheRepositoryCommitWatch pins the Cut D.1
+// contract: the commit tool asks for a commit and gets a RepositoryCommit
+// name, so the tool boundary records the run's own view and leaves the dirty
+// set alone. Clearing it here would clear it for a commit that has not landed;
+// the Project reconciler clears it when the RepositoryCommit succeeds.
+func TestEinoV2CommitLeavesSettlementToTheRepositoryCommitWatch(t *testing.T) {
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
@@ -903,8 +907,8 @@ func TestEinoV2CommitSettlementClearsCompleteDirtyBundleAtToolBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 0 {
-		t.Fatalf("dirty paths after successful tool-boundary settlement = %#v, want cleared", paths)
+	if len(paths) != 1 || paths[0] != "src/App.tsx" {
+		t.Fatalf("dirty paths after the commit request = %#v, want them untouched until the commit lands", paths)
 	}
 	if got := runState.CheckpointState().CommittedWorkspaceDigest; got != digest {
 		t.Fatalf("committed workspace digest = %q, want %q", got, digest)
@@ -956,7 +960,10 @@ func TestEinoV2SuccessfulCommitSettlementDoesNotAdvancePlanProgress(t *testing.T
 	}
 }
 
-func TestEinoV2SuccessfulCommitReplayRepairsLocalSettlement(t *testing.T) {
+// TestEinoV2SuccessfulCommitReplayIsCountedOnce keeps a replayed commit from
+// re-running the run-local bookkeeping. The durable ledger is not this
+// function's business any more, so what it proves is the counter.
+func TestEinoV2SuccessfulCommitReplayIsCountedOnce(t *testing.T) {
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
@@ -1001,15 +1008,15 @@ func TestEinoV2SuccessfulCommitReplayRepairsLocalSettlement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 0 {
-		t.Fatalf("dirty paths after successful commit replay = %#v, want cleared", paths)
+	if len(paths) != 1 || paths[0] != "src/App.tsx" {
+		t.Fatalf("dirty paths after a replayed commit = %#v, want them untouched until the commit lands", paths)
 	}
 	if got := runState.CheckpointState().CommittedWorkspaceDigest; got != digest {
 		t.Fatalf("replayed committed workspace digest = %q, want %q", got, digest)
 	}
 }
 
-func TestEinoV2UnknownHandlerDynamicCommitSettlesAndReplaysExactlyOnce(t *testing.T) {
+func TestEinoV2UnknownHandlerDynamicCommitRequestsAndReplaysExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	h := newProjectAssistantV2ToolHarness(t, "v2-dynamic-commit-settlement")
 	defer h.server.Shutdown(ctx)
@@ -1062,52 +1069,14 @@ func TestEinoV2UnknownHandlerDynamicCommitSettlesAndReplaysExactlyOnce(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 0 {
-		t.Fatalf("dirty paths after dynamic commit settlement = %#v, want cleared", paths)
+	if len(paths) != 1 || paths[0] != "src/App.tsx" {
+		t.Fatalf("dirty paths after the dynamic commit request = %#v, want them untouched until the commit lands", paths)
 	}
 	if got := runState.CheckpointState().CommittedWorkspaceDigest; got == "" {
 		t.Fatal("dynamic commit did not record the committed workspace digest")
 	}
 	if _, count := runState.RepeatedCompletedAction(); count != 1 {
 		t.Fatalf("dynamic commit completed action count = %d, want replay excluded", count)
-	}
-}
-
-func TestEinoV2CommitSettlementFailureStopsAfterDurableCommitOutcome(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	workspaces := workspace.NewFileStore(root)
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}})
-	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx"}); err != nil {
-		t.Fatal(err)
-	}
-	settlementPath := filepath.Join(root, ".assistant-snapshots", "org-a", "ws-1", "demo", "project-uid", "commit-settlement.json")
-	if err := os.Mkdir(settlementPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	runState := newProjectEinoAssistantRunState()
-	runState.RecordSourceMutation()
-	tool := projectEinoAssistantTool{
-		req:      projectAssistantRunRequest{Workspace: workspaces, WorkspaceScope: scope},
-		runState: runState,
-	}
-	err := tool.recordV2CommitSettlement(ctx, projectAssistantToolSpec{
-		Name: projectToolCommitProjectFiles,
-		Risk: projectAssistantToolRiskCommit,
-	}, map[string]any{
-		"paths":           []any{"src/App.tsx"},
-		"workspaceDigest": "sha256:bundle",
-	}, true)
-	if err != nil {
-		t.Fatalf("model-visible settlement error = %v, want successful external outcome preserved", err)
-	}
-	checkpoint := runState.CheckpointState()
-	if checkpoint.CommittedWorkspaceDigest != "sha256:bundle" {
-		t.Fatalf("committed digest after failed local settlement = %q, want external success retained", checkpoint.CommittedWorkspaceDigest)
-	}
-	if len(checkpoint.VerificationBlockers) == 0 || !strings.Contains(checkpoint.VerificationBlockers[0], "local workspace settlement") {
-		t.Fatalf("settlement blockers = %#v, want server-owned blocker", checkpoint.VerificationBlockers)
 	}
 }
 

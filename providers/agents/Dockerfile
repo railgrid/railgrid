@@ -23,11 +23,11 @@ COPY providers/agents/ ./
 COPY --from=portal /portal/dist ./portal/dist
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agents-provider .
 
-# 3. Minimal runtime image. APIResourceSchemas the `init` subcommand applies are
-#    baked at /etc/railgrid/schemas (RAILGRID_SCHEMAS_DIR).
+# 3. Minimal runtime image. The two declarative objects `init` applies — the
+#    generated APIExport and its APIResourceSchemas — are baked at /etc/railgrid/kcp (RAILGRID_KCP_DIR).
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/agents-provider /agents-provider
-COPY providers/agents/deploy/chart/files/schemas /etc/railgrid/schemas
+COPY providers/agents/deploy/chart/files /etc/railgrid/kcp
 EXPOSE 8087
 ENV PORT=8087
 USER nonroot:nonroot

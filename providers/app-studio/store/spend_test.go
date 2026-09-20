@@ -162,7 +162,7 @@ func TestPostgresStoreOrganizationSpendAccountingExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schemaName := "app_studio_spend_" + time.Now().UTC().Format("20060102150405")
 	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
@@ -173,7 +173,7 @@ func TestPostgresStoreOrganizationSpendAccountingExternalDSN(t *testing.T) {
 		if openErr != nil {
 			return
 		}
-		defer cleanupDB.Close()
+		defer func() { _ = cleanupDB.Close() }()
 		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
 	})
 
@@ -181,7 +181,7 @@ func TestPostgresStoreOrganizationSpendAccountingExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPostgres: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	// EnsureSchema must be idempotent for the new migration.
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema second run: %v", err)

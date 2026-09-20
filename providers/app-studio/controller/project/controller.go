@@ -25,26 +25,43 @@ You may obtain a copy of the License at
 // The template-switch handler deletes replaced instances while it still holds
 // the old spec, and the ownerReference covers Project deletion.
 //
-// Convergence is event-driven: the dependency kinds (instances, the backing
-// Repository, an in-flight RepositoryCommit) are watched per tenant
-// workspace through package tenantwatch, and the HTTP/assistant layer
-// signals the reconciler through package reconcilesignal when a turn ends or
-// files change. A slow safety resync covers whatever an event missed.
+// Two clients, split by whose API surface the object lives on:
+//
+//   - the Project itself — spec, status, finalizers, annotations — rides the
+//     multicluster manager's client for the request's cluster, which is this
+//     provider's own ServiceAccount over its APIExport virtual workspace. It
+//     owns the kind; nothing else is involved.
+//   - everything belonging to a DEPENDENCY — the bound Instances, the backing
+//     Repository, an in-flight RepositoryCommit — rides a client on the tenant
+//     workspace itself ({hub}/clusters/{cluster}), authenticated as the
+//     project's hub-minted scoped identity (identity.go). The virtual
+//     workspace does not serve those kinds, deliberately: claiming a
+//     first-party group pins one serving APIExport identityHash for every
+//     consuming workspace at once, so a workspace bound to an org-owned
+//     infrastructure or code provider would be served nothing. Acting inside
+//     the workspace through its own bindings works for whichever copy it bound.
+//
+// Convergence is event-driven: the dependency kinds are watched per tenant
+// workspace through package tenantwatch, with the same identity token, and the
+// HTTP/assistant layer signals the reconciler through package reconcilesignal
+// when a turn ends or files change. Nothing is polled: a reconcile happens
+// because something happened.
 package project
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"sync"
-	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"github.com/kcp-dev/sdk/apis/core"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -61,24 +78,19 @@ import (
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/bindings"
 	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
-	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/internal/projectledger"
 	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
+	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const (
-	// finalizer guards instance teardown on Project deletion.
-	finalizer = "ai.railgrid.ai/instances"
-	// resyncInterval is the safety net under the watches and signals: drift
-	// nothing announced (an event dropped while a watcher reconnected, a
-	// signal published before the controller subscribed) is noticed within
-	// this long.
-	resyncInterval = 10 * time.Minute
-	// identityRequeueInterval waits for the project ServiceAccount's token
-	// Secret to be populated by kcp's token controller — the one dependency
-	// that is neither watched nor signalled, and never takes long.
-	identityRequeueInterval = 5 * time.Second
+	// finalizer guards the whole teardown chain a deleted Project owns
+	// (teardown.go). It is declared on the API type because the API layer
+	// stamps it at creation time, so a Project deleted a second later still
+	// has a cleanup owner.
+	finalizer = aiv1alpha1.ProjectFinalizer
 	// instanceConvergenceMaxAttempts bounds optimistic-concurrency recovery.
 	// A fresh GET/recompute is enough to absorb the provider's usual computed
 	// field update; persistent contention is surfaced to a rate-limited
@@ -108,6 +120,15 @@ type Reconciler struct {
 	// Workspace is the shared on-disk project file store (nil disables
 	// commit convergence).
 	Workspace *workspace.FileStore
+	// Store is the conversation store a deleted project's finalizer purges:
+	// its threads, transcripts, runs and preview thumbnail. Nil leaves the
+	// rows in place, which is only ever a REST-less test wiring.
+	Store store.Store
+	// StopAssistant interrupts an assistant turn still running for a project
+	// that is being deleted. The old delete VERB refused with a 409 instead;
+	// a CR delete cannot refuse, so the run is stopped and the teardown waits
+	// for Busy to go false. Nil means there is no supervisor to ask.
+	StopAssistant func(context.Context, workspace.Scope) error
 	// Attachments owns the durable project attachment scope. The controller adds
 	// its finalizer only after the Project's tenant scope and UID are available;
 	// API-created Projects carry the finalizer from creation time so an immediate
@@ -125,48 +146,73 @@ type Reconciler struct {
 	// OnCommitted is told about every commit convergence settles, so the
 	// project's assistant thread can show it. Nil disables the notification.
 	OnCommitted func(context.Context, workspace.Scope, CommitResult)
-	// Watches delivers instance, Repository, and RepositoryCommit events from
-	// every tenant workspace (see package tenantwatch). Nil means no watches:
-	// convergence then rides the safety resync alone.
+	// Watches delivers Instance, Repository and RepositoryCommit events from
+	// every tenant workspace (see package tenantwatch), through the same
+	// identity the writes below use. Nil means no dependency watches, which is
+	// the same deployment that has no identity to write with either.
 	Watches *tenantwatch.Hub
 	// Signals carries "this project changed" events from the HTTP/assistant
 	// layer: a turn ended, files were written. Nil means no signals.
 	Signals *reconcilesignal.Bus
-	// binaryCommits caches, per workspace cluster, whether the Code
-	// provider's code__commit_files accepts base64 file items.
-	binaryCommits hubmcp.CapabilityCache
 	// skipNotices remembers the last skipped-path notice per project so an
 	// unchanged skip is logged once rather than on every reconcile.
 	noticeMu    sync.Mutex
 	skipNotices map[string]string
-	// HubBase / HubInsecure address the hub for MCP commit calls and for the
-	// tenant-path client below.
+	// HubBase / HubInsecure address the hub for the commit action calls
+	// (commitaction.go) and for the tenant-path client below.
 	HubBase     string
 	HubInsecure bool
-	// TenantClientFor is a test seam for the tenant-path client: a client on
-	// the workspace cluster authenticated as the project ServiceAccount.
-	// Production leaves it nil and dials {HubBase}/clusters/{cluster} with the
-	// identity token. Instance and repository writes go through THIS client —
-	// the workspace's own bindings — rather than the claimed VW, so they reach
-	// whichever copy of infrastructure/code the workspace binds (platform or
-	// self-hosted) with no permission-claim identity pinning (see package
-	// tenantaccess).
+	// Identities mints the per-project identity this loop acts as inside the
+	// tenant workspace, and which the project's own workload presents
+	// elsewhere. Nil means there is no hub to ask (REST-only dev): the
+	// cross-provider half of the reconcile is then skipped and the Project's
+	// own convergence carries on.
+	Identities *scopedidentity.Cache
+	// TenantClientFor is a test seam for the workspace client: a client on the
+	// tenant's own API surface, authenticated as the project identity.
+	// Production leaves it nil and dials {HubBase}/clusters/{cluster}.
 	TenantClientFor func(clusterName, token string) (client.Client, error)
+	// noIdentityNotices remembers which projects were already told about a
+	// missing hub, so a REST-only deployment logs once per project rather than
+	// on every pass.
+	noIdentityNotices sync.Map
 }
 
-// tenantClient resolves the client used for instance/repository writes. vw is
-// the claimed-VW fallback for deployments with no hub address configured
-// (REST-only dev); that path still depends on first-party permission claims
-// and cannot serve mixed platform/self-hosted workspaces.
-func (r *Reconciler) tenantClient(clusterName, token string, vw client.Client) (client.Client, error) {
+// tenantClient builds the client every dependency read and write goes through:
+// the tenant's own API surface, as the project identity. There is no
+// claimed-virtual-workspace fallback, because the virtual workspace does not
+// serve those kinds — see the package comment.
+func (r *Reconciler) tenantClient(clusterName, token string) (client.Client, error) {
 	if r.TenantClientFor != nil {
 		return r.TenantClientFor(clusterName, token)
 	}
-	if r.HubBase == "" {
-		log.Printf("WARNING app-studio project reconciler: RAILGRID_HUB_URL is empty; falling back to the claimed-VW client, which cannot serve workspaces whose infrastructure/code provider identity differs from this deployment's pins")
-		return vw, nil
-	}
 	return tenantaccess.NewClient(r.HubBase, clusterName, token, r.HubInsecure)
+}
+
+// crossProviderAccess resolves the identity token and the workspace client the
+// dependency half of a reconcile needs. An empty token with a nil error means
+// there is no hub to ask: the caller skips that half rather than failing, and
+// the project is told so once.
+func (r *Reconciler) crossProviderAccess(ctx context.Context, clusterName string, p *aiv1alpha1.Project) (client.Client, string, error) {
+	token, err := r.identityToken(ctx, clusterName, p)
+	if err != nil {
+		return nil, "", fmt.Errorf("project identity: %w", err)
+	}
+	if token == "" {
+		if _, told := r.noIdentityNotices.LoadOrStore(clusterName+"/"+p.Name, struct{}{}); !told {
+			log.Printf("WARNING app-studio project %s: no hub identity service is configured (RAILGRID_HUB_URL), so its instances, repository and commits cannot be converged; the Project itself still reconciles", p.Name)
+		}
+		return nil, "", nil
+	}
+	tc, err := r.tenantClient(clusterName, token)
+	if err != nil {
+		return nil, "", fmt.Errorf("tenant client: %w", err)
+	}
+	// The same identity that writes the dependency objects watches them for
+	// this workspace (once per cluster; later calls are no-ops until a watcher
+	// fails and a different token is offered).
+	r.Watches.Ensure(clusterName, token, dependencyKinds...)
+	return tc, token, nil
 }
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -182,18 +228,21 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		return err
 	}
 	if r.Watches != nil {
-		// Engaged per tenant cluster alongside the Project watch; the
-		// watchers themselves start once a reconcile holds an identity token.
-		return c.MultiClusterWatch(r.Watches.Source(r.mapDependencyEvent,
-			tenantwatch.InstancesGVR, tenantwatch.RepositoriesGVR, tenantwatch.RepositoryCommitsGVR))
+		// Engaged per tenant cluster alongside the Project watch; the watchers
+		// themselves start once a reconcile holds an identity token.
+		return c.MultiClusterWatch(r.Watches.Source(r.mapDependencyEvent, dependencyKinds...))
 	}
 	return nil
 }
 
-// dependencyKinds are the watched kinds the project identity may list and
-// watch (its ClusterRole covers infrastructure.railgrid.ai and
-// code.railgrid.ai).
-var dependencyKinds = []schema.GroupVersionResource{tenantwatch.InstancesGVR, tenantwatch.RepositoriesGVR, tenantwatch.RepositoryCommitsGVR}
+// dependencyKinds are the kinds the project identity's composition lets it
+// list and watch in the tenant workspace
+// (internal/crossprovider/composition.go).
+var dependencyKinds = []schema.GroupVersionResource{
+	tenantwatch.InstancesGVR,
+	tenantwatch.RepositoriesGVR,
+	tenantwatch.RepositoryCommitsGVR,
+}
 
 // mapDependencyEvent names the Project a watched object belongs to. Instances
 // carry the project label the reconciler stamps; a Repository carries the
@@ -223,6 +272,8 @@ func (r *Reconciler) mapDependencyEvent(ctx context.Context, c client.Client, ev
 }
 
 // projectsForRepository lists the cluster's Projects bound to repositoryRef.
+// It reads the manager's client for the event's cluster — Projects are this
+// provider's own kind, served by its virtual workspace — not the tenant client.
 func projectsForRepository(ctx context.Context, c client.Client, repositoryRef string) []types.NamespacedName {
 	repositoryRef = strings.TrimSpace(repositoryRef)
 	if c == nil || repositoryRef == "" {
@@ -249,6 +300,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("cluster %q: %w", req.ClusterName, err)
 	}
 	c := cl.GetClient()
+
+	// Every working-copy ledger read and write in this pass goes through the
+	// project's own CR, over this same client. Attaching it here is what lets
+	// the workspace store's commit paths stay free of control-plane types
+	// (workspace/ledger.go).
+	ctx = workspace.ContextWithLedger(ctx, projectledger.FromControllerClient(c))
 
 	var p aiv1alpha1.Project
 	if err := c.Get(ctx, req.NamespacedName, &p); err != nil {
@@ -307,25 +364,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Everything below that touches instances or repositories acts as the
-	// project's ServiceAccount against the tenant workspace itself. The
-	// identity objects are provisioned over the claimed VW (built-in types),
-	// then the writes ride the workspace's own bindings.
-	token, err := r.ensureIdentity(ctx, c, &p)
+	// Everything below that touches a dependency's objects acts as the
+	// project's hub-minted identity, inside the tenant workspace. Without one
+	// there is no path to those kinds at all, so that half is skipped.
+	tc, token, err := r.crossProviderAccess(ctx, clusterName, &p)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("project identity: %w", err)
+		return ctrl.Result{}, err
 	}
-	if token == "" {
-		// Token controller not done; nothing else can proceed safely.
-		return ctrl.Result{RequeueAfter: identityRequeueInterval}, nil
+	if tc == nil {
+		return ctrl.Result{}, nil
 	}
-	tc, err := r.tenantClient(clusterName, token, c)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("tenant client: %w", err)
-	}
-	// The same identity that writes instances and repositories watches them
-	// for this workspace (once per cluster; later calls are no-ops).
-	r.Watches.Ensure(clusterName, token, dependencyKinds...)
 
 	// Converge each bound instance, folding observed state per environment.
 	instancesNeedRetry := false
@@ -381,12 +429,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		liveStatuses = append(liveStatuses, bindings.FoldEnvironment(env.spec, bindingStatuses))
 	}
 
-	// Mirror, touching only the environments the reconciler owns (other
-	// status fields — Phase, UpdatedAt, artifact-env entries — belong to the
-	// API layer).
+	// Mirror the environments the reconciler owns, and stamp the generation
+	// this pass observed, in one status write.
+	statusChanged := false
 	next := bindings.MergeEnvironmentStatuses(p.Status.Environments, liveStatuses)
 	if !environmentStatusesEqual(p.Status.Environments, next) {
 		p.Status.Environments = next
+		statusChanged = true
+	}
+	// UpdatedAt orders the project list, so it has to follow a spec change by
+	// ANY writer — the portal patching the Project directly, kubectl, the
+	// assistant — not only the ones that once passed through a REST facade
+	// that stamped it on the way past. kcp bumps metadata.generation on every
+	// spec write, so comparing it with the last generation we stamped is the
+	// whole mechanism; an empty Phase or UpdatedAt covers a Project created
+	// outside the API layer, which has neither.
+	if p.Status.ObservedGeneration != p.Generation || p.Status.Phase == "" || p.Status.UpdatedAt == nil {
+		now := metav1.Now()
+		p.Status.ObservedGeneration = p.Generation
+		p.Status.UpdatedAt = &now
+		p.Status.Phase = aiv1alpha1.ProjectPhaseReady
+		statusChanged = true
+	}
+	if statusChanged {
 		if err := c.Status().Update(ctx, &p); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -400,7 +465,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("repository: %w", err)
 	}
-	commit, err := r.commitWorkspace(ctx, c, token, tc, &p, repo)
+	commit, err := r.commitWorkspace(ctx, c, tc, token, &p, repo)
 	if err != nil {
 		log.Printf("app-studio project %s: commit convergence: %v", p.Name, err)
 		commit.retry = true
@@ -415,7 +480,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if instancesNeedRetry || commit.retry {
 		return ctrl.Result{Requeue: true}, nil
 	}
-	return ctrl.Result{RequeueAfter: resyncInterval}, nil
+	return ctrl.Result{}, nil
 }
 
 func isProjectDevelopmentBinding(environment string, binding aiv1alpha1.ProjectProviderBindingSpec) bool {
@@ -522,10 +587,10 @@ func (r *Reconciler) actionsTenantPath(ctx context.Context, c client.Client, p *
 	}
 	annotations := p.GetAnnotations()
 	if annotated := strings.TrimSpace(annotations[bindings.OrgUUIDAnnotation]); annotated != "" && annotated != org {
-		return "", fmt.Errorf("Project %q organization annotation does not match authoritative tenant path", p.Name)
+		return "", fmt.Errorf("the organization annotation on Project %q does not match the authoritative tenant path", p.Name)
 	}
 	if annotated := strings.TrimSpace(annotations[bindings.WorkspaceUUIDAnnotation]); annotated != "" && annotated != workspace {
-		return "", fmt.Errorf("Project %q workspace annotation does not match authoritative tenant path", p.Name)
+		return "", fmt.Errorf("the workspace annotation on Project %q does not match the authoritative tenant path", p.Name)
 	}
 	return strings.TrimSpace(path), nil
 }
@@ -568,13 +633,13 @@ func resolveLogicalClusterPath(ctx context.Context, c client.Client, clusterName
 
 	annotations := matches[0].GetAnnotations()
 	if got := strings.TrimSpace(annotations["kcp.io/cluster"]); got == "" {
-		return "", fmt.Errorf("App Studio APIBinding has no kcp.io/cluster annotation")
+		return "", fmt.Errorf("the App Studio APIBinding has no kcp.io/cluster annotation")
 	} else if got != clusterName {
-		return "", fmt.Errorf("App Studio APIBinding cluster %q does not match request cluster %q", got, clusterName)
+		return "", fmt.Errorf("the App Studio APIBinding cluster %q does not match request cluster %q", got, clusterName)
 	}
 	path := strings.TrimSpace(annotations[core.LogicalClusterPathAnnotationKey])
 	if path == "" {
-		return "", fmt.Errorf("App Studio APIBinding has no %s annotation", core.LogicalClusterPathAnnotationKey)
+		return "", fmt.Errorf("the App Studio APIBinding has no %s annotation", core.LogicalClusterPathAnnotationKey)
 	}
 	return path, nil
 }
@@ -647,10 +712,18 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, p *aiv
 		if observedTemplate == "" {
 			observedTemplate, _, _ = unstructured.NestedString(want.Object, "spec", "template")
 		}
-		next.Object["spec"] = map[string]any{
+		nextSpec := map[string]any{
 			"template": observedTemplate,
 			"values":   bindings.MergeProviderSpec(observedValues, desiredValues),
 		}
+		// The pull-secret reference is ours to write and ours to clear: a
+		// binding that no longer names a Secret must not leave the instance
+		// pointing at one, because the instance controller reports a dangling
+		// ref rather than ignoring it.
+		if ref, found, _ := unstructured.NestedMap(want.Object, "spec", "imagePullSecretRef"); found {
+			nextSpec["imagePullSecretRef"] = ref
+		}
+		next.Object["spec"] = nextSpec
 		labels := next.GetLabels()
 		if labels == nil {
 			labels = map[string]string{}
@@ -672,15 +745,41 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, p *aiv
 	return nil, fmt.Errorf("instance convergence retry budget exhausted")
 }
 
-// finalize deletes bound instances, then releases the finalizer. The
-// infrastructure provider's template owns the runtime namespace and
-// garbage-collects every materialized workload when the instance goes away.
+// finalize runs the teardown chain a deleted Project owns and then releases
+// the finalizer. The order is by dependency, and every step is idempotent
+// because a failure re-runs the chain from the top (teardown.go explains why
+// this is a finalizer and not the HTTP handler it used to be):
+//
+//  1. stop the assistant — an in-flight turn owns the workspace tree and is
+//     still writing conversation rows;
+//  2. release (or, on explicit request, delete) the Code Repository, before
+//     the instances, because it is the only step that can still be undone;
+//  3. delete the infrastructure instances the project provisioned — the
+//     template owns the runtime namespace and garbage-collects the workloads;
+//  4. purge the conversation rows, attachments and preview thumbnail;
+//  5. revoke the project's hub identity;
+//  6. remove this replica's working copy of the files.
+//
+// The coding-sandbox cache Instance is absent on purpose: it carries a Project
+// ownerReference, so kcp's garbage collector takes it.
 func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha1.Project, clusterName string) (ctrl.Result, error) {
 	instanceFinalizer := controllerutil.ContainsFinalizer(p, finalizer)
 	attachmentFinalizer := controllerutil.ContainsFinalizer(p, store.AttachmentStorageFinalizer)
 	if !instanceFinalizer && !attachmentFinalizer {
 		return ctrl.Result{}, nil
 	}
+
+	// Step 1. Nothing below may run while a turn is still in flight.
+	if scope, ok := scopeOf(p); ok {
+		if err := r.quiesceAssistant(ctx, scope); err != nil {
+			if errors.Is(err, errProjectAssistantBusy) {
+				log.Printf("app-studio project %s: deletion is waiting for the assistant turn to finish", p.Name)
+				return ctrl.Result{}, nil
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
 	if attachmentFinalizer {
 		if r.Attachments == nil {
 			return ctrl.Result{}, fmt.Errorf("attachment storage finalizer present but attachment store is unavailable")
@@ -702,40 +801,70 @@ func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha
 			controllerutil.RemoveFinalizer(p, store.AttachmentStorageFinalizer)
 		}
 	}
+
 	if instanceFinalizer {
-		if bound := providerBindings(p); len(bound) > 0 {
-			// Deletion goes through the tenant-path client like every other
-			// instance write. Blocking on the identity here is deliberate: the
-			// old claimed-VW path treated an unserved resource's 404 as "already
-			// gone" and released the finalizer over live instances.
-			token, err := r.ensureIdentity(ctx, c, p)
+		// Steps 2 and 3 share one workspace client, and both are skipped
+		// together when there is no identity to act as — the same deployment
+		// that never created any of it.
+		//
+		// Teardown goes through the tenant-path client like every other
+		// dependency write. Blocking on the identity is deliberate: a
+		// claimed-VW path treated an unserved resource's 404 as "already
+		// gone" and released the finalizer over live instances.
+		bound := providerBindings(p)
+		if len(bound) > 0 || p.Spec.Repository != nil {
+			tc, _, err := r.crossProviderAccess(ctx, clusterName, p)
 			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("project identity for teardown: %w", err)
+				return ctrl.Result{}, err
 			}
-			if token == "" {
-				return ctrl.Result{RequeueAfter: identityRequeueInterval}, nil
-			}
-			tc, err := r.tenantClient(clusterName, token, c)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("tenant client for teardown: %w", err)
-			}
-			for _, env := range bound {
-				for _, binding := range env.bindings {
-					want, _, err := bindings.Desired(p, binding)
-					if err != nil {
-						// Un-buildable desired state also means nothing was created.
-						continue
-					}
-					obj := &unstructured.Unstructured{}
-					obj.SetGroupVersionKind(want.GroupVersionKind())
-					obj.SetName(want.GetName())
-					if err := tc.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-						return ctrl.Result{}, fmt.Errorf("deleting instance for binding %q: %w", binding.Name, err)
+			if tc == nil {
+				log.Printf("app-studio project %s: releasing the instance finalizer without teardown because no hub identity is configured", p.Name)
+			} else {
+				if err := r.settleRepository(ctx, tc, p); err != nil {
+					return ctrl.Result{}, err
+				}
+				for _, env := range bound {
+					for _, binding := range env.bindings {
+						want, _, err := bindings.Desired(p, binding)
+						if err != nil {
+							// Un-buildable desired state also means nothing was created.
+							continue
+						}
+						obj := &unstructured.Unstructured{}
+						obj.SetGroupVersionKind(want.GroupVersionKind())
+						obj.SetName(want.GetName())
+						if err := tc.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+							return ctrl.Result{}, fmt.Errorf("deleting instance for binding %q: %w", binding.Name, err)
+						}
 					}
 				}
 			}
 		}
 	}
+
+	// Step 4. The conversation rows are keyed by the same scope as the
+	// attachments, and purging them is what makes the deletion final rather
+	// than merely invisible.
+	if scope, ok := attachmentScopeForProject(p); ok {
+		if err := r.purgeConversations(ctx, scope); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Step 5. Revoke the identity now rather than leaving it live until the
+	// hub's sweep notices the Project is gone. A failure here is logged and
+	// not escalated: the sweep is the backstop, and a hub blip must not wedge
+	// a deletion the tenant asked for.
+	if err := r.releaseIdentity(ctx, clusterName, p); err != nil {
+		log.Printf("app-studio project %s: releasing the project identity: %v", p.Name, err)
+	}
+	r.noIdentityNotices.Delete(clusterName + "/" + p.Name)
+
+	// Step 6.
+	if scope, ok := scopeOf(p); ok {
+		r.removeWorkspaceTree(ctx, scope)
+	}
+
 	if instanceFinalizer {
 		controllerutil.RemoveFinalizer(p, finalizer)
 	}

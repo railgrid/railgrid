@@ -257,6 +257,7 @@ func TestProjectTemplateToolchain(t *testing.T) {
 func TestDevelopmentSyncFailureSurfacesAsVerificationBlocker(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
@@ -314,6 +315,7 @@ func TestDevelopmentSyncFailureSurfacesAsVerificationBlocker(t *testing.T) {
 func TestDevelopmentSyncSchedulingPreservesMutationOrder(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
@@ -438,7 +440,7 @@ func TestSyncProjectDevelopmentTargetRejectsUnroutedWorkspaceAsPrecondition(t *t
 		t.Fatal(err)
 	}
 	dyn := publishingTestDynamic(publishingTestTarget("demo-dev", "uid", "private", ""))
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: workspaces}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: workspaces}
 	target := projectDevelopmentSyncTargetInfo{
 		ResourceName: "demo-dev",
 		Components:   map[string]projectTemplateComponent{"api": {WorkspacePath: "api", Toolchain: "node"}},

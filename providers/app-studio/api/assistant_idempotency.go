@@ -176,18 +176,6 @@ func validateProjectAssistantStartReplayWithSelectionsAndParts(run store.Assista
 	return nil
 }
 
-func (s *Server) recoverProjectAssistantStartReplay(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode) (store.AssistantRun, bool) {
-	return s.recoverProjectAssistantStartReplayWithSkills(ctx, scope, createErr, clientRequestID, actor, content, mode, nil)
-}
-
-func (s *Server) recoverProjectAssistantStartReplayWithSkills(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode, skills []string) (store.AssistantRun, bool) {
-	return s.recoverProjectAssistantStartReplayWithSelections(ctx, scope, createErr, clientRequestID, actor, content, mode, skills, nil)
-}
-
-func (s *Server) recoverProjectAssistantStartReplayWithSelections(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode, skills []string, resources []projectAssistantContextResourceInput) (store.AssistantRun, bool) {
-	return s.recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx, scope, createErr, clientRequestID, actor, content, mode, skills, resources, nil)
-}
-
 func (s *Server) recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode, skills []string, resources []projectAssistantContextResourceInput, parts []projectAssistantContentPart) (store.AssistantRun, bool) {
 	if !errors.Is(createErr, store.ErrAssistantRunConflict) {
 		return store.AssistantRun{}, false

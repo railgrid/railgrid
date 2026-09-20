@@ -5246,7 +5246,7 @@ async function saveProjectSettings() {
     selected.value?.name === projectName
   projectSettingsSaving.value = true
   try {
-    const updated = await api.patchProject(props.ctx, projectName, { displayName, description })
+    const updated = await api.updateProjectDetails(props.ctx, projectName, { displayName, description })
     if (!isCurrentSave()) return
     selected.value = updated
     const idx = projects.value.findIndex((item) => item.name === updated.name)
@@ -6275,12 +6275,13 @@ async function changeDevelopmentPreviewAccess(mode: string) {
   developmentPreviewAccessConverged.value = false
   developmentPreviewReadinessMessage.value = 'Updating preview access…'
   try {
-    const updated = await api.patchProject(props.ctx, project.name, {
-      sharing: {
-        preview: { mode: requested },
-        publishing: project.sharing?.publishing ?? { mode: 'private' },
-      },
-    })
+    // Preview visibility is a verb, not a field: POST /preview flips the mode
+    // AND reconciles the app-access grants behind it, which a bare write to
+    // spec.sharing.preview would leave stale. Re-read the view afterwards so
+    // the selected project carries the new policy.
+    await api.setPreviewAccess(props.ctx, project.name, requested)
+    if (selected.value?.name !== project.name) return
+    const updated = await api.getProject(props.ctx, project.name)
     if (selected.value?.name !== project.name) return
     selected.value = updated
     await authorizeDevelopmentPreview({ force: true })
@@ -7112,9 +7113,21 @@ async function requestDeleteProject(project: Project) {
     projectDeletion.acknowledge(operation)
     removeWorkbenchPersistence(deletionScope)
     if (!responseIsCurrent()) return
-    // DELETE returns after the server accepts the request, while the resource
-    // may remain in a terminating phase. Remove only the accepted project from
-    // the local list instead of immediately reading that stale projection back.
+    // The API server accepts the delete immediately; the object stays visible,
+    // terminating, until its finalizer has torn down the instances, released
+    // the repository, purged the conversation and revoked the identity. Watch
+    // it disappear rather than reading the terminating projection back — but
+    // do not block the UI on it: the local row goes either way, and a
+    // finalizer that is still working is not an error the user can act on.
+    void api.awaitProjectDeleted(props.ctx, name, target.uid ?? '')
+      .then((gone) => {
+        if (!gone || !responseIsCurrent()) return
+        invalidateProjectListRequests()
+      })
+      .catch(() => {
+        // The project list refresh below is the backstop for a poll that
+        // could not read the object at all.
+      })
     invalidateProjectListRequests()
     removeProjectFromLocalList(target)
     if (!projects.value.some((item) => item.name === name)) removeProjectThumbnail(name)

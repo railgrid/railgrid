@@ -7,7 +7,7 @@ import InstanceDetailPage from './views/InstanceDetailPage.vue'
 import MissingCredentialsPage from './views/MissingCredentialsPage.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import { resolveConfirm } from './portalkit/confirm'
-import { setBasePath, setHostFetch, setTenant, setToken } from './api'
+import { setBasePath, setHostFetch, setTenant } from './api'
 import { createResourceTombstones } from './refresh'
 import { legacyInfrastructurePath, parseInfrastructureSubPath } from './routes'
 import type { RailgridContext } from './types'
@@ -44,22 +44,23 @@ const contextVersion = ref(0)
 const instanceTombstones = createResourceTombstones()
 let instanceTombstoneTenant: string | null | undefined
 
-// React to ctx changes — basePath drives URL prefixes on fetches,
-// token feeds Authorization, both reactively update when the shell
-// re-pushes context (e.g. token rotation, workspace switch).
+// React to ctx changes — basePath drives URL prefixes on fetches, and
+// ctx.fetch is the host-owned transport that carries the caller's identity.
+// The raw bearer is never read here: the host injects Authorization itself,
+// so a token rotation is invisible to this bundle unless the host also hands
+// it a new transport.
 watch(
-  () => [props.ctx?.basePath, props.ctx?.token, props.ctx?.tenant] as const,
-  ([basePath, token, tenant]) => {
+  () => [props.ctx?.basePath, props.ctx?.fetch, props.ctx?.tenant] as const,
+  ([basePath, hostFetch, tenant]) => {
     // Keep the existing API setters as the public context boundary. Each
     // setter invalidates in-flight reads, while this owner remounts pages so
     // no route-local state crosses an authority change.
     setBasePath(basePath)
-    setHostFetch(props.ctx?.fetch)
-    setToken(token)
+    setHostFetch(hostFetch)
     setTenant(tenant)
     resolveConfirm(false)
-    // A refreshed bearer token is still the same KRM authority. Preserve
-    // deletion markers across token rotation, but never across tenants.
+    // A new transport for the same workspace is still the same KRM authority.
+    // Preserve deletion markers across it, but never across tenants.
     if (instanceTombstoneTenant !== tenant) instanceTombstones.clear()
     instanceTombstoneTenant = tenant
     contextVersion.value += 1

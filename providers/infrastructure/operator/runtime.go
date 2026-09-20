@@ -31,7 +31,9 @@ func writeTempKubeconfig(kubeconfig []byte) (string, func(), error) {
 	}
 	cleanup := func() { _ = os.Remove(f.Name()) }
 	if _, err := f.Write(kubeconfig); err != nil {
-		f.Close()
+		// Already failing on the write; the close error adds nothing,
+		// and cleanup() removes the file either way.
+		_ = f.Close()
 		cleanup()
 		return "", func() {}, err
 	}

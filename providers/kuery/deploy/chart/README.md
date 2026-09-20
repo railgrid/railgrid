@@ -1,6 +1,6 @@
 # railgrid-kuery-provider
 
-Railgrid provider for fleet-wide object search, relationship traversal, and impact analysis across connected edge clusters (built on railgrid/kuery). Ships the provider Deployment, ClusterIP Service, and the CatalogEntry that registers the provider (UI + backend + the SavedView APIExport + edgeProxyAccess) with the railgrid hub. Phase 1 skeleton.
+Railgrid provider for fleet-wide object search, relationship traversal, and impact analysis across connected edge clusters (built on railgrid/kuery). Ships the provider Deployment, ClusterIP Service, and the CatalogEntry that registers the provider (UI + backend + the SavedView APIExport) with the railgrid hub.
 
 Helm chart for the railgrid **kuery** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
@@ -36,7 +36,7 @@ helm upgrade --install kuery oci://ghcr.io/railgrid/charts/railgrid-kuery-provid
 | `image.repository` | `ghcr.io/railgrid/railgrid-kuery-provider` |  |
 | `image.tag` | `""` |  |
 | `image.pullPolicy` | `IfNotPresent` |  |
-| `replicaCount` | `1` | Number of Deployment replicas. Phase 1 is stateless; Phase 2 introduces the local store, which pins this to 1. Safe to scale WITH store.driver=postgres: engagement is sharded across replicas by per-edge Leases in the provider workspace, and queries/edge listings are answered from the shared store… |
+| `replicaCount` | `1` | Number of Deployment replicas; pinned to 1 with the default SQLite driver. Extra replicas with `store.driver=postgres` buy availability, not sync throughput: every replica serves queries, MCP and the portal from the shared store and the shared Engagement records, while the controllers are singletons behind one Lease in the provider workspace… |
 | `service` |  |  |
 | `service.type` | `ClusterIP` |  |
 | `service.port` | `8081` |  |

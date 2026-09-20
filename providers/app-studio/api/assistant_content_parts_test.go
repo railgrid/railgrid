@@ -82,7 +82,7 @@ func TestProjectAssistantAnnotationCanonicalizeAndRenderAsUntrusted(t *testing.T
 	if envelope := derived[untrustedStart:untrustedEnd]; strings.Contains(envelope, "comment") || strings.Contains(envelope, "Fix the clipped save action") {
 		t.Fatalf("user-authored annotation comment leaked into untrusted envelope: %q", envelope)
 	}
-	if strings.Index(derived, "[@annotation:annotation-1]") < 0 {
+	if !strings.Contains(derived, "[@annotation:annotation-1]") {
 		t.Fatalf("model-visible annotation is missing stable reference: %q", derived)
 	}
 
@@ -213,6 +213,7 @@ func TestProjectAssistantAnnotationDurableReplayAndThreadProjection(t *testing.T
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	annotation := validProjectAssistantAnnotation()
 	parts := []projectAssistantContentPart{projectAssistantContentPartFromAnnotation(annotation)}
@@ -249,6 +250,7 @@ func TestProjectAssistantDurableStartRejectsMalformedContentParts(t *testing.T) 
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	started := false
 	malformed := projectAssistantContentPart{Type: "text", Text: "request", SkillID: "not-allowed"}
@@ -410,6 +412,7 @@ func TestProjectAssistantContentPartsDurableReplayAndRepairProjection(t *testing
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	resource := projectAssistantContextResourceInput{
 		Provider: "demo",
@@ -508,6 +511,7 @@ func TestProjectAssistantReplayFindsCanonicalTurnAcrossThreads(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	canonical, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{ID: "thread-canonical", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil)

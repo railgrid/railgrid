@@ -319,7 +319,7 @@ metadata: {name: probe}
 spec: {edgeRef: {name: $EDGE}, host: 169.254.169.254, port: 80}
 EOF
 curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $MEMBER_TOKEN" \
-  "$HUB/services/providers/edges/edgeproxy/clusters/$CLUSTER/apis/edges.railgrid.ai/v1alpha1/services/probe/proxy/"
+  "$HUB/services/providers/edges/dataplane/clusters/$CLUSTER/services/probe/proxy/"
 
 # 1.2 bearer: org provider backend log must show system:serviceaccount:, never the user token
 # 2.1 mcpserver: no ClusterRoleBinding to cluster-admin owned by an MCPServer

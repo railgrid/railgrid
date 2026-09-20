@@ -598,7 +598,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if err != nil {
 					return "", err
 				}
-				return s.commitProjectWorkspaceFiles(ctx, req.Identity, req.WorkspaceScope, req.Project, req.ProjectRepositoryRef, req.MCPEndpoint, req.HTTPRequest, req.Arguments)
+				return s.commitProjectWorkspaceFiles(ctx, req.Identity, req.WorkspaceScope, req.Project, req.ProjectRepositoryRef, req.Arguments)
 			},
 		},
 		projectAssistantToolFunc{

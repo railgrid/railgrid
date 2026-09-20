@@ -6,62 +6,35 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package queryapi is the ONLY entry point to the kuery store. It takes a
-// kuery QuerySpec over HTTP and force-rewrites its cluster filter to the
-// caller's tenant before handing it to the engine — kuery itself has no
-// authorization, so isolation lives entirely at this choke point.
+// Package queryapi is the ONLY entry point to the kuery store.
 //
-// Tenant identity is the tenant workspace's kcp logical-cluster ID,
-// everywhere: the engagement controller keys engaged clusters
-// "{clusterID}/{edge}" and labels their rows with the ID, and every query
-// surface scopes by the ID the hub injects. Workspace paths are never
-// identity — a path in an identity header is rejected, not translated.
+// There is exactly one route into it — the query verb on a named SavedView,
+// POST /dataplane/clusters/{clusterID}/savedviews/{name}/run (run.go) — and it
+// authorizes every request as the caller, twice, before the engine is touched.
+// What used to be here instead was a flat POST /api/query whose tenant came
+// from the X-Railgrid-Cluster header and whose bearer was never looked at; it
+// was safe only for as long as the hub proxy stripped and re-injected that
+// header, and a request sent straight at the pod would have been believed. It
+// is gone, along with /api/edges, /api/status and the RAILGRID_DEV_ALLOW_TENANT_QUERY
+// "?tenant=" escape hatch. No compatibility route replaced them.
+//
+// Tenant identity is the tenant workspace's kcp logical-cluster ID, and it
+// comes from the request PATH: the engagement controller keys engaged clusters
+// "{clusterID}/{edge}", the Engagement records key on the same ID, and the
+// gates run against that same ID. Workspace paths are never identity — the
+// data-plane grammar refuses one in the cluster position rather than
+// translating it.
 package queryapi
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"os"
 	"regexp"
 	"strings"
 
-	"k8s.io/klog/v2"
-
 	"github.com/railgrid/kuery/apis/query/v1alpha1"
-	"github.com/railgrid/kuery/pkg/engine"
 
-	"github.com/railgrid/provider-kuery/engagement"
-)
-
-// Handler serves POST /api/query.
-type Handler struct {
-	Engine *engine.Engine
-}
-
-// Identity is the hub-injected caller identity: the tenant workspace's kcp
-// logical-cluster ID plus the user. Both hub paths carry the ID — the
-// backend proxy (/services/providers/kuery/*) and the MCP aggregate's
-// federation client inject X-Railgrid-Cluster on every request, and
-// X-Railgrid-Tenant carries the same ID. Without an identity (direct pod
-// access) requests are refused.
-type Identity struct {
-	// Cluster is the tenant's kcp logical-cluster ID — the tenant key kuery
-	// scopes by.
-	Cluster string
-	User    string
-}
-
-var (
-	// ErrMissingIdentity is returned when no identity header identifies the
-	// caller's tenant.
-	ErrMissingIdentity = errors.New("missing tenant identity (X-Railgrid-Cluster)")
-	// ErrInvalidIdentity is returned when an identity header carries
-	// something other than a kcp logical-cluster ID — typically a workspace
-	// path (root:railgrid:tenants:...), which kuery never accepts as a tenant
-	// key.
-	ErrInvalidIdentity = errors.New("invalid tenant identity")
+	"github.com/railgrid/provider-kuery/index"
 )
 
 // clusterIDPattern is the shape of a kcp logical-cluster name: a lowercase
@@ -74,125 +47,60 @@ func IsClusterID(s string) bool {
 	return clusterIDPattern.MatchString(s)
 }
 
-// IdentityFromRequest extracts the proxy-injected identity. The cluster ID
-// is taken from X-Railgrid-Cluster; X-Railgrid-Tenant is consulted only when that
-// header is absent, and only if it holds a cluster ID — a workspace path
-// there is an error, not a fallback (kuery keys nothing by path).
+var (
+	// ErrNoEngagedEdges means the tenant has no edge kuery is currently
+	// syncing, so there is nothing any query of theirs could match.
+	ErrNoEngagedEdges = errors.New("no edges are engaged for this workspace")
+	// ErrEdgeNotEngaged means the query named an edge that is not in the
+	// tenant's engaged set — a typo, an edge that just disconnected, or
+	// another tenant's edge.
+	ErrEdgeNotEngaged = errors.New("edge is not engaged for this workspace")
+)
+
+// ScopeToTenant force-rewrites the spec's cluster filter so it can only match
+// edges engaged for this tenant, identified by its kcp logical-cluster ID, and
+// refuses outright when there is nothing to match.
 //
-// With RAILGRID_DEV_ALLOW_TENANT_QUERY=true (dev only), ?tenant=<clusterID>
-// substitutes for the headers — same escape hatch as the infrastructure
-// provider.
-func IdentityFromRequest(r *http.Request) (Identity, error) {
-	id := Identity{User: r.Header.Get("X-Railgrid-User")}
-
-	if v := strings.TrimSpace(r.Header.Get("X-Railgrid-Cluster")); v != "" {
-		if !IsClusterID(v) {
-			return id, fmt.Errorf("%w: X-Railgrid-Cluster %q is not a kcp logical-cluster ID", ErrInvalidIdentity, v)
-		}
-		id.Cluster = v
-		return id, nil
-	}
-	if v := strings.TrimSpace(r.Header.Get("X-Railgrid-Tenant")); v != "" {
-		if !IsClusterID(v) {
-			return id, fmt.Errorf("%w: X-Railgrid-Tenant %q is a workspace path, not a kcp logical-cluster ID; kuery identifies tenants by cluster ID only (send X-Railgrid-Cluster)", ErrInvalidIdentity, v)
-		}
-		id.Cluster = v
-		return id, nil
-	}
-	if os.Getenv("RAILGRID_DEV_ALLOW_TENANT_QUERY") == "true" {
-		if v := strings.TrimSpace(r.URL.Query().Get("tenant")); v != "" {
-			if !IsClusterID(v) {
-				return id, fmt.Errorf("%w: ?tenant=%q is not a kcp logical-cluster ID", ErrInvalidIdentity, v)
-			}
-			id.Cluster = v
-			return id, nil
-		}
-	}
-	return id, ErrMissingIdentity
-}
-
-// writeIdentityError maps an IdentityFromRequest failure to an HTTP status:
-// no identity is 401, a malformed one (a path) is 400 — the proxy sent
-// something kuery cannot scope by, and retrying with the same headers
-// cannot succeed.
-func writeIdentityError(w http.ResponseWriter, err error) {
-	status := http.StatusUnauthorized
-	if errors.Is(err, ErrInvalidIdentity) {
-		status = http.StatusBadRequest
-	}
-	http.Error(w, err.Error(), status)
-}
-
-// ServeHTTP handles POST /api/query with a v1alpha1.QuerySpec body and
-// responds with the v1alpha1.QueryStatus JSON.
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	id, err := IdentityFromRequest(r)
-	if err != nil {
-		writeIdentityError(w, err)
-		return
-	}
-
-	var spec v1alpha1.QuerySpec
-	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
-		http.Error(w, "invalid QuerySpec body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	ScopeToTenant(&spec, id.Cluster)
-
-	status, err := h.Engine.Execute(r.Context(), &spec)
-	if err != nil {
-		// The engine prefixes caller-controlled validation failures with
-		// "validation:" and wraps everything else (SQL generation, query
-		// execution, scanning) under its own prefixes. Validation messages
-		// are safe and actionable, so echo them as a 400. Internal store
-		// failures, however, can leak confusing driver internals to users
-		// (e.g. "UNION types ... cannot be matched (SQLSTATE 42804)"), which
-		// are kuery engine bugs, not something the user can act on. Log the
-		// full detail server-side and return a generic message.
-		if strings.HasPrefix(err.Error(), "validation:") {
-			http.Error(w, "query failed: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		klog.FromContext(r.Context()).Error(err, "kuery query execution failed",
-			"tenant", id.Cluster, "user", id.User)
-		http.Error(w, "query failed: internal error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(status); err != nil {
-		// Too late for an error status; connection-level failure.
-		return
-	}
-}
-
-// ScopeToTenant force-rewrites the spec's cluster filter so it can only
-// match clusters engaged for this tenant, identified by its kcp
-// logical-cluster ID:
+// engaged is the tenant's edge set, read from the Engagement records — the
+// authority. The rewrite below is how that answer is expressed to an engine
+// whose ClusterFilter holds one cluster name or one label map:
 //
+//   - With no engaged edge, the query is refused before the store is touched.
+//     It is not "an empty result": the caller asked about a fleet that is not
+//     being synced, and saying so is the only useful answer.
+//   - A caller-supplied cluster name is interpreted as the EDGE name and must
+//     be in the engaged set; it is then rewritten to the engaged form
+//     "{clusterID}/{edge}". A name already carrying a prefix — the caller's
+//     own, a foreign cluster's, or a legacy workspace path — is stripped back
+//     to the edge and re-pinned to the caller's own cluster.
 //   - The labels map is REPLACED with exactly {tenant: <cluster ID>}.
-//     Replaced, not merged: cluster labels are an internal scoping
-//     mechanism (engaged clusters carry engagement.TenantLabel), and on
-//     SQLite kuery interpolates caller-controlled label KEYS into the SQL
-//     json_extract path — merging would hand callers that string.
-//   - A caller-supplied cluster name is interpreted as the EDGE name and
-//     rewritten to the engaged form "{clusterID}/{edge}". Already-prefixed
-//     names are normalized to the caller's own tenant.
-func ScopeToTenant(spec *v1alpha1.QuerySpec, cluster string) {
+//     Replaced, not merged: on SQLite kuery interpolates caller-controlled
+//     label KEYS into the SQL json_extract path, and merging would hand
+//     callers that string.
+func ScopeToTenant(spec *v1alpha1.QuerySpec, cluster string, engaged []string) error {
+	if len(engaged) == 0 {
+		return fmt.Errorf("%w", ErrNoEngagedEdges)
+	}
 	if spec.Cluster == nil {
 		spec.Cluster = &v1alpha1.ClusterFilter{}
 	}
-	spec.Cluster.Labels = map[string]string{engagement.TenantLabel: cluster}
+	spec.Cluster.Labels = map[string]string{index.TenantLabel: cluster}
+
 	if name := spec.Cluster.Name; name != "" {
-		edge := name
-		if i := strings.LastIndex(name, "/"); i != -1 {
-			edge = name[i+1:]
+		edge := index.EdgeOf(name)
+		if !contains(engaged, edge) {
+			return fmt.Errorf("%w: %q (engaged: %s)", ErrEdgeNotEngaged, edge, strings.Join(engaged, ", "))
 		}
-		spec.Cluster.Name = cluster + "/" + edge
+		spec.Cluster.Name = index.StoreName(cluster, edge)
 	}
+	return nil
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

@@ -33,7 +33,14 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/tenant"
+	"github.com/railgrid/provider-sdk/claimscope"
 )
+
+// ProviderName is this provider's CatalogEntry name. It is the value of the
+// railgrid.ai/owner label on every Secret this provider owns, and therefore
+// the value in its manifest's permission-claim selector; the two must agree or
+// the provider writes Secrets it cannot read back.
+const ProviderName = "agents"
 
 // GVRs for the agents provider resources.
 var (
@@ -42,7 +49,13 @@ var (
 	ScheduleGVR   = agentsGVR("schedules")
 	TriggerGVR    = agentsGVR("triggers")
 	ToolsetGVR    = agentsGVR("toolsets")
-	SecretGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	RunGVR        = agentsGVR("runs")
+	// ModelCredentialGVR is the named model endpoint an agent runs on. The
+	// key stays in the Secret spec.secretRef names; this object is what the
+	// portal lists, what a reconciler validates, and what the probe verbs are
+	// addressed at.
+	ModelCredentialGVR = agentsGVR("modelcredentials")
+	SecretGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 )
 
 func agentsGVR(resource string) schema.GroupVersionResource {
@@ -55,6 +68,7 @@ var (
 	scheduleResource = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
 	triggerResource  = tenant.Resource{GVR: TriggerGVR, Kind: "Trigger", Plural: "Triggers", Namespaced: false}
 	toolsetResource  = tenant.Resource{GVR: ToolsetGVR, Kind: "Toolset", Plural: "Toolsets", Namespaced: false}
+	modelCredRes     = tenant.Resource{GVR: ModelCredentialGVR, Kind: "ModelCredential", Plural: "ModelCredentials", Namespaced: false}
 	secretResource   = tenant.Resource{GVR: SecretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
 )
 
@@ -109,6 +123,21 @@ func (c *Client) Toolsets() *TypedResource[agentsv1alpha1.Toolset, agentsv1alpha
 	}
 }
 
+// ModelCredentials returns a typed interface for ModelCredential resources.
+func (c *Client) ModelCredentials() *TypedResource[agentsv1alpha1.ModelCredential, agentsv1alpha1.ModelCredentialList] {
+	return &TypedResource[agentsv1alpha1.ModelCredential, agentsv1alpha1.ModelCredentialList]{
+		scope: c.scope, res: modelCredRes,
+		gvk: ModelCredentialGVR.GroupVersion().WithKind("ModelCredential"),
+	}
+}
+
+// GetModelCredential reads one ModelCredential by name, which is what
+// llm.CredentialResolver needs. It is spelled out rather than left to the
+// caller so the whole provider resolves a credential name the same way.
+func (c *Client) GetModelCredential(ctx context.Context, name string) (*agentsv1alpha1.ModelCredential, error) {
+	return c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
+}
+
 // GetSecret fetches a Secret from the tenant workspace namespace.
 func (c *Client) GetSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error) {
 	u, err := c.scope.Get(ctx, secretResource, namespace, name)
@@ -140,7 +169,18 @@ func (c *Client) ListSecrets(ctx context.Context, namespace string) ([]corev1.Se
 	return out, nil
 }
 
-// ApplySecret create-or-updates a Secret in the tenant workspace namespace.
+// ApplySecret create-or-updates a Secret in the tenant workspace namespace,
+// stamped as owned by this provider.
+//
+// The owner label is set here rather than at each call site because it is not
+// decoration: this provider's `secrets` permission claim is scoped to it
+// (manifest.yaml), so a Secret written without it is one the provider's own
+// reconcilers and unattended runs can no longer see — kcp's APIExport virtual
+// workspace filters LIST/WATCH by the claim and answers GET with a 404. And
+// these writes go through the hub kcp proxy AS THE CALLER, not through the
+// virtual workspace, so kcp's selector admission — which would have stamped it
+// — never runs on them. Forgetting the label at one call site would therefore
+// fail nowhere at write time and everywhere later.
 func (c *Client) ApplySecret(ctx context.Context, s *corev1.Secret) (*corev1.Secret, error) {
 	if s.APIVersion == "" {
 		s.APIVersion = "v1"
@@ -148,6 +188,7 @@ func (c *Client) ApplySecret(ctx context.Context, s *corev1.Secret) (*corev1.Sec
 	if s.Kind == "" {
 		s.Kind = "Secret"
 	}
+	s.Labels = claimscope.WithOwner(s.Labels, ProviderName)
 	u, err := toUnstructured(s)
 	if err != nil {
 		return nil, err

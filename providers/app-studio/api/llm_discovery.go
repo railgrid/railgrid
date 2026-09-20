@@ -257,7 +257,8 @@ func projectLLMDiscoveryJSON(client *http.Client, request *http.Request, target 
 	if err != nil {
 		return fmt.Errorf("request provider models: %w", err)
 	}
-	defer response.Body.Close()
+	// Close errors on a read-only response body are not actionable.
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return &projectLLMDiscoveryUpstreamError{
 			StatusCode: response.StatusCode,

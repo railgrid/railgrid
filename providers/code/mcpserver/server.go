@@ -23,13 +23,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/railgrid/provider-code/commitbundle"
-	"github.com/railgrid/provider-code/tenant"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // Deps is what the MCP transport needs: the per-tenant caller-token client
 // factory plus the provider-owned bundle store used by commit_files.
 type Deps struct {
-	Tenant  *tenant.ClientFactory
+	Tenant  dataplane.CallerFactory
 	Bundles commitbundle.Store
 }
 

@@ -133,7 +133,7 @@ func (f *fakeIssuer) tuples() []string {
 // edgePath is where the platform edges provider serves a tunnelled request to
 // an org-owned provider's Service (providers.EdgeRoute.EdgeProxyPath).
 func edgePath(cluster, service string) string {
-	return "/edgeproxy/clusters/" + cluster + "/apis/edges.railgrid.ai/v1alpha1/services/" + service + "/proxy"
+	return "/dataplane/clusters/" + cluster + "/services/" + service + "/proxy"
 }
 
 type orgFixture struct {
@@ -306,7 +306,7 @@ func assertOrgRequestsDelegated(t *testing.T, reqs []seenRequest, wantToken, wan
 	t.Helper()
 	n := 0
 	for _, r := range reqs {
-		if !strings.HasPrefix(r.path, "/edgeproxy/") {
+		if !strings.HasPrefix(r.path, "/dataplane/") {
 			continue
 		}
 		n++
@@ -351,7 +351,7 @@ func TestOrgMemberFederatesOwnProvidersOverEdge(t *testing.T) {
 			infraReqs = append(infraReqs, r)
 		case strings.HasPrefix(r.path, edgePath("lc-ws-a", "provider-vault")):
 			vaultReqs = append(vaultReqs, r)
-		case strings.HasPrefix(r.path, "/edgeproxy/"):
+		case strings.HasPrefix(r.path, "/dataplane/"):
 			t.Fatalf("unexpected tunnelled request %+v", r)
 		}
 	}
@@ -433,7 +433,7 @@ func TestOrgProvidersSkippedWithoutDelegatedIdentity(t *testing.T) {
 				t.Fatalf("an org provider's BackendURL was dialled directly %d times, want 0", n)
 			}
 			for _, r := range f.edges.all() {
-				if strings.HasPrefix(r.path, "/edgeproxy/") {
+				if strings.HasPrefix(r.path, "/dataplane/") {
 					t.Fatalf("org provider contacted without a delegated identity: %+v", r)
 				}
 			}
@@ -453,7 +453,7 @@ func TestOrgProviderSkippedWhenMintFails(t *testing.T) {
 	got := toolNames(t, f.handler, "alice-a")
 	assertTools(t, got, "code__commit_files", "edges__ssh_exec")
 	for _, r := range f.edges.all() {
-		if strings.HasPrefix(r.path, "/edgeproxy/") {
+		if strings.HasPrefix(r.path, "/dataplane/") {
 			t.Fatalf("org provider contacted after a failed mint: %+v", r)
 		}
 	}

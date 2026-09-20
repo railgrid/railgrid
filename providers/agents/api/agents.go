@@ -56,32 +56,6 @@ func writeResourceError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	list, err := c.Agents().List(r.Context(), metav1.ListOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	a, err := c.Agents().Get(r.Context(), r.PathValue("name"), metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, a)
-}
-
 type createAgentRequest struct {
 	Name            string `json:"name"`
 	DisplayName     string `json:"displayName"`
@@ -238,24 +212,6 @@ func (s *Server) validateChannelUniqueness(ctx context.Context, c *agentsclient.
 		}
 	}
 	return nil
-}
-
-func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req createAgentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := s.applyAgentCreate(r.Context(), c, &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
 }
 
 // agentFromCreateRequest validates the request and builds the Agent to
@@ -430,26 +386,6 @@ func writeUpdateError(w http.ResponseWriter, err error) {
 	writeResourceError(w, err)
 }
 
-// updateAgent patches mutable agent fields — notably the assigned model
-// credential, so a user can reassign an agent to a different credential.
-func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req updateAgentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := s.applyAgentUpdate(r.Context(), c, r.PathValue("name"), &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
 // applyAgentUpdate reads the agent, applies the patch fields that are present,
 // and writes it back. Shared by the REST handler and the MCP update_agent tool
 // so both surfaces have identical semantics: absent fields are untouched, list
@@ -547,21 +483,6 @@ func (s *Server) applyAgentUpdate(ctx context.Context, c *agentsclient.Client, n
 		agent.Spec.Budget = budget
 	}
 	return c.Agents().Update(ctx, agent, metav1.UpdateOptions{})
-}
-
-func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
-	c, id, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	name := r.PathValue("name")
-	if err := c.Agents().Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	// Best-effort teardown of the agent's store data.
-	_ = s.store.DeleteAgentData(r.Context(), id.scope(name), name)
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
@@ -665,7 +586,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		seq++
 		b, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, event, b)
+		// A write error here only means the client went away, which
+		// clientGone() already covers on the next call; nothing to report.
+		_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, event, b)
 		flusher.Flush()
 	}
 
@@ -678,7 +601,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		Creds: c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
 		RunID:     runID,
 		SessionID: req.SessionID, Task: req.Message, Trigger: agentsv1alpha1.RunTriggerChat,
-		EdgesEndpoint: s.edgesEndpoint(id.clusterID), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+		EdgesEndpoint: s.aggregateMCPEndpoint(r.Context(), id), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
 		// ClusterID addresses the tenant workspace on the data plane — without
 		// it an instance-backed tool (self-hosted search, a browser instance)
 		// has no way to compose its URL.
@@ -758,14 +681,17 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// deleteSession wipes one chat session's transcript.
+// deleteSession wipes one chat session's transcript. It is the `session` verb
+// on the agent — DELETE …/agents/{name}/session/{sessionID} — kept separate
+// from the `sessions` list so a reader can be granted the transcript without
+// being granted the power to erase it.
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
 	name := r.PathValue("name")
-	session := r.PathValue("session")
+	session := r.PathValue("tail")
 	if err := s.store.DeleteSession(r.Context(), id.scope(name), session); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -773,31 +699,21 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// edgesEndpoint is the hub's aggregate MCP virtual endpoint for a workspace
-// cluster — the edges tool family (kube + SSH tools) dials it as the calling
-// user. Uses the conventional "default" MCPServer; empty when the hub URL or
-// cluster is unknown.
-func (s *Server) edgesEndpoint(clusterID string) string {
-	if s.cfg.HubURL == "" || clusterID == "" {
-		return ""
-	}
-	return strings.TrimRight(s.cfg.HubURL, "/") + "/services/mcpserver/" + clusterID + "/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp"
-}
-
 // errNoCredential signals that an agent has no model credential assigned.
 var errNoCredential = errors.New("this agent has no model credential assigned — pick one on the Models tab")
 
 // buildChatModelCtx builds the model for an ordinary (chat-purpose) run.
-func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent) (einomodel.BaseChatModel, error) {
+func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent) (einomodel.BaseChatModel, error) {
 	return s.buildModelForPurpose(ctx, creds, agent, llm.PurposeChat)
 }
 
 // buildModelForPurpose resolves the agent's named model credential for a run
 // purpose and builds the Eino model from it. Agents reference a credential by
-// name in spec.models[purpose]; the credential is its own Secret
-// (railgrid-agents-model-<name>). A purpose the agent did not map falls back to
-// "chat", so mapping only "chat" keeps working everywhere.
-func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
+// name in spec.models[purpose]; the name is a ModelCredential in this
+// workspace, whose spec.secretRef points at the Secret holding the key. A
+// purpose the agent did not map falls back to "chat", so mapping only "chat"
+// keeps working everywhere.
+func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
 	primary := strings.TrimSpace(agent.Spec.Models[purpose])
 	if primary == "" {
 		primary = strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
@@ -846,18 +762,26 @@ func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.SecretGette
 // primaryModelName resolves the model id of the agent's primary chat credential
 // for cost attribution. Best-effort: returns "" when unresolvable (cost then
 // falls back to 0 rather than erroring the run).
-func (s *Server) primaryModelName(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent) string {
+func (s *Server) primaryModelName(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent) string {
 	return s.modelNameForPurpose(ctx, creds, agent, llm.PurposeChat)
+}
+
+// credentialNameForPurpose resolves which ModelCredential a run purpose lands
+// on, following the same purpose → chat fallback as buildModelForPurpose. It
+// reads nothing: the answer is on the agent's spec, which is what makes it
+// usable on an error path where a kube read would be one failure too late.
+func credentialNameForPurpose(agent *agentsv1alpha1.Agent, purpose string) string {
+	if name := strings.TrimSpace(agent.Spec.Models[purpose]); name != "" {
+		return name
+	}
+	return strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
 }
 
 // modelNameForPurpose resolves the model id behind a run purpose, following the
 // same purpose → chat fallback as buildModelForPurpose so cost attribution and
 // context-window sizing name the model that will actually be called.
-func (s *Server) modelNameForPurpose(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent, purpose string) string {
-	name := strings.TrimSpace(agent.Spec.Models[purpose])
-	if name == "" {
-		name = strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
-	}
+func (s *Server) modelNameForPurpose(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent, purpose string) string {
+	name := credentialNameForPurpose(agent, purpose)
 	if name == "" {
 		return ""
 	}
@@ -878,6 +802,12 @@ func (s *Server) credentialsError(err error) bool {
 	if errors.Is(err, llm.ErrNotConfigured) || errors.Is(err, errNoCredential) {
 		return true
 	}
-	m := strings.ToLower(err.Error())
-	return strings.Contains(m, "not found") && strings.Contains(m, llm.ModelCredentialPrefix)
+	if errors.Is(err, llm.ErrCredentialNotFound) {
+		return true
+	}
+	// A credential that resolves to nothing arrives as an apiserver NotFound
+	// on either half of the pair (the ModelCredential or its Secret), which is
+	// a configuration gap rather than a fault — the caller shows "configure a
+	// model" instead of an apiserver error.
+	return apierrors.IsNotFound(err)
 }

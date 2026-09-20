@@ -3,9 +3,9 @@ name: railgrid-quickstart-provider
 description: |
   Reference railgrid provider demonstrating the platform's extension surface
   end-to-end. Ships the provider Deployment, ClusterIP Service, and the
-  CatalogEntry that registers the provider (UI + backend + a sample
-  greetings APIExport) with the railgrid hub. Pure broker — no kcp or kro
-  kubeconfig wiring; useful as a copy-from template for new providers.
+  CatalogEntry that registers the provider (UI + backend + the greetings
+  APIExport) with the railgrid hub. A complete, copy-from template for a new
+  provider's chart.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

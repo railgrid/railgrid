@@ -9,28 +9,24 @@
 package queryapi
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/railgrid/kuery/apis/query/v1alpha1"
 
-	"github.com/railgrid/provider-kuery/engagement"
+	"github.com/railgrid/provider-kuery/index"
 )
 
-// testCluster is a tenant workspace's kcp logical-cluster ID — the only
-// tenant key kuery scopes by.
+// testCluster is a tenant workspace's kcp logical-cluster ID — the only tenant
+// key kuery scopes by, and it arrives in the request PATH, never a header.
 const testCluster = "1ngen6o0so3jwz2h"
 
 // TestScopeToTenant_ReplacesLabels is the isolation property: whatever the
 // caller sends in cluster.labels is discarded — the only label filter the
 // engine ever sees is the provider-owned tenant label. (On SQLite, kuery
-// interpolates label KEYS into the generated SQL, so merging
-// caller-supplied keys would also be an injection surface.)
+// interpolates label KEYS into the generated SQL, so merging caller-supplied
+// keys would also be an injection surface.)
 func TestScopeToTenant_ReplacesLabels(t *testing.T) {
 	spec := &v1alpha1.QuerySpec{
 		Cluster: &v1alpha1.ClusterFilter{
@@ -41,20 +37,24 @@ func TestScopeToTenant_ReplacesLabels(t *testing.T) {
 			},
 		},
 	}
-	ScopeToTenant(spec, testCluster)
+	if err := ScopeToTenant(spec, testCluster, []string{"edge-1"}); err != nil {
+		t.Fatalf("ScopeToTenant: %v", err)
+	}
 
 	if len(spec.Cluster.Labels) != 1 {
 		t.Fatalf("labels not replaced: %v", spec.Cluster.Labels)
 	}
-	if got := spec.Cluster.Labels[engagement.TenantLabel]; got != testCluster {
+	if got := spec.Cluster.Labels[index.TenantLabel]; got != testCluster {
 		t.Fatalf("tenant label = %q, want %s", got, testCluster)
 	}
 }
 
 func TestScopeToTenant_NilClusterGetsTenantFilter(t *testing.T) {
 	spec := &v1alpha1.QuerySpec{}
-	ScopeToTenant(spec, testCluster)
-	if spec.Cluster == nil || spec.Cluster.Labels[engagement.TenantLabel] != testCluster {
+	if err := ScopeToTenant(spec, testCluster, []string{"edge-1", "edge-2"}); err != nil {
+		t.Fatalf("ScopeToTenant: %v", err)
+	}
+	if spec.Cluster == nil || spec.Cluster.Labels[index.TenantLabel] != testCluster {
 		t.Fatalf("nil cluster filter not scoped: %+v", spec.Cluster)
 	}
 	if spec.Cluster.Name != "" {
@@ -62,11 +62,12 @@ func TestScopeToTenant_NilClusterGetsTenantFilter(t *testing.T) {
 	}
 }
 
-// TestScopeToTenant_EdgeNameRewrite pins the engaged cluster name form
-// "{clusterID}/{edge}": a bare edge name is prefixed with the caller's
-// cluster ID, and any caller-supplied prefix — the caller's own, a foreign
-// cluster ID, or a legacy workspace path — is replaced by it.
+// TestScopeToTenant_EdgeNameRewrite pins the engaged cluster-name form
+// "{clusterID}/{edge}": a bare edge name in the engaged set is prefixed with
+// the caller's cluster ID, and any caller-supplied prefix — the caller's own,
+// a foreign cluster ID, or a legacy workspace path — is replaced by it.
 func TestScopeToTenant_EdgeNameRewrite(t *testing.T) {
+	engaged := []string{"edge-1"}
 	cases := []struct {
 		name string
 		in   string
@@ -80,14 +81,32 @@ func TestScopeToTenant_EdgeNameRewrite(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := &v1alpha1.QuerySpec{Cluster: &v1alpha1.ClusterFilter{Name: tc.in}}
-			ScopeToTenant(spec, testCluster)
+			if err := ScopeToTenant(spec, testCluster, engaged); err != nil {
+				t.Fatalf("ScopeToTenant: %v", err)
+			}
 			if spec.Cluster.Name != tc.want {
 				t.Fatalf("cluster name = %q, want %q", spec.Cluster.Name, tc.want)
 			}
-			if spec.Cluster.Labels[engagement.TenantLabel] != testCluster {
+			if spec.Cluster.Labels[index.TenantLabel] != testCluster {
 				t.Fatal("tenant label filter missing alongside name")
 			}
 		})
+	}
+}
+
+// The engaged set is the authority: naming an edge that is not in it is
+// refused rather than quietly widened or quietly emptied, and a tenant with no
+// engaged edge at all cannot reach the store.
+func TestScopeToTenant_RefusesEdgesOutsideTheEngagedSet(t *testing.T) {
+	spec := &v1alpha1.QuerySpec{Cluster: &v1alpha1.ClusterFilter{Name: "someone-elses-edge"}}
+	err := ScopeToTenant(spec, testCluster, []string{"edge-1"})
+	if !errors.Is(err, ErrEdgeNotEngaged) {
+		t.Fatalf("err = %v, want ErrEdgeNotEngaged", err)
+	}
+
+	err = ScopeToTenant(&v1alpha1.QuerySpec{}, testCluster, nil)
+	if !errors.Is(err, ErrNoEngagedEdges) {
+		t.Fatalf("err with no engagements = %v, want ErrNoEngagedEdges", err)
 	}
 }
 
@@ -104,162 +123,32 @@ func TestIsClusterID(t *testing.T) {
 	}
 }
 
-// TestIdentityFromRequest_ClusterHeader: the hub sends X-Railgrid-Cluster on
-// every proxied request (REST and MCP); that alone identifies the tenant.
-func TestIdentityFromRequest_ClusterHeader(t *testing.T) {
-	r := httptest.NewRequest("POST", "/api/query?tenant=evil", nil)
-	r.Header.Set("X-Railgrid-Cluster", testCluster)
-	r.Header.Set("X-Railgrid-User", "alice")
-	id, err := IdentityFromRequest(r)
-	if err != nil {
-		t.Fatalf("IdentityFromRequest: %v", err)
+// A per-user scratch view's name must be a legal object name and a legal path
+// segment, stable for one user, and must not be the user's address in clear.
+func TestPlaygroundViewName(t *testing.T) {
+	const user = "Alice@example.com"
+	name := PlaygroundViewName(user)
+	if name != PlaygroundViewName("alice@example.com") {
+		t.Fatal("the name is case sensitive; one user would get two views")
 	}
-	if id.Cluster != testCluster || id.User != "alice" {
-		t.Fatalf("identity = %+v, want cluster %s / user alice", id, testCluster)
+	if name == PlaygroundViewName("bob@example.com") {
+		t.Fatal("two users share one scratch view")
 	}
-
-	// X-Railgrid-Cluster wins over X-Railgrid-Tenant, whatever the latter holds
-	// (a transitional hub still sends the workspace path there).
-	r2 := httptest.NewRequest("POST", "/api/query", nil)
-	r2.Header.Set("X-Railgrid-Cluster", testCluster)
-	r2.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:org:ws")
-	if id, err := IdentityFromRequest(r2); err != nil || id.Cluster != testCluster {
-		t.Fatalf("identity with both headers = %+v, %v; want cluster %s", id, err, testCluster)
+	for _, c := range name {
+		legal := c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-'
+		if !legal {
+			t.Fatalf("name %q contains %q, which is not legal in an object name", name, string(c))
+		}
 	}
-
-	// Without the dev escape, the query parameter must NOT be honored.
-	r3 := httptest.NewRequest("POST", "/api/query?tenant="+testCluster, nil)
-	if _, err := IdentityFromRequest(r3); !errors.Is(err, ErrMissingIdentity) {
-		t.Fatalf("query-param tenant honored without dev escape: %v", err)
+	if len(name) != len(PlaygroundNamePrefix)+playgroundDigestLength {
+		t.Fatalf("name %q is not the expected width", name)
 	}
-}
-
-// TestIdentityFromRequest_TenantHeaderFallback: X-Railgrid-Tenant stands in for
-// a missing X-Railgrid-Cluster only when it carries a cluster ID.
-func TestIdentityFromRequest_TenantHeaderFallback(t *testing.T) {
-	r := httptest.NewRequest("POST", "/api/query", nil)
-	r.Header.Set("X-Railgrid-Tenant", testCluster)
-	id, err := IdentityFromRequest(r)
-	if err != nil || id.Cluster != testCluster {
-		t.Fatalf("identity = %+v, %v; want cluster %s", id, err, testCluster)
+	for _, leaked := range []string{"alice", "example.com", "@"} {
+		if strings.Contains(name, leaked) {
+			t.Fatalf("name %q leaks the user's address", name)
+		}
 	}
-}
-
-// TestIdentityFromRequest_RejectsPath: a workspace path in X-Railgrid-Tenant is
-// an error with a message that names the problem — never scoped by, never
-// translated. Same for a path in X-Railgrid-Cluster.
-func TestIdentityFromRequest_RejectsPath(t *testing.T) {
-	const path = "root:railgrid:tenants:org:ws"
-	for _, header := range []string{"X-Railgrid-Tenant", "X-Railgrid-Cluster"} {
-		t.Run(header, func(t *testing.T) {
-			r := httptest.NewRequest("POST", "/api/query", nil)
-			r.Header.Set(header, path)
-			id, err := IdentityFromRequest(r)
-			if !errors.Is(err, ErrInvalidIdentity) {
-				t.Fatalf("path in %s: err = %v, want ErrInvalidIdentity", header, err)
-			}
-			if id.Cluster != "" {
-				t.Fatalf("path in %s leaked into the identity: %q", header, id.Cluster)
-			}
-			for _, want := range []string{header, path, "cluster ID"} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error %q does not mention %q", err, want)
-				}
-			}
-		})
-	}
-}
-
-func TestIdentityFromRequest_DevEscapeRequiresClusterID(t *testing.T) {
-	t.Setenv("RAILGRID_DEV_ALLOW_TENANT_QUERY", "true")
-
-	r := httptest.NewRequest("POST", "/api/query?tenant="+testCluster, nil)
-	if id, err := IdentityFromRequest(r); err != nil || id.Cluster != testCluster {
-		t.Fatalf("dev escape: identity = %+v, %v", id, err)
-	}
-	r2 := httptest.NewRequest("POST", "/api/query?tenant=root:railgrid:tenants:org:ws", nil)
-	if _, err := IdentityFromRequest(r2); !errors.Is(err, ErrInvalidIdentity) {
-		t.Fatalf("dev escape accepted a path: %v", err)
-	}
-	// Headers still take precedence over the escape hatch.
-	r3 := httptest.NewRequest("POST", "/api/query?tenant=zzzforeign000000", nil)
-	r3.Header.Set("X-Railgrid-Cluster", testCluster)
-	if id, err := IdentityFromRequest(r3); err != nil || id.Cluster != testCluster {
-		t.Fatalf("header not preferred over ?tenant: %+v, %v", id, err)
-	}
-}
-
-// TestQueryHandlerIdentityStatuses: no identity is 401, a path is 400 with
-// the explanatory message in the body; the engine is never touched
-// (Handler.Engine is nil on purpose).
-func TestQueryHandlerIdentityStatuses(t *testing.T) {
-	h := &Handler{}
-
-	req := httptest.NewRequest("POST", "/api/query", strings.NewReader(`{}`))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no identity: status = %d, want 401", rec.Code)
-	}
-
-	req = httptest.NewRequest("POST", "/api/query", strings.NewReader(`{}`))
-	req.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:org:ws")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("path identity: status = %d, want 400", rec.Code)
-	}
-	if body := rec.Body.String(); !strings.Contains(body, "workspace path") || !strings.Contains(body, "X-Railgrid-Cluster") {
-		t.Fatalf("path identity: body %q should explain the header contract", body)
-	}
-}
-
-type edgeListerFunc func(ctx context.Context, cluster string) ([]string, error)
-
-func (f edgeListerFunc) TenantEdges(ctx context.Context, cluster string) ([]string, error) {
-	return f(ctx, cluster)
-}
-
-// TestEdgesHandlerScopesByClusterHeader proves a request carrying ONLY
-// X-Railgrid-Cluster is scoped to that cluster ID and reports its edges under
-// the "{clusterID}/{edge}" keys kuery records them as.
-func TestEdgesHandlerScopesByClusterHeader(t *testing.T) {
-	var asked string
-	h := &EdgesHandler{Lister: edgeListerFunc(func(_ context.Context, cluster string) ([]string, error) {
-		asked = cluster
-		return []string{"edge-1", "edge-2"}, nil
-	})}
-	req := httptest.NewRequest("GET", "/api/edges", nil)
-	req.Header.Set("X-Railgrid-Cluster", testCluster)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
-	}
-	if asked != testCluster {
-		t.Fatalf("lister asked for %q, want the X-Railgrid-Cluster value %s", asked, testCluster)
-	}
-	var resp edgesResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-	if resp.Tenant != testCluster {
-		t.Fatalf("tenant = %q, want %s", resp.Tenant, testCluster)
-	}
-	if len(resp.Edges) != 2 || resp.Edges[0] != "edge-1" {
-		t.Fatalf("edges = %v", resp.Edges)
-	}
-	if len(resp.Clusters) != 2 || resp.Clusters[0] != testCluster+"/edge-1" || resp.Clusters[1] != testCluster+"/edge-2" {
-		t.Fatalf("clusters = %v, want {clusterID}/{edge} keys", resp.Clusters)
-	}
-
-	// A path in X-Railgrid-Tenant is rejected before the lister runs.
-	asked = ""
-	req = httptest.NewRequest("GET", "/api/edges", nil)
-	req.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:org:ws")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest || asked != "" {
-		t.Fatalf("path identity: status = %d, lister asked %q; want 400 and no listing", rec.Code, asked)
+	if PlaygroundViewName("") != PlaygroundNamePrefix+"anonymous" {
+		t.Fatalf("an unidentified caller got %q, want one shared named view", PlaygroundViewName(""))
 	}
 }

@@ -255,8 +255,13 @@ func TestEnsureProviderServeWiresHeartbeatCredential(t *testing.T) {
 	if env["RAILGRID_PROVIDER_KUBECONFIG"] != providerKubeconfigMount {
 		t.Errorf("RAILGRID_PROVIDER_KUBECONFIG = %q, want %q", env["RAILGRID_PROVIDER_KUBECONFIG"], providerKubeconfigMount)
 	}
-	if env["INFRASTRUCTURE_KUBECONFIG"] != providerKubeconfigMount {
-		t.Errorf("INFRASTRUCTURE_KUBECONFIG = %q, want %q", env["INFRASTRUCTURE_KUBECONFIG"], providerKubeconfigMount)
+	// serve reads exactly one kubeconfig name. The retired provider-specific
+	// one, and the root-scoped retarget hint that went with it, must not be
+	// handed to it any more.
+	for _, retired := range []string{"INFRASTRUCTURE_KUBECONFIG", "INFRASTRUCTURE_WORKSPACE_PATH"} {
+		if value, set := env[retired]; set {
+			t.Errorf("%s = %q, want it unset: serve reads only RAILGRID_PROVIDER_KUBECONFIG", retired, value)
+		}
 	}
 	if _, set := env["RAILGRID_HUB_TOKEN"]; set {
 		t.Errorf("RAILGRID_HUB_TOKEN set without spec.hub.tokenSecret")
@@ -349,5 +354,47 @@ func TestEnsureProviderServePropagatesCodingSandboxConfig(t *testing.T) {
 	}
 	if got := env["RAILGRID_DEV_AGENT_IMAGE"]; got != provider.Spec.Development.AgentImage {
 		t.Errorf("RAILGRID_DEV_AGENT_IMAGE = %q, want %q", got, provider.Spec.Development.AgentImage)
+	}
+}
+
+// With the INFRASTRUCTURE_WORKSPACE_PATH hint gone, the operator — not serve —
+// is what makes a supplied root-scoped kubeconfig point at the provider
+// workspace. It scopes the copy it replicates, so the credential serve mounts
+// already terminates at /clusters/<providerWorkspace>.
+func TestEnsureProviderServeScopesReplicatedKubeconfigToWorkspace(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	provider := &v1alpha1.InfrastructureProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"},
+		Spec: v1alpha1.InfrastructureProviderSpec{
+			ProviderWorkspace: "root:railgrid:providers:infrastructure",
+			Provider: v1alpha1.ProviderServeSpec{
+				Image: v1alpha1.ImageSpec{Repository: "example.test/infrastructure", Tag: "test"},
+			},
+		},
+	}
+	rootKubeconfig := []byte(`apiVersion: v1
+kind: Config
+clusters:
+- name: kcp
+  cluster:
+    server: https://kcp.example/clusters/root
+contexts:
+- name: kcp
+  context: {cluster: kcp, user: admin}
+current-context: kcp
+users:
+- name: admin
+  user: {token: t}
+`)
+	if err := EnsureProviderServe(context.Background(), client, provider, rootKubeconfig, nil, nil); err != nil {
+		t.Fatalf("EnsureProviderServe: %v", err)
+	}
+	secret, err := client.CoreV1().Secrets(ServeNamespace).Get(context.Background(), provider.Name+"-provider-kubeconfig", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://kcp.example/clusters/root:railgrid:providers:infrastructure"
+	if !strings.Contains(string(secret.Data["kubeconfig"]), want) {
+		t.Fatalf("replicated kubeconfig = %s, want server %s", secret.Data["kubeconfig"], want)
 	}
 }

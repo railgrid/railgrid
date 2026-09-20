@@ -11,10 +11,12 @@
 // custom element.
 
 import { QuickstartElement } from './element'
+import { QuickstartDashboardTileElement } from './tile'
 import { ensureRailgridUIStyles } from './portalkit/styles'
 import styles from './style.css?raw'
 
 const TAG = 'railgrid-provider-quickstart'
+const TILE_TAG = 'railgrid-dashboard-tile-quickstart'
 
 // Install the shared recipes before the light-DOM element is connected.
 ensureRailgridUIStyles()
@@ -34,4 +36,10 @@ if (!customElements.get(TAG)) {
     document.head.appendChild(s)
   }
   customElements.define(TAG, QuickstartElement)
+}
+
+// Optional second element: the console mounts it on its dashboard page. It
+// shares the stylesheet registered above.
+if (!customElements.get(TILE_TAG)) {
+  customElements.define(TILE_TAG, QuickstartDashboardTileElement)
 }

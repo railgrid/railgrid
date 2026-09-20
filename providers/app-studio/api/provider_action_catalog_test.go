@@ -41,7 +41,7 @@ func TestFetchProviderActionCatalogRejectsSelfSignedByDefault(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: upstream.URL}).fetchProviderActionCatalog(context.Background(), identity{token: "caller-token"})
+	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}).fetchProviderActionCatalog(context.Background(), identity{token: "caller-token"})
 	if err == nil {
 		t.Fatal("catalog lookup accepted a self-signed hub without an explicit insecure opt-in")
 	}
@@ -60,7 +60,7 @@ func TestProviderAssistantSkillSourceKeepsCatalogPackagesAcrossReadinessChanges(
 	}
 	valid.Digest = digest
 	ready := true
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{
 			{Name: "databricks", Ready: ready, AssistantSkills: []providerCatalogAssistantSkill{{
@@ -104,7 +104,7 @@ func TestProviderAssistantSkillSourceKeepsCatalogPackagesAcrossReadinessChanges(
 }
 
 func TestProviderAssistantSkillSourceWithoutBearerOmitsOptionalPackages(t *testing.T) {
-	source, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.invalid"}).providerAssistantSkillSource(context.Background(), identity{})
+	source, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.invalid"}).providerAssistantSkillSource(context.Background(), identity{})
 	if err != nil {
 		t.Fatalf("missing-bearer provider source: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestProviderAssistantSkillSourceWithoutBearerOmitsOptionalPackages(t *testi
 }
 
 func TestProjectAssistantSkillCatalogResolverFailureIsolated(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return nil, errors.New("provider catalog backend secret should not escape")
 	}
@@ -145,7 +145,7 @@ func TestProjectAssistantSkillCatalogResolverFailureIsolated(t *testing.T) {
 
 func TestVerifyProjectActionGrantsPropagatesCatalogFailure(t *testing.T) {
 	expected := errors.New("provider catalog backend unavailable")
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return nil, expected
 	}
@@ -201,7 +201,7 @@ func TestFetchProviderActionCatalogInsecureOptInPreservesCallerHeaders(t *testin
 		baseInsecure = baseTLS.InsecureSkipVerify
 	}
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: upstream.URL, mcpInsecureSkipTLSVerify: true}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, mcpInsecureSkipTLSVerify: true}
 	catalog, err := s.fetchProviderActionCatalog(context.Background(), identity{
 		tenant:        "cluster-1",
 		clusterID:     "cluster-1",
@@ -242,7 +242,7 @@ func TestFetchProviderActionCatalogRejectsRedirect(t *testing.T) {
 	}))
 	defer redirect.Close()
 
-	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: redirect.URL, mcpInsecureSkipTLSVerify: true}).fetchProviderActionCatalog(context.Background(), identity{token: "caller-token"})
+	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: redirect.URL, mcpInsecureSkipTLSVerify: true}).fetchProviderActionCatalog(context.Background(), identity{token: "caller-token"})
 	if err == nil {
 		t.Fatal("catalog lookup followed a redirect")
 	}
@@ -267,6 +267,7 @@ func TestProjectIntegrationGrantRequiresConsentAndOwnsAudit(t *testing.T) {
 	}}
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return catalog, nil
@@ -311,6 +312,7 @@ func TestProjectIntegrationGrantRejectsDigestDriftWithoutMutation(t *testing.T) 
 	currentDigest := testProjectActionSchemaDigest
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{{
@@ -359,6 +361,7 @@ func TestProjectIntegrationRevokePreservesAuditWithoutProvider(t *testing.T) {
 	catalogUnavailable := false
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		catalogCalls++
@@ -433,6 +436,7 @@ func TestProjectIntegrationReactivationRequiresFreshCatalogConsent(t *testing.T)
 	fixture := newIntegrationHTTPFixture(t, projectWithTableIntegration(true))
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{{

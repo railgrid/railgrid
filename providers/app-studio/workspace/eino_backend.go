@@ -36,7 +36,7 @@ const (
 	einoBackendCandidateMarker   = "__app_studio_eino_candidate__"
 )
 
-var errEinoReadOnlyWorkspace = errors.New("App Studio project filesystem backend is read-only")
+var errEinoReadOnlyWorkspace = errors.New("the App Studio project filesystem backend is read-only")
 
 // EinoReadOnlyBackend exposes one App Studio project through Eino's filesystem
 // interface without granting filesystem mutation capabilities.

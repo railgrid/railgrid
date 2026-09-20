@@ -364,7 +364,7 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 // validation. It validates only bounded argument shape; the workspace store
 // remains authoritative for file content and target state.
 func projectAssistantValidateWorkspaceMutationArguments(toolName string, args map[string]any) error {
-	allowed := map[string]struct{}{}
+	var allowed map[string]struct{}
 	switch strings.TrimSpace(toolName) {
 	case projectToolCreateFile:
 		allowed = map[string]struct{}{"path": {}, "content": {}, "recoveryOf": {}}

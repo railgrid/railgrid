@@ -100,33 +100,6 @@ func (m *MemoryStore) FindRunByIdempotencyKey(_ context.Context, scope Scope, ke
 	return Run{}, false, nil
 }
 
-func (m *MemoryStore) ListUnfinishedRuns(_ context.Context, phases []RunPhase, updatedBefore time.Time, limit int) ([]ScopedRun, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	want := map[RunPhase]bool{}
-	for _, p := range phases {
-		want[p] = true
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []ScopedRun
-	for key, run := range m.runs {
-		if len(want) > 0 && !want[run.Phase] {
-			continue
-		}
-		if !run.UpdatedAt.Before(updatedBefore) {
-			continue
-		}
-		out = append(out, ScopedRun{Scope: m.runScopes[key], Run: run})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Run.UpdatedAt.Before(out[j].Run.UpdatedAt) })
-	if len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
-}
-
 func (m *MemoryStore) SaveTenantRef(_ context.Context, clusterID string, ref TenantRef) error {
 	if clusterID == "" {
 		return fmt.Errorf("cluster ID is required")
@@ -668,6 +641,48 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 		if it.AgentName == agentName && hasPrefix(k, tk+"|") {
 			delete(m.inbox, k)
 		}
+	}
+	return nil
+}
+
+// DeleteRunData removes one run's rows. See Store.DeleteRunData for why usage
+// is not among them.
+func (m *MemoryStore) DeleteRunData(_ context.Context, scope Scope, runID string) error {
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(runID) == "" {
+		return fmt.Errorf("run ID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(scope) + "|" + runID
+	delete(m.runs, key)
+	delete(m.runScopes, key)
+	for k, msgs := range m.messages {
+		if !hasPrefix(k, tenantKey(scope)+"|") {
+			continue
+		}
+		kept := msgs[:0]
+		for _, msg := range msgs {
+			if msg.RunID != runID {
+				kept = append(kept, msg)
+			}
+		}
+		if len(kept) == 0 {
+			delete(m.messages, k)
+			continue
+		}
+		m.messages[k] = kept
+	}
+	for k, calls := range m.toolCalls {
+		kept := calls[:0]
+		for _, call := range calls {
+			if call.RunID != runID {
+				kept = append(kept, call)
+			}
+		}
+		m.toolCalls[k] = kept
 	}
 	return nil
 }

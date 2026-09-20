@@ -21,17 +21,25 @@ You may obtain a copy of the License at
 // 9 and 14) — a claim pins one serving identityHash for every consumer,
 // which breaks the moment an org self-hosts a dependency. The reconcilers
 // therefore already act through each workspace's OWN bindings as a
-// per-project/per-studio ServiceAccount (package tenantaccess); this package
-// watches through that same path, with the same identity, and needs no
-// claim at all.
+// HUB-MINTED per-project/per-studio scoped identity
+// (controller/project/identity.go, provider-sdk/identityclient), reaching
+// the workspace at {hub}/clusters/{cluster}; this package watches through
+// that same path, with that same identity, and needs no claim at all.
+//
+// The identity's own rules are what make the watch legal: the composition
+// the CatalogEntry declares on each dependency (manifest.yaml
+// spec.dependencies[].composes) carries UNNAMED list and watch on the
+// dependency kinds, which is the one shape a collection request can be
+// authorized by — RBAC does not apply resourceNames to a list or a watch.
 //
 // Lifecycle: a Source is engaged per cluster by the multicluster controller
 // (ForCluster), which is when the Hub learns the cluster's queue. Watchers
 // start lazily on the first Ensure for that cluster — the reconciler calls
 // it once it holds an identity token — and stop when every source has
-// disengaged the cluster. A watcher whose token stops working (its
-// ServiceAccount was deleted with its Project) marks itself failed and is
-// replaced by the next Ensure with a live token.
+// disengaged the cluster. A watcher whose token stops working (the identity
+// was revoked with its Project, or the token simply rotated past what the
+// server accepts) marks itself failed and is replaced by the next Ensure
+// carrying a different token.
 package tenantwatch
 
 import (
@@ -112,8 +120,9 @@ type watcher struct {
 }
 
 // NewHub returns a hub that dials workspace clusters with dial. A nil dial
-// yields a hub that never watches (REST-only deployments without a hub URL);
-// the reconcilers then rely on their safety resync alone.
+// yields a hub that never watches (REST-only deployments without a hub URL),
+// which is the same deployment that has no hub to mint an identity from and
+// therefore converges no dependency kind at all.
 func NewHub(dial Dialer) *Hub {
 	return &Hub{dial: dial, clusters: map[string]*clusterState{}}
 }

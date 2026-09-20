@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -153,9 +154,85 @@ type Store interface {
 	Delete(ctx context.Context, scope, name, digest string) error
 }
 
+// Arrival names a bundle that has just become readable in a store. It is what
+// a consumer waiting for a bundle needs to wake up: the scope it landed in and
+// its name.
+type Arrival struct {
+	Scope string
+	Name  string
+}
+
+// Notifier is implemented by a store that can say when a bundle lands, so a
+// consumer waits on the event instead of polling the filesystem. The
+// notification is in-process only: a bundle written by another replica is not
+// announced here, which is why every consumer keeps a bounded fallback.
+type Notifier interface {
+	// Notify returns a channel of arrivals that lives until ctx is done.
+	Notify(ctx context.Context) <-chan Arrival
+}
+
 // FileStore stores bundles as JSON files in a local directory.
 type FileStore struct {
 	dir string
+
+	mu       sync.Mutex
+	watchers []chan Arrival
+}
+
+var _ Notifier = (*FileStore)(nil)
+
+// notifyBuffer is how many arrivals a watcher may fall behind by. A drop costs
+// the waiting consumer its fallback wait, never correctness, so the announce
+// path never blocks a Put.
+const notifyBuffer = 64
+
+// Notify returns a channel that receives an Arrival for every bundle this
+// process publishes, from the moment it is called until ctx is done — a
+// subscription per controller term, so restarting the manager does not leave
+// a watcher behind. A send that would block is dropped rather than queued, so
+// a watcher that stopped draining can never stall a Put; a dropped arrival
+// costs the consumer its own fallback wait, never correctness.
+func (s *FileStore) Notify(ctx context.Context) <-chan Arrival {
+	ch := make(chan Arrival, notifyBuffer)
+	if s == nil {
+		return ch
+	}
+	s.mu.Lock()
+	s.watchers = append(s.watchers, ch)
+	s.mu.Unlock()
+	if ctx != nil {
+		context.AfterFunc(ctx, func() { s.unwatch(ch) })
+	}
+	return ch
+}
+
+// unwatch drops one subscription.
+func (s *FileStore) unwatch(ch chan Arrival) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, watcher := range s.watchers {
+		if watcher == ch {
+			s.watchers = append(s.watchers[:i], s.watchers[i+1:]...)
+			return
+		}
+	}
+}
+
+// announce tells every watcher that a bundle is readable under scope.
+func (s *FileStore) announce(scope, name string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	watchers := make([]chan Arrival, len(s.watchers))
+	copy(watchers, s.watchers)
+	s.mu.Unlock()
+	for _, ch := range watchers {
+		select {
+		case ch <- Arrival{Scope: scope, Name: name}:
+		default:
+		}
+	}
 }
 
 // NewFileStoreFromEnv builds a filesystem store. CODE_COMMIT_BUNDLE_DIR can be
@@ -216,6 +293,7 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 		// does not reclaim it out from under this new request.
 		now := time.Now()
 		_ = os.Chtimes(path, now, now)
+		s.announce(scope, bundle.Name)
 		return ref, nil
 	} else if !os.IsNotExist(err) {
 		return BundleRef{}, fmt.Errorf("stat bundle: %w", err)
@@ -242,6 +320,7 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 	if err := os.Rename(tmpName, path); err != nil {
 		return BundleRef{}, fmt.Errorf("publish bundle: %w", err)
 	}
+	s.announce(scope, bundle.Name)
 	return ref, nil
 }
 

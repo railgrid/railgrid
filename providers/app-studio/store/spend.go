@@ -63,12 +63,12 @@ type OrganizationSpendStore interface {
 
 // Spend totals are numeric counters, never message content, so the encrypting
 // wrapper passes them through unchanged.
-func (e *encryptedStore) AddOrganizationSpend(ctx context.Context, orgUUID string, at time.Time, delta OrganizationSpendDelta, now time.Time) (OrganizationSpend, error) {
-	return e.inner.AddOrganizationSpend(ctx, orgUUID, at, delta, now)
+func (s *encryptedStore) AddOrganizationSpend(ctx context.Context, orgUUID string, at time.Time, delta OrganizationSpendDelta, now time.Time) (OrganizationSpend, error) {
+	return s.inner.AddOrganizationSpend(ctx, orgUUID, at, delta, now)
 }
 
-func (e *encryptedStore) GetOrganizationSpend(ctx context.Context, orgUUID string, at time.Time) (OrganizationSpend, error) {
-	return e.inner.GetOrganizationSpend(ctx, orgUUID, at)
+func (s *encryptedStore) GetOrganizationSpend(ctx context.Context, orgUUID string, at time.Time) (OrganizationSpend, error) {
+	return s.inner.GetOrganizationSpend(ctx, orgUUID, at)
 }
 
 // OrganizationSpendPeriodStart returns the UTC calendar-month bucket that

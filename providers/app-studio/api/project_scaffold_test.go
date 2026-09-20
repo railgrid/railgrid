@@ -64,7 +64,7 @@ func TestSeedProjectScaffoldPopulatesWorkspace(t *testing.T) {
 	defer srv.Close()
 
 	store := workspace.NewFileStore(t.TempDir())
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: store}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
 	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1", user: "alice"}
 	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
 	info := projectTemplateInfo{
@@ -103,7 +103,7 @@ func TestSeedProjectScaffoldPopulatesWorkspace(t *testing.T) {
 }
 
 func TestSeedProjectScaffoldSkipsWhenNoScaffold(t *testing.T) {
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: workspace.NewFileStore(t.TempDir())}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: workspace.NewFileStore(t.TempDir())}
 	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
 	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
 	seeded, err := s.seedProjectScaffold(context.Background(), id, p, projectTemplateInfo{Name: "x"})
@@ -116,7 +116,7 @@ func TestSeedProjectScaffoldSkipsPopulatedWorkspace(t *testing.T) {
 	srv := giteaStyleArchive(t, map[string]string{"web/index.html": "x"})
 	defer srv.Close()
 	store := workspace.NewFileStore(t.TempDir())
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: store}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
 	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
 	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
 	scope := projectWorkspaceScope(id, p)
@@ -143,7 +143,7 @@ func TestSeedProjectScaffoldSeedsOverRepositoryBoilerplate(t *testing.T) {
 	})
 	defer srv.Close()
 	store := workspace.NewFileStore(t.TempDir())
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: store}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
 	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
 	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
 	scope := projectWorkspaceScope(id, p)

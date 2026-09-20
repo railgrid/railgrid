@@ -20,8 +20,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 func (s *PostgresStore) CreateAssistantThread(ctx context.Context, scope Scope, thread AssistantThread, events []AssistantThreadEvent) (AssistantThread, error) {
@@ -117,7 +120,9 @@ func (s *PostgresStore) ListAssistantThreads(ctx context.Context, scope Scope, a
 	if err != nil {
 		return AssistantThreadPage{}, fmt.Errorf("list assistant threads: %w", err)
 	}
-	defer rows.Close()
+	// Discarded: rows.Err() below reports any iteration failure, and a
+	// second report from Close would only duplicate it.
+	defer func() { _ = rows.Close() }()
 	page := AssistantThreadPage{Items: make([]AssistantThread, 0, limit)}
 	for rows.Next() {
 		var thread AssistantThread
@@ -651,6 +656,7 @@ func (s *PostgresStore) AppendAssistantThreadEvent(ctx context.Context, scope Sc
 	if err := tx.Commit(); err != nil {
 		return AssistantThreadEvent{}, fmt.Errorf("commit assistant thread event: %w", err)
 	}
+	s.notifyAssistantThreadEvent(ctx, scope, prepared.ThreadID)
 	return prepared, nil
 }
 
@@ -683,7 +689,9 @@ func (s *PostgresStore) ListAssistantThreadEvents(ctx context.Context, scope Sco
 	if err != nil {
 		return nil, fmt.Errorf("list assistant thread events: %w", err)
 	}
-	defer rows.Close()
+	// Discarded: rows.Err() below reports any iteration failure, and a
+	// second report from Close would only duplicate it.
+	defer func() { _ = rows.Close() }()
 	events := make([]AssistantThreadEvent, 0, limit)
 	for rows.Next() {
 		event := AssistantThreadEvent{ThreadID: threadID}
@@ -727,7 +735,9 @@ func (s *PostgresStore) ListAssistantThreadEventsBefore(ctx context.Context, sco
 	if err != nil {
 		return nil, fmt.Errorf("list assistant thread events before sequence: %w", err)
 	}
-	defer rows.Close()
+	// Discarded: rows.Err() below reports any iteration failure, and a
+	// second report from Close would only duplicate it.
+	defer func() { _ = rows.Close() }()
 	events := make([]AssistantThreadEvent, 0, limit)
 	for rows.Next() {
 		event := AssistantThreadEvent{ThreadID: threadID}
@@ -771,7 +781,9 @@ func (s *PostgresStore) ListAssistantThreadTurnEventsBefore(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("list assistant thread turn events before sequence: %w", err)
 	}
-	defer rows.Close()
+	// Discarded: rows.Err() below reports any iteration failure, and a
+	// second report from Close would only duplicate it.
+	defer func() { _ = rows.Close() }()
 	events := make([]AssistantThreadEvent, 0, limit)
 	for rows.Next() {
 		event := AssistantThreadEvent{ThreadID: threadID}
@@ -813,4 +825,119 @@ func (s *PostgresStore) GetAssistantThreadTurnStartSequence(ctx context.Context,
 		return 0, fmt.Errorf("get assistant thread turn start sequence: %w", err)
 	}
 	return sequence, nil
+}
+
+// WatchAssistantThreadEvents subscribes to one thread's arrivals over the
+// process-wide LISTEN connection, starting that connection on first use.
+//
+// Postgres delivers a notification to every connected listener, so a stream
+// served by replica A is woken by an append made on replica B. Within a
+// replica the broadcaster does the rest of the fan-out, so N concurrent
+// streams still cost exactly one database connection.
+func (s *PostgresStore) WatchAssistantThreadEvents(ctx context.Context, scope Scope, threadID string) (<-chan struct{}, func(), error) {
+	if err := scope.validate(); err != nil {
+		return nil, nil, err
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return nil, nil, errors.New("assistant thread id is required")
+	}
+	if err := s.ensureThreadEventListener(); err != nil {
+		return nil, nil, err
+	}
+	ch, release := s.threadEvents.subscribe(threadEventKey(scope, threadID))
+	return ch, release, nil
+}
+
+// ensureThreadEventListener opens the dedicated LISTEN connection once. A
+// failure is remembered: the caller falls back to reading on a timer, and
+// retrying a broken DSN on every stream would only add connection churn to an
+// already degraded provider.
+func (s *PostgresStore) ensureThreadEventListener() error {
+	s.listenOnce.Do(func() {
+		listener := pq.NewListener(s.dsn, 2*time.Second, time.Minute, func(_ pq.ListenerEventType, err error) {
+			if err != nil {
+				log.Printf("App Studio thread event listener: %v", err)
+			}
+		})
+		if err := listener.Listen(AssistantThreadEventNotifyChannel); err != nil {
+			_ = listener.Close()
+			s.listenErr = fmt.Errorf("listen on %s: %w", AssistantThreadEventNotifyChannel, err)
+			return
+		}
+		s.listenMu.Lock()
+		s.listener = listener
+		s.listenMu.Unlock()
+		go s.consumeThreadEventNotifications(listener)
+	})
+	return s.listenErr
+}
+
+// consumeThreadEventNotifications turns notifications into broadcaster
+// publishes until the listener is closed.
+//
+// lib/pq signals a reconnect by delivering a nil notification; the
+// notifications raised while the connection was down are gone, so every
+// subscriber is woken to re-read rather than risk a stream sitting on a stale
+// cursor until its keepalive.
+func (s *PostgresStore) consumeThreadEventNotifications(listener *pq.Listener) {
+	for notification := range listener.NotificationChannel() {
+		if notification == nil {
+			s.threadEvents.publishAll()
+			continue
+		}
+		s.threadEvents.publish(notification.Extra)
+	}
+}
+
+// notifyAssistantThreadEvent publishes the arrival after the append has
+// committed. It is best effort by construction: a lost notification costs the
+// reader its keepalive interval, never an event, because every reader
+// re-reads from its own cursor.
+func (s *PostgresStore) notifyAssistantThreadEvent(ctx context.Context, scope Scope, threadID string) {
+	if _, err := s.db.ExecContext(ctx, `SELECT pg_notify($1, $2)`, AssistantThreadEventNotifyChannel, threadEventKey(scope, threadID)); err != nil {
+		log.Printf("App Studio thread event notify failed for thread %s: %v", threadID, err)
+	}
+}
+
+// AssistantThreadActivity answers the retention deadline's inputs in one
+// round trip. The thread row is read for its own UpdatedAt so a conversation
+// with no turns still has an age.
+func (s *PostgresStore) AssistantThreadActivity(ctx context.Context, scope Scope, threadID string) (AssistantThreadActivity, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantThreadActivity{}, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return AssistantThreadActivity{}, errors.New("assistant thread id is required")
+	}
+	var (
+		threadUpdatedAt time.Time
+		turnCount       int
+		turnUpdatedAt   sql.NullTime
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT t.updated_at,
+			COALESCE(a.turn_count, 0),
+			a.last_turn_at
+		FROM app_studio_assistant_threads t
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS turn_count, MAX(updated_at) AS last_turn_at
+			FROM app_studio_assistant_turns
+			WHERE org_uuid=t.org_uuid AND workspace_uuid=t.workspace_uuid
+			  AND project_name=t.project_name AND project_uid=t.project_uid
+			  AND thread_id=t.thread_id
+		) a ON TRUE
+		WHERE t.org_uuid=$1 AND t.workspace_uuid=$2 AND t.project_name=$3 AND t.project_uid=$4 AND t.thread_id=$5`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID).
+		Scan(&threadUpdatedAt, &turnCount, &turnUpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AssistantThreadActivity{}, ErrAssistantThreadNotFound
+	}
+	if err != nil {
+		return AssistantThreadActivity{}, fmt.Errorf("read assistant thread activity: %w", err)
+	}
+	activity := AssistantThreadActivity{TurnCount: turnCount, LastActivityAt: threadUpdatedAt.UTC()}
+	if turnUpdatedAt.Valid && turnUpdatedAt.Time.After(activity.LastActivityAt) {
+		activity.LastActivityAt = turnUpdatedAt.Time.UTC()
+	}
+	return activity, nil
 }

@@ -25,8 +25,12 @@ import (
 // APIResourceSchemas, the APIExport, the APIExportEndpointSlice, and the bind
 // RBAC grant. Idempotent; serve also ensures the slice at startup.
 //
-// Schemas are read from RAILGRID_SCHEMAS_DIR (default /etc/railgrid/schemas), which the
-// Helm chart populates (and the dev Makefile points at deploy/chart/files/schemas).
+// The two declarative objects — the generated APIExport and the
+// APIResourceSchemas it references — are read from RAILGRID_KCP_DIR (default
+// /etc/railgrid/kcp), which is the chart's deploy/chart/files/ directory baked
+// into the image. init applies them verbatim; nothing about the export is
+// written in Go. Change a permission claim in manifest.yaml and re-run
+// `make codegen-code-provider`.
 func runInitCmd(ctx context.Context) error {
 	config, err := loadControllerConfig()
 	if err != nil {
@@ -38,9 +42,16 @@ func runInitCmd(ctx context.Context) error {
 	// bootstrap both the platform workspace and an org's self-hosted copy. Set
 	// the env var only to reference an export in a different workspace.
 	workspacePath := os.Getenv("CODE_WORKSPACE_PATH")
-	schemasDir := os.Getenv("RAILGRID_SCHEMAS_DIR")
-	if schemasDir == "" {
-		schemasDir = "/etc/railgrid/schemas"
+	kcpDir := os.Getenv("RAILGRID_KCP_DIR")
+	if kcpDir == "" {
+		kcpDir = "/etc/railgrid/kcp"
+	}
+	// Per-installation APIExport identity hashes for first-party claim groups,
+	// as "group=hash,group=hash". Empty for this provider: it claims only
+	// built-in Secrets, which need no hash.
+	identityHashes, err := sdkinstall.ParseIdentityHashes(os.Getenv("RAILGRID_IDENTITY_HASHES"))
+	if err != nil {
+		return err
 	}
 	// CatalogEntry self-registration: the provider applies its own CatalogEntry
 	// into its workspace (the Provider controller bound providers.railgrid.ai
@@ -51,25 +62,12 @@ func runInitCmd(ctx context.Context) error {
 		Config:           config,
 		ExportName:       install.APIExportName,
 		WorkspacePath:    workspacePath,
-		SchemasDir:       schemasDir,
-		Claims:           codeClaims(),
+		KCPDir:           kcpDir,
+		IdentityHashes:   identityHashes,
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}
-	log.Printf("code-provider init: workspace bootstrapped (export=%s path=%s schemas=%s catalogEntry=%s)", install.APIExportName, workspacePath, schemasDir, catalogEntryFile)
+	log.Printf("code-provider init: workspace bootstrapped (export=%s path=%s kcpDir=%s catalogEntry=%s)", install.APIExportName, workspacePath, kcpDir, catalogEntryFile)
 	return nil
-}
-
-// codeClaims declares the code provider's APIExport permission claims. The
-// secrets claim is a built-in k8s type (empty group), so it needs no
-// identityHash. The controllers read each Connection's PAT Secret and write the
-// generated DeployKey private-key Secret, hence the write verbs.
-func codeClaims() []sdkinstall.PermissionClaim {
-	return []sdkinstall.PermissionClaim{
-		{
-			Resource: "secrets",
-			Verbs:    []string{"get", "list", "watch", "create", "update", "patch", "delete"},
-		},
-	}
 }

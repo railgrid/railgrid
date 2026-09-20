@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -30,6 +29,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
@@ -54,6 +54,13 @@ const (
 	orgUUIDAnnotation       = "ai.railgrid.ai/org-uuid"
 	workspaceUUIDAnnotation = "ai.railgrid.ai/workspace-uuid"
 )
+
+// initializeRepositoryAnnotation asks for the project's existing working copy
+// to be queued as the first commit of a repository the user just attached. The
+// reconciler clears it once the paths are in the ledger; it is the only record
+// that the seeding happened, because the receipt file it replaced lived on one
+// replica's volume.
+const initializeRepositoryAnnotation = "ai.railgrid.ai/initialize-repository"
 
 // scopeOf derives the workspace scope from the Project's identity
 // annotations. ok is false for legacy Projects created before the
@@ -82,18 +89,23 @@ type commitOutcome struct {
 	retry bool
 }
 
-// pendingCommitAnnotation on the Project points at the RepositoryCommit the
-// reconciler is following up (the durable record with the commit's content
-// digest and paths lives in the workspace ledger; see resolvePendingCommit).
-// It is what `kubectl get project -o yaml` shows while a commit is queued
-// behind a GitHub rate limit, and what the RepositoryCommit watch converges.
-const pendingCommitAnnotation = "ai.railgrid.ai/pending-commit"
-
 // commitWorkspace pushes dirty workspace files to git when the project is
-// idle. c is the claimed-VW client the Project itself is written through
-// (the pending-commit pointer); tc the tenant-path client the Code provider
-// is read through.
-func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, token string, tc client.Client, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
+// idle. Two clients, as everywhere in this package: c is the manager's client
+// over this provider's APIExport virtual workspace, which owns the Project and
+// is where the pending-commit pointer is written; tc is the tenant-workspace
+// client authenticated as the project identity, which is where a
+// RepositoryCommit is read. token is that same identity's bearer.
+//
+// Asking for the commit is the one thing here that is not a CR write, and
+// deliberately: a RepositoryCommit is a POINTER at a source bundle held in the
+// Code provider's own store (providers/code/commitbundle), and only that
+// provider can put bytes there. The `repositories/{name}/commit/v1` action
+// stores the bundle and creates the CR in one step and returns that CR's
+// name, which this loop then follows over the RepositoryCommit watch — which
+// is why the declared composition on repositorycommits still carries no
+// create, and why the project identity carries the verb as a clause-C grant
+// instead (commitaction.go, identity.go).
+func (r *Reconciler) commitWorkspace(ctx context.Context, c, tc client.Client, token string, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
 	if r.Workspace == nil || r.HubBase == "" {
 		return commitOutcome{}, nil // commit convergence not wired (REST-only dev)
 	}
@@ -106,9 +118,20 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, token
 		return commitOutcome{}, nil // legacy project without identity annotations
 	}
 
-	if p.Annotations["ai.railgrid.ai/initialize-repository"] == b.RepositoryRef {
-		if err := r.Workspace.InitializeRepositorySource(ctx, scope, b.RepositoryRef); err != nil {
+	// An explicitly attached repository gets the project's existing files as
+	// its first commit. The annotation is the once-only record — it used to be
+	// a receipt file on the workspace volume, which a replica without that
+	// volume could not see — so it is cleared as soon as the paths are in the
+	// ledger, and the union it performs is idempotent if this pass is retried
+	// before the clear lands.
+	if p.Annotations[initializeRepositoryAnnotation] == b.RepositoryRef {
+		if err := r.Workspace.InitializeRepositorySource(ctx, scope); err != nil {
 			return commitOutcome{dirty: true}, fmt.Errorf("initialize repository source: %w", err)
+		}
+		if c != nil {
+			if err := patchProjectAnnotation(ctx, c, p, initializeRepositoryAnnotation, ""); err != nil {
+				return commitOutcome{dirty: true}, fmt.Errorf("clear repository initialization request: %w", err)
+			}
 		}
 	}
 
@@ -139,13 +162,6 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, token
 		if err != nil || !resolved {
 			return commitOutcome{dirty: true}, err
 		}
-	} else if p.Annotations[pendingCommitAnnotation] != "" {
-		// The pointer outlived its ledger record (the workspace volume was
-		// replaced): there is nothing to follow up, so the next commit is a
-		// fresh one — at worst one resend, the same as before the record.
-		if err := r.setPendingCommitPointer(ctx, c, p, ""); err != nil {
-			return commitOutcome{dirty: true}, err
-		}
 	}
 
 	paths, err := r.Workspace.UncommittedPaths(ctx, scope)
@@ -162,104 +178,69 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, token
 		return commitOutcome{dirty: true}, nil // an assistant turn owns the workspace; its end is signalled
 	}
 
-	mcp := hubmcp.NewClient(r.HubBase, clusterOf(p), token, r.HubInsecure)
-	if !mcp.Ready() {
+	// The project's own hub-minted identity is what asks for the commit: the
+	// Code provider's gates admit it on `get` of the Repository plus `create`
+	// on repositories/commit, and the commit is therefore authorized as the
+	// project rather than as this provider. No identity (no hub configured)
+	// means no commit path — the files stay dirty and are committed once
+	// there is one.
+	if strings.TrimSpace(token) == "" || tc == nil || r.HubBase == "" {
 		return commitOutcome{dirty: true, retry: true}, nil
 	}
 
-	// Build the payload the same way the assistant's commit tool does:
-	// missing files are deletions; binaries travel base64 when the Code
-	// provider supports it. A file that cannot be committed (binary on an
-	// older provider, or over the per-file bound) is skipped and stays dirty
-	// without forcing a requeue, so it neither blocks text commits nor spins
-	// the reconciler; the next commit pass after a provider upgrade picks it
-	// up. Files past the bundle bound are committed on an immediate requeue.
+	// Build the payload: missing files are deletions, binaries travel base64
+	// (the action's schema declares the encoding, so there is nothing to
+	// probe for). A file that cannot be committed — over the per-file bound —
+	// is skipped and stays dirty without forcing a requeue, so it neither
+	// blocks text commits nor spins the reconciler. Files past the bundle
+	// bound are committed on an immediate requeue.
 	sort.Strings(paths)
-	bundle, err := r.buildCommitBundle(ctx, mcp, clusterOf(p), scope, paths)
+	bundle, err := r.buildCommitBundle(ctx, scope, paths)
 	if err != nil {
 		return commitOutcome{dirty: true}, err
 	}
-	files, deletePaths, committed := bundle.files, bundle.deletePaths, bundle.committed
 	r.noteSkippedPaths(p.Name, scope, bundle.skipped)
-	if len(files) == 0 && len(deletePaths) == 0 {
+	if len(bundle.files) == 0 && len(bundle.deletePaths) == 0 {
 		return commitOutcome{dirty: bundle.deferred, retry: bundle.deferred}, nil
 	}
 
-	writtenPaths := make([]string, 0, len(files))
-	for _, f := range files {
+	writtenPaths := make([]string, 0, len(bundle.files))
+	for _, f := range bundle.files {
 		writtenPaths = append(writtenPaths, f["path"])
 	}
-	commitArgs := map[string]any{
-		"repositoryRef": b.RepositoryRef,
-		"message":       commitMessage(writtenPaths, deletePaths),
-		"files":         files,
-	}
-	if len(deletePaths) > 0 {
-		commitArgs["deletePaths"] = deletePaths
-	}
-	result, callErr := mcp.CallCodeTool(ctx, "code__commit_files", commitArgs)
-	var commit commitToolResult
-	if callErr == nil {
-		if err := json.Unmarshal(result, &commit); err != nil {
-			return commitOutcome{dirty: true}, fmt.Errorf("commit workspace: decode commit_files result: %w", err)
-		}
-	}
-	// Only a Succeeded commit with a SHA has landed. An accepted but
-	// unfinished one is recorded and followed up by name; anything else
-	// leaves the paths dirty so the next idle reconcile retries.
-	if callErr != nil || !commit.settled() {
-		name := unfinishedCommitName(callErr, commit)
-		if name == "" {
-			if callErr != nil {
-				return commitOutcome{dirty: true}, fmt.Errorf("commit workspace: %w", callErr)
-			}
-			return commitOutcome{dirty: true}, fmt.Errorf("commit workspace: RepositoryCommit %q is not settled (phase %q); retrying on the next idle reconcile", commit.Name, commit.Phase)
-		}
-		digest, err := r.Workspace.WorkspaceDigest(ctx, scope, committed)
-		if err != nil {
-			return commitOutcome{dirty: true}, fmt.Errorf("workspace digest for pending commit: %w", err)
-		}
-		if err := r.Workspace.RecordPendingCommit(ctx, scope, workspace.PendingCommit{
-			Name:            name,
-			RepositoryRef:   b.RepositoryRef,
-			WorkspaceDigest: digest,
-			Paths:           committed,
-		}); err != nil {
-			return commitOutcome{dirty: true}, fmt.Errorf("record pending commit: %w", err)
-		}
-		if err := r.setPendingCommitPointer(ctx, c, p, name); err != nil {
-			return commitOutcome{dirty: true}, err
-		}
-		log.Printf("app-studio project %s: RepositoryCommit %s accepted but not finished; following it up instead of resending", p.Name, name)
-		return commitOutcome{dirty: true}, nil
+	created, err := r.requestCommit(ctx, tc, token, clusterOf(p), b.RepositoryRef, string(repo.GetUID()), bundle, commitMessage(writtenPaths, bundle.deletePaths))
+	if err != nil {
+		return commitOutcome{dirty: true}, fmt.Errorf("commit workspace: %w", err)
 	}
 
-	digest, err := r.Workspace.WorkspaceDigest(ctx, scope, committed)
+	// The action creates the RepositoryCommit and returns; it never waits for
+	// the commit to land. So there is exactly one settlement path — record
+	// the commit as pending, point the Project at it, and let the watch
+	// converge it (resolvePendingCommit). The rate-limited case and the
+	// ordinary case are the same code, which is the point of moving off the
+	// tool: nothing parses a prose error for a name any more.
+	digest, err := r.Workspace.WorkspaceDigest(ctx, scope, bundle.committed)
 	if err != nil {
-		return commitOutcome{dirty: true}, fmt.Errorf("workspace digest after commit: %w", err)
+		return commitOutcome{dirty: true}, fmt.Errorf("workspace digest for pending commit: %w", err)
 	}
-	if err := r.settleCommit(ctx, scope, digest, committed); err != nil {
-		return commitOutcome{dirty: true}, err
+	if err := r.Workspace.RecordPendingCommit(ctx, scope, workspace.PendingCommit{
+		Name:            created.Name,
+		RepositoryRef:   b.RepositoryRef,
+		WorkspaceDigest: digest,
+		Paths:           bundle.committed,
+	}); err != nil {
+		return commitOutcome{dirty: true}, fmt.Errorf("record pending commit: %w", err)
 	}
-	log.Printf("app-studio project %s: committed %d files (%d deletions) @ %s", p.Name, len(files), len(deletePaths), shortSHA(commit.CommitSHA))
-	if bundle.deferred {
-		log.Printf("app-studio project %s: more uncommitted files remain beyond one commit's bounds; committing them next pass", p.Name)
-	}
-	repositoryRef := commit.RepositoryRef
-	if repositoryRef == "" {
-		repositoryRef = b.RepositoryRef
-	}
-	r.notifyCommitted(ctx, scope, CommitResult{
-		RepositoryRef: repositoryRef,
-		CommitSHA:     commit.CommitSHA,
-		CommitURL:     commit.CommitURL,
-		Branch:        commit.Branch,
-		Files:         committed,
-	})
-	return commitOutcome{dirty: bundle.deferred, retry: bundle.deferred}, nil
+	log.Printf("app-studio project %s: RepositoryCommit %s requested for %d file(s) (%d deletions); following it to settlement", p.Name, created.Name, len(bundle.files), len(bundle.deletePaths))
+	// Deliberately not resolved here. The RepositoryCommit was created a
+	// moment ago by another provider; reading it back immediately would race
+	// its own creation, and a NotFound at that instant is indistinguishable
+	// from "the commit is gone", which would clear the record and resend.
+	// The watch delivers the object, and the pass it wakes settles it.
+	return commitOutcome{dirty: true, retry: bundle.deferred}, nil
 }
 
-// commitBundle is one bounded commit_files payload.
+// commitBundle is one bounded commit payload.
 type commitBundle struct {
 	files       []map[string]string
 	deletePaths []string
@@ -271,13 +252,27 @@ type commitBundle struct {
 	deferred bool
 }
 
+// wireFiles is the bundle as the commit action's `files` member: writes with
+// their content and encoding, deletions as {path, delete}. One list, because
+// the action takes one — the MCP tool's separate deletePaths member was a
+// second way to say the same thing.
+func (b commitBundle) wireFiles() []codecommit.File {
+	out := make([]codecommit.File, 0, len(b.files)+len(b.deletePaths))
+	for _, f := range b.files {
+		out = append(out, codecommit.File{Path: f["path"], Content: f["content"], Encoding: f["encoding"]})
+	}
+	for _, path := range b.deletePaths {
+		out = append(out, codecommit.File{Path: path, Delete: true})
+	}
+	return out
+}
+
 // buildCommitBundle reads dirty paths into one payload bounded by the Code
 // provider's limits (decoded bytes): 2 MiB per text file, 25 MiB per binary,
 // 48 MiB and 500 files per commit.
-func (r *Reconciler) buildCommitBundle(ctx context.Context, mcp *hubmcp.Client, cluster string, scope workspace.Scope, paths []string) (commitBundle, error) {
+func (r *Reconciler) buildCommitBundle(ctx context.Context, scope workspace.Scope, paths []string) (commitBundle, error) {
 	bundle := commitBundle{skipped: map[string]string{}}
 	var total int64
-	binarySupported := -1 // unknown until the first binary needs it
 	for _, path := range paths {
 		if len(bundle.committed) >= hubmcp.BundleMaxFiles {
 			bundle.deferred = true
@@ -302,17 +297,6 @@ func (r *Reconciler) buildCommitBundle(ctx context.Context, mcp *hubmcp.Client, 
 				bundle.skipped[path] = "text larger than the 2 MiB per-file commit limit"
 				continue
 			}
-		} else {
-			if binarySupported < 0 {
-				binarySupported = 0
-				if r.commitFilesSupportsBinary(ctx, mcp, cluster) {
-					binarySupported = 1
-				}
-			}
-			if binarySupported == 0 {
-				bundle.skipped[path] = "binary; the Code provider does not accept binary commits yet"
-				continue
-			}
 		}
 		if total+int64(len(data)) > hubmcp.BundleMaxBytes && len(bundle.committed) > 0 {
 			bundle.deferred = true
@@ -323,23 +307,6 @@ func (r *Reconciler) buildCommitBundle(ctx context.Context, mcp *hubmcp.Client, 
 		bundle.committed = append(bundle.committed, path)
 	}
 	return bundle, nil
-}
-
-// commitFilesSupportsBinary reads (and caches per cluster) whether
-// code__commit_files advertises base64 file items. A failed probe is treated
-// as unsupported for this pass only.
-func (r *Reconciler) commitFilesSupportsBinary(ctx context.Context, mcp *hubmcp.Client, cluster string) bool {
-	if supported, ok := r.binaryCommits.Get(cluster); ok {
-		return supported
-	}
-	tools, err := mcp.ListTools(ctx)
-	if err != nil {
-		log.Printf("app-studio: read Code provider tool catalog for cluster %s: %v", cluster, err)
-		return false
-	}
-	supported := hubmcp.CommitFilesSupportsEncoding(tools)
-	r.binaryCommits.Set(cluster, supported)
-	return supported
 }
 
 // noteSkippedPaths logs files that stay uncommitted, once per distinct set.
@@ -393,90 +360,111 @@ func shortSHA(sha string) string {
 
 // Pending commits.
 //
-// commit_files waits a bounded time for the RepositoryCommit it creates. When
-// GitHub rate-limits the provider (or the wait simply ends first) the tool
-// fails with the RepositoryCommit's name while the provider keeps retrying it.
-// Resending would queue yet another RepositoryCommit behind the same limit,
-// so the reconciler records the pending one durably — its name, and the
-// workspace digest and paths it carried, in the project's workspace ledger
-// (next to the settlement receipt), with the name mirrored onto the Project
-// as pendingCommitAnnotation — and reads it by name through the tenant
-// client whenever the RepositoryCommit watch reports a change, until it
-// settles. Nothing is polled: the watch drives every follow-up.
+// Every commit is pending when it is made: the commit action creates the
+// RepositoryCommit and returns its name, and the files are in git only once
+// that CR reaches Succeeded. The reconciler records it durably — the name,
+// and the workspace digest and paths it carried, in the project's workspace
+// ledger next to the settlement receipt, with the name mirrored onto the
+// Project as pendingCommitAnnotation — and re-reads it by name through the
+// tenant client whenever the RepositoryCommit watch reports a change, until
+// it settles. Nothing is polled: the watch drives every follow-up, and a
+// commit queued behind a GitHub rate limit is not a special case, just a
+// commit that takes longer.
 //
-// The RepositoryCommit is created by the Code provider's commit_files tool,
-// not by this reconciler, because its spec references a provider-owned
-// source bundle that only that tool can store; the object it names is still
-// the one pointer everything converges on.
+// The RepositoryCommit is created by the Code provider, not by this
+// reconciler, because its spec references a provider-owned source bundle that
+// only that provider can store; the object it names is still the one pointer
+// everything converges on.
 
 // repositoryCommitGVK is the Code provider's RepositoryCommit resource.
 var repositoryCommitGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: "v1alpha1", Kind: "RepositoryCommit"}
 
-// unfinishedCommitPattern extracts the RepositoryCommit name from the Code
-// provider's "queued behind a GitHub rate limit" / "did not finish within the
-// wait" commit_files errors.
-var unfinishedCommitPattern = regexp.MustCompile(`RepositoryCommit "([^"]+)" (?:is queued behind a GitHub rate limit|did not finish within)`)
-
-// unfinishedCommitName names the RepositoryCommit a commit_files call left
-// running, or "" when the call did not leave one (a failed or rejected
-// commit is simply retried).
-func unfinishedCommitName(callErr error, result commitToolResult) string {
-	if callErr != nil {
-		if m := unfinishedCommitPattern.FindStringSubmatch(callErr.Error()); m != nil {
-			return m[1]
+// readRepositoryCommit reads one RepositoryCommit by name as the project
+// identity: a Get when the identity holds a named grant, otherwise the
+// composition's unnamed list, reduced to the requested name. A commit absent
+// from that list is reported as NotFound, exactly as the Get would.
+func readRepositoryCommit(ctx context.Context, tc client.Client, name string) (*unstructured.Unstructured, error) {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(repositoryCommitGVK)
+	err := tc.Get(ctx, types.NamespacedName{Name: name}, obj)
+	if err == nil || !apierrors.IsForbidden(err) {
+		return obj, err
+	}
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(repositoryCommitGVK.GroupVersion().WithKind(repositoryCommitGVK.Kind + "List"))
+	if listErr := tc.List(ctx, list); listErr != nil {
+		return nil, fmt.Errorf("%w (and listing commits instead: %v)", err, listErr)
+	}
+	for i := range list.Items {
+		if list.Items[i].GetName() == name {
+			return &list.Items[i], nil
 		}
-		return ""
 	}
-	switch result.Phase {
-	case commitPhaseSucceeded, commitPhaseFailed:
-		return ""
-	}
-	return strings.TrimSpace(result.Name)
+	return nil, apierrors.NewNotFound(schema.GroupResource{Group: repositoryCommitGVK.Group, Resource: "repositorycommits"}, name)
 }
 
-// setPendingCommitPointer writes (or, with an empty name, clears) the
-// Project's pending-commit annotation. A nil client (tests without a
-// control-plane fake) leaves the object untouched.
-func (r *Reconciler) setPendingCommitPointer(ctx context.Context, c client.Client, p *aiv1alpha1.Project, name string) error {
-	if p.Annotations[pendingCommitAnnotation] == name || c == nil {
-		return nil
+// patchProjectAnnotation sets (or, with an empty value, removes) one
+// annotation with a merge patch rather than an Update of the whole object.
+//
+// This is not a style preference. Since §9 Cut D.3 the working-copy ledger is
+// written to the SAME Project's status, so `p` in hand goes stale the moment a
+// dirty path or a pending commit is recorded — an Update carrying the
+// resourceVersion this pass started with would lose that race every time. A
+// merge patch names only the key it changes and takes no version with it, and
+// the client writes the fresh object back into p.
+func patchProjectAnnotation(ctx context.Context, c client.Client, p *aiv1alpha1.Project, key, value string) error {
+	var annotation any = value
+	if value == "" {
+		annotation = nil
+	}
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"annotations": map[string]any{key: annotation}},
+	})
+	if err != nil {
+		return err
+	}
+	if err := c.Patch(ctx, p, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		return err
 	}
 	if p.Annotations == nil {
 		p.Annotations = map[string]string{}
 	}
-	if name == "" {
-		delete(p.Annotations, pendingCommitAnnotation)
+	if value == "" {
+		delete(p.Annotations, key)
 	} else {
-		p.Annotations[pendingCommitAnnotation] = name
-	}
-	if err := c.Update(ctx, p); err != nil {
-		return fmt.Errorf("record pending RepositoryCommit %q on project: %w", name, err)
+		p.Annotations[key] = value
 	}
 	return nil
 }
 
-// clearPendingCommit forgets a pending commit in both places.
-func (r *Reconciler) clearPendingCommit(ctx context.Context, c client.Client, p *aiv1alpha1.Project, scope workspace.Scope) error {
-	if err := r.Workspace.ClearPendingCommit(ctx, scope); err != nil {
-		return err
-	}
-	return r.setPendingCommitPointer(ctx, c, p, "")
+// clearPendingCommit forgets a pending commit. One place now: the pointer and
+// the record used to be an annotation and a file that could disagree, and
+// since §9 Cut D.3 they are one member of one object.
+func (r *Reconciler) clearPendingCommit(ctx context.Context, scope workspace.Scope) error {
+	return r.Workspace.ClearPendingCommit(ctx, scope)
 }
 
 // resolvePendingCommit reads a pending RepositoryCommit and reports whether
 // it is resolved: Succeeded (settled and announced) or Failed/gone (cleared,
 // so a fresh commit may be sent). A still-running commit stays recorded and
 // is re-read when its watch event arrives.
+//
+// The read is tc — the tenant workspace, as the project identity — while every
+// write here is c, the Project's own virtual workspace. The identity's grant on
+// repositorycommits is the composition's unnamed `list`/`watch`: a named `get`
+// on THIS commit cannot be minted before the commit exists, and the identity
+// is not re-minted per commit. So a Get that the workspace refuses falls back
+// to the list the identity does hold, filtered to the one name. An identity
+// that has since been refreshed with the name keeps using the cheaper Get.
 func (r *Reconciler) resolvePendingCommit(ctx context.Context, c, tc client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (bool, error) {
-	if tc == nil {
+	if c == nil || tc == nil {
 		return false, nil
 	}
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(repositoryCommitGVK)
-	if err := tc.Get(ctx, types.NamespacedName{Name: pending.Name}, obj); err != nil {
+	obj, err := readRepositoryCommit(ctx, tc, pending.Name)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Printf("app-studio project %s: pending RepositoryCommit %s is gone; a fresh commit will be sent", scope.ProjectName, pending.Name)
-			return true, r.clearPendingCommit(ctx, c, p, scope)
+			return true, r.clearPendingCommit(ctx, scope)
 		}
 		return false, fmt.Errorf("read pending RepositoryCommit %q: %w", pending.Name, err)
 	}
@@ -487,7 +475,7 @@ func (r *Reconciler) resolvePendingCommit(ctx context.Context, c, tc client.Clie
 		if err := r.settleCommit(ctx, scope, pending.WorkspaceDigest, pending.Paths); err != nil {
 			return false, err
 		}
-		if err := r.clearPendingCommit(ctx, c, p, scope); err != nil {
+		if err := r.clearPendingCommit(ctx, scope); err != nil {
 			return false, err
 		}
 		commitURL, _, _ := unstructured.NestedString(obj.Object, "status", "commitURL")
@@ -503,11 +491,11 @@ func (r *Reconciler) resolvePendingCommit(ctx context.Context, c, tc client.Clie
 		return true, nil
 	case phase == commitPhaseFailed:
 		log.Printf("app-studio project %s: pending RepositoryCommit %s failed; a fresh commit will be sent", scope.ProjectName, pending.Name)
-		return true, r.clearPendingCommit(ctx, c, p, scope)
+		return true, r.clearPendingCommit(ctx, scope)
 	default:
-		// Still running. Make sure the pointer is visible (an earlier
-		// annotation write may have conflicted) and wait for the watch.
-		return false, r.setPendingCommitPointer(ctx, c, p, pending.Name)
+		// Still running: the record is already on the project, so there is
+		// nothing to mirror. Wait for the watch.
+		return false, nil
 	}
 }
 
@@ -522,26 +510,11 @@ type CommitResult struct {
 	Files []string
 }
 
-// commitToolResult is the subset of the Code provider's commit_files result
-// the reconciler acts on.
-type commitToolResult struct {
-	RepositoryRef string `json:"repositoryRef"`
-	Name          string `json:"name"`
-	Phase         string `json:"phase"`
-	CommitSHA     string `json:"commitSHA"`
-	CommitURL     string `json:"commitURL"`
-	Branch        string `json:"branch"`
-}
-
 // RepositoryCommit phases the reconciler acts on.
 const (
 	commitPhaseSucceeded = "Succeeded"
 	commitPhaseFailed    = "Failed"
 )
-
-func (c commitToolResult) settled() bool {
-	return c.Phase == commitPhaseSucceeded && strings.TrimSpace(c.CommitSHA) != ""
-}
 
 const (
 	// commitMessageMaxLength keeps generated messages under the

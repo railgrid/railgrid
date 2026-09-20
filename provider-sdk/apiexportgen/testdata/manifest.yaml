@@ -1,0 +1,22 @@
+# A comment block the parser has to skip, mentioning kind: CatalogEntry.
+---
+apiVersion: providers.railgrid.ai/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: fixture
+spec:
+  displayName: "Fixture"
+  apiExport:
+    name: "fixture.providers.railgrid.ai"
+    permissionClaims:
+      - resource: secrets
+        verbs: [get, list, watch]
+        tenantScoped: true
+      - group: ""
+        resource: serviceaccounts
+        verbs: ["get", "create"]
+        tenantScoped: true
+      - group: rbac.authorization.k8s.io
+        resource: clusterroles
+        verbs: [get, create]
+        tenantScoped: true

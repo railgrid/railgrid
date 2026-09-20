@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 // Instance-backed tools (self-hosted search, a browser instance) need BOTH the
@@ -20,20 +21,49 @@ import (
 // still loads, the model still calls it, and the user gets an error that reads
 // like the instance is broken. This asserts the wiring per path instead.
 func TestDataPlaneForRunPaths(t *testing.T) {
-	s := &Server{}
+	s := &Server{providerLookups: newProviderLookupCache()}
 	s.cfg.HubURL = "https://hub.example.com"
+	// Which provider serves the instance group is read from the workspace's own
+	// APIBinding — a get on one named binding, which an agent's own scoped
+	// identity can hold, so an unattended run resolves it for itself. The cache
+	// is a cache, not a crutch.
+	s.providerLookups.put("23qp2e0jwjeqwp2i|"+tools.InstanceAPIGroup, "infrastructure")
 
 	t.Run("a run carrying both is usable", func(t *testing.T) {
-		dp := s.dataPlaneFor(taskRun{ClusterID: "23qp2e0jwjeqwp2i", HubToken: "user-token"})
+		dp := s.dataPlaneFor(t.Context(), taskRun{ClusterID: "23qp2e0jwjeqwp2i", HubToken: "user-token"})
 		if !dp.Available() {
 			t.Fatalf("data plane unusable: %+v", dp)
+		}
+		url, err := dp.ProxyURL("mcp", "browser", "browsers", "b1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The provider name comes from the binding, and the path from
+		// dataplane.ProviderPath — neither is spelled here.
+		want := "https://hub.example.com/services/providers/infrastructure/dataplane/clusters/23qp2e0jwjeqwp2i/browsers/b1/proxy"
+		if url != want {
+			t.Errorf("proxy URL = %q, want %q", url, want)
+		}
+	})
+
+	t.Run("a workspace with no binding for the instance group is unusable", func(t *testing.T) {
+		// Nothing resolved and nothing to resolve it with: the tool must say so
+		// rather than compose a URL for a provider that may not be enabled.
+		cold := &Server{providerLookups: newProviderLookupCache()}
+		cold.cfg.HubURL = "https://hub.example.com"
+		dp := cold.dataPlaneFor(t.Context(), taskRun{ClusterID: "23qp2e0jwjeqwp2i", HubToken: "user-token"})
+		if dp.Available() {
+			t.Fatal("a run with no resolved provider must not be usable")
+		}
+		if _, err := dp.ProxyURL("mcp", "browser", "browsers", "b1"); err == nil {
+			t.Fatal("ProxyURL must refuse without a provider")
 		}
 	})
 
 	t.Run("a background run is unusable, by design", func(t *testing.T) {
 		// No user to act as. The tool reports this precisely; it must not
 		// silently compose a URL that 401s at the hub.
-		if s.dataPlaneFor(taskRun{ClusterID: "23qp2e0jwjeqwp2i", Trigger: agentsv1alpha1.RunTriggerSchedule}).Available() {
+		if s.dataPlaneFor(t.Context(), taskRun{ClusterID: "23qp2e0jwjeqwp2i", Trigger: agentsv1alpha1.RunTriggerSchedule}).Available() {
 			t.Fatal("a run with no hub token must not be usable")
 		}
 	})
@@ -42,7 +72,7 @@ func TestDataPlaneForRunPaths(t *testing.T) {
 		// The regression that motivated this test: the interactive chat path
 		// set HubToken but not ClusterID, so search failed in chat — the one
 		// place it was supposed to work.
-		if s.dataPlaneFor(taskRun{HubToken: "user-token"}).Available() {
+		if s.dataPlaneFor(t.Context(), taskRun{HubToken: "user-token"}).Available() {
 			t.Fatal("a run with no cluster ID must not be usable")
 		}
 	})

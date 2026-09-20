@@ -30,12 +30,8 @@ func TestSavedModelConnectionCredentialBoundary(t *testing.T) {
 	}))
 	defer upstream.Close()
 	registry := projectLLMRegistry{Models: []projectLLMModelSettings{{ID: "main", Name: "Main", Settings: projectLLMSettings{Provider: "openai-compatible", BaseURL: upstream.URL, Model: "gpt-4o", APIKey: "stored-key"}}}}
-	secret, err := projectLLMRegistrySecret(registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: secret})
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry})
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	for _, tt := range []struct {
 		name, id, endpoint, provider string
 		status                       int

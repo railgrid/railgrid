@@ -35,6 +35,77 @@ without running the agent again, and a full executor queue answers `503` with
 `Retry-After` instead of dropping the message. See
 [docs/agents-multi-channel.md](../../docs/agents-multi-channel.md#inbound-verification-de-duplication-and-quarantine).
 
+## Model credentials
+
+An agent reaches a model through a **`ModelCredential`** — a cluster-scoped
+object in the tenant's own workspace carrying the provider flavour
+(`openai-compatible` or `openai`), the base URL, a default model id, and a
+`secretRef` naming the Secret that holds the API key. The key itself is never
+on the object, so a credential is safe to list, watch and show.
+
+The Secret must carry the label `railgrid.ai/owner: agents`. The provider's
+`secrets` permission claim is scoped to it, so kcp hides anything without it
+from the provider — an unlabelled Secret saves cleanly and is then invisible to
+every unattended run. The portal stamps the label on everything it writes; if
+you create one by hand, stamp it yourself.
+
+A reconciler keeps the verdict on the object, so its status is the source of
+truth rather than a button somebody pressed once:
+
+| Condition | True when |
+| --- | --- |
+| `SecretResolved` | the Secret exists, carries `spec.secretKey` (default `apiKey`), and is labelled |
+| `Reachable` | `GET {spec.baseURL}/models` answered with that key |
+| `Ready` | both of the above |
+
+`status.models` records the **chat-capable subset** of what the endpoint
+served, which is what the portal's model picker offers, and
+`status.lastProbeError` explains a failure (bounded, never the key).
+
+The subset matters. An endpoint answers `GET /models` with everything the
+account can reach — for OpenAI that is ~130 ids including speech,
+transcription, embeddings, images, realtime, moderation, the legacy completion
+models, and the families served only on `/v1/responses` (`*-codex`, `*-pro`,
+`*-deep-research`, `computer-use-*`). This engine speaks Chat Completions only,
+so picking one of those saves cleanly and then fails on the first turn with the
+provider's 404 "This model is not supported in the v1/chat/completions
+endpoint". `llm.ChatCapable` / `llm.FilterChatModels` (`llm/chatmodels.go`)
+remove them, inside `llm.DiscoverModels` so the reconciler's `status.models`
+and the `discover` verb's answer are one list. Curated catalog ids come first,
+in catalog order, then the rest alphabetically; the portal groups on that split
+(**Recommended** / **Other models this endpoint serves**) and manual entry
+stays available for anything the deny-list is wrong about.
+
+Two verbs probe a **saved** credential on demand:
+`modelcredentials/{name}/test` runs a real chat round-trip, and
+`modelcredentials/{name}/discover` re-reads the model list and refreshes the
+status. `test` takes an optional body `{"model": "<id>"}` that probes that
+chat-capable id instead of the saved `spec.model` — everything else (endpoint,
+key) still comes from the object and its Secret. That is what lets the editor
+prove a model a person just picked *before* "Save changes" writes it, rather
+than leaving the first agent run to discover it does not work. Agents reference a credential by name in `spec.models[purpose]` and
+`spec.modelFallbacks`, and their own `ModelCredentialsReady` condition names
+any that are missing or not ready.
+
+```bash
+kubectl create secret generic railgrid-agents-model-openai \
+  --from-literal=apiKey=sk-… -n default
+kubectl label secret railgrid-agents-model-openai railgrid.ai/owner=agents -n default
+kubectl apply -f - <<'EOF'
+apiVersion: agents.railgrid.ai/v1alpha1
+kind: ModelCredential
+metadata:
+  name: openai
+spec:
+  provider: openai-compatible
+  baseURL: https://api.openai.com/v1
+  model: gpt-4o
+  secretRef:
+    name: railgrid-agents-model-openai
+EOF
+kubectl get modelcredentials
+```
+
 ## Dependencies
 
 The only hard dependencies are the **hub** and **Postgres**. That is deliberate:

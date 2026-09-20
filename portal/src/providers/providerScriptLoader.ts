@@ -97,6 +97,21 @@ export interface ProviderScriptOptions {
   // no crossorigin attribute, so a cross-origin URL would load unpinned and
   // untrusted.
   src?: string | null
+  // Re-read the catalog and return this provider's CURRENT SRI pin, or null
+  // when there is none. Supplied by stores/providers.ts.
+  //
+  // A provider bundle can be rebuilt behind an unchanged catalog version (every
+  // Tilt rebuild, any image rebuild at the same chart version). For the moments
+  // between that rebuild and the hub noticing, the pin this page was given
+  // describes bytes that no longer exist and the browser refuses the script
+  // with "Failed to find a valid digest in the 'integrity' attribute". The hub
+  // corrects its pin the moment it serves the new bundle
+  // (pkg/hub/providers/proxy.go), so an open page can recover by asking again —
+  // ONCE, and only when the answer is a DIFFERENT pin. A retry on the same pin
+  // would just fail the same way, and retrying without a pin, or after a failed
+  // refresh, would be loading whatever the upstream now serves on no authority
+  // at all. SRI is never weakened here: the retry is pinned too.
+  refreshIntegrity?: (() => Promise<string | null>) | null
 }
 
 function injectProviderScript(
@@ -194,6 +209,7 @@ export function loadProviderScript(
   const requestedVersion = version ?? '0'
   const integrity = options.integrity || null
   const bundleSrc = options.src || null
+  const refreshIntegrity = options.refreshIntegrity || null
   const loads = documentLoads(doc)
   const current = loads.get(name)
   if (current?.version === requestedVersion) return current.promise
@@ -218,13 +234,43 @@ export function loadProviderScript(
   const predecessor = current?.promise.catch(() => undefined) ?? Promise.resolve()
   let attempt: ProviderScriptAttempt | undefined
   let cancelled: Error | undefined
+
+  // Reinject once with a pin the hub has since corrected. Rethrowing the
+  // original failure is the default: every guard below leaves the load exactly
+  // as terminal as it was without this path.
+  async function retryWithRefreshedPin(failure: Error): Promise<void> {
+    if (cancelled) throw cancelled
+    // An unpinned load cannot have failed on its pin, and without a refresh
+    // there is nothing to ask.
+    if (!integrity || !refreshIntegrity) throw failure
+    let refreshed: string | null
+    try {
+      refreshed = await refreshIntegrity()
+    } catch {
+      throw failure
+    }
+    if (cancelled) throw cancelled
+    // No pin, or the same pin the browser just refused: nothing has changed,
+    // so a second injection would fail identically.
+    if (!refreshed || refreshed === integrity) throw failure
+    // The failed attempt revoked its bootstrap generation; a reinjected
+    // bootstrap needs a live one or a generation-aware provider would observe
+    // itself as stale and decline to install.
+    const retryGeneration = claimProviderBootstrapGeneration(doc, name)
+    record.bootstrapGeneration = retryGeneration
+    attempt = injectProviderScript(doc, name, requestedVersion, retryGeneration, timeoutMs, refreshed, bundleSrc)
+    return attempt.promise
+  }
+
   const record: ProviderScriptLoad = {
     version: requestedVersion,
     bootstrapGeneration,
     promise: predecessor.then(() => {
       if (cancelled) throw cancelled
       attempt = injectProviderScript(doc, name, requestedVersion, bootstrapGeneration, timeoutMs, integrity, bundleSrc)
-      return attempt.promise
+      // Only the FIRST attempt is given this catch, so a load can never be
+      // retried more than once.
+      return attempt.promise.catch(retryWithRefreshedPin)
     }),
     cancel: (reason = new Error(`cancelled provider "${name}" version ${requestedVersion}`)) => {
       cancelled = reason

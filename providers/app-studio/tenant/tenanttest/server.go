@@ -436,7 +436,7 @@ func (s *Server) update(w http.ResponseWriter, rt route, objs map[string]*unstru
 		return
 	}
 	if uid := desired.GetUID(); uid != "" && uid != current.GetUID() {
-		writeStatus(w, apierrors.NewConflict(gr, rt.name, fmt.Errorf("Precondition failed: UID in precondition: %s, UID in object meta: %s", uid, current.GetUID())))
+		writeStatus(w, apierrors.NewConflict(gr, rt.name, fmt.Errorf("precondition failed: UID in precondition: %s, UID in object meta: %s", uid, current.GetUID())))
 		return
 	}
 	stored := s.mergeWriteLocked(current, desired, rt.subresource == "status")
@@ -513,11 +513,11 @@ func (s *Server) delete(w http.ResponseWriter, rt route, objs map[string]*unstru
 	}
 	if pre := opts.Preconditions; pre != nil {
 		if pre.UID != nil && *pre.UID != current.GetUID() {
-			writeStatus(w, apierrors.NewConflict(gr, rt.name, fmt.Errorf("Precondition failed: UID in precondition: %s, UID in object meta: %s", *pre.UID, current.GetUID())))
+			writeStatus(w, apierrors.NewConflict(gr, rt.name, fmt.Errorf("precondition failed: UID in precondition: %s, UID in object meta: %s", *pre.UID, current.GetUID())))
 			return
 		}
 		if pre.ResourceVersion != nil && *pre.ResourceVersion != current.GetResourceVersion() {
-			writeStatus(w, apierrors.NewConflict(gr, rt.name, fmt.Errorf("Precondition failed: ResourceVersion in precondition: %s, ResourceVersion in object meta: %s", *pre.ResourceVersion, current.GetResourceVersion())))
+			writeStatus(w, apierrors.NewConflict(gr, rt.name, fmt.Errorf("precondition failed: ResourceVersion in precondition: %s, ResourceVersion in object meta: %s", *pre.ResourceVersion, current.GetResourceVersion())))
 			return
 		}
 	}

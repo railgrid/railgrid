@@ -70,19 +70,87 @@ railgrid-provider-quickstart .quickstart-panel-title {
   text-transform: uppercase;
 }
 
-railgrid-provider-quickstart .quickstart-dump {
+railgrid-provider-quickstart .quickstart-form {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+railgrid-provider-quickstart .quickstart-field {
+  display: grid;
+  gap: 4px;
   min-width: 0;
-  margin: 0;
-  padding: 10px 12px;
-  background: var(--color-surface-overlay, #171927);
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  border-radius: 4px;
-  box-shadow: none;
-  color: var(--color-text-secondary, #8a8ca6);
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace);
+}
+
+railgrid-provider-quickstart .quickstart-label {
   font-size: 11px;
-  line-height: 1.5;
-  overflow-x: auto;
+  color: var(--color-text-muted, inherit);
+}
+
+railgrid-provider-quickstart .quickstart-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+railgrid-provider-quickstart .quickstart-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  background: var(--color-surface-overlay);
+  font-size: 12px;
+}
+
+railgrid-provider-quickstart .quickstart-row-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+railgrid-provider-quickstart .quickstart-row-message {
+  flex: 1 1 8rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+railgrid-provider-quickstart .quickstart-row-observed {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--color-text-muted, inherit);
+}
+
+railgrid-provider-quickstart .quickstart-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--color-border-subtle);
+  border-radius: 4px;
+  color: var(--color-text-muted, inherit);
+  font-size: 11px;
+  text-align: center;
+}
+
+railgrid-provider-quickstart .quickstart-error {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--color-text-error);
+}
+
+railgrid-provider-quickstart .quickstart-greeted {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-success-border);
+  border-radius: 4px;
+  color: var(--color-success);
+  font-size: 12px;
 }
 
 railgrid-provider-quickstart code {

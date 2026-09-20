@@ -60,7 +60,7 @@ func publishingTestServer(t *testing.T, dyn *fake.FakeDynamicClient, members ...
 	t.Helper()
 	client := asclient.NewFromDynamic(dyn)
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		publishingMembershipFetcher: func(context.Context, identity) ([]publishingMember, error) {
 			return members, nil
@@ -125,7 +125,7 @@ func setPublishingIdentity(r *http.Request) {
 	r.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	r.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	r.Header.Set("X-Railgrid-User", "alice")
-	r.Header.Set("Authorization", "Bearer test-token")
+	r.Header.Set("Authorization", "Bearer "+"alice-token")
 }
 
 func publishingDo(t *testing.T, router *mux.Router, method, target, body string) *httptest.ResponseRecorder {
@@ -413,7 +413,7 @@ func TestGrantInviteByEmailProvisionsThroughHubAndWritesRBAC(t *testing.T) {
 	client := asclient.NewFromDynamic(dyn)
 	var invitedEmail string
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		publishingMembershipFetcher: func(context.Context, identity) ([]publishingMember, error) {
 			return nil, nil // the invitee is not a member yet
@@ -601,7 +601,7 @@ func publishingServerAgainstHub(t *testing.T, dyn *fake.FakeDynamicClient, hubUR
 	t.Helper()
 	client := asclient.NewFromDynamic(dyn)
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		hubBase:          hubURL,
 	}
@@ -652,11 +652,13 @@ func TestInviteByEmailPostsOrgMembershipScopedToWorkspace(t *testing.T) {
 		t.Fatalf("hub call = %s %s, want POST /api/orgs/org-a/memberships", hub.inviteMethod, hub.invitePath)
 	}
 	for header, want := range map[string]string{
-		"Authorization":        "Bearer test-token",
+		"Authorization":        "Bearer alice-token",
 		"X-Railgrid-Org":       "org-a",
 		"X-Railgrid-Workspace": "ws-1",
-		"X-Railgrid-User":      "alice",
-		"Content-Type":         "application/json",
+		// The forwarded user header now carries the REVIEWED actor, not the
+		// inbound label: the hub is told who this request actually is.
+		"X-Railgrid-User": "alice",
+		"Content-Type":    "application/json",
 	} {
 		if got := hub.inviteHeader.Get(header); got != want {
 			t.Errorf("invite header %s = %q, want %q", header, got, want)

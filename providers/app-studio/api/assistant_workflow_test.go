@@ -259,6 +259,7 @@ func TestProjectAssistantDurableExecGraphToolProjectsPublicActionFeed(t *testing
 			}
 			mirrorServer := NewWithWorkspace(nil, messages, nil, "", false)
 			mirrorServer.tenantWorkspaces = defaultTestWorkspaces.lookup
+			mirrorServer.tenantActors = defaultTestActors.lookup
 			mirrorState := assistantThreadMirrorState{actionStatuses: map[string]string{}}
 			mirrorRun := store.AssistantRun{ID: runID, ActiveMessageID: "assistant-" + tt.name, Status: store.AssistantRunStatusCompleted}
 			if err := mirrorServer.projectAssistantThreadSnapshot(context.Background(), scope, threadID, mirrorTurn, mirrorRun, &mirrorState, projectAssistantRunSnapshot{
@@ -671,6 +672,7 @@ func stringSliceContains(values []string, want string) bool {
 func TestProjectAssistantWorkflowToolsAreEinoGraphTools(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	req := projectAssistantRunRequest{
 		Identity:       identity{tenant: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
 		Project:        &aiv1alpha1.Project{},
@@ -717,6 +719,7 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolFiltersAndBoundsCat
 
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -777,6 +780,7 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolReturnsEveryEligibl
 
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -1001,6 +1005,7 @@ func TestFormatInitialProjectRuntimeVerificationRequiresProcessEvidence(t *testi
 func TestRuntimeVerificationRetriesOneFailedCurrentRevisionSync(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
 	project.UID = "project-uid-demo"
@@ -1107,6 +1112,7 @@ func TestVerifyDevelopmentRuntimeCheckpointsDirtySandboxBeforeVerification(t *te
 	id := identity{orgUUID: "org", workspaceUUID: "ws"}
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	var syncCalls atomic.Int32
 	server.developmentSyncAfterMutation = func(_ identity, _ *aiv1alpha1.Project, name string) error {
 		if name != projectActionWorkspaceSync {
@@ -1170,6 +1176,7 @@ func TestVerifyDevelopmentRuntimeFailsClosedOnSandboxCheckpointConflict(t *testi
 	id := identity{orgUUID: "org", workspaceUUID: "ws"}
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	fakeSandbox := &sandboxClientFake{response: projectAssistantSandboxWorkspaceResponse{SourceRevision: revision + 1, SourceDigest: "new"}}
 	sandbox := &projectAssistantRunSandbox{
 		server: server, client: fakeSandbox, id: id, project: project, scope: scope, runState: state,
@@ -1359,7 +1366,7 @@ func TestPollProjectAssistantProcessStatusWaitsForCurrentAttemptPort(t *testing.
 		})
 	}))
 	defer upstream.Close()
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: upstream.URL}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}
 	process, supported, err := pollProjectAssistantProcessStatusWithTiming(
 		context.Background(),
 		server,
@@ -1389,7 +1396,7 @@ func TestPollProjectAssistantProcessStatusMarksFirstWarmupTimeoutOperational(t *
 		})
 	}))
 	defer upstream.Close()
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: upstream.URL}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}
 	ref := dataPlaneRef{Resource: "applications", Name: "demo", Component: "backend"}
 	process, _, err := pollProjectAssistantProcessStatusWithTiming(
 		context.Background(), server, identity{clusterID: "root"}, ref,
@@ -1622,6 +1629,7 @@ func TestProjectAssistantRuntimeLogBlockersDetectSyntaxAndMissingScript(t *testi
 func TestProjectAssistantVerifyRuntimeGraphToolReturnsReadinessAndNoLogsWithoutBinding(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -1661,6 +1669,7 @@ func TestProjectAssistantVerifyRuntimeAlwaysCollectsWorkspaceEvidence(t *testing
 	}
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	repo := &ProjectRepositoryView{Ref: "demo", Name: "demo", Status: projectRepositoryStatusReady}
 
 	// Legacy or hallucinated file-list arguments must not disable evidence
@@ -1717,7 +1726,7 @@ func TestProjectAssistantVerifyRuntimeSchemaDoesNotExposeWorkspaceEvidenceContro
 	if err != nil {
 		t.Fatalf("read graph tool info: %v", err)
 	}
-	generated, err := info.ParamsOneOf.ToJSONSchema()
+	generated, err := info.ToJSONSchema()
 	if err != nil {
 		t.Fatalf("generate graph tool schema: %v", err)
 	}
@@ -1751,6 +1760,7 @@ func einoToolByNameForTest(t *testing.T, tools []einotool.BaseTool, name string)
 func TestProjectAssistantWorkflowRegisteredReadOnly(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	registry := server.projectAssistantToolRegistry()
 	spec, ok := registry.Spec(projectToolPlanProjectChanges)
 	if !ok {
@@ -1770,6 +1780,7 @@ func TestProjectAssistantWorkflowRegisteredReadOnly(t *testing.T) {
 func TestProjectAssistantReadinessWorkflowRegisteredReadOnly(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	registry := server.projectAssistantToolRegistry()
 	spec, ok := registry.Spec(projectToolCheckProjectReadiness)
 	if !ok {
@@ -1789,6 +1800,7 @@ func TestProjectAssistantReadinessWorkflowRegisteredReadOnly(t *testing.T) {
 func TestProjectAssistantPrepareDeploymentWorkflowRegisteredReadOnly(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	registry := server.projectAssistantToolRegistry()
 	spec, ok := registry.Spec(projectToolPrepareProjectDeployment)
 	if !ok {
@@ -1808,6 +1820,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowRegisteredReadOnly(t *testing.
 func TestProjectAssistantRuntimeWorkflowToolsRegistered(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	registry := server.projectAssistantToolRegistry()
 	tests := []struct {
 		name       string
@@ -1844,6 +1857,7 @@ func TestProjectAssistantWorkflowPlansFromMemoryRepositoryAndWorkspace(t *testin
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -1891,6 +1905,7 @@ func TestProjectAssistantReadinessWorkflowReportsContextWithoutTrace(t *testing.
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -1934,6 +1949,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowReportsBuildAndRuntimeReadines
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -1981,6 +1997,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowReportsBuildAndRuntimeReadines
 func TestProjectAssistantPrepareDeploymentWorkflowReportsBlockers(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -2002,6 +2019,7 @@ func TestProjectAssistantWorkflowDoesNotMutateWorkspace(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -2028,6 +2046,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowDoesNotMutateWorkspace(t *test
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -2053,6 +2072,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowDoesNotMutateWorkspace(t *test
 func TestProjectAssistantRuntimeStatusAndPreviewWorkflowsReportNotConfiguredWithoutSessionRuntime(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	for _, name := range []string{"get_runtime_status", "get_preview_url"} {
 		t.Run(name, func(t *testing.T) {
 			id := identity{tenant: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
@@ -2141,6 +2161,7 @@ func TestProjectAssistantPreviewURLWorkflowReturnsExternalPreviewURL(t *testing.
 func TestProjectAssistantWorkflowBoundsLargeResultAsJSON(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"

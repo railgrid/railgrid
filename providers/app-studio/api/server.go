@@ -34,6 +34,7 @@ import (
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
@@ -95,6 +96,20 @@ type Server struct {
 	// caller. Nil without a hub URL; identity then carries no org/workspace
 	// scope.
 	tenantWorkspaces workspaceLookup
+	// tenantActors resolves the AUTHENTICATED caller behind a request's
+	// bearer, through a SelfSubjectReview on the request's own cluster. It is
+	// the only source of identity.actor; X-Railgrid-User is a label.
+	tenantActors actorLookup
+	// tenantProviders resolves which provider serves a dependency's APIExport
+	// in a given workspace, from that workspace's own APIBindings. Every
+	// cross-provider URL is built from it, so a self-hosted copy of a
+	// dependency is reached by the name the tenant enabled rather than by a
+	// constant compiled in here.
+	tenantProviders providerLookup
+	// callers builds the caller-scoped client the data plane's two gates run
+	// through. It holds no provider credential at all: the only way a
+	// data-plane request is authorized is the caller's own bearer.
+	callers dataplane.CallerFactory
 	// llmDiscoveryHTTPClient is a narrow test seam for credential-scoped model
 	// catalog requests. Production uses a redirect-denying bounded client.
 	llmDiscoveryHTTPClient *http.Client
@@ -143,11 +158,11 @@ type Server struct {
 	// far a plain (non-App Studio) sync pushed the agent's applied revision
 	// ahead of the FileStore revision. See developmentSyncRevision.
 	developmentSyncRevisionOffsets map[string]uint64
-	// codeCommitBinary / codeCheckoutBinary cache, per workspace cluster,
-	// whether the Code provider's commit_files / checkout_repository tools
-	// advertise base64 binaries. syncBinary caches, per development
-	// component, whether its agent's /status advertises base64 sync.
-	codeCommitBinary   hubmcp.CapabilityCache
+	// codeCheckoutBinary caches, per workspace cluster, whether the Code
+	// provider's checkout_repository tool advertises base64 binaries. Commit
+	// is not cached because it is not probed: it is an action whose schema
+	// declares the encoding. syncBinary caches, per development component,
+	// whether its agent's /status advertises base64 sync.
 	codeCheckoutBinary hubmcp.CapabilityCache
 	syncBinary         hubmcp.CapabilityCache
 	// syncBinaryNotices remembers components already told (in the log) that
@@ -227,6 +242,9 @@ func NewWithWorkspaceContext(parent context.Context, tenantClient *tenant.Client
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		tenantWorkspaces:         workspaceLookupFor(tenantClient, hubBase, mcpInsecureSkipTLSVerify),
+		tenantActors:             actorLookupFor(hubBase, mcpInsecureSkipTLSVerify),
+		tenantProviders:          providerLookupFor(hubBase, mcpInsecureSkipTLSVerify),
+		callers:                  callerFactoryFor(hubBase, mcpInsecureSkipTLSVerify),
 		hubPublicURL:             strings.TrimSpace(os.Getenv("RAILGRID_HUB_PUBLIC_URL")),
 		actionsExternalURL:       strings.TrimSpace(os.Getenv("RAILGRID_ACTIONS_EXTERNAL_URL")),
 		actionsCABundle:          actionsCABundle,
@@ -330,108 +348,12 @@ func (s *Server) developmentSyncLock(id identity, project *aiv1alpha1.Project) *
 	return lock
 }
 
-// Register mounts the project routes onto r. The hub backend proxy strips the
-// /services/providers/app-studio prefix, so paths are registered bare.
-func (s *Server) Register(r *mux.Router) {
-	r.HandleFunc("/metrics", projectAssistantMetricsHandler).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects", s.listProjects).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects", s.createProject).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/stream", s.createProjectStream).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/create-readiness", s.getProjectCreateReadiness).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/plan", s.planProject).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/development-templates", s.listDevelopmentTemplates).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/import-repositories", s.listImportRepositories).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/llm-settings", s.getProjectLLMSettings).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/llm-settings", s.patchProjectLLMSettings).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/llm-settings/models/discover", s.discoverProjectLLMModels).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/llm-settings/test", s.testProjectLLMConnection).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/llm-settings/models", s.createProjectLLMModel).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.patchProjectLLMModel).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.deleteProjectLLMModel).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/llm-settings/default", s.setDefaultProjectLLMModel).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/{project}", s.getProject).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}", s.patchProject).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/{project}/repository", s.putProjectRepository).Methods(http.MethodPut)
-	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/thumbnail", s.getProjectThumbnail).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/attachments", s.listProjectAssistantAttachments).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/attachments", s.createProjectAssistantAttachment).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/attachments/{attachment}", s.getProjectAssistantAttachment).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/attachments/{attachment}", s.deleteProjectAssistantAttachment).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/assistant/threads", s.listProjectAssistantThreads).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/skills", s.getProjectAssistantSkills).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/skills/detail", s.getProjectAssistantSkillDetailByID).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/skills/project", s.createProjectAssistantSkill).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/skills/project/import", s.importProjectAssistantSkill).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/skills/activation", s.setProjectAssistantSkillActivation).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/skills/project/{packageName:.*}/export", s.exportProjectAssistantSkill).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/skills/project/{packageName:.*}", s.getProjectAssistantSkillDetail).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/skills/project/{packageName:.*}", s.updateProjectAssistantSkill).Methods(http.MethodPut)
-	r.HandleFunc("/api/projects/{project}/assistant/skills/project/{packageName:.*}", s.deleteProjectAssistantSkill).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/assistant/threads", s.createProjectAssistantThread).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}", s.patchProjectAssistantThread).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}", s.deleteProjectAssistantThread).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/items", s.listProjectAssistantThreadItems).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/events", s.streamProjectAssistantThreadEvents).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns", s.startProjectAssistantThreadTurn).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/reviews", s.startProjectAssistantThreadReview).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/active", s.activeProjectAssistantThreadTurn).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}", s.getProjectAssistantThreadTurn).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/steer", s.steerProjectAssistantThreadTurn).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/interrupt", s.interruptProjectAssistantThreadTurn).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/continue", s.continueProjectAssistantThreadTurn).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/approval", s.respondProjectAssistantThreadTurn).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/input", s.respondProjectAssistantThreadTurn).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/template", s.putProjectTemplate).Methods(http.MethodPut)
-	r.HandleFunc("/api/projects/{project}/integrations", s.listProjectIntegrations).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/integrations", s.addProjectIntegration).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/integrations/{integration}", s.patchProjectIntegration).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/{project}/integrations/{integration}", s.removeProjectIntegration).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/integrations/{integration}/invoke", s.invokeProjectIntegration).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/integrations/{integration}/invoke/{action}", s.invokeProjectIntegration).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/integrations/{integration}/actions", s.invokeProjectIntegration).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/integrations/{integration}/actions/{action}", s.invokeProjectIntegration).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/promotion", s.getProjectPromotion).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/releases", s.getProjectReleases).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/checkpoints", s.getProjectCheckpoints).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/promote", s.promoteProjectHandler).Methods(http.MethodPost)
-	// Preview visibility is the development-side counterpart of publishing and
-	// lives in the same project settings surface.
-	r.HandleFunc("/api/projects/{project}/preview", s.getProjectPreviewAccess).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/preview", s.setProjectPreviewAccess).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/preview", s.resetProjectPreviewAccess).Methods(http.MethodDelete)
-	// Preview grants mirror the publishing ones exactly — same shapes, same
-	// member/invite semantics — because both delegate to the shared handlers.
-	r.HandleFunc("/api/projects/{project}/preview/grants", s.listProjectPreviewGrants).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/preview/grants", s.createProjectPreviewGrant).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/preview/grants/{grant}", s.revokeProjectPreviewGrant).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/publishing", s.getProjectPublishing).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/publishing", s.publishProject).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/publishing", s.unpublishProject).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/publishing/members", s.listProjectPublishingMembers).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/publishing/grants", s.listProjectPublishingGrants).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/publishing/grants", s.createProjectPublishingGrant).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/publishing/grants/{grant}", s.revokeProjectPublishingGrant).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/hydrate-workspace", s.hydrateProjectWorkspace).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/restore-workspace", s.restoreProjectWorkspace).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/scaffold", s.reseedProjectScaffold).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/sync-development", s.syncProjectDevelopment).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/restart-development", s.restartProjectDevelopment).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/development-logs", s.logsProjectDevelopment).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/development-status", s.statusProjectDevelopment).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/files", s.listProjectFiles).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/files/content", s.readProjectFile).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/files/content", s.writeProjectFile).Methods(http.MethodPut)
-	r.HandleFunc("/api/projects/{project}/files/content", s.deleteProjectFile).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/files/raw", s.readProjectFileRaw).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/files/upload", s.uploadProjectFiles).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/authorize-development-preview", s.authorizeProjectDevelopmentPreview).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/preview-bridge/sessions", s.createProjectPreviewBridgeSession).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/preview-bridge/sessions/{session}", s.deleteProjectPreviewBridgeSession).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.getProjectAssistantApprovalMode).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.patchProjectAssistantApprovalMode).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/memory", s.patchProjectMemory).Methods(http.MethodPatch)
+// MetricsHandler is the assistant's Prometheus surface. It is NOT part of the
+// tenant-facing server: serve.New has no route class for it, and it never had
+// one — it was mounted beside /api/* and reachable by any caller the hub
+// proxied. main.go serves it on the internal listener instead.
+func (s *Server) MetricsHandler() http.Handler {
+	return http.HandlerFunc(projectAssistantMetricsHandler)
 }
 
 // ConfigureAttachmentDraftRetention changes the expiry applied to explicitly
@@ -503,6 +425,15 @@ func (s *Server) requireProjectClient(w http.ResponseWriter, r *http.Request) (*
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Railgrid-Cluster missing) — the hub did not resolve a cluster for this workspace")
 		return nil, identity{}, false
 	}
+	if id.user == "" {
+		// Everything under /api/projects records or checks an actor somewhere
+		// (thread and attachment ownership, approval decisions, the audit
+		// trail). Serving a request whose caller could not be identified
+		// would write those as if nobody did them.
+		log.Printf("app-studio: resolving caller identity on cluster %s: %v", id.clusterID, id.userErr)
+		writeStatus(w, http.StatusBadGateway, "ActorUnresolved", ErrActorUnresolved.Error()+" on cluster "+id.clusterID+": "+errorText(id.userErr))
+		return nil, identity{}, false
+	}
 	c, err := s.clientFor(id)
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "creating project client: "+err.Error())
@@ -525,12 +456,6 @@ func (s *Server) requireProjectWithClient(w http.ResponseWriter, r *http.Request
 	}
 	s.noteWorkspaceCluster(id)
 	return c, id, p, true
-}
-
-// requireProject fetches the named Project, discarding the client/identity.
-func (s *Server) requireProject(w http.ResponseWriter, r *http.Request) (*aiv1alpha1.Project, bool) {
-	_, _, p, ok := s.requireProjectWithClient(w, r)
-	return p, ok
 }
 
 // requireStore guards against a nil message store.

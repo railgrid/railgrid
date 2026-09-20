@@ -110,14 +110,17 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 	if r := findRule(t, rules, "edges.railgrid.ai", "kubernetesclusters"); r == nil {
 		t.Fatal("missing edges rule")
 	}
-	var proxy bool
-	for _, r := range rules {
-		if slices.Contains(r.APIGroups, "edges.railgrid.ai") && slices.Equal(r.Verbs, []string{"proxy"}) {
-			proxy = true
-		}
+	// The edges data plane gates create on {resource}/{verb}, never a bare
+	// verb on the object (providers/edges/internal/tunnel/grammar.go).
+	k8s := findRule(t, rules, "edges.railgrid.ai", "kubernetesclusters/k8s")
+	if k8s == nil || !slices.Equal(k8s.Verbs, []string{"create"}) ||
+		!slices.Equal(k8s.Resources, []string{"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp"}) {
+		t.Fatalf("edges data-plane rule = %+v, want create on kubernetesclusters/{k8s,ssh,mcp}", k8s)
 	}
-	if !proxy {
-		t.Fatalf("missing proxy verb on edges resources: %+v", rules)
+	for _, r := range rules {
+		if slices.Contains(r.APIGroups, "edges.railgrid.ai") && slices.Contains(r.Verbs, "proxy") {
+			t.Fatalf("retired wildcard proxy verb granted: %+v", r)
+		}
 	}
 
 	exec := findRule(t, rules, "infrastructure.railgrid.ai", "instances/exec")
@@ -165,19 +168,74 @@ func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
 		}
 	}
 
-	// A group whose data plane serves every bound resource keeps them all.
+	// Each edge kind gets exactly the verbs its data plane serves, and a kind
+	// the tunnel does not serve (macosservers) gets no data-plane grant.
 	edges := buildRules([]apisv1alpha2.BoundAPIResource{
 		bound("edges.railgrid.ai", "kubernetesclusters"),
 		bound("edges.railgrid.ai", "linuxservers"),
+		bound("edges.railgrid.ai", "macosservers"),
+		bound("edges.railgrid.ai", "services"),
 	}, nil, false)
-	var proxied []string
-	for _, r := range edges {
-		if slices.Contains(r.APIGroups, "edges.railgrid.ai") && slices.Equal(r.Verbs, []string{"proxy"}) {
-			proxied = r.Resources
+	want := map[string][]string{
+		"kubernetesclusters/k8s": {"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp"},
+		"linuxservers/k8s":       {"linuxservers/k8s", "linuxservers/ssh"},
+		"services/proxy":         {"services/proxy", "services/mcp"},
+	}
+	for key, resources := range want {
+		r := findRule(t, edges, "edges.railgrid.ai", key)
+		if r == nil || !slices.Equal(r.Verbs, []string{"create"}) || !slices.Equal(r.Resources, resources) {
+			t.Fatalf("%s rule = %+v, want create on %v", key, r, resources)
 		}
 	}
-	if !slices.Equal(proxied, []string{"kubernetesclusters", "linuxservers"}) {
-		t.Fatalf("proxy resources = %v, want both edge kinds", proxied)
+	for _, r := range edges {
+		for _, res := range r.Resources {
+			if strings.HasPrefix(res, "macosservers/") {
+				t.Fatalf("macosservers must get no data-plane grant: %+v", r)
+			}
+		}
+	}
+}
+
+// The agents data plane's probe verbs are a grant on modelcredentials and
+// nothing else. Agents used to carry them as agents/model-test and
+// agents/model-discover, which meant an MCP token holding "may test a model
+// credential" held it on the AGENT — the same object chat and run hang off.
+// Now the credential is an object of its own and the grant says so, and no
+// other agents.railgrid.ai resource picks up a subresource by sharing the
+// group.
+func TestBuildRules_AgentsGrantsOnlyModelCredentialProbes(t *testing.T) {
+	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+		bound("agents.railgrid.ai", "agents"),
+		bound("agents.railgrid.ai", "modelcredentials"),
+		bound("agents.railgrid.ai", "runs"),
+		bound("agents.railgrid.ai", "connections"),
+	}, nil, false)
+	assertNoWildcards(t, rules)
+
+	probe := findRule(t, rules, "agents.railgrid.ai", "modelcredentials/test")
+	if probe == nil || !slices.Equal(probe.Verbs, []string{"create"}) ||
+		!slices.Equal(probe.Resources, []string{"modelcredentials/test", "modelcredentials/discover"}) {
+		t.Fatalf("agents data-plane rule = %+v, want create on modelcredentials/{test,discover}", probe)
+	}
+	// The retired coordinates, and everything else the data plane serves that
+	// an MCP token has no business invoking.
+	for _, res := range []string{
+		"agents/model-test", "agents/model-discover",
+		"agents/chat", "agents/run", "agents/inbox-resolve",
+		"connections/test", "runs/cancel",
+	} {
+		if r := findRule(t, rules, "agents.railgrid.ai", res); r != nil {
+			t.Fatalf("%s must not be granted: %+v", res, r)
+		}
+	}
+
+	// readOnly servers invoke nothing: a probe is still a call out to a third
+	// party with the tenant's key.
+	ro := buildRules([]apisv1alpha2.BoundAPIResource{
+		bound("agents.railgrid.ai", "modelcredentials"),
+	}, nil, true)
+	if r := findRule(t, ro, "agents.railgrid.ai", "modelcredentials/test"); r != nil {
+		t.Fatalf("readOnly server must not get a probe grant: %+v", r)
 	}
 }
 

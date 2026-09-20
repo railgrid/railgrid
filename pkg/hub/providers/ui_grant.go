@@ -580,9 +580,12 @@ func (h *UIGrantHandler) hashOrgProviderMainJS(ctx context.Context, prov Provide
 		// anyway; this keeps the failure legible.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	data, err := fetchProviderMainJS(ctx, client, &ui)
+	// Unconditional: an org bundle is fetched per grant against a
+	// transport built for that grant, so there is no cached validator to
+	// revalidate with here.
+	read, err := fetchProviderMainJS(ctx, client, &ui, "")
 	if err != nil {
 		return "", err
 	}
-	return sriSHA384(data), nil
+	return read.integrity, nil
 }

@@ -62,9 +62,9 @@ devMode: false
 allowUnverifiedSSHHostKey: false
 
 # Secret holding the workspace-admin kubeconfig minted via /bonkers (admin
-# onboarding). Used by BOTH the init container (bootstrap APIExport/schemas) and
-# the serve container (token validation + cross-tenant controllers). Key must be
-# "kubeconfig".
+# onboarding). Used by BOTH the init container (applies the generated APIExport
+# + schemas from /etc/railgrid/kcp) and the serve container (token validation +
+# cross-tenant controllers). Key must be "kubeconfig".
 providerKubeconfig:
   secretName: railgrid-provider-kubeconfig
 

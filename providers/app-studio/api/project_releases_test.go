@@ -82,7 +82,7 @@ func TestProjectReleasesOrdersEvidenceAndComputesLiveFromProductionImages(t *tes
 		t.Fatalf("get project: %v", err)
 	}
 
-	response, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).projectReleases(context.Background(), client, persisted)
+	response, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).projectReleases(context.Background(), client, persisted)
 	if err != nil {
 		t.Fatalf("projectReleases: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestPromoteProjectSelectedHistoricalCommitResolvesFreshArtifacts(t *testing
 		t.Fatalf("get project: %v", err)
 	}
 
-	releases, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).projectReleases(context.Background(), client, persisted)
+	releases, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).projectReleases(context.Background(), client, persisted)
 	if err != nil || len(releases.Items) != 2 {
 		t.Fatalf("release history before promotion = %#v, err=%v", releases, err)
 	}
@@ -158,10 +158,10 @@ func TestPromoteProjectSelectedHistoricalCommitResolvesFreshArtifacts(t *testing
 	if oldReleaseID == "" {
 		t.Fatal("missing historical release ID")
 	}
-	if _, _, missingEvidenceErr := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).promoteProjectWithSelection(context.Background(), client, identity{}, persisted, nil, nil, oldSHA, true); missingEvidenceErr == nil || !strings.Contains(missingEvidenceErr.Error(), "releaseID is required") {
+	if _, _, missingEvidenceErr := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).promoteProjectWithSelection(context.Background(), client, identity{}, persisted, nil, nil, oldSHA, true); missingEvidenceErr == nil || !strings.Contains(missingEvidenceErr.Error(), "releaseID is required") {
 		t.Fatalf("promotion without releaseID error = %v, want release evidence validation", missingEvidenceErr)
 	}
-	updated, response, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).promoteProjectWithSelection(context.Background(), client, identity{}, persisted, nil, nil, oldSHA, true, oldReleaseID)
+	updated, response, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).promoteProjectWithSelection(context.Background(), client, identity{}, persisted, nil, nil, oldSHA, true, oldReleaseID)
 	if err != nil {
 		t.Fatalf("historical promotion: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestPromoteProjectSelectedHistoricalCommitResolvesFreshArtifacts(t *testing
 	}
 
 	for _, invalid := range []string{failedSHA, strings.Repeat("9", 40), ""} {
-		_, _, invalidErr := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).promoteProjectWithSelection(context.Background(), client, identity{}, updated, nil, nil, invalid, true, oldReleaseID)
+		_, _, invalidErr := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).promoteProjectWithSelection(context.Background(), client, identity{}, updated, nil, nil, invalid, true, oldReleaseID)
 		if invalidErr == nil || !strings.Contains(invalidErr.Error(), "commitSHA is required") && !strings.Contains(invalidErr.Error(), "not a successful commit") {
 			t.Fatalf("selected commit %q error = %v, want validation rejection", invalid, invalidErr)
 		}
@@ -211,7 +211,7 @@ func TestPromoteProjectSelectedHistoricalCommitResolvesFreshArtifacts(t *testing
 	if _, err := client.Resource(codePackageResource, "").Update(context.Background(), frontend, metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("update repointed frontend package: %v", err)
 	}
-	_, _, staleErr := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).promoteProjectWithSelection(context.Background(), client, identity{}, updated, nil, nil, oldSHA, true, oldReleaseID)
+	_, _, staleErr := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).promoteProjectWithSelection(context.Background(), client, identity{}, updated, nil, nil, oldSHA, true, oldReleaseID)
 	if staleErr == nil || !strings.Contains(staleErr.Error(), "release evidence is stale") {
 		t.Fatalf("repointed tag promotion error = %v, want stale release evidence rejection", staleErr)
 	}
@@ -228,7 +228,7 @@ func TestPromoteProjectSelectedHistoricalCommitRejectsPartialArtifacts(t *testin
 	if err != nil {
 		t.Fatalf("get project: %v", err)
 	}
-	_, _, err = (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).promoteProjectWithSelection(context.Background(), client, identity{}, persisted, nil, nil, commitSHA, true, "sha256:stale")
+	_, _, err = (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).promoteProjectWithSelection(context.Background(), client, identity{}, persisted, nil, nil, commitSHA, true, "sha256:stale")
 	if err == nil || !strings.Contains(err.Error(), "not ready to promote") {
 		t.Fatalf("partial historical promotion error = %v, want not-ready validation", err)
 	}
@@ -237,7 +237,7 @@ func TestPromoteProjectSelectedHistoricalCommitRejectsPartialArtifacts(t *testin
 func TestPromoteProjectHandlerRejectsExplicitCommitWithoutReleaseEvidence(t *testing.T) {
 	project := projectForPromoteWithRepository("shop", "repo-a")
 	client := newProjectBuildProvenanceClient(project, nil, nil)
-	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/shop/promote", strings.NewReader(`{"commitSHA":"1111111111111111111111111111111111111111"}`))
 	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
@@ -259,7 +259,7 @@ func TestProjectReleaseHandlersReturnAndPromoteExactEvidence(t *testing.T) {
 		projectBuildPackageForTest("repo-a", "backend", "ghcr.io/acme/shop/backend", map[string]any{"digest": "sha256:back", "tags": []any{"sha-" + commitSHA}}),
 	}
 	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, packages)
-	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 
 	getRequest := httptest.NewRequest(http.MethodGet, "/api/projects/shop/releases", nil)
 	getRequest = mux.SetURLVars(getRequest, map[string]string{"project": "shop"})

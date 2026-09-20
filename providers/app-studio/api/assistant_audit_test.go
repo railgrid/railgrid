@@ -173,7 +173,7 @@ func TestProjectAssistantRunAuditRecordsModelCallShapeWithoutPayloads(t *testing
 	run := &store.AssistantRun{ID: "run-model-call"}
 	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, started)
 	remaining := int64(1234)
-	recorder.recordModelCall(
+	if err := recorder.recordModelCall(
 		context.Background(),
 		2,
 		7,
@@ -184,8 +184,10 @@ func TestProjectAssistantRunAuditRecordsModelCallShapeWithoutPayloads(t *testing
 			{Name: projectEinoAssistantWriteTodosTool},
 		},
 		[]*schema.ToolInfo{{Name: projectToolEditFile}},
-	)
-	recorder.recordModelResult(
+	); err != nil {
+		t.Fatalf("recordModelCall: %v", err)
+	}
+	if err := recorder.recordModelResult(
 		context.Background(),
 		2,
 		schema.AssistantMessage("top-secret-model-content", []schema.ToolCall{{
@@ -196,7 +198,9 @@ func TestProjectAssistantRunAuditRecordsModelCallShapeWithoutPayloads(t *testing
 				Arguments: `{"todos":[{"content":"top-secret-todo-content","status":"in_progress"}]}`,
 			},
 		}}),
-	)
+	); err != nil {
+		t.Fatalf("recordModelResult: %v", err)
+	}
 
 	raw := string(run.Audit)
 	for _, forbidden := range []string{
@@ -355,12 +359,16 @@ func TestProjectAssistantRunAuditKeepsFailureAdjacentModelCalls(t *testing.T) {
 	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
 	total := projectAssistantAuditMaxModelCalls + 3
 	for ordinal := 1; ordinal <= total; ordinal++ {
-		recorder.recordModelCall(context.Background(), ordinal, 0, 0, nil, nil, nil)
-		recorder.recordModelResult(
+		if err := recorder.recordModelCall(context.Background(), ordinal, 0, 0, nil, nil, nil); err != nil {
+			t.Fatalf("recordModelCall: %v", err)
+		}
+		if err := recorder.recordModelResult(
 			context.Background(),
 			ordinal,
 			schema.AssistantMessage("safe", nil),
-		)
+		); err != nil {
+			t.Fatalf("recordModelResult: %v", err)
+		}
 	}
 
 	var audit projectAssistantRunAudit
@@ -382,7 +390,9 @@ func TestProjectAssistantRunAuditKeepsFailureAdjacentModelCalls(t *testing.T) {
 func TestProjectAssistantRunAuditMarksUnfinishedModelCallAsError(t *testing.T) {
 	run := &store.AssistantRun{ID: "run-model-call-error"}
 	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
-	recorder.recordModelCall(context.Background(), 1, 0, 0, nil, nil, nil)
+	if err := recorder.recordModelCall(context.Background(), 1, 0, 0, nil, nil, nil); err != nil {
+		t.Fatalf("recordModelCall: %v", err)
+	}
 	recorder.recordModelError()
 
 	var audit projectAssistantRunAudit
@@ -807,6 +817,7 @@ func TestCompleteClaimedProjectAssistantRunAfterResumeErrorFinalizesAudit(t *tes
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	started := time.Now().UTC().Add(-2 * time.Second)
 	run := store.AssistantRun{

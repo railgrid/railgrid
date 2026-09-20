@@ -12,44 +12,104 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 )
 
-func TestDataPlaneURL(t *testing.T) {
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example/"}
+func testDataPlaneServer(provider string) *Server {
+	return &Server{
+		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		tenantActors:     defaultTestActors.lookup,
+		tenantProviders:  testProviders(provider),
+		hubBase:          "https://hub.example/",
+	}
+}
 
-	got := s.dataPlaneURL("root:railgrid:orgs:acme", dataPlaneRef{Resource: "applications", Name: "shop-dev"}, dataPlaneVerbLog, "")
-	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/root:railgrid:orgs:acme/applications/shop-dev/log"
+func TestDataPlaneURL(t *testing.T) {
+	s := testDataPlaneServer("infrastructure")
+	id := identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"}
+
+	got, err := s.dataPlaneURL(context.Background(), id, dataPlaneRef{Resource: "instances", Name: "shop-dev"}, dataPlaneVerbLog, "")
+	if err != nil {
+		t.Fatalf("dataPlaneURL: %v", err)
+	}
+	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/rgl3jcl2cfl3xa5p/instances/shop-dev/log"
 	if got != want {
 		t.Fatalf("dataPlaneURL = %q, want %q", got, want)
 	}
 
-	// The open proxy verb appends the caller tail after the verb.
-	gotProxy := s.dataPlaneURL("c1", dataPlaneRef{Resource: "applications", Name: "r1"}, dataPlaneVerbProxy, "/assets/app.js")
-	wantProxy := "https://hub.example/services/providers/infrastructure/dataplane/clusters/c1/applications/r1/proxy/assets/app.js"
+	// The open proxy verb appends the caller tail after the verb, and carries
+	// the caller's query string through untouched.
+	gotProxy, err := s.dataPlaneURL(context.Background(), id, dataPlaneRef{Resource: "instances", Name: "r1"}, dataPlaneVerbProxy, "/search?q=ada&format=json")
+	if err != nil {
+		t.Fatalf("proxy URL: %v", err)
+	}
+	wantProxy := "https://hub.example/services/providers/infrastructure/dataplane/clusters/rgl3jcl2cfl3xa5p/instances/r1/proxy/search?q=ada&format=json"
 	if gotProxy != wantProxy {
 		t.Fatalf("proxy URL = %q, want %q", gotProxy, wantProxy)
 	}
 
 	// Component verbs address a template instance's component
 	// (docs/app-studio-template-sandboxes.md §3).
-	gotComp := s.dataPlaneURL("c1", dataPlaneRef{Resource: "applications", Name: "shop-dev", Component: "backend"}, dataPlaneVerbSync, "")
-	wantComp := "https://hub.example/services/providers/infrastructure/dataplane/clusters/c1/applications/shop-dev/components/backend/sync"
+	gotComp, err := s.dataPlaneURL(context.Background(), id, dataPlaneRef{Resource: "instances", Name: "shop-dev", Component: "backend"}, dataPlaneVerbSync, "")
+	if err != nil {
+		t.Fatalf("component URL: %v", err)
+	}
+	wantComp := "https://hub.example/services/providers/infrastructure/dataplane/clusters/rgl3jcl2cfl3xa5p/instances/shop-dev/components/backend/sync"
 	if gotComp != wantComp {
 		t.Fatalf("component URL = %q, want %q", gotComp, wantComp)
 	}
 }
 
+// The provider segment is whatever the workspace bound, not a constant: a
+// tenant running its own copy of infrastructure is reached under that copy's
+// name with no change here.
+func TestDataPlaneURLFollowsTheWorkspaceBinding(t *testing.T) {
+	s := testDataPlaneServer("acme-infrastructure")
+	got, err := s.dataPlaneURL(context.Background(), identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"},
+		dataPlaneRef{Resource: "instances", Name: "shop-dev"}, dataPlaneVerbLog, "")
+	if err != nil {
+		t.Fatalf("dataPlaneURL: %v", err)
+	}
+	want := "https://hub.example/services/providers/acme-infrastructure/dataplane/clusters/rgl3jcl2cfl3xa5p/instances/shop-dev/log"
+	if got != want {
+		t.Fatalf("dataPlaneURL = %q, want %q", got, want)
+	}
+}
+
+// A workspace path is not a logical-cluster ID: the hub proxy answers it with
+// 403, so the address is refused here rather than minted and sent.
+func TestDataPlaneURLRefusesAWorkspacePath(t *testing.T) {
+	s := testDataPlaneServer("infrastructure")
+	if _, err := s.dataPlaneURL(context.Background(), identity{clusterID: "root:railgrid:orgs:acme", token: "tok"},
+		dataPlaneRef{Resource: "instances", Name: "shop-dev"}, dataPlaneVerbLog, ""); err == nil {
+		t.Fatal("expected a workspace path to be refused")
+	}
+}
+
+// Without a binding there is no coordinate. The call fails with that reason
+// instead of guessing a provider name that may not be enabled here.
+func TestDataPlaneURLFailsWhenNoProviderIsBound(t *testing.T) {
+	s := testDataPlaneServer("infrastructure")
+	s.tenantProviders = func(context.Context, string, string, string) (string, error) {
+		return "", errors.New("workspace binds no provider serving infrastructure.providers.railgrid.ai")
+	}
+	if _, err := s.dataPlaneURL(context.Background(), identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"},
+		dataPlaneRef{Resource: "instances", Name: "shop-dev"}, dataPlaneVerbLog, ""); err == nil {
+		t.Fatal("expected an unbound dependency to fail")
+	}
+}
+
 func TestNewDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
-	id := identity{clusterID: "c1", token: "tok"}
+	id := identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"}
 	ref := dataPlaneRef{Resource: "applications", Name: "r1"}
 	// No hub base configured.
-	if _, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).newDataPlaneRequest(context.Background(), http.MethodGet, id, ref, dataPlaneVerbLog, "", nil); err == nil {
+	if _, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).newDataPlaneRequest(context.Background(), http.MethodGet, id, ref, dataPlaneVerbLog, "", nil); err == nil {
 		t.Fatal("expected error when hubBase is unset")
 	}
 	// No cluster on the request.
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	s := testDataPlaneServer("infrastructure")
 	if _, err := s.newDataPlaneRequest(context.Background(), http.MethodGet, identity{token: "tok"}, ref, dataPlaneVerbLog, "", nil); err == nil {
 		t.Fatal("expected error when clusterID is empty")
 	}
@@ -71,10 +131,10 @@ func TestNewDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
 // sandbox sync, exec and restart returned once the infrastructure provider
 // moved into a tenant cluster.
 func TestNewDataPlaneRequestSelectsTheCallerWorkspace(t *testing.T) {
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	s := testDataPlaneServer("infrastructure")
 	ref := dataPlaneRef{Resource: "instances", Name: "pitch-dev", Component: "app"}
 	req, err := s.newDataPlaneRequest(context.Background(), http.MethodPost, identity{
-		clusterID:     "c1",
+		clusterID:     "rgl3jcl2cfl3xa5p",
 		token:         "tok",
 		orgUUID:       " org-1 ",
 		workspaceUUID: "ws-1",
@@ -93,7 +153,7 @@ func TestNewDataPlaneRequestSelectsTheCallerWorkspace(t *testing.T) {
 	// the hub treats a present-but-empty header as an org-scope selection too,
 	// but an absent header keeps the request identical to today's for callers
 	// that never had a workspace.
-	req, err = s.newDataPlaneRequest(context.Background(), http.MethodGet, identity{clusterID: "c1", token: "tok"}, ref, dataPlaneVerbLog, "", nil)
+	req, err = s.newDataPlaneRequest(context.Background(), http.MethodGet, identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"}, ref, dataPlaneVerbLog, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

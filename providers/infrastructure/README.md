@@ -298,7 +298,7 @@ the policies it labelled as its own. Requirements and caveats:
 | `RAILGRID_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
 | `RAILGRID_PROVIDER_NAME` | `infrastructure` | CatalogEntry name |
 | `RAILGRID_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
-| `RAILGRID_PROVIDER_KUBECONFIG` | `/var/run/secrets/railgrid/railgrid-provider-kubeconfig` | Mounted kcp kubeconfig |
+| `RAILGRID_PROVIDER_KUBECONFIG` | **required** (chart: `/var/run/secrets/railgrid/railgrid-provider-kubeconfig`) | The workspace-scoped kubeconfig `init` mints. The only one `serve` reads — no `KUBECONFIG` fallback, no in-cluster fallback; unset is a startup failure |
 | `RAILGRID_TENANT_CREDENTIALS_SECRET` | `cloud-credentials` | Secret name in tenant workspace |
 | `RAILGRID_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace in tenant workspace |
 | `RAILGRID_CODING_SANDBOX_ENABLED` | `false` | Opts into seeding/admitting the platform-owned universal coding sandbox; enabled deployments require immutable universal and dev-agent images |
@@ -308,8 +308,7 @@ the policies it labelled as its own. Requirements and caveats:
 | `RAILGRID_TENANT_NETWORK_POLICY_ENABLED` | `false` | Maintain the tenant isolation NetworkPolicy in every runtime namespace (see "Tenant network isolation"); `false` removes the provider-owned ones |
 | `RAILGRID_TENANT_NETWORK_POLICY_ALLOWED_NAMESPACES` | (unset) | Comma-separated extra namespaces admitted by that policy |
 | `RAILGRID_TENANT_NETWORK_POLICY_ALLOWED_CIDRS` | (unset) | Comma-separated extra CIDRs (canonical form) admitted by that policy |
-| `RAILGRID_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=` replace `X-Railgrid-Tenant` (dev only) |
-| `KRO_KUBECONFIG` | (unset → stub mode) | Central kro cluster kubeconfig |
+| `KRO_KUBECONFIG` | (unset → in-cluster, else stub-only) | kro runtime cluster kubeconfig. Without one the Instance controller stays off and only the Template controller runs (stub backend) |
 | `KRO_NAMESPACE_PREFIX` | `railgrid-tenants-` | Per-tenant namespace prefix |
 
 ---
@@ -319,35 +318,63 @@ the policies it labelled as its own. Requirements and caveats:
 Everything below is for working on the provider locally or wiring it up by hand
 (without the operator). For deploying, use the operator section above.
 
-## Run locally (stub mode — no central kro needed)
+## Run locally: `init`, then `serve`
+
+`serve` never bootstraps and never runs with an admin credential. It reads one
+kubeconfig — `RAILGRID_PROVIDER_KUBECONFIG`, the workspace-scoped ServiceAccount
+credential `init` mints — and exits if it is not set. There is no fallback to
+`KUBECONFIG` and none to the pod's ServiceAccount: the first would give serve
+rights `init` deliberately withheld, and the second silently points every kcp
+controller at the host cluster instead of kcp.
+
+So local dev is two steps, in this order:
 
 ```sh
-# 1. Build the portal bundle.
+# 0. Build the portal bundle (once per portal change).
 npm --prefix portal install
 npm --prefix portal run build
 
-# 2. Run the provider. With KRO_KUBECONFIG unset, kro/stub.go serves
-#    three baked-in templates so the UI is demoable without infra.
+# 1. init — the one high-privilege step. Installs the CRDs, the APIExport and
+#    its schemas, the Templates CachedResource, then mints the ServiceAccount
+#    kubeconfig serve will run with and writes it to INFRASTRUCTURE_KUBECONFIG.
+#    Run it again whenever the schemas change; it is idempotent.
+INFRASTRUCTURE_ADMIN_KUBECONFIG=$KCP_ADMIN_KUBECONFIG \
+INFRASTRUCTURE_WORKSPACE_PATH=root:railgrid:providers:infrastructure \
+INFRASTRUCTURE_KUBECONFIG=./infrastructure.kubeconfig \
+go run . init
+
+# 2. serve — the long-lived process, on the minted credential.
+RAILGRID_PROVIDER_KUBECONFIG=./infrastructure.kubeconfig \
+RAILGRID_HUB_URL=https://console.127.0.0.1.sslip.io:9443 \
+RAILGRID_HUB_TOKEN=test \
+RAILGRID_HUB_INSECURE=true \
 go run .
-# → listening on :8081 (kro=*kro.stubClient tenant=false mcp=true)
+# → infrastructure provider listening on :8081 (mcp=true)
 
 # 3. Smoke test: liveness.
 curl -s localhost:8081/healthz
 
 # 4. MCP tools/list (note: SSE response — pipe through `head`). Templates
-#    and instances are NOT served as REST — they are kro_* MCP tools and,
-#    in a real cluster, CRDs read/written directly against kcp.
+#    and instances are NOT served as REST — they are MCP tools and, in a real
+#    cluster, CRDs read/written directly against kcp.
 curl -s -X POST -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   localhost:8081/mcp | head
 ```
 
-## Run against a real central kro cluster
+`make init-provider-infrastructure` then `make run-provider-infrastructure` are
+the same two steps against the embedded-kcp dev hub.
 
-Point `KRO_KUBECONFIG` at the central cluster's kubeconfig:
+## Add a real kro runtime cluster
+
+Without `KRO_KUBECONFIG` (and outside a pod) there is no cluster to materialize
+instances on, so the Instance controller stays off and only the Template
+controller runs, reconciling through the stub backend. Point `KRO_KUBECONFIG` at
+the runtime cluster to turn both on:
 
 ```sh
+RAILGRID_PROVIDER_KUBECONFIG=./infrastructure.kubeconfig \
 KRO_KUBECONFIG=/path/to/kro-kubeconfig \
 RAILGRID_HUB_URL=https://console.127.0.0.1.sslip.io:9443 \
 RAILGRID_HUB_TOKEN=test \

@@ -277,7 +277,7 @@ func TestProjectTemplateDevBindingCarriesTrustedActionsContext(t *testing.T) {
 func TestProjectTemplateBindingContextAllowsMissingActionsURLWithoutGrant(t *testing.T) {
 	p := &aiv1alpha1.Project{}
 	p.Name = "shop"
-	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup}).projectTemplateBindingContext(p, identity{})
+	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).projectTemplateBindingContext(p, identity{})
 	if err != nil {
 		t.Fatalf("projectTemplateBindingContext: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestProjectTemplateBindingContextAllowsMissingActionsURLWithoutGrant(t *tes
 func TestProjectTemplateBindingContextDoesNotEnableActionsWithoutGrant(t *testing.T) {
 	p := &aiv1alpha1.Project{}
 	p.Name = "shop"
-	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsExternalURL: "https://hub.example"}).projectTemplateBindingContext(p, identity{})
+	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://hub.example"}).projectTemplateBindingContext(p, identity{})
 	if err != nil {
 		t.Fatalf("projectTemplateBindingContext: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestProjectTemplateBindingContextIncludesCABundleOnlyWithActiveGrant(t *tes
 		},
 	}
 	bundle := "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----"
-	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsExternalURL: "https://hub.example", actionsCABundle: bundle}).projectTemplateBindingContext(p, identity{})
+	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://hub.example", actionsCABundle: bundle}).projectTemplateBindingContext(p, identity{})
 	if err != nil {
 		t.Fatalf("projectTemplateBindingContext: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestProjectTemplateBindingContextIncludesCABundleOnlyWithActiveGrant(t *tes
 	}
 
 	noGrant := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "plain"}}
-	context, err = (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsCABundle: bundle}).projectTemplateBindingContext(noGrant, identity{})
+	context, err = (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsCABundle: bundle}).projectTemplateBindingContext(noGrant, identity{})
 	if err != nil {
 		t.Fatalf("actionless projectTemplateBindingContext: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestProjectTemplateBindingContextRejectsMissingOrInvalidActionsURLWithGrant
 		{name: "path", url: "https://hub.example/actions", want: "absolute HTTPS URL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsExternalURL: tc.url}).projectTemplateBindingContext(p, identity{})
+			_, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: tc.url}).projectTemplateBindingContext(p, identity{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("projectTemplateBindingContext(%q) error = %v, want substring %q", tc.url, err, tc.want)
 			}
@@ -380,7 +380,7 @@ func TestProjectDevelopmentRuntimeBindingClearsStaleActionsContext(t *testing.T)
 		}`)},
 	}
 
-	updated, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup}).projectDevelopmentRuntimeBinding(binding, p, identity{
+	updated, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).projectDevelopmentRuntimeBinding(binding, p, identity{
 		tenant:        "cluster-a",
 		clusterID:     "cluster-a",
 		workspacePath: "root:railgrid:tenants:org:ws",
@@ -438,7 +438,7 @@ func TestProjectDevelopmentRuntimeBindingClearsActionsAfterGrantRevocation(t *te
 		}`)},
 	}
 
-	updated, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsExternalURL: "https://hub.example"}).projectDevelopmentRuntimeBinding(binding, p, identity{})
+	updated, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://hub.example"}).projectDevelopmentRuntimeBinding(binding, p, identity{})
 	if err != nil {
 		t.Fatalf("projectDevelopmentRuntimeBinding: %v", err)
 	}
@@ -667,7 +667,7 @@ func TestPutProjectTemplateRejectsPlatformOwnedAsBadRequest(t *testing.T) {
 	}
 	client := newProjectCreationTestClient(&unstructured.Unstructured{Object: projectObject}, platformOwned)
 	server := &Server{
-		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:            store.NewMemoryStore(),
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 	}
@@ -678,7 +678,7 @@ func TestPutProjectTemplateRejectsPlatformOwnedAsBadRequest(t *testing.T) {
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	request.Header.Set("X-Railgrid-User", "alice")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+"alice-token")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 

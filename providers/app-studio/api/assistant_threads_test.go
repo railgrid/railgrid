@@ -192,6 +192,7 @@ func TestLoadAssistantThreadEventWindowPagesCompleteTurns(t *testing.T) {
 	counting := &assistantThreadWindowCountingStore{Store: messages}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
@@ -279,6 +280,7 @@ func TestLoadAssistantThreadEventWindowNeverEmitsCursorWithoutTurnStart(t *testi
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
@@ -310,6 +312,7 @@ func TestLoadAssistantThreadEventWindowCompletesTurnAcrossStorePages(t *testing.
 	counting := &assistantThreadWindowCountingStore{Store: messages}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	events := []store.AssistantThreadEvent{
@@ -362,6 +365,7 @@ func TestLoadAssistantThreadEventWindowSkipsOversizedTurnAndKeepsOlderHistoryRea
 	counting := &assistantThreadWindowCountingStore{Store: messages}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	oldItem := assistantThreadItem{
@@ -422,6 +426,7 @@ func TestLoadAssistantThreadEventWindowSkipsMetadataOnlyTailAndKeepsOlderHistory
 	counting := &assistantThreadWindowCountingStore{Store: messages}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	oldItem := assistantThreadItem{
@@ -588,6 +593,7 @@ func TestAttachAssistantThreadMessagePresentationRepairsHistoricalItems(t *testi
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	progress := projectAssistantProgressSnapshot{
@@ -634,6 +640,7 @@ func TestAttachAssistantThreadMessagePresentationReadsRecentEndOfLargeHistory(t 
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	for index := 0; index < 5_001; index++ {
@@ -677,6 +684,7 @@ func TestAttachAssistantThreadDynamicToolPresentationRepairsHistoricalInteractio
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	runID := "run-interaction"
 	now := time.Now().UTC()
@@ -753,6 +761,7 @@ func TestAttachAssistantThreadDynamicToolPresentationSharesBudgetAcrossRuns(t *t
 	}
 	server := NewWithWorkspace(nil, enrichmentStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	legacyItem := func(id, runID, callID string) assistantThreadItem {
 		action := projectAssistantActionFeedItem{
 			ID: projectAssistantActionPublicID(callID), Kind: projectAssistantActionFeedItemOther,
@@ -795,6 +804,7 @@ func TestAssistantThreadCompatibilityEnrichmentIsBounded(t *testing.T) {
 	counting := &assistantThreadEnrichmentCountingStore{Store: store.NewMemoryStore()}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 
 	legacyAction := projectAssistantActionFeedItem{
 		ID: "missing-action", Kind: projectAssistantActionFeedItemOther,
@@ -842,6 +852,7 @@ func TestAssistantThreadTerminalEventDoesNotEndStreamForNewerTurn(t *testing.T) 
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-stream-turns", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
@@ -880,6 +891,7 @@ func TestTerminalizeProjectAssistantTurnStartFailureClosesCanonicalTurn(t *testi
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-start-failure", ActorID: "alice", CreatedAt: now, UpdatedAt: now}

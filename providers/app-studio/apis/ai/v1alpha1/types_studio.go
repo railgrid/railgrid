@@ -61,6 +61,122 @@ type StudioSpec struct {
 	// Search — no per-project browser, and app-studio owns no browser image.
 	// +optional
 	Browser StudioBrowser `json:"browser,omitempty"`
+
+	// LLM is the workspace's model registry: which models the assistant may
+	// use, and where each one's credential lives. It belongs on the Studio
+	// for the same reason Search and Browser do — there is exactly one per
+	// workspace and every project addresses it.
+	//
+	// Credentials are NOT here. Each model names a Secret holding only its
+	// own apiKey, so editing one model never requires reading another's key,
+	// and listing models touches no Secret at all.
+	// +optional
+	LLM *StudioLLM `json:"llm,omitempty"`
+}
+
+// StudioLLM is the non-secret half of the model registry.
+type StudioLLM struct {
+	// DefaultModel is the id of the model the assistant uses when a request
+	// names none. It must be an active (non-archived) entry; the reconciler
+	// reports DefaultModelMissing when it is not.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	DefaultModel string `json:"defaultModel,omitempty"`
+
+	// Models holds every configuration, active and archived. Archived entries
+	// are revision history: a model can be rolled back to one, and a run
+	// pinned to a revisionID keeps resolving after the model is edited.
+	// +optional
+	// +kubebuilder:validation:MaxItems=200
+	// +listType=map
+	// +listMapKey=revisionID
+	Models []StudioLLMModel `json:"models,omitempty"`
+
+	// Runtime carries the request-shaping settings shared by every model.
+	// +optional
+	Runtime StudioLLMRuntime `json:"runtime,omitempty"`
+}
+
+// StudioLLMModel is one model configuration revision.
+type StudioLLMModel struct {
+	// ID is the logical model a person picks. Revisions of the same model
+	// share it, so exactly one of them may be active at a time.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	ID string `json:"id"`
+
+	// RevisionID identifies this revision uniquely across the registry. It is
+	// what a long-running assistant turn pins, so editing a model cannot
+	// change the model a resumable run comes back to.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	RevisionID string `json:"revisionID"`
+
+	// Archived marks a superseded revision: kept for rollback and for runs
+	// pinned to it, never offered as a choice.
+	// +optional
+	Archived bool `json:"archived,omitempty"`
+
+	// Name is what the model is called in the UI.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=80
+	Name string `json:"name"`
+
+	// Provider selects the wire protocol (openai, anthropic, google, ...).
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	Provider string `json:"provider,omitempty"`
+
+	// BaseURL overrides the provider's default endpoint.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	BaseURL string `json:"baseURL,omitempty"`
+
+	// Model is the provider's own model identifier, e.g. gpt-5.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Model string `json:"model"`
+
+	// SecretRef names the Secret holding this model's credential, in the
+	// Studio's own namespace, under the key "apiKey". Revisions of one model
+	// normally share it. A model without one is configured but unusable, and
+	// the reconciler says so.
+	// +optional
+	SecretRef *StudioLLMSecretRef `json:"secretRef,omitempty"`
+}
+
+// StudioLLMSecretRef points at a credential Secret.
+type StudioLLMSecretRef struct {
+	// Name of the Secret. Its "apiKey" entry is the credential.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+}
+
+// StudioLLMRuntime shapes every model request in the workspace.
+type StudioLLMRuntime struct {
+	// MaxRetries bounds automatic retries of a failed model call.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=10
+	MaxRetries *int32 `json:"maxRetries,omitempty"`
+
+	// RetryBackoffMS is the delay between those retries.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	RetryBackoffMS *int64 `json:"retryBackoffMS,omitempty"`
+
+	// StreamIdleTimeoutMS ends a stream that has produced nothing for this
+	// long.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	StreamIdleTimeoutMS *int64 `json:"streamIdleTimeoutMS,omitempty"`
 }
 
 // StudioSearch describes the shared search backend. Its zero value is the
@@ -122,7 +238,48 @@ type StudioStatus struct {
 	// UpdatedAt is the last status transition the reconciler observed.
 	// +optional
 	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+
+	// Conditions carries workspace-level assertions the reconciler makes and
+	// no schema can. The workspace's LLM registry is a plain Opaque Secret —
+	// it has no CRD, so nothing validates it on write — and it used to be
+	// reachable only through App Studio handlers that checked it on the way
+	// past. Now that it is edited directly, the checks live here instead, as
+	// LLMRegistryValid: the registry is still wrong in exactly the same ways,
+	// but the workspace can see that it is.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	// +patchStrategy=merge
+	// +patchMergeKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
+	// Models reports, per registry model, whether its credential Secret is
+	// actually present and non-empty. This is how a client learns that a
+	// model is usable WITHOUT reading any Secret: the reconciler looks, and
+	// publishes one boolean. Nothing here is derived from the key's value.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Models []StudioLLMModelStatus `json:"models,omitempty"`
 }
+
+// StudioLLMModelStatus is the observed usability of one active model.
+type StudioLLMModelStatus struct {
+	// ID matches spec.llm.models[].id.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=63
+	ID string `json:"id"`
+
+	// Configured is true when the referenced Secret exists and carries a
+	// non-empty apiKey.
+	// +optional
+	Configured bool `json:"configured,omitempty"`
+}
+
+// StudioConditionLLMRegistryValid reports whether the workspace's LLM model
+// registry Secret is structurally sound. Its reasons are the rules the
+// deleted /api/projects/llm-settings handlers used to enforce.
+const StudioConditionLLMRegistryValid = "LLMRegistryValid"
 
 // StudioServiceStatus is one shared service's observed state.
 type StudioServiceStatus struct {

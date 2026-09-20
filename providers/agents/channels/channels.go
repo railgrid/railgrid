@@ -136,7 +136,7 @@ func sendDiscord(ctx context.Context, m Message) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("discord send: HTTP %d", resp.StatusCode)
 	}
@@ -158,7 +158,7 @@ func sendTelegram(ctx context.Context, m Message) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("telegram sendMessage: HTTP %d", resp.StatusCode)
 	}
@@ -176,7 +176,7 @@ func sendSlack(ctx context.Context, m Message) error {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode/100 != 2 {
 			return fmt.Errorf("slack webhook: HTTP %d", resp.StatusCode)
 		}
@@ -193,7 +193,7 @@ func sendSlack(ctx context.Context, m Message) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`

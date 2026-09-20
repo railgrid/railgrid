@@ -1,9 +1,9 @@
 ## railgrid-kuery-provider values
-## Phase 1 skeleton: the provider serves a micro-frontend and a small
-## backend HTTP API, heartbeats the hub, and owns the SavedView APIExport.
-## Phase 2 adds the embedded kuery engine (edge informer sync into a local
-## store) — at which point this chart grows a PVC and the replica count
-## becomes fixed at 1 (SQLite store).
+## The provider serves a micro-frontend and a backend HTTP API, heartbeats
+## the hub, owns the SavedView APIExport, and runs the embedded kuery engine
+## (edge informer sync into a local store). With the default SQLite store the
+## chart mounts a PVC and pins the replica count to 1; with Postgres it
+## scales.
 
 # Container image. Build with: docker build -t IMAGE providers/kuery/
 image:
@@ -11,12 +11,29 @@ image:
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
-# Number of Deployment replicas. Phase 1 is stateless; Phase 2 introduces
-# the local store, which pins this to 1.
-# Safe to scale WITH store.driver=postgres: engagement is sharded across
-# replicas by per-edge Leases in the provider workspace, and queries/edge
-# listings are answered from the shared store on every replica. The template
-# refuses replicaCount > 1 with the default SQLite store.
+# Number of Deployment replicas. The local store pins this to 1 with the
+# default SQLite driver, and the template refuses replicaCount > 1 with it.
+#
+# With store.driver=postgres, replicaCount > 1 is a supported configuration,
+# for edge sync as well as for serving. Every replica does real work:
+#
+#   - Every replica answers queries, MCP and the portal from the shared store
+#     and the shared Engagement records, so read capacity scales and no
+#     request has to reach a particular pod.
+#   - Edge sync is DIVIDED across replicas, not duplicated and not idle.
+#     Engagement runs on every replica and takes a provider-sdk/sharding claim
+#     (one coordination.k8s.io Lease per "{clusterID}/{edgeName}", in the
+#     provider workspace) before it dials an edge, syncing only the edges it
+#     wins. Concurrent replicas are correct by construction — one wins each
+#     edge and the others keep off it — and a replica that stops releases its
+#     claims, so its share moves to peers in one event rather than after the
+#     60s claim TTL.
+#
+# Only the two single-writer loops are still leader-elected (the SavedView and
+# Engagement reconcilers); neither is on the sync path. /readyz and the hub
+# heartbeat report whether THIS replica is watching tenant workspaces, since no
+# peer covers for it. See providers/kuery/README.md, "Running more than one
+# replica".
 replicaCount: 1
 
 service:

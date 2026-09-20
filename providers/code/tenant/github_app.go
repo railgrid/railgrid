@@ -75,20 +75,37 @@ func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, d
 		}
 		return backend.Credential{Token: token}, nil
 	}
+	token, _, err := r.installationToken(ctx, conn, data, nil)
+	if err != nil {
+		return backend.Credential{}, err
+	}
+	return backend.Credential{Token: token}, nil
+}
+
+// installationToken mints a GitHub App installation access token for the
+// Connection and returns it with its expiry.
+//
+// permissions, when non-empty, asks GitHub to issue the token with LESS than
+// the installation holds — the documented way to get a narrow, short-lived
+// credential out of an App. It is how mint_registry_token hands out a
+// packages:read token instead of the credential that can also push code: a
+// pull secret sits on a runtime cluster for as long as the workload does, so
+// it must not be able to do anything but pull.
+func (r CredentialResolver) installationToken(ctx context.Context, conn *api.Connection, data map[string][]byte, permissions map[string]string) (string, time.Time, error) {
 	appID, err := strconv.ParseInt(strings.TrimSpace(string(data["appID"])), 10, 64)
 	if err != nil || appID <= 0 {
-		return backend.Credential{}, errors.New("GitHub App appID must be positive")
+		return "", time.Time{}, errors.New("GitHub App appID must be positive")
 	}
 	installationID, err := strconv.ParseInt(strings.TrimSpace(string(data["installationID"])), 10, 64)
 	if err != nil || installationID <= 0 {
-		return backend.Credential{}, errors.New("GitHub App installationID must be positive")
+		return "", time.Time{}, errors.New("GitHub App installationID must be positive")
 	}
 	if len(data["privateKey"]) > 32768 {
-		return backend.Credential{}, errors.New("GitHub App private key exceeds limit")
+		return "", time.Time{}, errors.New("GitHub App private key exceeds limit")
 	}
 	block, rest := pem.Decode(data["privateKey"])
 	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
-		return backend.Credential{}, errors.New("GitHub App privateKey must contain one RSA private key")
+		return "", time.Time{}, errors.New("GitHub App privateKey must contain one RSA private key")
 	}
 	var key *rsa.PrivateKey
 	if block.Type == "RSA PRIVATE KEY" {
@@ -99,7 +116,7 @@ func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, d
 		key, _ = parsed.(*rsa.PrivateKey)
 	}
 	if err != nil || key == nil || key.N.BitLen() < 2048 {
-		return backend.Credential{}, errors.New("GitHub App requires a valid RSA key of at least 2048 bits")
+		return "", time.Time{}, errors.New("GitHub App requires a valid RSA key of at least 2048 bits")
 	}
 	now := time.Now()
 	if r.Now != nil {
@@ -111,22 +128,30 @@ func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, d
 	digest := sha256.Sum256([]byte(unsigned))
 	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
 	if err != nil {
-		return backend.Credential{}, errors.New("GitHub App signing failed")
+		return "", time.Time{}, errors.New("GitHub App signing failed")
 	}
 	base := "https://api.github.com"
 	if conn.Spec.BaseURL != "" {
 		u, err := url.Parse(conn.Spec.BaseURL)
 		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return backend.Credential{}, errors.New("GitHub App baseURL must be an HTTPS API endpoint")
+			return "", time.Time{}, errors.New("GitHub App baseURL must be an HTTPS API endpoint")
 		}
 		base = strings.TrimRight(u.String(), "/")
 		if !strings.HasSuffix(base, "/api/v3") {
 			base += "/api/v3"
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/app/installations/%d/access_tokens", base, installationID), strings.NewReader("{}"))
+	body := "{}"
+	if len(permissions) > 0 {
+		encoded, err := json.Marshal(map[string]any{"permissions": permissions})
+		if err != nil {
+			return "", time.Time{}, errors.New("GitHub App permission request could not be encoded")
+		}
+		body = string(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/app/installations/%d/access_tokens", base, installationID), strings.NewReader(body))
 	if err != nil {
-		return backend.Credential{}, err
+		return "", time.Time{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+unsigned+"."+base64.RawURLEncoding.EncodeToString(signature))
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -140,22 +165,22 @@ func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, d
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("credential redirects forbidden") }
 	response, err := client.Do(req)
 	if err != nil {
-		return backend.Credential{}, errors.New("GitHub installation token request failed")
+		return "", time.Time{}, errors.New("GitHub installation token request failed")
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusCreated {
-		return backend.Credential{}, fmt.Errorf("GitHub installation token returned HTTP %d", response.StatusCode)
+		return "", time.Time{}, fmt.Errorf("GitHub installation token returned HTTP %d", response.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, 65537))
-	if err != nil || len(body) > 65536 {
-		return backend.Credential{}, errors.New("invalid installation token response")
+	payload, err := io.ReadAll(io.LimitReader(response.Body, 65537))
+	if err != nil || len(payload) > 65536 {
+		return "", time.Time{}, errors.New("invalid installation token response")
 	}
 	var result struct {
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	if json.Unmarshal(body, &result) != nil || result.Token == "" || !result.ExpiresAt.After(now.Add(5*time.Minute)) {
-		return backend.Credential{}, errors.New("invalid or expiring installation token")
+	if json.Unmarshal(payload, &result) != nil || result.Token == "" || !result.ExpiresAt.After(now.Add(5*time.Minute)) {
+		return "", time.Time{}, errors.New("invalid or expiring installation token")
 	}
-	return backend.Credential{Token: result.Token}, nil
+	return result.Token, result.ExpiresAt, nil
 }

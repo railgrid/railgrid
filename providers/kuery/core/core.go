@@ -6,22 +6,26 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package core wires the embedded kuery engine: SQL store, query engine,
-// multi-cluster sync controller, and the stale-cluster garbage collector.
-// The engagement controller feeds clusters in; the query API and MCP tools
-// read out. See docs/kuery-provider-architecture.md (railgrid repo).
+// Package core wires the embedded kuery engine: SQL store, query engine and
+// multi-cluster sync controller. The engagement controller feeds clusters in;
+// the query verb and the MCP tools read out. See
+// docs/kuery-provider-architecture.md (railgrid repo).
+//
+// There is deliberately no garbage collector here. kuery ships one that walks
+// the whole store every five minutes looking for clusters whose TTL has
+// expired; this provider knows exactly which cluster expired and when, because
+// each one has an Engagement whose owner stopped renewing. Purging is a
+// RequeueAfter on that record (engagement/engagementctl.go), so the work is
+// proportional to what actually expired rather than to the size of the index.
 package core
 
 import (
-	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/railgrid/kuery/pkg/engine"
-	"github.com/railgrid/kuery/pkg/gc"
 	"github.com/railgrid/kuery/pkg/store"
 	kuerysync "github.com/railgrid/kuery/pkg/sync"
 )
@@ -42,8 +46,6 @@ type Config struct {
 	// no objects — edge links are bandwidth-constrained, so the chart
 	// defaults this to workloads/config/RBAC/networking.
 	Whitelist string
-	// GCInterval is how often the stale-cluster GC runs. Default 5m.
-	GCInterval time.Duration
 }
 
 // Core bundles the embedded kuery components the rest of the provider uses.
@@ -51,7 +53,6 @@ type Core struct {
 	Store  store.Store
 	Engine *engine.Engine
 	Sync   *kuerysync.SyncController
-	gc     *gc.GarbageCollector
 }
 
 // New creates the store (running migrations), engine, and sync controller.
@@ -61,9 +62,6 @@ func New(cfg Config) (*Core, error) {
 	}
 	if cfg.DSN == "" {
 		cfg.DSN = "kuery.db"
-	}
-	if cfg.GCInterval == 0 {
-		cfg.GCInterval = 5 * time.Minute
 	}
 
 	s, err := store.NewStore(store.Config{Driver: cfg.Driver, DSN: cfg.DSN})
@@ -91,14 +89,7 @@ func New(cfg Config) (*Core, error) {
 			Blacklist: blacklist,
 			Whitelist: whitelist,
 		}),
-		gc: gc.NewGarbageCollector(s, cfg.GCInterval),
 	}, nil
-}
-
-// StartGC runs the stale-cluster garbage collector until ctx is done.
-// Blocking; run in a goroutine.
-func (c *Core) StartGC(ctx context.Context) {
-	c.gc.Run(ctx)
 }
 
 // parseBlacklist converts a comma-separated "resource.group" list into

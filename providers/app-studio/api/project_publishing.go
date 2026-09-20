@@ -47,7 +47,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -61,6 +60,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/hubapi"
 	"github.com/railgrid/provider-app-studio/tenant"
 )
 
@@ -844,7 +844,7 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 		return publishingMember{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(s.hubBase, "/")+"/api/orgs/"+url.PathEscape(id.orgUUID)+"/memberships",
+		strings.TrimRight(s.hubBase, "/")+hubapi.OrgMembershipsPath(id.orgUUID),
 		strings.NewReader(string(payload)))
 	if err != nil {
 		return publishingMember{}, err
@@ -961,8 +961,8 @@ func (s *Server) currentPublishingMembers(ctx context.Context, id identity) ([]p
 		return nil, fmt.Errorf("trusted organization, workspace, and bearer identity are required for membership validation")
 	}
 	paths := []string{
-		"/api/orgs/" + url.PathEscape(id.orgUUID) + "/memberships",
-		"/api/orgs/" + url.PathEscape(id.orgUUID) + "/workspaces/" + url.PathEscape(id.workspaceUUID) + "/memberships",
+		hubapi.OrgMembershipsPath(id.orgUUID),
+		hubapi.WorkspaceMembershipsPath(id.orgUUID, id.workspaceUUID),
 	}
 	seen := map[string]publishingMember{}
 	client := s.publishingHTTPClient

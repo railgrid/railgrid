@@ -29,18 +29,21 @@ import (
 	"log"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/railgrid/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/identityclient"
+	"github.com/railgrid/provider-sdk/leaderelection"
 	"github.com/railgrid/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/vwhealth"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"github.com/railgrid/provider-app-studio/api"
@@ -50,6 +53,7 @@ import (
 	"github.com/railgrid/provider-app-studio/controller/studio"
 	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
 	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
+	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 	appscheme "github.com/railgrid/provider-app-studio/scheme"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
@@ -63,11 +67,12 @@ const endpointSliceName = apiExportName
 // continue without the manager when no kubeconfig is in scope.
 var errControllerDisabled = errors.New("no kubeconfig available; controller manager disabled")
 
-// controllerRetryInterval bounds the delay between manager setup/start
-// attempts. A controller can be unavailable while the provider workspace is
-// being bootstrapped, so retrying is expected; the HTTP process must not claim
-// readiness until one of those attempts has a live manager.
-const controllerRetryInterval = 15 * time.Second
+// controllerLeaseName gates the reconcilers on a Lease in the provider
+// workspace ("default" namespace — kcp serves Leases in every logical
+// cluster), so scaling the deployment past one replica keeps every Project,
+// Studio and Session single-writer. Non-leaders keep serving the REST API,
+// the assistant supervisor and the replica-affinity forwarder.
+const controllerLeaseName = "app-studio-controllers"
 
 type controllerMode string
 
@@ -76,137 +81,13 @@ const (
 	controllerModeRequired controllerMode = "required"
 )
 
-// controllerState is deliberately independent from process liveness. The
-// provider can keep serving its REST surface while a required controller is
-// starting or recovering, but Kubernetes/provider readiness must remain false
-// in those states.
-type controllerState string
+// checkerFunc adapts a plain function to vwhealth.Checker so main can hold
+// readiness false for a required controller whose kubeconfig never resolved —
+// the one failure the virtual-workspace probe cannot see, because without a
+// config there is nothing to probe.
+type checkerFunc func() error
 
-const (
-	controllerStateRESTOnly controllerState = "rest-only"
-	controllerStateStarting controllerState = "starting"
-	controllerStateReady    controllerState = "ready"
-	controllerStateFailed   controllerState = "failed"
-	controllerStateStopped  controllerState = "stopped"
-)
-
-type controllerHealthSnapshot struct {
-	Required bool
-	State    controllerState
-	Error    string
-}
-
-// controllerHealth is the small dependency shared by the HTTP readiness
-// handler and the heartbeat loop. Keeping it instance-owned avoids a global
-// readiness flag leaking across tests or future provider instances.
-type controllerHealth struct {
-	mu       sync.RWMutex
-	required bool
-	state    controllerState
-	lastErr  string
-}
-
-func newControllerHealth(required bool) *controllerHealth {
-	state := controllerStateRESTOnly
-	if required {
-		state = controllerStateStarting
-	}
-	return &controllerHealth{required: required, state: state}
-}
-
-func (h *controllerHealth) snapshot() controllerHealthSnapshot {
-	if h == nil {
-		return controllerHealthSnapshot{State: controllerStateRESTOnly}
-	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return controllerHealthSnapshot{
-		Required: h.required,
-		State:    h.state,
-		Error:    h.lastErr,
-	}
-}
-
-func (h *controllerHealth) markStarting() {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.state = controllerStateStarting
-	h.lastErr = ""
-}
-
-func (h *controllerHealth) markReady() {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.state = controllerStateReady
-	h.lastErr = ""
-}
-
-func (h *controllerHealth) markFailed(err error) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.state = controllerStateFailed
-	h.lastErr = ""
-	if err != nil {
-		h.lastErr = err.Error()
-	}
-}
-
-func (h *controllerHealth) markStopped(err error) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.state = controllerStateStopped
-	h.lastErr = ""
-	if err != nil {
-		h.lastErr = err.Error()
-	}
-}
-
-func (h *controllerHealth) markRESTOnly() {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.required = false
-	h.state = controllerStateRESTOnly
-	h.lastErr = ""
-}
-
-func (h *controllerHealth) ready() bool {
-	snapshot := h.snapshot()
-	return !snapshot.Required || snapshot.State == controllerStateReady
-}
-
-// heartbeatCanSend is intentionally stricter than the payload contract: the
-// hub records any received heartbeat as liveness and does not inspect its
-// status field. REST-only mode (or a legacy caller without a health dependency)
-// is always eligible; a required controller must already be running.
-func heartbeatCanSend(health *controllerHealth) bool {
-	return health == nil || health.ready()
-}
-
-func (h *controllerHealth) heartbeatStatus() string {
-	snapshot := h.snapshot()
-	if !snapshot.Required || snapshot.State == controllerStateReady {
-		return "healthy"
-	}
-	if snapshot.State == controllerStateStarting {
-		return "starting"
-	}
-	return "unhealthy"
-}
+func (f checkerFunc) Check() error { return f() }
 
 // controllerDeps carries the runtime collaborators the Project reconciler
 // shares with the HTTP layer: the on-disk workspace store (commit
@@ -220,18 +101,26 @@ type controllerDeps struct {
 	Owns        func(workspace.Scope) bool
 	OnCommitted func(context.Context, workspace.Scope, project.CommitResult)
 	Store       store.Store
-	HubBase     string
-	HubInsecure bool
+	// StopAssistant interrupts an assistant run for a project being deleted.
+	// The Project finalizer calls it before purging anything the turn might
+	// still be writing to.
+	StopAssistant func(context.Context, workspace.Scope) error
+	HubBase       string
+	HubInsecure   bool
 	// SessionSignals / ProjectSignals wake the Session and Project
 	// reconcilers on assistant and workspace transitions (nil: resync only).
 	SessionSignals *reconcilesignal.Bus
 	ProjectSignals *reconcilesignal.Bus
+	// SessionRetention is how long a conversation survives its last activity
+	// before the Session reconciler deletes it (and its finalizer purges the
+	// store). Zero keeps conversations indefinitely.
+	SessionRetention time.Duration
 }
 
-// dependencyWatches builds the per-workspace watch hub the Project and
-// Studio reconcilers share. Watches ride the tenant-path identity exactly as
-// the reconcilers' writes do, so they need the hub address; without one
-// (REST-only dev) there are no watches and the reconcilers resync only.
+// dependencyWatches builds the per-workspace watch hub the Project and Studio
+// reconcilers share. Watches ride the tenant-path identity exactly as the
+// reconcilers' writes do, so they need the hub address; without one (REST-only
+// dev) there is no identity to watch with either and there are no watches.
 func dependencyWatches(deps controllerDeps) *tenantwatch.Hub {
 	if deps.HubBase == "" {
 		return nil
@@ -240,6 +129,33 @@ func dependencyWatches(deps controllerDeps) *tenantwatch.Hub {
 	return tenantwatch.NewHub(func(cluster, token string) (dynamic.Interface, error) {
 		return tenantaccess.NewDynamicClient(hubBase, cluster, token, insecure)
 	})
+}
+
+// scopedIdentities builds the hub identity client the Project and Studio
+// reconcilers mint each owner's identity with. It is how this provider reaches
+// a DEPENDENCY's objects — inside the tenant workspace, through the
+// workspace's own bindings — and also what a project's workload acts as when
+// it reaches the MCP aggregate or calls a data-plane verb on its own instance.
+// Its own kinds still ride its APIExport virtual workspace.
+//
+// A failure here is logged and degrades to nil rather than refusing to start:
+// a REST-only dev deployment has no hub to ask, and the Project and Studio
+// CRs still converge without one.
+func scopedIdentities(deps controllerDeps) *scopedidentity.Cache {
+	if deps.HubBase == "" {
+		return nil
+	}
+	insecure := deps.HubInsecure
+	client, err := identityclient.New(identityclient.Options{
+		HubURL:   deps.HubBase,
+		Provider: providerName,
+		Insecure: &insecure,
+	})
+	if err != nil {
+		log.Printf("WARNING app-studio: the hub identity service is unavailable, so per-project identities cannot be minted: %v", err)
+		return nil
+	}
+	return scopedidentity.New(client)
 }
 
 // projectCommitNotifier adapts the API server's commit notification to the
@@ -257,40 +173,66 @@ func projectCommitNotifier(notify func(context.Context, workspace.Scope, api.Pro
 	}
 }
 
-// startControllerManager builds the multicluster manager, starts the Project
-// reconciler, and blocks until the manager exits. A nil config means "skip the
-// manager, run REST-only". Keeping Start synchronous is important: callers can
-// observe both setup errors and post-start exits and re-enter the bounded retry
-// loop instead of hiding the manager in a detached goroutine.
+// startControllerManager campaigns for the controller lease and — while this
+// replica leads — runs the multicluster manager with the Project, Session and
+// Studio reconcilers. A nil config means "skip the manager, run REST-only".
 //
-// Deliberately NOT leader-elected (unlike code/infrastructure):
-// the Project reconciler converges commits from the pod-local workspace
-// FileStore the HTTP assistant writes to, and pod readiness requires the
-// manager to be running (controllerReadyRunnable below) — a lease would both
-// strand sessions whose files live on a non-leader and wedge rollouts on a
-// never-ready standby. The provider is single-replica by design (chart pins
-// replicaCount: 1); scaling it needs shared workspace storage first. When a health
-// dependency is supplied, a controller-runtime RunnableFunc is registered
-// before Start. That runnable marks health ready only when the manager starts
-// launching runnables and then blocks for manager cancellation; any error
-// returned from Start immediately transitions it back to failed in
-// runControllerManager.
-func startControllerManager(ctx context.Context, config *rest.Config, deps controllerDeps, healthStates ...*controllerHealth) error {
+// It returns as soon as the campaign is under way: the API server, the
+// assistant supervisor and the replica-affinity forwarder must keep serving on
+// every replica, leader or not, so nothing here may block them. ready, when
+// set, carries the multicluster provider's watch state for the duration of
+// each term.
+func startControllerManager(ctx context.Context, config *rest.Config, deps controllerDeps, ready *vwhealth.Readiness) error {
 	if config == nil {
 		return errControllerDisabled
 	}
 
 	ctrl.SetLogger(klog.NewKlogr())
+
+	go func() {
+		if err := leaderelection.Run(ctx, leaderelection.Options{
+			Config:    config,
+			Namespace: leaderelection.DefaultNamespace,
+			Name:      controllerLeaseName,
+		}, func(termCtx context.Context) {
+			if err := runControllerManager(termCtx, config, deps, ready); err != nil {
+				log.Printf("controller manager exited: %v", err)
+			}
+		}); err != nil {
+			log.Printf("controller leader election failed; controllers are not running: %v", err)
+		}
+	}()
+	return nil
+}
+
+// runControllerManager builds the multicluster manager and blocks in Start
+// until the leadership term ends. Called once per term — a stopped
+// controller-runtime manager cannot be restarted, and neither can the tenant
+// watch hub it shares with the Project and Studio reconcilers, so both are
+// built fresh here and die with the term.
+//
+// The multicluster provider is attached to readiness for the term: from the
+// moment this replica is leader until it stops being one, /readyz (and so the
+// hub's BackendHealthy) and the heartbeat say whether tenant workspaces are
+// actually being watched.
+func runControllerManager(ctx context.Context, config *rest.Config, deps controllerDeps, ready *vwhealth.Readiness) error {
 	scheme := appscheme.NewScheme()
 
 	provider, err := apiexportprovider.New(config, endpointSliceName, apiexportprovider.Options{Scheme: scheme})
 	if err != nil {
 		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}
+	if ready != nil {
+		defer ready.Attach("controllers", provider)()
+	}
 
+	skipNameValidation := true
 	mgr, err := mcmanager.New(config, provider, manager.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"}, // provider serves its own HTTP; disable controller-runtime metrics
+		// Controller names register process-globally; the manager built for a
+		// later leadership term must skip that check.
+		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
 	})
 	if err != nil {
 		return fmt.Errorf("creating multicluster manager: %w", err)
@@ -300,58 +242,39 @@ func startControllerManager(ctx context.Context, config *rest.Config, deps contr
 		return fmt.Errorf("project controller: message store does not support attachment lifecycle cleanup")
 	}
 
+	identities := scopedIdentities(deps)
 	watches := dependencyWatches(deps)
 	if err := (&project.Reconciler{
-		Actions:     deps.Actions,
-		Workspace:   deps.Workspace,
-		Busy:        deps.Busy,
-		Owns:        deps.Owns,
-		OnCommitted: deps.OnCommitted,
-		Attachments: attachments,
-		HubBase:     deps.HubBase,
-		HubInsecure: deps.HubInsecure,
-		Watches:     watches,
-		Signals:     deps.ProjectSignals,
+		Actions:       deps.Actions,
+		Workspace:     deps.Workspace,
+		Busy:          deps.Busy,
+		Owns:          deps.Owns,
+		OnCommitted:   deps.OnCommitted,
+		Attachments:   attachments,
+		Store:         deps.Store,
+		StopAssistant: deps.StopAssistant,
+		HubBase:       deps.HubBase,
+		HubInsecure:   deps.HubInsecure,
+		Watches:       watches,
+		Signals:       deps.ProjectSignals,
+		Identities:    identities,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("project controller: %w", err)
 	}
-	if err := (&session.Reconciler{Store: deps.Store, Signals: deps.SessionSignals}).SetupWithManager(mgr); err != nil {
+	if err := (&session.Reconciler{Store: deps.Store, Signals: deps.SessionSignals, Retention: deps.SessionRetention}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("session controller: %w", err)
 	}
 	if err := (&studio.Reconciler{
 		HubBase:     deps.HubBase,
 		HubInsecure: deps.HubInsecure,
 		Watches:     watches,
+		Identities:  identities,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("studio controller: %w", err)
 	}
 
-	if len(healthStates) > 0 && healthStates[0] != nil {
-		if err := mgr.GetLocalManager().Add(controllerReadyRunnable(healthStates[0])); err != nil {
-			return fmt.Errorf("controller health runnable: %w", err)
-		}
-	}
-
 	log.Printf("app-studio controller manager starting (endpointSlice=%s)", endpointSliceName)
-	if err := mgr.Start(ctx); err != nil {
-		return fmt.Errorf("controller manager exited: %w", err)
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return errors.New("controller manager exited without an error")
-}
-
-// controllerReadyRunnable is registered with the underlying
-// controller-runtime manager before Start. Its Start method is therefore the
-// readiness transition: setup can still fail without advertising health, and
-// the runnable remains alive for the manager lifetime.
-func controllerReadyRunnable(health *controllerHealth) manager.Runnable {
-	return manager.RunnableFunc(func(ctx context.Context) error {
-		health.markReady()
-		<-ctx.Done()
-		return nil
-	})
+	return mgr.Start(ctx)
 }
 
 // controllerModeFromEnv makes REST-only operation an intentional local-dev
@@ -378,96 +301,5 @@ func controllerModeFromEnv() controllerMode {
 		// advertise a REST-only health contract while its controller is absent.
 		log.Printf("unknown APP_STUDIO_CONTROLLER_MODE=%q; requiring controller", os.Getenv("APP_STUDIO_CONTROLLER_MODE"))
 		return controllerModeRequired
-	}
-}
-
-// runControllerManager owns the complete manager lifecycle. Every setup or
-// post-start error transitions health to failed, waits a bounded interval, and
-// retries until ctx is cancelled. The function takes loader/starter functions
-// so lifecycle tests can exercise transitions without starting a real kcp
-// cluster.
-func runControllerManager(
-	ctx context.Context,
-	health *controllerHealth,
-	loadConfig func() (*rest.Config, error),
-	start func(context.Context, *rest.Config, controllerDeps) error,
-	deps controllerDeps,
-	retryInterval time.Duration,
-) {
-	runControllerManagerWithRetryGate(ctx, health, loadConfig, start, deps, retryInterval, waitControllerRetry)
-}
-
-// waitControllerRetry is the production retry gate. Keeping the wait behind a
-// small function seam lets lifecycle tests release each retry explicitly and
-// assert failed/starting transitions without relying on timer scheduling.
-func waitControllerRetry(ctx context.Context, retryInterval time.Duration) bool {
-	if retryInterval < 0 {
-		retryInterval = 0
-	}
-	timer := time.NewTimer(retryInterval)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
-func runControllerManagerWithRetryGate(
-	ctx context.Context,
-	health *controllerHealth,
-	loadConfig func() (*rest.Config, error),
-	start func(context.Context, *rest.Config, controllerDeps) error,
-	deps controllerDeps,
-	retryInterval time.Duration,
-	retryGate func(context.Context, time.Duration) bool,
-) {
-	if health == nil {
-		health = newControllerHealth(true)
-	}
-	if !health.snapshot().Required {
-		health.markRESTOnly()
-		log.Printf("controller manager disabled: explicit REST-only mode")
-		return
-	}
-	if loadConfig == nil || start == nil {
-		err := errors.New("controller manager lifecycle dependencies are not configured")
-		health.markFailed(err)
-		log.Printf("controller manager not ready: %v", err)
-		return
-	}
-
-	for attempt := 1; ; attempt++ {
-		if err := ctx.Err(); err != nil {
-			health.markStopped(err)
-			return
-		}
-		health.markStarting()
-
-		config, err := loadConfig()
-		if err == nil {
-			err = start(ctx, config, deps)
-			if err == nil && ctx.Err() == nil {
-				err = errors.New("controller manager exited without an error")
-			}
-		}
-		if ctx.Err() != nil {
-			health.markStopped(ctx.Err())
-			return
-		}
-		if err == nil {
-			err = errors.New("controller manager exited without an error")
-		}
-		health.markFailed(err)
-		log.Printf("controller manager not ready (attempt %d): %v; retrying in %s", attempt, err, retryInterval)
-
-		if retryGate == nil {
-			retryGate = waitControllerRetry
-		}
-		if !retryGate(ctx, retryInterval) {
-			health.markStopped(ctx.Err())
-			return
-		}
 	}
 }

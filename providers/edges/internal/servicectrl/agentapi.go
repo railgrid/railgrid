@@ -29,13 +29,12 @@ import (
 
 // ConnManager is the subset of the tunnel ConnManager the reconcilers need.
 // *tunnel.ConnManager satisfies it structurally. Load/HasConnection are
-// cluster-aware (a peer-held tunnel resolves to a relayed dialer);
-// HasLocalConnection is replica-local and gates the event subscribers so one
-// replica — the tunnel owner — subscribes per service, not the whole fleet.
+// cluster-aware: a peer-held tunnel resolves to a relayed dialer, which is
+// what lets the reconcilers run on the leader alone while any replica may
+// hold the socket.
 type ConnManager interface {
 	Load(key string) (tunnel.Dialer, bool)
 	HasConnection(key string) bool
-	HasLocalConnection(key string) bool
 }
 
 // connKey mirrors edgeConnKey in the tunnel package: "{resource}/{cluster}/{name}".

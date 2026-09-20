@@ -162,10 +162,11 @@ func TestProjectAssistantRunManagerIgnoresUnscopedTurns(t *testing.T) {
 
 func TestGenerateProjectAssistantStreamPreemptsActiveProjectTurn(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "http://llm.example.test", Model: "test-model", APIKey: "test-key"}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	engine := &preemptProbeProjectAssistantEngine{
 		entered:    make(chan struct{}),
 		firstCause: make(chan error, 1),
@@ -226,9 +227,10 @@ func TestGenerateProjectAssistantStreamPreemptsActiveProjectTurn(t *testing.T) {
 
 func TestGenerateProjectAssistantStreamDoesNotStartAfterHandoffTimeout(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "http://llm.example.test", Model: "test-model", APIKey: "test-key"}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	engine := &cancellationInsensitiveProjectAssistantEngine{
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
@@ -282,11 +284,12 @@ func TestGenerateProjectAssistantStreamDoesNotStartAfterHandoffTimeout(t *testin
 
 func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "http://llm.example.test", Model: "test-model", APIKey: "test-key"}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
 	baseStore := store.NewMemoryStore()
 	messages := cancelSensitiveAssistantRunStore{Store: baseStore}
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	engine := &preemptProbeResumeAssistantEngine{
 		resumeEntered: make(chan struct{}),
 		resumeCause:   make(chan error, 1),

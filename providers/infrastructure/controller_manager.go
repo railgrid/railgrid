@@ -8,32 +8,33 @@
 
 package main
 
-// Platform controller manager — the one that reconciles Template CRs
-// into backend setup (kro RGDs). Lives alongside the legacy
-// REST surface; the two coexist for PRs A-D and the REST handlers get
-// deleted in PR E once the UI + MCP have migrated to the kcp-native
-// path.
+// The provider's write loops and the credential they run with.
 //
-// The manager is OPT-IN via INFRASTRUCTURE_CONTROLLER_KUBECONFIG (or
-// the standard KUBECONFIG fallback). When neither is set the provider
-// runs as it does today: REST broker, no controller. That keeps the
-// dev-mode/stub flow intact while the new code lands.
+// serve NEVER bootstraps and never runs with an admin credential. The
+// high-privilege install chain (CRDs, CachedResource, EndpointSlice, APIExport
+// schemas) belongs to `init` and to the operator; serve is handed the
+// workspace-scoped kubeconfig those produced and does nothing it cannot do with
+// it. There is exactly one env var for that kubeconfig —
+// RAILGRID_PROVIDER_KUBECONFIG, the name every chart sets on the serve
+// container and every other provider reads — and no fallback: not the pod's
+// ServiceAccount (that points at the HOST cluster, not kcp), not a root-scoped
+// admin kubeconfig retargeted at a workspace. Missing it is a startup failure,
+// not a degraded mode.
+//
+// One lease, one manager. The Instance controller's multicluster manager owns
+// the provider workspace as its local cluster, so the Template controller runs
+// on mgr.GetLocalManager() rather than on a manager (and lease) of its own.
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -43,99 +44,184 @@ import (
 	"github.com/railgrid/provider-infrastructure/backend"
 	krobackend "github.com/railgrid/provider-infrastructure/backend/kro"
 	"github.com/railgrid/provider-infrastructure/backend/stub"
+	"github.com/railgrid/provider-infrastructure/controller/instance"
 	"github.com/railgrid/provider-infrastructure/controller/template"
 	"github.com/railgrid/provider-infrastructure/install"
+	"github.com/railgrid/provider-infrastructure/networkpolicy"
 )
 
-// Leases gating this binary's singleton write loops, all held in the provider
+// Leases gating this binary's singleton write loops, held in the provider
 // workspace ("default" namespace — kcp serves Leases in every logical
-// cluster). One lease per loop so each is independently singleton; which
-// replica holds which does not matter. REST/MCP/portal serving is untouched —
-// non-leaders keep serving.
+// cluster). REST/MCP/portal serving is untouched — non-leaders keep serving.
 const (
-	controllerLeaseName = "infrastructure-controllers"
-	instanceLeaseName   = "infrastructure-instance"
-	bootstrapLeaseName  = "infrastructure-bootstrap"
+	// controllerLeaseName gates the single write loop: the Instance
+	// controller's multicluster manager, with the Template controller folded
+	// onto its local (provider-workspace) manager. It keeps the Instance
+	// lease's name because the Instance reconciler is the one that owns
+	// cross-cluster state, so a rolling update must never run two of them.
+	controllerLeaseName = "infrastructure-instance"
+	// bootstrapLeaseName gates the operator's bootstrap reconciler.
+	bootstrapLeaseName = "infrastructure-bootstrap"
 )
 
-// startControllerManager installs the platform CRDs (legacy single-binary
-// mode), then campaigns for the controller lease and — while leader — runs a
-// controller-runtime manager pointed at the provider's own kcp workspace with
-// the Template controller on it. The caller loads the kcp config (shared with
-// the tenant client) and passes it in; a nil config means "skip the manager,
-// run REST-only".
-func startControllerManager(ctx context.Context, config *rest.Config) error {
+// providerKubeconfigEnv is the one and only kubeconfig serve reads: the
+// workspace-scoped credential `init` mints (or the operator replicates), which
+// is what every chart already sets on the serve container.
+const providerKubeconfigEnv = "RAILGRID_PROVIDER_KUBECONFIG"
+
+// loadControllerConfig returns the rest.Config every serve-side controller, the
+// tenant client factory and both readiness probes run against. It resolves
+// exactly one source — see providerKubeconfigEnv — and fails otherwise, because
+// each alternative is a way to run serve with credentials it must not have:
+// an admin kubeconfig (retargeted or not) hands serve rights `init` deliberately
+// did not grant it, and the in-cluster ServiceAccount silently points every kcp
+// controller at the host cluster.
+func loadControllerConfig() (*rest.Config, error) {
+	path := os.Getenv(providerKubeconfigEnv)
+	if path == "" {
+		return nil, fmt.Errorf(
+			"%s is not set: serve runs only with the workspace-scoped provider kubeconfig that `infrastructure-provider init` mints "+
+				"(or that the operator replicates into the serve Secret) — run `init` first, then point %s at it",
+			providerKubeconfigEnv, providerKubeconfigEnv)
+	}
+	cfg, err := clientcmd.BuildConfigFromFlags("", path)
+	if err != nil {
+		return nil, fmt.Errorf("%s=%s: %w", providerKubeconfigEnv, path, err)
+	}
+	log.Printf("kcp config resolved from %s (host=%s)", providerKubeconfigEnv, cfg.Host)
+	return cfg, nil
+}
+
+// startControllers campaigns for the controller lease and, while leader, runs
+// the provider's reconcilers against its own kcp workspace. Everything is
+// resolved up front so a misconfiguration is reported at startup rather than
+// whenever this replica happens to win an election.
+//
+// With a kro runtime cluster in scope both controllers run: the Instance
+// reconciler on the APIExport virtual workspace, and the Template reconciler on
+// that manager's local cluster (the provider workspace) with the runtime
+// cluster's RGD cache as a second event source. Without one — dev and the e2e
+// suite, where templates are reconciled by the stub backend — only the Template
+// reconciler runs, on a plain manager over the same workspace, under the same
+// lease.
+func startControllers(ctx context.Context, config *rest.Config) error {
 	if config == nil {
-		return errControllerDisabled
+		return fmt.Errorf("startControllers: nil provider config")
 	}
 
-	// In the init/serve split (INFRASTRUCTURE_KUBECONFIG set), init has
-	// already done all the high-privilege bootstrap. Serve runs with a
-	// narrow SA that doesn't have all the rights needed to re-apply
-	// CachedResources, so we MUST skip these calls. In the legacy
-	// single-binary mode we still run them so dev clusters that haven't
-	// migrated to init/serve keep working.
-	if os.Getenv("INFRASTRUCTURE_KUBECONFIG") == "" {
-		if err := install.CRDs(ctx, config); err != nil {
-			return fmt.Errorf("install CRDs: %w", err)
-		}
-		// Legacy single-binary path: CachedResource + EndpointSlice before
-		// APIExport so templates use virtual storage. Templates MUST be served
-		// via virtual storage (to project into tenant workspaces) — never fall
-		// back to CRD storage; fail so a restart retries until the identityHash
-		// is ready.
-		if err := install.PlatformCachedResources(ctx, config); err != nil {
-			return fmt.Errorf("install CachedResources: %w", err)
-		}
-		if err := install.PlatformCachedResourceEndpointSlices(ctx, config); err != nil {
-			return fmt.Errorf("install EndpointSlice: %w", err)
-		}
-		hash, err := install.WaitForCachedResourceIdentity(ctx, config)
-		if err != nil {
-			return fmt.Errorf("CachedResource identityHash not ready (templates require virtual storage): %w", err)
-		}
-		if hash == "" {
-			return fmt.Errorf("CachedResource identityHash empty (templates require virtual storage)")
-		}
-		if err := install.PlatformSchemaInAPIExport(ctx, config, hash); err != nil {
-			return fmt.Errorf("register platform schemas on APIExport: %w", err)
-		}
-	}
-
-	// Register controller-runtime's logger once before building the
-	// manager. Without this, the first internal log call (e.g. the
-	// priorityqueue depth report) prints a "log.SetLogger(...) was never
-	// called" stack trace and swallows all controller-runtime logs.
+	// Register controller-runtime's logger once before building any manager.
+	// Without this, the first internal log call (e.g. the priorityqueue depth
+	// report) prints a "log.SetLogger(...) was never called" stack trace and
+	// swallows all controller-runtime logs.
 	ctrl.SetLogger(klog.NewKlogr())
 
-	// Leader-elected: only the replica holding the lease runs the Template
-	// controller, so scaling the serve deployment past one replica stops the
-	// two-active-managers conflict churn. The manager is rebuilt fresh each
-	// term — a stopped controller-runtime manager cannot be restarted.
+	registry := backend.NewRegistry()
+	if err := registry.Register(stub.New()); err != nil {
+		return fmt.Errorf("register stub backend: %w", err)
+	}
+
+	// The kro backend authors RGDs on the runtime cluster (where the kro
+	// controller watches them), NOT in this provider's kcp workspace. It is
+	// resolved from KRO_KUBECONFIG, else the pod's in-cluster config (the
+	// operator's in-cluster-runtime mode).
+	runtimeClient, runtimeCfg, runtimeSrc, runtimeErr := runtimeDynamicClient()
+	if runtimeErr == nil {
+		if err := registry.Register(krobackend.New(runtimeClient)); err != nil {
+			return fmt.Errorf("register kro backend: %w", err)
+		}
+		log.Printf("controllers: kro backend registered (RGD runtime cluster: %s)", runtimeSrc)
+	} else {
+		log.Printf("controllers: no kro runtime cluster (%v) — stub backend only, Instance reconciler disabled", runtimeErr)
+	}
+
+	// Tenant runtime-namespace ingress isolation (off unless
+	// RAILGRID_TENANT_NETWORK_POLICY_ENABLED=true). The exposure Gateway's
+	// namespace is always admitted, resolved exactly as the kro backend
+	// resolves ${railgrid.gatewayNamespace} so the policy follows the HTTPRoutes.
+	gatewayNamespace := os.Getenv("RAILGRID_GATEWAY_NAMESPACE")
+	if gatewayNamespace == "" {
+		gatewayNamespace = krobackend.DefaultGatewayNamespace
+	}
+	netpol, err := networkpolicy.FromEnv(gatewayNamespace)
+	if err == nil {
+		err = netpol.Validate()
+	}
+	if err != nil {
+		return fmt.Errorf("tenant network policy: %w", err)
+	}
+	log.Printf("controllers: tenant network policy enabled=%t gatewayNamespace=%q allowedNamespaces=%q allowedCIDRs=%q",
+		netpol.Enabled, netpol.GatewayNamespace, netpol.AllowedNamespaces, netpol.AllowedCIDRs)
+
+	baseDomain := os.Getenv("RAILGRID_APP_BASE_DOMAIN")
+
+	// Leader-elected: instances own runtime-cluster state (kro CRs, bridged
+	// Secrets) and Templates own RGDs, so exactly one replica may reconcile
+	// them. The managers are rebuilt fresh each term — a stopped
+	// controller-runtime manager cannot be restarted.
 	go func() {
 		if err := leaderelection.Run(ctx, leaderelection.Options{
 			Config:    config,
 			Namespace: leaderelection.DefaultNamespace,
 			Name:      controllerLeaseName,
 		}, func(termCtx context.Context) {
-			if err := runTemplateControllerManager(termCtx, config); err != nil {
-				log.Printf("controller manager exited: %v", err)
+			var runErr error
+			if runtimeErr == nil {
+				runErr = runControllers(termCtx, config, registry, instance.Config{
+					ProviderConfig:       config,
+					APIExportName:        install.APIExportName,
+					BaseDomain:           baseDomain,
+					Runtime:              runtimeClient,
+					RuntimeConfig:        runtimeCfg,
+					CodingSandboxEnabled: codingSandboxEnabled(),
+					NetworkPolicy:        netpol,
+				})
+			} else {
+				runErr = runTemplateOnly(termCtx, config, registry)
+			}
+			if runErr != nil {
+				log.Printf("controllers: exited: %v", runErr)
 			}
 		}); err != nil {
-			log.Printf("controller leader election failed; Template controller is not running: %v", err)
+			log.Printf("controller leader election failed; no reconcilers are running: %v", err)
 		}
 	}()
 	return nil
 }
 
-// runTemplateControllerManager builds the Template controller manager and
+// runControllers builds the Instance controller's multicluster manager, folds
+// the Template controller onto its local (provider-workspace) manager, and
 // blocks in Start until the leadership term ends. Called once per term.
-func runTemplateControllerManager(ctx context.Context, config *rest.Config) error {
+func runControllers(ctx context.Context, config *rest.Config, registry *backend.Registry, cfg instance.Config) error {
+	c, err := instance.New(cfg)
+	if err != nil {
+		return fmt.Errorf("instance controller: %w", err)
+	}
+	// The Template controller watches Templates in the provider workspace —
+	// the multicluster manager's local cluster — and the RGDs the kro backend
+	// authors on the runtime cluster, whose cache the Instance controller
+	// already runs. One manager, one cache per cluster, one lease.
+	if err := (&template.Reconciler{
+		Client:               c.LocalManager().GetClient(),
+		Backends:             registry,
+		CodingSandboxEnabled: codingSandboxEnabled(),
+		RuntimeCache:         c.RuntimeCache(),
+	}).SetupWithManager(c.LocalManager()); err != nil {
+		return fmt.Errorf("template controller: %w", err)
+	}
+
+	log.Printf("controllers: starting (apiExport=%s baseDomain=%q backends=%v)", cfg.APIExportName, cfg.BaseDomain, registry.Names())
+	return c.Start(ctx)
+}
+
+// runTemplateOnly runs the Template controller alone on a plain manager over
+// the provider workspace. This is the no-runtime-cluster path: there is nothing
+// for the Instance reconciler to materialize instances on, but Templates still
+// validate and reconcile through the stub backend (dev, and the e2e suite).
+func runTemplateOnly(ctx context.Context, config *rest.Config, registry *backend.Registry) error {
 	skipNameValidation := true
 	mgr, err := manager.New(config, manager.Options{
-		// Disable the metrics server in PR A; the bind on :8080 would
-		// collide with the provider's own HTTP server in dev. PR E
-		// adds it back on a configurable port.
+		// The provider's own HTTP server owns the port in dev; a metrics
+		// listener here would collide with it.
 		Metrics: metricsserver.Options{BindAddress: "0"},
 		// Controller names register process-globally; the manager built for a
 		// later leadership term must skip that check.
@@ -144,164 +230,13 @@ func runTemplateControllerManager(ctx context.Context, config *rest.Config) erro
 	if err != nil {
 		return fmt.Errorf("manager.New: %w", err)
 	}
-
-	registry := backend.NewRegistry()
-	if err := registry.Register(stub.New()); err != nil {
-		return fmt.Errorf("register stub backend: %w", err)
-	}
-
-	// kro backend: authors RGDs on the runtime cluster (where the kro
-	// controller watches RGDs — a kind cluster in dev), NOT this provider's
-	// kcp workspace. It needs a separate client; KRO_KUBECONFIG points at
-	// that cluster (the same kubeconfig the legacy kro broker reads). When
-	// unset we run stub-only so dev/REST-only flows still boot.
-	// Resolve the kro runtime cluster: explicit KRO_KUBECONFIG, else the pod's
-	// in-cluster config (the operator's in-cluster-runtime mode — serve runs in
-	// the runtime cluster and authors RGDs against it via its pod SA). Falls
-	// back to stub-only when neither is available (dev/REST-only).
-	var kroCfg *rest.Config
-	var kroSrc string
-	if p := os.Getenv("KRO_KUBECONFIG"); p != "" {
-		c, err := clientcmd.BuildConfigFromFlags("", p)
-		if err != nil {
-			return fmt.Errorf("loading KRO_KUBECONFIG for kro backend: %w", err)
-		}
-		kroCfg, kroSrc = c, "KRO_KUBECONFIG="+p
-	} else if c, err := rest.InClusterConfig(); err == nil {
-		kroCfg, kroSrc = c, "in-cluster"
-	}
-	var runtimeCache cache.Cache
-	if kroCfg != nil {
-		kroDyn, err := dynamic.NewForConfig(kroCfg)
-		if err != nil {
-			return fmt.Errorf("kro backend dynamic client: %w", err)
-		}
-		if err := registry.Register(krobackend.New(kroDyn)); err != nil {
-			return fmt.Errorf("register kro backend: %w", err)
-		}
-		// A cache over the runtime cluster, started with the manager, so the
-		// Template controller can watch the RGDs the backend authors (kro's
-		// accept/reject verdict lands on their status).
-		runtimeCluster, err := cluster.New(kroCfg, func(o *cluster.Options) {
-			o.Scheme = runtime.NewScheme()
-		})
-		if err != nil {
-			return fmt.Errorf("kro runtime cluster: %w", err)
-		}
-		if err := mgr.Add(runtimeCluster); err != nil {
-			return fmt.Errorf("add kro runtime cluster to manager: %w", err)
-		}
-		runtimeCache = runtimeCluster.GetCache()
-		log.Printf("controller manager: kro backend registered (RGD runtime cluster: %s)", kroSrc)
-	} else {
-		log.Printf("controller manager: no kro runtime config (KRO_KUBECONFIG unset, not in a pod) — kro backend not registered (stub-only)")
-	}
-
 	if err := (&template.Reconciler{
 		Client:               mgr.GetClient(),
 		Backends:             registry,
 		CodingSandboxEnabled: codingSandboxEnabled(),
-		RuntimeCache:         runtimeCache,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("template controller: %w", err)
 	}
-
-	log.Printf("infrastructure controller manager starting (backends=%v)", registry.Names())
+	log.Printf("controllers: starting Template controller only (backends=%v)", registry.Names())
 	return mgr.Start(ctx)
 }
-
-// loadControllerConfig returns a rest.Config for the workspace the
-// platform controllers target. Looked up in this order:
-//
-//	RAILGRID_PROVIDER_KUBECONFIG             — standardized across all providers
-//	INFRASTRUCTURE_KUBECONFIG             — minted SA kubeconfig from `init`
-//	INFRASTRUCTURE_CONTROLLER_KUBECONFIG  — legacy provider-specific override
-//	KUBECONFIG                            — standard env var
-//	in-cluster service account            — when run as a pod
-//
-// RAILGRID_PROVIDER_KUBECONFIG is the name every chart sets on the serve
-// container, and the name the other eight providers read. Until it was
-// honored here, a chart-deployed serve container found none of the
-// provider-specific names — only `init` is given INFRASTRUCTURE_KUBECONFIG —
-// and fell through to the in-cluster ServiceAccount. That silently pointed
-// every kcp controller at the HOST cluster, surfacing as an unrelated-looking
-// RBAC error the first time something touched the API (leases in "default").
-//
-// The minted path wins because serve mode is supposed to run with
-// the lowest-privilege identity available. If init has already run,
-// INFRASTRUCTURE_KUBECONFIG points at a SA token bound to the
-// narrow ClusterRole in install/identity.go. The remaining entries
-// stay as escape hatches for dev clusters that haven't migrated to
-// the init/serve split.
-//
-// Returns errControllerDisabled when none of them resolve; the
-// caller logs + continues without the controller.
-func loadControllerConfig() (*rest.Config, error) {
-	c, source, err := loadControllerConfigRaw()
-	if err != nil {
-		return nil, err
-	}
-	// Say which source won. Every controller and both leader elections run
-	// against this config, so picking the wrong one misdirects the whole
-	// provider — and the symptom surfaces far from the cause.
-	log.Printf("kcp config resolved from %s (host=%s)", source, c.Host)
-	if source == sourceInCluster {
-		log.Printf("WARNING: no provider kubeconfig in scope, so controllers will run "+
-			"against the HOST cluster, not kcp. Set %s to the mounted provider kubeconfig.",
-			"RAILGRID_PROVIDER_KUBECONFIG")
-	}
-	// When INFRASTRUCTURE_WORKSPACE_PATH is set, retarget the config host at
-	// /clusters/<path>. This lets serve run with a root-scoped (admin)
-	// kubeconfig pointed at the provider workspace — so the operator-driven
-	// flow no longer needs `init` to mint a workspace-scoped kubeconfig.
-	// Idempotent: an already workspace-scoped kubeconfig (prod) is unchanged.
-	if ws := os.Getenv("INFRASTRUCTURE_WORKSPACE_PATH"); ws != "" {
-		host, herr := retargetHostToWorkspace(c.Host, ws)
-		if herr != nil {
-			return nil, fmt.Errorf("retarget controller kubeconfig to workspace %q: %w", ws, herr)
-		}
-		c.Host = host
-	}
-	return c, nil
-}
-
-// sourceInCluster names the last-resort branch of loadControllerConfigRaw.
-const sourceInCluster = "the in-cluster ServiceAccount"
-
-// controllerKubeconfigEnvs is the resolution order, most-specific first. The
-// standardized RAILGRID_PROVIDER_KUBECONFIG leads: it is what every chart sets on
-// the serve container and what the other providers read.
-var controllerKubeconfigEnvs = []string{
-	"RAILGRID_PROVIDER_KUBECONFIG",
-	"INFRASTRUCTURE_KUBECONFIG",
-	"INFRASTRUCTURE_CONTROLLER_KUBECONFIG",
-	"KUBECONFIG",
-}
-
-// loadControllerConfigRaw returns the config and the name of the source it
-// came from, so the caller can report which one won.
-func loadControllerConfigRaw() (*rest.Config, string, error) {
-	for _, env := range controllerKubeconfigEnvs {
-		p := os.Getenv(env)
-		if p == "" {
-			continue
-		}
-		c, err := clientcmd.BuildConfigFromFlags("", p)
-		if err != nil {
-			return nil, "", fmt.Errorf("%s: %w", env, err)
-		}
-		return c, env, nil
-	}
-	// In-cluster fallback. The error returned by InClusterConfig is
-	// the right "not running in a pod" signal so we let it surface
-	// up the chain as errControllerDisabled.
-	c, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, "", errControllerDisabled
-	}
-	return c, sourceInCluster, nil
-}
-
-// errControllerDisabled is the sentinel main() checks for so it can
-// log + continue without the manager when no kubeconfig is in scope.
-var errControllerDisabled = errors.New("no kubeconfig available; controller manager disabled")

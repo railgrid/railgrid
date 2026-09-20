@@ -8,20 +8,17 @@
 
 package queryapi
 
-import (
-	"net/http"
-)
-
-// QuerySpecSchema is a JSON Schema (draft-07) for the kuery QuerySpec — the
-// body POSTed to /api/query. It is intentionally a curated, hand-authored
-// subset of the full kuery type (the fields a human or an editor actually
-// needs), not a generated dump: it powers the playground's editor
-// autocomplete/validation AND doubles as external API documentation. Keep the
+// QuerySpecSchema is a JSON Schema (draft-07) for the kuery QuerySpec — a
+// SavedView's spec.query, and the optional override the run verb accepts. It
+// is intentionally a curated, hand-authored subset of the full kuery type (the
+// fields a human or an editor actually needs), not a generated dump: it powers
+// the playground's editor autocomplete, it is what ValidateQuerySpec checks a
+// saved view against, and it doubles as external API documentation. Keep the
 // relation enum in lockstep with the engine's relation set.
 const QuerySpecSchema = `{
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "kuery QuerySpec",
-  "description": "A single query across every edge cluster engaged for your workspace. POST to /api/query; the response is QueryStatus.objects[].",
+  "description": "A single query across every edge cluster engaged for your workspace. It is a SavedView's spec.query; run it with POST /dataplane/clusters/{clusterID}/savedviews/{name}/run and the result is QueryStatus.objects[].",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -139,17 +136,14 @@ const QuerySpecSchema = `{
   }
 }`
 
-// SchemaHandler serves the QuerySpec JSON Schema. It needs no tenant identity —
-// the schema is the same for everyone — so it's safe to call unauthenticated,
-// which lets external clients fetch it for codegen/docs.
-type SchemaHandler struct{}
-
-func (SchemaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/schema+json")
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	_, _ = w.Write([]byte(QuerySpecSchema))
-}
+// SchemaPath is where the schema is served: a static asset overlaid onto the
+// portal bundle (assets.go), NOT an /api/ route.
+//
+// The provider has exactly one authorized tenant route (the query verb), and
+// the schema is not tenant data — it is the same document for everyone and is
+// public API documentation. Serving it from the Go constant rather than
+// copying it into portal/public keeps one source of truth: the same bytes the
+// savedview reconciler validates against are the bytes the editor completes
+// from. The hub's UI proxy routes any path whose last segment contains a "."
+// to this binary, so it reaches the browser exactly like cytoscape.min.js.
+const SchemaPath = "/query-schema.json"

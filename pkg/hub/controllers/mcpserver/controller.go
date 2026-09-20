@@ -279,24 +279,38 @@ func ensureMCPIdentity(ctx context.Context, cs kubernetes.Interface, srv *railgr
 		UID:        srv.UID,
 	}
 
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: mcpIdentityNamespace, OwnerReferences: []metav1.OwnerReference{owner}},
-	}
-	if _, err := cs.CoreV1().ServiceAccounts(mcpIdentityNamespace).Create(ctx, sa, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return nil, "", false, fmt.Errorf("ensuring ServiceAccount %s/%s: %w", mcpIdentityNamespace, saName, err)
+	// Read before create: this runs on every reconcile, and the reconcile
+	// requeues every toolsRefreshInterval, so a create-first ensure was a 409
+	// on the ServiceAccount and another on the Secret once a minute per
+	// MCPServer, in the tenant's own audit log.
+	if _, err := cs.CoreV1().ServiceAccounts(mcpIdentityNamespace).Get(ctx, saName, metav1.GetOptions{}); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, "", false, fmt.Errorf("reading ServiceAccount %s/%s: %w", mcpIdentityNamespace, saName, err)
+		}
+		sa := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: mcpIdentityNamespace, OwnerReferences: []metav1.OwnerReference{owner}},
+		}
+		if _, err := cs.CoreV1().ServiceAccounts(mcpIdentityNamespace).Create(ctx, sa, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			return nil, "", false, fmt.Errorf("ensuring ServiceAccount %s/%s: %w", mcpIdentityNamespace, saName, err)
+		}
 	}
 
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            secretName,
-			Namespace:       mcpIdentityNamespace,
-			OwnerReferences: []metav1.OwnerReference{owner},
-			Annotations:     map[string]string{corev1.ServiceAccountNameKey: saName},
-		},
-		Type: corev1.SecretTypeServiceAccountToken,
-	}
-	if _, err := cs.CoreV1().Secrets(mcpIdentityNamespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return nil, "", false, fmt.Errorf("ensuring token Secret %s/%s: %w", mcpIdentityNamespace, secretName, err)
+	if _, err := cs.CoreV1().Secrets(mcpIdentityNamespace).Get(ctx, secretName, metav1.GetOptions{}); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, "", false, fmt.Errorf("reading token Secret %s/%s: %w", mcpIdentityNamespace, secretName, err)
+		}
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            secretName,
+				Namespace:       mcpIdentityNamespace,
+				OwnerReferences: []metav1.OwnerReference{owner},
+				Annotations:     map[string]string{corev1.ServiceAccountNameKey: saName},
+			},
+			Type: corev1.SecretTypeServiceAccountToken,
+		}
+		if _, err := cs.CoreV1().Secrets(mcpIdentityNamespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			return nil, "", false, fmt.Errorf("ensuring token Secret %s/%s: %w", mcpIdentityNamespace, secretName, err)
+		}
 	}
 
 	if err := ensureMCPRBAC(ctx, cs, srv, owner, saName, rules); err != nil {

@@ -39,9 +39,10 @@ const ProjectLabel = "app-studio.railgrid.ai/project"
 // instances correctly.
 const TemplateLabel = "railgrid.ai/template"
 
-// Provider Actions fields are platform-owned instance inputs. The prefix is
-// intentionally broader than the currently-known field list: a binding must
-// never be able to smuggle a future reserved Actions field into an instance.
+// ActionsFieldPrefix marks the platform-owned Provider Actions instance
+// inputs. The prefix is intentionally broader than the currently-known field
+// list: a binding must never be able to smuggle a future reserved Actions
+// field into an instance.
 const ActionsFieldPrefix = "railgridActions"
 
 const (
@@ -258,8 +259,6 @@ func ApplyActionsOverlay(values map[string]any, overlay ActionsOverlay) map[stri
 	return out
 }
 
-// ApplyActionsOverlayToBinding applies the pure value overlay while retaining
-// the rest of the binding contract unchanged.
 // AccessField is the template input that decides who can reach an instance's
 // URL. Templates that expose a URL declare it (public | private); templates
 // that expose nothing do not, which is why callers must tolerate its absence
@@ -325,6 +324,8 @@ func DropUnsupportedAccess(observed, desired map[string]any) {
 	}
 }
 
+// ApplyActionsOverlayToBinding applies the pure value overlay while retaining
+// the rest of the binding contract unchanged.
 func ApplyActionsOverlayToBinding(binding aiv1alpha1.ProjectProviderBindingSpec, overlay ActionsOverlay) (aiv1alpha1.ProjectProviderBindingSpec, error) {
 	values, err := Values(binding)
 	if err != nil {
@@ -522,6 +523,17 @@ func Desired(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpe
 	}
 	vals := map[string]any{}
 	maps.Copy(vals, values)
+	spec := map[string]any{
+		"template": templateName,
+		"values":   vals,
+	}
+	// The pull-secret reference is a typed spec field, not a value: the
+	// instance's provider reads it directly, and the producer that wrote the
+	// Secret is the one that names it. Nothing derives a name from the
+	// instance's any more (docs/provider-contract-review.md M8).
+	if ref := binding.ImagePullSecretRef; ref != nil && strings.TrimSpace(ref.Name) != "" {
+		spec["imagePullSecretRef"] = map[string]any{"name": strings.TrimSpace(ref.Name)}
+	}
 	want := &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": binding.ResourceRef.APIVersion,
@@ -533,10 +545,7 @@ func Desired(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpe
 					TemplateLabel: templateName,
 				},
 			},
-			"spec": map[string]any{
-				"template": templateName,
-				"values":   vals,
-			},
+			"spec": spec,
 		},
 	}
 	if owner := OwnerRef(p); owner != nil {

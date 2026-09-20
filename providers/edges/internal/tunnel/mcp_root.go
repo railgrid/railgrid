@@ -48,8 +48,8 @@ var rootMCPImpl = &mcp.Implementation{
 // connected KubernetesCluster edges) with the Home Assistant tools of every
 // Ready home-assistant Service in the caller's tenant, so an AI agent with
 // the edges tool family sees both without any agents-provider change.
-func (s *Server) RootMCPHandler() http.Handler {
-	return s.buildRootMCPHandler()
+func (p *Server) RootMCPHandler() http.Handler {
+	return p.buildRootMCPHandler()
 }
 
 func (p *Server) buildRootMCPHandler() http.Handler {
@@ -130,15 +130,17 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 
 	srv := mcp.NewServer(rootMCPImpl, &mcp.ServerOptions{Instructions: instructions})
 
-	// 2. Register each service's tools by type. The list and per-tool Secret
-	//    reads act as the caller (token), since the provider SA has no direct
-	//    RBAC on Service objects in tenant workspaces.
+	// 2. Register each service's tools by type. The LIST above acts as the
+	//    caller (token) — the provider SA has no direct RBAC on Service
+	//    objects in tenant workspaces — so only Services the caller can see
+	//    are registered. Each tool's own Secret read then acts as the
+	//    provider, because that Secret is edges-owned (readServiceToken).
 	for _, h := range toRegister {
 		switch {
 		case h.reg.view.Spec.Type == "home-assistant":
-			p.registerHomeAssistantTools(srv, h.prefix, cluster, token, h.reg.view, h.dialer)
+			p.registerHomeAssistantTools(srv, h.prefix, cluster, h.reg.view, h.dialer)
 		case svccatalog.IsDataDriven(h.reg.view.Spec.Type):
-			p.registerCatalogTools(srv, h.prefix, cluster, token, h.reg.view, h.dialer)
+			p.registerCatalogTools(srv, h.prefix, cluster, h.reg.view, h.dialer)
 		}
 		logger.Info("service tools registered", "service", h.reg.name, "type", h.reg.view.Spec.Type, "prefix", h.prefix)
 	}

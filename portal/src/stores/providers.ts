@@ -43,10 +43,6 @@ export interface ProviderDTO {
   // an org-owned provider: its bundle URL and pin come from the grant the
   // portal requests at load time (providers/providerBundle.ts).
   mainJSIntegrity?: string
-  // True when the provider requests background access to the workspace's
-  // edge clusters (verb "proxy" on edges) on Enable. Rendered in the
-  // Enable confirmation dialog alongside permission claims.
-  edgeProxyAccess?: boolean
   // When set, the portal renders this Vue Router route name in-tree
   // instead of loading /main.js. First-party providers (mcp, kubernetes-
   // edges, server-edges) use this to surface their existing SPA pages
@@ -86,6 +82,33 @@ export interface ProviderDTO {
 
 export interface ProviderDependencyDTO {
   name: string
+  // Kinds of this dependency the provider creates and manages in the tenant
+  // workspace. Shown in the Enable dialog as its own consent line; nothing
+  // applies until a workspace or org admin accepts it there.
+  composes?: CompositionRequest[]
+}
+
+// CompositionRequest mirrors providersv1alpha1.ProviderComposition: one kind
+// of a dependency provider that this provider's reconcilers manage.
+export interface CompositionRequest {
+  group: string
+  resource: string
+  verbs?: string[]
+}
+
+// AcceptedComposition mirrors pkg/hub/restapi.AcceptedComposition. `provider`
+// is the DEPENDENCY whose kind is composed, not the provider being enabled.
+export interface AcceptedComposition {
+  provider: string
+  group: string
+  resource: string
+}
+
+// CompositionState mirrors pkg/hub/restapi.CompositionState.
+export interface CompositionState {
+  granted?: AcceptedComposition[]
+  pending?: AcceptedComposition[]
+  implicit?: boolean
 }
 
 // EnabledProviderDetail mirrors pkg/hub/restapi.EnabledProviderDetail — which
@@ -110,6 +133,11 @@ export interface EnabledProviderDetail {
   // The provider's hub capabilities here: in force, and declared but not yet
   // accepted. Absent when the provider requests none.
   hubAccess?: HubAccessState
+  // The kinds of other providers this one manages here: in force, and
+  // declared but not yet accepted. A pending composition is why a provider
+  // that looks enabled cannot create what it is for. Absent when it declares
+  // none.
+  compositions?: CompositionState
 }
 
 // StaleClaim mirrors pkg/hub/restapi.StaleClaim. kcp reports a binding with a
@@ -473,6 +501,14 @@ export const useProvidersStore = defineStore('providers', () => {
     return bindingsByProvider.value[name]?.hubAccess?.pending ?? []
   }
 
+  // Compositions an enabled provider declares that nobody here has accepted
+  // yet. Its reconcilers are refused the corresponding identity rules until
+  // an admin reviews them, so this is the visible cause of "enabled but it
+  // does not do anything".
+  function pendingCompositions(name: string): AcceptedComposition[] {
+    return bindingsByProvider.value[name]?.compositions?.pending ?? []
+  }
+
   function dependencyLabel(name: string): string {
     return byName(name)?.displayName ?? name
   }
@@ -670,7 +706,12 @@ export const useProvidersStore = defineStore('providers', () => {
   // the provider's declared claims — anything the user didn't accept
   // is sent to kcp as state=Rejected (which prevents the binding from
   // going Bound and surfaces the mismatch cleanly).
-  async function enable(p: ProviderDTO, accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[] = []): Promise<void> {
+  async function enable(
+    p: ProviderDTO,
+    accept: PermissionClaim[],
+    acceptHubAccess: AcceptedHubAccess[] = [],
+    acceptCompositions: AcceptedComposition[] = [],
+  ): Promise<void> {
     if (!p.apiExportPath || !p.apiExportName) {
       throw new Error(`${p.name}: provider declares no APIExport to bind`)
     }
@@ -691,6 +732,7 @@ export const useProvidersStore = defineStore('providers', () => {
     const body = {
       acceptedClaims: accept.map((c) => ({ group: c.group ?? '', resource: c.resource })),
       acceptedHubAccess: acceptHubAccess.map((h) => ({ capability: h.capability, scope: h.scope })),
+      acceptedCompositions: acceptCompositions.map((c) => ({ provider: c.provider, group: c.group, resource: c.resource })),
     }
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/enable`
 
@@ -818,6 +860,39 @@ export const useProvidersStore = defineStore('providers', () => {
     return items.value.find((p) => p.name === name)
   }
 
+  // refreshMainJSIntegrity re-reads the catalog and answers with the provider's
+  // CURRENT SRI pin, for a bundle whose load the browser just refused.
+  //
+  // A provider's bundle can be rebuilt without its catalog version changing, so
+  // the pin this page holds can describe bytes the hub no longer serves. The
+  // hub re-pins from what it actually served the moment a browser asks for the
+  // new bundle (pkg/hub/providers/proxy.go), which means the answer to that
+  // refused load is already waiting in /api/providers by the time we ask.
+  //
+  // This is deliberately a plain read rather than load(): load() coalesces with
+  // an in-flight catalog request and would hand back the same stale pin that
+  // just failed, which the loader reads as "nothing changed, do not retry". The
+  // catalog IS refreshed from the response, but only when no other request has
+  // started or finished meanwhile, so this can never resurrect another scope's
+  // items. Errors propagate: the loader treats a failed refresh as "no retry".
+  async function refreshMainJSIntegrity(name: string): Promise<string | null> {
+    const targetOrgUUID = readTenantSelection().orgUUID
+    const requestSequence = catalogRequestSequence
+    const res = await authFetch('/api/providers', {
+      headers: targetOrgUUID ? { 'X-Railgrid-Org': targetOrgUUID } : undefined,
+    })
+    if (!res.ok) {
+      throw new Error(`provider list failed: ${res.status} ${res.statusText}`)
+    }
+    const body = (await res.json()) as ProvidersResponse
+    const fresh = body.items ?? []
+    if (requestSequence === catalogRequestSequence && catalogOrgUUID.value === targetOrgUUID) {
+      items.value = fresh
+      categories.value = body.categories ?? []
+    }
+    return fresh.find((p) => p.name === name)?.mainJSIntegrity ?? null
+  }
+
   return {
     items,
     categories,
@@ -840,6 +915,7 @@ export const useProvidersStore = defineStore('providers', () => {
     selfHostable,
     bindingsByProvider,
     pendingHubAccess,
+    pendingCompositions,
     hasAnyEnabled,
     isEnabled,
     isSelfManaged,
@@ -858,5 +934,6 @@ export const useProvidersStore = defineStore('providers', () => {
     enable,
     disable,
     byName,
+    refreshMainJSIntegrity,
   }
 })

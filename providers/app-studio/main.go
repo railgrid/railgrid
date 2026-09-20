@@ -25,7 +25,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,13 +32,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -48,6 +45,8 @@ import (
 	"github.com/railgrid/provider-app-studio/tenant"
 	"github.com/railgrid/provider-app-studio/workspace"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/serve"
+	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
@@ -132,7 +131,8 @@ func runMainWith(args []string, initCmd func(context.Context) error, serve func(
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			if err := initCmd(ctx); err != nil {
-				fmt.Fprintln(stderr, "init:", err)
+				// The exit code, not the message, is what the caller acts on.
+				_, _ = fmt.Fprintln(stderr, "init:", err)
 				return 1
 			}
 			return 0
@@ -140,7 +140,8 @@ func runMainWith(args []string, initCmd func(context.Context) error, serve func(
 			serve()
 			return 0
 		default:
-			fmt.Fprintf(stderr, "unknown subcommand: %s\nusage: app-studio [init|serve]\n", args[0])
+			// The exit code, not the message, is what the caller acts on.
+			_, _ = fmt.Fprintf(stderr, "unknown subcommand: %s\nusage: app-studio [init|serve]\n", args[0])
 			return 2
 		}
 	}
@@ -246,8 +247,28 @@ func runServe() {
 	// subresources on the template instance, reached through the hub as the
 	// calling user. See docs/app-studio-template-sandboxes.md.
 
-	controllerHealth := newControllerHealth(controllerModeFromEnv() == controllerModeRequired)
-	handler, err := newHandler(apiServer, controllerHealth)
+	// Readiness is reachability of the APIExport virtual workspace, plus —
+	// while this replica holds the controller lease — whether the multicluster
+	// provider is actually watching tenant workspaces (see
+	// provider-sdk/vwhealth). A replica that is not leading has nothing
+	// attached and stays ready on the probe alone: its REST API, assistant
+	// supervisor and replica-affinity forwarder are serving regardless.
+	mode := controllerModeFromEnv()
+	kcpConfig, kcpErr := loadProviderConfig()
+	if kcpErr != nil {
+		kcpConfig = nil
+	}
+	vwState := &vwhealth.Readiness{}
+	if mode == controllerModeRequired && kcpConfig == nil {
+		// Fail closed: a pod told to run controllers that has no credential to
+		// run them with must not advertise readiness. Nothing else can notice
+		// this — the probe needs a config to probe with.
+		err := fmt.Errorf("controller mode is %q but no provider kubeconfig resolved: %w", mode, kcpErr)
+		log.Printf("%v", err)
+		vwState.Attach("controllers", checkerFunc(func() error { return err }))
+	}
+
+	handler, err := newHandler(apiServer, vwhealth.Handler(vwState))
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
@@ -264,8 +285,8 @@ func runServe() {
 		replicaAddr = podIP + ":" + internalPort
 	}
 	internalToken := ""
-	if cfg, cfgErr := loadProviderConfig(); cfgErr == nil && cfg != nil {
-		internalToken = cfg.BearerToken
+	if kcpConfig != nil {
+		internalToken = kcpConfig.BearerToken
 	}
 	if replicaAddr != "" && internalToken == "" {
 		log.Printf("replica forwarding disabled (provider credential has no bearer token); serving project requests locally")
@@ -279,7 +300,7 @@ func runServe() {
 	core := apiServer.ReplicaAffinity(handler)
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           logMiddleware(apiServer.StripReplicaHeaders(core)),
+		Handler:           apiServer.StripReplicaHeaders(core),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -290,10 +311,18 @@ func runServe() {
 		}
 	}()
 
+	// The internal listener carries peer-forwarded project requests AND
+	// /metrics. Metrics used to sit beside /api/* on the public port, where
+	// any caller the hub proxied could scrape the assistant's operational
+	// counters; it is not a Pillar 2 route class and serve.New has no field
+	// for it, which is the contract saying the same thing.
+	internalMux := http.NewServeMux()
+	internalMux.Handle("/metrics", apiServer.MetricsHandler())
+	internalMux.Handle("/", apiServer.InternalReplicaHandler(core))
 	if replicaAddr != "" {
 		internalSrv := &http.Server{
 			Addr:              ":" + internalPort,
-			Handler:           logMiddleware(apiServer.InternalReplicaHandler(core)),
+			Handler:           internalMux,
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
@@ -310,26 +339,28 @@ func runServe() {
 		}()
 	}
 
-	// Beats are gated on controller readiness (heartbeatCanSend): the hub
-	// records any received beat as liveness, so a required controller that
-	// is starting, failed, or stopped must go quiet and let the TTL mark the
-	// provider stale.
-	hb, err := hubclient.ConfigFromEnv("app-studio", heartbeatVersion)
+	// The hub records any received beat as liveness and never inspects its
+	// status, so hold beats while readiness says otherwise: the TTL then flips
+	// the catalog entry to NotReady instead of it staying green over a
+	// provider that cannot reach the tenant workspaces it serves.
+	go vwhealth.Watch(ctx, kcpConfig, endpointSliceName, vwState, vwhealth.DefaultInterval)
+
+	hb, err := hubclient.ConfigFromEnv(providerName, heartbeatVersion)
 	if err != nil {
 		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}
-	hb.CanSend = func() bool { return heartbeatCanSend(controllerHealth) }
+	hb.CanSend = func() bool { return vwState.Check() == nil }
 	go hubclient.RunHeartbeat(ctx, hb)
 
-	// Deterministic lifecycle: the Project reconciler converges instances
-	// across every tenant workspace. Opt-in via RAILGRID_PROVIDER_KUBECONFIG.
-	//
-	// Started in a retry loop because ordering is not guaranteed: the
-	// provider frequently comes up before `init` has created its workspace,
-	// APIExport, and endpoint slice (fresh cluster, first deploy). The loop
-	// owns manager.Start synchronously, so setup failures and post-start exits
-	// both transition readiness and re-enter recovery.
-	go func() {
+	// Deterministic lifecycle: the Project, Session and Studio reconcilers
+	// converge state across every tenant workspace, behind a Lease in the
+	// provider workspace so only one replica writes. Opt-in via
+	// RAILGRID_PROVIDER_KUBECONFIG; the campaign itself retries forever, which
+	// is what covers a provider that comes up before `init` has created its
+	// workspace, APIExport and endpoint slice.
+	if mode == controllerModeRESTOnly {
+		log.Printf("controller manager disabled: explicit REST-only mode")
+	} else {
 		deps := controllerDeps{
 			Actions:     apiServer.ActionsRuntimeConfig(),
 			Workspace:   workspaces,
@@ -337,18 +368,23 @@ func runServe() {
 			Owns:        apiServer.OwnsProject,
 			OnCommitted: projectCommitNotifier(apiServer.ProjectCommitted),
 			Store:       msgStore,
-			HubBase:     strings.TrimRight(os.Getenv("RAILGRID_HUB_URL"), "/"),
-			HubInsecure: os.Getenv("RAILGRID_HUB_INSECURE") == "true",
+			// Deleting a Project stops its assistant run rather than being
+			// refused by it: the CR is already going (Cut D.4).
+			StopAssistant: apiServer.StopAssistantForDeletedProject,
+			HubBase:       strings.TrimRight(os.Getenv("RAILGRID_HUB_URL"), "/"),
+			HubInsecure:   os.Getenv("RAILGRID_HUB_INSECURE") == "true",
 			// Event-driven reconciles: the API publishes thread/turn and
 			// workspace transitions, the controllers subscribe.
 			SessionSignals: apiServer.SessionSignals(),
 			ProjectSignals: apiServer.ProjectSignals(),
+			// Conversation retention as a per-Session deadline (zero: keep
+			// conversations forever).
+			SessionRetention: parseRetention(os.Getenv("APP_STUDIO_MESSAGE_RETENTION")),
 		}
-		start := func(startCtx context.Context, config *rest.Config, startDeps controllerDeps) error {
-			return startControllerManager(startCtx, config, startDeps, controllerHealth)
+		if err := startControllerManager(ctx, kcpConfig, deps, vwState); err != nil {
+			log.Printf("controller manager: NOT started: %v", err)
 		}
-		runControllerManager(ctx, controllerHealth, loadProviderConfig, start, deps, controllerRetryInterval)
-	}()
+	}
 
 	<-ctx.Done()
 	log.Printf("shutting down")
@@ -365,74 +401,41 @@ func runServe() {
 	apiServer.RelinquishProjectClaims(release)
 }
 
-// newHandler builds the combined backend-API + portal handler. apiServer may be
-// nil (the portal still serves), which keeps the asset tests independent of the
-// kube/store wiring.
-func newHandler(apiServer *api.Server, healthStates ...*controllerHealth) (http.Handler, error) {
-	r := mux.NewRouter()
-	health := (*controllerHealth)(nil)
-	if len(healthStates) > 0 {
-		health = healthStates[0]
-	}
-
-	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-	r.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		snapshot := health.snapshot()
-		if !health.ready() {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"status":     "not_ready",
-				"controller": string(snapshot.State),
-				"error":      snapshot.Error,
-			})
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"status":     "ready",
-			"controller": string(snapshot.State),
-		})
-	})
-
-	if apiServer != nil {
-		apiServer.Register(r)
-	}
-
-	fileServer, distFS, err := portalHandler()
+// newHandler builds the provider's whole HTTP surface from provider-sdk/serve.
+//
+// It used to be a hand-rolled gorilla router: /healthz, /readyz, ~95 /api/*
+// routes, a /metrics endpoint beside them, and a portal catch-all with its own
+// index fallback. serve.New takes one handler per Pillar 2 route class and
+// refuses anything else — there is no /api/* field, so the deviation this
+// provider had the most of is now one it cannot express
+// (docs/provider-connectivity-contract.md §"Pillar 2 route classes").
+//
+// apiServer may be nil (the portal still serves), which keeps the asset tests
+// independent of the kube/store wiring. readiness may be nil, which serves
+// /readyz as always ready.
+func newHandler(apiServer *api.Server, readiness http.Handler) (http.Handler, error) {
+	_, distFS, err := portalHandler()
 	if err != nil {
 		return nil, err
 	}
-
-	// Portal catch-all: try the embedded FS first (main.js, icon.svg,
-	// /assets/*), else serve index.html so a deep link renders the SPA.
-	r.PathPrefix("/").HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodGet && req.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		clean := strings.TrimPrefix(req.URL.Path, "/")
-		if clean != "" {
-			if servePortalAsset(w, req, distFS, clean) {
-				return
-			}
-			// Missing executable/style/image requests must fail as assets. Serving
-			// the SPA document with 200 here turns a retired lazy chunk into a
-			// misleading JavaScript MIME error and can conceal broken manifests.
-			if strings.HasPrefix(clean, "assets/") || path.Ext(clean) != "" {
-				http.NotFound(w, req)
-				return
-			}
-		}
-		req2 := req.Clone(req.Context())
-		req2.URL.Path = "/"
-		fileServer.ServeHTTP(w, req2)
-	})
-
-	return r, nil
+	if readiness == nil {
+		readiness = vwhealth.Handler(&vwhealth.Readiness{})
+	}
+	options := serve.Options{
+		Name:      providerName,
+		Readiness: readiness,
+		Portal:    distFS,
+	}
+	if apiServer != nil {
+		// Class (a): every tenant-facing verb, on the one grammar, each gated
+		// as the caller. serve.New hands it the RAW request path.
+		options.DataPlane = apiServer.DataPlane()
+	}
+	handler, err := serve.New(options)
+	if err != nil {
+		return nil, err
+	}
+	return handler, nil
 }
 
 func openWorkspaceStore() *workspace.FileStore {
@@ -441,7 +444,16 @@ func openWorkspaceStore() *workspace.FileStore {
 		root = filepath.Join(os.TempDir(), "railgrid-app-studio-workspaces")
 	}
 	log.Printf("app studio workspace root: %s", root)
-	return workspace.NewFileStore(root)
+	store := workspace.NewFileStore(root)
+	// The volume holds the working TREE and nothing else. The working-copy
+	// ledger — dirty paths, source revision, the commit in flight, the
+	// settlement receipt — is `Project.status.workspace`, reached through a
+	// client attached to each call's context: the caller's on the request path
+	// (api/project_ledger.go), the manager's in the Project reconciler. This
+	// makes a call path that forgot to attach one an error rather than a
+	// silent return to pod-local authority.
+	store.RequireContextLedger()
+	return store
 }
 
 // openMessageStore builds the App Studio message store from env, wraps it with
@@ -482,10 +494,12 @@ func openMessageStore(ctx context.Context) (store.Store, func(), error) {
 		}
 	}
 
-	if retention := parseRetention(os.Getenv("APP_STUDIO_MESSAGE_RETENTION")); retention > 0 {
-		go runRetention(ctx, msgStore, retention)
-	}
-
+	// Conversation retention is NOT swept here any more. It is a per-Session
+	// deadline owned by the Session reconciler (controller/session): it
+	// requeues at status.lastActivityAt + APP_STUDIO_MESSAGE_RETENTION and
+	// deletes that Session, whose finalizer purges the thread. One owner (the
+	// controller leader), one conversation at a time, and an in-flight turn
+	// defers its own expiry — none of which a fleet-wide cutoff could do.
 	return msgStore, closeFn, nil
 }
 
@@ -502,26 +516,16 @@ func parseRetention(raw string) time.Duration {
 	return d
 }
 
-func runRetention(ctx context.Context, msgStore store.Store, retention time.Duration) {
-	interval := retention / 4
-	if interval < time.Minute {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			cutoff := time.Now().Add(-retention)
-			if _, err := msgStore.DeleteMessagesOlderThan(ctx, cutoff); err != nil {
-				log.Printf("App Studio retention cleanup failed (cutoff %s): %v", cutoff, err)
-			}
-		}
-	}
-}
-
+// runAttachmentRetention sweeps expired DRAFT attachments on a cutoff, and
+// deliberately stays a sweep.
+//
+// A draft is an upload that no turn has claimed yet: it is scoped to a project
+// and an actor, carries its own expires_at, and can outlive — or entirely
+// predate — any thread. There is therefore no Session to hang its deadline on,
+// which is why conversation retention moved to the Session reconciler and this
+// one did not. Attachments that a turn DID bind are not swept here at all:
+// they belong to the conversation and go with it when the Session's finalizer
+// purges the thread.
 func runAttachmentRetention(ctx context.Context, attachmentStore store.AttachmentStore, retention time.Duration) {
 	interval := retention / 4
 	if interval < time.Minute {
@@ -539,12 +543,4 @@ func runAttachmentRetention(ctx context.Context, attachmentStore store.Attachmen
 			}
 		}
 	}
-}
-
-func logMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
-	})
 }

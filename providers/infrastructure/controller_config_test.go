@@ -13,6 +13,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,98 +45,91 @@ users:
 	return path
 }
 
-// clearControllerKubeconfigEnv unsets every variable the resolver consults so a
-// developer's own environment cannot leak into the test.
-func clearControllerKubeconfigEnv(t *testing.T) {
+// clearProviderKubeconfigEnv unsets every variable serve ever consulted — the
+// standardized name it still reads and the retired provider-specific ones — so
+// a developer's own environment cannot leak into the test.
+func clearProviderKubeconfigEnv(t *testing.T) {
 	t.Helper()
-	for _, env := range controllerKubeconfigEnvs {
+	for _, env := range []string{
+		providerKubeconfigEnv,
+		"INFRASTRUCTURE_KUBECONFIG",
+		"INFRASTRUCTURE_CONTROLLER_KUBECONFIG",
+		"KUBECONFIG",
+		"INFRASTRUCTURE_WORKSPACE_PATH",
+	} {
 		t.Setenv(env, "")
 	}
-	t.Setenv("INFRASTRUCTURE_WORKSPACE_PATH", "")
 }
 
-// The regression: the charts set RAILGRID_PROVIDER_KUBECONFIG on the serve
-// container and nothing else. When it was not consulted, serve fell through to
-// the in-cluster ServiceAccount and pointed every kcp controller at the HOST
-// cluster — which surfaced as leases in "default" being forbidden rather than
-// as a missing kubeconfig.
-func TestLoadControllerConfigHonorsStandardizedName(t *testing.T) {
-	clearControllerKubeconfigEnv(t)
-	t.Setenv("RAILGRID_PROVIDER_KUBECONFIG", writeKubeconfig(t, "provider", "https://kcp.example/clusters/root:railgrid:providers:infrastructure"))
+// The charts set RAILGRID_PROVIDER_KUBECONFIG on the serve container and
+// nothing else, and that is now the only name serve honors.
+func TestLoadControllerConfigReadsStandardizedName(t *testing.T) {
+	clearProviderKubeconfigEnv(t)
+	want := "https://kcp.example/clusters/root:railgrid:providers:infrastructure"
+	t.Setenv(providerKubeconfigEnv, writeKubeconfig(t, "provider", want))
 
-	cfg, source, err := loadControllerConfigRaw()
+	cfg, err := loadControllerConfig()
 	if err != nil {
-		t.Fatalf("loadControllerConfigRaw: %v", err)
+		t.Fatalf("loadControllerConfig: %v", err)
 	}
-	if source != "RAILGRID_PROVIDER_KUBECONFIG" {
-		t.Errorf("source = %q, want RAILGRID_PROVIDER_KUBECONFIG", source)
-	}
-	if cfg.Host != "https://kcp.example/clusters/root:railgrid:providers:infrastructure" {
-		t.Errorf("Host = %q — resolved the wrong kubeconfig", cfg.Host)
+	if cfg.Host != want {
+		t.Errorf("Host = %q, want %q", cfg.Host, want)
 	}
 }
 
-// The operator sets only INFRASTRUCTURE_KUBECONFIG, so that path must keep
-// working; and the standardized name must win when both are present.
-func TestLoadControllerConfigResolutionOrder(t *testing.T) {
-	standardized := writeKubeconfig(t, "standardized", "https://standardized.example")
-	operator := writeKubeconfig(t, "operator", "https://operator.example")
-	legacy := writeKubeconfig(t, "legacy", "https://legacy.example")
+// The point of PR 1: serve has no second-choice credential. Every retired
+// source — the operator's own name, the legacy override, a stray KUBECONFIG,
+// and (implicitly) the in-cluster ServiceAccount — must fail rather than let
+// serve run with something `init` did not mint for it.
+func TestLoadControllerConfigRejectsRetiredSources(t *testing.T) {
+	for _, env := range []string{
+		"INFRASTRUCTURE_KUBECONFIG",
+		"INFRASTRUCTURE_CONTROLLER_KUBECONFIG",
+		"KUBECONFIG",
+	} {
+		t.Run(env, func(t *testing.T) {
+			clearProviderKubeconfigEnv(t)
+			t.Setenv(env, writeKubeconfig(t, "retired", "https://retired.example"))
 
-	for _, tc := range []struct {
-		name       string
-		env        map[string]string
-		wantSource string
-		wantHost   string
-	}{{
-		name:       "operator-only still works",
-		env:        map[string]string{"INFRASTRUCTURE_KUBECONFIG": operator},
-		wantSource: "INFRASTRUCTURE_KUBECONFIG",
-		wantHost:   "https://operator.example",
-	}, {
-		name: "standardized wins over the provider-specific names",
-		env: map[string]string{
-			"RAILGRID_PROVIDER_KUBECONFIG":         standardized,
-			"INFRASTRUCTURE_KUBECONFIG":            operator,
-			"INFRASTRUCTURE_CONTROLLER_KUBECONFIG": legacy,
-		},
-		wantSource: "RAILGRID_PROVIDER_KUBECONFIG",
-		wantHost:   "https://standardized.example",
-	}, {
-		name:       "legacy override is still an escape hatch",
-		env:        map[string]string{"INFRASTRUCTURE_CONTROLLER_KUBECONFIG": legacy},
-		wantSource: "INFRASTRUCTURE_CONTROLLER_KUBECONFIG",
-		wantHost:   "https://legacy.example",
-	}} {
-		t.Run(tc.name, func(t *testing.T) {
-			clearControllerKubeconfigEnv(t)
-			for k, v := range tc.env {
-				t.Setenv(k, v)
+			cfg, err := loadControllerConfig()
+			if err == nil {
+				t.Fatalf("loadControllerConfig accepted %s (host=%s); serve must require %s", env, cfg.Host, providerKubeconfigEnv)
 			}
-
-			cfg, source, err := loadControllerConfigRaw()
-			if err != nil {
-				t.Fatalf("loadControllerConfigRaw: %v", err)
-			}
-			if source != tc.wantSource {
-				t.Errorf("source = %q, want %q", source, tc.wantSource)
-			}
-			if cfg.Host != tc.wantHost {
-				t.Errorf("Host = %q, want %q", cfg.Host, tc.wantHost)
+			if !strings.Contains(err.Error(), providerKubeconfigEnv) {
+				t.Errorf("error = %q, want it to name %s", err, providerKubeconfigEnv)
 			}
 		})
 	}
 }
 
-// Outside a pod, with nothing configured, the caller must get the sentinel it
-// checks for rather than a config pointing somewhere arbitrary.
-func TestLoadControllerConfigDisabledWithoutAnySource(t *testing.T) {
-	clearControllerKubeconfigEnv(t)
-	// rest.InClusterConfig keys off these; unset they yield ErrNotInCluster.
-	t.Setenv("KUBERNETES_SERVICE_HOST", "")
-	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+// A root-scoped kubeconfig used to be usable for serve by pointing
+// INFRASTRUCTURE_WORKSPACE_PATH at the provider workspace. That hint is gone:
+// the variable must have no effect on the host serve connects to.
+func TestLoadControllerConfigIgnoresWorkspacePathHint(t *testing.T) {
+	clearProviderKubeconfigEnv(t)
+	t.Setenv(providerKubeconfigEnv, writeKubeconfig(t, "root", "https://kcp.example/clusters/root"))
+	t.Setenv("INFRASTRUCTURE_WORKSPACE_PATH", "root:railgrid:providers:infrastructure")
 
-	if _, _, err := loadControllerConfigRaw(); err != errControllerDisabled { //nolint:errorlint // sentinel is returned directly
-		t.Fatalf("err = %v, want errControllerDisabled", err)
+	cfg, err := loadControllerConfig()
+	if err != nil {
+		t.Fatalf("loadControllerConfig: %v", err)
+	}
+	if cfg.Host != "https://kcp.example/clusters/root" {
+		t.Errorf("Host = %q — INFRASTRUCTURE_WORKSPACE_PATH still retargets serve", cfg.Host)
+	}
+}
+
+// With nothing configured the caller gets an actionable error naming the
+// variable and the command that produces its value, not a config pointing
+// somewhere arbitrary.
+func TestLoadControllerConfigFailsWithoutProviderKubeconfig(t *testing.T) {
+	clearProviderKubeconfigEnv(t)
+
+	_, err := loadControllerConfig()
+	if err == nil {
+		t.Fatal("loadControllerConfig succeeded with no provider kubeconfig")
+	}
+	if !strings.Contains(err.Error(), providerKubeconfigEnv) || !strings.Contains(err.Error(), "init") {
+		t.Errorf("error = %q, want it to name %s and `init`", err, providerKubeconfigEnv)
 	}
 }

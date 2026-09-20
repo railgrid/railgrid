@@ -31,30 +31,31 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/tools/clientcmd"
-	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/revdial"
 )
 
-var secretGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
-
-// buildEdgeAgentProxyHandler creates the HTTP handler for Edge agent tunnel
-// registration (the agent-facing side of the new Edge workflow).
+// buildEdgeAgentProxyHandler serves Pillar 2 class (f), the agent tunnel.
 //
-// Agents connect via WebSocket to:
+// Agents connect via WebSocket to the grammar route, on the same shape every
+// other class-(a)/(f) route uses — only the root differs, because the
+// credential is the edge's own rather than a tenant caller's:
 //
-//	/services/agent-proxy/{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/proxy
+//	/agent/clusters/{cluster}/{resource}/{name}/proxy
 //
-// The hub upgrades the connection, wraps it in a revdial.Dialer, and stores
-// it in p.edgeConnManager keyed by "edges/{cluster}/{name}". Subsequent
-// user-facing requests (buildEdgesProxyHandler) look up that dialer to open
+// The provider upgrades the connection, wraps it in a revdial.Dialer, and
+// stores it in p.edgeConnManager keyed by "{resource}/{cluster}/{name}".
+// Consumer requests (buildEdgesProxyHandler) look up that dialer to open
 // back-connections to the agent.
 //
-// A separate /proxy endpoint (relative to the mount point) handles revdial
-// pick-up connections initiated by the agent side.
+// Two further routes carry revdial pick-up connections the agent opens when
+// the provider dials it. They are not grammar routes and never name an
+// object: the dialer id in the query IS the capability.
+//
+//	/agent/proxy                 single-replica / pre-routing pickup
+//	/agent/proxy/{replica}       replica-addressed pickup
 func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -62,40 +63,43 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		},
 	}
 
-	mux := http.NewServeMux()
+	// Dispatched on the RAW path, never through an http.ServeMux: ServeMux
+	// cleans the path and answers a non-clean one with a redirect, and ".."
+	// and "//" are exactly what the grammar must refuse rather than rewrite.
+	pickup := revdial.ConnHandler(upgrader)
+	routedPickup := p.pickupRouter(pickup)
+	tunnelHandler := p.agentTunnelHandler(upgrader)
 
-	// /proxy — revdial pick-up endpoint.
-	// When the hub dials the agent (Dialer.Dial), it sends a "conn-ready"
-	// message to the agent telling it to open a new WebSocket to this path.
-	// The path passed to revdial.NewDialer below must match the absolute URL
-	// path where this handler is mounted.
-	//
-	// Kept for single-replica mode and for dialers created before replica
-	// routing was enabled; replica-addressed pickups go through /proxy/{id}.
-	mux.Handle("/proxy", revdial.ConnHandler(upgrader))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == agentPickupRoute:
+			pickup.ServeHTTP(w, r)
+		case strings.HasPrefix(r.URL.Path, agentPickupRoute+"/"):
+			routedPickup.ServeHTTP(w, r)
+		default:
+			tunnelHandler.ServeHTTP(w, r)
+		}
+	})
+}
 
-	// /proxy/{replicaID} — replica-addressed pick-up. With replica routing
-	// enabled, each dialer's advertised pickup path names the replica whose
-	// process holds it (the revdial dialer map is process-global and the
-	// dialer closes over the accepted socket), so a pickup the Service hands
-	// to any OTHER replica is forwarded — as a WebSocket upgrade — to the
-	// owner's internal listener. The agent treats the pickup path as opaque,
-	// so this needs no agent changes and each agent keeps ONE control
-	// connection no matter how many replicas run.
-	mux.Handle("/proxy/", p.pickupRouter(revdial.ConnHandler(upgrader)))
+// agentPickupRoute is the revdial pick-up path under the class (f) mount.
+const agentPickupRoute = "/" + AgentRoot + "/proxy"
 
-	// / — initial agent connection handler.
-	// Path (after mount-prefix stripping):
-	//   /{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/proxy
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Dispatch MCP requests before agent auth — MCP handler has its own auth.
-		if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/mcp") {
-			cluster, resource, name, ok := p.parseEdgeMCPPath(r.URL.Path)
-			if !ok {
-				http.Error(w, "invalid path: expected /{cluster}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/mcp", http.StatusBadRequest)
-				return
-			}
-			p.buildMCPHandler(cluster, resource, name).ServeHTTP(w, r)
+// agentTunnelHandler serves /agent/clusters/{cluster}/{resource}/{name}/proxy.
+func (p *Server) agentTunnelHandler(upgrader websocket.Upgrader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 0. Parse the grammar. The same parser the consumer plane uses, so a
+		// malformed or traversal-carrying path is refused identically on both
+		// classes; the verb is pinned to "proxy" because class (f) has one.
+		req, ok := dataplane.ParseRequest(AgentRoot, r)
+		if !ok || req.Verb != AgentVerb || req.Tail != "" {
+			http.Error(w, "invalid path: expected /"+AgentRoot+"/clusters/{cluster}/{resource}/{name}/"+AgentVerb, http.StatusBadRequest)
+			return
+		}
+		cluster, resource, name := req.ClusterID, req.Resource, req.Name
+		gvr, kind, known := p.gvrForResource(resource)
+		if !known {
+			http.Error(w, "invalid path: unknown resource", http.StatusBadRequest)
 			return
 		}
 
@@ -106,16 +110,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 			return
 		}
 
-		// 2. Parse cluster, resource, and name from the URL path, and confirm the
-		// resource matches the single kind this tunnel serves.
-		cluster, resource, name, ok := p.parseEdgeAgentPath(r.URL.Path)
-		if !ok {
-			http.Error(w, "invalid path: expected /{cluster}/apis/"+p.group+"/"+p.version+"/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy", http.StatusBadRequest)
-			return
-		}
-		gvr, _, _ := p.gvrForResource(resource)
-
-		// 3. Authentication: SA tokens go through kcp delegated authorization;
+		// 2. Authentication: SA tokens go through kcp delegated authorization;
 		//    bootstrap join tokens are accepted if they match edge.Status.JoinToken.
 		//    The test-only static-token set only stands in for an agent credential
 		//    when there is no kcp config at all (see Config.AllowStaticTokenBypass);
@@ -161,18 +156,32 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 			}
 		}
 
-		// 4. Upgrade to WebSocket.
-		// When the agent authenticated via a bootstrap join token, build a minimal
-		// kubeconfig and include it in the upgrade response so the agent can save it
-		// as its durable credential and reconnect without the join token on restart.
+		// 3. Upgrade to WebSocket.
+		//
+		// An agent that authenticated with its bootstrap join token is
+		// ENROLLING: this is the one moment it has no durable credential, so
+		// the provider mints its scoped identity and hands the whole enrolment
+		// bundle back on the upgrade response — the TTL'd token, the hub URL
+		// and CA, and the addressing tuple with the routes it refreshes at.
+		//
+		// This replaces X-Railgrid-Agent-Kubeconfig, which shipped a legacy,
+		// non-expiring ServiceAccount token the agent then wrote to disk and
+		// into a Secret. Nothing here is permanent: the agent re-mints through
+		// the agent-token verb at 80% of the TTL.
 		var upgradeHeaders http.Header
-		kubeconfigDelivered := false
+		credentialDelivered := false
 		if authenticatedByJoinToken {
-			kubeconfigHeader := p.buildAgentKubeconfigHeader(cluster, resource, name, token)
 			upgradeHeaders = http.Header{}
-			if kubeconfigHeader != "" {
-				upgradeHeaders.Set("X-Railgrid-Agent-Kubeconfig", kubeconfigHeader)
-				kubeconfigDelivered = true
+			if header, cerr := p.enrolmentHeader(r.Context(), gvr, kind, cluster, name); cerr != nil {
+				// Not fatal: the tunnel is up and useful, and the join token
+				// stays valid (see clearJoinToken) so the next attempt can
+				// enrol. An agent with no credential simply cannot reconnect
+				// on its own yet.
+				p.logger.Error(cerr, "could not mint the agent credential on join; the join token stays valid for the next attempt",
+					"cluster", cluster, "name", name)
+			} else {
+				upgradeHeaders.Set(AgentCredentialHeader, header)
+				credentialDelivered = true
 			}
 		}
 		wsConn, err := upgrader.Upgrade(w, r, upgradeHeaders)
@@ -182,7 +191,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 			return
 		}
 
-		// 5. Register the revdial tunnel.
+		// 4. Register the revdial tunnel.
 		// The pick-up path must match the absolute path at which the /proxy
 		// endpoint is reachable (i.e. the mount point + /proxy).
 		key := edgeConnKey(resource, cluster, name)
@@ -208,11 +217,11 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		// handler only records what it alone observes on tunnel open: joinToken
 		// clearing, hostname, SSH credentials / host key (server kinds), URL.
 		//
-		// clearJoinToken: only clear the bootstrap join token if we successfully
-		// delivered a kubeconfig to the agent. If the RBAC controller hasn't
-		// provisioned the SA secret yet, the agent won't have a durable credential
-		// and needs the join token to remain valid for the next reconnect attempt.
-		clearJoinToken := !authenticatedByJoinToken || kubeconfigDelivered
+		// clearJoinToken: only clear the bootstrap join token if the agent
+		// actually received a credential. If the mint failed, the agent has no
+		// durable credential and needs the join token to stay valid for its
+		// next attempt — clearing it there would strand the edge.
+		clearJoinToken := !authenticatedByJoinToken || credentialDelivered
 		// MacOSServer is Service-only, so ignore SSH headers for it and preserve
 		// the existing LinuxServer/KubernetesCluster handling.
 		var sshCreds *sshCredsFromAgent
@@ -240,52 +249,6 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		}
 		p.logger.Info("Edge agent tunnel closed", "key", key)
 	})
-
-	return mux
-}
-
-// parseEdgeAgentPath extracts {cluster} and {name} from the path that the
-// handler sees after the "/services/agent-proxy" prefix has been stripped.
-//
-// Expected format:
-//
-//	/{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/proxy
-//
-// parseEdgeAgentPath validates the path against this Server's configured kinds
-// and returns (cluster, resource, name). resource is one of the served kinds'
-// resources. Format:
-//
-//	/{cluster}/apis/{group}/{version}/{resource}/{name}/proxy
-func (p *Server) parseEdgeAgentPath(path string) (cluster, resource, name string, ok bool) {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 8)
-	if len(parts) < 7 {
-		return "", "", "", false
-	}
-	if _, _, known := p.gvrForResource(parts[4]); !known {
-		return "", "", "", false
-	}
-	if parts[1] != "apis" || parts[2] != p.group || parts[3] != p.version ||
-		parts[6] != "proxy" {
-		return "", "", "", false
-	}
-	return parts[0], parts[4], parts[5], true
-}
-
-// parseEdgeMCPPath extracts {cluster} and {name} for per-edge MCP requests.
-// Format: /{cluster}/apis/{group}/{version}/{resource}/{name}/mcp
-func (p *Server) parseEdgeMCPPath(path string) (cluster, resource, name string, ok bool) {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 8)
-	if len(parts) < 7 {
-		return "", "", "", false
-	}
-	if _, _, known := p.gvrForResource(parts[4]); !known {
-		return "", "", "", false
-	}
-	if parts[1] != "apis" || parts[2] != p.group || parts[3] != p.version ||
-		parts[6] != "mcp" {
-		return "", "", "", false
-	}
-	return parts[0], parts[4], parts[5], true
 }
 
 // edgeConnKey returns the ConnManager key for an Edge tunnel.
@@ -294,88 +257,32 @@ func edgeConnKey(resource, cluster, name string) string {
 	return resource + "/" + cluster + "/" + name
 }
 
-// buildAgentKubeconfigHeader reads the ServiceAccount token from the kubeconfig
-// secret created by the RBAC controller, builds a minimal kubeconfig with it,
-// and returns the result base64-encoded for the X-Railgrid-Agent-Kubeconfig header.
-// Returns an empty string if the SA token is not yet available.
-func (p *Server) buildAgentKubeconfigHeader(cluster, resource, edgeName, _ string) string {
-	if p.kcpConfig == nil {
-		p.logger.Info("Cannot build agent kubeconfig: no kcp config")
-		return ""
-	}
-
-	// Read the SA token from the kubeconfig secret created by the RBAC controller.
-	// Route through the tenant workspace via the APIExport virtual workspace (the
-	// provider SA cannot read tenant Secrets by re-rooting its own config).
-	cfg, err := p.tenantConfigFor(context.Background(), cluster)
+// enrolmentHeader mints this edge's agent credential and renders it for the
+// WebSocket upgrade response.
+//
+// The UID is read here, not taken from the request: the hub binds the identity
+// to the edge's UID so a deleted and recreated edge cannot inherit its
+// predecessor's credential, and the only trustworthy source of that UID is the
+// object itself.
+func (p *Server) enrolmentHeader(ctx context.Context, gvr schema.GroupVersionResource, kind, cluster, name string) (string, error) {
+	cfg, err := p.tenantConfigFor(ctx, cluster)
 	if err != nil {
-		p.logger.Error(err, "failed to resolve tenant config for SA token lookup", "cluster", cluster)
-		return ""
+		return "", fmt.Errorf("resolving tenant config: %w", err)
 	}
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		p.logger.Error(err, "failed to create dynamic client for SA token lookup")
-		return ""
+		return "", fmt.Errorf("creating dynamic client: %w", err)
 	}
-
-	secretName := edgesv1alpha1.EdgeCredentialName(resource, edgeName) + "-kubeconfig"
-	secret, err := dynClient.Resource(secretGVR).Namespace("railgrid-system").Get(
-		context.Background(), secretName, metav1.GetOptions{})
+	edge, err := dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		p.logger.Error(err, "failed to get kubeconfig secret for token-exchange",
-			"secret", "railgrid-system/"+secretName)
-		return ""
+		return "", fmt.Errorf("reading %s %s/%s: %w", gvr.Resource, cluster, name, err)
 	}
 
-	tokenB64, found, _ := unstructured.NestedString(secret.Object, "data", "token")
-	if !found || tokenB64 == "" {
-		p.logger.Info("SA token not yet populated in kubeconfig secret", "secret", secretName)
-		return ""
-	}
-	tokenBytes, err := base64.StdEncoding.DecodeString(tokenB64)
+	credential, err := p.mintAgentCredential(ctx, gvr, kind, cluster, name, string(edge.GetUID()))
 	if err != nil {
-		p.logger.Error(err, "failed to decode SA token from secret", "secret", secretName)
-		return ""
+		return "", err
 	}
-	saToken := string(tokenBytes)
-
-	hubURL := p.hubExternalURL
-	if hubURL == "" {
-		hubURL = "https://localhost:9443"
-	}
-	kubecfg := buildAgentKubeconfig(hubURL, cluster, edgeName, saToken)
-	data, err := clientcmd.Write(*kubecfg)
-	if err != nil {
-		p.logger.Error(err, "failed to serialise agent kubeconfig")
-		return ""
-	}
-	return base64.StdEncoding.EncodeToString(data)
-}
-
-// buildAgentKubeconfig constructs a minimal kubeconfig that the agent can use
-// to authenticate against the hub with a ServiceAccount token.
-func buildAgentKubeconfig(hubURL, cluster, edgeName, token string) *clientcmdapi.Config {
-	// Include the cluster path in the server URL so the agent reconnects to the
-	// correct kcp logical cluster on restart (mirrors how existing agents work).
-	serverURL := hubURL
-	if cluster != "" && cluster != "default" {
-		serverURL = strings.TrimRight(hubURL, "/") + "/clusters/" + cluster
-	}
-	contextName := "railgrid-" + edgeName
-	return &clientcmdapi.Config{
-		APIVersion: "v1",
-		Kind:       "Config",
-		Clusters: map[string]*clientcmdapi.Cluster{
-			"railgrid-hub": {Server: serverURL, InsecureSkipTLSVerify: true},
-		},
-		AuthInfos: map[string]*clientcmdapi.AuthInfo{
-			contextName: {Token: token},
-		},
-		Contexts: map[string]*clientcmdapi.Context{
-			"default": {Cluster: "railgrid-hub", AuthInfo: contextName},
-		},
-		CurrentContext: "default",
-	}
+	return credential.Encode()
 }
 
 // authorizeByJoinToken looks up the Edge by cluster+name and performs a
@@ -426,12 +333,13 @@ func (p *Server) authorizeByJoinToken(ctx context.Context, gvr schema.GroupVersi
 // with the standard delegated auth-delegator pattern against the consumer
 // workspace, served on the provider's APIExport virtual workspace (kcp#4279 /
 // kcp#4280): a TokenReview authenticates the token where it was minted, and a
-// SubjectAccessReview authorizes the resolved identity for verb "proxy" on this
-// edge object.
+// SubjectAccessReview authorizes the resolved identity for "create" on the
+// virtual subresource {resource}/proxy, scoped to this edge object — the same
+// coordinate every other data-plane verb is gated on.
 //
 // The agent SA is provisioned in the consumer workspace by the RBAC reconciler
-// (rbac_reconciler.go), which also grants it a per-edge "proxy" ClusterRole
-// scoped via resourceNames to this edge alone (ensureEdgeProxyGrant). So the
+// (rbac_reconciler.go), which also grants it a per-edge ClusterRole scoped via
+// resourceNames to this edge alone (ensureEdgeProxyGrant). So the
 // review proves both authenticity (a live consumer-workspace credential) and
 // that it is the right edge (only this edge's SA is granted "proxy" on this
 // name). Revocation is by edge deletion, which GCs the SA and its per-edge
@@ -444,7 +352,8 @@ func (p *Server) authorizeByIssuedToken(ctx context.Context, gvr schema.GroupVer
 	if err != nil {
 		return fmt.Errorf("resolving tenant config: %w", err)
 	}
-	return authorize(ctx, tenantCfg, p.kcpConfig, token, cluster, "proxy", gvr.Group, gvr.Resource, name)
+	return authorize(ctx, tenantCfg, p.kcpConfig, token, cluster,
+		dataplane.SSARVerb, gvr.Group, gvr.Resource, AgentVerb, name)
 }
 
 // AgentHostnameHeader is the WebSocket upgrade header on which the agent

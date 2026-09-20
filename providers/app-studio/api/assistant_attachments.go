@@ -33,6 +33,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/railgrid/provider-sdk/dataplane"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -93,25 +94,6 @@ func (s *Server) projectAttachmentStore(w http.ResponseWriter) (store.Attachment
 	}
 	writeStatus(w, http.StatusNotImplemented, "NotImplemented", "project attachment store is not configured on this provider")
 	return nil, false
-}
-
-// bindProjectAssistantAttachment is the turn-admission adapter. The caller
-// must convert the HTTP receipt into store.AttachmentReceipt, including its
-// CreatedAt value, before invoking this method. Binding verifies every
-// immutable field under the authenticated actor and atomically promotes a
-// draft to retained storage; repeated identical binds are safe.
-func (s *Server) bindProjectAssistantAttachment(ctx context.Context, id identity, project *aiv1alpha1.Project, receipt store.AttachmentReceipt) (store.Attachment, error) {
-	if s == nil || project == nil {
-		return store.Attachment{}, store.ErrAttachmentNotFound
-	}
-	attachmentStore := s.attachments
-	if attachmentStore == nil && s.store != nil {
-		attachmentStore, _ = s.store.(store.AttachmentStore)
-	}
-	if attachmentStore == nil {
-		return store.Attachment{}, fmt.Errorf("project attachment store is not configured")
-	}
-	return attachmentStore.BindAttachment(ctx, projectMessageScope(id.orgUUID, id.workspaceUUID, project), receipt, id.user)
 }
 
 // bindProjectAssistantContentPartAttachments is the durable admission boundary
@@ -225,6 +207,9 @@ func (s *Server) listProjectAssistantAttachments(w http.ResponseWriter, r *http.
 	}
 	items := make([]attachmentReceiptResponse, 0, len(attachments))
 	for _, attachment := range attachments {
+		// ActorID was recorded from the uploader's SelfSubjectReview, and
+		// id.user comes from this caller's: the comparison is between two
+		// authenticated subjects, not between two header values.
 		if attachment.ActorID != id.user {
 			continue
 		}
@@ -236,10 +221,6 @@ func (s *Server) listProjectAssistantAttachments(w http.ResponseWriter, r *http.
 func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http.Request) {
 	c, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
-		return
-	}
-	if id.user == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "caller identity missing — the hub did not provide X-Railgrid-User")
 		return
 	}
 	if project.DeletionTimestamp != nil {
@@ -268,7 +249,9 @@ func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http
 		return
 	}
 	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+		// Best effort: the temp files are removed on a timer by the OS anyway,
+		// and a failure here must not change the response.
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
 	}
 	attachmentID, err := parseClientAttachmentID(r)
 	if err != nil {
@@ -280,7 +263,9 @@ func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "multipart field file is required")
 		return
 	}
-	defer file.Close()
+	// Read-only multipart part: a close error carries no information the
+	// handler can act on.
+	defer func() { _ = file.Close() }()
 	data, err := io.ReadAll(io.LimitReader(file, store.AttachmentMaxBytes+1))
 	if err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "read attachment: "+err.Error())
@@ -328,7 +313,18 @@ func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http
 		}
 		return
 	}
-	w.Header().Set("Location", "/api/projects/"+mux.Vars(r)["project"]+"/assistant/attachments/"+created.ID)
+	// Location points at the verb that reads the receipt back, on the same
+	// grammar the caller used to create it. It used to name the retired
+	// /api route, which by now would have been an address that 404s.
+	if location, err := (dataplane.Request{
+		ClusterID: id.clusterID,
+		Resource:  "projects",
+		Name:      mux.Vars(r)["project"],
+		Verb:      "attachments",
+		Tail:      created.ID,
+	}).Path(dataplane.DataplaneRoot); err == nil {
+		w.Header().Set("Location", location)
+	}
 	if newlyCreated {
 		writeJSON(w, http.StatusCreated, attachmentReceipt(created))
 		return
@@ -578,10 +574,6 @@ func (s *Server) getProjectAssistantAttachment(w http.ResponseWriter, r *http.Re
 func (s *Server) deleteProjectAssistantAttachment(w http.ResponseWriter, r *http.Request) {
 	_, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
-		return
-	}
-	if id.user == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "caller identity missing — the hub did not provide X-Railgrid-User")
 		return
 	}
 	attachmentStore, ok := s.projectAttachmentStore(w)

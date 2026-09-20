@@ -4,8 +4,8 @@ description: |
   Railgrid provider for fleet-wide object search, relationship traversal, and
   impact analysis across connected edge clusters (built on railgrid/kuery).
   Ships the provider Deployment, ClusterIP Service, and the CatalogEntry
-  that registers the provider (UI + backend + the SavedView APIExport +
-  edgeProxyAccess) with the railgrid hub. Phase 1 skeleton.
+  that registers the provider (UI + backend + the SavedView APIExport)
+  with the railgrid hub.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

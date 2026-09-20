@@ -60,15 +60,37 @@ test('impact drill-down preserves mounted tab state and falls back to the host r
   assert.doesNotMatch(impact, /href="\/(?:ui\/)?providers\/kuery"/u)
 })
 
-test('edge discovery fences late responses to the request and context that started them', () => {
-  assert.match(app, /let edgesRequestID = 0/u)
-  assert.match(app, /const requestID = \+\+edgesRequestID/u)
+// Edges and saved views come from the kube client, not from the provider: both
+// are ordinary objects in the tenant's own workspace, and the provider serves
+// exactly one tenant route (the query verb). The fencing contract is unchanged
+// — a late response must not overwrite a newer context's state.
+test('workspace discovery reads kube objects and fences late responses', () => {
+  assert.match(app, /let requestID = 0/u)
+  assert.match(app, /const current = \+\+requestID/u)
   assert.match(app, /const requestContext = computed\(\(\) => createKueryRequestContext\(context\.value\)\)/u)
   assert.match(app, /const request = requestContext\.value/u)
-  assert.match(app, /const isCurrent = \(\): boolean =>[\s\S]*edgesRequestID === requestID[\s\S]*requestContext\.value\.identity === requestIdentity/u)
-  assert.match(app, /if \(!isCurrent\(\)\) return[\s\S]*edges\.value = parsed\.edges/u)
-  assert.match(app, /if \(isCurrent\(\)\) \{[\s\S]*edgesLoading\.value = false/u)
+  assert.match(app, /const isCurrent = \(\): boolean => requestID === current/u)
+  assert.match(app, /const kube = kubeClientFor\(request\)/u)
+  assert.match(app, /listEdges\(kube\), listSavedViews\(kube\)/u)
+  assert.match(app, /if \(!isCurrent\(\)\) return[\s\S]*edges\.value = discovered/u)
+  assert.match(app, /if \(isCurrent\(\)\) loading\.value = false/u)
   assert.match(app, /watch\(\[identity, token\],[\s\S]*currentIdentity === previousIdentity && currentToken !== previousToken/u)
+  // The gate is the host transport and a workspace, never the deprecated token.
+  assert.doesNotMatch(app, /request\.token &&/u)
+  // No /api/ route survives anywhere in the shell.
+  assert.doesNotMatch(app, /\/api\//u)
+})
+
+// Every ad-hoc query is the run verb on the caller's own scratch SavedView,
+// created with the kube client — so there is no query surface outside the
+// tenant's RBAC.
+test('ad-hoc queries run as a verb on a per-user SavedView', () => {
+  assert.match(app, /const scratchView = ref\(''\)/u)
+  assert.match(app, /await playgroundViewName\(request\.user\)/u)
+  assert.match(app, /await ensurePlaygroundView\(kube, name, request\.user\)/u)
+  for (const view of ['TopologyView', 'InventoryView', 'PlaygroundView', 'ImpactView']) {
+    assert.match(app, new RegExp(`<${view}[^>]*:saved-view="scratchView"`, 'u'))
+  }
 })
 
 test('secondary views mount lazily and stay mounted after first visit', () => {
@@ -108,7 +130,10 @@ test('Kuery requests share one context-derived transport contract', () => {
   assert.doesNotMatch(requestContext, /headers\.Authorization/u)
   assert.match(requestContext, /headers\['X-Railgrid-Org'\] = orgUUID/u)
   assert.match(requestContext, /headers\['X-Railgrid-Workspace'\] = workspaceUUID/u)
-  assert.match(requestContext, /identity = JSON\.stringify\(\[basePath, token, orgUUID, workspaceUUID\]\)/u)
+  assert.match(requestContext, /identity = JSON\.stringify\(\[basePath, token, orgUUID, workspaceUUID, cluster\]\)/u)
+  // ready is a transport-and-workspace check; a token check here would break
+  // every view the day a host stops exposing railgridContext.token.
+  assert.match(requestContext, /ready: !!basePath && !!cluster && \(hasHostFetch \|\| !!token\)/u)
   assert.match(kuery, /createKueryRequestContext\(context\)\.basePath/u)
   assert.doesNotMatch(kuery, /headers\['X-Railgrid-Org'\]/u)
   assert.doesNotMatch(tile, /headers\['X-Railgrid-Org'\]/u)
@@ -121,8 +146,10 @@ test('dashboard tile fences post-await writes to mounted context and request', (
   assert.match(tile, /const generation = this\._contextGeneration/u)
   assert.match(tile, /const request = createKueryRequestContext\(this\._ctx\)/u)
   assert.match(tile, /const isCurrent = \(\): boolean =>[\s\S]*generation === this\._contextGeneration[\s\S]*identity === request\.identity/u)
-  assert.match(tile, /if \(!isCurrent\(\)\) return[\s\S]*const out = \(await res\.json\(\)/u)
+  assert.match(tile, /const \[edges, views\] = await Promise\.all\(\[listEdges\(kube\), listSavedViews\(kube\)\]\)/u)
+  assert.match(tile, /if \(!isCurrent\(\)\) return[\s\S]*this\._edges = edges/u)
   assert.match(tile, /if \(!isCurrent\(\)\) return[\s\S]*this\._edges = \[\]/u)
+  assert.doesNotMatch(tile, /\/api\//u)
   assert.match(tile, /if \(!isCurrent\(\)\) return[\s\S]*this\._loading = false/u)
   assert.match(tile, /this\._contextGeneration \+= 1[\s\S]*this\._poller\?\.stop\(\)/u)
   assert.match(tile, /class="kuery-tile-live" role="status" aria-live="polite" aria-atomic="true"/u)
@@ -132,7 +159,7 @@ test('dashboard tile fences post-await writes to mounted context and request', (
   assert.match(styles, /railgrid-dashboard-tile-kuery \{ display: block; font-size: 13px; \}/u)
   assert.match(styles, /\.kuery-tile-dot--success \{ background: var\(--color-success\); \}/u)
   assert.doesNotMatch(styles, /\.kuery-tile-(?:stats|stat|label|rows|name|chev|more|empty|msg|err)\b/u)
-  assert.match(tile, /data-edge="\$\{escapeHTML\(name\)\}"/u)
+  assert.match(tile, /data-view="\$\{escapeHTML\(name\)\}"/u)
   assert.match(tile, /el\.addEventListener\('click', \(\) => this\._navigate\(''\)\)/u)
   assert.match(tile, /if \(html === this\._lastHTML\) return false/u)
 })

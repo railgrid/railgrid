@@ -104,7 +104,9 @@ func (h *HubVersionCache) Get(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetching hub version: %w", err)
 	}
-	defer resp.Body.Close()
+	// Nothing is written to the hub here and the decoded body is the only
+	// thing wanted, so a close error on the response is not actionable.
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("hub /version returned %s", resp.Status)
 	}

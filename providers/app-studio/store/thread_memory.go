@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -523,7 +524,22 @@ func (s *MemoryStore) AppendAssistantThreadEvent(_ context.Context, scope Scope,
 	prepared.Sequence = expectedSequence + 1
 	s.threadEvents[scope][prepared.ThreadID] = append(events, cloneAssistantThreadEvent(prepared))
 	s.appendAssistantThreadTurnEventsLocked(scope, prepared.ThreadID, prepared)
+	defer s.threadEventSignals.publish(threadEventKey(scope, prepared.ThreadID))
 	return cloneAssistantThreadEvent(prepared), nil
+}
+
+// WatchAssistantThreadEvents is the memory store's half of
+// AssistantThreadEventWatcher. There is no cross-process step to take: one
+// process owns the whole store.
+func (s *MemoryStore) WatchAssistantThreadEvents(_ context.Context, scope Scope, threadID string) (<-chan struct{}, func(), error) {
+	if err := scope.validate(); err != nil {
+		return nil, nil, err
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return nil, nil, errors.New("assistant thread id is required")
+	}
+	ch, release := s.threadEventSignals.subscribe(threadEventKey(scope, threadID))
+	return ch, release, nil
 }
 
 func (s *MemoryStore) appendAssistantThreadTurnEventsLocked(scope Scope, threadID string, events ...AssistantThreadEvent) {
@@ -693,4 +709,28 @@ func cloneAssistantThreadEvents(events []AssistantThreadEvent) []AssistantThread
 		out[index] = cloneAssistantThreadEvent(events[index])
 	}
 	return out
+}
+
+// AssistantThreadActivity folds the thread's own timestamp together with its
+// turns'. A thread with no turns still reports its own UpdatedAt, so a
+// conversation that was opened and abandoned still ages out.
+func (s *MemoryStore) AssistantThreadActivity(_ context.Context, scope Scope, threadID string) (AssistantThreadActivity, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantThreadActivity{}, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	thread, ok := s.assistantThreads[scope][threadID]
+	if !ok {
+		return AssistantThreadActivity{}, ErrAssistantThreadNotFound
+	}
+	activity := AssistantThreadActivity{LastActivityAt: thread.UpdatedAt.UTC()}
+	for _, turn := range s.assistantTurns[scope][threadID] {
+		activity.TurnCount++
+		if turn.UpdatedAt.After(activity.LastActivityAt) {
+			activity.LastActivityAt = turn.UpdatedAt.UTC()
+		}
+	}
+	return activity, nil
 }

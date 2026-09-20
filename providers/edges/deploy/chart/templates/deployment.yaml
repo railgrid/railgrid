@@ -33,8 +33,9 @@ spec:
       initContainers:
         # Bootstrap the provider workspace (KubernetesCluster + LinuxServer + MacOSServer
         # APIResourceSchemas, APIExport, endpoint slice, bind grant) with the
-        # onboarded workspace-admin kubeconfig. Schemas baked at
-        # /etc/railgrid/schemas. Idempotent.
+        # onboarded workspace-admin kubeconfig. The generated APIExport and its
+        # schemas are baked at /etc/railgrid/kcp (Dockerfile) and applied
+        # verbatim. Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -42,8 +43,8 @@ spec:
           env:
             - name: RAILGRID_PROVIDER_KUBECONFIG
               value: /var/run/secrets/railgrid/kubeconfig
-            - name: RAILGRID_SCHEMAS_DIR
-              value: /etc/railgrid/schemas
+            - name: RAILGRID_KCP_DIR
+              value: /etc/railgrid/kcp
             {{- if .Values.catalogEntry.enabled }}
             - name: RAILGRID_CATALOGENTRY_FILE
               value: /etc/railgrid/catalogentry/catalogentry.yaml
@@ -76,7 +77,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 20
           readinessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet: { path: /readyz, port: http }
             periodSeconds: 5
           env:
             - name: PORT

@@ -45,7 +45,6 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 	"github.com/railgrid/railgrid/pkg/util/confighelpers"
-	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // kcp resource GVRs.
@@ -1804,6 +1803,20 @@ type ProviderClaim struct {
 	Resource string
 	Verbs    []string
 	Accepted bool
+	// MatchLabels is the claim's declared scope: the label set an object must
+	// carry for this claim to reach it. Empty accepts the claim for every
+	// object of the resource in the workspace (kcp's matchAll).
+	//
+	// This is the field that turns "the provider may read every Secret in your
+	// workspace" into "the provider may read the Secrets it labelled as its
+	// own". kcp enforces it on both sides of the APIExport virtual workspace:
+	// its permission-claim labeler stamps the internal
+	// claimed.internal.apis.kcp.io/<export> label only on objects the selector
+	// matches, the virtual workspace filters LIST/WATCH by that label and 404s
+	// a GET without it, and its virtual-workspace admission refuses a write
+	// whose object does not match (stamping the matchLabels when they are
+	// simply absent). See docs/cross-provider-simplification.md X-4.
+	MatchLabels map[string]string
 }
 
 // EnsureProviderAPIBinding creates (or no-ops on AlreadyExists) an
@@ -1887,7 +1900,7 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 					Verbs:        c.Verbs,
 					IdentityHash: identities[c.Group+"/"+c.Resource],
 				},
-				Selector: apisv1alpha2.PermissionClaimSelector{MatchAll: true},
+				Selector: claimSelector(c),
 			},
 			State: state,
 		})
@@ -1920,6 +1933,35 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 		return fmt.Errorf("waiting for APIBinding %q to bind in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
 	}
 	return nil
+}
+
+// claimSelector renders a declared claim's scope as the kcp selector written
+// onto the accepted claim in the tenant's APIBinding.
+//
+// A claim with no declared scope becomes matchAll, which is what every claim
+// was before X-4 and what a claim on a resource only the provider ever creates
+// still legitimately is. A claim WITH a scope becomes a label selector, and
+// from that point kcp serves the provider only the matching objects.
+//
+// Note for upgrades: the selector on an accepted claim is IMMUTABLE in kcp
+// (apis.kcp.io_apibindings.yaml, "Permission claim selector is immutable"), and
+// EnsureProviderAPIBinding only ever creates the binding — it no-ops on
+// AlreadyExists. A workspace that enabled the provider before the claim was
+// narrowed therefore keeps its matchAll binding, wider than the provider now
+// asks for, until the provider is disabled and re-enabled there. kcp surfaces
+// the gap as PermissionClaimsValid=False / PermissionClaimsMismatch on the
+// binding; it does not stop the binding from being Bound.
+func claimSelector(c ProviderClaim) apisv1alpha2.PermissionClaimSelector {
+	if len(c.MatchLabels) == 0 {
+		return apisv1alpha2.PermissionClaimSelector{MatchAll: true}
+	}
+	matchLabels := make(map[string]string, len(c.MatchLabels))
+	for key, value := range c.MatchLabels {
+		matchLabels[key] = value
+	}
+	return apisv1alpha2.PermissionClaimSelector{
+		LabelSelector: metav1.LabelSelector{MatchLabels: matchLabels},
+	}
 }
 
 // exportClaimIdentities returns, per claim, the identityHash the bound
@@ -2124,6 +2166,210 @@ func providerNameFromExportPath(path, orgUUID string) (string, bool) {
 	return name, true
 }
 
+// ProviderBindingRef locates one provider APIBinding in the tenant fleet: the
+// (org, workspace) pair whose logical cluster holds it, plus its name. The
+// per-workspace reads already know where they are; a fleet-wide walk does not,
+// so the coordinates have to travel with the result.
+type ProviderBindingRef struct {
+	OrgUUID       string
+	WorkspaceUUID string
+	BindingName   string
+}
+
+// ListProviderAPIBindingsForExport returns every APIBinding in the tenant
+// fleet that binds exportPath/exportName — the cross-workspace counterpart to
+// ListProviderAPIBindings, which answers "what is enabled in THIS workspace".
+//
+// It exists for fleet-wide claim migrations (AGENTS.md §5.1: a provider's
+// permission claims live on its APIExport, but what a tenant actually granted
+// lives on that tenant's own APIBinding, in that tenant's own workspace, and
+// `init` never touches those). Two deliberate differences from the
+// per-workspace variant:
+//
+//   - No status.phase filter. A binding held out of Bound because it is
+//     missing a claim is exactly the one a claims migration has to reach.
+//   - Matching is on the export reference, not on the path-derived provider
+//     name, so an Org that self-hosts a provider under the same name as the
+//     platform one is not swept up by a migration of the platform copy.
+//
+// A workspace that cannot be listed is skipped rather than failing the walk:
+// one unreachable tenant must not hide the rest of the fleet from an operator.
+func (b *Bootstrapper) ListProviderAPIBindingsForExport(ctx context.Context, exportPath, exportName string) ([]ProviderBindingRef, error) {
+	if exportPath == "" || exportName == "" {
+		return nil, fmt.Errorf("ListProviderAPIBindingsForExport: exportPath and exportName are required")
+	}
+	orgs, err := b.ListOrgWorkspaces(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing Org Workspaces: %w", err)
+	}
+	var out []ProviderBindingRef
+	for _, orgUUID := range orgs {
+		// Unfiltered on purpose: this is lifecycle, not a tenant-facing view.
+		// The org-providers container holds no provider APIBindings, so it
+		// costs one empty List and keeps the walk honest if that ever changes.
+		workspaces, err := b.ListChildWorkspaces(ctx, orgUUID)
+		if err != nil {
+			klog.FromContext(ctx).Error(err, "skipping org while listing provider APIBindings", "org", orgUUID)
+			continue
+		}
+		for _, wsUUID := range workspaces {
+			wsClient, err := dynamic.NewForConfig(configForPath(b.config, childWorkspacePath(orgUUID, wsUUID)))
+			if err != nil {
+				return nil, fmt.Errorf("creating child workspace client for %s/%s: %w", orgUUID, wsUUID, err)
+			}
+			list, err := wsClient.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				klog.FromContext(ctx).Error(err, "skipping workspace while listing provider APIBindings", "org", orgUUID, "workspace", wsUUID)
+				continue
+			}
+			for i := range list.Items {
+				item := &list.Items[i]
+				path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
+				name, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
+				if path != exportPath || name != exportName {
+					continue
+				}
+				out = append(out, ProviderBindingRef{OrgUUID: orgUUID, WorkspaceUUID: wsUUID, BindingName: item.GetName()})
+			}
+		}
+	}
+	return out, nil
+}
+
+// ReacceptProviderAPIBindingClaims rewrites one binding's
+// spec.permissionClaims to `claims` — the provider's CatalogEntry claim set as
+// it stands today — accepting each one, and reports whether anything changed.
+//
+// This is the migration half of AGENTS.md §5.1. A provider that starts
+// requiring a newly-declared claim breaks every already-enabled tenant on
+// rollout, because `init` only updates the provider-side APIExport: the
+// tenant's binding keeps the claim set it accepted when it was enabled. Bound
+// or not, that binding is the object that decides what the provider is
+// actually allowed to touch.
+//
+// Two rules make re-running this safe:
+//
+//   - A claim the tenant EXPLICITLY REJECTED stays Rejected. Rejecting is a
+//     decision the tenant made about their own workspace; a migration
+//     propagates the provider's claim set, it does not overturn consent.
+//   - A claim already on the binding keeps its identityHash and selector.
+//     Those were resolved against what this workspace binds when it was
+//     enabled (see verifyClaimIdentities); re-deriving them from the export
+//     here could re-pin a workspace to a stale copy of a dependency. Only
+//     genuinely new claims take their identity from the export — and only they
+//     take their scope from it, because kcp makes an accepted claim's selector
+//     immutable, so a claim narrowed after a workspace enabled the provider
+//     keeps that workspace's original (wider) scope until the provider is
+//     disabled and re-enabled there.
+//
+// Claims the provider no longer declares are dropped: the target is the
+// CatalogEntry's current set, not the union with history. ProviderClaim.Accepted
+// is ignored — the type is shared with the Enable flow, where a human ticked
+// each box; here the whole point is that the provider already declares them.
+func (b *Bootstrapper) ReacceptProviderAPIBindingClaims(
+	ctx context.Context,
+	ref ProviderBindingRef,
+	exportPath, exportName string,
+	claims []ProviderClaim,
+) (bool, error) {
+	if ref.OrgUUID == "" || ref.WorkspaceUUID == "" || ref.BindingName == "" {
+		return false, fmt.Errorf("ReacceptProviderAPIBindingClaims: org, workspace and binding name are required")
+	}
+	if len(claims) == 0 {
+		return false, fmt.Errorf("ReacceptProviderAPIBindingClaims: refusing to clear every permission claim on %s", ref.BindingName)
+	}
+	wsClient, err := dynamic.NewForConfig(configForPath(b.config, childWorkspacePath(ref.OrgUUID, ref.WorkspaceUUID)))
+	if err != nil {
+		return false, fmt.Errorf("creating child workspace client: %w", err)
+	}
+
+	key := func(group, resource string) string { return group + "/" + resource }
+	// Resolved at most once, and only when some claim is new to this binding:
+	// exportClaimIdentities polls for the provisioner to stamp a first-party
+	// claim's hash, which is wasted latency per binding when (as in the common
+	// migration) every new claim is a built-in type that carries none.
+	var identities map[string]string
+
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		u, err := wsClient.Resource(apiBindingGVR).Get(ctx, ref.BindingName, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Errorf("getting APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+		}
+		var binding apisv1alpha2.APIBinding
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &binding); err != nil {
+			return false, fmt.Errorf("decoding APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+		}
+		existing := make(map[string]apisv1alpha2.AcceptablePermissionClaim, len(binding.Spec.PermissionClaims))
+		for _, pc := range binding.Spec.PermissionClaims {
+			existing[key(pc.Group, pc.Resource)] = pc
+		}
+		if identities == nil {
+			for _, c := range claims {
+				if _, ok := existing[key(c.Group, c.Resource)]; ok {
+					continue
+				}
+				identities, err = b.exportClaimIdentities(ctx, exportPath, exportName, claims)
+				if err != nil {
+					return false, err
+				}
+				break
+			}
+		}
+
+		desired := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
+		for _, c := range claims {
+			entry := apisv1alpha2.AcceptablePermissionClaim{
+				ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
+					PermissionClaim: apisv1alpha2.PermissionClaim{
+						GroupResource: apisv1alpha2.GroupResource{Group: c.Group, Resource: c.Resource},
+						Verbs:         c.Verbs,
+						IdentityHash:  identities[key(c.Group, c.Resource)],
+					},
+					Selector: claimSelector(c),
+				},
+				State: apisv1alpha2.ClaimAccepted,
+			}
+			if prev, ok := existing[key(c.Group, c.Resource)]; ok {
+				entry.IdentityHash = prev.IdentityHash
+				entry.Selector = prev.Selector
+				if prev.State == apisv1alpha2.ClaimRejected {
+					entry.State = apisv1alpha2.ClaimRejected
+				}
+			}
+			desired = append(desired, entry)
+		}
+		if reflect.DeepEqual(binding.Spec.PermissionClaims, desired) {
+			return false, nil
+		}
+
+		// Set only spec.permissionClaims on the object as read, rather than
+		// re-serializing the decoded APIBinding: a round-trip through the typed
+		// struct would silently drop anything this build's kcp SDK does not
+		// know about.
+		items := make([]any, 0, len(desired))
+		for i := range desired {
+			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desired[i])
+			if err != nil {
+				return false, fmt.Errorf("encoding permission claim: %w", err)
+			}
+			items = append(items, raw)
+		}
+		if err := unstructured.SetNestedSlice(u.Object, items, "spec", "permissionClaims"); err != nil {
+			return false, fmt.Errorf("setting spec.permissionClaims: %w", err)
+		}
+		if _, err := wsClient.Resource(apiBindingGVR).Update(ctx, u, metav1.UpdateOptions{}); err == nil {
+			return true, nil
+		} else if !errors.IsConflict(err) {
+			return false, fmt.Errorf("updating APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+		} else {
+			lastErr = err
+		}
+	}
+	return false, fmt.Errorf("updating APIBinding %q in %s/%s after %d conflicts: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, maxAttempts, lastErr)
+}
+
 // DeleteProviderAPIBinding removes the named provider APIBinding from the
 // child workspace root:railgrid:tenants:{orgUUID}:{wsUUID}. NotFound is a no-op so
 // the Disable action is idempotent. Counterpart to EnsureProviderAPIBinding.
@@ -2138,223 +2384,6 @@ func (b *Bootstrapper) DeleteProviderAPIBinding(ctx context.Context, orgUUID, ws
 	}
 	if err := wsClient.Resource(apiBindingGVR).Delete(ctx, bindingName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("deleting APIBinding %q in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
-	}
-	return nil
-}
-
-var clusterRoleGVR = schema.GroupVersionResource{
-	Group:    "rbac.authorization.k8s.io",
-	Version:  "v1",
-	Resource: "clusterroles",
-}
-
-// edgeProxyGrantName is the name of both the ClusterRole and the
-// ClusterRoleBinding the Enable-time edges-proxy grant materializes in the
-// tenant workspace, parameterized by provider name so multiple providers'
-// grants coexist.
-func edgeProxyGrantName(providerName string) string {
-	return "railgrid:provider:" + providerName + ":edges-proxy"
-}
-
-// EnsureProviderEdgeProxyGrant grants `subject` (the provider SA's
-// cluster-qualified identity — see pkg/util/identity) the "proxy" verb on the
-// edges provider's group (edges.railgrid.ai, resources kubernetesclusters +
-// linuxservers + macosservers) in the child workspace root:railgrid:tenants:{orgUUID}:{wsUUID}.
-// The edges provider's tunnel edgeproxy handler SAR-checks exactly this tuple
-// (provider-sdk/tunnel/auth.go), so the grant is what lets a provider with
-// CatalogEntry spec.edgeProxyAccess open background connections to the tenant's
-// edges. Idempotent; subjects are reconciled on
-// re-Enable so a provider workspace re-provision (new cluster ID → new
-// qualified subject) heals on the next Enable.
-func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error {
-	if orgUUID == "" || wsUUID == "" || providerName == "" || subject == "" {
-		return fmt.Errorf("EnsureProviderEdgeProxyGrant: orgUUID, wsUUID, providerName, subject are required")
-	}
-	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
-	wsClient, err := dynamic.NewForConfig(wsConfig)
-	if err != nil {
-		return fmt.Errorf("creating child workspace client: %w", err)
-	}
-
-	name := edgeProxyGrantName(providerName)
-	role := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "rbac.authorization.k8s.io/v1",
-		"kind":       "ClusterRole",
-		"metadata":   map[string]any{"name": name},
-		"rules": []any{
-			// Workspace access: kcp's workspaceContentAuthorizer requires
-			// the "access" verb on "/" before any resource RBAC is even
-			// consulted, and a foreign SA is not covered by the tenant
-			// workspace's system:authenticated grants (railgrid's SAR also
-			// drops its groups). Same pairing kcp's own cross-workspace SA
-			// e2e uses (TestAPIResourceSchemaVirtualWorkspaceAuthorization).
-			map[string]any{
-				"nonResourceURLs": []any{"/"},
-				"verbs":           []any{"access"},
-			},
-			// The edge plane is the single `edges` provider owning both kinds
-			// under one group edges.railgrid.ai. Using its OWN SA it reads +
-			// writes the edge CR DIRECTLY in the tenant workspace
-			// (kcpurl.ClusterURL, not the APIExport VW):
-			//   - get/list/watch on the kinds: validate the agent's bootstrap
-			//     join token against status.joinToken (else the tunnel is
-			//     rejected "invalid join token") + read SSH creds for edgeproxy.
-			//   - update/patch on the /status subresource: markEdgeConnected
-			//     flips status.connected/phase and clears status.joinToken when
-			//     the agent tunnel comes up (else the edge stays AwaitingAgent /
-			//     connected=false forever).
-			//   - proxy on the kinds: the SDK tunnel's edgeproxy consumer SAR.
-			// Bound to the provider SA's cluster-qualified identity (see
-			// pkg/util/identity).
-			map[string]any{
-				"apiGroups": []any{"edges.railgrid.ai"},
-				"resources": []any{"kubernetesclusters", "linuxservers", "macosservers"},
-				"verbs":     []any{"get", "list", "watch", "proxy"},
-			},
-			map[string]any{
-				"apiGroups": []any{"edges.railgrid.ai"},
-				"resources": []any{"kubernetesclusters/status", "linuxservers/status", "macosservers/status"},
-				"verbs":     []any{"get", "update", "patch"},
-			},
-			// The tunnel reads AND writes Secrets + Namespaces DIRECTLY with the
-			// provider SA (not the VW):
-			//   - read: token-exchange reads the agent's SA kubeconfig Secret
-			//     (edge-<name>-kubeconfig) + SSH-cred lookups read
-			//     spec.sshCredentialsRef Secrets.
-			//   - create/update: on a SERVER edge's connect, markEdgeConnected →
-			//     storeSSHCredentials creates a namespace + a
-			//     <edge>-ssh-credentials Secret and records it in
-			//     status.sshCredentials. Without create access the Secret write
-			//     403s, status.sshCredentials stays null, and the SSH handler has
-			//     no creds → openAgentSSHTunnel fails → the browser terminal shows
-			//     "session ended".
-			map[string]any{
-				"apiGroups": []any{""},
-				"resources": []any{"secrets"},
-				"verbs":     []any{"get", "list", "watch", "create", "update"},
-			},
-			map[string]any{
-				"apiGroups": []any{""},
-				"resources": []any{"namespaces"},
-				"verbs":     []any{"get", "create"},
-			},
-			// When an agent RECONNECTS with its SA token (after token-exchange),
-			// the tunnel authenticates it via delegated authn/authz: a TokenReview
-			// + SubjectAccessReview run with the provider SA in the tenant
-			// workspace. The provider SA must be able to CREATE those review
-			// objects — otherwise authorizeFn errors and the reconnect is rejected
-			// (bad handshake), even though the JOIN-token first connect (which
-			// only reads the CR) succeeds. This is the "initial join works,
-			// follow-up SA-token connect fails" case.
-			map[string]any{
-				"apiGroups": []any{"authentication.k8s.io"},
-				"resources": []any{"tokenreviews"},
-				"verbs":     []any{"create"},
-			},
-			map[string]any{
-				"apiGroups": []any{"authorization.k8s.io"},
-				"resources": []any{"subjectaccessreviews"},
-				"verbs":     []any{"create"},
-			},
-		},
-	}}
-	if _, err := wsClient.Resource(clusterRoleGVR).Create(ctx, role, metav1.CreateOptions{}); err != nil {
-		if !errors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating ClusterRole %q: %w", name, err)
-		}
-		// Reconcile the rules on an existing ClusterRole so verb/resource changes
-		// (e.g. adding /status writes + secrets reads) take effect on re-Enable
-		// rather than being silently skipped by the create.
-		existingRole, getErr := wsClient.Resource(clusterRoleGVR).Get(ctx, name, metav1.GetOptions{})
-		if getErr != nil {
-			return fmt.Errorf("getting ClusterRole %q: %w", name, getErr)
-		}
-		wantRules, _, _ := unstructured.NestedSlice(role.Object, "rules")
-		gotRules, _, _ := unstructured.NestedSlice(existingRole.Object, "rules")
-		if !reflect.DeepEqual(gotRules, wantRules) {
-			if err := unstructured.SetNestedSlice(existingRole.Object, wantRules, "rules"); err != nil {
-				return fmt.Errorf("rewriting ClusterRole rules: %w", err)
-			}
-			if _, err := wsClient.Resource(clusterRoleGVR).Update(ctx, existingRole, metav1.UpdateOptions{}); err != nil {
-				return fmt.Errorf("updating ClusterRole %q: %w", name, err)
-			}
-		}
-	}
-
-	// Bind the qualified identity (the correct cross-workspace form) AND its
-	// un-qualified local fallback. On the tunnel's direct CR-read path kcp only
-	// qualifies the provider SA when its token carries a verified home-cluster
-	// claim; when it doesn't (e.g. a legacy token not yet stamped by the token
-	// controller), the request authorizes as the plain
-	// system:serviceaccount:{ns}:{name}. Binding both makes the grant match
-	// either way, so the join-token validation isn't rejected as "invalid".
-	wantSubjects := []any{
-		map[string]any{
-			"apiGroup": "rbac.authorization.k8s.io",
-			"kind":     "User",
-			"name":     subject,
-		},
-	}
-	if local, ok := identity.LocalFromQualified(subject); ok {
-		wantSubjects = append(wantSubjects, map[string]any{
-			"apiGroup": "rbac.authorization.k8s.io",
-			"kind":     "User",
-			"name":     local,
-		})
-	}
-	crb := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "rbac.authorization.k8s.io/v1",
-		"kind":       "ClusterRoleBinding",
-		"metadata":   map[string]any{"name": name},
-		"roleRef": map[string]any{
-			"apiGroup": "rbac.authorization.k8s.io",
-			"kind":     "ClusterRole",
-			"name":     name,
-		},
-		"subjects": wantSubjects,
-	}}
-	_, err = wsClient.Resource(clusterRoleBindingGVR).Create(ctx, crb, metav1.CreateOptions{})
-	if err == nil {
-		return nil
-	}
-	if !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating ClusterRoleBinding %q: %w", name, err)
-	}
-	existing, getErr := wsClient.Resource(clusterRoleBindingGVR).Get(ctx, name, metav1.GetOptions{})
-	if getErr != nil {
-		return fmt.Errorf("getting ClusterRoleBinding %q: %w", name, getErr)
-	}
-	gotSubjects, _, _ := unstructured.NestedSlice(existing.Object, "subjects")
-	if reflect.DeepEqual(gotSubjects, wantSubjects) {
-		return nil
-	}
-	if err := unstructured.SetNestedSlice(existing.Object, wantSubjects, "subjects"); err != nil {
-		return fmt.Errorf("rewriting ClusterRoleBinding subjects: %w", err)
-	}
-	if _, err := wsClient.Resource(clusterRoleBindingGVR).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("updating ClusterRoleBinding %q: %w", name, err)
-	}
-	return nil
-}
-
-// RemoveProviderEdgeProxyGrant deletes the ClusterRole/ClusterRoleBinding
-// pair EnsureProviderEdgeProxyGrant created. NotFound is a no-op — Disable
-// must succeed for providers that never had the grant.
-func (b *Bootstrapper) RemoveProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName string) error {
-	if orgUUID == "" || wsUUID == "" || providerName == "" {
-		return fmt.Errorf("RemoveProviderEdgeProxyGrant: orgUUID, wsUUID, providerName are required")
-	}
-	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
-	wsClient, err := dynamic.NewForConfig(wsConfig)
-	if err != nil {
-		return fmt.Errorf("creating child workspace client: %w", err)
-	}
-	name := edgeProxyGrantName(providerName)
-	if err := wsClient.Resource(clusterRoleBindingGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("deleting ClusterRoleBinding %q: %w", name, err)
-	}
-	if err := wsClient.Resource(clusterRoleGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("deleting ClusterRole %q: %w", name, err)
 	}
 	return nil
 }

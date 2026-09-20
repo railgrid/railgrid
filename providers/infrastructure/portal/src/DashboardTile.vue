@@ -17,7 +17,7 @@
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { AlertTriangle, ArrowRight, Check, ChevronRight, Clock, Package } from 'lucide-vue-next'
-import { api, isContextChangedError, setHostFetch, setTenant, setToken } from './api'
+import { api, isContextChangedError, setHostFetch, setTenant } from './api'
 import {
   createTilePoller,
   hasWorkspaceContext,
@@ -91,7 +91,6 @@ async function load() {
   loading.value = true
   try {
     setHostFetch(ctx.fetch)
-    setToken(ctx.token ?? null)
     setTenant(ctx.tenant ?? null)
     const r = await api.listInstances()
     if (generation !== contextGeneration) return

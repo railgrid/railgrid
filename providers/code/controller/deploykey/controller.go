@@ -38,6 +38,7 @@ import (
 	"github.com/railgrid/provider-code/backend"
 	"github.com/railgrid/provider-code/controller/shared"
 	"github.com/railgrid/provider-code/tenant"
+	"github.com/railgrid/provider-sdk/claimscope"
 )
 
 // secretDataKeyPrivate / secretDataKeyPublic are the Secret data keys the
@@ -196,6 +197,8 @@ func (r *Reconciler) ensurePublicKey(ctx context.Context, c client.Client, key *
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
+			// The provider's secrets claim is label-scoped to what it wrote.
+			Labels: claimscope.OwnerLabels("code"),
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         codev1alpha1.SchemeGroupVersion.String(),
 				Kind:               "DeployKey",

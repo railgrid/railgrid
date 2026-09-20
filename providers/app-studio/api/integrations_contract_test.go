@@ -91,7 +91,7 @@ func TestProviderReferenceReconcileOnlyGetsAndNeverOwnsTarget(t *testing.T) {
 		})
 	}
 	c := asclient.NewFromDynamic(dyn)
-	if _, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).reconcileProjectLiveBindings(context.Background(), c, project, identity{}); err != nil {
+	if _, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).reconcileProjectLiveBindings(context.Background(), c, project, identity{}); err != nil {
 		t.Fatalf("reconcileProjectLiveBindings: %v", err)
 	}
 	got, err := c.Resource(providerBindingResource(testDatabricksTableGVR, databricksTableKind), "").Get(context.Background(), "orders", metav1.GetOptions{})
@@ -139,7 +139,7 @@ func TestProviderReferenceProjectCleanupDoesNotDeleteTarget(t *testing.T) {
 		t.Fatalf("project cleanup deleted provider-owned Table")
 		return true, nil, nil
 	})
-	if err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).deleteProjectProviderResources(context.Background(), asclient.NewFromDynamic(dyn), project, identity{}); err != nil {
+	if err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).deleteProjectProviderResources(context.Background(), asclient.NewFromDynamic(dyn), project, identity{}); err != nil {
 		t.Fatalf("deleteProjectProviderResources: %v", err)
 	}
 }
@@ -174,7 +174,7 @@ func TestProviderActionForwardingNeverRetriesWithInsecureTLS(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, hubBase: upstream.URL, actionsExternalURL: "https://hub.example", mcpInsecureSkipTLSVerify: true}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, actionsExternalURL: "https://hub.example", mcpInsecureSkipTLSVerify: true}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	ref := &aiv1alpha1.ProjectProviderResourceReference{
 		Name: "item", APIVersion: "example/v1", Kind: "Item", Resource: "items",
@@ -209,7 +209,7 @@ func TestProviderActionForwardingAppendsConfiguredCAToSystemTrust(t *testing.T) 
 	defer upstream.Close()
 
 	caBundle := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw})
-	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, hubBase: upstream.URL, actionsExternalURL: "https://hub.example", actionsCABundle: string(caBundle), mcpInsecureSkipTLSVerify: true}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, actionsExternalURL: "https://hub.example", actionsCABundle: string(caBundle), mcpInsecureSkipTLSVerify: true}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
 	if err != nil || status != http.StatusOK || envelope.Error != nil {
@@ -240,7 +240,7 @@ func TestProviderActionForwardingUsesVerifiedOrgWorkspaceHeaders(t *testing.T) {
 		})
 	}))
 	defer upstream.Close()
-	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, hubBase: upstream.URL, actionsExternalURL: "https://hub.example"}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, actionsExternalURL: "https://hub.example"}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Railgrid-Org", "spoofed")
@@ -268,7 +268,7 @@ func TestProviderActionForwardingRejectsRedirectWithoutLeakingBearer(t *testing.
 	}))
 	defer redirect.Close()
 	ref := &aiv1alpha1.ProjectProviderResourceReference{Name: "item", APIVersion: "example/v1", Kind: "Item", Resource: "items"}
-	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, hubBase: redirect.URL, actionsExternalURL: "https://hub.example"}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: redirect.URL, actionsExternalURL: "https://hub.example"}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
 	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
@@ -525,7 +525,7 @@ func integrationTestCatalogResolver(context.Context, identity) ([]providerCatalo
 func integrationHTTPTestRequest(method, path, body string) *http.Request {
 	request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("Authorization", "Bearer "+"alice@example.com-token")
 	request.Header.Set("X-Railgrid-User", "alice@example.com")
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Org", "org-a")
@@ -542,6 +542,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 	})
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -598,7 +599,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 	if actionRequest.URL != "/services/providers/databricks/actions/clusters/cluster-a/tables/orders/query_table/v1" {
 		t.Fatalf("provider action URL = %q, want data-plane action route", actionRequest.URL)
 	}
-	if actionRequest.Headers.Get("Authorization") != "Bearer caller-token" ||
+	if actionRequest.Headers.Get("Authorization") != "Bearer alice@example.com-token" ||
 		actionRequest.Headers.Get("X-Railgrid-Tenant") != "cluster-a" ||
 		actionRequest.Headers.Get("X-Railgrid-Cluster") != "cluster-a" ||
 		actionRequest.Headers.Get("Idempotency-Key") != "idem-1" ||
@@ -638,6 +639,7 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 	fixture.setApplication(t, developmentApplicationObject())
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -713,6 +715,7 @@ func TestProjectIntegrationAddRejectsMissingActionsURLWithoutMutation(t *testing
 	before := fixture.project(t)
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
 	server.Register(router)
@@ -774,6 +777,7 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 	before := fixture.project(t)
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.actionsExternalURL = actionsURL
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -805,6 +809,7 @@ func TestProjectIntegrationInvokeRejectsBeforeHubForward(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, projectWithTableIntegration(false))
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -854,6 +859,7 @@ func TestProjectIntegrationInvokeForwardsGenericProviderAndInput(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, integrationProjectWithProvider("other"))
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -924,7 +930,7 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 	c := asclient.NewFromDynamic(dyn)
 	id := identity{tenant: "cluster-a", clusterID: "cluster-a"}
 
-	if err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).deleteProjectDevelopmentBindingResources(context.Background(), c, project, id); err != nil {
+	if err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).deleteProjectDevelopmentBindingResources(context.Background(), c, project, id); err != nil {
 		t.Fatalf("delete old template binding: %v", err)
 	}
 	info, err := projectTemplateInfoFromUnstructured(applicationTemplateObject())
@@ -944,10 +950,10 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 			Name: "demo-prod", APIVersion: "infrastructure.railgrid.ai/v1alpha1", Kind: "Application", Resource: "applications",
 		},
 	})
-	if _, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, actionsExternalURL: "https://hub.example"}).reconcileProjectLiveBindings(context.Background(), c, project, id); err != nil {
+	if _, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://hub.example"}).reconcileProjectLiveBindings(context.Background(), c, project, id); err != nil {
 		t.Fatalf("reconcile after template switch/promotion: %v", err)
 	}
-	if err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).deleteProjectProviderResources(context.Background(), c, project, id); err != nil {
+	if err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).deleteProjectProviderResources(context.Background(), c, project, id); err != nil {
 		t.Fatalf("project cleanup: %v", err)
 	}
 	if _, err := c.Resource(providerBindingResource(testDatabricksTableGVR, databricksTableKind), "").Get(context.Background(), "orders", metav1.GetOptions{}); err != nil {

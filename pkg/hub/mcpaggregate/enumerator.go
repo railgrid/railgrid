@@ -83,6 +83,8 @@ func RegistryEnumerator(reg *providers.Registry, router OrgProviderRouter, log l
 					Name:        p.Name,
 					DisplayName: p.DisplayName,
 					MCPURL:      strings.TrimRight(p.BackendURL.String(), "/") + "/mcp",
+					Actions:     declaredActions(p),
+					Verbs:       declaredVerbs(p),
 				})
 				continue
 			}
@@ -131,5 +133,64 @@ func orgTarget(ctx context.Context, router OrgProviderRouter, log logr.Logger, p
 		MCPURL:      strings.TrimRight(route.BaseURL, "/") + "/mcp",
 		OrgUUID:     p.OrgUUID,
 		Transport:   route.Transport,
+		Actions:     declaredActions(p),
+		Verbs:       declaredVerbs(p),
 	}, true
+}
+
+// declaredActions projects a registry record's validated actions into the
+// discovery view. The registry entry carries compiled schema validators and
+// execution limits; none of that crosses this boundary — discovery gets the
+// coordinate, what it is bound to, how risky the provider says it is, whether
+// a human must consent, and the digest that pins the contract version.
+func declaredActions(p providers.Provider) []DeclaredAction {
+	if len(p.Actions) == 0 {
+		return nil
+	}
+	out := make([]DeclaredAction, 0, len(p.Actions))
+	for _, a := range p.Actions {
+		out = append(out, DeclaredAction{
+			ID:          a.ID,
+			Name:        a.Name,
+			Version:     a.Version,
+			DisplayName: a.DisplayName,
+			Description: a.Description,
+			BoundResource: DeclaredBoundResource{
+				APIVersion: a.Resource.APIVersion,
+				Kind:       a.Resource.Kind,
+				Resource:   a.Resource.Resource,
+			},
+			ReadOnly: a.ReadOnly,
+			Risk:     string(a.Risk),
+			Consent: DeclaredConsent{
+				Required: a.Consent.Required,
+				Prompt:   a.Consent.Prompt,
+				Scope:    a.Consent.Scope,
+			},
+			SchemaDigest: a.SchemaDigest,
+		})
+	}
+	return out
+}
+
+// declaredVerbs projects a registry record's declared data-plane verbs into
+// the discovery view. The coordinate is spelled "<resource>/<verb>": the same
+// string the hub uses for the RBAC subresource and for a scoped-identity
+// capability, so what a client reads here is what an operator would grant.
+func declaredVerbs(p providers.Provider) []DeclaredVerb {
+	if len(p.DataPlaneVerbs) == 0 {
+		return nil
+	}
+	out := make([]DeclaredVerb, 0, len(p.DataPlaneVerbs))
+	for _, v := range p.DataPlaneVerbs {
+		out = append(out, DeclaredVerb{
+			Coordinate:  v.Resource + "/" + v.Verb,
+			Resource:    v.Resource,
+			Verb:        v.Verb,
+			Description: v.Description,
+			Stream:      v.Stream,
+			ReadOnly:    v.ReadOnly,
+		})
+	}
+	return out
 }

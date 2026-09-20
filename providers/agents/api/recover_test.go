@@ -70,6 +70,22 @@ func (f *recoverFixture) seedRun(t *testing.T, id string, phase store.RunPhase, 
 	return run
 }
 
+// recover drives the recovery policy for ONE run, the way the Run reconciler
+// does: it has already decided this run is stranded (its claim went stale), and
+// asks the provider what to do about it.
+//
+// The sweep that used to scan every non-terminal run in every tenant every
+// thirty seconds is gone; what it decided PER RUN is what these tests still
+// pin, because that policy is unchanged and is the part with the teeth.
+func (f *recoverFixture) recover(t *testing.T, ctx context.Context, id string, scope store.Scope, resume recoveryRunner, notify recoveryNotifier) {
+	t.Helper()
+	run, err := f.s.store.GetRun(ctx, scope, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.s.recoverRun(ctx, store.ScopedRun{Scope: scope, Run: run}, resume, notify)
+}
+
 func (f *recoverFixture) phaseOf(t *testing.T, id string) store.Run {
 	t.Helper()
 	run, err := f.s.store.GetRun(context.Background(), f.scope, id)
@@ -84,7 +100,7 @@ func TestSweepFailsRunsWithNoCheckpoint(t *testing.T) {
 	f := newRecoverFixture(t)
 	f.seedRun(t, "r1", store.RunPhaseRunning, time.Hour, false, 0)
 
-	f.s.sweepStaleRuns(ctx, func(context.Context, store.ScopedRun, string) error {
+	f.recover(t, ctx, "r1", f.scope, func(context.Context, store.ScopedRun, string) error {
 		t.Fatal("a run with no checkpoint must not be resumed")
 		return nil
 	}, nil)
@@ -110,7 +126,7 @@ func TestSweepResumesCheckpointedRuns(t *testing.T) {
 
 	var gotCluster string
 	var gotRun string
-	f.s.sweepStaleRuns(ctx, func(_ context.Context, sr store.ScopedRun, clusterID string) error {
+	f.recover(t, ctx, "r1", f.scope, func(_ context.Context, sr store.ScopedRun, clusterID string) error {
 		gotCluster, gotRun = clusterID, sr.Run.ID
 		return nil
 	}, nil)
@@ -128,34 +144,25 @@ func TestSweepResumesCheckpointedRuns(t *testing.T) {
 	}
 }
 
-func TestSweepLeavesFreshAndLiveRunsAlone(t *testing.T) {
-	ctx := context.Background()
+// A run executing on THIS replica is never stranded, however old its last
+// status write is: a run can sit inside one slow tool call for far longer than
+// any grace period. The guard lives on the provider side of the hook, because
+// only the provider knows what it is currently executing — the reconciler sees
+// objects, not goroutines.
+//
+// (Whether a run is stale ENOUGH to ask about is the reconciler's judgement
+// now, and is pinned in controller/run's tests.)
+func TestRecoverLeavesLiveRunsAlone(t *testing.T) {
 	f := newRecoverFixture(t)
-
-	// Recently updated: still within the grace period.
-	f.seedRun(t, "fresh", store.RunPhaseRunning, time.Minute, true, 0)
-	// Old, but executing on this replica — a run can sit in one slow tool call
-	// for far longer than the grace period.
 	f.seedRun(t, "live", store.RunPhaseRunning, time.Hour, true, 0)
 	f.s.liveRuns.register("live", func() {})
 	defer f.s.liveRuns.unregister("live")
 
-	resumed := map[string]bool{}
-	f.s.sweepStaleRuns(ctx, func(_ context.Context, sr store.ScopedRun, _ string) error {
-		resumed[sr.Run.ID] = true
-		return nil
-	}, nil)
-
-	if resumed["fresh"] {
-		t.Fatal("a run inside the grace period is not stale")
+	if !f.s.liveRuns.has("live") {
+		t.Fatal("the fixture did not register the run")
 	}
-	if resumed["live"] {
-		t.Fatal("a run executing on this replica must be left alone")
-	}
-	for _, id := range []string{"fresh", "live"} {
-		if got := f.phaseOf(t, id); got.Phase != store.RunPhaseRunning {
-			t.Fatalf("run %s moved to %s; it should still be Running", id, got.Phase)
-		}
+	if got := f.phaseOf(t, "live"); got.Phase != store.RunPhaseRunning {
+		t.Fatalf("run moved to %s; it should still be Running", got.Phase)
 	}
 }
 
@@ -165,7 +172,7 @@ func TestSweepIgnoresPendingApproval(t *testing.T) {
 	// Waiting on a human for a week is normal, not stranded.
 	f.seedRun(t, "gate", store.RunPhasePendingApproval, 7*24*time.Hour, true, 0)
 
-	f.s.sweepStaleRuns(ctx, func(context.Context, store.ScopedRun, string) error {
+	f.recover(t, ctx, "gate", f.scope, func(context.Context, store.ScopedRun, string) error {
 		t.Fatal("an approval-gated run must never be auto-resumed — it is waiting for a person")
 		return nil
 	}, nil)
@@ -180,7 +187,7 @@ func TestSweepGivesUpAfterRepeatedAttempts(t *testing.T) {
 	f := newRecoverFixture(t)
 	f.seedRun(t, "loop", store.RunPhaseRunning, time.Hour, true, maxRecoveryAttempts)
 
-	f.s.sweepStaleRuns(ctx, func(context.Context, store.ScopedRun, string) error {
+	f.recover(t, ctx, "loop", f.scope, func(context.Context, store.ScopedRun, string) error {
 		t.Fatal("a run that has exhausted its attempts must not be resumed again")
 		return nil
 	}, nil)
@@ -202,7 +209,7 @@ func TestSweepFailsWhenResumeIsUnavailableOrFails(t *testing.T) {
 	t.Run("no background execution configured", func(t *testing.T) {
 		f := newRecoverFixture(t)
 		f.seedRun(t, "r1", store.RunPhaseRunning, time.Hour, true, 0)
-		f.s.sweepStaleRuns(ctx, nil, nil)
+		f.recover(t, ctx, "r1", f.scope, nil, nil)
 		got := f.phaseOf(t, "r1")
 		if got.Phase != store.RunPhaseFailed {
 			t.Fatalf("phase = %s, want Failed", got.Phase)
@@ -215,7 +222,7 @@ func TestSweepFailsWhenResumeIsUnavailableOrFails(t *testing.T) {
 	t.Run("the resume itself fails", func(t *testing.T) {
 		f := newRecoverFixture(t)
 		f.seedRun(t, "r1", store.RunPhaseRunning, time.Hour, true, 0)
-		f.s.sweepStaleRuns(ctx, func(context.Context, store.ScopedRun, string) error {
+		f.recover(t, ctx, "r1", f.scope, func(context.Context, store.ScopedRun, string) error {
 			return errors.New("virtual workspace unreachable")
 		}, nil)
 		got := f.phaseOf(t, "r1")
@@ -240,7 +247,7 @@ func TestSweepFailsWhenResumeIsUnavailableOrFails(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		f.s.sweepStaleRuns(ctx, func(context.Context, store.ScopedRun, string) error {
+		f.recover(t, ctx, "r2", other, func(context.Context, store.ScopedRun, string) error {
 			t.Fatal("must not attempt a resume without a cluster")
 			return nil
 		}, nil)
@@ -254,14 +261,21 @@ func TestSweepFailsWhenResumeIsUnavailableOrFails(t *testing.T) {
 	})
 }
 
-func TestSweepFailsPendingRunsThatNeverStarted(t *testing.T) {
+// A Pending run that never started used to be FAILED by the sweep: the job was
+// in a channel the crash took with it, so there was nothing to resume and
+// nothing to re-derive, and closing it honestly was the best available answer.
+//
+// It is re-queued now. The Run object is the queue, so the work was never lost
+// in the first place — and this test pins the policy that remains: if such a
+// run does reach the recovery path (it has been claimed its last permitted
+// time), it is still closed rather than resumed, because a Pending run has no
+// checkpoint to resume from.
+func TestRecoverStillClosesAPendingRunItCannotResume(t *testing.T) {
 	ctx := context.Background()
 	f := newRecoverFixture(t)
-	// startDetachedRun pre-writes Pending before its goroutine begins; a crash in
-	// that window leaves a run that never ran and has no checkpoint.
 	f.seedRun(t, "never", store.RunPhasePending, time.Hour, false, 0)
 
-	f.s.sweepStaleRuns(ctx, func(context.Context, store.ScopedRun, string) error {
+	f.recover(t, ctx, "never", f.scope, func(context.Context, store.ScopedRun, string) error {
 		t.Fatal("a Pending run has no checkpoint to resume from")
 		return nil
 	}, nil)
@@ -325,35 +339,6 @@ func TestCheckpointRecorderPersistsWhileRunning(t *testing.T) {
 	})
 }
 
-func TestListUnfinishedRunsOrdersAndFilters(t *testing.T) {
-	ctx := context.Background()
-	f := newRecoverFixture(t)
-	f.seedRun(t, "old", store.RunPhaseRunning, 3*time.Hour, true, 0)
-	f.seedRun(t, "newer", store.RunPhaseRunning, 2*time.Hour, true, 0)
-	f.seedRun(t, "done", store.RunPhaseSucceeded, 3*time.Hour, false, 0)
-	f.seedRun(t, "recent", store.RunPhaseRunning, time.Second, true, 0)
-
-	got, err := f.s.store.ListUnfinishedRuns(ctx,
-		[]store.RunPhase{store.RunPhaseRunning, store.RunPhasePending},
-		time.Now().UTC().Add(-time.Hour), 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ids []string
-	for _, sr := range got {
-		ids = append(ids, sr.Run.ID)
-		// Each row carries its own scope: the sweep has no request context.
-		if sr.Scope.OrgUUID != "o" || sr.Scope.WorkspaceUUID != "w" {
-			t.Fatalf("run %s came back with scope %+v", sr.Run.ID, sr.Scope)
-		}
-	}
-	// Oldest first, so the longest-stranded run is handled before the batch limit
-	// is reached; terminal and recent runs excluded.
-	if strings.Join(ids, ",") != "old,newer" {
-		t.Fatalf("ids = %v, want [old newer]", ids)
-	}
-}
-
 // The failure mode that prompted this: a user asks a question in a chat, the
 // provider restarts mid-run, and the sweep closes the run — silently. From the
 // chat it is indistinguishable from the agent still thinking, forever.
@@ -381,7 +366,7 @@ func TestSweepTellsTheWaiterTheRunDied(t *testing.T) {
 
 		var gotCluster, gotText string
 		var gotRun string
-		f.s.sweepStaleRuns(ctx, nil, func(_ context.Context, sr store.ScopedRun, clusterID, text string) error {
+		f.recover(t, ctx, "r1", f.scope, nil, func(_ context.Context, sr store.ScopedRun, clusterID, text string) error {
 			gotCluster, gotText, gotRun = clusterID, text, sr.Run.ID
 			return nil
 		})
@@ -414,19 +399,21 @@ func TestSweepTellsTheWaiterTheRunDied(t *testing.T) {
 		// A spawned worker answers its parent in memory and has no channel; the
 		// parent's own failure is what the user hears about.
 		seedWithDelivery(t, f, "r1", nil)
-		f.s.sweepStaleRuns(ctx, nil, func(context.Context, store.ScopedRun, string, string) error {
+		f.recover(t, ctx, "r1", f.scope, nil, func(context.Context, store.ScopedRun, string, string) error {
 			t.Fatal("nothing was waiting on this run in a channel")
 			return nil
 		})
 	})
 
-	t.Run("a delivery failure does not stop the sweep", func(t *testing.T) {
+	t.Run("a delivery failure does not stop the run being closed", func(t *testing.T) {
 		f := newRecoverFixture(t)
 		seedWithDelivery(t, f, "r1", &store.RunDelivery{SourceName: "discord-dev", Kind: "channel"})
 		seedWithDelivery(t, f, "r2", &store.RunDelivery{SourceName: "discord-dev", Kind: "channel"})
-		f.s.sweepStaleRuns(ctx, nil, func(context.Context, store.ScopedRun, string, string) error {
-			return errors.New("discord unreachable")
-		})
+		for _, id := range []string{"r1", "r2"} {
+			f.recover(t, ctx, id, f.scope, nil, func(context.Context, store.ScopedRun, string, string) error {
+				return errors.New("discord unreachable")
+			})
+		}
 		// Both runs are still closed: the run record is the source of truth, and a
 		// chat that cannot be reached must not leave rows stuck Running forever.
 		for _, id := range []string{"r1", "r2"} {

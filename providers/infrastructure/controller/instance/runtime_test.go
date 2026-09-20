@@ -21,10 +21,13 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/dataplane"
+	sdkdataplane "github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
 )
 
 func developmentTemplate() *infrav1alpha1.Template {
@@ -133,28 +136,30 @@ func TestDesiredNetworkPhaseDoesNotOscillateDuringRuntimeRollout(t *testing.T) {
 }
 
 // The runtime CR is watched, so neither readiness nor the setup -> runtime
-// network transition is polled: with no lifecycle deadline pending only the
-// safety resync remains, regardless of the runtime generation's state.
-func TestInstanceRequeueAfterIsSafetyResyncWithoutLifecycleDeadline(t *testing.T) {
+// network transition is polled. With no lifecycle deadline pending there is
+// nothing left to wake up for: the reconciler asks for no requeue at all,
+// regardless of the runtime generation's state. A non-zero answer here would
+// be the blanket resync the contract forbids.
+func TestInstanceRequeueAfterIsZeroWithoutLifecycleDeadline(t *testing.T) {
 	tmpl := developmentTemplate()
-	created := metav1.Time{}
-	now := time.Time{}
+	now := time.Now()
+	created := metav1.NewTime(now.Add(-30 * time.Second))
 
 	if got := instanceRequeueAfter(now, created, tmpl,
-		runtimeForNetwork(3, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != resyncPeriod {
-		t.Fatalf("stale runtime requeue = %s, want safety resync %s", got, resyncPeriod)
+		runtimeForNetwork(3, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != 0 {
+		t.Fatalf("stale runtime requeue = %s, want no requeue", got)
 	}
 	if got := instanceRequeueAfter(now, created, tmpl,
-		runtimeForNetwork(3, 3, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != resyncPeriod {
-		t.Fatalf("current runtime requeue = %s, want safety resync %s", got, resyncPeriod)
+		runtimeForNetwork(3, 3, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")); got != 0 {
+		t.Fatalf("current runtime requeue = %s, want no requeue", got)
 	}
-	if got := instanceRequeueAfter(now, created, nil, nil); got != resyncPeriod {
-		t.Fatalf("no-template requeue = %s, want safety resync %s", got, resyncPeriod)
+	if got := instanceRequeueAfter(now, created, nil, nil); got != 0 {
+		t.Fatalf("no-template requeue = %s, want no requeue", got)
 	}
 }
 
-// A development Instance's idle/max-lifetime deadline is still scheduled
-// exactly when it falls inside the resync window.
+// The one RequeueAfter that survives: a development Instance's computed
+// idle/max-lifetime deadline.
 func TestInstanceRequeueAfterHonorsLifecycleDeadline(t *testing.T) {
 	now := time.Now()
 	tmpl := developmentTemplate()
@@ -254,10 +259,10 @@ func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) 
 		},
 	}
 	handler := dataplane.NewHandler(
-		mirroredInstanceGetter{instance: instance},
+		mirroredCallers(instance),
 		mirroredContractGetter{contract: contract},
 		mirroredRuntime{},
-		dataplane.WithExec(mirroredExecutor{}, mirroredAuthorizer{}),
+		dataplane.WithExec(mirroredExecutor{}),
 		dataplane.WithDevelopmentGetter(mirroredDevelopmentGetter{}),
 	)
 	body, err := json.Marshal(map[string]any{
@@ -277,7 +282,26 @@ func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) 
 	}
 }
 
-type mirroredInstanceGetter struct{ instance *unstructured.Unstructured }
+// mirroredCallers is the caller factory both gates run through: the Instance
+// is visible in cluster "ws" to bearer "caller", and every verb on
+// instances/* is granted, so this test exercises the status mirror rather
+// than RBAC.
+func mirroredCallers(instance *unstructured.Unstructured) *conformance.FakeCallers {
+	object := instance.DeepCopy()
+	object.SetAPIVersion("infrastructure.railgrid.ai/v1alpha1")
+	object.SetKind("Instance")
+	// Instances are cluster-scoped in the tenant workspace, which is how
+	// gate 1 reads them.
+	object.SetNamespace("")
+	instancesGVR := schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances"}
+	return &conformance.FakeCallers{
+		Cluster:   "ws",
+		Token:     "caller",
+		Objects:   []*unstructured.Unstructured{object},
+		ListKinds: map[schema.GroupVersionResource]string{instancesGVR: "InstanceList"},
+		Allow:     func(a conformance.Attributes) bool { return a.Verb == sdkdataplane.SSARVerb },
+	}
+}
 
 type mirroredStatusClient struct{ ctrlclient.Client }
 
@@ -287,10 +311,6 @@ type mirroredStatusWriter struct{ ctrlclient.SubResourceWriter }
 
 func (mirroredStatusWriter) Update(context.Context, ctrlclient.Object, ...ctrlclient.SubResourceUpdateOption) error {
 	return nil
-}
-
-func (g mirroredInstanceGetter) Get(context.Context, string, string, string, string) (*unstructured.Unstructured, error) {
-	return g.instance, nil
 }
 
 type mirroredContractGetter struct {
@@ -329,10 +349,4 @@ func (mirroredExecutor) Poll(context.Context, dataplane.ExecCall) (dataplane.Exe
 
 func (mirroredExecutor) Cancel(context.Context, dataplane.ExecCall) (dataplane.ExecResult, error) {
 	return dataplane.ExecResult{SessionID: "session-1", State: "canceled"}, nil
-}
-
-type mirroredAuthorizer struct{}
-
-func (mirroredAuthorizer) AuthorizeExec(context.Context, dataplane.ExecAuthorization) error {
-	return nil
 }

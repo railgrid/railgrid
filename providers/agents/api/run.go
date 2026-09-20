@@ -128,7 +128,7 @@ type runCheckpoint struct {
 // Edges* configure the optional hub-MCP edges family (interactive runs only —
 // it authenticates as the calling user).
 type taskRun struct {
-	Creds llm.SecretGetter
+	Creds llm.CredentialResolver
 	CR    tools.CRAccess
 	Scope store.Scope
 	Agent *agentsv1alpha1.Agent
@@ -264,7 +264,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		Store: s.store, Scope: scope, Agent: agent, CR: run.CR,
 		Secrets: run.Creds, ConnSecretName: connectionSecretName,
 		RunID:     runID,
-		DataPlane: s.dataPlaneFor(run),
+		DataPlane: s.dataPlaneFor(ctx, run),
 	}, run)
 	defer closeTools()
 
@@ -299,7 +299,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
 		Role: "user", Content: run.Task, CreatedAt: runStartedAt,
 	})
-	_ = s.store.SaveRun(ctx, scope, store.Run{
+	_ = s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
 		ParentRunID: run.ParentRunID, IdempotencyKey: run.IdempotencyKey,
 		Delivery: run.delivery(),
@@ -322,6 +322,11 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		CheckpointEvery:     checkpointEveryIterations,
 	}, cb)
 	end := time.Now().UTC()
+	// A model the upstream refuses on Chat Completions (a responses-only
+	// family, a retired snapshot) is a credential to edit, not a crash. The
+	// provider's own sentence is kept; what is added is which credential owns
+	// the model id and where to change it.
+	err = llm.ExplainChatCompletionsRefusal(err, credentialNameForPurpose(agent, purpose))
 	if err != nil {
 		phase := store.RunPhaseFailed
 		// A registry cancel (or run timeout) surfaces as a context error —
@@ -364,7 +369,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 			stored.USDMicros = costMicros
 			stored.WorkedDurationMS = tracker.workedDurationMS()
 			stored.UpdatedAt = end
-			_ = s.store.SaveRun(ctx, scope, stored)
+			_ = s.saveRun(ctx, scope, stored)
 		}
 		s.appendTurnTerminal(ctx, scope, run, sessionID, runStartedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePendingApproval), "", "")
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePendingApproval})
@@ -415,7 +420,7 @@ func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id id
 	tr.CR = clientCR{c}
 	tr.Scope = scope
 	tr.Agent = agent
-	tr.EdgesEndpoint = s.edgesEndpoint(id.clusterID)
+	tr.EdgesEndpoint = s.aggregateMCPEndpoint(r.Context(), id)
 	tr.HubToken = id.token
 	tr.EdgesInsecure = s.cfg.HubInsecure
 	tr.ClusterID = id.clusterID
@@ -423,7 +428,7 @@ func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id id
 	// Detach from the request context: the response returns immediately while
 	// the run continues (executeTask applies the agent's own timeout).
 	ctx := context.WithoutCancel(r.Context())
-	_ = s.store.SaveRun(ctx, scope, store.Run{
+	_ = s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
 		IdempotencyKey: tr.IdempotencyKey,
 		Phase:          store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
@@ -451,13 +456,15 @@ func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id id
 }
 
 // dataPlaneFor describes how instance-backed tools reach tenant workloads for
-// this run. Background runs carry no user token, so the result is unusable by
-// design — the tool reports that precisely rather than failing at the hub.
-func (s *Server) dataPlaneFor(run taskRun) tools.DataPlane {
+// this run. A run with no identity is unusable by design — the tool reports
+// that precisely rather than failing at the hub — and so is one in a workspace
+// where nothing is known to serve the instance API group.
+func (s *Server) dataPlaneFor(ctx context.Context, run taskRun) tools.DataPlane {
 	return tools.DataPlane{
 		HubBase:   s.cfg.HubURL,
 		ClusterID: run.ClusterID,
 		Token:     run.HubToken,
+		Provider:  s.providerForAPIGroup(ctx, run.ClusterID, run.HubToken, tools.InstanceAPIGroup),
 		Insecure:  s.cfg.HubInsecure,
 	}
 }
@@ -556,7 +563,7 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	}
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
-	_ = s.store.SaveRun(ctx, scope, stored)
+	_ = s.saveRun(ctx, scope, stored)
 }
 
 // runEvent is one run lifecycle change pushed to /api/events subscribers. A

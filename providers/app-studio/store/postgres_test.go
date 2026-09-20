@@ -217,7 +217,7 @@ func TestPostgresStoreV2ContractExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schemaName := "app_studio_v2_" + time.Now().UTC().Format("20060102150405")
 	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
@@ -228,7 +228,7 @@ func TestPostgresStoreV2ContractExternalDSN(t *testing.T) {
 		if openErr != nil {
 			return
 		}
-		defer cleanupDB.Close()
+		defer func() { _ = cleanupDB.Close() }()
 		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
 	})
 
@@ -258,7 +258,7 @@ func TestPostgresStoreV2ContractExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPostgres: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	for _, name := range assistantLookupIndexNames() {
 		exists, valid, indexErr := assistantLookupIndexState(ctx, s.db, name)
 		if indexErr != nil {
@@ -383,7 +383,7 @@ func TestPostgresStorePointLookupsExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schemaName := fmt.Sprintf("app_studio_point_lookup_%d", time.Now().UTC().UnixNano())
 	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
@@ -394,7 +394,7 @@ func TestPostgresStorePointLookupsExternalDSN(t *testing.T) {
 		if openErr != nil {
 			return
 		}
-		defer cleanupDB.Close()
+		defer func() { _ = cleanupDB.Close() }()
 		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
 	})
 
@@ -402,7 +402,7 @@ func TestPostgresStorePointLookupsExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPostgres: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-a"}
 	otherScope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-b"}
 	now := time.Now().UTC()
@@ -447,7 +447,7 @@ func TestPostgresRetentionProtectsActiveMessagesAndConversationHighWaterMark(t *
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schemaName := fmt.Sprintf("app_studio_retention_seq_%d", time.Now().UTC().UnixNano())
 	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
@@ -458,7 +458,7 @@ func TestPostgresRetentionProtectsActiveMessagesAndConversationHighWaterMark(t *
 		if openErr != nil {
 			return
 		}
-		defer cleanupDB.Close()
+		defer func() { _ = cleanupDB.Close() }()
 		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
 	})
 
@@ -466,7 +466,7 @@ func TestPostgresRetentionProtectsActiveMessagesAndConversationHighWaterMark(t *
 	if err != nil {
 		t.Fatalf("OpenPostgres: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	scope := Scope{OrgUUID: "org-retention", WorkspaceUUID: "workspace-retention", ProjectName: "demo", ProjectUID: "project-retention"}
 	old := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -553,7 +553,7 @@ func TestPostgresRetentionDoesNotDeleteAttachmentWhenThreadIsRevived(t *testing.
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	schemaName := fmt.Sprintf("app_studio_retention_attachment_race_%d", time.Now().UTC().UnixNano())
 	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
 		t.Fatalf("create schema: %v", err)
@@ -563,7 +563,7 @@ func TestPostgresRetentionDoesNotDeleteAttachmentWhenThreadIsRevived(t *testing.
 		if openErr != nil {
 			return
 		}
-		defer cleanupDB.Close()
+		defer func() { _ = cleanupDB.Close() }()
 		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
 	})
 
@@ -572,7 +572,7 @@ func TestPostgresRetentionDoesNotDeleteAttachmentWhenThreadIsRevived(t *testing.
 	if err != nil {
 		t.Fatalf("OpenPostgres: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	scope := Scope{OrgUUID: "org-retention-race", WorkspaceUUID: "workspace-retention-race", ProjectName: "demo", ProjectUID: "project-retention-race"}
 	old := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
 	thread, err := store.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-retention-race", ActorID: "alice", CreatedAt: old, UpdatedAt: old}, nil)
@@ -602,7 +602,7 @@ func TestPostgresRetentionDoesNotDeleteAttachmentWhenThreadIsRevived(t *testing.
 	if err != nil {
 		t.Fatalf("open lock-holder postgres: %v", err)
 	}
-	defer holdDB.Close()
+	defer func() { _ = holdDB.Close() }()
 	holdTx, err := holdDB.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin lock-holder transaction: %v", err)
@@ -655,7 +655,7 @@ func TestPostgresAttachmentLifecycleExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	schemaName := fmt.Sprintf("app_studio_attachment_lifecycle_%d", time.Now().UTC().UnixNano())
 	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
 		t.Fatal(err)
@@ -665,14 +665,14 @@ func TestPostgresAttachmentLifecycleExternalDSN(t *testing.T) {
 		if openErr != nil {
 			return
 		}
-		defer cleanupDB.Close()
+		defer func() { _ = cleanupDB.Close() }()
 		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
 	})
 	s, err := OpenPostgres(ctx, postgresDSNWithSearchPath(t, dsn, schemaName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	scope := attachmentTestScope()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	expires := now.Add(time.Hour)

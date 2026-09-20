@@ -77,7 +77,7 @@ func TestReplicaAffinityTakesOverFromUnreachableOwner(t *testing.T) {
 		gotBody = string(b)
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	r := httptest.NewRequest(http.MethodPut, "/api/projects/shop/template", strings.NewReader(`{"template":"web"}`))
+	r := httptest.NewRequest(http.MethodPut, "/dataplane/clusters/cluster-1/projects/shop/template", strings.NewReader(`{"template":"web"}`))
 	r.Header.Set("X-Railgrid-Tenant", "cluster-1")
 	r.Header.Set("Authorization", "Bearer test-token")
 	rec := httptest.NewRecorder()
@@ -112,7 +112,7 @@ func TestReplicaAffinityKeepsOwnerThatFailsAfterConnecting(t *testing.T) {
 	local := 0
 	h := s.ReplicaAffinity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { local++ }))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, projectRequest("/api/projects/shop/sync-development", http.MethodPost))
+	h.ServeHTTP(rec, projectRequest("/dataplane/clusters/cluster-1/projects/shop/sync-development", http.MethodPost))
 
 	if local != 0 || rec.Code != http.StatusBadGateway {
 		t.Fatalf("broken forward = local %d, code %d; want 502 without local serve", local, rec.Code)
@@ -134,11 +134,11 @@ func TestRelinquishProjectClaimsHandsProjectsToSuccessor(t *testing.T) {
 
 	old.RelinquishProjectClaims(context.Background())
 
-	successor := &Server{tenantWorkspaces: old.tenantWorkspaces, store: msgStore}
+	successor := &Server{tenantWorkspaces: old.tenantWorkspaces, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: msgStore}
 	successor.SetReplicaRouting("replica-new", "10.0.0.2:8091", "internal-token")
 	local := 0
 	h := successor.ReplicaAffinity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { local++ }))
-	h.ServeHTTP(httptest.NewRecorder(), projectRequest("/api/projects/shop", http.MethodGet))
+	h.ServeHTTP(httptest.NewRecorder(), projectRequest("/dataplane/clusters/cluster-1/projects/shop/view", http.MethodGet))
 	if local != 1 {
 		t.Fatal("successor forwarded a relinquished project instead of serving it")
 	}

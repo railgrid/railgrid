@@ -40,8 +40,8 @@ test('keeps the composer free of explicit skill selection controls', () => {
 })
 
 test('uses the generic detail and activation routes for focused skills', () => {
-  assert.match(api, /assistant\/skills\/detail\?id=\$\{encodeURIComponent\(id\)\}/)
-  assert.match(api, /assistant\/skills\/activation/)
+  assert.match(api, /projectURL\(ctx, name, 'skill-detail'\)\}\?id=\$\{encodeURIComponent\(id\)\}/)
+  assert.match(api, /projectURL\(ctx, name, 'skills-activation'\)/)
   assert.match(workbench, /api\.getAssistantSkillDetail\(props\.ctx, props\.projectName, skill\.id\)/)
   assert.match(workbench, /api\.setAssistantSkillActivation\(props\.ctx, props\.projectName, skill\.id, skill\.enabled === false\)/)
 })

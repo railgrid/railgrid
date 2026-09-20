@@ -330,11 +330,6 @@ func projectAssistantPreviewInspectionTextResult(result projectAssistantPreviewI
 	return projectAssistantToolJSONResult(result, nil)
 }
 
-func (s *Server) resolveProjectPreviewInspectionURL(ctx context.Context, id identity, project *aiv1alpha1.Project) (string, error) {
-	preview, err := s.resolveProjectPreviewInspectionTarget(ctx, id, project)
-	return preview.PreviewURL, err
-}
-
 func (s *Server) resolveProjectPreviewInspectionTarget(ctx context.Context, id identity, project *aiv1alpha1.Project) (projectSandboxPreviewURLResponse, error) {
 	if s.previewInspectionResolveURL != nil {
 		previewURL, err := s.previewInspectionResolveURL(ctx, id, project)

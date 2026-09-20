@@ -75,6 +75,26 @@ func newClusterAuthorizer(members membershipGetter, resolve clusterResolver, chi
 	}
 }
 
+// AuthorizeCluster reports whether userName may reach clusterID — the same
+// membership question ServeHTTP settles for /clusters/{id}, exported so the
+// one answer serves every front door.
+//
+// The provider backend proxy is the second such door: a data-plane route
+// names its workspace in its path (/{root}/clusters/{id}/…) and the hub has
+// to authorize that cluster before it hands the ID to a provider as
+// X-Railgrid-Cluster. It asks here rather than growing a second membership
+// check, so the set of workspaces a caller can reach with kubectl and the set
+// they can reach through a provider stay the same set.
+//
+// It adds no policy of its own: the decision, the caching and the fail-closed
+// behaviour are all clusterAuthorizer.authorize below, unchanged.
+func (p *KCPProxy) AuthorizeCluster(ctx context.Context, userName, clusterID string) bool {
+	if p == nil || p.authorizer == nil {
+		return false
+	}
+	return p.authorizer.authorize(ctx, userName, clusterID)
+}
+
 // authorize reports whether userName may reach clusterID (a child-workspace
 // cluster, or an edge {cluster}:{edge} under one). Failure is closed: any error
 // or unknown cluster denies.

@@ -109,13 +109,9 @@ func TestDiscoverProjectLLMModelsHandlerReusesStoredCredential(t *testing.T) {
 			APIKey:   "stored-workspace-key",
 		},
 	}}}
-	secret, err := projectLLMRegistrySecret(registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: secret})
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry})
 	server := &Server{
-		tenantWorkspaces:       staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor:       func(identity) (*asclient.Client, error) { return client, nil },
 		llmDiscoveryHTTPClient: upstream.Client(),
 	}
@@ -141,7 +137,7 @@ func TestDiscoverProjectLLMModelsHandlerReusesStoredCredential(t *testing.T) {
 
 func TestDiscoverProjectLLMModelsHandlerRequiresCredential(t *testing.T) {
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{})
-	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	response := httptest.NewRecorder()
 
 	server.discoverProjectLLMModels(response, projectLLMDiscoveryRequest(t, `{"provider":"openai-compatible","baseURL":"https://api.openai.com/v1"}`))
@@ -165,12 +161,8 @@ func TestDiscoverProjectLLMModelsHandlerDoesNotReuseCredentialForChangedEndpoint
 			APIKey:   "stored-workspace-key",
 		},
 	}}}
-	secret, err := projectLLMRegistrySecret(registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: secret})
-	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry})
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	response := httptest.NewRecorder()
 
 	server.discoverProjectLLMModels(response, projectLLMDiscoveryRequest(t, `{"provider":"openai-compatible","baseURL":"https://gateway.example/v1","existingModelID":"gpt-high"}`))

@@ -15,6 +15,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -199,4 +200,20 @@ func assistantTurnStatusValid(status AssistantTurnStatus) bool {
 
 func assistantTurnStatusTerminal(status AssistantTurnStatus) bool {
 	return status == AssistantTurnStatusCompleted || status == AssistantTurnStatusInterrupted || status == AssistantTurnStatusFailed
+}
+
+// AssistantThreadActivity summarises one conversation without loading it: how
+// many turns it holds and when it last moved. It is what the Session
+// projection mirrors and what the retention deadline is measured from.
+type AssistantThreadActivity struct {
+	TurnCount      int
+	LastActivityAt time.Time
+}
+
+// AssistantThreadActivityReader is the optional half of Store that can answer
+// that summary cheaply. It is separate from Store so a narrow test double
+// stays valid; a Session whose store cannot answer simply carries no
+// turnCount/lastActivityAt and is left out of per-session retention.
+type AssistantThreadActivityReader interface {
+	AssistantThreadActivity(ctx context.Context, scope Scope, threadID string) (AssistantThreadActivity, error)
 }

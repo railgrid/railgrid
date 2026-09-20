@@ -46,7 +46,7 @@ const HeartbeatTTL = 90 * time.Second
 const SweepInterval = 30 * time.Second
 
 // Provider is the in-memory record the proxies consult to route a request.
-// Fields are nil-able to reflect that UI/backend/VW are independently optional
+// Fields are nil-able to reflect that UI and backend are independently optional
 // in the source ProviderCatalogEntry.
 type Provider struct {
 	Name string
@@ -82,11 +82,13 @@ type Provider struct {
 	// deliberately never dialled directly by the hub.
 	BackendHealthRequired bool
 	BackendHealthy        bool
-	// VirtualWorkspaceURL is the provider-declared action transport target.
-	// Provider Actions append /actions/{name}/{version} to this URL; they never
-	// use BackendURL or a provider MCP endpoint.
-	VirtualWorkspaceURL *url.URL
-	Actions             []ProviderAction
+	Actions               []ProviderAction
+	// DataPlaneVerbs mirrors CatalogEntry.spec.dataPlane.verbs: the verbs this
+	// provider serves on its own resources. Declaring one serves nothing — the
+	// provider still enforces it with its own SSAR — but it is what makes the
+	// {resource}/{verb} coordinate machine-readable, which is what lets the
+	// hub scoped-identity service mint a capability for it.
+	DataPlaneVerbs []ProviderDataPlaneVerb
 	// AssistantSkills contains only validated, provider-supplied inline App
 	// Studio packages. It intentionally carries no provider URL, credential, or
 	// runtime handle; the authenticated catalog API is the sole distribution
@@ -98,24 +100,43 @@ type Provider struct {
 	APIExportPath    string     // kcp workspace path hosting the APIExport (e.g. root:railgrid:providers:cost)
 	APIExportName    string     // APIExport name (e.g. cost.providers.railgrid.ai)
 	PermissionClaims []PermissionClaim
+	// APIGroups are the API groups this provider SERVES, read by the catalog
+	// reconciler from spec.resources[].group on the provider's own APIExport
+	// (apis.kcp.io/v1alpha2, named APIExportName, in APIExportPath) — deduped
+	// and sorted.
+	//
+	// It is deliberately a separate field from APIExportName rather than
+	// derived from it. The export is named after the provider
+	// (`edges.providers.railgrid.ai`); the kinds it serves are in a different
+	// group (`edges.railgrid.ai`), sometimes several groups, and the mapping
+	// between the two is a naming convention nobody enforces. The APIExport is
+	// the only thing that actually knows, so it is what is read.
+	//
+	// Everything that asks "which provider owns this API group" answers from
+	// here: the scoped-identity policy (pkg/hub/identity, clauses A, B, C and
+	// E) and composition admission below. Empty means the hub has not managed
+	// to read the export yet — a fail-closed state, not a permissive one: the
+	// policy refuses such a group with unknown_group, and the reconciler
+	// reports it as the APIGroupsUnknown condition on the CatalogEntry.
+	APIGroups []string
 	// SelfHosting carries the provider's own deployment recipe, from which the
 	// hub renders per-organization install instructions. Nil when the provider
 	// is platform-operated only.
 	SelfHosting *SelfHosting
-
-	// EdgeProxyAccess mirrors CatalogEntry.spec.edgeProxyAccess: on tenant
-	// Enable, the hub grants the provider SA the "proxy" verb on edges in
-	// the tenant workspace (see pkg/hub/restapi/providers_enable.go).
-	EdgeProxyAccess bool
 	// HubAccess mirrors CatalogEntry.spec.hubAccess: the hub REST
 	// capabilities the provider requests. Declaring grants nothing; they are
 	// enforced only as accepted by a tenant (pkg/hub/hubaccess).
 	HubAccess []providersv1alpha1.ProviderHubAccess
 	// WorkspaceCluster is the logical cluster ID of the provider's
-	// sub-workspace (Workspace.spec.cluster of root:railgrid:providers:{name}).
-	// It anchors the qualified RBAC subject the edge-proxy grant binds —
-	// the same cluster ID kcp puts in the provider SA's token claims. Set
-	// via SetWorkspaceCluster after provisioning; empty until then.
+	// sub-workspace (Workspace.spec.cluster of root:railgrid:providers:{name})
+	// — the same cluster name kcp embeds in the provider SA's token claims.
+	// Set via SetWorkspaceCluster after provisioning; empty until then.
+	//
+	// Its one reader today is the admin providers API (pkg/hub/admin), which
+	// shows an operator which workspace a registered provider actually lives
+	// in. It used to anchor the qualified RBAC subject of the Enable-time
+	// edges-proxy grant; that grant was deleted (no provider authenticates as
+	// its own SA against a tenant workspace any more).
 	WorkspaceCluster string
 
 	// CatalogEntryCluster is the logical cluster the provider's CatalogEntry
@@ -180,6 +201,19 @@ type Provider struct {
 // gate provider enablement without coupling callers to CRD types.
 type Dependency struct {
 	Name string
+	// Composes mirrors CatalogEntry.spec.dependencies[].composes: the
+	// dependency's kinds this provider's reconcilers create and manage in the
+	// tenant workspace. Declaring one grants nothing — it is what the Enable
+	// dialog asks an admin to consent to, and what the scoped-identity policy
+	// measures a requested rule against (clause E).
+	Composes []Composition
+}
+
+// Composition is one composed kind of a dependency provider.
+type Composition struct {
+	Group    string
+	Resource string
+	Verbs    []string
 }
 
 // SelfHosting mirrors CatalogEntry.spec.selfHosting: how an organization runs
@@ -253,6 +287,13 @@ type PermissionClaim struct {
 	Resource     string
 	Verbs        []string
 	TenantScoped bool
+	// MatchLabels mirrors the claim's spec selector: the label set a claimed
+	// object must carry for the provider to see or write it. Empty means the
+	// claim covers every object of the resource in the workspace, which the
+	// contract allows only outside ScopedCoreResources
+	// (provider-sdk/install). It is what the hub writes onto the accepted
+	// claim's selector in the tenant's APIBinding.
+	MatchLabels map[string]string
 }
 
 // NavChild mirrors CatalogEntry.spec.ui.children — a single sub-nav
@@ -286,6 +327,17 @@ type ProviderAction struct {
 	Limits          ProviderActionLimits
 	Consent         providersv1alpha1.ProviderActionConsent
 	Deprecation     *providersv1alpha1.ProviderActionDeprecation
+}
+
+// ProviderDataPlaneVerb is the registry's view of one declared data-plane
+// verb. It carries no schema: a data-plane verb is a coordinate and a
+// transport, not a request/response contract (that is what an action is).
+type ProviderDataPlaneVerb struct {
+	Resource    string
+	Verb        string
+	Description string
+	Stream      bool
+	ReadOnly    bool
 }
 
 // ProviderActionResource identifies the provider-owned resource an action is
@@ -632,10 +684,18 @@ func cloneProviderAssistantSkills(in []ProviderAssistantSkill) []ProviderAssista
 
 func cloneProvider(p Provider) Provider {
 	p.Dependencies = append([]Dependency(nil), p.Dependencies...)
+	for i := range p.Dependencies {
+		p.Dependencies[i].Composes = append([]Composition(nil), p.Dependencies[i].Composes...)
+		for j := range p.Dependencies[i].Composes {
+			p.Dependencies[i].Composes[j].Verbs = append([]string(nil), p.Dependencies[i].Composes[j].Verbs...)
+		}
+	}
 	p.PermissionClaims = append([]PermissionClaim(nil), p.PermissionClaims...)
 	for i := range p.PermissionClaims {
 		p.PermissionClaims[i].Verbs = append([]string(nil), p.PermissionClaims[i].Verbs...)
+		p.PermissionClaims[i].MatchLabels = copyLabels(p.PermissionClaims[i].MatchLabels)
 	}
+	p.APIGroups = append([]string(nil), p.APIGroups...)
 	p.Children = append([]NavChild(nil), p.Children...)
 	p.HubAccess = append([]providersv1alpha1.ProviderHubAccess(nil), p.HubAccess...)
 	p.Actions = append([]ProviderAction(nil), p.Actions...)
@@ -783,4 +843,17 @@ func ParseURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("url %q must be absolute (scheme + host)", raw)
 	}
 	return u, nil
+}
+
+// copyLabels returns an independent copy of a claim selector's label set, or
+// nil for an empty one, so a snapshot never aliases the registry's map.
+func copyLabels(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }

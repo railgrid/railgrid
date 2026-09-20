@@ -62,10 +62,11 @@ can proceed independently. `PUT /api/projects/{project}/repository` accepts
 | API types | `apis/ai/v1alpha1/` — the `Project`, `Session`, and `Studio` CRD types (deepcopy generated) |
 | Typed client | `client/` — trimmed dynamic client for the Project resource |
 | Tenant client | `tenant/` — token-forwarding `ClientFactory` (host+TLS from the provider kubeconfig, caller token per request) |
+| Cross-provider reach | `internal/crossprovider/` — the dependency coordinates and the composition the reconcilers are granted; `controller/{project,studio}/identity.go` mint it, `controller/tenantwatch/` watches with it |
 | Message store | `store/` — Postgres + in-memory + envelope-encryption implementations |
 | Development runtime | `api/development_*` + `api/dataplane_client.go` — template-selected development instances, component-aware sync, restart/log/status calls, and edge-checked preview authorization |
 | Portal | `portal/` — the Vue micro-frontend (`<railgrid-provider-app-studio>`), embedded via `assets.go` |
-| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.railgrid.ai`) + Code and Infrastructure dependencies + Project/Session/Studio schemas + tenant-scoped Infrastructure, Code Repository, ServiceAccount, Secret, and RBAC claims |
+| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.railgrid.ai`) + Project/Session/Studio schemas + the Code and Infrastructure dependencies with what this provider composes from each + exactly one tenant-scoped permission claim, on `secrets` |
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
 | CI (mirror) | `.github/workflows/{image,chart}.yaml` — publish the image + chart to GHCR (run only in the mirror) |
 
@@ -166,14 +167,26 @@ Environment variables consumed by the binary:
 
 ## Health and readiness
 
-`GET /healthz` is process liveness: it remains successful while a required
-controller is starting or retrying. `GET /readyz` is the provider readiness
-contract used by the CatalogEntry and Kubernetes readiness probe. In
-`required` mode it returns success only while the multicluster controller is
-running; startup, setup failure, retry, and unexpected controller exit remain
-not ready. In intentional `rest-only` mode it reports ready with that mode in
-the response. This separation keeps the process alive for recovery without
-advertising a provider whose reconciliation plane is unavailable.
+`GET /healthz` is process liveness and never follows readiness: the API
+server, the assistant supervisor and the replica-affinity forwarder keep
+serving whatever the controllers are doing.
+
+`GET /readyz` is `provider-sdk/vwhealth`: it reports whether this process can
+reach the `ai.railgrid.ai` APIExport virtual workspace, and — while this
+replica holds the `app-studio-controllers` Lease — whether the multicluster
+provider is actually watching tenant workspaces. A replica that is not leading
+has nothing attached and is ready on the probe alone, so a standby cannot wedge
+a rollout. A pod in `required` mode that resolved no provider kubeconfig stays
+unready, because there is nothing to probe with. The heartbeat is gated on the
+same answer: the hub records any received beat as liveness, so the provider
+goes quiet and lets the TTL mark it stale rather than staying green over
+controllers that are not running.
+
+The controllers themselves run under `provider-sdk/leaderelection`, rebuilt per
+term, so scaling the deployment past one replica keeps every Project, Session
+and Studio single-writer. See
+[`docs/app-studio-replica-awareness.md`](../../docs/app-studio-replica-awareness.md)
+for what is still project-affine.
 
 ## Local message history
 
@@ -432,6 +445,15 @@ files, represents missing dirty paths as deletions, and delegates the atomic
 upsert/delete commit to the Code provider's `code__commit_files` tool. A
 workspace move is persisted as an upsert of the destination and deletion of the
 source in the same repository commit.
+
+The background convergence loop takes a different route to the same place: the
+Project reconciler (`controller/project/commit.go`) invokes the Code provider's
+`repositories/commit/v1` **action** as the project identity, staging oversized
+payloads through `repositories/stage_commit_bundle`, and follows the
+`RepositoryCommit` the action names over the watch it already runs. The two
+surfaces share the workspace settlement ledger, so neither double-commits what
+the other settled; moving the assistant's tool onto the same action is open
+work.
 
 The reverse direction is `hydrate_workspace`: it reads the repository tree
 through the Code provider's `code__checkout_repository` tool and writes it into

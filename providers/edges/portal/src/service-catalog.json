@@ -1,0 +1,635 @@
+[
+  {
+    "type": "home-assistant",
+    "displayName": "Home Assistant",
+    "description": "Home automation hub — lights, sensors, scenes, and services.",
+    "category": "Home",
+    "defaultPort": 8123,
+    "defaultScheme": "http",
+    "auth": "bearer",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "token",
+          "label": "Long-lived access token",
+          "help": "Profile → Security → Long-lived access tokens → Create.",
+          "secret": true
+        }
+      ],
+      "hint": "A Home Assistant long-lived access token."
+    },
+    "tools": [
+      {
+        "name": "states",
+        "description": "List entity states (lights, sensors, switches…)."
+      },
+      {
+        "name": "get_state",
+        "description": "Read one entity's state by entity_id."
+      },
+      {
+        "name": "call_service",
+        "description": "Call a service, e.g. turn a light on/off or open a cover."
+      }
+    ]
+  },
+  {
+    "type": "portainer",
+    "displayName": "Portainer",
+    "description": "Container management UI.",
+    "category": "Infrastructure",
+    "defaultPort": 9000,
+    "defaultScheme": "http",
+    "auth": "apiKeyHeader",
+    "authParam": "X-API-Key",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "help": "My account → Access tokens → Add access token.",
+          "secret": true
+        }
+      ],
+      "hint": "A Portainer API access token."
+    },
+    "tools": [
+      {
+        "name": "endpoints",
+        "description": "List environments (endpoints)."
+      },
+      {
+        "name": "stacks",
+        "description": "List deployed stacks."
+      },
+      {
+        "name": "status",
+        "description": "Portainer status/version."
+      }
+    ]
+  },
+  {
+    "type": "proxmox",
+    "displayName": "Proxmox VE",
+    "description": "Virtualization management (VMs, containers, storage).",
+    "category": "Infrastructure",
+    "defaultPort": 8006,
+    "defaultScheme": "https",
+    "auth": "proxmox",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "token",
+          "label": "API token",
+          "help": "Datacenter → Permissions → API Tokens. Format USER@REALM!TOKENID=UUID.",
+          "secret": true
+        }
+      ],
+      "hint": "A Proxmox API token: USER@REALM!TOKENID=UUID."
+    },
+    "tools": [
+      {
+        "name": "nodes",
+        "description": "List cluster nodes."
+      },
+      {
+        "name": "resources",
+        "description": "List cluster resources (VMs, storage, nodes)."
+      },
+      {
+        "name": "cluster_status",
+        "description": "Cluster/quorum status."
+      }
+    ]
+  },
+  {
+    "type": "jellyfin",
+    "displayName": "Jellyfin",
+    "description": "Media server.",
+    "category": "Media",
+    "defaultPort": 8096,
+    "defaultScheme": "http",
+    "auth": "apiKeyHeader",
+    "authParam": "X-Emby-Token",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "help": "Dashboard → API Keys.",
+          "secret": true
+        }
+      ],
+      "hint": "A Jellyfin API key."
+    },
+    "tools": [
+      {
+        "name": "sessions",
+        "description": "List active playback sessions."
+      },
+      {
+        "name": "system",
+        "description": "Server system info/version."
+      },
+      {
+        "name": "search",
+        "description": "Search the library. Pass query {\"searchTerm\":\"dune\"}."
+      }
+    ]
+  },
+  {
+    "type": "plex",
+    "displayName": "Plex",
+    "description": "Media server.",
+    "category": "Media",
+    "defaultPort": 32400,
+    "defaultScheme": "http",
+    "auth": "apiKeyHeader",
+    "authParam": "X-Plex-Token",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "token",
+          "label": "X-Plex-Token",
+          "help": "See Plex support: 'Finding an authentication token'.",
+          "secret": true
+        }
+      ],
+      "hint": "A Plex authentication token (X-Plex-Token)."
+    },
+    "tools": [
+      {
+        "name": "sessions",
+        "description": "List what's currently playing."
+      },
+      {
+        "name": "libraries",
+        "description": "List library sections."
+      },
+      {
+        "name": "identity",
+        "description": "Server identity/version."
+      }
+    ]
+  },
+  {
+    "type": "prowlarr",
+    "displayName": "Prowlarr",
+    "description": "Indexer manager for the *arr apps.",
+    "category": "Media",
+    "defaultPort": 9696,
+    "defaultScheme": "http",
+    "auth": "apiKeyHeader",
+    "authParam": "X-Api-Key",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "help": "Settings → General → API Key.",
+          "secret": true
+        }
+      ],
+      "hint": "The Prowlarr API key."
+    },
+    "tools": [
+      {
+        "name": "indexers",
+        "description": "List configured Prowlarr indexers."
+      },
+      {
+        "name": "search",
+        "description": "Search across indexers. Pass query params, e.g. {\"query\":\"ubuntu\",\"type\":\"search\"}."
+      },
+      {
+        "name": "status",
+        "description": "Prowlarr system status/version."
+      }
+    ]
+  },
+  {
+    "type": "radarr",
+    "displayName": "Radarr",
+    "description": "Movie library and download manager.",
+    "category": "Media",
+    "defaultPort": 7878,
+    "defaultScheme": "http",
+    "auth": "apiKeyHeader",
+    "authParam": "X-Api-Key",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "help": "Settings → General → API Key.",
+          "secret": true
+        }
+      ],
+      "hint": "The Radarr API key."
+    },
+    "tools": [
+      {
+        "name": "movies",
+        "description": "List all movies in Radarr."
+      },
+      {
+        "name": "queue",
+        "description": "List the download queue."
+      },
+      {
+        "name": "lookup",
+        "description": "Search for a movie to add. Pass query {\"term\":\"dune 2021\"}."
+      }
+    ]
+  },
+  {
+    "type": "sonarr",
+    "displayName": "Sonarr",
+    "description": "TV series library and download manager.",
+    "category": "Media",
+    "defaultPort": 8989,
+    "defaultScheme": "http",
+    "auth": "apiKeyHeader",
+    "authParam": "X-Api-Key",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "help": "Settings → General → API Key.",
+          "secret": true
+        }
+      ],
+      "hint": "The Sonarr API key."
+    },
+    "tools": [
+      {
+        "name": "series",
+        "description": "List all TV series in Sonarr."
+      },
+      {
+        "name": "queue",
+        "description": "List the download queue."
+      },
+      {
+        "name": "calendar",
+        "description": "Upcoming/recent episodes (query: start, end as ISO dates)."
+      },
+      {
+        "name": "lookup",
+        "description": "Search for a series to add. Pass query {\"term\":\"the wire\"}."
+      }
+    ]
+  },
+  {
+    "type": "qbittorrent",
+    "displayName": "qBittorrent",
+    "description": "BitTorrent client WebUI.",
+    "category": "Media",
+    "defaultPort": 8080,
+    "defaultScheme": "http",
+    "auth": "qbittorrent",
+    "credential": {
+      "packing": "userpass",
+      "fields": [
+        {
+          "key": "username",
+          "label": "Username"
+        },
+        {
+          "key": "password",
+          "label": "Password",
+          "secret": true
+        }
+      ],
+      "hint": "The qBittorrent WebUI username and password."
+    },
+    "tools": [
+      {
+        "name": "torrents",
+        "description": "List torrents (filter/category via query, e.g. {\"filter\":\"downloading\"})."
+      },
+      {
+        "name": "transfer",
+        "description": "Global transfer stats (speeds, totals)."
+      },
+      {
+        "name": "add",
+        "description": "Add a torrent. Pass form {\"urls\":\"magnet:?...\"}."
+      },
+      {
+        "name": "pause",
+        "description": "Pause torrents. Pass form {\"hashes\":\"\u003chash\u003e|all\"}."
+      },
+      {
+        "name": "resume",
+        "description": "Resume torrents. Pass form {\"hashes\":\"\u003chash\u003e|all\"}."
+      },
+      {
+        "name": "delete",
+        "description": "Delete torrents. Form {\"hashes\":\"\u003chash\u003e\",\"deleteFiles\":\"false\"}."
+      }
+    ]
+  },
+  {
+    "type": "grafana",
+    "displayName": "Grafana",
+    "description": "Dashboards and data-source explorer.",
+    "category": "Monitoring",
+    "defaultPort": 3000,
+    "defaultScheme": "http",
+    "auth": "bearer",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "token",
+          "label": "Service account token",
+          "help": "Administration → Service accounts → Add token.",
+          "secret": true
+        }
+      ],
+      "hint": "A Grafana service-account (or API) token."
+    },
+    "tools": [
+      {
+        "name": "search",
+        "description": "Search dashboards/folders. Query: {\"query\":\"cpu\",\"type\":\"dash-db\"}."
+      },
+      {
+        "name": "datasources",
+        "description": "List configured data sources."
+      },
+      {
+        "name": "health",
+        "description": "Grafana health/version."
+      },
+      {
+        "name": "query",
+        "description": "Run a data-source query. Pass a JSON body per the Grafana /api/ds/query schema."
+      }
+    ]
+  },
+  {
+    "type": "grafana-loki",
+    "displayName": "Grafana Loki",
+    "description": "Log aggregation (LogQL).",
+    "category": "Monitoring",
+    "defaultPort": 3100,
+    "defaultScheme": "http",
+    "auth": "bearer",
+    "credential": {
+      "optional": true,
+      "packing": "single",
+      "fields": [
+        {
+          "key": "token",
+          "label": "Bearer token (optional)",
+          "help": "Leave empty if Loki is unauthenticated behind the tunnel.",
+          "secret": true
+        }
+      ],
+      "hint": "Optional bearer token; often unauthenticated behind the tunnel."
+    },
+    "tools": [
+      {
+        "name": "query",
+        "description": "LogQL instant query. Query {\"query\":\"{app=\\\"x\\\"}\"}."
+      },
+      {
+        "name": "query_range",
+        "description": "LogQL range query. Query {\"query\":\"...\",\"start\":\"...\",\"end\":\"...\"}."
+      },
+      {
+        "name": "labels",
+        "description": "List log stream labels."
+      }
+    ]
+  },
+  {
+    "type": "prometheus",
+    "displayName": "Prometheus",
+    "description": "Metrics and alerting (PromQL).",
+    "category": "Monitoring",
+    "defaultPort": 9090,
+    "defaultScheme": "http",
+    "auth": "bearer",
+    "credential": {
+      "optional": true,
+      "packing": "single",
+      "fields": [
+        {
+          "key": "token",
+          "label": "Bearer token (optional)",
+          "help": "Leave empty if Prometheus is unauthenticated behind the tunnel.",
+          "secret": true
+        }
+      ],
+      "hint": "Optional bearer token; often unauthenticated behind the tunnel."
+    },
+    "tools": [
+      {
+        "name": "query",
+        "description": "Instant query. Pass query {\"query\":\"up\"}."
+      },
+      {
+        "name": "query_range",
+        "description": "Range query. Query: {\"query\":\"rate(...)\",\"start\":\"...\",\"end\":\"...\",\"step\":\"60\"}."
+      },
+      {
+        "name": "targets",
+        "description": "List scrape targets and their health."
+      },
+      {
+        "name": "alerts",
+        "description": "List active alerts."
+      }
+    ]
+  },
+  {
+    "type": "adguard",
+    "displayName": "AdGuard Home",
+    "description": "Network-wide DNS ad/tracker blocking.",
+    "category": "Network",
+    "defaultPort": 80,
+    "defaultScheme": "http",
+    "auth": "basic",
+    "credential": {
+      "packing": "userpass",
+      "fields": [
+        {
+          "key": "username",
+          "label": "Username"
+        },
+        {
+          "key": "password",
+          "label": "Password",
+          "secret": true
+        }
+      ],
+      "hint": "The AdGuard Home web interface username and password."
+    },
+    "tools": [
+      {
+        "name": "status",
+        "description": "Protection status + version."
+      },
+      {
+        "name": "stats",
+        "description": "DNS query stats (top clients/domains, counts)."
+      },
+      {
+        "name": "filtering",
+        "description": "Filtering (blocklists) status."
+      },
+      {
+        "name": "protection",
+        "description": "Toggle protection. Body {\"enabled\":false,\"duration\":0}."
+      }
+    ]
+  },
+  {
+    "type": "pihole",
+    "displayName": "Pi-hole",
+    "description": "Network-wide DNS ad blocking (v6).",
+    "category": "Network",
+    "defaultPort": 80,
+    "defaultScheme": "http",
+    "auth": "pihole",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "password",
+          "label": "Web password",
+          "help": "The Pi-hole admin web interface password.",
+          "secret": true
+        }
+      ],
+      "hint": "The Pi-hole v6 web interface password."
+    },
+    "tools": [
+      {
+        "name": "summary",
+        "description": "Query/blocking summary stats."
+      },
+      {
+        "name": "blocking",
+        "description": "Blocking enabled/disabled status."
+      },
+      {
+        "name": "disable",
+        "description": "Pause blocking. Body {\"blocking\":false,\"timer\":300}."
+      },
+      {
+        "name": "top_domains",
+        "description": "Top permitted/blocked domains."
+      }
+    ]
+  },
+  {
+    "type": "unifi-network",
+    "displayName": "UniFi Network",
+    "description": "UniFi OS console — clients, devices, sites.",
+    "category": "Network",
+    "defaultPort": 443,
+    "defaultScheme": "https",
+    "schemeLocked": true,
+    "hostRequired": true,
+    "hostHelp": "The UniFi console address, e.g. 192.168.1.1.",
+    "auth": "apiKeyHeader",
+    "authParam": "X-API-KEY",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "help": "UniFi OS → Control Plane → Integrations → create a local API key.",
+          "secret": true
+        }
+      ],
+      "hint": "A UniFi OS local API key."
+    },
+    "tools": [
+      {
+        "name": "sites",
+        "description": "List UniFi Network sites (each site's id + name)."
+      },
+      {
+        "name": "clients",
+        "description": "List connected clients for a site. Query {\"siteId\":\"\u003cid\u003e\"}."
+      },
+      {
+        "name": "devices",
+        "description": "List UniFi devices (APs/switches/gateways) for a site. Query {\"siteId\":\"\u003cid\u003e\"}."
+      }
+    ]
+  },
+  {
+    "type": "unifi-protect",
+    "displayName": "UniFi Protect",
+    "description": "UniFi OS console — cameras and snapshots.",
+    "category": "Network",
+    "defaultPort": 443,
+    "defaultScheme": "https",
+    "schemeLocked": true,
+    "hostRequired": true,
+    "hostHelp": "The UniFi console address, e.g. 192.168.1.1.",
+    "auth": "apiKeyHeader",
+    "authParam": "X-API-KEY",
+    "credential": {
+      "packing": "single",
+      "fields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "help": "UniFi OS → Control Plane → Integrations → create a local API key.",
+          "secret": true
+        }
+      ],
+      "hint": "A UniFi OS local API key (same key works for Network + Protect)."
+    },
+    "tools": [
+      {
+        "name": "cameras",
+        "description": "List Protect cameras (each camera's id, name, state)."
+      },
+      {
+        "name": "snapshot",
+        "description": "Current snapshot (JPEG) from a camera. Query {\"cameraId\":\"\u003cid\u003e\"} (optional {\"highQuality\":\"true\"}). Live capture: may 500 on a sleeping doorbell — retry or try another camera."
+      }
+    ],
+    "instructions": "The snapshot tool captures a live frame on demand, so it depends on the camera's current state. Battery- or power-managed cameras (notably G4/G5 doorbells) drop to standby and their snapshot may return a 500 \"UNKNOWN_ERROR\" until they wake — this is UniFi Protect's response, not a credential or connectivity fault. On a snapshot 500, retry the same camera a couple of times (waking it usually succeeds), or take a snapshot from another camera covering the same area. Snapshots are returned as images you can view directly. Omit highQuality unless you specifically need full resolution — it makes the doorbell 500 more likely. The events tool returns recent motion/ring/smart-detect events captured from Protect's live WebSocket feed (the provider subscribes in the background and buffers them). It is a rolling recent-history buffer, not a full archive: it only holds events seen since the subscription connected, most recent first. To see who/what triggered a camera, query events and then snapshot that camera."
+  },
+  {
+    "type": "generic",
+    "displayName": "Generic HTTP service",
+    "description": "Any HTTP service — proxied through the tunnel, no MCP tools.",
+    "category": "Other",
+    "defaultPort": 80,
+    "defaultScheme": "http",
+    "auth": "bearer",
+    "credential": {
+      "optional": true,
+      "packing": "single",
+      "fields": [
+        {
+          "key": "token",
+          "label": "Bearer token (optional)",
+          "help": "Injected as Authorization: Bearer when set.",
+          "secret": true
+        }
+      ],
+      "hint": "Optional bearer token injected on proxied requests."
+    }
+  }
+]

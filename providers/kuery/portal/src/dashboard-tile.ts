@@ -1,12 +1,17 @@
 // Dashboard tile for kuery, mounted by <railgrid-dashboard-tile-kuery>
 // (see main.ts).
 //
-// kuery owns no resources of its own — it is a query surface over the edges
-// another provider enrolls. So this tile deliberately reports the ONE thing it
-// can state truthfully from its own API: how many edges are currently
-// queryable, and which. That is genuinely useful (an empty list is why a query
-// returns nothing) and it is honest about scope: the edge lifecycle belongs to
-// the edges provider's tile, not this one.
+// The tile reports the two numbers that decide whether a query will answer
+// anything: how many SavedViews the workspace has, and how many edges are
+// connected for them to run over. An empty edge list is the single most common
+// reason a query comes back with nothing, and a workspace with no saved view
+// has nothing to run at all.
+//
+// Both come from the kube client rather than from kuery: SavedViews are
+// kuery's own kind in the tenant's workspace and edges are the edges
+// provider's, so the tile reads what the signed-in user is allowed to read and
+// the provider keeps its single tenant route. Edge LIFECYCLE still belongs to
+// the edges provider's tile; this one only counts.
 //
 // Plain DOM using portalkit's framework-neutral dashboard tile semantics.
 
@@ -22,11 +27,13 @@ import {
   type TilePoller,
 } from './portalkit/dashboardtile'
 import { createKueryRequestContext } from './request-context'
+import { kubeClientFor, listEdges, listSavedViews, type SavedView } from './savedviews'
 
 export class KueryDashboardTile extends HTMLElement {
   private _ctx: TileContext | null = null
   private _poller: TilePoller | null = null
   private _edges: string[] = []
+  private _views: SavedView[] = []
   private _loading = true
   private _error: string | null = null
   private _contextGeneration = 0
@@ -39,6 +46,7 @@ export class KueryDashboardTile extends HTMLElement {
     if (changed) {
       this._contextGeneration += 1
       this._edges = []
+      this._views = []
       this._error = null
       this._loading = true
       if (this._connected) this._render()
@@ -73,25 +81,26 @@ export class KueryDashboardTile extends HTMLElement {
       generation === this._contextGeneration &&
       createKueryRequestContext(this._ctx).identity === request.identity
     const ctx = this._ctx
-    if (!hasWorkspaceContext(ctx)) {
+    const kube = kubeClientFor(request)
+    if (!hasWorkspaceContext(ctx) || !kube) {
       if (!isCurrent()) return
       this._edges = []
+      this._views = []
       this._error = null
       this._loading = false
       this._render()
       return
     }
     try {
-      const res = await request.fetch(request.basePath + '/api/edges', { credentials: 'same-origin', headers: request.headers })
+      const [edges, views] = await Promise.all([listEdges(kube), listSavedViews(kube)])
       if (!isCurrent()) return
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-      const out = (await res.json()) as { edges?: string[] }
-      if (!isCurrent()) return
-      this._edges = out.edges ?? []
+      this._edges = edges
+      this._views = views
       this._error = null
     } catch (e) {
       if (!isCurrent()) return
       this._edges = []
+      this._views = []
       this._error = isBenignTileError(e) ? null : tileErrorText(e)
     } finally {
       if (!isCurrent()) return
@@ -114,18 +123,23 @@ export class KueryDashboardTile extends HTMLElement {
       return
     }
 
-    const rows = this._edges.slice(0, TILE_ROWS)
-    const more = this._edges.length - rows.length
-    const stats = `<span class="${dashboardTileSemanticClass.stat} ${dashboardTileSemanticClass.statTotal}">${ic('search', dashboardTileSemanticClass.statIcon)}<strong class="${dashboardTileSemanticClass.statNum}">${this._edges.length}</strong> <span class="${dashboardTileSemanticClass.statLabel}">${
-      this._edges.length === 1 ? 'edge queryable' : 'edges queryable'
+    const names = this._views
+      .map((view) => view.spec?.displayName || view.metadata.name)
+      .filter((name): name is string => !!name)
+    const rows = names.slice(0, TILE_ROWS)
+    const more = names.length - rows.length
+    const stats = `<span class="${dashboardTileSemanticClass.stat} ${dashboardTileSemanticClass.statTotal}">${ic('search', dashboardTileSemanticClass.statIcon)}<strong class="${dashboardTileSemanticClass.statNum}">${this._views.length}</strong> <span class="${dashboardTileSemanticClass.statLabel}">${
+      this._views.length === 1 ? 'saved view' : 'saved views'
+    }</span></span><span class="${dashboardTileSemanticClass.stat}">${ic('cpu', dashboardTileSemanticClass.statIcon)}<strong class="${dashboardTileSemanticClass.statNum}">${this._edges.length}</strong> <span class="${dashboardTileSemanticClass.statLabel}">${
+      this._edges.length === 1 ? 'edge engaged' : 'edges engaged'
     }</span></span>`
 
     const body = rows.length
       ? `<div>
-           <div class="${dashboardTileSemanticClass.sectionLabel}">Edges</div>
+           <div class="${dashboardTileSemanticClass.sectionLabel}">Saved views</div>
            <ul class="${dashboardTileSemanticClass.list}">${rows
              .map(
-               (name) => `<li><button type="button" class="${dashboardTileSemanticClass.row}" data-edge="${escapeHTML(name)}">
+               (name) => `<li><button type="button" class="${dashboardTileSemanticClass.row}" data-view="${escapeHTML(name)}">
                  <span class="${dashboardTileSemanticClass.rowDot} kuery-tile-dot--success"></span>
                  <span class="${dashboardTileSemanticClass.rowPrimary}">${escapeHTML(name)}</span>
                  ${chevron()}
@@ -134,15 +148,17 @@ export class KueryDashboardTile extends HTMLElement {
              .join('')}</ul>
            ${more > 0 ? `<div class="${dashboardTileSemanticClass.rowSecondary}">+${more} more</div>` : ''}
          </div>`
-      : `<p class="${dashboardTileSemanticClass.empty}">No edges to query yet — enroll one in Edges first.</p>`
+      : this._edges.length
+        ? `<p class="${dashboardTileSemanticClass.empty}">No saved views yet — open Kuery and run a query to make one.</p>`
+        : `<p class="${dashboardTileSemanticClass.empty}">No edges to query yet — enroll one in Edges first.</p>`
 
-    const liveText = `${this._edges.length} ${this._edges.length === 1 ? 'edge is' : 'edges are'} queryable.`
+    const liveText = `${this._views.length} saved ${this._views.length === 1 ? 'view' : 'views'} over ${this._edges.length} engaged ${this._edges.length === 1 ? 'edge' : 'edges'}.`
     const html = `<span class="kuery-tile-live" role="status" aria-live="polite" aria-atomic="true">${liveText}</span><div class="${dashboardTileSemanticClass.root}"><div class="${dashboardTileSemanticClass.stats}">${stats}</div>${body}</div>`
     if (!this._commit(html)) return
 
-    for (const el of Array.from(this.querySelectorAll<HTMLButtonElement>('button[data-edge]'))) {
-      // The playground is the only destination this provider has; opening it
-      // for the clicked edge is the useful action.
+    for (const el of Array.from(this.querySelectorAll<HTMLButtonElement>('button[data-view]'))) {
+      // The shell is the only destination this provider has; opening it is the
+      // useful action.
       el.addEventListener('click', () => this._navigate(''))
     }
   }
@@ -159,7 +175,7 @@ function chevron(): string {
   return `<svg class="${dashboardTileSemanticClass.chevron}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>`
 }
 
-// Edge names come from the API and land in an HTML string, so escape them.
+// Names come from the API and land in an HTML string, so escape them.
 function escapeHTML(v: string): string {
   return v.replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string,

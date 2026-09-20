@@ -10,7 +10,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -20,33 +19,6 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 )
-
-func (s *Server) listSchedules(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	list, err := c.Schedules().List(r.Context(), metav1.ListOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-// getSchedule returns one schedule in the same shape as a list item.
-func (s *Server) getSchedule(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	sched, err := c.Schedules().Get(r.Context(), r.PathValue("name"), metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, sched)
-}
 
 type createScheduleRequest struct {
 	Name      string `json:"name"`
@@ -61,24 +33,6 @@ type createScheduleRequest struct {
 	// ChannelRef routes this schedule's output to a named agent channel; empty
 	// means the agent's primary channel.
 	ChannelRef string `json:"channelRef,omitempty"`
-}
-
-func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req createScheduleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := applyScheduleCreate(r.Context(), c, &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
 }
 
 // applyScheduleCreate validates the request and creates the schedule. Shared by
@@ -140,24 +94,6 @@ type updateScheduleRequest struct {
 	ChannelRef *string `json:"channelRef,omitempty"`
 }
 
-func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	var req updateScheduleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
-		return
-	}
-	out, err := applyScheduleUpdate(r.Context(), c, r.PathValue("name"), &req)
-	if err != nil {
-		writeUpdateError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
 // applyScheduleUpdate reads the schedule, applies the patch fields that are
 // present, and writes it back. Shared by the REST handler and the MCP
 // update_schedule tool so both surfaces have identical semantics: absent fields
@@ -198,18 +134,6 @@ func applyScheduleUpdate(ctx context.Context, c *agentsclient.Client, name strin
 		}
 	}
 	return c.Schedules().Update(ctx, sched, metav1.UpdateOptions{})
-}
-
-func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
-	if !ok {
-		return
-	}
-	if err := c.Schedules().Delete(r.Context(), r.PathValue("name"), metav1.DeleteOptions{}); err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // runScheduleNow fires a schedule's task immediately as the calling user,

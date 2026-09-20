@@ -55,6 +55,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/controllers/organization"
 	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
+	"github.com/railgrid/railgrid/pkg/hub/identity"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
 	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
@@ -850,9 +851,56 @@ func (s *Server) Run(ctx context.Context) error {
 			workloadAttestor := workloadidentity.NewHTTPAttestor(workloadidentity.HTTPAttestorOptions{
 				Registry: providerRegistry,
 			})
+			// §10: ONE identity service. Both the pod-attested App Studio
+			// workload exchange and every provider-asserted identity go
+			// through pkg/hub/identity, which records a ScopedIdentity in
+			// root:railgrid:system:tenants, materializes the ServiceAccount
+			// and its policy-checked RBAC through the single minter in
+			// pkg/hub/serviceaccounts, and garbage-collects on the owner.
+			identityClients, err := serviceaccounts.NewClusterClientFactory(kcpConfig, apiurl.KCPClusterURL)
+			if err != nil {
+				return fmt.Errorf("creating scoped identity workspace clients: %w", err)
+			}
+			identityOwners, err := identity.NewDynamicOwnerProbe(kcpConfig)
+			if err != nil {
+				return fmt.Errorf("creating scoped identity owner probe: %w", err)
+			}
+			identityBindings, err := identity.NewAPIBindingChecker(kcpConfig, providerRegistry)
+			if err != nil {
+				return fmt.Errorf("creating scoped identity binding checker: %w", err)
+			}
+			// Clause E reads the SAME Grant the Enable dialog writes, so a
+			// composition a tenant accepted (or declined) takes effect on the
+			// composing provider's next token refresh with nothing else to
+			// reconcile.
+			identityCompositions, err := identity.NewGrantCompositionChecker(kcpConfig, hubAccessGrants, providerRegistry, s.opts.ProviderHubAccessPlatformDefault)
+			if err != nil {
+				return fmt.Errorf("creating scoped identity composition checker: %w", err)
+			}
+			identityService := identity.New(identity.Options{
+				Records: userClient.ScopedIdentities(),
+				Clients: identityClients,
+				Policy:  identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings, identityCompositions),
+				Owners:  identityOwners,
+			})
+			// The sweep is what collects an identity whose holder stopped
+			// refreshing. Every replica runs one; each action is idempotent.
+			go identity.NewReconciler(identity.ReconcilerOptions{
+				Service: identityService,
+				Logger:  logger.WithName("scoped-identity"),
+			}).Start(ctx)
+			// Provider-asserted identities authenticate exactly as heartbeats
+			// do, with the same authenticator instance and therefore the same
+			// TokenReview caches.
+			restapi.NewIdentityHandler(
+				identityService,
+				identity.NewProviderAttestor(heartbeatAuthenticator),
+				logger.WithName("scoped-identity"),
+			).Register(router)
+
 			workloadHandler := workloadidentity.New(workloadidentity.Options{
 				Attestor:      workloadAttestor,
-				Issuer:        saMgr,
+				Issuer:        identityService,
 				ScopeResolver: workloadidentity.NewKCPProjectScopeResolver(bootstrapper),
 				Logger:        logger,
 			})
@@ -889,6 +937,11 @@ func (s *Server) Run(ctx context.Context) error {
 				adminSub := router.PathPrefix("/api/admin").Subrouter()
 				adminSub.Use(admin.Middleware(adminResolver, adminChecker))
 				admin.NewHandler(adminSvc, userClient, providerRegistry).Register(adminSub)
+				// The fleet-wide provider-claims migration is the twin of the
+				// per-workspace Enable flow, so it lives with it in restapi and
+				// only borrows this subrouter's admin gate. See
+				// pkg/hub/restapi/admin_provider_claims.go.
+				apiHandler.RegisterAdmin(adminSub)
 				logger.Info("Admin routes registered at /api/admin/* (gated by --admin-users)")
 			}
 		}
@@ -938,7 +991,7 @@ func (s *Server) Run(ctx context.Context) error {
 		// provider's Helm init applies the in-workspace objects. The catalog
 		// controller only maintains the registry + resolves the workspace
 		// cluster ID for the Enable flow.
-		if err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
+		catalogReconciler, err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
 			HubExternalURL: s.opts.HubExternalURL,
 			HubInternalURL: s.opts.HubInternalURL,
 			// Org-owned providers are reached over their edge tunnel. The
@@ -951,9 +1004,16 @@ func (s *Server) Run(ctx context.Context) error {
 			// once their grace period lapses, so it needs the same Provisioner
 			// configuration as the paths that mint them.
 			Provisioner: s.providerProvisionerOptions(),
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("setting up provider catalog controller: %w", err)
 		}
+		// A provider bundle can change behind spec.ui.url without its version
+		// changing (any image rebuild at the same chart version), and until the
+		// next reconcile notices, the pin the portal holds refuses the bundle in
+		// every browser. The UI proxy is the only component that sees the bytes
+		// the browser gets, so it corrects the pin from what it actually served.
+		uiProxy.SetMainJSIntegrityObserver(catalogReconciler)
 		go func() {
 			logger.Info("Starting providers multicluster manager")
 			if err := providersMgr.Start(ctx); err != nil {

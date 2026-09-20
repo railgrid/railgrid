@@ -4,7 +4,7 @@ description: |
   railgrid provider that manages source-code repositories and access (deploy
   keys, collaborators) across git hosting providers (GitHub today). Ships the
   provider Deployment, ClusterIP Service, and the CatalogEntry that registers
-  the provider — with its four tenant-authored APIResourceSchemas — with the
+  the provider — with its eight tenant-authored APIResourceSchemas — with the
   railgrid hub.
 type: application
 version: 0.1.0

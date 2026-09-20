@@ -9,37 +9,43 @@
 // kuery is the railgrid provider for fleet-wide object search, relationship
 // traversal, and impact analysis across connected edge clusters, built on
 // github.com/railgrid/kuery. See docs/kuery-provider-architecture.md in the
-// railgrid repo for the design and phasing.
-//
-// Phase 1 skeleton: registration surface only (healthz, heartbeat, portal
-// placeholder, /api/status). Phase 2 embeds the kuery engine + the Edge
-// engagement controller and adds the tenant-scoped /api/query.
+// railgrid repo for the design.
 //
 // It serves three groups of routes on the same port:
 //
-//   - /, /main.js, /icon.svg, /assets/* — the portal-side micro-frontend
-//     built by Vite from portal/src/* and embedded via portal/dist (see
-//     assets.go and portal/README.md). Mounted in the portal under
-//     /ui/providers/kuery/.
-//   - /healthz, /api/status — the provider's "backend HTTP API". Mounted
-//     via /services/providers/kuery/.
+//   - /dataplane/clusters/{id}/savedviews/{name}/run — the ONE tenant route.
+//     A verb on a bound resource, addressed by the tenant's kcp
+//     logical-cluster ID and authorized as the caller through the shared
+//     provider-sdk/dataplane gates. There is no /api/ surface: the flat
+//     /api/query, /api/edges and /api/status routes, and the header-derived
+//     tenant they trusted, were deleted outright rather than deprecated.
+//   - /mcp, /mcp/sse — the same executor for agents, through the same gates.
+//   - /, /main.js, /icon.svg, /query-schema.json, /assets/* — the portal-side
+//     micro-frontend built by Vite from portal/src/* and embedded via
+//     portal/dist (see assets.go and portal/README.md), plus the QuerySpec
+//     JSON Schema overlaid onto the same bundle as a static asset. Mounted in
+//     the portal under /ui/providers/kuery/.
+//   - /healthz (liveness) and /readyz (readiness, from vwhealth).
 //
-// In production these two surfaces are split only by URL — a single
-// Service exposes the port and the CatalogEntry routes the same URL to
-// both the UI proxy and the backend proxy. For local dev, the binary
-// listens on PORT and the hub proxies in front.
+// The layout itself is provider-sdk/serve's: it takes one handler per Pillar 2
+// route class and refuses anything that is not one, which is what keeps the
+// deleted /api/ surface deleted.
+//
+// In production the tenant and UI surfaces are split only by URL — a single
+// Service exposes the port and the CatalogEntry routes the same URL to both
+// the UI proxy and the backend proxy. For local dev, the binary listens on
+// PORT and the hub proxies in front.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -53,8 +59,28 @@ import (
 	"github.com/railgrid/provider-kuery/mcpserver"
 	"github.com/railgrid/provider-kuery/queryapi"
 
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/leaderelection"
+	"github.com/railgrid/provider-sdk/serve"
+	"github.com/railgrid/provider-sdk/vwhealth"
 )
+
+// controllerLeaseName gates the SINGLE-WRITER loops — the savedview
+// reconciler and the Engagement record reconciler — on a Lease in the
+// provider's own workspace.
+//
+// It deliberately does NOT gate edge engagement any more. Engagement is
+// sharded per edge instead (provider-sdk/sharding), which is a better fit than
+// a lease for the same reason a lease was never a good fit for it: the work is
+// divisible. One writer per Engagement record is still guaranteed, by the
+// edge's claim rather than by this Lease, and the replicas share the syncing
+// instead of queueing for it.
+//
+// Every replica serves queries, MCP and the portal regardless: the request
+// path reads the shared store and the Engagement records, neither of which
+// needs this replica to hold anything.
+const controllerLeaseName = "kuery-controllers"
 
 // envOr returns the env value or a default.
 func envOr(key, def string) string {
@@ -64,10 +90,11 @@ func envOr(key, def string) string {
 	return def
 }
 
-// loadProviderConfig loads the minted provider kubeconfig — the credential
-// whose SA token the Enable-time edges-proxy grant authorizes. Resolution
-// order matches the other providers: RAILGRID_PROVIDER_KUBECONFIG, then the
-// conventional mount path, then KUBECONFIG.
+// loadProviderConfig loads the minted provider kubeconfig — the credential the
+// controllers, the Engagement records and the caller factory are all built
+// from. Resolution order matches the other providers:
+// RAILGRID_PROVIDER_KUBECONFIG, then the conventional mount path, then
+// KUBECONFIG.
 func loadProviderConfig() (*rest.Config, error) {
 	candidates := []string{
 		os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),
@@ -90,27 +117,12 @@ func loadProviderConfig() (*rest.Config, error) {
 	return nil, fmt.Errorf("no kubeconfig found (set RAILGRID_PROVIDER_KUBECONFIG)")
 }
 
-type statusResponse struct {
-	Message     string    `json:"message"`
-	Provider    string    `json:"provider"`
-	ServedAt    time.Time `json:"servedAt"`
-	UserHeader  string    `json:"userHeader,omitempty"`
-	TokenLength int       `json:"tokenLength,omitempty"`
-	StoreDriver string    `json:"storeDriver"`
-	// Tenant echoes the caller's tenant key — the kcp logical-cluster ID the
-	// hub injected — when the request carried one. Engaged clusters for it
-	// are keyed "{tenant}/{edge}" (see /api/edges).
-	Tenant string `json:"tenant,omitempty"`
-	// EngagedEdges is how many edges THIS replica syncs (per-replica
-	// introspection, all tenants); the caller's own edges come from /api/edges.
-	EngagedEdges int `json:"engagedEdges"`
-}
-
 // Subcommands:
 //
 //	kuery-provider init   — one-shot: apply APIResourceSchemas, APIExport,
-//	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    RAILGRID_PROVIDER_KUBECONFIG (+ KUERY_EDGES_IDENTITY_HASH). See init_cmd.go.
+//	    APIExportEndpointSlice, the provider-private Engagement CRD, and the
+//	    bind grant into the provider workspace using
+//	    RAILGRID_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	kuery-provider serve  — runtime (default).
 func main() {
 	if len(os.Args) > 1 {
@@ -142,7 +154,28 @@ func runServe() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Embedded kuery: SQL store + query engine + sync controller + GC.
+	// The provider kubeconfig is not optional. Everything that makes this a
+	// provider rather than a web server hangs off it: the two gates on the
+	// query verb build their caller clients from its host and CA, the
+	// Engagement records live in the workspace it points at, and the
+	// controllers watch tenant workspaces through it. Serving without one used
+	// to be allowed "for UI dev" and produced a process that answered every
+	// health check while being incapable of authorizing or answering a single
+	// tenant query — exactly the silent failure /readyz exists to prevent.
+	providerCfg, err := loadProviderConfig()
+	if err != nil {
+		log.Fatalf("provider kubeconfig: %v (kuery cannot authorize a query, record an engagement or watch a workspace without it)", err)
+	}
+	// controller-runtime requires a logger before any manager is built.
+	ctrl.SetLogger(klog.NewKlogr())
+
+	apiExportName := envOr("KUERY_APIEXPORT_NAME", apiExportName)
+
+	// Embedded kuery: SQL store + query engine + sync controller. There is no
+	// garbage-collection ticker any more: purging a stale edge's rows is a
+	// RequeueAfter on its Engagement (engagement/engagementctl.go), so the
+	// work happens when something expires rather than every five minutes over
+	// the whole store.
 	storeDriver := envOr("KUERY_STORE_DRIVER", "sqlite")
 	kc, err := core.New(core.Config{
 		Driver:    storeDriver,
@@ -153,132 +186,132 @@ func runServe() {
 	if err != nil {
 		log.Fatalf("kuery core: %v", err)
 	}
-	go kc.StartGC(ctx)
 
-	// Engagement controller: watches Edge objects across bound tenant
-	// workspaces (APIExport VW) and feeds connected kubernetes edges into
-	// the sync controller via the hub's edges-proxy. Requires the minted
-	// provider kubeconfig; without one the provider serves an empty index
-	// (useful for UI dev), with a loud warning.
-	var engagementCtl *engagement.Controller
-	if providerCfg, err := loadProviderConfig(); err != nil {
-		log.Printf("WARNING edge engagement disabled (no provider kubeconfig): %v", err)
-	} else {
-		// controller-runtime requires a logger before any manager is built.
-		ctrl.SetLogger(klog.NewKlogr())
-		engagementCtl, err = engagement.New(engagement.Config{
-			ProviderConfig: providerCfg,
-			HubBaseURL:     os.Getenv("RAILGRID_HUB_URL"),
-			APIExportName:  envOr("KUERY_APIEXPORT_NAME", "kuery.providers.railgrid.ai"),
-			Sync:           kc.Sync,
-			Store:          kc.Store,
-		})
-		if err != nil {
-			log.Fatalf("engagement controller: %v", err)
+	// Readiness: can THIS process reach the APIExport virtual workspace it
+	// watches? Engagement runs on every replica and attaches its multicluster
+	// provider for the life of the process, so /readyz and the heartbeat both
+	// report whether THIS replica is really watching tenant workspaces rather
+	// than merely whether it is up. That check matters more now than it did
+	// when only the leader engaged: a replica whose virtual-workspace URL is
+	// unreachable syncs none of the edges it claimed, and no peer is covering
+	// for it.
+	ready := &vwhealth.Readiness{}
+	go vwhealth.Watch(ctx, providerCfg, apiExportName, ready, 0)
+
+	// Engagement controller: watches KubernetesCluster edges across bound
+	// tenant workspaces and feeds connected edges into the sync controller via
+	// the hub's edges-proxy, recording each as an Engagement.
+	engagementCtl, err := engagement.New(engagement.Config{
+		ProviderConfig: providerCfg,
+		HubBaseURL:     os.Getenv("RAILGRID_HUB_URL"),
+		APIExportName:  apiExportName,
+		// The name the hub knows this provider by. It is what authenticates
+		// every identity request (the hub TokenReviews the provider's own
+		// bearer in the provider workspace and refuses a request that names
+		// anyone else) and what its policy measures the requested rules
+		// against — so it is the same name the heartbeat registers under.
+		ProviderName: envOr("RAILGRID_PROVIDER_NAME", "kuery"),
+		Sync:         kc.Sync,
+		Store:        kc.Store,
+		Readiness:    ready,
+	})
+	if err != nil {
+		log.Fatalf("engagement controller: %v", err)
+	}
+
+	// Edge engagement runs on EVERY replica, not behind the controller lease.
+	// The per-edge claims (provider-sdk/sharding) are what make that safe and
+	// what make it worth doing: every replica watches every enabled workspace,
+	// but each one engages only the edges whose claim it wins, so N replicas
+	// divide the fleet's sync work instead of N-1 of them idling while the
+	// leader carries all of it. A replica that dies costs its share of the
+	// edges one handover; one that stops cleanly costs nothing, because it
+	// releases its claims on the way out.
+	go func() {
+		if err := engagementCtl.Run(ctx); err != nil {
+			log.Printf("edge engagement exited: %v", err)
 		}
-		go func() {
-			if err := engagementCtl.Start(ctx); err != nil {
-				log.Printf("engagement controller stopped: %v", err)
+	}()
+
+	// Behind the lease stays only what must have exactly one writer: the
+	// SavedView reconciler (a tenant object's status) and the Engagement
+	// reconciler (the garbage collector — it deletes a purged engagement's
+	// index rows and record). Neither is on the sync path, so a gap between
+	// terms delays a status stamp or a purge and nothing else. The manager is
+	// rebuilt each term because a stopped controller-runtime manager cannot be
+	// restarted.
+	go func() {
+		if err := leaderelection.Run(ctx, leaderelection.Options{
+			Config:    providerCfg,
+			Namespace: leaderelection.DefaultNamespace,
+			Name:      controllerLeaseName,
+		}, func(termCtx context.Context) {
+			if err := engagementCtl.RunSingletons(termCtx); err != nil {
+				log.Printf("singleton controllers exited: %v", err)
 			}
-		}()
+		}); err != nil {
+			log.Printf("controller leader election failed; the SavedView and Engagement reconcilers are not running: %v", err)
+		}
+	}()
+
+	// Caller factory: the provider's own connection with every credential
+	// dropped, so a client it hands back can only ever act as the bearer on
+	// the request it was built for.
+	callers, err := dataplane.NewCallerFactory(providerCfg)
+	if err != nil {
+		log.Fatalf("data-plane caller factory: %v", err)
 	}
 
-	mux := http.NewServeMux()
-
-	// Health: gates Ready=true in the hub when wired via spec.backend.healthPath.
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-
-	// Tenant-scoped query API — the only path to the kuery store. Tenant
-	// identity is the kcp logical-cluster ID the hub injects
-	// (X-Railgrid-Cluster); see queryapi.IdentityFromRequest.
-	mux.Handle("/api/query", &queryapi.Handler{Engine: kc.Engine})
-
-	// QuerySpec JSON Schema — powers the playground editor's autocomplete and
-	// doubles as external API docs. Unauthenticated (the schema is public).
-	mux.Handle("/api/query-schema", queryapi.SchemaHandler{})
-
-	// Engaged-edge listing for the portal's edge selector. The interface
-	// indirection keeps the nil case (engagement disabled) serving [].
-	var edgeLister queryapi.EdgeLister
-	if engagementCtl != nil {
-		edgeLister = engagementCtl
+	runner := &queryapi.RunHandler{
+		Engine:      kc.Engine,
+		Callers:     callers,
+		Engagements: engagementCtl.Registry(),
 	}
-	mux.Handle("/api/edges", &queryapi.EdgesHandler{Lister: edgeLister})
 
-	// MCP tools (kuery_query, kuery_impact); the hub proxies
-	// /services/providers/kuery/mcp{,/sse} here and the aggregate picks
-	// them up like the infrastructure provider's kro_* family.
-	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{Engine: kc.Engine})
-	mux.Handle("/mcp", mcpHandler)
-	mux.Handle("/mcp/sse", mcpHandler)
+	// MCP tools (kuery_query, kuery_impact) on the same gated executor; the
+	// hub proxies /services/providers/kuery/mcp{,/sse} here and the aggregate
+	// picks them up like the infrastructure provider's kro_* family.
+	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{Runner: runner})
 
-	// Status endpoint the portal calls: sync surface + identity echo.
-	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		resp := statusResponse{
-			Message:     "kuery provider: fleet query engine",
-			Provider:    "kuery",
-			ServedAt:    time.Now().UTC(),
-			UserHeader:  r.Header.Get("X-Railgrid-User"),
-			StoreDriver: storeDriver,
-		}
-		if id, err := queryapi.IdentityFromRequest(r); err == nil {
-			resp.Tenant = id.Cluster
-		}
-		if engagementCtl != nil {
-			resp.EngagedEdges = engagementCtl.EngagedCount()
-		}
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			resp.TokenLength = len(auth)
-		}
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-
-	// Static portal assets (main.js, icon.svg, /assets/*) come from the
-	// embedded Vite build output. The "/" fallback serves index.html so
-	// direct browser visits get the standalone debug page.
-	fileServer, distFS, err := portalHandler()
+	// Static portal assets (main.js, icon.svg, query-schema.json, /assets/*)
+	// come from the embedded Vite build output; serve falls back to index.html
+	// so a direct browser visit to any client-side route gets the standalone
+	// debug page.
+	dist, err := portalFS()
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// GET for full responses; HEAD for cache/preflight checks the
-		// browser may issue when loading <img> or <script> assets.
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		// /api/status and /healthz are registered explicitly and won't get
-		// here. For anything else: try the embedded FS first (catches
-		// /main.js, /icon.svg, /assets/foo-abc.js). If that misses, serve
-		// the index.html fallback so a browser visit to e.g. /anything
-		// shows the debug page rather than 404.
-		clean := strings.TrimPrefix(r.URL.Path, "/")
-		if clean != "" {
-			if servePortalAsset(w, r, distFS, clean) {
-				return
-			}
-		}
-		// Index fallback. Reuse the http.FileServer so caching headers and
-		// Last-Modified are handled correctly. Clone the request so we
-		// can override URL.Path to "/" without mutating the caller's r.
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = "/"
-		fileServer.ServeHTTP(w, r2)
+
+	// The whole surface, one handler per route class. The query verb is
+	// mounted as the data plane and therefore dispatched off the raw request
+	// path — an http.ServeMux would have cleaned "//" and ".." out of it and
+	// answered with a redirect instead of the refusal the grammar owes the
+	// caller.
+	handler, err := serve.New(serve.Options{
+		Name:      "kuery",
+		Readiness: vwhealth.Handler(ready),
+		Portal:    dist,
+		MCP:       mcpHandler,
+		DataPlane: runner,
 	})
+	if err != nil {
+		log.Fatalf("server: %v", err)
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           logMiddleware(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		log.Fatalf("listen %s: %v", srv.Addr, err)
 	}
 
 	go func() {
 		log.Printf("kuery provider listening on :%s", port)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server: %v", err)
 		}
 	}()
@@ -287,11 +320,16 @@ func runServe() {
 	// controller's TTL doesn't flip us to NotReady. Configured from
 	// RAILGRID_HUB_URL / RAILGRID_PROVIDER_NAME / RAILGRID_HUB_INSECURE and the
 	// provider SA token (see provider-sdk/hubclient); an empty RAILGRID_HUB_URL
-	// disables it (useful for tests / dry-run).
+	// disables it.
+	//
+	// CanSend is the same answer /readyz gives, and it is re-evaluated before
+	// every beat. A one-shot flag could not: a replica whose watches died after
+	// startup would keep reporting itself alive forever.
 	hb, err := hubclient.ConfigFromEnv("kuery", heartbeatVersion)
 	if err != nil {
 		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}
+	hb.CanSend = func() bool { return ready.Check() == nil }
 	go hubclient.RunHeartbeat(ctx, hb)
 
 	<-ctx.Done()
@@ -305,12 +343,3 @@ func runServe() {
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
 const heartbeatVersion = "0.1.0"
-
-func logMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
-		_ = fmt.Sprintf
-	})
-}

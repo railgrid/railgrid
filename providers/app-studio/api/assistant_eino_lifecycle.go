@@ -94,7 +94,7 @@ func projectEinoAssistantLifecycleMiddleware(
 func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 	ctx context.Context,
 	state *adk.ChatModelAgentState,
-	modelCtx *adk.ModelContext,
+	_ *adk.ModelContext,
 ) (context.Context, *adk.ChatModelAgentState, error) {
 	if m.runState == nil {
 		return ctx, state, nil
@@ -120,7 +120,7 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 	if err := m.refreshLiveRequestContext(ctx); err != nil {
 		return ctx, state, err
 	}
-	if err := m.refreshExecutableToolContext(ctx, state, modelCtx); err != nil {
+	if err := m.refreshExecutableToolContext(ctx, state); err != nil {
 		return ctx, state, err
 	}
 	if !m.runState.TakeSteeringDeferral() {
@@ -408,7 +408,7 @@ func (m *projectEinoAssistantLifecycle) emitAttachmentRehydrateFailure(err error
 func (m *projectEinoAssistantLifecycle) AfterModelRewriteState(
 	ctx context.Context,
 	state *adk.ChatModelAgentState,
-	modelCtx *adk.ModelContext,
+	_ *adk.ModelContext,
 ) (context.Context, *adk.ChatModelAgentState, error) {
 	if state == nil {
 		return ctx, state, nil
@@ -469,7 +469,6 @@ func projectAssistantRunContainsAttachment(runState *projectEinoAssistantRunStat
 func (m *projectEinoAssistantLifecycle) refreshExecutableToolContext(
 	ctx context.Context,
 	state *adk.ChatModelAgentState,
-	modelCtx *adk.ModelContext,
 ) error {
 	if m == nil || m.server == nil || m.runState == nil || state == nil {
 		return nil
@@ -534,9 +533,9 @@ func (m *projectEinoAssistantLifecycle) refreshExecutableToolContext(
 	// the request while preserving the existing tool contracts.
 	state.ToolInfos = projectEinoAssistantStableToolInfos(append(frameworkInfos, infos...))
 	state.DeferredToolInfos = nil
-	if modelCtx != nil {
-		modelCtx.Tools = state.ToolInfos
-	}
+	// ModelContext.Tools is not mirrored: it is deprecated and only kept
+	// populated by the framework for legacy WrapModel handlers. ToolInfos on
+	// the rewritten state is what the model call is built from.
 	return nil
 }
 
@@ -941,8 +940,7 @@ func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
 				m.runState.QueuePlanProgressReminder(previousPlan, planProgress)
 			}
 		}
-		switch {
-		case name == projectToolVerifyDevelopmentRuntime:
+		if name == projectToolVerifyDevelopmentRuntime {
 			if m.runState != nil {
 				m.runState.RecordDevelopmentVerificationResult(result)
 				if m.runState.SourceMutationVerified() {

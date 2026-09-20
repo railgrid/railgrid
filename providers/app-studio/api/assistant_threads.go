@@ -1247,6 +1247,16 @@ func (s *Server) respondProjectAssistantThreadTurn(w http.ResponseWriter, r *htt
 	s.resumeProjectAssistant(w, mux.SetURLVars(r, vars))
 }
 
+const (
+	// assistantThreadStreamKeepalive bounds how long a quiet stream can go
+	// without a byte, and is therefore also how long a dropped notification
+	// can delay an event.
+	assistantThreadStreamKeepalive = 15 * time.Second
+	// assistantThreadStreamFallbackPoll is only reached by a store that does
+	// not implement AssistantThreadEventWatcher.
+	assistantThreadStreamFallbackPoll = 250 * time.Millisecond
+)
+
 func (s *Server) streamProjectAssistantThreadEvents(w http.ResponseWriter, r *http.Request) {
 	_, id, project, thread, ok := s.requireOwnedAssistantThread(w, r)
 	if !ok {
@@ -1272,10 +1282,31 @@ func (s *Server) streamProjectAssistantThreadEvents(w http.ResponseWriter, r *ht
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "streaming is not supported")
 		return
 	}
-	poll := time.NewTicker(250 * time.Millisecond)
-	keepalive := time.NewTicker(15 * time.Second)
-	defer poll.Stop()
+	// The stream is woken by the store, not by a timer: Postgres LISTEN/NOTIFY
+	// (fanned out in-process, so N streams cost one connection) and a direct
+	// in-process broadcast for the memory store. The keepalive tick doubles as
+	// the safety net — it loops back through the read below, so a notification
+	// lost to a listener reconnect costs latency, never an event. A store that
+	// cannot push falls back to that tick alone, which is why arrivals is
+	// allowed to be nil.
+	var arrivals <-chan struct{}
+	if watcher, ok := s.store.(store.AssistantThreadEventWatcher); ok {
+		signals, release, watchErr := watcher.WatchAssistantThreadEvents(r.Context(), scope, thread.ID)
+		if watchErr == nil {
+			arrivals = signals
+			defer release()
+		}
+	}
+	keepalive := time.NewTicker(assistantThreadStreamKeepalive)
 	defer keepalive.Stop()
+	var fallbackPoll <-chan time.Time
+	if arrivals == nil {
+		// No push: fall back to the historical poll interval so a narrow store
+		// still streams at interactive latency.
+		fallback := time.NewTicker(assistantThreadStreamFallbackPoll)
+		defer fallback.Stop()
+		fallbackPoll = fallback.C
+	}
 	for {
 		events, err := s.store.ListAssistantThreadEvents(r.Context(), scope, thread.ID, after, 500)
 		if err != nil {
@@ -1297,7 +1328,8 @@ func (s *Server) streamProjectAssistantThreadEvents(w http.ResponseWriter, r *ht
 			continue
 		}
 		select {
-		case <-poll.C:
+		case <-arrivals:
+		case <-fallbackPoll:
 		case <-keepalive.C:
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
 				return

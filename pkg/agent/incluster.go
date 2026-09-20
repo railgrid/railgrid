@@ -18,7 +18,7 @@ package agent
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -27,6 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	"github.com/railgrid/railgrid/pkg/agent/tunnel"
 )
 
 const (
@@ -80,16 +82,6 @@ func newInClusterKubernetesClient() (*kubernetes.Clientset, error) {
 	return cs, nil
 }
 
-// decodeKubeconfigB64 decodes a base64-encoded kubeconfig string as returned
-// by the hub's token-exchange header.
-func decodeKubeconfigB64(kubeconfigB64 string) (string, error) {
-	b, err := base64.StdEncoding.DecodeString(kubeconfigB64)
-	if err != nil {
-		return "", fmt.Errorf("decoding base64 kubeconfig: %w", err)
-	}
-	return string(b), nil
-}
-
 // LoadKubeconfigFromSecret reads the hub kubeconfig from the in-cluster Secret.
 // Returns ("", nil) when the Secret does not exist yet (first boot before token exchange).
 func LoadKubeconfigFromSecret(edgeName string) (string, error) {
@@ -118,6 +110,87 @@ func LoadKubeconfigFromSecret(edgeName string) (string, error) {
 		return "", nil
 	}
 	return string(data), nil
+}
+
+// credentialSecretKey is where the enrolment bundle lives inside the agent's
+// own Secret. It sits beside the (now unused) kubeconfig key rather than
+// replacing it, so a rollback does not have to migrate the Secret back.
+const credentialSecretKey = "credential.json"
+
+// SaveCredentialToSecret persists the agent's enrolment bundle into its
+// in-cluster Secret so it survives a pod restart. A pod's filesystem does not.
+func SaveCredentialToSecret(edgeName string, credential tunnel.Credential) error {
+	encoded, err := json.Marshal(credential)
+	if err != nil {
+		return fmt.Errorf("encoding the agent credential: %w", err)
+	}
+	return saveAgentSecretKey(edgeName, credentialSecretKey, encoded)
+}
+
+// LoadCredentialFromSecret reads a previously saved bundle from the agent's
+// in-cluster Secret. Absent is not an error: it means this pod has not
+// enrolled yet.
+func LoadCredentialFromSecret(edgeName string) (tunnel.Credential, bool, error) {
+	cs, err := newInClusterKubernetesClient()
+	if err != nil {
+		return tunnel.Credential{}, false, err
+	}
+	ns, err := inClusterNamespace()
+	if err != nil {
+		return tunnel.Credential{}, false, err
+	}
+	secret, err := cs.CoreV1().Secrets(ns).Get(context.Background(), AgentKubeconfigSecretName(edgeName), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return tunnel.Credential{}, false, nil
+	}
+	if err != nil {
+		return tunnel.Credential{}, false, fmt.Errorf("getting the agent secret: %w", err)
+	}
+	raw, ok := secret.Data[credentialSecretKey]
+	if !ok || len(raw) == 0 {
+		return tunnel.Credential{}, false, nil
+	}
+	var credential tunnel.Credential
+	if err := json.Unmarshal(raw, &credential); err != nil {
+		return tunnel.Credential{}, false, fmt.Errorf("parsing the stored agent credential: %w", err)
+	}
+	return credential, credential.Token != "", nil
+}
+
+// saveAgentSecretKey upserts one key of the agent's own Secret.
+func saveAgentSecretKey(edgeName, key string, value []byte) error {
+	cs, err := newInClusterKubernetesClient()
+	if err != nil {
+		return err
+	}
+	ns, err := inClusterNamespace()
+	if err != nil {
+		return err
+	}
+	secretName := AgentKubeconfigSecretName(edgeName)
+	existing, err := cs.CoreV1().Secrets(ns).Get(context.Background(), secretName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = cs.CoreV1().Secrets(ns).Create(context.Background(), &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: ns},
+			Type:       corev1.SecretTypeOpaque,
+			Data:       map[string][]byte{key: value},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("creating the agent secret: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting the agent secret: %w", err)
+	}
+	if existing.Data == nil {
+		existing.Data = make(map[string][]byte)
+	}
+	existing.Data[key] = value
+	if _, err := cs.CoreV1().Secrets(ns).Update(context.Background(), existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating the agent secret: %w", err)
+	}
+	return nil
 }
 
 // SaveKubeconfigToSecret writes the hub kubeconfig to the in-cluster Secret so

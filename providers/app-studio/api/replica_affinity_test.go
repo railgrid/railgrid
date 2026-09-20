@@ -28,7 +28,7 @@ import (
 func affinityTestServer(t *testing.T, replicaID, addr string) (*Server, store.Store) {
 	t.Helper()
 	msgStore := store.NewMemoryStore()
-	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-1": testWorkspace("cluster-1", "org-1", "ws-1")}.lookup, store: msgStore}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-1": testWorkspace("cluster-1", "org-1", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: msgStore}
 	s.SetReplicaRouting(replicaID, addr, "internal-token")
 	return s, msgStore
 }
@@ -49,7 +49,7 @@ func TestReplicaAffinityClaimsUnownedProjectsAndServesLocally(t *testing.T) {
 	}))
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, projectRequest("/api/projects/shop/hydrate-workspace", http.MethodPost))
+	h.ServeHTTP(rec, projectRequest("/dataplane/clusters/cluster-1/projects/shop/hydrate-workspace", http.MethodPost))
 	if served != 1 || rec.Code != http.StatusNoContent {
 		t.Fatalf("unowned project not served locally: served=%d code=%d", served, rec.Code)
 	}
@@ -66,7 +66,7 @@ func TestReplicaAffinityForwardsForeignProjects(t *testing.T) {
 		if r.Header.Get(replicaInternalTokenHeader) != "internal-token" {
 			t.Errorf("forwarded request missing internal token")
 		}
-		if r.URL.Path != "/api/projects/shop/sync-development" {
+		if r.URL.Path != "/dataplane/clusters/cluster-1/projects/shop/sync-development" {
 			t.Errorf("forwarded path = %q", r.URL.Path)
 		}
 		ownerHits++
@@ -90,7 +90,7 @@ func TestReplicaAffinityForwardsForeignProjects(t *testing.T) {
 	local := 0
 	h := s.ReplicaAffinity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { local++ }))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, projectRequest("/api/projects/shop/sync-development", http.MethodPost))
+	h.ServeHTTP(rec, projectRequest("/dataplane/clusters/cluster-1/projects/shop/sync-development", http.MethodPost))
 	if local != 0 || ownerHits != 1 || rec.Code != http.StatusAccepted {
 		t.Fatalf("foreign project not forwarded: local=%d owner=%d code=%d", local, ownerHits, rec.Code)
 	}
@@ -117,8 +117,8 @@ func TestReplicaAffinityServesStoreBackedReadsAnywhere(t *testing.T) {
 	h := s.ReplicaAffinity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { served++ }))
 
 	for _, path := range []string{
-		"/api/projects/shop/assistant/threads/th-1/events", // SSE stream
-		"/api/projects/shop/assistant/threads",
+		"/dataplane/clusters/cluster-1/sessions/th-1/events", // SSE stream
+		"/dataplane/clusters/cluster-1/projects/shop/sessions",
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, projectRequest(path, http.MethodGet))
@@ -132,7 +132,7 @@ func TestReplicaAffinityServesStoreBackedReadsAnywhere(t *testing.T) {
 
 	// Workspace-reading GETs and the root project document are NOT local-safe:
 	// GET /projects/{name} now carries the pod-local source-revision fence.
-	for _, path := range []string{"/api/projects/shop", "/api/projects/shop/files"} {
+	for _, path := range []string{"/dataplane/clusters/cluster-1/projects/shop/view", "/dataplane/clusters/cluster-1/projects/shop/files"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, projectRequest(path, http.MethodGet))
 		if served != 2 {
@@ -150,12 +150,13 @@ func TestReplicaAffinityLoopGuardAndCollectionRoutes(t *testing.T) {
 	h := s.ReplicaAffinity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { served++ }))
 
 	// A forwarded request must serve locally regardless of claims.
-	r := projectRequest("/api/projects/shop/sync-development", http.MethodPost)
+	r := projectRequest("/dataplane/clusters/cluster-1/projects/shop/sync-development", http.MethodPost)
 	r.Header.Set(replicaForwardedHeader, "1")
 	h.ServeHTTP(httptest.NewRecorder(), r)
 
-	// Collection endpoints under /api/projects/ are not project-scoped.
-	for _, path := range []string{"/api/projects", "/api/projects/plan", "/api/projects/llm-settings"} {
+	// Workspace-wide verbs hang off the Studio, not a project, so they are
+	// not project-scoped and every replica may serve them.
+	for _, path := range []string{"/dataplane/clusters/cluster-1/studios/studio/create-readiness", "/dataplane/clusters/cluster-1/projects/plan/view", "/dataplane/clusters/cluster-1/projects/llm-settings/view"} {
 		h.ServeHTTP(httptest.NewRecorder(), projectRequest(path, http.MethodPost))
 	}
 	if served != 4 {
@@ -173,11 +174,11 @@ func TestInternalReplicaHandlerRequiresToken(t *testing.T) {
 		inner++
 	}))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/projects/shop/sync-development", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/dataplane/clusters/cluster-1/projects/shop/sync-development", nil))
 	if rec.Code != http.StatusUnauthorized || inner != 0 {
 		t.Fatalf("tokenless internal request = %d/%d, want 401", rec.Code, inner)
 	}
-	r := httptest.NewRequest(http.MethodPost, "/api/projects/shop/sync-development", nil)
+	r := httptest.NewRequest(http.MethodPost, "/dataplane/clusters/cluster-1/projects/shop/sync-development", nil)
 	r.Header.Set(replicaInternalTokenHeader, "internal-token")
 	h.ServeHTTP(httptest.NewRecorder(), r)
 	if inner != 1 {

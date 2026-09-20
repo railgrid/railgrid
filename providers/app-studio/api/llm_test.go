@@ -29,6 +29,7 @@ import (
 
 	einoschema "github.com/cloudwego/eino/schema"
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 func TestVerifyProjectLLMConnectionCallsConfiguredModel(t *testing.T) {
@@ -162,10 +163,17 @@ func TestProjectLLMSettingsUseCodexStreamRecoveryDefaults(t *testing.T) {
 		t.Fatalf("stream idle timeout = %s, want 5m", settings.StreamIdleTimeout)
 	}
 
+	// Runtime settings now round-trip through Studio spec.llm.runtime rather
+	// than a Secret entry, so assert the value survives the read the
+	// assistant actually performs.
 	settings.StreamIdleTimeout = 73 * time.Second
-	secret := projectLLMSettingsSecret(settings)
-	if got := secretDataValue(secret, "streamIdleTimeoutMS"); got != "73000" {
-		t.Fatalf("persisted stream idle timeout = %q, want 73000", got)
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
+	registry, err := readProjectLLMRegistry(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registry.Runtime.StreamIdleTimeout != 73*time.Second {
+		t.Fatalf("persisted stream idle timeout = %s, want 73s", registry.Runtime.StreamIdleTimeout)
 	}
 
 	settings.StreamIdleTimeout = 0
@@ -313,7 +321,7 @@ func TestProjectAssistantUnlimitedLimitLogNamesOnlyActiveBounds(t *testing.T) {
 }
 
 func TestNewProjectEinoAssistantModelFactoryUsesNativeOpenAIModel(t *testing.T) {
-	factory := newProjectEinoAssistantModelFactory(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup})
+	factory := newProjectEinoAssistantModelFactory(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders})
 	model, err := factory(context.Background(), projectAssistantRunRequest{
 		LLM: projectLLMSettings{
 			Provider: defaultProjectLLMProvider,
@@ -337,7 +345,7 @@ func TestNewProjectEinoAssistantModelFactoryUsesNativeOpenAIModel(t *testing.T) 
 }
 
 func TestNewProjectEinoAssistantModelFactoryUsesNativeGeminiModel(t *testing.T) {
-	factory := newProjectEinoAssistantModelFactory(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup})
+	factory := newProjectEinoAssistantModelFactory(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders})
 	model, err := factory(context.Background(), projectAssistantRunRequest{
 		LLM: projectLLMSettings{
 			Provider: projectLLMProviderGoogle,

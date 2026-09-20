@@ -17,16 +17,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/railgrid/provider-app-studio/workspace"
 )
 
-// codeBinaryHub fakes the tenant MCP aggregate: tools/list optionally
-// advertises base64 on commit_files/checkout, and tools/call records the
-// arguments it receives.
+// codeBinaryHub fakes the tenant MCP aggregate for CHECKOUT, which is still a
+// tool: tools/list optionally advertises the binaryEncoding opt-in, and
+// tools/call records the arguments it receives. Commit is not here any more —
+// it is the repositories/commit/v1 action (commit_action_test.go).
 type codeBinaryHub struct {
 	advertise bool
 	calls     []map[string]any
@@ -49,127 +48,21 @@ func (h *codeBinaryHub) serve(t *testing.T) *httptest.Server {
 		result := map[string]any{}
 		switch req.Method {
 		case "tools/list":
-			commitItem := map[string]any{"path": map[string]any{}, "content": map[string]any{}}
 			checkoutProps := map[string]any{"repositoryRef": map[string]any{}}
 			if h.advertise {
-				commitItem["encoding"] = map[string]any{"type": "string"}
 				checkoutProps["binaryEncoding"] = map[string]any{"type": "string"}
 			}
 			result["tools"] = []any{
-				map[string]any{"name": projectToolCodeCommitFiles, "inputSchema": map[string]any{"properties": map[string]any{"files": map[string]any{"items": map[string]any{"properties": commitItem}}}}},
 				map[string]any{"name": projectToolCodeCheckoutRepository, "inputSchema": map[string]any{"properties": checkoutProps}},
 			}
 		case "tools/call":
 			h.calls = append(h.calls, map[string]any{"name": req.Params.Name, "arguments": req.Params.Arguments})
-			text := `{"name":"commit-1","phase":"Succeeded","commitSHA":"0123456789abcdef"}`
-			if req.Params.Name == projectToolCodeCheckoutRepository {
-				text = h.checkout
-			}
-			result["content"] = []any{map[string]any{"type": "text", "text": text}}
+			result["content"] = []any{map[string]any{"type": "text", "text": h.checkout}}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 	}))
 	t.Cleanup(server.Close)
 	return server
-}
-
-func commitBinaryFixture(t *testing.T, advertise bool) (*Server, *codeBinaryHub, *httptest.Server, workspace.Scope, []byte) {
-	t.Helper()
-	hub := &codeBinaryHub{advertise: advertise}
-	upstream := hub.serve(t)
-	workspaces := workspace.NewFileStore(t.TempDir())
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	image := testPNG(1024)
-	ctx := context.Background()
-	if _, err := workspaces.PutFile(ctx, scope, workspace.PutOptions{Path: "public/logo.png", Data: image}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := workspaces.PutFile(ctx, scope, workspace.PutOptions{Path: "src/app.ts", Data: []byte("export {}\n")}); err != nil {
-		t.Fatal(err)
-	}
-	server := NewWithWorkspace(nil, nil, workspaces, upstream.URL, false)
-	server.tenantWorkspaces = defaultTestWorkspaces.lookup
-	return server, hub, upstream, scope, image
-}
-
-func TestCommitProjectFilesSendsBase64WhenProviderAdvertisesEncoding(t *testing.T) {
-	server, hub, upstream, scope, image := commitBinaryFixture(t, true)
-	result, err := server.commitProjectWorkspaceFiles(context.Background(), identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"}, scope, nil, "demo", upstream.URL,
-		httptest.NewRequest(http.MethodPost, "/", nil), map[string]any{"repositoryRef": "demo", "paths": []any{"public/logo.png", "src/app.ts"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(projectCommitSkippedBinaryPaths(result)) != 0 {
-		t.Fatalf("supported provider result reports skipped binaries: %s", result)
-	}
-	files := hub.calls[len(hub.calls)-1]["arguments"].(map[string]any)["files"].([]any)
-	var sawBinary bool
-	for _, raw := range files {
-		file := raw.(map[string]any)
-		if file["path"] == "public/logo.png" {
-			decoded, err := base64.StdEncoding.DecodeString(file["content"].(string))
-			sawBinary = file["encoding"] == "base64" && err == nil && bytes.Equal(decoded, image)
-		} else if _, ok := file["encoding"]; ok {
-			t.Fatalf("text entry has encoding: %v", file)
-		}
-	}
-	if !sawBinary {
-		t.Fatalf("binary entry missing or malformed: %v", files)
-	}
-}
-
-func TestCommitProjectFilesSkipsBinariesForOlderProvider(t *testing.T) {
-	server, hub, upstream, scope, _ := commitBinaryFixture(t, false)
-	id := identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"}
-	result, err := server.commitProjectWorkspaceFiles(context.Background(), id, scope, nil, "demo", upstream.URL,
-		httptest.NewRequest(http.MethodPost, "/", nil), map[string]any{"repositoryRef": "demo", "paths": []any{"public/logo.png", "src/app.ts"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if skipped := projectCommitSkippedBinaryPaths(result); strings.Join(skipped, ",") != "public/logo.png" {
-		t.Fatalf("skipped = %v in %s", skipped, result)
-	}
-	raw, _ := json.Marshal(hub.calls[len(hub.calls)-1]["arguments"])
-	if strings.Contains(string(raw), "logo.png") || strings.Contains(string(raw), "base64") {
-		t.Fatalf("older provider received a binary: %s", raw)
-	}
-	if _, err := server.commitProjectWorkspaceFiles(context.Background(), id, scope, nil, "demo", upstream.URL,
-		httptest.NewRequest(http.MethodPost, "/", nil), map[string]any{"repositoryRef": "demo", "paths": []any{"public/logo.png"}}); err == nil || !strings.Contains(err.Error(), "only binary files changed") {
-		t.Fatalf("binary-only commit error = %v", err)
-	}
-}
-
-func TestCommitSettlementKeepsSkippedBinariesDirty(t *testing.T) {
-	ctx := context.Background()
-	workspaces := workspace.NewFileStore(t.TempDir())
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	for _, file := range []workspace.PutOptions{{Path: "src/App.tsx", Data: []byte("app\n")}, {Path: "public/logo.png", Data: testPNG(64)}} {
-		if _, err := workspaces.PutFile(ctx, scope, file); err != nil {
-			t.Fatal(err)
-		}
-	}
-	paths := []string{"public/logo.png", "src/App.tsx"}
-	if _, err := workspaces.AddUncommittedPaths(ctx, scope, paths); err != nil {
-		t.Fatal(err)
-	}
-	digest, err := workspaces.WorkspaceDigest(ctx, scope, paths)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runState := newProjectEinoAssistantRunState()
-	runState.RecordSourceMutation()
-	tool := projectEinoAssistantTool{req: projectAssistantRunRequest{Workspace: workspaces, WorkspaceScope: scope}, runState: runState}
-	result := `{"commitSHA":"abc","skippedBinaryPaths":["public/logo.png"]}`
-	if err := tool.recordV2CommitSettlement(ctx, projectAssistantToolSpec{Name: projectToolCommitProjectFiles, Risk: projectAssistantToolRiskCommit}, map[string]any{
-		"paths":           []any{"public/logo.png", "src/App.tsx"},
-		"workspaceDigest": digest,
-	}, true, result); err != nil {
-		t.Fatal(err)
-	}
-	dirty, err := workspaces.UncommittedPaths(ctx, scope)
-	if err != nil || strings.Join(dirty, ",") != "public/logo.png" {
-		t.Fatalf("dirty after settlement = %v, %v; want only the skipped binary", dirty, err)
-	}
 }
 
 func TestHydrateRequestsAndWritesBase64Binaries(t *testing.T) {

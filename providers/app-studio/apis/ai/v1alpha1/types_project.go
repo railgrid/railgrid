@@ -22,6 +22,31 @@ import (
 )
 
 const (
+	// ProjectFinalizer guards the teardown a deleted Project owns: the
+	// infrastructure instances it provisioned, the claim (or the object) of
+	// its Code Repository, its conversation rows and attachments, its hub
+	// identity, and the pod-local working copy of its files. It is spelled
+	// "instances" for the one thing it started as; the chain behind it is
+	// docs/roadmap/provider-contract-remediation.md §9 Cut D.4.
+	ProjectFinalizer = "ai.railgrid.ai/instances"
+
+	// ProjectDeleteRepositoryAnnotation opts a project's deletion into also
+	// deleting the Code Repository App Studio created for it. Deleting a
+	// project must never destroy the user's code by default — git is the
+	// durable source of truth and the repository outlives the workspace UI
+	// concept — so the default is to release the project's claim and leave
+	// the repository importable again.
+	//
+	// It is an annotation and not a spec field because it is a decision about
+	// ONE deletion, not desired state of a living project: whoever deletes the
+	// Project stamps it in the same breath, and the finalizer reads it. A
+	// value other than "true" means release.
+	//
+	// The finalizer refuses to delete an ADOPTED repository whatever the
+	// annotation says: App Studio did not create it, and a repository it only
+	// borrowed is not its to destroy.
+	ProjectDeleteRepositoryAnnotation = "ai.railgrid.ai/delete-repository"
+
 	// ProjectPhaseReady marks a Project that is ready for portal use.
 	ProjectPhaseReady = "Ready"
 
@@ -314,6 +339,26 @@ type ProjectProviderBindingSpec struct {
 	// forwards a call.
 	// +optional
 	AllowedActions []ProjectProviderActionSpec `json:"allowedActions,omitempty"`
+
+	// ImagePullSecretRef names the Secret in this workspace that holds the
+	// image-pull credential the bound instance needs, and is copied onto the
+	// instance's spec.imagePullSecretRef.
+	//
+	// It is a typed reference on both ends. The infrastructure provider used
+	// to look for "<instance>-registry" and App Studio used to mint exactly
+	// that name, which coupled the two by a string neither validated
+	// (docs/provider-contract-review.md M8). Promotion now says which Secret
+	// it wrote; an unset ref means the instance pulls from a public registry.
+	// +optional
+	ImagePullSecretRef *LocalSecretReference `json:"imagePullSecretRef,omitempty"`
+}
+
+// LocalSecretReference names a Secret in the project's own workspace.
+type LocalSecretReference struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
 }
 
 type ProjectProviderResourceReference struct {
@@ -368,13 +413,142 @@ type ProjectStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
-	// UpdatedAt reflects the latest API mutation affecting metadata or memory.
+	// UpdatedAt reflects the latest spec mutation the controller has observed.
+	// The project list is ordered by it, so it must follow writes from any
+	// client — the portal patching the CR directly, kubectl, the assistant —
+	// not just the ones that once went through a REST facade.
 	// +optional
 	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+
+	// ObservedGeneration is the metadata.generation the controller last
+	// stamped UpdatedAt for. It is what makes UpdatedAt honest without a
+	// write-side facade: kcp bumps generation on every spec change, so the
+	// reconciler can tell "the spec moved" from "I am reconciling again".
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Environments reports provider-observed environment state.
 	// +optional
 	Environments []ProjectEnvironmentStatus `json:"environments,omitempty"`
+
+	// Workspace is the ledger for the project's WORKING COPY: the monotonic
+	// source revision the development data plane fences on, the set of paths
+	// that differ from the last commit, the RepositoryCommit in flight and the
+	// receipt that settles it.
+	//
+	// It lives here, on App Studio's own kind, because it is App Studio's own
+	// state about a project it owns. The Code provider's RepositoryCheckout is
+	// a one-shot operation object — a repositoryRef plus a ref in spec, the
+	// checkout's own result in status — with no home for "the revision this
+	// project's working copy is at", and inventing one there would make a
+	// second provider's CRD carry this provider's bookkeeping.
+	//
+	// Moving it here is what takes the ledger off the pod-local volume
+	// (docs/roadmap/provider-contract-remediation.md §9 Cut D.3): the volume
+	// now holds only the working tree, which is rebuildable from the last
+	// commit plus the dirty set recorded below.
+	// +optional
+	Workspace *ProjectWorkspaceStatus `json:"workspace,omitempty"`
+}
+
+// ProjectWorkspaceStatus is the durable ledger for one project's working copy.
+// Every field is written through the status subresource under optimistic
+// concurrency, so two replicas editing the same project converge instead of
+// overwriting each other.
+type ProjectWorkspaceStatus struct {
+	// SourceRevision is the monotonic revision of the working copy. The
+	// development data plane hands it to the component agent as a fence, so it
+	// must never go backwards — including when the project moves between
+	// replicas, which is precisely why it is here and not in a file beside the
+	// tree. A project whose working copy has never been written has no
+	// revision; readers treat that as revision 1.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	SourceRevision int64 `json:"sourceRevision,omitempty"`
+
+	// UncommittedPaths are the working-copy paths that differ from the last
+	// commit, sorted. A path that no longer exists in the tree is a deletion
+	// and is committed as one.
+	//
+	// The bound is honest rather than arbitrary: a project tree is capped at
+	// 500 files (workspace.maxWorkspaceTreeFiles), so the largest transition
+	// one project can produce is a whole-tree replacement — up to 500 written
+	// paths plus up to 500 deleted ones — and 1024 leaves headroom above that.
+	// Each entry is bounded by the same 1024 bytes the file store accepts for
+	// a path (workspace.MaxProjectPathBytes), so nothing the store admits can
+	// fail to be recorded here.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=1024
+	// +kubebuilder:validation:items:MaxLength=1024
+	UncommittedPaths []string `json:"uncommittedPaths,omitempty"`
+
+	// PendingCommit is a RepositoryCommit the Code provider accepted but has
+	// not finished. It is followed up by name over the RepositoryCommit watch
+	// rather than resent.
+	// +optional
+	PendingCommit *ProjectPendingCommit `json:"pendingCommit,omitempty"`
+
+	// Settlement is the post-commit cleanup a successful commit still owes the
+	// ledger: the paths it carried and the content digest they had when it was
+	// sent. Recording it before clearing the dirty set is what lets a process
+	// that dies mid-settlement finish the job without repeating the commit.
+	// +optional
+	Settlement *ProjectCommitSettlement `json:"settlement,omitempty"`
+}
+
+// ProjectPendingCommit names an in-flight RepositoryCommit and the working-copy
+// content it carried.
+type ProjectPendingCommit struct {
+	// Name is the RepositoryCommit object's name in the tenant workspace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// RepositoryRef names the Repository the commit targets.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	RepositoryRef string `json:"repositoryRef,omitempty"`
+
+	// WorkspaceDigest binds Paths to the bytes they had when the commit was
+	// sent. Settlement only clears a path whose content still digests the
+	// same, so an edit made after the commit left stays dirty.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	WorkspaceDigest string `json:"workspaceDigest,omitempty"`
+
+	// Paths are the working-copy paths the commit carried, deletions included.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=1024
+	// +kubebuilder:validation:items:MaxLength=1024
+	Paths []string `json:"paths,omitempty"`
+
+	// RequestedAt is when the commit action was called.
+	// +optional
+	RequestedAt *metav1.Time `json:"requestedAt,omitempty"`
+}
+
+// ProjectCommitSettlement is the receipt a landed commit leaves behind.
+type ProjectCommitSettlement struct {
+	// WorkspaceDigest is the content digest Paths must still have for the
+	// settlement to apply.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	WorkspaceDigest string `json:"workspaceDigest"`
+
+	// Paths are the committed working-copy paths to clear from the dirty set.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=1024
+	// +kubebuilder:validation:items:MaxLength=1024
+	Paths []string `json:"paths,omitempty"`
+
+	// RecordedAt is when the commit was observed to have landed.
+	// +optional
+	RecordedAt *metav1.Time `json:"recordedAt,omitempty"`
 }
 
 type ProjectEnvironmentStatus struct {

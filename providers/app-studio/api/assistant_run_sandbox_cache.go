@@ -537,30 +537,13 @@ func (s *Server) ensureProjectAssistantRunSandboxInstance(ctx context.Context, c
 	return true, nil
 }
 
-// deleteProjectAssistantRunSandboxCache removes the project-scoped coding
-// environment before deleting the Project. The exact deterministic name also
-// covers caches created before owner references were introduced.
-func (s *Server) deleteProjectAssistantRunSandboxCache(ctx context.Context, c *asclient.Client, id identity, project *aiv1alpha1.Project) error {
-	if c == nil || project == nil {
-		return nil
-	}
-	name := projectAssistantRunSandboxName(projectWorkspaceScope(id, project), project, "")
-	resource := c.Resource(runSandboxInstancesResource, "")
-	instance, err := resource.Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("get project coding environment %q: %w", name, err)
-	}
-	if instance.GetAnnotations()[projectAssistantRunSandboxLabel] != "true" {
-		return fmt.Errorf("%w: instance %q is not an App Studio coding environment", errProjectAssistantRunSandboxConflict, name)
-	}
-	if err := resource.Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete project coding environment %q: %w", name, err)
-	}
-	return nil
-}
+// The project-scoped coding-environment cache is NOT deleted by hand any
+// more. It carries an ownerReference to its Project
+// (ensureProjectAssistantRunSandboxOwner), so kcp's garbage collector removes
+// it when the Project is deleted — which is the CR-native answer, and the only
+// one that also covers `kubectl delete project`. The delete VERB that used to
+// reconstruct the deterministic name and remove it is gone with Cut D.4
+// (controller/project/teardown.go).
 
 func (s *Server) enforceProjectAssistantRunSandboxQuota(ctx context.Context, c *asclient.Client, currentName string) error {
 	if c == nil {

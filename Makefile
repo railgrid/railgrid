@@ -1,7 +1,7 @@
-.PHONY: sync-portalkit verify-portalkit verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
+.PHONY: sync-portalkit verify-portalkit verify-provider-contract verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
 .PHONY: build-access-proxy docker-build-access-proxy
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin build-runner-linux
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider
+.PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -218,9 +218,19 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.railgrid.ai.yaml \
 		   providers/edges/deploy/chart/files/schemas/$$r.edges.railgrid.ai.yaml; \
 	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/edges/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/edges/config/kcp/apiexport-edges.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/edges/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/edges/config/kcp/apiexport-edges.providers.railgrid.ai.yaml
+	cp providers/edges/config/kcp/apiexport-edges.providers.railgrid.ai.yaml providers/edges/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
-.PHONY: codegen-edges-provider build-edges-provider build-edges-provider-portal \
+.PHONY: codegen-quickstart-provider codegen-kuery-provider codegen-edges-provider build-edges-provider build-edges-provider-portal \
 	install-provider-edges init-provider-edges run-provider-edges uninstall-provider-edges docker-build-edges-provider
 
 ## --- edges provider dev lifecycle (install → init → run) --------------------
@@ -243,7 +253,7 @@ init-provider-edges: build-edges-provider ## Bootstrap edges APIExport + write d
 		"$(EDGES_KCP_SERVER)/clusters/$(EDGES_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(EDGES_RUNTIME_KUBECONFIG)
 	RAILGRID_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
-	RAILGRID_SCHEMAS_DIR=$(EDGES_SCHEMAS_DIR) \
+	RAILGRID_KCP_DIR=$(EDGES_KCP_DIR) \
 	EDGES_WORKSPACE_PATH=$(EDGES_WORKSPACE_PATH) \
 		$(BINDIR)/edges-provider init
 
@@ -260,7 +270,6 @@ run-provider-edges: build-edges-provider ## Run the edges provider (needs: hub +
 	EDGES_INTERNAL_PORT=$(EDGES_INTERNAL_PORT) \
 	RAILGRID_HUB_URL=$(EDGES_HUB_URL) \
 	RAILGRID_HUB_EXTERNAL_URL=$(EDGES_HUB_EXTERNAL_URL) \
-	RAILGRID_HUB_TOKEN=$(EDGES_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=edges \
 	RAILGRID_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
@@ -375,6 +384,17 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 	cp providers/infrastructure/config/crds/infrastructure.railgrid.ai_templates.yaml \
 	   providers/infrastructure/config/crds/infrastructure.railgrid.ai_instances.yaml \
 	   providers/infrastructure/install/crds/
+	@# infrastructure mints its APIResourceSchemas at RUNTIME (install/crds.go
+	@# plus the Templates CachedResource), so there is no apigen output to fold
+	@# in. The APIExport is generated from the manifest all the same, so a
+	@# permission claim is still written in exactly one place; spec.resources is
+	@# empty and provider-sdk/install merges it with the entries the runtime
+	@# writers add.
+	@mkdir -p providers/infrastructure/config/kcp providers/infrastructure/deploy/chart/files
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/infrastructure/manifest.yaml \
+		--out $(CURDIR)/providers/infrastructure/config/kcp/apiexport-infrastructure.providers.railgrid.ai.yaml
+	cp providers/infrastructure/config/kcp/apiexport-infrastructure.providers.railgrid.ai.yaml providers/infrastructure/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the code
@@ -391,6 +411,62 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 		cp providers/code/config/kcp/apiresourceschema-$$r.code.railgrid.ai.yaml \
 		   providers/code/deploy/chart/files/schemas/$$r.code.railgrid.ai.yaml; \
 	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/code/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/code/config/kcp/apiexport-code.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/code/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/code/config/kcp/apiexport-code.providers.railgrid.ai.yaml
+	cp providers/code/config/kcp/apiexport-code.providers.railgrid.ai.yaml providers/code/deploy/chart/files/apiexport.yaml
+	./hack/ensure-boilerplate.sh
+
+codegen-quickstart-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the quickstart provider's local API (+ chart schemas)
+	@mkdir -p providers/quickstart/config/crds providers/quickstart/config/kcp providers/quickstart/deploy/chart/files/schemas
+	cd providers/quickstart && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/quickstart/config/crds
+	./hack/apigen.sh --input-dir providers/quickstart/config/crds --output-dir providers/quickstart/config/kcp
+	@for r in greetings; do \
+		cp providers/quickstart/config/kcp/apiresourceschema-$$r.quickstart.providers.railgrid.ai.yaml \
+		   providers/quickstart/deploy/chart/files/schemas/$$r.quickstart.providers.railgrid.ai.yaml; \
+	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/quickstart/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/quickstart/config/kcp/apiexport-quickstart.providers.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/quickstart/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/quickstart/config/kcp/apiexport-quickstart.providers.railgrid.ai.yaml
+	cp providers/quickstart/config/kcp/apiexport-quickstart.providers.railgrid.ai.yaml providers/quickstart/deploy/chart/files/apiexport.yaml
+	./hack/ensure-boilerplate.sh
+
+codegen-kuery-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the kuery provider's local API (+ chart schemas)
+	@mkdir -p providers/kuery/config/crds providers/kuery/config/kcp providers/kuery/deploy/chart/files/schemas
+	cd providers/kuery && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/kuery/config/crds
+	./hack/apigen.sh --input-dir providers/kuery/config/crds --output-dir providers/kuery/config/kcp
+	@for r in savedviews; do \
+		cp providers/kuery/config/kcp/apiresourceschema-$$r.kuery.providers.railgrid.ai.yaml \
+		   providers/kuery/deploy/chart/files/schemas/$$r.kuery.providers.railgrid.ai.yaml; \
+	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/kuery/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/kuery/config/kcp/apiexport-kuery.providers.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/kuery/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/kuery/config/kcp/apiexport-kuery.providers.railgrid.ai.yaml
+	cp providers/kuery/config/kcp/apiexport-kuery.providers.railgrid.ai.yaml providers/kuery/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the agents provider's local API (+ chart schemas)
@@ -400,10 +476,20 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./hack/apigen.sh --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
-	@for r in agents connections schedules triggers toolsets; do \
+	@for r in agents connections modelcredentials schedules triggers toolsets runs; do \
 		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.railgrid.ai.yaml \
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.railgrid.ai.yaml; \
 	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/agents/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/agents/config/kcp/apiexport-agents.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/agents/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/agents/config/kcp/apiexport-agents.railgrid.ai.yaml
+	cp providers/agents/config/kcp/apiexport-agents.railgrid.ai.yaml providers/agents/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the App Studio provider's local API (+ manifest + chart schema)
@@ -419,6 +505,16 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 	   providers/app-studio/deploy/chart/files/schemas/sessions.ai.railgrid.ai.yaml
 	cp providers/app-studio/config/kcp/apiresourceschema-studios.ai.railgrid.ai.yaml \
 	   providers/app-studio/deploy/chart/files/schemas/studios.ai.railgrid.ai.yaml
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# apigen leaves behind is deleted by the generator (it is not the export's
+	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
+	cd provider-sdk && go run ./cmd/apiexportgen \
+		--manifest $(CURDIR)/providers/app-studio/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/app-studio/config/kcp/apiexport-ai.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/app-studio/deploy/chart/files/schemas \
+		--out $(CURDIR)/providers/app-studio/config/kcp/apiexport-ai.railgrid.ai.yaml
+	cp providers/app-studio/config/kcp/apiexport-ai.railgrid.ai.yaml providers/app-studio/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
 
 test:
@@ -484,6 +580,17 @@ fix-lint-code-provider: $(GOLANGCI_LINT) ## Format and auto-fix the standalone C
 lint: $(GOLANGCI_LINT) ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...
 
+PROVIDER_MODULES := quickstart code infrastructure edges kuery agents app-studio
+
+lint-providers: $(GOLANGCI_LINT) ## Run golangci-lint in every standalone provider module (separate go.mod, not covered by lint)
+	@rc=0; for p in $(PROVIDER_MODULES); do \
+		echo "== providers/$$p"; \
+		(cd providers/$$p && $(CURDIR)/$(GOLANGCI_LINT) run ./...) || rc=1; \
+	done; exit $$rc
+
+lint-provider-sdk: $(GOLANGCI_LINT) ## Run golangci-lint in provider-sdk
+	cd provider-sdk && $(CURDIR)/$(GOLANGCI_LINT) run ./...
+
 fix-lint: $(GOLANGCI_LINT) ## Run golangci-lint with auto-fix
 	$(GOLANGCI_LINT) run --fix ./...
 
@@ -523,6 +630,10 @@ verify-portalkit: ## Verify vendored portalkit copies are in sync with the canon
 	@hack/sync-portalkit.sh --verify
 	@node --test provider-sdk/portalkit/dashboardtile.conformance.test.mjs provider-sdk/portalkit/kube.behavior.test.mjs
 	@$(MAKE) verify-agentkit
+
+verify-provider-contract: ## Verify provider manifests, claims and route classes match the provider contract
+	@node hack/verify-provider-contract.test.mjs
+	@node hack/verify-provider-contract.mjs
 
 verify-agentkit: ## Verify optional AgentKit style loading and conversation contracts
 	@node --test hack/verify-agentkit-dependencies.test.mjs
@@ -1041,7 +1152,7 @@ EDGES_MANIFEST ?= providers/edges/manifest.yaml
 EDGES_PROVIDER_MANIFEST ?= providers/edges/provider.yaml
 EDGES_WORKSPACE_PATH ?= root:railgrid:providers:edges
 EDGES_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/edges-runtime.kubeconfig
-EDGES_SCHEMAS_DIR ?= $(CURDIR)/providers/edges/deploy/chart/files/schemas
+EDGES_KCP_DIR ?= $(CURDIR)/providers/edges/deploy/chart/files
 
 ## Run the quickstart provider binary locally. Heartbeats to the hub on
 ## $(QUICKSTART_HUB_URL); TLS verification skipped (dev cert is self-signed).
@@ -1051,9 +1162,9 @@ run-provider-quickstart: build-quickstart-provider ## Run the quickstart provide
 	@echo "  token: $(QUICKSTART_TOKEN)"
 	PORT=$(QUICKSTART_PORT) \
 	RAILGRID_HUB_URL=$(QUICKSTART_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(QUICKSTART_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=quickstart \
+	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 		$(BINDIR)/quickstart-provider
 
 ## Apply the quickstart CatalogEntry into root:railgrid:providers. Idempotent.
@@ -1078,7 +1189,7 @@ e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 		echo "ports 19443/16443/18081/2380 are in use; stop any running railgrid-hub/quickstart-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Run --providers flag mechanics suite (dep validation, unknown name,
 ## filtered enable). Each test spawns its own hub on the standard
@@ -1090,7 +1201,7 @@ e2e-provider-flags: build-hub ## Run --providers flag mechanics suite
 		echo "ports 19443/16443/2380 are in use; stop any running railgrid-hub first (e.g. pkill railgrid-hub)"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/providerflags/... -v -timeout $(E2E_PROVIDER_FLAGS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/providerflags/... -v -timeout $(E2E_PROVIDER_FLAGS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Run both provider suites back-to-back (sequential — they share port 2380).
 e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-flags suites sequentially
@@ -1108,7 +1219,30 @@ e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructur
 		echo "ports 19453/16453/18086/2380 are in use; stop any running railgrid-hub/infrastructure-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Hub scoped-identity e2e (embedded kcp + quickstart-provider as the
+## REQUESTING provider). Covers pkg/hub/identity end to end: minting for a
+## Greeting owner under clause A and using the token against /clusters/{id},
+## the refusal codes for rules outside policy, refresh returning a new token
+## for the same ServiceAccount, clause E composition (declared-but-unaccepted
+## is refused, accepted at Enable is admitted, an undeclared verb stays
+## refused), and the sweep collecting an identity whose owner was deleted.
+## The suite registers its own synthetic dependency provider ("fixture") for
+## the composition half — no second provider binary is built. It runs the hub
+## with --provider-hub-access-platform-default=false so "refused until
+## accepted" is a real assertion. The GC test is paced by the reconciler's
+## 2-minute sweep, which is most of the wall time. Shares the embedded-kcp
+## etcd port 2380 with the other subprocess suites — do not run them
+## concurrently.
+E2E_IDENTITY_TIMEOUT ?= 20m
+.PHONY: e2e-identity
+e2e-identity: build-hub build-quickstart-provider ## Run hub scoped-identity e2e suite
+	@test -z "$$(lsof -ti :19503 :16503 :18128 :2380 2>/dev/null)" || { \
+		echo "ports 19503/16503/18128/2380 are in use; stop any running railgrid-hub/quickstart-provider first"; \
+		exit 1; \
+	}
+	go test -count=1 ./test/e2e/suites/identity/... -v -timeout $(E2E_IDENTITY_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Kuery provider e2e (embedded kcp + kuery-provider init/serve subprocesses).
 ## Covers the provider-plumbing half of kuery: provisioning, init bootstrap
@@ -1124,20 +1258,8 @@ e2e-kuery-provider: build-hub build-kuery-provider ## Run kuery provider e2e sui
 		echo "ports 19493/16493/18118/2380 are in use; stop any running railgrid-hub/kuery-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/kueryprovider/... -v -timeout $(E2E_KUERY_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/kueryprovider/... -v -timeout $(E2E_KUERY_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
-## Provider-actions E2E: embedded hub plus host-process App Studio and
-## Databricks providers, a local TLS fake upstream, and a generated Node app
-## invoking the action through the hub. RAILGRID_E2E_KEEP_DATA=true preserves
-## logs and source/readiness/interaction evidence under the suite temp dir.
-E2E_PROVIDER_ACTIONS_TIMEOUT ?= 20m
-.PHONY:
-## Optional bounded smoke against an already-running local hub/provider setup.
-## Set RAILGRID_E2E_PROVIDER_ACTIONS_LIVE=true plus RAILGRID_LIVE_HUB_URL,
-## RAILGRID_LIVE_PROJECT, and RAILGRID_LIVE_ACTIONS_TOKEN_FILE.
-## Optional registry-backed package smoke. The live-only flag keeps TestMain
-## from starting the full hub/provider stack; set RAILGRID_E2E_PROVIDER_ACTIONS_NPM_REGISTRY
-## to use a non-default registry mirror.
 ## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
 ## Covers the control-plane + auth surface of the decoupled edges provider:
 ## provisioning + CatalogEntry Ready, the /api/providers DTO, tenant Enable via
@@ -1152,7 +1274,7 @@ e2e-edges: build-hub build-edges-provider ## Run edges provider e2e suite
 		echo "ports 19463/16463/18088/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/edges/... -v -timeout $(E2E_EDGES_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/edges/... -v -timeout $(E2E_EDGES_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Edges DATA-PLANE connectivity e2e (embedded kcp over HTTPS + edges-provider
 ## + a real railgrid agent against a kind cluster). Proves the reverse tunnel:
@@ -1169,7 +1291,7 @@ e2e-edges-connectivity: build-hub build-edges-provider build-kuery-provider buil
 		echo "ports 19473/16473/18098/18099/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## CLI suite: every user-facing `railgrid` command as a real subprocess against a
 ## live hub (embedded kcp over HTTPS, two static-token users so membership
@@ -1183,7 +1305,7 @@ e2e-cli: build-hub build-edges-provider build-railgrid certs ## Run the railgrid
 		echo "ports 19483/16483/18108/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/cli/... -v -timeout $(E2E_CLI_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/cli/... -v -timeout $(E2E_CLI_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Tilt-cluster suite: runs against an ALREADY-RUNNING operator-deployed,
 ## multi-shard Tilt stack (start it in another terminal with `make tilt-cluster`).
@@ -1228,7 +1350,7 @@ e2e-tilt-cluster: ## Run Tilt-cluster provider e2e (requires `make tilt-cluster`
 		echo "infrastructure provider not reachable at $(E2E_TILT_INFRA_URL); is 'make tilt-cluster' fully up?"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/tiltcluster/... -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/tiltcluster/... -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Opt-in demonstration of using Config Connector CRDs with the infrastructure
 ## operator's KRO runtime. The test creates only a minimal StorageBucket CRD; it
@@ -1256,7 +1378,7 @@ e2e-tilt-cluster-config-connector: ## Run the opt-in Config Connector compositio
 	RAILGRID_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
 	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
 	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
-		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorComposition$$' -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorComposition$$' -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Real-cloud extension of the infrastructure-operator Config Connector
 ## demonstration. Installation imports the caller-supplied service-account JSON
@@ -1314,7 +1436,7 @@ e2e-tilt-cluster-config-connector-gcp-run: ## Create then delete a real Pub/Sub 
 	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
 	RAILGRID_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
 	RAILGRID_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
-		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubLifecycle$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubLifecycle$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Smoke only the already-enabled stable Pub/Sub Template. Installation and
 ## Template enablement are separate manual actions; this target creates and
@@ -1338,7 +1460,7 @@ e2e-tilt-cluster-config-connector-smoke: ## Create then delete one real Pub/Sub 
 	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
 	RAILGRID_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
 	RAILGRID_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
-		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubSmoke$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubSmoke$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-tilt-cluster-config-connector-gcp-smoke: e2e-tilt-cluster-config-connector-smoke
 
@@ -1437,7 +1559,7 @@ init-provider-quickstart: build-quickstart-provider ## Bootstrap quickstart APIE
 	@echo "Running quickstart-provider init (creates APIExport + endpoint slice + bind grant)"
 	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 	QUICKSTART_WORKSPACE_PATH=$(QUICKSTART_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=/nonexistent \
+	RAILGRID_KCP_DIR=providers/quickstart/deploy/chart/files \
 		$(BINDIR)/quickstart-provider init
 
 ## Delete the quickstart CatalogEntry + Provider. Deleting the Provider triggers
@@ -1462,7 +1584,7 @@ KUERY_KCP_SERVER ?= https://localhost:6443
 KUERY_MANIFEST ?= providers/kuery/manifest.yaml
 KUERY_PROVIDER_MANIFEST ?= providers/kuery/provider.yaml
 KUERY_WORKSPACE_PATH ?= root:railgrid:providers:kuery
-KUERY_SCHEMAS_DIR ?= providers/kuery/deploy/chart/files/schemas
+KUERY_KCP_DIR ?= providers/kuery/deploy/chart/files
 # Dev runtime kubeconfig for the engagement controller, written by
 # init-provider-kuery from the provider SA token the hub mints.
 KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
@@ -1531,11 +1653,12 @@ run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (
 	@echo "Starting kuery provider on :$(KUERY_PORT)"
 	@echo "  hub:   $(KUERY_HUB_URL)"
 	@echo "  token: $(KUERY_TOKEN)"
-	@if [ -f $(KUERY_RUNTIME_KUBECONFIG) ]; then \
-		echo "  engagement: $(KUERY_RUNTIME_KUBECONFIG)"; \
-	else \
-		echo "  engagement: DISABLED (run 'make init-provider-kuery' after install-provider-kuery)"; \
-	fi
+	@test -f $(KUERY_RUNTIME_KUBECONFIG) || { \
+		echo "provider kubeconfig not found at $(KUERY_RUNTIME_KUBECONFIG)"; \
+		echo "serve refuses to start without it: run 'make init-provider-kuery' after install-provider-kuery"; \
+		exit 1; \
+	}
+	@echo "  kubeconfig: $(KUERY_RUNTIME_KUBECONFIG)"
 	@# Dev always runs Postgres. Fall back to the local dev container DSN when
 	@# KUERY_STORE_DSN is unset (external Postgres overrides it).
 	STORE_DSN="$${KUERY_STORE_DSN:-$(KUERY_STORE_DSN)}"; \
@@ -1545,11 +1668,9 @@ run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (
 	echo "  store: postgres ($$STORE_DSN)"; \
 	PORT=$(KUERY_PORT) \
 	RAILGRID_HUB_URL=$(KUERY_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(KUERY_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=kuery \
 	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
-	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	KUERY_STORE_DRIVER=postgres \
 	KUERY_STORE_DSN="$$STORE_DSN" \
 		$(BINDIR)/kuery-provider
@@ -1598,7 +1719,7 @@ init-provider-kuery: build-kuery-provider ## Bootstrap kuery APIExport (schemas+
 	@echo "Running kuery-provider init (schemas + APIExport + endpoint slice + bind grant)"
 	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
 	KUERY_WORKSPACE_PATH=$(KUERY_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=$(KUERY_SCHEMAS_DIR) \
+	RAILGRID_KCP_DIR=$(KUERY_KCP_DIR) \
 		$(BINDIR)/kuery-provider init
 
 uninstall-provider-kuery: ## Delete kuery CatalogEntry + Provider (full teardown)
@@ -1644,7 +1765,7 @@ APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 APP_STUDIO_KCP_SERVER ?= https://localhost:6443
 APP_STUDIO_WORKSPACE_PATH ?= root:railgrid:providers:app-studio
 APP_STUDIO_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-provider.kubeconfig
-APP_STUDIO_SCHEMAS_DIR ?= providers/app-studio/deploy/chart/files/schemas
+APP_STUDIO_KCP_DIR ?= providers/app-studio/deploy/chart/files
 APP_STUDIO_MANIFEST ?= providers/app-studio/manifest.yaml
 APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
 APP_STUDIO_DATABASE_URL ?=
@@ -1670,7 +1791,7 @@ AGENTS_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 AGENTS_KCP_SERVER ?= https://localhost:6443
 AGENTS_WORKSPACE_PATH ?= root:railgrid:providers:agents
 AGENTS_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/agents-provider.kubeconfig
-AGENTS_SCHEMAS_DIR ?= providers/agents/deploy/chart/files/schemas
+AGENTS_KCP_DIR ?= providers/agents/deploy/chart/files
 AGENTS_MANIFEST ?= providers/agents/manifest.yaml
 AGENTS_PROVIDER_MANIFEST ?= providers/agents/provider.yaml
 # Durable store: dev runs use a local Postgres container by default (mirrors
@@ -1704,13 +1825,10 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-br
 	fi
 	PORT=$(KROMC_PORT) \
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=infrastructure \
-	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
-	INFRASTRUCTURE_WORKSPACE_PATH=$${INFRASTRUCTURE_WORKSPACE_PATH:-$(INFRASTRUCTURE_WORKSPACE_PATH)} \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
-	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
+	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)} \
 	RAILGRID_APP_BASE_DOMAIN=$${RAILGRID_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
 	RAILGRID_GATEWAY_NAME=$${RAILGRID_GATEWAY_NAME:-cloudflare-tunnel} \
 	RAILGRID_GATEWAY_NAMESPACE=$${RAILGRID_GATEWAY_NAMESPACE:-cfgate-system} \
@@ -1729,10 +1847,8 @@ run-provider-infrastructure-operator: build-infrastructure-provider app-studio-p
 	@# first. It then reconciles the in-workspace bootstrap and seeds kro itself.
 	PORT=$(KROMC_PORT) \
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=infrastructure \
-	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_PROVIDER_KUBECONFIG=$${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} \
 	INFRASTRUCTURE_RUNTIME_KUBECONFIG=$${INFRASTRUCTURE_RUNTIME_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
@@ -1860,7 +1976,6 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		PORT=$(APP_STUDIO_PORT) \
 		RAILGRID_HUB_URL=$(APP_STUDIO_HUB_URL) \
 		RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL}" \
-		RAILGRID_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
 		RAILGRID_HUB_INSECURE=true \
 		RAILGRID_PROVIDER_NAME=app-studio \
@@ -1876,7 +1991,6 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		PORT=$(APP_STUDIO_PORT) \
 		RAILGRID_HUB_URL=$(APP_STUDIO_HUB_URL) \
 		RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL}" \
-		RAILGRID_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
 		RAILGRID_HUB_INSECURE=true \
 		RAILGRID_PROVIDER_NAME=app-studio \
@@ -1924,12 +2038,13 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 		"$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(APP_STUDIO_PROVIDER_KUBECONFIG)
 	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
-	@# No identity hashes: app-studio claims no first-party resources. The
-	@# reconcilers act as workspace ServiceAccounts through each tenant's own
-	@# bindings, so no APIExport identityHash pinning is involved.
+	@# app-studio claims no first-party resources: its reconcilers act in each
+	@# tenant workspace through hub-minted scoped identities (tenant-workspace
+	@# RBAC through the workspace's own bindings), which is what keeps a
+	@# workspace free to bind an org-owned infrastructure or code provider.
 	RAILGRID_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
 	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
+	RAILGRID_KCP_DIR=$(APP_STUDIO_KCP_DIR) \
 		$(BINDIR)/app-studio-provider init
 
 ## Delete the App Studio CatalogEntry. Useful while iterating on the chart.
@@ -1982,7 +2097,6 @@ run-provider-agents: build-agents-provider agents-db-up ## Run the agents provid
 	fi; \
 	PORT=$(AGENTS_PORT) \
 	RAILGRID_HUB_URL=$(AGENTS_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(AGENTS_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=agents \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
@@ -2020,7 +2134,7 @@ init-provider-agents: build-agents-provider ## Bootstrap agents APIExport + writ
 	@echo "Running agents-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
 	RAILGRID_PROVIDER_KUBECONFIG=$(AGENTS_PROVIDER_KUBECONFIG) \
 	AGENTS_WORKSPACE_PATH=$(AGENTS_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=$(AGENTS_SCHEMAS_DIR) \
+	RAILGRID_KCP_DIR=$(AGENTS_KCP_DIR) \
 		$(BINDIR)/agents-provider init
 
 uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
@@ -2091,7 +2205,7 @@ uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry + Provi
 ## Uses the hub's admin kubeconfig to install CRDs, register APIExport
 ## schemas, apply the Templates CachedResource, mint a low-privilege
 ## ServiceAccount + token, and write a runtime kubeconfig that
-## run-provider-infrastructure picks up via INFRASTRUCTURE_KUBECONFIG.
+## run-provider-infrastructure passes to serve as RAILGRID_PROVIDER_KUBECONFIG.
 ##
 ## When KRO_KUBECONFIG is set, also seeds the kro cluster with a
 ## kro.run/cluster=true Secret pointing at this workspace's VW.
@@ -2108,6 +2222,7 @@ init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrast
 	@echo "  runtime: $(INFRASTRUCTURE_RUNTIME_KUBECONFIG)"
 	INFRASTRUCTURE_ADMIN_KUBECONFIG=$(KROMC_KCP_KUBECONFIG) \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
+	RAILGRID_KCP_DIR=$(CURDIR)/providers/infrastructure/deploy/chart/files \
 	INFRASTRUCTURE_KUBECONFIG=$(INFRASTRUCTURE_RUNTIME_KUBECONFIG) \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 		$(BINDIR)/infrastructure-provider init
@@ -2135,10 +2250,8 @@ serve-provider-code: ## Run the already-built code provider
 	set -a; [ -f providers/code/.env ] && . ./providers/code/.env || true; set +a; \
 	PORT=$(CODE_PORT) \
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=code \
-	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
 	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
@@ -2193,7 +2306,7 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 			--insecure-skip-tls-verify=true >/dev/null
 	RAILGRID_PROVIDER_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
 	CODE_WORKSPACE_PATH=$(CODE_WORKSPACE_PATH) \
-	RAILGRID_SCHEMAS_DIR=$(CURDIR)/providers/code/deploy/chart/files/schemas \
+	RAILGRID_KCP_DIR=$(CURDIR)/providers/code/deploy/chart/files \
 		$(BINDIR)/code-provider init
 
 # --- Provider Databricks (local dev) ---
@@ -2589,7 +2702,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
+verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 
@@ -2618,28 +2731,28 @@ e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, 
 	RAILGRID_AGENT_IMAGE=ghcr.io/railgrid/railgrid-agent \
 	RAILGRID_AGENT_IMAGE_TAG=test \
 	RAILGRID_AGENT_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-ssh: build ## Run SSH server-mode e2e suite (hub-only cluster)
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, push-to-main only in CI)
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Docs-install e2e. These suites execute the hack/install/ scripts that
 ## docs/install-external-kcp.md and docs/install-embedded-kcp.md quote,
@@ -2655,7 +2768,7 @@ e2e-install-external: build ## Run docs install e2e (two-shard kcp via kcp-opera
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/installexternal/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/installexternal/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-install-embedded: build ## Run docs install e2e (embedded kcp + gateway)
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
@@ -2663,7 +2776,7 @@ e2e-install-embedded: build ## Run docs install e2e (embedded kcp + gateway)
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/installembedded/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/installembedded/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-all: build ## Run all e2e suites
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
@@ -2674,7 +2787,7 @@ e2e-all: build ## Run all e2e suites
 	RAILGRID_AGENT_IMAGE=ghcr.io/railgrid/railgrid-agent \
 	RAILGRID_AGENT_IMAGE_TAG=test \
 	RAILGRID_AGENT_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)
+	go test -count=1 ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)
 
 e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging
 	$(MAKE) e2e-standalone E2E_FLAGS="--keep-clusters"
@@ -2704,9 +2817,6 @@ fix-lint-model-connections: $(GOLANGCI_LINT) ## Format model connection changes 
 test-app-studio-portal: ## Run the App Studio portal regression suite
 	cd providers/app-studio/portal && npm test
 
-.PHONY:
-.PHONY:
-.PHONY:
 .PHONY: package-runner-darwin
 package-runner-darwin: build-runner-darwin ## Package MacOS runner binaries and the local upgrade manager
 	python3 hack/runner-install/package.py $(BINDIR) darwin

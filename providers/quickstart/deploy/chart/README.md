@@ -1,13 +1,27 @@
 # railgrid-quickstart-provider
 
-Reference railgrid provider demonstrating the platform's extension surface end-to-end. Ships the provider Deployment, ClusterIP Service, and the CatalogEntry that registers the provider (UI + backend + a sample greetings APIExport) with the railgrid hub. Pure broker — no kcp or kro kubeconfig wiring; useful as a copy-from template for new providers.
+Reference railgrid provider demonstrating the platform's extension surface end-to-end. Ships the provider Deployment, ClusterIP Service, and the CatalogEntry that registers the provider (UI + backend + the `greetings` APIExport) with the railgrid hub. A complete, copy-from template for a new provider's chart.
 
 Helm chart for the railgrid **quickstart** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
 
 ## Installing
 
-A provider needs a kcp credential for the workspace it registers into.
+A provider needs a kcp credential for the workspace it registers into, and this
+chart mounts it into **both** containers as `RAILGRID_PROVIDER_KUBECONFIG`:
+
+- the `init` container applies the two objects the provider ships — the
+  APIResourceSchemas and the generated APIExport, both baked into the image at
+  `/etc/railgrid/kcp` (override with `RAILGRID_KCP_DIR`) and applied verbatim —
+  then creates the APIExportEndpointSlice the controller watches and the bind
+  grant;
+- the `provider` container watches tenant workspaces through the APIExport
+  virtual workspace, and lends the config's host and CA — never its bearer — to
+  the per-request clients the `greet` data-plane verb authorizes through.
+
+Without the Secret the pod still serves the portal, but no `Greeting` is ever
+reconciled and the verb is disabled. The readiness probe is `/readyz` (watches
+are live), separate from the `/healthz` liveness probe (the process is up).
 
 - **On the platform**, an admin mints it during provider onboarding.
 - **Running it yourself**, railgrid creates the workspace, mints the credential,
@@ -36,7 +50,7 @@ helm upgrade --install quickstart oci://ghcr.io/railgrid/charts/railgrid-quickst
 | `image.repository` | `ghcr.io/railgrid/railgrid-quickstart-provider` |  |
 | `image.tag` | `""` |  |
 | `image.pullPolicy` | `IfNotPresent` |  |
-| `replicaCount` | `2` | Number of Deployment replicas. The provider is stateless (no kcp client cache, no local storage), so any replica count is safe. |
+| `replicaCount` | `2` | Number of Deployment replicas. Safe above 1: the HTTP surface is stateless and the reconciler is single-writer by leader election on a Lease in the provider's own kcp workspace (no RBAC on this cluster is involved). |
 | `service` |  |  |
 | `service.type` | `ClusterIP` |  |
 | `service.port` | `8081` |  |
@@ -46,7 +60,7 @@ helm upgrade --install quickstart oci://ghcr.io/railgrid/charts/railgrid-quickst
 | `hub.tokenSecretRef.name` | `""` |  |
 | `hub.tokenSecretRef.key` | `token` |  |
 | `hub.insecure` | `false` | Skip TLS verification on heartbeat — dev only, defaults off. |
-| `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted by the platform admin via /bonkers (admin onboarding). The init container uses it to apply the provider's schemas/APIExport/slice/bind grant. Key must be "kubeconfig". |
+| `providerKubeconfig` |  | **Required.** Secret holding the workspace-admin kubeconfig minted by the platform admin via /bonkers (admin onboarding). Key must be `kubeconfig`. Mounted by both containers at `/var/run/secrets/railgrid` and passed as `RAILGRID_PROVIDER_KUBECONFIG`: `init` bootstraps the workspace with it, `serve` watches tenant workspaces and builds the data-plane caller clients from it. |
 | `providerKubeconfig.secretName` | `railgrid-provider-kubeconfig` |  |
 | `catalogEntry` |  | When true, the chart renders the CatalogEntry (which registers the provider with the hub) into a ConfigMap that the init container applies into the provider workspace via the provider kubeconfig. The CatalogEntry is a kcp resource, so it is NOT applied to the hosting cluster this chart installs i… |
 | `catalogEntry.enabled` | `true` |  |

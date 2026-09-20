@@ -40,6 +40,11 @@ const props = defineProps<{
   discoverDisabledReason?: string
   testing?: boolean
   testError?: string | null
+  // testNotice explains why testing is unavailable, or what has to happen
+  // first, without marking the connection a failure. A form whose probes are
+  // verbs on a SAVED object needs somewhere to say "save this first" that is
+  // not an error.
+  testNotice?: string | null
   connectionTested?: boolean
   testDisabled?: boolean
   saveDisabled?: boolean
@@ -237,6 +242,7 @@ function isLocked(): boolean {
       <p v-else-if="connectionTested" class="k-inline-notification k-inline-notification--success" role="status" aria-live="polite">
         <Check :size="14" :stroke-width="2" />Connection verified. The model responded successfully.
       </p>
+      <p v-else-if="testNotice" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite">{{ testNotice }}</p>
     </div>
 
     <p class="k-model-form-test-hint">Testing sends a small model request and may incur a charge.</p>

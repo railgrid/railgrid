@@ -67,12 +67,10 @@ func (p *railgridEdgeProvider) GetTargets(_ context.Context) ([]string, error) {
 // k8sSubresourceURL builds the full URL of this edge's k8s subresource, served
 // by the provider's own consumer edgeproxy and reached back through the hub:
 //
-//	{hubBase}{edgeProxyPublicPath}/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/k8s
+//	{hubBase}{edgeProxyPublicPath}/clusters/{cluster}/{resource}/{name}/k8s
 func (p *railgridEdgeProvider) k8sSubresourceURL(edgeName string) string {
-	return fmt.Sprintf("%s%s/clusters/%s/apis/%s/%s/%s/%s/k8s",
-		strings.TrimRight(p.hubBase, "/"),
-		strings.TrimRight(p.edgeProxyPublicPath, "/"),
-		p.cluster, p.group, p.version, p.resource, edgeName)
+	return strings.TrimRight(p.hubBase, "/") +
+		edgeProxyPath(p.edgeProxyPublicPath, p.cluster, p.resource, edgeName, VerbK8s)
 }
 
 // GetDerivedKubernetes returns a *mcpkubernetes.Kubernetes pointing at the edge

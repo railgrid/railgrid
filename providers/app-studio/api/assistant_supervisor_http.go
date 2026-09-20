@@ -907,6 +907,12 @@ func (s *Server) persistProjectAssistantDurableMetadataWith(ctx context.Context,
 }
 
 func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator, request *http.Request, id identity, c *asclient.Client, project *aiv1alpha1.Project, run store.AssistantRun, start *projectAssistantStreamStart) {
+	// A turn outlives the request that started it, and its context is the
+	// supervisor's rather than the request's — so the caller's working-copy
+	// ledger has to be attached here too. Every file the assistant writes
+	// records its path on `Project.status.workspace` through it
+	// (api/project_ledger.go).
+	ctx = s.withProjectLedger(ctx, id)
 	content := &strings.Builder{}
 	workSegmentStarted := time.Now().UTC()
 	state := &projectAssistantDurableMetadataState{

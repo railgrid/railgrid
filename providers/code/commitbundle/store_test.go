@@ -345,3 +345,57 @@ func TestFileStoreSweepRemovesOnlyOrphans(t *testing.T) {
 		t.Fatalf("abandoned temp file survived: %v", err)
 	}
 }
+
+// TestNotifyAnnouncesArrivalsUntilContextEnds covers the wake-up the
+// RepositoryCommit controller waits on instead of polling: every published
+// bundle is announced, a re-published one still is (the controller may be
+// waiting for a bundle the writer already had), and a subscription ends with
+// its context so a restarted controller does not leave a watcher behind.
+func TestNotifyAnnouncesArrivalsUntilContextEnds(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	arrivals := store.Notify(ctx)
+
+	ref, err := store.Put(ctx, "logical-cluster", []File{{Path: "index.html", Content: "<h1>demo</h1>"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-arrivals:
+		if got != (Arrival{Scope: "logical-cluster", Name: ref.Name}) {
+			t.Fatalf("unexpected arrival %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first write was not announced")
+	}
+
+	if _, err := store.Put(ctx, "logical-cluster", []File{{Path: "index.html", Content: "<h1>demo</h1>"}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-arrivals:
+		if got.Name != ref.Name {
+			t.Fatalf("unexpected arrival %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("re-published bundle was not announced")
+	}
+
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		store.mu.Lock()
+		watchers := len(store.watchers)
+		store.mu.Unlock()
+		if watchers == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cancelled subscription was not dropped")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

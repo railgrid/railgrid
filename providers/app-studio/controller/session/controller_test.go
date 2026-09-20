@@ -101,3 +101,60 @@ func TestFinalizePurgesThread(t *testing.T) {
 		t.Fatal("thread survived the purge")
 	}
 }
+
+func TestRetentionDeadlineIsPerSessionAndDefersActiveTurns(t *testing.T) {
+	last := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	lastActivity := metav1.NewTime(last)
+	idle := aiv1alpha1.SessionStatus{LastActivityAt: &lastActivity}
+
+	if _, ok := (&Reconciler{}).retentionDeadline(idle); ok {
+		t.Fatal("retention must be disabled when no window is configured")
+	}
+
+	r := &Reconciler{Retention: 48 * time.Hour}
+	deadline, ok := r.retentionDeadline(idle)
+	if !ok || !deadline.Equal(last.Add(48*time.Hour)) {
+		t.Fatalf("deadline = (%v, %v), want %v", deadline, ok, last.Add(48*time.Hour))
+	}
+
+	if _, ok := r.retentionDeadline(aiv1alpha1.SessionStatus{}); ok {
+		t.Fatal("a session with no recorded activity must not be given a deadline")
+	}
+
+	busy := idle
+	busy.ActiveTurnID = "turn-1"
+	busy.ActiveTurnStatus = string(store.AssistantTurnStatusInProgress)
+	if _, ok := r.retentionDeadline(busy); ok {
+		t.Fatal("a conversation with an in-flight turn must not expire")
+	}
+
+	settled := busy
+	settled.ActiveTurnStatus = string(store.AssistantTurnStatusCompleted)
+	if _, ok := r.retentionDeadline(settled); !ok {
+		t.Fatal("a completed turn must not defer retention")
+	}
+}
+
+func TestStatusEqualComparesActivityFields(t *testing.T) {
+	at := metav1.NewTime(time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC))
+	base := aiv1alpha1.SessionStatus{Title: "t", TurnCount: 2, LastActivityAt: &at}
+	if !statusEqual(base, aiv1alpha1.SessionStatus{Title: "t", TurnCount: 2, LastActivityAt: &at}) {
+		t.Fatal("identical statuses compared unequal")
+	}
+	bumped := base
+	bumped.TurnCount = 3
+	if statusEqual(base, bumped) {
+		t.Fatal("turnCount drift was not detected")
+	}
+	later := metav1.NewTime(at.Add(time.Minute))
+	moved := base
+	moved.LastActivityAt = &later
+	if statusEqual(base, moved) {
+		t.Fatal("lastActivityAt drift was not detected")
+	}
+	cleared := base
+	cleared.LastActivityAt = nil
+	if statusEqual(base, cleared) {
+		t.Fatal("a cleared lastActivityAt was not detected")
+	}
+}

@@ -131,7 +131,7 @@ func TestProjectAssistantBrowserCapabilityValidation(t *testing.T) {
 }
 
 func TestProjectAssistantBrowserDiscoveryFailureIsPrompted(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	mismatch := &projectAssistantBrowserCapabilityMismatchError{
 		Required:  []string{"browser_snapshot"},
@@ -199,7 +199,7 @@ func TestProjectAssistantNativeBrowserToolsJoinEinoDiscovery(t *testing.T) {
 		Parameters:  json.RawMessage(`{"type":"object"}`),
 		Risk:        projectAssistantToolRiskRead,
 	}}
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	discovery := projectEinoAssistantDiscoverTools(context.Background(), server, projectAssistantRunRequest{
 		ToolPort:   fakeNativeBrowserToolPort{tools: []projectAssistantTool{browser}},
 		TurnPolicy: projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
@@ -356,21 +356,21 @@ func TestProjectAssistantBrowserSessionOwnerIncludesProjectAndCaller(t *testing.
 		Project:        project,
 		AssistantRunID: "run-a",
 	}
-	owner := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).nativeBrowserOwner(base)
+	owner := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).nativeBrowserOwner(base)
 	otherUser := base
 	otherUser.Identity.user = "bob"
 	otherProject := base
 	otherProject.Project = &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "project-b", UID: types.UID("uid-b")}}
-	if owner.key() == (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).nativeBrowserOwner(otherUser).key() {
+	if owner.key() == (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).nativeBrowserOwner(otherUser).key() {
 		t.Fatal("different caller inherited the same browser session key")
 	}
-	if owner.key() == (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).nativeBrowserOwner(otherProject).key() {
+	if owner.key() == (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).nativeBrowserOwner(otherProject).key() {
 		t.Fatal("different project inherited the same browser session key")
 	}
 }
 
 func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -401,7 +401,7 @@ func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
 }
 
 func TestProjectAssistantNativeBrowserFirstNonNavigationStartsAtPreview(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	defer server.browserSessions.closeAll()
 	var toolCalls []string
@@ -443,7 +443,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 	defer preview.Close()
 
 	server := &Server{
-		tenantWorkspaces:             defaultTestWorkspaces.lookup,
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		hubBase:                      hub.URL,
 		hubPublicURL:                 hub.URL,
 		previewInsecureSkipTLSVerify: true,
@@ -526,7 +526,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 }
 
 func TestProjectAssistantNativeBrowserFirstNavigationIsNotDuplicated(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	defer server.browserSessions.closeAll()
 	var toolCalls []string
@@ -628,7 +628,7 @@ func TestProjectAssistantNativeBrowserTabsParseOfficialMarkdownReceipt(t *testin
 }
 
 func TestProjectEinoAssistantBrowserDiscoveryCachesAcrossModelBoundariesAndCheckpoint(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, previewInspector: &fakeProjectAssistantPreviewInspector{}}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, previewInspector: &fakeProjectAssistantPreviewInspector{}}
 	port := &countingNativeBrowserToolPort{
 		server:       server,
 		browserTools: nativeBrowserCatalogTestTools(server),
@@ -667,7 +667,7 @@ func TestProjectEinoAssistantBrowserDiscoveryCachesAcrossModelBoundariesAndCheck
 }
 
 func TestProjectAssistantNativeBrowserManagedSessionSurvivesModelRefresh(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example", previewInspector: &fakeProjectAssistantPreviewInspector{}}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", previewInspector: &fakeProjectAssistantPreviewInspector{}}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	var initializeCalls int
 	configurePreviewInteractionBrowserTestServer(t, server, func(method, _ string) {
@@ -722,7 +722,7 @@ func TestProjectAssistantNativeBrowserManagedSessionSurvivesModelRefresh(t *test
 }
 
 func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -807,7 +807,7 @@ func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *tes
 }
 
 func TestProjectAssistantLegacyInspectionCannotCloseManagedSessionAtModelBoundary(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -930,7 +930,7 @@ func TestProjectAssistantNativeBrowserMutationReportsUnknownAndFailsClosedWhenSa
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 			server.browserSessions = newProjectAssistantBrowserSessionManager()
 			configurePreviewInteractionBrowserTestServer(t, server, nil)
 			server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -1017,7 +1017,7 @@ func TestProjectAssistantNativeBrowserReceiptBridgesScreenshotTransiently(t *tes
 	if len(expanded) != 2 || expanded[1].UserInputMultiContent[1].Image == nil {
 		t.Fatalf("native screenshot was not bridged to vision input: %#v", expanded)
 	}
-	if got := expanded[1].UserInputMultiContent[1].Image.MessagePartCommon.Base64Data; got == nil || *got != "aW1hZ2UtcGl4ZWxz" {
+	if got := expanded[1].UserInputMultiContent[1].Image.Base64Data; got == nil || *got != "aW1hZ2UtcGl4ZWxz" {
 		t.Fatalf("vision bridge data = %v", got)
 	}
 	state.RecordToolMessage(chatMessage{Role: "tool", Name: "browser_take_screenshot", ToolCallID: "browser-shot", Content: raw})
@@ -1095,7 +1095,7 @@ func TestProjectAssistantBrowserSessionManagerScopesRefsAndCatalogsByWorkspace(t
 }
 
 func TestProjectAssistantNativeBrowserReadRetriesLostSessionOnce(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -1166,7 +1166,7 @@ func TestProjectAssistantNativeBrowserReadRetriesLostSessionOnce(t *testing.T) {
 }
 
 func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 	manager := newProjectAssistantBrowserSessionManager()
 	server.browserSessions = manager
 	defer manager.closeAll()
@@ -1259,7 +1259,7 @@ func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t
 }
 
 func TestProjectAssistantNativeBrowserLostReadWithPendingInteractionIsUnverifiable(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -1367,7 +1367,7 @@ func TestProjectAssistantNativeBrowserLostReadWithPendingInteractionIsUnverifiab
 }
 
 func TestProjectAssistantNativeBrowserMutationDoesNotReplayLostSession(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {

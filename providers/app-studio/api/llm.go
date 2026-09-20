@@ -40,6 +40,7 @@ import (
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	einoschema "github.com/cloudwego/eino/schema"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
@@ -47,12 +48,17 @@ import (
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const (
-	projectLLMSecretName           = "railgrid-projects-llm"
+	// projectLLMCredentialKey is the only entry a model credential Secret
+	// has. Its name is derived from the model ID (the Studio reconciler owns
+	// LLMCredentialSecretName), so no coordination is needed between the
+	// client that writes a key and the runtime that reads it.
+	projectLLMCredentialKey        = "apiKey"
 	projectLLMSecretNamespace      = "default"
 	defaultProjectLLMProvider      = "openai-compatible"
 	defaultProjectLLMBaseURL       = "https://api.openai.com/v1"
@@ -219,7 +225,6 @@ const (
 	projectToolCommitFiles                    = "commit_files"
 	projectToolWebSearch                      = "web_search"
 	projectToolWebFetch                       = "web_fetch"
-	projectToolCodeCommitFiles                = "code__commit_files"
 	projectToolInfrastructureListTemplates    = "infrastructure__list_templates"
 	projectToolInfrastructureDescribeTemplate = "infrastructure__describe_template"
 	projectToolInfrastructureProvision        = "infrastructure__provision"
@@ -390,91 +395,6 @@ type projectMCPTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
-}
-
-func (s *Server) getProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
-	}
-	registry, err := readProjectLLMRegistry(r.Context(), c)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, registry.view())
-}
-
-func (s *Server) patchProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
-	// The hub used to gate this on the railgrid "admin" membership role. The
-	// provider acts as the caller, so the workspace Secret's own RBAC is the
-	// authority: a non-admin caller's Update is rejected by the apiserver.
-	c, _, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
-	}
-	var req PatchProjectLLMSettingsRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	registry, err := readProjectLLMRegistry(r.Context(), c)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	model, found := registry.model("")
-	if !found {
-		model = projectLLMModelSettings{
-			ID:       projectLLMLegacyDefaultModelID,
-			Name:     defaultProjectLLMModel,
-			Settings: registry.Runtime,
-		}
-		registry.Models = append(registry.Models, model)
-		registry.DefaultModelID = model.ID
-	}
-	settings := model.Settings
-	if req.Provider != nil {
-		settings.Provider = strings.TrimSpace(*req.Provider)
-		if settings.Provider == "" {
-			settings.Provider = defaultProjectLLMProvider
-		}
-	}
-	if req.BaseURL != nil {
-		baseURL, err := normalizeLLMBaseURL(*req.BaseURL)
-		if err != nil {
-			writeProjectError(w, err)
-			return
-		}
-		settings.BaseURL = baseURL
-	}
-	if req.Model != nil {
-		settings.Model = strings.TrimSpace(*req.Model)
-		if settings.Model == "" {
-			writeProjectError(w, newValidationError("model cannot be empty"))
-			return
-		}
-	}
-	if req.APIKey != nil {
-		settings.APIKey = strings.TrimSpace(*req.APIKey)
-	}
-	if err := normalizeProjectLLMSettings(&settings); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	for i := range registry.Models {
-		if registry.Models[i].ID == model.ID {
-			registry.Models[i].Settings = settings
-			if strings.TrimSpace(registry.Models[i].Name) == "" || registry.Models[i].Name == defaultProjectLLMModel {
-				registry.Models[i].Name = settings.Model
-			}
-			break
-		}
-	}
-	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, registry.view())
 }
 
 func (s *Server) generateProjectAssistantStream(
@@ -906,7 +826,25 @@ func projectLinkedRepositoryRef(p *aiv1alpha1.Project) string {
 	return strings.TrimSpace(p.Spec.Repository.RepositoryRef)
 }
 
-func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, project *aiv1alpha1.Project, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {
+// commitProjectWorkspaceFiles is the assistant's commit_project_files tool.
+//
+// It makes exactly the call the Project reconciler makes — the Code provider's
+// `repositories/{name}/commit/v1` action, through internal/codecommit — and
+// the only difference is whose bearer carries it: here it is the human who
+// asked for the commit, forwarded from the request that authenticated them to
+// App Studio, so the Code provider's two gates authorize the person rather
+// than this provider. It used to be the `code__commit_files` MCP tool, which
+// meant holding `use` on an MCPServer to write a file and probing the tool's
+// advertised input schema to find out whether binaries were allowed; the
+// action's schema settles that, so there is nothing to probe and no aggregate
+// in the path.
+//
+// Nothing waits for the commit to land. The action creates a RepositoryCommit
+// and returns its name; this records it as the workspace's pending commit —
+// the same durable record the reconciler writes — and the reconciler's watch
+// on that object is what settles the dirty-path ledger, for both callers. The
+// tool therefore reports a commit REQUESTED, which is what actually happened.
+func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, project *aiv1alpha1.Project, projectRepositoryRef string, args map[string]any) (string, error) {
 	projectRepositoryRef = strings.TrimSpace(projectRepositoryRef)
 	if projectRepositoryRef == "" {
 		return "", errors.New("project repository is not configured")
@@ -938,16 +876,18 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		seen[clean] = struct{}{}
 		cleanPaths = append(cleanPaths, clean)
 	}
-	files := make([]map[string]string, 0, len(cleanPaths))
+	files := make([]codecommit.File, 0, len(cleanPaths))
+	writtenPaths := make([]string, 0, len(cleanPaths))
 	deletePaths := make([]string, 0)
-	skippedBinaries := make([]string, 0)
-	binarySupported := -1 // probed on the first binary only
 	var totalBytes int64
 	for _, p := range cleanPaths {
 		data, err := s.workspaces.ReadFileBytes(ctx, scope, p, hubmcp.BinaryFileMaxBytes)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				// A path the model listed that is no longer on disk is a
+				// deletion, which the action takes in the same file list.
 				deletePaths = append(deletePaths, p)
+				files = append(files, codecommit.File{Path: p, Delete: true})
 				continue
 			}
 			var tooLarge *workspace.FileTooLargeError
@@ -956,34 +896,18 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 			}
 			return "", err
 		}
-		if hubmcp.IsText(data) {
-			if len(data) > hubmcp.CommitTextMaxBytes {
-				return "", fmt.Errorf("file %q is too large to commit through commit_project_files: %d > %d bytes", p, len(data), hubmcp.CommitTextMaxBytes)
-			}
-		} else {
-			if binarySupported < 0 {
-				binarySupported = 0
-				if commit, _ := s.codeBinaryCapabilities(ctx, r, id); commit {
-					binarySupported = 1
-				}
-			}
-			if binarySupported == 0 {
-				// An older Code provider would store base64 as text. Leave the
-				// binary uncommitted (it stays dirty) instead of blocking text.
-				skippedBinaries = append(skippedBinaries, p)
-				continue
-			}
+		if hubmcp.IsText(data) && len(data) > hubmcp.CommitTextMaxBytes {
+			return "", fmt.Errorf("file %q is too large to commit through commit_project_files: %d > %d bytes", p, len(data), hubmcp.CommitTextMaxBytes)
 		}
 		totalBytes += int64(len(data))
 		if totalBytes > projectCommitProjectFilesMaxSize {
 			return "", fmt.Errorf("commit_project_files payload is too large: %d > %d bytes", totalBytes, projectCommitProjectFilesMaxSize)
 		}
-		files = append(files, hubmcp.WireFile(p, data))
+		wire := hubmcp.WireFile(p, data)
+		files = append(files, codecommit.File{Path: wire["path"], Content: wire["content"], Encoding: wire["encoding"]})
+		writtenPaths = append(writtenPaths, p)
 	}
-	if len(files) == 0 && len(deletePaths) == 0 {
-		if len(skippedBinaries) > 0 {
-			return "", fmt.Errorf("only binary files changed (%s), and this workspace's Code provider does not accept binary commits yet; they stay uncommitted in the workspace", strings.Join(skippedBinaries, ", "))
-		}
+	if len(files) == 0 {
 		return "", errors.New("no file changes to commit")
 	}
 	workspaceDigest, err := s.workspaces.WorkspaceDigest(ctx, scope, cleanPaths)
@@ -994,36 +918,92 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		expectedDigest != workspaceDigest {
 		return "", errors.New("workspace content changed after commit approval; request approval again for the current content")
 	}
-	commitArgs := map[string]any{
-		"repositoryRef": projectRepositoryRef,
-		"files":         files,
-	}
-	if len(deletePaths) > 0 {
-		commitArgs["deletePaths"] = deletePaths
-	}
-	if message := projectToolString(args["message"]); message != "" {
-		commitArgs["message"] = message
-	}
-	if branch := projectToolString(args["branch"]); branch != "" {
-		commitArgs["branch"] = branch
-	}
-	resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, id.tenant, s.mcpInsecureSkipTLSVerify, projectToolCodeCommitFiles, commitArgs)
+
+	// The action is addressed at the Repository by name and PINNED by UID: the
+	// provider refuses a UID that does not match what its own read returns, so
+	// a recycled name cannot commit into a stranger's repository. Reading it
+	// here is also gate 1 in advance — a caller who cannot see the Repository
+	// is refused with a reason instead of an opaque action_forbidden.
+	repositoryUID, err := s.projectRepositoryUID(ctx, id, projectRepositoryRef)
 	if err != nil {
 		return "", err
 	}
-	if len(skippedBinaries) > 0 {
-		// The settlement reads skippedBinaryPaths so these stay dirty for a
-		// later commit once the Code provider supports binaries.
-		decoded := map[string]any{}
-		if json.Unmarshal([]byte(resp), &decoded) == nil {
-			decoded["skippedBinaryPaths"] = skippedBinaries
-			decoded["note"] = "Binary files were not committed because this workspace's Code provider does not accept binary commits yet; they remain uncommitted in the project workspace and are still synced to the development sandbox."
-			if raw, err := json.Marshal(decoded); err == nil {
-				resp = string(raw)
-			}
+	provider, err := s.providerFor(ctx, id, codeAPIExportName)
+	if err != nil {
+		return "", err
+	}
+	created, err := (&codecommit.Client{HubBase: s.hubBase, Insecure: s.mcpInsecureSkipTLSVerify}).Commit(ctx, codecommit.Request{
+		Provider:      provider,
+		Token:         id.token,
+		Cluster:       id.clusterID,
+		RepositoryRef: projectRepositoryRef,
+		RepositoryUID: repositoryUID,
+		Message:       projectToolString(args["message"]),
+		Branch:        projectToolString(args["branch"]),
+		Files:         files,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	// Record the commit the way the reconciler records its own, so the single
+	// settlement path converges it: the RepositoryCommit watch reads this
+	// record, checks the digest still matches, clears exactly those paths and
+	// announces the SHA. Recording it is best-effort in one direction only —
+	// the commit HAS been requested, so failing the tool here would invite a
+	// duplicate commit on retry; what is lost without the record is the
+	// automatic settlement, and the next reconcile re-commits the same paths.
+	if s.workspaces != nil {
+		if err := s.workspaces.RecordPendingCommit(ctx, scope, workspace.PendingCommit{
+			Name:            created.Name,
+			RepositoryRef:   projectRepositoryRef,
+			WorkspaceDigest: workspaceDigest,
+			Paths:           cleanPaths,
+		}); err != nil {
+			klog.V(2).Infof("record pending RepositoryCommit %s for project %s: %v", created.Name, scope.ProjectName, err)
 		}
 	}
-	return resp, nil
+	// Wake the Project reconciler now rather than on its next event: it is
+	// what follows the RepositoryCommit to settlement, and the sooner it has
+	// the record the sooner the committed paths stop reading as dirty.
+	s.signalProject(id.workspaceUUID, scope.ProjectName)
+
+	result := map[string]any{
+		"name":          created.Name,
+		"uid":           created.UID,
+		"repositoryRef": projectRepositoryRef,
+		"files":         writtenPaths,
+		"note":          "The commit was requested; RepositoryCommit " + created.Name + " is the object it lands under. App Studio follows it to completion and clears the committed paths when it succeeds.",
+	}
+	if len(deletePaths) > 0 {
+		result["deletePaths"] = deletePaths
+	}
+	if branch := projectToolString(args["branch"]); branch != "" {
+		result["branch"] = branch
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// projectRepositoryUID reads the Code Repository this project is bound to, as
+// the caller, and returns its UID.
+func (s *Server) projectRepositoryUID(ctx context.Context, id identity, repositoryRef string) (string, error) {
+	c, err := s.clientFor(id)
+	if err != nil {
+		return "", err
+	}
+	repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, repositoryRef, metav1.GetOptions{})
+	if err != nil {
+		return "", codeProviderRequestError("get Code repository", err)
+	}
+	uid := strings.TrimSpace(string(repo.GetUID()))
+	if uid == "" {
+		return "", fmt.Errorf("the Code repository %q has no UID to pin the commit to", repositoryRef)
+	}
+	return uid, nil
 }
 
 func ensureProjectToolCallIDs(toolCalls []chatToolCall, modelCallOrdinal int) {
@@ -1657,24 +1637,6 @@ func projectToolStringList(value any) []string {
 	return out
 }
 
-func projectToolObjectPaths(value any) []string {
-	items, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		obj, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if path := projectToolString(obj["path"]); path != "" {
-			out = append(out, path)
-		}
-	}
-	return out
-}
-
 func projectToolNumber(value any) (int64, bool) {
 	switch v := value.(type) {
 	case float64:
@@ -1760,14 +1722,14 @@ func (s *Server) loadProjectMCPAssistantTools(r *http.Request, id identity, _ pr
 	if err != nil {
 		return nil, false, err
 	}
-	codeCommitAvailable := false
-	for _, t := range tools {
-		if projectMCPCommitToolAvailable(t.Name) {
-			codeCommitAvailable = true
-			break
-		}
-	}
-	return projectAssistantMCPToolsForSpecs(tools, s.mcpInsecureSkipTLSVerify), codeCommitAvailable, nil
+	// Whether commit_project_files is offered is now a question about the
+	// WORKSPACE's bindings, not about the MCP catalogue: committing is the
+	// Code provider's `repositories/commit/v1` action, so the capability
+	// exists exactly when this workspace binds a Code provider to address it
+	// on. It used to be "is code__commit_files in tools/list", which made an
+	// aggregate's availability decide whether a repository could be written.
+	_, codeErr := s.providerFor(r.Context(), id, codeAPIExportName)
+	return projectAssistantMCPToolsForSpecs(tools, s.mcpInsecureSkipTLSVerify), codeErr == nil, nil
 }
 
 // mcpEndpoint returns the hub's unified MCPServer virtual-workspace endpoint for
@@ -2022,19 +1984,6 @@ func readProjectLLMSettings(ctx context.Context, c *asclient.Client) (projectLLM
 	return registry.selectedSettings("", "")
 }
 
-func writeProjectLLMSettings(ctx context.Context, c *asclient.Client, settings projectLLMSettings) error {
-	registry := projectLLMRegistry{
-		DefaultModelID: projectLLMLegacyDefaultModelID,
-		Models: []projectLLMModelSettings{{
-			ID:       projectLLMLegacyDefaultModelID,
-			Name:     settings.Model,
-			Settings: settings,
-		}},
-		Runtime: settings,
-	}
-	return writeProjectLLMRegistry(ctx, c, registry)
-}
-
 func defaultProjectLLMSettings() projectLLMSettings {
 	return projectLLMSettings{
 		Provider:             defaultProjectLLMProvider,
@@ -2256,39 +2205,6 @@ func looksLikeJWTOrOAuthToken(raw string) bool {
 	_, hasAlg := header["alg"]
 	_, hasKeyID := header["kid"]
 	return strings.EqualFold(typ, "JWT") || hasAlg || hasKeyID
-}
-
-func (s projectLLMSettings) view() ProjectLLMSettingsView {
-	return ProjectLLMSettingsView{
-		Provider:   s.Provider,
-		BaseURL:    s.BaseURL,
-		Model:      s.Model,
-		Configured: strings.TrimSpace(s.APIKey) != "",
-	}
-}
-
-func projectLLMSettingsSecret(settings projectLLMSettings) *unstructured.Unstructured {
-	data := map[string]interface{}{
-		"provider":            encodeSecretValue(settings.Provider),
-		"baseURL":             encodeSecretValue(settings.BaseURL),
-		"model":               encodeSecretValue(settings.Model),
-		"maxRetries":          encodeSecretValue(strconv.Itoa(settings.MaxRetries)),
-		"retryBackoffMS":      encodeSecretValue(strconv.FormatInt(settings.RetryBackoff.Milliseconds(), 10)),
-		"streamIdleTimeoutMS": encodeSecretValue(strconv.FormatInt(settings.StreamIdleTimeout.Milliseconds(), 10)),
-	}
-	if strings.TrimSpace(settings.APIKey) != "" {
-		data["apiKey"] = encodeSecretValue(settings.APIKey)
-	}
-	return &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "v1",
-		"kind":       "Secret",
-		"metadata": map[string]interface{}{
-			"name":      projectLLMSecretName,
-			"namespace": projectLLMSecretNamespace,
-		},
-		"type": "Opaque",
-		"data": data,
-	}}
 }
 
 func secretDataValue(secret *unstructured.Unstructured, key string) string {
@@ -2522,10 +2438,6 @@ func projectLocalToolAllowed(name string) bool {
 func projectMCPToolAllowed(name string) bool {
 	_, ok := projectAssistantMCPToolSpec(projectMCPTool{Name: name})
 	return ok
-}
-
-func projectMCPCommitToolAvailable(name string) bool {
-	return strings.EqualFold(strings.TrimSpace(name), projectToolCodeCommitFiles)
 }
 
 func projectAssistantMCPToolsForSpecs(tools []projectMCPTool, skipTLSVerify ...bool) []projectAssistantTool {
