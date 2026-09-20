@@ -41,7 +41,7 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: runs
-    schema: v260919-91e6c6ad.runs.agents.railgrid.ai
+    schema: v260919-e478625c.runs.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai

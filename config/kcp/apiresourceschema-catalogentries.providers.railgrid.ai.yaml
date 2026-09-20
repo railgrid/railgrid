@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-78822e7c.catalogentries.providers.railgrid.ai
+  name: v260919-e478625c.catalogentries.providers.railgrid.ai
 spec:
   group: providers.railgrid.ai
   names:

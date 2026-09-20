@@ -89,6 +89,11 @@ go build -o bin/railgrid-hub ./cmd/railgrid-hub
         'cmd/railgrid-hub',
         'pkg',
         'apis',
+        # config/kcp and config/crds are embedded into the hub binary
+        # (config/kcp/embed.go, pkg/hub/bootstrap/crds); a regenerated
+        # APIResourceSchema must rebuild the hub or bootstrap keeps retrying
+        # an immutable update forever and the portal never comes up.
+        'config',
         'go.mod',
         'go.sum',
         # Restart the hub once the railgrid-kro kubeconfig appears so the

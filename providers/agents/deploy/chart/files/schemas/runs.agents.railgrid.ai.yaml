@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-91e6c6ad.runs.agents.railgrid.ai
+  name: v260919-e478625c.runs.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -80,6 +80,44 @@ spec:
               maxLength: 253
               minLength: 1
               type: string
+            delivery:
+              description: |-
+                Delivery is where this run's answer is headed, and — for an unattended
+                run — what makes the object a complete work item.
+
+                It is on SPEC rather than status because it is part of the request: a
+                process that picks this run up after a restart has to know where to send
+                the answer, and the goroutine that knew is exactly what a crash destroys.
+              properties:
+                kind:
+                  description: |-
+                    Kind is what submitted the run: schedule, trigger or channel. Empty for a
+                    run with no unattended source — one a person started and is watching.
+                  maxLength: 32
+                  type: string
+                notifyChannel:
+                  description: |-
+                    NotifyChannel is the agent-channel role (a name in the agent's
+                    spec.channels) an unattended run reports to. Empty means the agent's
+                    primary channel. Resolved at delivery time, so re-pointing a channel
+                    takes effect without re-queueing anything.
+                  maxLength: 253
+                  type: string
+                replyTarget:
+                  description: |-
+                    ReplyTarget pins the exact chat inside the source connection (the Discord
+                    channel or Telegram chat the message came from), so the answer lands
+                    where the question was asked rather than on the connection's default.
+                  maxLength: 253
+                  type: string
+                sourceName:
+                  description: |-
+                    SourceName attributes the run to whatever asked for it: a Schedule, a
+                    Trigger, a channel Connection, or a caller identity. A label, never a
+                    trust root — the gates already decided the caller could start this.
+                  maxLength: 253
+                  type: string
+              type: object
             idempotencyKey:
               description: |-
                 IdempotencyKey is the caller-supplied de-duplication token this run was
@@ -108,13 +146,6 @@ spec:
                 conversation (an unattended fire with nothing to continue).
               maxLength: 253
               type: string
-            sourceName:
-              description: |-
-                SourceName attributes the run to whatever asked for it: a schedule, a
-                trigger, a channel connection, or a caller identity. A label, never a
-                trust root — the gates already decided the caller could start this.
-              maxLength: 253
-              type: string
             trigger:
               description: |-
                 Trigger is what started the run: chat, schedule, heartbeat, wakeup,
@@ -129,6 +160,21 @@ spec:
         status:
           description: RunStatus is what happened. Only the provider writes it.
           properties:
+            attempt:
+              description: |-
+                Attempt counts how many times this run has been claimed. A run that
+                kills the process that picks it up is the reason it is on the object and
+                not in memory: without it, such a run is re-queued forever by every new
+                leader, and the provider never starts cleanly again.
+              format: int32
+              type: integer
+            claimedAt:
+              description: |-
+                ClaimedAt is when Owner was written. It bounds how long a claim holds
+                before another process may take the run: a claim with no timestamp is
+                indistinguishable from one made by a process that died a second later.
+              format: date-time
+              type: string
             conditions:
               description: Conditions follows the standard Kubernetes conditions pattern.
               items:
@@ -213,10 +259,19 @@ spec:
               type: integer
             owner:
               description: |-
-                Owner is the replica currently executing this run, written when it is
-                claimed and cleared when it settles. It is what makes a restart
-                recoverable without a timer: a Pending run with no owner is unclaimed
-                work, and a Running run whose owner is gone is work to re-queue.
+                Owner is the process that claimed this run.
+
+                It is the whole locking story for unattended work. A Pending run with no
+                owner is unclaimed: the reconciler writes its own identity here through
+                the status subresource, and optimistic concurrency settles the race —
+                the loser sees a conflict and drops the run rather than executing it a
+                second time. Because only the leader reconciles, an owner that is not
+                the current process is a previous leader, and a run still unstarted
+                under one past ClaimGrace is work to re-claim.
+
+                It is also what makes a restart recover without a timer: the watch
+                re-delivers every Run on startup, and the unclaimed and abandoned ones
+                are simply the ones whose owner is empty or stale.
               maxLength: 253
               type: string
             phase:
