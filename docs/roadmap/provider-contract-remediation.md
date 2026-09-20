@@ -15,9 +15,16 @@ provider serves through `provider-sdk/serve`, every verb passes
 §3 and §7 are applied in the `railgrid/providers` checkout (databricks, planner,
 factory on `serve.New` + `dataplane`; factory heartbeat with `CanSend`) against
 a local `replace github.com/railgrid/provider-sdk => ../../../railgrid/provider-sdk`
-in each `go.mod` that must be repinned to a published SDK before merge; the
-factory typed Go APIs (§7.3) are deferred and written up in that repo's
-`docs/typed-apis.md`.
+in each `go.mod` that must be repinned to a published SDK before merge. §7.3
+landed as typed `apis/v1alpha1` Go types for factory's five kinds, generated
+through controller-gen + apigen + apiexportgen, with a schema-equivalence gate
+(`hack/verify-schema-equivalence.py`) proving no bound, enum, default or CEL
+rule was lost against the retired Python DSL; the hand-written `manifest.yaml`
+replaced `generate-api.py`. Still owed there: converting `internal/api`'s
+unstructured decode path and the controllers to the typed kinds
+(`docs/typed-apis.md`, "What is still owed").
+Operator and tenant upgrade steps are collected in
+[provider-contract-migration.md](../provider-contract-migration.md).
 Open follow-ups recorded by the implementation:
 - Edge agents adopt a saved credential (`~/.railgrid/agent-<edge>.credential.json`)
   only when it matches their hub and cluster, and alternate with the join token
@@ -55,8 +62,10 @@ Open follow-ups recorded by the implementation:
   in every workspace that had edges enabled; delete both by hand (nothing reads
   them and no code path removes them any more).
 - A tenant APIBinding accepted before a claim was narrowed keeps its `matchAll`
-  selector (immutable) and shows `PermissionClaimsValid=False` as a warning;
-  Disable and re-Enable, or the admin `claims/reaccept` endpoint, refreshes it.
+  selector (kcp makes it immutable) and shows `PermissionClaimsValid=False` as
+  a warning; only Disable and re-Enable in that workspace recreates it with the
+  narrow selector. The admin `claims/reaccept` endpoint propagates the claim
+  set but deliberately keeps each existing claim's selector.
 When a phase merges, replace the branch name with the PR number; when a provider
 is fully conformant, delete its section.
 

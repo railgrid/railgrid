@@ -63,5 +63,6 @@ railgrid is alpha software at v0.1.x. There is no hosted service; you run the hu
 | [Ingress]({% link ingress/index.md %}) | Expose the hub through nginx, Gateway API or Cloudflare Tunnel |
 | [MCP architecture]({% link mcp-architecture.md %}) | How tools from providers and edges become one endpoint |
 | [Developer guide]({% link developers.md %}) | The local kind environment and provider development |
+| [Provider contract upgrade notes]({% link provider-contract-migration.md %}) | One-time operator steps and tenant-visible changes from the provider contract remediation |
 
 Under the hood, workspaces are served by [kcp](https://github.com/kcp-dev/kcp); the [developer guide]({% link developers.md %}) covers what that means for operators and provider authors. Design documents live in the repository: [providers](https://github.com/railgrid/railgrid/blob/main/docs/providers.md), [organizations](https://github.com/railgrid/railgrid/blob/main/docs/organizations.md), [provider actions](https://github.com/railgrid/railgrid/blob/main/docs/provider-actions.md), [BYO providers](https://github.com/railgrid/railgrid/blob/main/docs/byo-providers.md).
