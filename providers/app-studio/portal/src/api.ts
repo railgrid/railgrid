@@ -946,10 +946,13 @@ export const api = {
     )
   },
 
+  // The development-preview view speaks 'private' | 'public'; the verb
+  // normalizes 'private' to 'restricted' (requestedPreviewMode in
+  // api/project_preview_access.go), so both vocabularies are accepted here.
   async setPreviewAccess(
     ctx: RailgridContext | null,
     name: string,
-    mode: ProjectPublishingMode,
+    mode: ProjectPublishingMode | 'private',
   ): Promise<ProjectPreviewAccess> {
     return request<ProjectPreviewAccess>(
       ctx,
