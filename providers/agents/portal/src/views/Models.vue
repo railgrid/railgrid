@@ -124,6 +124,20 @@ function fallbackOf(credential: Credential) { revision.value; return props.store
 function fmtCtx(value: number): string { return value >= 1e6 ? `${value / 1e6}M ctx` : value >= 1e3 ? `${Math.round(value / 1e3)}k ctx` : `${value} ctx` }
 function setMap<K, V>(source: Map<K, V>, key: K, value: V): Map<K, V> { return new Map(source).set(key, value) }
 function credentialAction(name: string): CredentialAction | undefined { return credentialActions.value.get(name) }
+// statusLabel is what the card says before anyone presses Test: the
+// reconciler's own verdict. `ready` undefined means the provider has not
+// looked yet, which is a different statement from "looked and it is broken" —
+// so it reads as "Checking…", not as a failure.
+function statusLabel(credential: Credential): string {
+  if (credential.ready === true) return 'Ready'
+  if (credential.ready === false) return credential.secretResolved === false ? 'Needs credential' : 'Not reachable'
+  return 'Checking…'
+}
+function statusTone(credential: Credential): 'success' | 'danger' | 'muted' {
+  if (credential.ready === true) return 'success'
+  if (credential.ready === false) return 'danger'
+  return 'muted'
+}
 function credentialIsBusy(name: string): boolean { return credentialActions.value.has(name) }
 function invalidateProbe(name: string): void {
   probeGenerations.set(name, (probeGenerations.get(name) || 0) + 1)
@@ -191,7 +205,7 @@ function cancelCreate(): void {
   saveError.value = null
   if (props.createRoute) emit('create-cancel', { store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession })
 }
-async function saveModel(body: CredentialWrite, probe: CredentialTestResult): Promise<void> {
+async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): Promise<void> {
   if (createBusy.value) return
   if (!editingCredential.value && credentials.value.data.some(item => item.name === body.name)) { saveError.value = 'A model with this name already exists. Choose another name.'; return }
   const authority = captureAuthority()
@@ -204,9 +218,22 @@ async function saveModel(body: CredentialWrite, probe: CredentialTestResult): Pr
     const result = await authority.api.saveCredential(body)
     if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
     clearProbeState(body.name)
-    tested.value = setMap(tested.value, body.name, probe)
+    if (probe) tested.value = setMap(tested.value, body.name, probe)
     await authority.store.load('credentials')
     if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
+    // A credential saved without a model is half a job, and deliberately so:
+    // "which models does this endpoint serve?" is a verb on the SAVED
+    // credential, so the first save is what makes the question askable. Keep
+    // the editor open on the object that now exists, rather than closing on a
+    // credential no agent can run.
+    if (!edited && !(body.model ?? '').trim()) {
+      editingCredential.value = credentials.value.data.find(item => item.name === body.name) ?? { ...result }
+      editName.value = body.name
+      creating.value = false
+      editorGeneration.value++
+      toast('ok', 'Connection saved. Find models to pick one.')
+      return
+    }
     cancelEditorAfterSave()
     toast('ok', edited ? 'Model updated.' : 'Model connected.')
     if (!edited && props.routeOwned) emit('create-success', { resource: 'model', name: body.name, item: result, ...fence })
@@ -238,7 +265,7 @@ defineExpose({ loadCatalog, loadUsage })
     <template v-if="createRoute || creating || editingCredential">
       <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Models</button>
       <header class="k-create-header"><h1 class="k-create-title">{{ editingCredential ? 'Edit model' : 'Connect model' }}</h1><p class="k-create-description">Configure a workspace model connection.</p></header>
-      <ModelConnectionEditor ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :busy="createBusy" :error="saveError" @save="saveModel" @cancel="cancelCreate" />
+      <ModelConnectionEditor ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" />
     </template>
     <template v-else>
       <div class="agents-panel-head"><h3>Models</h3><button v-if="!showFirstRun" class="k-btn k-btn--primary" @click="routeOwned ? emit('navigate', { kind: 'create', resource: 'model' }) : creating = true"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect model</button></div><p class="muted">Connect and manage models for your agents.</p>
@@ -250,13 +277,15 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       <div v-if="credentials.hasSnapshot" class="k-model-grid">
-        <ModelConnectionCard v-for="credential in credentials.data" :key="credential.name" :name="credential.name" :model="credential.model || '—'" :endpoint="credential.baseURL" :configured="credential.hasAPIKey !== false" :busy="credentialIsBusy(credential.name)"
-          :test-state="testing.has(credential.name) ? 'Testing…' : tested.get(credential.name)?.ok ? `Test passed · ${tested.get(credential.name)?.latencyMS} ms` : tested.has(credential.name) ? 'Test failed' : 'Not tested'"
-          :test-tone="tested.get(credential.name)?.ok ? 'success' : tested.has(credential.name) ? 'danger' : 'muted'">
+        <ModelConnectionCard v-for="credential in credentials.data" :key="credential.name" :name="credential.name" :model="credential.model || '—'" :endpoint="credential.baseURL" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
+          :test-state="testing.has(credential.name) ? 'Testing…' : tested.get(credential.name)?.ok ? `Test passed · ${tested.get(credential.name)?.latencyMS} ms` : tested.has(credential.name) ? 'Test failed' : statusLabel(credential)"
+          :test-tone="tested.get(credential.name)?.ok ? 'success' : tested.has(credential.name) ? 'danger' : statusTone(credential)">
           <div v-if="lookupModel(credential.model || '')" class="agents-model-chips"><template v-if="lookupModel(credential.model || '')"><span v-if="lookupModel(credential.model || '')?.contextWindow" class="agents-chip">{{ fmtCtx(lookupModel(credential.model || '')!.contextWindow!) }}</span><span v-if="lookupModel(credential.model || '')?.vision" class="agents-chip"><Eye :stroke-width="1.75" aria-hidden="true" /> vision</span><span v-if="lookupModel(credential.model || '')?.toolCall" class="agents-chip"><Wrench :stroke-width="1.75" aria-hidden="true" /> tools</span><span v-if="lookupModel(credential.model || '')?.reasoning" class="agents-chip"><Brain :stroke-width="1.75" aria-hidden="true" /> reasoning</span></template></div>
           <p v-if="lookupModel(credential.model || '')" class="agents-hint">${{ lookupModel(credential.model || '')?.inputPer1M }} input · ${{ lookupModel(credential.model || '')?.outputPer1M }} output<br />USD per 1M tokens · catalog estimate</p><p v-else class="agents-hint">{{ missingCatalogLabel() }}</p>
           <div class="agents-model-assign"><span v-for="agent in primaryOf(credential)" :key="`p-${agent.metadata.name}`" class="agents-chip agents-chip-primary"><Link2 :stroke-width="1.75" aria-hidden="true" /> Primary: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-for="agent in fallbackOf(credential)" :key="`f-${agent.metadata.name}`" class="agents-chip agents-chip-fallback"><CornerDownRight :stroke-width="1.75" aria-hidden="true" /> Fallback: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-if="!primaryOf(credential).length && !fallbackOf(credential).length" class="muted agents-assign-none">Not assigned to any agent</span></div>
           <p v-if="tested.get(credential.name)?.error" class="k-error" role="alert">{{ tested.get(credential.name)?.error }}</p>
+          <p v-else-if="credential.ready === false && credential.statusMessage" class="k-error" role="alert">{{ credential.statusMessage }}</p>
+          <p v-if="credential.discovered?.length" class="agents-hint">{{ credential.discovered.length }} chat model{{ credential.discovered.length === 1 ? '' : 's' }} available from this endpoint</p>
           <template #actions><button class="k-btn k-btn--ghost" :disabled="credentialActions.size > 0" @click="toggleEdit(credential)">Edit</button><button class="k-btn k-btn--ghost" :disabled="testing.has(credential.name) || credentialIsBusy(credential.name)" @click="testCredential(credential.name)">Test connection</button><button class="k-icon-action" :disabled="credentialIsBusy(credential.name)" :aria-busy="credentialAction(credential.name) === 'deleting'" :aria-label="credentialAction(credential.name) === 'deleting' ? `Deleting ${credential.name}…` : `Delete ${credential.name}`" @click="remove(credential.name)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button></template>
         </ModelConnectionCard>
       </div>

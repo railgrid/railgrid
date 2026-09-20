@@ -39,6 +39,9 @@ package serve
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -325,7 +328,7 @@ func (s *server) handlePortal(w http.ResponseWriter, r *http.Request) {
 	// hub's UI proxy applies (isAssetPath, pkg/hub/providers/proxy.go), so the
 	// two ends of the proxy agree on what the SPA owns.
 	if name := strings.TrimPrefix(r.URL.Path, "/"); name != "" && isAssetPath(name) {
-		if s.serveAsset(w, name) {
+		if s.serveAsset(w, r, name) {
 			return
 		}
 		// A path that looks like an asset and is not in the bundle is a 404,
@@ -346,7 +349,17 @@ func (s *server) handlePortal(w http.ResponseWriter, r *http.Request) {
 // written nothing) when it is absent. Content-Type comes from the extension
 // because http.FileServer's sniffing does not apply when we copy the bytes
 // ourselves.
-func (s *server) serveAsset(w http.ResponseWriter, name string) bool {
+// serveAsset writes one portal asset with a strong ETag and answers
+// If-None-Match with 304. The hub pins main.js with Subresource Integrity and
+// revalidates that pin with a conditional GET on every reconcile
+// (pkg/hub/providers/ui_integrity.go); without the ETag it would have to
+// re-download and re-hash the whole bundle each time, or keep a stale pin for
+// a resync interval after a rebuild at an unchanged version, which is what
+// made the browser refuse a rebuilt bundle.
+//
+// Assets are read whole: a portal bundle is a few hundred KB of files the
+// process ships with, and the hash is over the exact bytes served.
+func (s *server) serveAsset(w http.ResponseWriter, r *http.Request, name string) bool {
 	f, err := s.portal.Open(name)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -359,16 +372,24 @@ func (s *server) serveAsset(w http.ResponseWriter, name string) bool {
 	if info, err := f.Stat(); err == nil && info.IsDir() {
 		return false
 	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		s.log.Error(err, "portal asset read", "name", name)
+		http.Error(w, "asset unreadable", http.StatusInternalServerError)
+		return true
+	}
 
 	contentType := mime.TypeByExtension(path.Ext(name))
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
+	sum := sha256.Sum256(data)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "no-cache")
-	if _, err := io.Copy(w, f); err != nil {
-		s.log.Error(err, "portal asset write", "name", name)
-	}
+	w.Header().Set("ETag", `"`+hex.EncodeToString(sum[:16])+`"`)
+	// ServeContent answers If-None-Match with 304 and sets Content-Length; a
+	// zero modtime leaves Last-Modified out so the ETag alone drives it.
+	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
 	return true
 }
 

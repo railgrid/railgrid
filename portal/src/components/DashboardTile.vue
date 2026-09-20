@@ -17,6 +17,7 @@ import {
 } from '@/providers/providerScriptLoader'
 import { createProviderContext } from '@/providers/providerContext'
 import { resolveProviderBundle } from '@/providers/providerBundle'
+import { useProvidersStore } from '@/stores/providers'
 import { authFetch } from '@/auth/session'
 import type { ProviderDTO } from '@/stores/providers'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
@@ -28,6 +29,7 @@ import {
 } from 'lucide-vue-next'
 
 const routeContext = useRouteContextStore()
+const providers = useProvidersStore()
 const { scopePath } = useScopedNavigation()
 
 // DashboardTile is the portal-side mount point for one provider's
@@ -155,7 +157,11 @@ async function loadAndMount(name: string, version: string | undefined, generatio
     // platform providers use the loader's fixed URL (providerBundle.ts).
     const bundle = await resolveProviderBundle(props.provider, authFetch)
     if (!isCurrentLoad(generation, name, version)) return
-    await loadProviderScript(name, version, document, undefined, bundle)
+    // See ProviderFrame.vue: one pinned retry against the hub's corrected pin.
+    await loadProviderScript(name, version, document, undefined, {
+      ...bundle,
+      refreshIntegrity: () => providers.refreshMainJSIntegrity(name),
+    })
   } catch {
     if (isCurrentLoad(generation, name, version)) loadState.value = 'error'
     return

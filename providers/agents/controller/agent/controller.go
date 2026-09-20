@@ -51,6 +51,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -130,18 +131,21 @@ func (r *Reconciler) now() time.Time {
 
 // SetupWithManager wires the reconciler into the multicluster manager.
 //
-// Connections are watched as well as Agents: an agent's channel bindings are
-// only valid while the Connections they name exist, so creating the missing
-// Connection must clear the condition without the agent being touched. The
-// mapping is deliberately coarse (every Agent in the cluster) — a Connection
-// event is rare and an Agent list is small, and the alternative is an index
-// over channel refs for no gain.
+// Connections and ModelCredentials are watched as well as Agents: an agent's
+// channel bindings are only valid while the Connections they name exist, and
+// its ModelCredentialsReady condition tracks credentials whose readiness
+// changes with no agent edit at all (a rotated key, an endpoint that started
+// refusing). Creating the missing object, or a credential going Ready, must
+// update the agent without it being touched. The mapping is deliberately
+// coarse (every Agent in the cluster) — those events are rare and an Agent
+// list is small, and the alternative is an index over refs for no gain.
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("agents-agent").
 		For(&agentsv1alpha1.Agent{}).
 		Watches(&agentsv1alpha1.Connection{}, allAgents).
+		Watches(&agentsv1alpha1.ModelCredential{}, allAgents).
 		Complete(r)
 }
 
@@ -211,6 +215,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if setValidated(&agent, reason, message) {
 		changed = true
 	}
+
+	// ModelCredentialsReady is its own condition rather than another Validated
+	// reason: an agent whose credential stopped answering has a correct spec
+	// and an unreachable model, and collapsing the two would report a rotated
+	// key as a malformed agent.
+	credReason, credMessage, err := r.validateModelCredentials(ctx, c, &agent)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if setModelCredentialsReady(&agent, credReason, credMessage) {
+		changed = true
+	}
 	if !changed {
 		return ctrl.Result{}, nil
 	}
@@ -239,6 +255,89 @@ func setValidated(agent *agentsv1alpha1.Agent, reason, message string) bool {
 		cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, reason, message
 	}
 	return meta.SetStatusCondition(&agent.Status.Conditions, cond)
+}
+
+// setModelCredentialsReady records the credential verdict. reason=="" is
+// ready; anything else is False with that reason and message.
+func setModelCredentialsReady(agent *agentsv1alpha1.Agent, reason, message string) bool {
+	cond := metav1.Condition{
+		Type:               agentsv1alpha1.ConditionModelCredentialsReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             agentsv1alpha1.ReasonModelCredentialsReady,
+		Message:            "every model credential this agent references is ready",
+		ObservedGeneration: agent.Generation,
+	}
+	if reason != "" {
+		cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, reason, message
+	}
+	return meta.SetStatusCondition(&agent.Status.Conditions, cond)
+}
+
+// validateModelCredentials checks that every ModelCredential the agent names —
+// in spec.models and spec.modelFallbacks — exists and is Ready.
+//
+// It reports the offending NAMES, because that is what the person edits. An
+// agent naming nothing at all is reported too: it is a configuration gap that
+// reads as a run failing at its first turn otherwise.
+func (r *Reconciler) validateModelCredentials(ctx context.Context, c client.Client, agent *agentsv1alpha1.Agent) (reason, message string, err error) {
+	names := referencedCredentials(agent)
+	if len(names) == 0 {
+		return agentsv1alpha1.ReasonNoModelCredential,
+			"spec.models names no model credential, so this agent cannot run; point spec.models.chat at a ModelCredential", nil
+	}
+	var missing, notReady []string
+	for _, name := range names {
+		var cred agentsv1alpha1.ModelCredential
+		switch err := c.Get(ctx, types.NamespacedName{Name: name}, &cred); {
+		case apierrors.IsNotFound(err):
+			missing = append(missing, name)
+			continue
+		case err != nil:
+			return "", "", err
+		}
+		if !meta.IsStatusConditionTrue(cred.Status.Conditions, agentsv1alpha1.ConditionReady) {
+			notReady = append(notReady, name)
+		}
+	}
+	if len(missing) > 0 {
+		return agentsv1alpha1.ReasonUnknownModelCredential,
+			fmt.Sprintf("model credential(s) %s do not exist in this workspace", strings.Join(missing, ", ")), nil
+	}
+	if len(notReady) > 0 {
+		return agentsv1alpha1.ReasonModelCredentialNotReady,
+			fmt.Sprintf("model credential(s) %s are not Ready; check their status for what to fix", strings.Join(notReady, ", ")), nil
+	}
+	return "", "", nil
+}
+
+// referencedCredentials is every credential name the agent runs on, in a
+// stable order and without duplicates: the per-purpose map first (purposes
+// sorted so the message never reorders itself between reconciles), then the
+// fallback list in the order it is written.
+func referencedCredentials(agent *agentsv1alpha1.Agent) []string {
+	purposes := make([]string, 0, len(agent.Spec.Models))
+	for purpose := range agent.Spec.Models {
+		purposes = append(purposes, purpose)
+	}
+	sort.Strings(purposes)
+
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, purpose := range purposes {
+		add(agent.Spec.Models[purpose])
+	}
+	for _, name := range agent.Spec.ModelFallbacks {
+		add(name)
+	}
+	return out
 }
 
 // budgetDecimalPattern mirrors api.budgetDecimalPattern: what the REST/MCP

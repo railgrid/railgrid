@@ -188,25 +188,48 @@ function projectFromCR(object: ProjectCR): Project {
 // Pillar 1 answer: the API server validates it against the CRD and the
 // caller's own membership, and the provider's reconciler fills in the service
 // references afterwards. Already-exists is success.
+//
+// Every Studio verb goes through studioRequest below, so this runs before the
+// FIRST such call of a session — including the create-readiness probe the
+// "new project" page makes before anything else. It once ran only before
+// create-project, and a fresh workspace 404'd on readiness. Once a Studio has
+// been seen in a workspace the check is not repeated for that tenant.
+const studioEnsured = new Map<string, Promise<void>>()
+
 async function ensureStudio(ctx: RailgridContext | null): Promise<void> {
-  const client = projectKubeClient(ctx)
-  try {
-    await client.get(studioResource, STUDIO_NAME)
-    return
-  } catch {
-    // fall through to create
-  }
-  try {
-    await client.create(studioResource, {
-      apiVersion: 'ai.railgrid.ai/v1alpha1',
-      kind: 'Studio',
-      metadata: { name: STUDIO_NAME },
-      spec: { search: { size: 'small' }, browser: { size: 'small' } },
-    })
-  } catch {
-    // A concurrent create, or a workspace where the binding has not caught up
-    // yet: the verb below reports the real reason.
-  }
+  const key = ctx ? `${ctx.orgUUID}/${ctx.workspaceUUID}` : ''
+  const pending = studioEnsured.get(key)
+  if (pending) return pending
+  const attempt = (async () => {
+    const client = projectKubeClient(ctx)
+    try {
+      await client.get(studioResource, STUDIO_NAME)
+      return
+    } catch {
+      // fall through to create
+    }
+    try {
+      await client.create(studioResource, {
+        apiVersion: 'ai.railgrid.ai/v1alpha1',
+        kind: 'Studio',
+        metadata: { name: STUDIO_NAME },
+        spec: { search: { size: 'small' }, browser: { size: 'small' } },
+      })
+    } catch {
+      // A concurrent create, or a workspace where the binding has not caught up
+      // yet: the verb below reports the real reason, and the next call retries.
+      studioEnsured.delete(key)
+    }
+  })()
+  studioEnsured.set(key, attempt)
+  return attempt
+}
+
+// studioRequest is request() for a Studio verb: it makes sure the singleton
+// exists first, because gate 1 is a real GET of it.
+async function studioRequest<T>(ctx: RailgridContext | null, method: string, verb: string, body?: unknown): Promise<T> {
+  await ensureStudio(ctx)
+  return request<T>(ctx, method, studioURL(ctx, verb), body)
 }
 
 // Project is a kcp CR on the workspace cluster, so a write to its spec is a
@@ -637,8 +660,7 @@ export const api = {
       existingRepositoryRef?: string
     },
   ): Promise<Project> {
-    await ensureStudio(ctx)
-    return request<Project>(ctx, 'POST', studioURL(ctx, 'create-project'), body)
+    return studioRequest<Project>(ctx, 'POST', 'create-project', body)
   },
 
   // createProjectStream creates a project over SSE, surfacing each creation
@@ -663,6 +685,7 @@ export const api = {
     const headers = tenantHeaders({})
     headers.Accept = 'text/event-stream'
     headers['Content-Type'] = 'application/json'
+    await ensureStudio(ctx)
     const res = await providerFetch(ctx)(`${studioURL(ctx, 'create-project-stream')}`, {
       method: 'POST',
       credentials: 'same-origin',
@@ -720,7 +743,7 @@ export const api = {
     ctx: RailgridContext | null,
     body: { prompt?: string; templateName?: string },
   ): Promise<ProjectPlan> {
-    return request<ProjectPlan>(ctx, 'POST', `${studioURL(ctx, 'plan')}`, body)
+    return studioRequest<ProjectPlan>(ctx, 'POST', 'plan', body)
   },
 
   // reseedScaffold re-attaches the template's starter code to an empty
@@ -853,20 +876,12 @@ export const api = {
   },
 
   async listDevelopmentTemplates(ctx: RailgridContext | null): Promise<DevelopmentTemplate[]> {
-    const body = await request<{ templates: DevelopmentTemplate[] }>(
-      ctx,
-      'GET',
-      `${studioURL(ctx, 'development-templates')}`,
-    )
+    const body = await studioRequest<{ templates: DevelopmentTemplate[] }>(ctx, 'GET', 'development-templates')
     return body.templates ?? []
   },
 
   async listImportRepositories(ctx: RailgridContext | null): Promise<ImportRepository[]> {
-    const body = await request<{ repositories: ImportRepository[] }>(
-      ctx,
-      'GET',
-      `${studioURL(ctx, 'import-repositories')}`,
-    )
+    const body = await studioRequest<{ repositories: ImportRepository[] }>(ctx, 'GET', 'import-repositories')
     return body.repositories ?? []
   },
 
@@ -1072,7 +1087,7 @@ export const api = {
   },
 
   async getProjectCreateReadiness(ctx: RailgridContext | null): Promise<ProjectCreateReadiness> {
-    return request<ProjectCreateReadiness>(ctx, 'GET', `${studioURL(ctx, 'create-readiness')}`)
+    return studioRequest<ProjectCreateReadiness>(ctx, 'GET', 'create-readiness')
   },
 
   async listAssistantSkills(ctx: RailgridContext | null, name: string): Promise<ProjectAssistantSkillsResponse> {
@@ -1199,7 +1214,7 @@ export const api = {
     ctx: RailgridContext | null,
     body: { provider: string; baseURL: string; apiKey?: string; existingModelID?: string },
   ): Promise<ProjectLLMModelDiscovery> {
-    return request<ProjectLLMModelDiscovery>(ctx, 'POST', `${studioURL(ctx, 'discover-models')}`, body)
+    return studioRequest<ProjectLLMModelDiscovery>(ctx, 'POST', 'discover-models', body)
   },
 
   async createLLMModel(
@@ -1213,6 +1228,7 @@ export const api = {
     ctx: RailgridContext | null,
     body: { provider?: string; baseURL?: string; model: string; apiKey: string; existingModelID?: string },
   ): Promise<{ ok: boolean }> {
+    await ensureStudio(ctx)
     return request<{ ok: boolean }>(ctx, 'POST', `${studioURL(ctx, 'test-model')}`, body, {
       timeoutMS: 35_000,
       timeoutMessage: 'model connection test timed out',
@@ -1451,7 +1467,7 @@ export const api = {
     return request<ProjectAssistantThread>(
       ctx,
       'POST',
-      `${sessionURL(ctx, threadID, 'update')}`,
+      `${sessionURL(ctx, threadID, 'edit')}`,
       body,
     )
   },
@@ -1460,7 +1476,7 @@ export const api = {
     await request<null>(
       ctx,
       'POST',
-      `${sessionURL(ctx, threadID, 'delete')}`,
+      `${sessionURL(ctx, threadID, 'discard')}`,
     )
   },
 

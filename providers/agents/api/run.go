@@ -128,7 +128,7 @@ type runCheckpoint struct {
 // Edges* configure the optional hub-MCP edges family (interactive runs only —
 // it authenticates as the calling user).
 type taskRun struct {
-	Creds llm.SecretGetter
+	Creds llm.CredentialResolver
 	CR    tools.CRAccess
 	Scope store.Scope
 	Agent *agentsv1alpha1.Agent
@@ -322,6 +322,11 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		CheckpointEvery:     checkpointEveryIterations,
 	}, cb)
 	end := time.Now().UTC()
+	// A model the upstream refuses on Chat Completions (a responses-only
+	// family, a retired snapshot) is a credential to edit, not a crash. The
+	// provider's own sentence is kept; what is added is which credential owns
+	// the model id and where to change it.
+	err = llm.ExplainChatCompletionsRefusal(err, credentialNameForPurpose(agent, purpose))
 	if err != nil {
 		phase := store.RunPhaseFailed
 		// A registry cancel (or run timeout) surfaces as a context error —

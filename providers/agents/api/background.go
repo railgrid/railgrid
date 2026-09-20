@@ -396,8 +396,10 @@ func (b *background) scoped(ctx context.Context, clusterID string) (dynamic.Inte
 	return dynamic.NewForConfig(c)
 }
 
-// vwSecrets adapts a scoped dynamic client to llm.SecretGetter so background
-// runs read model credentials through the APIExport claim.
+// vwSecrets adapts a scoped dynamic client to llm.CredentialResolver so
+// background runs resolve a model credential — the ModelCredential object and
+// the Secret it points at — through the APIExport virtual workspace. An
+// unattended run has no caller whose token could read either.
 type vwSecrets struct{ dyn dynamic.Interface }
 
 func (v vwSecrets) GetSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error) {
@@ -406,6 +408,14 @@ func (v vwSecrets) GetSecret(ctx context.Context, namespace, name string) (*core
 		return nil, err
 	}
 	return fromU[corev1.Secret](u)
+}
+
+func (v vwSecrets) GetModelCredential(ctx context.Context, name string) (*agentsv1alpha1.ModelCredential, error) {
+	u, err := v.dyn.Resource(agentsclient.ModelCredentialGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return fromU[agentsv1alpha1.ModelCredential](u)
 }
 
 func fromU[T any](u *unstructured.Unstructured) (*T, error) {

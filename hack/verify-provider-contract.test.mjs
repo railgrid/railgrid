@@ -207,6 +207,25 @@ function checks(result) {
   return new Set(result.violations.map((item) => item.check))
 }
 
+test('a data-plane verb named after a standard Kubernetes verb is reported', () => {
+  const withVerbs = (verbs) => MANIFEST.replace('  actions:\n', `  dataPlane:\n    verbs:\n${verbs}  actions:\n`)
+  const chartWithVerbs = (verbs) => CHART.replace('  actions:\n', `  dataPlane:\n    verbs:\n${verbs}  actions:\n`)
+  const bad = '      - resource: sessions\n        verb: update\n      - resource: sessions\n        verb: items\n'
+  const result = fixtureRepo({
+    'providers/fixture/manifest.yaml': withVerbs(bad),
+    'providers/fixture/deploy/chart/templates/catalogentry.yaml': chartWithVerbs(bad),
+  }).run()
+  const reserved = result.violations.filter((item) => item.check === 'reserved-verb')
+  assert.equal(reserved.length, 1)
+  assert.match(reserved[0].message, /sessions\/update/)
+  const good = bad.replace('verb: update', 'verb: edit')
+  const clean = fixtureRepo({
+    'providers/fixture/manifest.yaml': withVerbs(good),
+    'providers/fixture/deploy/chart/templates/catalogentry.yaml': chartWithVerbs(good),
+  }).run()
+  assert.equal(clean.violations.filter((item) => item.check === 'reserved-verb').length, 0)
+})
+
 test('a conformant provider reports nothing', () => {
   const result = fixtureRepo().run()
   assert.deepEqual(result.providers, ['fixture'])

@@ -94,17 +94,23 @@ func (s *Server) routes() map[string]resourceRoutes {
 	del := []string{http.MethodDelete}
 	return map[string]resourceRoutes{
 		"agents": {gvr: agentsclient.AgentGVR, verbs: map[string]verbRoute{
-			"chat":           {methods: post, handler: s.chat, stream: true},
-			"run":            {methods: post, handler: s.invokeAgentRun},
-			"sessions":       {methods: get, handler: s.listSessions, readOnly: true},
-			"session":        {methods: del, tail: tailRequired, handler: s.deleteSession},
-			"messages":       {methods: get, handler: s.listMessages, readOnly: true},
-			"usage":          {methods: get, handler: s.usageRollup, readOnly: true},
-			"inbox":          {methods: get, handler: s.listInboxItems, readOnly: true},
-			"inbox-resolve":  {methods: post, tail: tailRequired, handler: s.resolveInboxItem},
-			"events":         {methods: get, handler: s.streamEvents, stream: true, readOnly: true},
-			"model-test":     {methods: post, handler: s.testModelCredential},
-			"model-discover": {methods: post, handler: s.discoverModelCredential, readOnly: true},
+			"chat":          {methods: post, handler: s.chat, stream: true},
+			"run":           {methods: post, handler: s.invokeAgentRun},
+			"sessions":      {methods: get, handler: s.listSessions, readOnly: true},
+			"session":       {methods: del, tail: tailRequired, handler: s.deleteSession},
+			"messages":      {methods: get, handler: s.listMessages, readOnly: true},
+			"usage":         {methods: get, handler: s.usageRollup, readOnly: true},
+			"inbox":         {methods: get, handler: s.listInboxItems, readOnly: true},
+			"inbox-resolve": {methods: post, tail: tailRequired, handler: s.resolveInboxItem},
+			"events":        {methods: get, handler: s.streamEvents, stream: true, readOnly: true},
+		}},
+		// A model credential is an object, so its probes are verbs on IT
+		// rather than on some agent that happens to use it. That is what makes
+		// first-run work: a workspace with no agent yet can still save a
+		// credential and ask whether it answers.
+		"modelcredentials": {gvr: agentsclient.ModelCredentialGVR, verbs: map[string]verbRoute{
+			"test":     {methods: post, handler: s.testModelCredential},
+			"discover": {methods: post, handler: s.discoverModelCredential, readOnly: true},
 		}},
 		// Runs are objects now, so listing them, reading one and watching one are
 		// Pillar 1 — the caller does that with a kube client and this provider

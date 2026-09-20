@@ -182,12 +182,16 @@ type CatalogReconcilerOptions struct {
 	Provisioner []ProvisionerOption
 }
 
-// SetupCatalogWithManager wires the reconciler into a multicluster manager.
+// SetupCatalogWithManager wires the reconciler into a multicluster manager and
+// returns it, so the caller can hand it the hooks that only exist elsewhere in
+// the hub — notably the UI proxy's observed-bundle pin
+// (ProviderProxy.SetMainJSIntegrityObserver).
+//
 // kcpConfig is the admin rest.Config used only to RESOLVE each provider's
 // workspace cluster ID (read-only) for the Enable flow. Pass nil to run the
 // controller in registry-only mode (no kcp reads). The hub no longer
 // provisions providers — that moved to admin onboarding + provider Helm init.
-func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *rest.Config, opts CatalogReconcilerOptions) error {
+func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *rest.Config, opts CatalogReconcilerOptions) (*CatalogReconciler, error) {
 	r := &CatalogReconciler{
 		mgr:            mgr,
 		reg:            reg,
@@ -203,10 +207,13 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 	if kcpConfig != nil {
 		r.prov = NewProvisioner(kcpConfig, opts.Provisioner...)
 	}
-	return mcbuilder.ControllerManagedBy(mgr).
+	if err := mcbuilder.ControllerManagedBy(mgr).
 		Named("provider-catalog").
 		For(&providersv1alpha1.CatalogEntry{}).
-		Complete(r)
+		Complete(r); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // workspacePath returns the canonical kcp workspace path for a logical cluster,

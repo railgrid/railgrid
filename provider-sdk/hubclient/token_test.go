@@ -134,3 +134,42 @@ users:
 		t.Fatalf("TokenFromKubeconfig() = %q, %v; want from-file", got, err)
 	}
 }
+
+// The identity endpoint attests the caller as the provider's own ServiceAccount,
+// so the kubeconfig bearer must win over RAILGRID_HUB_TOKEN there, even though
+// the heartbeat resolver prefers the override. Dev setups fill the override
+// with a user token, which minted every identity as the user until this.
+func TestResolveProviderIdentityTokenPrefersTheProviderKubeconfig(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfig := filepath.Join(dir, "provider.kubeconfig")
+	if err := os.WriteFile(kubeconfig, []byte(`apiVersion: v1
+kind: Config
+clusters:
+- name: hub
+  cluster: {server: https://hub.example}
+users:
+- name: provider
+  user: {token: sa-token}
+contexts:
+- name: hub
+  context: {cluster: hub, user: provider}
+current-context: hub
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvHubToken, "user-static-token")
+	t.Setenv(EnvProviderKubeconfig, kubeconfig)
+
+	got, err := ResolveProviderIdentityToken()
+	if err != nil || got != "sa-token" {
+		t.Fatalf("ResolveProviderIdentityToken() = %q, %v; want the kubeconfig bearer", got, err)
+	}
+	if got, err := ResolveHubToken(); err != nil || got != "user-static-token" {
+		t.Fatalf("ResolveHubToken() = %q, %v; the heartbeat resolver must keep preferring the override", got, err)
+	}
+
+	t.Setenv(EnvProviderKubeconfig, "")
+	if got, err := ResolveProviderIdentityToken(); err != nil || got != "user-static-token" {
+		t.Fatalf("without a kubeconfig ResolveProviderIdentityToken() = %q, %v; want the override", got, err)
+	}
+}

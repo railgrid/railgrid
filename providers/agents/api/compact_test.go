@@ -28,28 +28,47 @@ import (
 	"github.com/railgrid/provider-agents/store"
 )
 
-// fakeCreds serves model-credential Secrets from a map, standing in for the
-// tenant client.
-type fakeCreds map[string]*corev1.Secret
+// fakeCreds resolves model credentials the way the tenant client does: the
+// ModelCredential carries the endpoint, the Secret it points at carries the
+// key.
+type fakeCreds struct {
+	creds   map[string]*agentsv1alpha1.ModelCredential
+	secrets map[string]*corev1.Secret
+}
 
 func (f fakeCreds) GetSecret(_ context.Context, _, name string) (*corev1.Secret, error) {
-	if sec, ok := f[name]; ok {
+	if sec, ok := f.secrets[name]; ok {
 		return sec, nil
 	}
 	return nil, fmt.Errorf("secret %q not found", name)
 }
 
+func (f fakeCreds) GetModelCredential(_ context.Context, name string) (*agentsv1alpha1.ModelCredential, error) {
+	if cred, ok := f.creds[name]; ok {
+		return cred, nil
+	}
+	return nil, fmt.Errorf("model credential %q not found", name)
+}
+
 func credsFor(baseURL string, models map[string]string) fakeCreds {
-	out := fakeCreds{}
+	out := fakeCreds{
+		creds:   map[string]*agentsv1alpha1.ModelCredential{},
+		secrets: map[string]*corev1.Secret{},
+	}
 	for credName, modelID := range models {
-		out[llm.CredentialSecretName(credName)] = &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: llm.CredentialSecretName(credName)},
-			Data: map[string][]byte{
-				"provider": []byte(llm.ProviderOpenAICompatible),
-				"baseURL":  []byte(baseURL),
-				"model":    []byte(modelID),
-				"apiKey":   []byte("test-key"),
+		secretName := CredentialSecretName(credName)
+		out.creds[credName] = &agentsv1alpha1.ModelCredential{
+			ObjectMeta: metav1.ObjectMeta{Name: credName},
+			Spec: agentsv1alpha1.ModelCredentialSpec{
+				Provider:  llm.ProviderOpenAICompatible,
+				BaseURL:   baseURL,
+				Model:     modelID,
+				SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: secretName},
 			},
+		}
+		out.secrets[secretName] = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretName},
+			Data:       map[string][]byte{agentsv1alpha1.DefaultModelSecretKey: []byte("test-key")},
 		}
 	}
 	return out

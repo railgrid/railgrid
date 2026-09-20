@@ -26,6 +26,18 @@ unstructured decode path and the controllers to the typed kinds
 Operator and tenant upgrade steps are collected in
 [provider-contract-migration.md](../provider-contract-migration.md).
 Open follow-ups recorded by the implementation:
+- App Studio's per-workspace `Studio` singleton is created by the portal
+  before the first Studio verb (every `studios/studio/{verb}` call now goes
+  through one helper that ensures it; before, only `create-project` did and a
+  fresh workspace 404'd on `create-readiness`). A provider-side bootstrap that
+  creates the singleton when a workspace binds the export would remove the
+  portal's write and make MCP or CLI callers work in a fresh workspace too;
+  it needs a signal for "workspace engaged", which the tenantwatch package has.
+- agents: landed. `ModelCredential` (`agents.railgrid.ai/v1alpha1`) is a
+  first-class kind referencing the tenant Secret; the probe verbs are
+  `modelcredentials/{name}/test` and `.../discover`, `agents/model-test` and
+  `agents/model-discover` are gone, and first-run onboarding discovers model IDs
+  before the first agent exists.
 - Edge agents adopt a saved credential (`~/.railgrid/agent-<edge>.credential.json`)
   only when it matches their hub and cluster, and alternate with the join token
   on a 401 (`docs/edges-agent-credentials.md`); the edges e2e now gives each

@@ -38,6 +38,36 @@ const (
 	ConditionValidated = "Validated"
 )
 
+// Conditions on ModelCredential. This kind is the exception to the one-
+// condition rule above, because a credential is a pair — an object and a
+// Secret — reached over the network, and "is it usable?" has two independent
+// answers a reader has to be able to tell apart: the Secret is not there yet
+// (fix it in this workspace) versus the endpoint refused the key (fix it at
+// the provider). Ready is the conjunction, and it is what an Agent's
+// ModelCredentialsReady reads.
+const (
+	// ConditionSecretResolved reports whether spec.secretRef names a Secret
+	// that exists, carries spec.secretKey, and is labelled
+	// railgrid.ai/owner: agents (without which the provider's label-scoped
+	// claim hides it from every unattended run).
+	ConditionSecretResolved = "SecretResolved"
+
+	// ConditionReachable reports whether GET {spec.baseURL}/models answered
+	// with the resolved key.
+	ConditionReachable = "Reachable"
+
+	// ConditionReady is True when both SecretResolved and Reachable are.
+	ConditionReady = "Ready"
+
+	// ConditionModelCredentialsReady is on an AGENT: every ModelCredential it
+	// references in spec.models and spec.modelFallbacks exists and is Ready.
+	// It is separate from Validated because a credential going unready is not
+	// a defect in the agent's spec — the agent is correct and the model is
+	// unreachable, and conflating the two would make a rotated key read as a
+	// malformed agent.
+	ConditionModelCredentialsReady = "ModelCredentialsReady"
+)
+
 // Reasons for Validated. A reconciler reports the first problem it finds, in
 // the order the checks are written, so the message stays about one thing.
 const (
@@ -99,6 +129,54 @@ const (
 	// ReasonUnsupportedType is a spec.type outside the set the provider knows
 	// how to speak.
 	ReasonUnsupportedType = "UnsupportedType"
+)
+
+// Reasons for the ModelCredential and Agent conditions above.
+const (
+	// ReasonSecretResolved accompanies SecretResolved=True.
+	ReasonSecretResolved = "SecretResolved"
+
+	// ReasonSecretUnreadable is a Secret the provider could not read at all —
+	// most often a Secret that exists but does not carry the owner label, so
+	// the label-scoped claim answers the read with a 404.
+	ReasonSecretUnreadable = "SecretUnreadable"
+
+	// ReasonOwnerLabelMissing is a Secret the provider CAN read (the caller's
+	// own view) but which is not labelled railgrid.ai/owner: agents, so no
+	// unattended run will ever see it.
+	ReasonOwnerLabelMissing = "OwnerLabelMissing"
+
+	// ReasonReachable accompanies Reachable=True.
+	ReasonReachable = "Reachable"
+
+	// ReasonProbeFailed is a GET {baseURL}/models that did not answer 2xx.
+	ReasonProbeFailed = "ProbeFailed"
+
+	// ReasonSecretUnresolved accompanies Reachable/Ready=False when the probe
+	// could not even be attempted because the Secret is not resolved.
+	ReasonSecretUnresolved = "SecretUnresolved"
+
+	// ReasonReady accompanies Ready=True.
+	ReasonReady = "Ready"
+
+	// ReasonNotReady accompanies Ready=False.
+	ReasonNotReady = "NotReady"
+
+	// ReasonModelCredentialsReady accompanies an Agent's
+	// ModelCredentialsReady=True.
+	ReasonModelCredentialsReady = "ModelCredentialsReady"
+
+	// ReasonUnknownModelCredential is a spec.models / spec.modelFallbacks
+	// entry naming a ModelCredential that does not exist in this workspace.
+	ReasonUnknownModelCredential = "UnknownModelCredential"
+
+	// ReasonModelCredentialNotReady is a referenced ModelCredential that
+	// exists but whose Ready condition is not True.
+	ReasonModelCredentialNotReady = "ModelCredentialNotReady"
+
+	// ReasonNoModelCredential is an Agent that names no model credential at
+	// all, so it cannot run.
+	ReasonNoModelCredential = "NoModelCredential"
 )
 
 // KnownToolFamilies are the grantable built-in tool families, the same set the

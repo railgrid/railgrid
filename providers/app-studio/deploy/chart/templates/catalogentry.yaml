@@ -217,10 +217,10 @@ spec:
         verb: adopt-session
         description: "Create the Session projection for a conversation that has none."
       - resource: sessions
-        verb: update
+        verb: edit
         description: "Rename or archive the conversation."
       - resource: sessions
-        verb: delete
+        verb: discard
         description: "Delete the conversation and purge its transcript."
       - resource: sessions
         verb: items

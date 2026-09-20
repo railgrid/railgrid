@@ -9,169 +9,260 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/llm"
 )
 
-type credentialDraft struct {
-	llm.Profile
-	ExistingName string `json:"existingName,omitempty"`
-}
-
-// resolveCredentialDraft never writes a Secret, and never sends an existing
-// credential to a newly supplied endpoint. The caller supplies a tenant client.
-func resolveCredentialDraft(ctx context.Context, c llm.SecretGetter, draft credentialDraft) (llm.Profile, error) {
-	p := draft.Profile
-	p.Provider = strings.TrimSpace(p.Provider)
-	if p.Provider == "" {
-		p.Provider = llm.ProviderOpenAICompatible
-	}
-	p.BaseURL = strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
-	if p.BaseURL == "" {
-		p.BaseURL = "https://api.openai.com/v1"
-	}
-	u, err := url.Parse(p.BaseURL)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return llm.Profile{}, errors.New("enter a valid HTTP or HTTPS API endpoint without credentials, query, or fragment")
-	}
-	p.APIKey = strings.TrimSpace(p.APIKey)
-	p.Model = strings.TrimSpace(p.Model)
-	if p.APIKey == "" && draft.ExistingName != "" {
-		stored, err := llm.LoadCredential(ctx, c, draft.ExistingName)
-		if err != nil {
-			return llm.Profile{}, err
-		}
-		if p.Provider != stored.Provider || p.BaseURL != strings.TrimRight(stored.BaseURL, "/") {
-			return llm.Profile{}, errors.New("enter a credential before testing or discovering models from a changed provider or endpoint")
-		}
-		p.APIKey = stored.APIKey
-	}
-	if p.APIKey == "" {
-		return llm.Profile{}, errors.New("enter an API key")
-	}
-	return p, nil
-}
-
-// modelProbeRequest is the body of the `model-test` and `model-discover` verbs.
+// The two probe verbs hang off a ModelCredential:
 //
-// A model credential is a Secret in the tenant's own workspace, written through
-// kcp — so there is nothing left for this provider to serve about it except the
-// one thing the browser must not do: hold the key long enough to call a third
-// party with it. That probe needs an object to be addressed by, and the natural
-// one is the AGENT that will use the credential: it is the thing whose ability
-// to reach a model the caller is really asking about, it is a bound CR of this
-// provider's own group, and `create` on agents/model-test is a grant a tenant
-// can reason about. Secrets were the other candidate and are not usable: they
-// are namespaced core objects, which the grammar does not address, and a verb on
-// them would be a grant over every Secret shape in the workspace.
+//	modelcredentials/{name}/test      POST  one real chat round-trip
+//	modelcredentials/{name}/discover  POST  GET {baseURL}/models
 //
-// Three shapes, in precedence order:
+// They used to hang off an AGENT, with a third shape that probed an unsaved
+// draft carrying a raw apiKey in the request body. Both were consequences of
+// a credential having no object of its own: the grammar addresses an object,
+// so the probe borrowed the agent that would use the credential — and a
+// workspace with no agent yet could not probe at all, which is exactly the
+// moment a person is setting their first model up. The draft shape existed to
+// paper over the same gap and put a key on the wire to do it.
 //
-//	{}                          probe the agent's own primary credential
-//	{"credential": "openai"}    probe that stored credential as it is saved
-//	{"provider": …, "apiKey": …, "existingName": …}   probe an unsaved draft
-type modelProbeRequest struct {
-	// Credential names a stored model credential to probe as saved.
-	Credential string `json:"credential,omitempty"`
+// A ModelCredential is an object, so neither is needed. The credential is
+// saved first and probed as a saved object: `create` on
+// modelcredentials/{verb} is a grant about the thing being probed, the key
+// never leaves the workspace, and the answer is the same one the reconciler
+// writes to status.
 
-	// The draft fields, used when Credential is empty and any of them is set.
-	// ExistingName lets the editor re-probe a saved credential's key against a
-	// changed model without the browser ever seeing the key.
-	Provider     string `json:"provider,omitempty"`
-	BaseURL      string `json:"baseURL,omitempty"`
-	Model        string `json:"model,omitempty"`
-	APIKey       string `json:"apiKey,omitempty"`
-	ExistingName string `json:"existingName,omitempty"`
-}
-
-// resolveModelProbe turns the request body into the profile to probe, reading
-// any referenced Secret AS THE CALLER through the tenant client.
-func (s *Server) resolveModelProbe(w http.ResponseWriter, r *http.Request) (llm.Profile, bool) {
+// gatedModelCredential returns the ModelCredential the data-plane gates read
+// for this request, plus a caller-scoped client.
+//
+// The object comes off the gate rather than being re-read: gate 1 already GET
+// it as the caller, and re-reading would be a second read whose result the
+// caller's grant did not cover.
+func (s *Server) gatedModelCredential(w http.ResponseWriter, r *http.Request) (*agentsv1alpha1.ModelCredential, *agentsclient.Client, bool) {
 	c, _, ok := s.requireClient(w, r)
 	if !ok {
-		return llm.Profile{}, false
+		return nil, nil, false
 	}
-	var req modelProbeRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	// An empty body is the "probe this agent's own model" form, so EOF is not
-	// an error.
-	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid model connection")
-		return llm.Profile{}, false
+	gate, ok := gateFrom(r.Context())
+	if !ok || gate.object == nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "model credential not resolved")
+		return nil, nil, false
 	}
+	var cred agentsv1alpha1.ModelCredential
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(gate.object.Object, &cred); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "model credential could not be read")
+		return nil, nil, false
+	}
+	return &cred, c, true
+}
 
-	name := strings.TrimSpace(req.Credential)
-	if name == "" && req.Provider == "" && req.BaseURL == "" && req.APIKey == "" && req.ExistingName == "" {
-		agent, err := c.Agents().Get(r.Context(), r.PathValue("name"), metav1.GetOptions{})
-		if err != nil {
-			writeResourceError(w, err)
-			return llm.Profile{}, false
-		}
-		name = strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
-		if name == "" {
-			writeJSON(w, http.StatusOK, credentialTestResult{OK: false, Error: errNoCredential.Error()})
-			return llm.Profile{}, false
-		}
+// resolveGatedProfile turns the gated credential into the profile to probe,
+// reading its Secret AS THE CALLER. A Secret the caller cannot read is a
+// failed probe with recovery copy, not a 500: it is the ordinary
+// half-finished state (the object saved, the Secret not).
+func (s *Server) resolveGatedProfile(w http.ResponseWriter, r *http.Request) (*agentsv1alpha1.ModelCredential, *agentsclient.Client, llm.Profile, bool) {
+	cred, c, ok := s.gatedModelCredential(w, r)
+	if !ok {
+		return nil, nil, llm.Profile{}, false
 	}
-	if name != "" {
-		profile, err := llm.LoadCredential(r.Context(), c, name)
-		if err != nil {
-			writeJSON(w, http.StatusOK, credentialTestResult{OK: false, Error: "credential not configured: " + err.Error()})
-			return llm.Profile{}, false
-		}
-		return profile, true
-	}
-
-	p, err := resolveCredentialDraft(r.Context(), c, credentialDraft{
-		Profile:      llm.Profile{Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model, APIKey: req.APIKey},
-		ExistingName: req.ExistingName,
-	})
+	profile, err := llm.ProfileFor(r.Context(), c, cred)
 	if err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return llm.Profile{}, false
+		writeJSON(w, http.StatusOK, credentialTestResult{
+			OK:    false,
+			Error: "This credential's API key could not be read. Check that Secret " + cred.Spec.SecretRef.Name + " exists in namespace default and holds the key.",
+		})
+		return nil, nil, llm.Profile{}, false
 	}
-	return p, true
+	return cred, c, profile, true
 }
 
-// testModelCredential serves the `model-test` verb: a real chat round-trip
-// against the model, so "verified" means the model answered and not merely that
-// the endpoint resolved. Discovery is deliberately a separate verb and cannot
-// mark a credential verified.
+// credentialTestRequest is the `test` verb's optional body.
+//
+// Model overrides the model for THIS probe only. It exists because the model a
+// person just picked in the editor was previously only exercised after "Save
+// changes" — by the first agent run, i.e. in a chat window, hours later, as a
+// 404 from the provider. Everything else about the probe (endpoint, key) still
+// comes from the saved object and its Secret, so an override cannot aim the
+// saved credential's key at a different endpoint.
+type credentialTestRequest struct {
+	Model string `json:"model,omitempty"`
+}
+
+const (
+	// maxTestRequestBody bounds the `test` body. It carries one model id and
+	// nothing else; anything larger is not a request this verb understands.
+	maxTestRequestBody = 4 << 10
+
+	// maxTestModelID matches ModelCredentialSpec.Model's MaxLength, because an
+	// override is a candidate for that field.
+	maxTestModelID = 253
+)
+
+// testModelCredential serves the `test` verb: a real chat round-trip against
+// the model, so "verified" means the model answered and not merely that the
+// endpoint resolved. Discovery is deliberately a separate verb and cannot mark
+// a credential verified.
+//
+// The body is optional: {"model": "<id>"} probes that id instead of the saved
+// spec.model, which is what lets the editor verify a pick BEFORE it is saved.
 func (s *Server) testModelCredential(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.resolveModelProbe(w, r)
+	// Parsed before the gate's Secret is read: a body this verb cannot honour
+	// is a 400, and a 400 should not have touched the tenant's key first.
+	override, ok := testModelOverride(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, verifyCredentialModel(r.Context(), p))
+	_, _, profile, ok := s.resolveGatedProfile(w, r)
+	if !ok {
+		return
+	}
+	if override != "" {
+		profile.Model = override
+	}
+	writeJSON(w, http.StatusOK, verifyCredentialModel(r.Context(), profile))
 }
 
-// discoverModelCredential serves the `model-discover` verb: GET {baseURL}/models
+// testModelOverride reads and validates the `test` body's optional model id.
+// An absent or empty body means "probe the saved model", which is what every
+// caller that predates the override sends.
+func testModelOverride(w http.ResponseWriter, r *http.Request) (string, bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxTestRequestBody+1))
+	if err != nil {
+		rejectTestRequest(w, "The request body could not be read.")
+		return "", false
+	}
+	if len(body) > maxTestRequestBody {
+		rejectTestRequest(w, "The request body is too large; this verb takes at most a model id.")
+		return "", false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return "", true
+	}
+	var req credentialTestRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		rejectTestRequest(w, "The request body is not valid JSON; send {\"model\": \"<id>\"} or no body at all.")
+		return "", false
+	}
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		return "", true
+	}
+	if len(model) > maxTestModelID {
+		rejectTestRequest(w, "That model id is too long; a model id is at most 253 characters.")
+		return "", false
+	}
+	// The same curation discovery applies, so the verb cannot be used to
+	// "verify" a model the picker would never have offered — which is exactly
+	// how gpt-5.3-codex was saved in the first place.
+	if !llm.ChatCapable(model) {
+		rejectTestRequest(w, "Model "+model+" is not usable for chat: this provider runs agents on the Chat Completions API and that model is not served there. Pick another model for this credential.")
+		return "", false
+	}
+	return model, true
+}
+
+// rejectedTest is the body a refused `test` request gets.
+//
+// It is two shapes at once, deliberately. `ok`/`error` is the verb's ordinary
+// result shape, so anything reading the probe's answer — curl, the MCP tool,
+// a script — sees a failed probe with the reason in the field it already
+// reads. `reason`/`message` is the Status shape the portal's generic error
+// path (api.ts fail()) reads, so the browser shows the sentence instead of
+// "Bad Request". Writing one and not the other loses the message in one of
+// the two callers.
+type rejectedTest struct {
+	OK      bool   `json:"ok"`
+	Error   string `json:"error"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+	Code    int    `json:"code"`
+}
+
+func rejectTestRequest(w http.ResponseWriter, message string) {
+	writeJSON(w, http.StatusBadRequest, rejectedTest{
+		Error:   message,
+		Reason:  "BadRequest",
+		Message: message,
+		Code:    http.StatusBadRequest,
+	})
+}
+
+// discoverModelCredential serves the `discover` verb: GET {baseURL}/models
 // with the key, so the editor can offer the model ids the endpoint actually
-// serves.
+// serves. It also refreshes status.models, so the answer a person just saw and
+// the answer the object reports are the same one.
 func (s *Server) discoverModelCredential(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.resolveModelProbe(w, r)
+	cred, c, profile, ok := s.resolveGatedProfile(w, r)
 	if !ok {
 		return
 	}
-	models, latency, err := probeOpenAIModels(r.Context(), p.BaseURL, p.APIKey)
+	models, latency, err := llm.DiscoverModels(r.Context(), profile.BaseURL, profile.APIKey)
 	result := credentialTestResult{OK: err == nil, Models: models, LatencyMS: latency.Milliseconds()}
 	if err != nil {
 		result.Error = "Could not find models. Check the endpoint and credential, or enter a model ID manually."
 	}
+	refreshDiscoveredModels(r.Context(), c, cred, models, err)
 	writeJSON(w, http.StatusOK, result)
+}
+
+// refreshDiscoveredModels writes what the probe just learned onto the object,
+// best effort.
+//
+// Best effort on purpose: the write runs as the CALLER, and a caller who may
+// probe a credential does not necessarily hold `update` on its status
+// subresource. The reconciler is the authority on this status and re-derives
+// all of it on its own cadence; this only shortens the window in which the
+// object disagrees with what the person is looking at.
+func refreshDiscoveredModels(ctx context.Context, c *agentsclient.Client, cred *agentsv1alpha1.ModelCredential, models []string, probeErr error) {
+	if len(models) > llm.MaxStatusModels {
+		models = models[:llm.MaxStatusModels]
+	}
+	status := agentsv1alpha1.ModelCredentialStatus{
+		ObservedGeneration: cred.Generation,
+		LastProbeTime:      &metav1.Time{Time: time.Now().UTC()},
+	}
+	if probeErr != nil {
+		status.LastProbeError = boundedProbeError(probeErr)
+	} else {
+		status.Models = models
+	}
+	// A short context of its own: the caller's request may be finishing, and
+	// an abandoned status write is not worth failing the verb over.
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_ = c.ModelCredentials().PatchStatus(writeCtx, cred.Name, status)
+}
+
+// maxProbeErrorLength bounds status.lastProbeError, matching the kind's
+// MaxLength. An upstream body can be megabytes and can echo request headers,
+// so it is truncated here and never stored whole.
+const maxProbeErrorLength = 512
+
+// boundedProbeError renders a probe failure for status.lastProbeError.
+func boundedProbeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if len(msg) > maxProbeErrorLength {
+		msg = msg[:maxProbeErrorLength]
+	}
+	return msg
 }
 
 func verifyCredentialModel(ctx context.Context, profile llm.Profile) credentialTestResult {

@@ -10,39 +10,43 @@ package api
 
 import (
 	"context"
-	"encoding/json"
-	"io"
-	"net/http"
-	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/llm"
 )
 
-// modelCredential is a named, reusable set of model credentials the user
-// creates once and assigns to one or more agents. Each is its own Secret
-// (railgrid-agents-model-<name>), so credentials can be shared and managed
-// independently. The API key is never returned on reads.
+// modelCredential is the key-free view of a ModelCredential the MCP tools
+// render. The API key is write-only: accepted on save, never returned.
 type modelCredential struct {
 	Name      string `json:"name"`
 	Provider  string `json:"provider,omitempty"`
 	BaseURL   string `json:"baseURL,omitempty"`
 	Model     string `json:"model,omitempty"`
 	HasAPIKey bool   `json:"hasAPIKey"`
-	// APIKey is write-only (accepted on POST, never returned).
+	// APIKey is write-only (accepted on save, never returned).
 	APIKey string `json:"apiKey,omitempty"`
 }
 
-// applyCredentialUpsert writes the named model-credential Secret
-// (create-or-update), preserving an existing key when none is supplied. Shared
-// by the REST handler and the MCP save_model_credential tool. The returned view
-// never carries the key.
+// CredentialSecretName is the Secret a ModelCredential written through this
+// provider points at. It is a default for the objects this code creates, not a
+// convention anything reads back: a ModelCredential says where its key is in
+// spec.secretRef, and a hand-written one may name any Secret it likes.
+func CredentialSecretName(name string) string { return "railgrid-agents-model-" + name }
+
+// applyCredentialUpsert writes a ModelCredential and the Secret it points at
+// (create-or-update), preserving an existing key when none is supplied.
+//
+// The Secret goes first, the object second — the same order
+// applyConnectionCreate uses, and for the same reason: the reconciler reacts
+// to the object, and a ModelCredential whose Secret does not exist yet parks
+// with SecretResolved=False until one does. The other order would flag a
+// credential that is about to be fine.
 func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *modelCredential) (*modelCredential, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.Provider = strings.TrimSpace(req.Provider)
@@ -55,16 +59,33 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 	if req.Provider == "" {
 		req.Provider = llm.ProviderOpenAICompatible
 	}
+	if req.BaseURL == "" {
+		req.BaseURL = llm.DefaultBaseURL
+	}
 	if req.Model == "" {
 		return nil, errBadRequest("model is required")
 	}
+
+	// The existing object decides which Secret to write into: an edit must not
+	// silently move a credential onto this provider's default name when it was
+	// pointed somewhere else.
+	secretName, secretKey := CredentialSecretName(req.Name), agentsv1alpha1.DefaultModelSecretKey
+	existing, err := c.GetModelCredential(ctx, req.Name)
+	switch {
+	case err == nil:
+		if n := strings.TrimSpace(existing.Spec.SecretRef.Name); n != "" {
+			secretName = n
+		}
+		secretKey = llm.SecretKey(existing.Spec)
+	case !apierrors.IsNotFound(err):
+		return nil, err
+	}
+
 	// Preserve an existing key when updating without a new one.
 	apiKey := req.APIKey
 	if apiKey == "" {
-		if existing, err := c.GetSecret(ctx, llm.SecretNamespace, llm.CredentialSecretName(req.Name)); err == nil {
-			if v, okk := existing.Data["apiKey"]; okk {
-				apiKey = string(v)
-			}
+		if sec, gerr := c.GetSecret(ctx, llm.SecretNamespace, secretName); gerr == nil {
+			apiKey = llm.APIKeyFromSecret(sec, agentsv1alpha1.ModelCredentialSpec{SecretKey: secretKey})
 		}
 		if apiKey == "" {
 			return nil, errBadRequest("apiKey is required")
@@ -72,16 +93,58 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 	}
 	sec := &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{Name: llm.CredentialSecretName(req.Name), Namespace: llm.SecretNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: llm.SecretNamespace},
 		Type:       corev1.SecretTypeOpaque,
-		StringData: map[string]string{"provider": req.Provider, "baseURL": req.BaseURL, "model": req.Model, "apiKey": apiKey},
+		StringData: map[string]string{secretKey: apiKey},
 	}
+	// ApplySecret stamps railgrid.ai/owner: agents, without which the
+	// provider's label-scoped claim hides the Secret from every unattended run.
 	if _, err := c.ApplySecret(ctx, sec); err != nil {
+		return nil, err
+	}
+
+	cred := &agentsv1alpha1.ModelCredential{
+		TypeMeta:   metav1.TypeMeta{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "ModelCredential"},
+		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
+		Spec: agentsv1alpha1.ModelCredentialSpec{
+			Provider:  req.Provider,
+			BaseURL:   req.BaseURL,
+			Model:     req.Model,
+			SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: secretName},
+			SecretKey: secretKey,
+		},
+	}
+	if _, err := c.ModelCredentials().Update(ctx, cred, metav1.UpdateOptions{}); err != nil {
 		return nil, err
 	}
 	return &modelCredential{
 		Name: req.Name, Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model, HasAPIKey: true,
 	}, nil
+}
+
+// deleteCredential removes a ModelCredential and the Secret it pointed at.
+// Best effort on the Secret, and in this order: an orphaned Secret is
+// harmless, an object pointing at a key that is gone is not.
+func deleteCredential(ctx context.Context, c *agentsclient.Client, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errBadRequest("name is required")
+	}
+	secretName := CredentialSecretName(name)
+	if cred, err := c.GetModelCredential(ctx, name); err == nil {
+		if n := strings.TrimSpace(cred.Spec.SecretRef.Name); n != "" {
+			secretName = n
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := c.ModelCredentials().Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := c.DeleteSecret(ctx, llm.SecretNamespace, secretName); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // credentialTestResult is the outcome of a live credential health probe.
@@ -90,71 +153,4 @@ type credentialTestResult struct {
 	LatencyMS int64    `json:"latencyMS"`
 	Error     string   `json:"error,omitempty"`
 	Models    []string `json:"models,omitempty"` // ids the endpoint serves (discovery)
-}
-
-// probeOpenAIModels calls GET {baseURL}/models and returns the served model ids
-// plus the round-trip latency. A non-2xx status or transport error is returned
-// as err (with latency still measured for the health badge).
-func probeOpenAIModels(ctx context.Context, baseURL, apiKey string) ([]string, time.Duration, error) {
-	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if base == "" {
-		base = "https://api.openai.com/v1"
-	}
-	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
-	if err != nil {
-		return nil, 0, err
-	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	start := time.Now()
-	resp, err := http.DefaultClient.Do(req)
-	latency := time.Since(start)
-	if err != nil {
-		return nil, latency, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	// 8MB cap: aggregator /models responses are huge (OpenRouter ships several
-	// MB of per-model metadata) and a truncated body fails to parse, which used
-	// to report "healthy, zero served models".
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(body))
-		if len(msg) > 200 {
-			msg = msg[:200]
-		}
-		return nil, latency, &probeError{status: resp.StatusCode, msg: msg}
-	}
-	var parsed struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		// 2xx but unexpected body — the endpoint is reachable, just not a
-		// standard /models list. Treat as healthy with no discovered models.
-		return nil, latency, nil
-	}
-	ids := make([]string, 0, len(parsed.Data))
-	for _, m := range parsed.Data {
-		if id := strings.TrimSpace(m.ID); id != "" {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
-	return ids, latency, nil
-}
-
-type probeError struct {
-	status int
-	msg    string
-}
-
-func (e *probeError) Error() string {
-	if e.msg != "" {
-		return "endpoint returned HTTP " + strconv.Itoa(e.status) + ": " + e.msg
-	}
-	return "endpoint returned HTTP " + strconv.Itoa(e.status)
 }

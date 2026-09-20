@@ -10,6 +10,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,6 +47,10 @@ func (f fakeCR) GetToolset(context.Context, string) (*agentsv1alpha1.Toolset, er
 
 // fakeSecrets returns one token for every connection secret.
 type fakeSecrets struct{ token string }
+
+func (f fakeSecrets) GetModelCredential(context.Context, string) (*agentsv1alpha1.ModelCredential, error) {
+	return nil, fmt.Errorf("no model credentials in this fixture")
+}
 
 func (f fakeSecrets) GetSecret(context.Context, string, string) (*corev1.Secret, error) {
 	return &corev1.Secret{Data: map[string][]byte{"token": []byte(f.token)}}, nil

@@ -153,8 +153,11 @@ var projectVerbs = []verbRoute{
 // Session's name is the thread ID, and the project it belongs to is read off
 // the gated object rather than the URL.
 var sessionVerbs = []verbRoute{
-	{verb: "update", handlers: post(func(s *Server) http.HandlerFunc { return s.patchProjectAssistantThread })},
-	{verb: "delete", handlers: post(func(s *Server) http.HandlerFunc { return s.deleteProjectAssistantThread })},
+	// "edit" and "discard", not "update" and "delete": the standard Kubernetes
+	// verbs are reserved and the hub refuses a CatalogEntry that declares one
+	// as a data-plane verb (apis/providers/v1alpha1/dataplane.go).
+	{verb: "edit", handlers: post(func(s *Server) http.HandlerFunc { return s.patchProjectAssistantThread })},
+	{verb: "discard", handlers: post(func(s *Server) http.HandlerFunc { return s.deleteProjectAssistantThread })},
 	{verb: "items", handlers: get(func(s *Server) http.HandlerFunc { return s.listProjectAssistantThreadItems })},
 	{verb: "events", handlers: get(func(s *Server) http.HandlerFunc { return s.streamProjectAssistantThreadEvents })},
 	{verb: "turn", handlers: post(func(s *Server) http.HandlerFunc { return s.startProjectAssistantThreadTurn })},

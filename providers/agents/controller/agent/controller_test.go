@@ -11,6 +11,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -531,5 +532,125 @@ func TestDeleteWithoutOurFinalizerIsANoOp(t *testing.T) {
 	}
 	if got == nil || len(got.Finalizers) != 1 {
 		t.Fatalf("another owner's finalizer must be left alone: %+v", got)
+	}
+}
+
+// ---- the ModelCredentialsReady condition ------------------------------------
+
+// readyCredential is a ModelCredential its own reconciler has already blessed.
+func readyCredential(name string) *agentsv1alpha1.ModelCredential {
+	cred := &agentsv1alpha1.ModelCredential{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	cred.Spec.BaseURL = "https://api.openai.com/v1"
+	cred.Spec.SecretRef.Name = "railgrid-agents-model-" + name
+	meta.SetStatusCondition(&cred.Status.Conditions, metav1.Condition{
+		Type: agentsv1alpha1.ConditionReady, Status: metav1.ConditionTrue,
+		Reason: agentsv1alpha1.ReasonReady, Message: "ready",
+	})
+	return cred
+}
+
+func unreadyCredential(name string) *agentsv1alpha1.ModelCredential {
+	cred := readyCredential(name)
+	meta.SetStatusCondition(&cred.Status.Conditions, metav1.Condition{
+		Type: agentsv1alpha1.ConditionReady, Status: metav1.ConditionFalse,
+		Reason: agentsv1alpha1.ReasonNotReady, Message: "the endpoint refused the key",
+	})
+	return cred
+}
+
+func modelCredentialsCondition(t *testing.T, got agentsv1alpha1.Agent) metav1.Condition {
+	t.Helper()
+	cond := meta.FindStatusCondition(got.Status.Conditions, agentsv1alpha1.ConditionModelCredentialsReady)
+	if cond == nil {
+		t.Fatalf("ModelCredentialsReady not set: %+v", got.Status.Conditions)
+	}
+	return *cond
+}
+
+// An agent's credentials are checked across the workspace, by name, and the
+// verdict names the offending ones — that is what a person edits. It is a
+// condition of its own rather than another Validated reason: a rotated key
+// leaves the agent's spec perfectly correct.
+func TestAgentModelCredentialsReady(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		models      map[string]string
+		fallbacks   []string
+		objects     []client.Object
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			name:       "no credential named",
+			wantReason: agentsv1alpha1.ReasonNoModelCredential,
+		},
+		{
+			name:        "unknown credential",
+			models:      map[string]string{"chat": "ghost"},
+			wantReason:  agentsv1alpha1.ReasonUnknownModelCredential,
+			wantMessage: "ghost",
+		},
+		{
+			name:        "credential not ready",
+			models:      map[string]string{"chat": "openai"},
+			objects:     []client.Object{unreadyCredential("openai")},
+			wantReason:  agentsv1alpha1.ReasonModelCredentialNotReady,
+			wantMessage: "openai",
+		},
+		{
+			name:       "primary and fallbacks all ready",
+			models:     map[string]string{"chat": "openai", "background": "cheap"},
+			fallbacks:  []string{"backup"},
+			objects:    []client.Object{readyCredential("openai"), readyCredential("cheap"), readyCredential("backup")},
+			wantReason: "",
+		},
+		{
+			name:        "one fallback missing",
+			models:      map[string]string{"chat": "openai"},
+			fallbacks:   []string{"backup"},
+			objects:     []client.Object{readyCredential("openai")},
+			wantReason:  agentsv1alpha1.ReasonUnknownModelCredential,
+			wantMessage: "backup",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := validAgent("scout")
+			a.Spec.Models = tc.models
+			a.Spec.ModelFallbacks = tc.fallbacks
+			got := reconcileAgents(t, a, tc.objects...)
+			cond := modelCredentialsCondition(t, got)
+			if tc.wantReason == "" {
+				if cond.Status != metav1.ConditionTrue {
+					t.Fatalf("ModelCredentialsReady = %s/%s: %s", cond.Status, cond.Reason, cond.Message)
+				}
+				return
+			}
+			if cond.Status != metav1.ConditionFalse || cond.Reason != tc.wantReason {
+				t.Fatalf("ModelCredentialsReady = %s/%s, want False/%s", cond.Status, cond.Reason, tc.wantReason)
+			}
+			if tc.wantMessage != "" && !strings.Contains(cond.Message, tc.wantMessage) {
+				t.Fatalf("message %q does not name %q", cond.Message, tc.wantMessage)
+			}
+			// The spec itself is fine in every one of these cases, so Validated
+			// must not be dragged down with it.
+			if v := meta.FindStatusCondition(got.Status.Conditions, agentsv1alpha1.ConditionValidated); v == nil || v.Status != metav1.ConditionTrue {
+				t.Fatalf("Validated = %+v, want True — a credential problem is not a spec problem", v)
+			}
+		})
+	}
+}
+
+// referencedCredentials is what the message is built from, so its order has to
+// be stable: a map iterated raw would reorder the message between reconciles
+// and write status on every pass.
+func TestReferencedCredentialsIsStableAndDeduped(t *testing.T) {
+	a := validAgent("scout")
+	a.Spec.Models = map[string]string{"chat": "main", "background": "cheap", "compaction": "main"}
+	a.Spec.ModelFallbacks = []string{"cheap", " backup ", ""}
+	want := []string{"cheap", "main", "backup"} // background, chat, compaction, then fallbacks
+	for range 5 {
+		if got := referencedCredentials(a); !slices.Equal(got, want) {
+			t.Fatalf("referencedCredentials = %v, want %v", got, want)
+		}
 	}
 }

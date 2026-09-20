@@ -2,7 +2,7 @@
 import { Check, ChevronDown, Search } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 
-import { filterDiscoveredModels, modelSelectorOptions, type ModelSelectorOption } from './modelIDSelection'
+import { filterDiscoveredModels, modelSelectorGroupLabels, modelSelectorOptions, type ModelSelectorOption } from './modelIDSelection'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import type { DiscoveredModel } from './modelIDSelection'
 
@@ -37,6 +37,10 @@ const selectedLabel = computed(() => selectedModel.value?.name || props.modelVal
 const matchingModels = computed(() => filterDiscoveredModels(props.models, query.value))
 const manualCandidate = computed(() => query.value.trim())
 const optionList = computed<ModelSelectorOption[]>(() => modelSelectorOptions(props.models, query.value))
+// Parallel to optionList: the heading to draw above each option, or null. See
+// modelSelectorGroupLabels — the list stays flat so index-based keyboard
+// traversal and aria-activedescendant keep working.
+const groupLabels = computed<(string | null)[]>(() => modelSelectorGroupLabels(optionList.value))
 const activeDescendant = computed(() => open.value && optionList.value[activeIndex.value]
   ? optionID(activeIndex.value)
   : undefined)
@@ -271,27 +275,28 @@ onBeforeUnmount(() => {
         </label>
         <div class="k-table__filter-meta" aria-live="polite">{{ optionSummary }}</div>
         <ul :id="listboxID" class="k-table__filter-options" role="listbox" aria-label="Model IDs">
-          <li
-            v-for="(option, index) in optionList"
-            :id="optionID(index)"
-            :key="option.key"
-            class="k-table__filter-option min-h-10"
-            :class="{
-              'is-active': index === activeIndex && !option.disabled,
-              'cursor-not-allowed opacity-50': option.disabled,
-            }"
-            role="option"
-            :aria-disabled="option.disabled || undefined"
-            :aria-selected="option.value === modelValue"
-            @mouseenter="!option.disabled && (activeIndex = index)"
-            @mousedown.prevent
-            @click="chooseOption(option)"
-          >
-            <Check :stroke-width="1.75" aria-hidden="true" />
-            <span class="min-w-0 flex-1 truncate">{{ option.manual ? `Use “${option.label}”` : option.label }}</span>
-            <span v-if="option.model?.compatibility === 'recommended'" class="shrink-0 text-[8px] font-semibold uppercase tracking-wide text-accent">Recommended</span>
-            <span v-else-if="option.disabled" class="shrink-0 text-[8px] font-semibold uppercase tracking-wide text-text-muted">Not for chat</span>
-          </li>
+          <template v-for="(option, index) in optionList" :key="option.key">
+            <li v-if="groupLabels[index]" role="presentation" class="k-table__filter-meta">{{ groupLabels[index] }}</li>
+            <li
+              :id="optionID(index)"
+              class="k-table__filter-option min-h-10"
+              :class="{
+                'is-active': index === activeIndex && !option.disabled,
+                'cursor-not-allowed opacity-50': option.disabled,
+              }"
+              role="option"
+              :aria-disabled="option.disabled || undefined"
+              :aria-selected="option.value === modelValue"
+              @mouseenter="!option.disabled && (activeIndex = index)"
+              @mousedown.prevent
+              @click="chooseOption(option)"
+            >
+              <Check :stroke-width="1.75" aria-hidden="true" />
+              <span class="min-w-0 flex-1 truncate">{{ option.manual ? `Use “${option.label}”` : option.label }}</span>
+              <span v-if="option.model?.compatibility === 'recommended'" class="shrink-0 text-[8px] font-semibold uppercase tracking-wide text-accent">Recommended</span>
+              <span v-else-if="option.disabled" class="shrink-0 text-[8px] font-semibold uppercase tracking-wide text-text-muted">Not for chat</span>
+            </li>
+          </template>
         </ul>
         <p v-if="models.length === 0 && !manualCandidate" class="k-table__filter-empty">Find models to load this provider’s catalog, or type a model ID above.</p>
       </div>

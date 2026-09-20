@@ -52,10 +52,14 @@ and tools are edited inside the agent, next to a live chat playground.
   (port 8087), Helm chart, `init` bootstrap, portal micro-frontend.
 - **Chat** — streaming (SSE) single-turn conversations on the Eino engine, with
   transcript + resumable run records in the store (in-memory backend; see gaps).
-- **Named model credentials** — created once, each its own Secret
-  (`railgrid-agents-model-<name>`), listed/created/deleted on the Models tab and
-  assigned/reassigned per agent. This is what an agent uses to reach its
-  provider (OpenAI-compatible today).
+- **Named model credentials** — a `ModelCredential` object per endpoint,
+  referencing the tenant Secret that holds the key; listed/created/deleted on
+  the Models tab and assigned/reassigned per agent. This is what an agent uses
+  to reach its provider (OpenAI-compatible today). A reconciler resolves the
+  Secret and calls `GET {baseURL}/models`, so `status.conditions` — not a
+  button somebody pressed once — is what says whether the credential works,
+  and `status.models` — the **chat-capable subset** of what the endpoint
+  served — is what the portal's model picker offers.
 - **Schedules / Triggers / Connections CRUD** — full create/list/delete of the
   `AgentSchedule`, `AgentTrigger`, and `Connection` CRs from their tabs.
 - **Run now / Fire now** — execute a schedule's or trigger's task as the
@@ -314,6 +318,7 @@ The [Milestones](#milestones) section lists the full plan.
 |---|---|
 | `Agent` | The persistent assistant: persona/system prompt, model profile refs (per purpose: `chat`, `background`, `compaction`), memory policy, tool grants (connection refs + toolset refs + built-in families) with per-trigger policy, limits (max tool turns, per-run timeout), **budget** (rolling token/USD cap), **`channels`** (named messaging bindings, one primary), **`autonomy`** (`suggest`/`ask`/`auto` — enforced at toolset assembly), and **`delegates`** (agent names this agent may spawn as sub-agents) |
 | `Connection` | A named credential to an external system: `type` (`github`, `mcp`, `websearch`, `http`, `telegram`, `slack`, `smtp`), **`auth`** (`secret` default, or `oauth`), `secretRef` to a tenant-workspace Secret, non-secret config (base URL, allowed hosts, channel/chat IDs). For `auth: oauth`, an `oauth` block (provider, scopes) and a provider-run callback mint + refresh the token into the Secret. Connections turn tool families and channels on per agent |
+| `ModelCredential` | A named model endpoint an agent runs on: `provider` (`openai-compatible` / `openai`), `baseURL`, a default `model` id, `secretRef` → the tenant Secret holding the API key, and `secretKey` (default `apiKey`). Status is the source of truth: `SecretResolved` (the Secret exists, carries the key, and is labelled `railgrid.ai/owner: agents`), `Reachable` (`GET {baseURL}/models` answered), `Ready` (both), plus `models` (the ids the endpoint served, ≤500), `lastProbeTime` and a bounded `lastProbeError`. Agents name one in `spec.models[purpose]` and `spec.modelFallbacks` |
 | `AgentSchedule` | Time-based firing. `type: cron \| wakeup \| heartbeat`; cron spec (5-field) + **`timeZone`** (IANA name, like `CronJob.spec.timeZone`; default UTC) + task prompt (cron) or standing checklist ref (heartbeat) + `agentRef` + retry policy + `suspend`. Status: `nextRun`, `lastRun`, `consecutiveFailures`, `disabledReason` |
 | `AgentTrigger` | Event-based firing — the non-time half of automation. `spec.source` (`webhook`, `channel`, `email`, `github`, `connection`) + `connectionRef` + `filter` (source-specific match: header/signature, message regex, event type, label) + `task` + `agentRef` + `suspend`. Webhook sources get a hub-routed inbound endpoint; connection sources subscribe to a Connection's event stream. Status: `lastFired`, `consecutiveFailures`, `disabledReason` |
 | `Toolset` | A shareable bundle of tool grants (families, connections, approval rules) many agents can link, so wiring is written once |
@@ -349,9 +354,8 @@ Three names, all under this provider's own prefixes:
 
 | Secret | Written by | Why the provider touches it |
 |---|---|---|
-| `railgrid-agents-model-<name>` | the tenant (portal, kube client) | read, to call the model on the tenant's behalf |
+| whatever a `ModelCredential`'s `spec.secretRef` names (this provider's own writers default it to `railgrid-agents-model-<name>`) | the tenant (portal, kube client) | read, to call the model on the tenant's behalf — by the ModelCredential reconciler and by unattended runs |
 | `railgrid-agents-conn-<name>` | **the provider** | the OAuth callback stores access + refresh tokens; the Connection reconciler generates the Telegram `secret_token` / Slack signing secret that make an inbound webhook verifiable |
-| `railgrid-agents-llm` | the tenant | the legacy single-credential Secret, read for workspaces that predate per-name credentials |
 
 There are no `serviceaccounts` / `clusterroles` / `clusterrolebindings` claims:
 an agent's unattended identity is **minted by the hub**, scoped to the exact
@@ -458,8 +462,8 @@ part.
 | `agents` | `inbox` | GET | this agent's pending approvals and questions |
 | `agents` | `inbox-resolve` | POST | `…/inbox-resolve/{itemID}` |
 | `agents` | `events` | GET | this agent's activity, streamed (SSE) |
-| `agents` | `model-test` | POST | probe a model credential with a real request |
-| `agents` | `model-discover` | POST | list the ids the credential's endpoint serves |
+| `modelcredentials` | `test` | POST | probe the credential with a real chat round-trip; optional body `{"model": "<id>"}` probes that chat-capable id instead of the saved one |
+| `modelcredentials` | `discover` | POST | list the chat-capable ids the credential's endpoint serves, and refresh its status |
 | `runs` | `trace` | GET | the run's step trace and answer (Postgres) |
 | `runs` | `wait` | GET | block until the run settles |
 | `runs` | `cancel` | POST | ask a run in flight to stop |
@@ -681,11 +685,57 @@ type Runner interface {
 - `Agent.spec.runner: auto | eino | claude-code` — `auto` picks `eino`
   unless the task is marked long-running and `claude-code` is available.
 
-**Model profiles.** `railgrid-agents-llm` holds a small list of named profiles
-(provider, baseURL, model, key) instead of one entry. Agents map purposes to
-profiles: `chat` (strong), `background` (cheap — heartbeats, wakeups,
-summarization), `compaction`. BYO OpenAI-compatible or Gemini, per tenant,
-provider-agnostic.
+**Model profiles.** Each endpoint is a `ModelCredential` object; the key stays
+in the Secret it points at. Agents map purposes to credential names: `chat`
+(strong), `background` (cheap — heartbeats, wakeups, summarization),
+`compaction`, plus an ordered `spec.modelFallbacks`. BYO OpenAI-compatible,
+per tenant, provider-agnostic.
+
+The credential model was a Secret named by convention
+(`railgrid-agents-model-<name>`, with the endpoint stuffed into its own keys)
+until the kind landed. Two things were wrong with it and both were structural.
+Nothing could validate it: a Secret has no status, so "is this key still good?"
+had no answer on any object and every run rediscovered the failure for itself.
+And the data-plane grammar addresses an OBJECT, so the probe verbs had to hang
+off an Agent — which meant the first thing anyone does in a new workspace,
+connect a model, had nothing to be addressed at. The portal papered over that
+with an "untestable" notice and asked the user to type a model ID from memory.
+A kind fixes both at once: the reconciler says what is true
+(`SecretResolved` / `Reachable` / `Ready`, and the model ids the endpoint
+serves), and `modelcredentials/{name}/test` and `.../discover` are verbs on the
+thing being asked about.
+
+**Discovery is curated, and the pick is proved before it is saved.** An
+endpoint answers `GET /models` with everything the account can reach; OpenAI's
+answer is ~130 ids, most of which are not chat models at all (speech,
+transcription, embeddings, images, realtime, moderation) and several of which
+are chat-shaped but served only on `/v1/responses` — `*-codex`, `*-pro`,
+`*-deep-research`, `computer-use-*`. `llm.BuildModel` speaks Chat Completions
+and nothing else, so offering that list raw is offering a trap: the model
+saves, and the failure arrives on the first turn as the provider's 404 "This
+model is not supported in the v1/chat/completions endpoint." So
+`llm.FilterChatModels` (a documented deny-list of id tokens, overruled by an
+exact catalog id so `gemini-2.5-pro` survives the `-pro` rule) runs inside
+`llm.DiscoverModels` — the one call the reconciler and the `discover` verb
+share, which is what keeps `status.models` and the verb's answer the same list
+rather than two. Catalog-known ids come first in catalog order, then the rest
+alphabetically, and the portal groups on that split.
+
+Curation narrows the list; it does not prove anything. That is what the `test`
+verb's optional `{"model": "<id>"}` body is for: the editor probes the model a
+person just picked, with the endpoint and key still taken from the saved object
+and its Secret, and "Save changes" stays disabled until it answers. A save that
+only rotates the key is unaffected — nothing new is being claimed about the
+model. And when a run does fail this way anyway (a model retired between the
+probe and the run), `llm.ExplainChatCompletionsRefusal` keeps the provider's
+sentence and adds which credential owns the model id.
+
+**Agents report their credentials.** The Agent reconciler resolves every name
+in `spec.models` and `spec.modelFallbacks` and sets
+`ModelCredentialsReady`, naming the offending credentials. It is a condition of
+its own rather than another `Validated` reason because a rotated key leaves the
+agent's spec perfectly correct — the agent is right and the model is
+unreachable, and a reader has to be able to tell those apart.
 
 **Budgets.** Every run records usage into `agents_usage`; each turn checks
 the agent's rolling window against `spec.budget`. On breach: suspend
@@ -851,7 +901,8 @@ providers/agents/
   api/               # dataplane.go is the whole route table; the rest are the
                      # verb handlers it dispatches to (NOT object CRUD — see
                      # design rule 4): chat SSE, run, runs, sessions, messages,
-                     # usage, inbox, events, model-test/discover on an agent;
+                     # usage, inbox, events on an agent; test/discover on a
+                     # model credential;
                      # test/enable-inbound/authorize on a connection; run on a
                      # schedule or trigger. Plus the OAuth callback, the signed
                      # webhooks, and the MCP tools, which are the one place the
@@ -896,8 +947,9 @@ reflect the 2026-07-12 state (see [Implementation status](#implementation-status
    Boots against a bare hub.
 2. ◑ **Chat + store** — eino runner, SSE chat, messages/runs in the store.
    **Done** except: Postgres backend (in-memory only), tool approvals in chat
-   (needs the tool loop), at-rest encryption. Model creds became *named
-   credentials* (own Secret each), not the single `railgrid-agents-llm`.
+   (needs the tool loop), at-rest encryption. Model creds became the
+   `ModelCredential` kind — one object per endpoint, referencing the Secret
+   that holds its key — not a single shared Secret.
 3. ✅ **Scheduler** — CRUD + tab + Run now, and **autonomous firing** via the
    Schedule reconciler + background executor: timezone-aware
    cron/wakeup/heartbeat, optimistic status claims, watchdog timeout,

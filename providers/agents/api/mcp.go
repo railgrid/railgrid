@@ -26,11 +26,11 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
-	"github.com/railgrid/provider-agents/llm"
 )
 
 // MCPHandler returns the streamable-HTTP MCP handler mounted at /mcp. A fresh
@@ -183,10 +183,16 @@ type updateAgentInput struct {
 }
 
 type credentialSummary struct {
-	Name      string `json:"name"`
-	Provider  string `json:"provider,omitempty"`
-	Model     string `json:"model,omitempty"`
-	HasAPIKey bool   `json:"hasAPIKey"`
+	Name     string `json:"name"`
+	Provider string `json:"provider,omitempty"`
+	BaseURL  string `json:"baseURL,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// Ready mirrors the ModelCredential's Ready condition: its Secret
+	// resolved and its endpoint answered. It replaces the old hasAPIKey,
+	// which only said a key had been typed, never that it worked.
+	Ready bool `json:"ready"`
+	// Models are the ids the endpoint served on the last successful probe.
+	Models []string `json:"models,omitempty"`
 }
 
 type listCredentialsOutput struct {
@@ -380,22 +386,20 @@ func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, listCredentialsOutput{}, err
 		}
-		secrets, err := c.ListSecrets(ctx, llm.SecretNamespace)
+		list, err := c.ModelCredentials().List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, listCredentialsOutput{}, err
 		}
 		out := listCredentialsOutput{Credentials: []credentialSummary{}}
-		for i := range secrets {
-			sec := &secrets[i]
-			if !strings.HasPrefix(sec.Name, llm.ModelCredentialPrefix) {
-				continue
-			}
-			get := func(k string) string { return strings.TrimSpace(string(sec.Data[k])) }
+		for i := range list.Items {
+			cred := &list.Items[i]
 			out.Credentials = append(out.Credentials, credentialSummary{
-				Name:      strings.TrimPrefix(sec.Name, llm.ModelCredentialPrefix),
-				Provider:  get("provider"),
-				Model:     get("model"),
-				HasAPIKey: get("apiKey") != "",
+				Name:     cred.Name,
+				Provider: cred.Spec.Provider,
+				BaseURL:  cred.Spec.BaseURL,
+				Model:    cred.Spec.Model,
+				Ready:    meta.IsStatusConditionTrue(cred.Status.Conditions, agentsv1alpha1.ConditionReady),
+				Models:   cred.Status.Models,
 			})
 		}
 		sort.Slice(out.Credentials, func(i, j int) bool { return out.Credentials[i].Name < out.Credentials[j].Name })

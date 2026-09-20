@@ -75,6 +75,12 @@ const MCPSERVERS: KubeResourceRef = { group: 'railgrid.ai', version: 'v1alpha1',
 // object — the step-level tool trace and the answer — is Postgres, reached
 // through the `trace` verb.
 const RUNS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'runs' }
+// Model credentials are objects of their own: the endpoint configuration is on
+// the object, the API key is in the Secret it points at, and the provider's
+// reconciler writes the verdict. They used to be a Secret with a magic name
+// and the endpoint stuffed into its keys, which nothing could validate and
+// nothing could address a probe at.
+const MODELCREDENTIALS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'modelcredentials' }
 // LABEL_AGENT mirrors api/runprojection.go. It is what makes "this agent's
 // runs" a server-side list rather than a filter over every run in the
 // workspace.
@@ -87,11 +93,15 @@ const DEFAULT_MCPSERVER = 'default'
 // a reconciler set.
 const FIELD_MANAGER = 'railgrid-agents-portal'
 
-// SECRET_NAMESPACE, CREDENTIAL_PREFIX and CONNECTION_PREFIX mirror
+// SECRET_NAMESPACE and CONNECTION_PREFIX mirror
 // providers/agents/llm/profiles.go and providers/agents/internal/connsecret.
 // They are a wire contract between this file and the provider: rename one side
 // and the provider stops finding the credential the portal just stored.
 const SECRET_NAMESPACE = 'default'
+// CREDENTIAL_PREFIX is only the DEFAULT name this writer gives a new model
+// credential's Secret. It is not a convention anything reads back any more:
+// the ModelCredential says where its key is in spec.secretRef, so an edit
+// follows the object rather than recomputing the name.
 const CREDENTIAL_PREFIX = 'railgrid-agents-model-'
 const CONNECTION_PREFIX = 'railgrid-agents-conn-'
 
@@ -107,6 +117,13 @@ const CONNECTION_PREFIX = 'railgrid-agents-conn-'
  * virtual workspace, so nothing stamps the label for us.
  */
 const OWNER_LABELS = { 'railgrid.ai/owner': 'agents' } as const
+/** The Secret key a model credential's API key is written under by default. */
+const DEFAULT_CREDENTIAL_KEY = 'apiKey'
+/** Conditions the ModelCredential reconciler writes. Mirrors apis/v1alpha1/conditions.go. */
+const CONDITION_READY = 'Ready'
+const CONDITION_SECRET_RESOLVED = 'SecretResolved'
+const CONDITION_REACHABLE = 'Reachable'
+
 /** The Secret key holding a Slack app signing secret or a generated Telegram secret_token. */
 const SIGNING_SECRET_KEY = 'signing_secret'
 
@@ -812,83 +829,163 @@ export class Resources {
   // ---- model credentials ---------------------------------------------------
 
   /**
-   * listCredentials projects the model-credential Secrets onto the same
-   * key-free view the REST handler returned. The apiKey is read only to answer
-   * `hasAPIKey` and is never put on the returned object, so no view can render
-   * or log it — but note that the raw Secret does reach the browser on this
-   * call, exactly as it would for `kubectl get secret` as the same user. The
-   * key material is the user's own, in the user's own workspace, and the
-   * provider no longer stands between them.
+   * listCredentials reads the ModelCredential objects and projects them onto
+   * the view the Models page renders.
+   *
+   * This used to list every Secret in the namespace and filter by name prefix,
+   * which meant the browser pulled real API keys back on every page load just
+   * to answer "is one set?". It reads objects now: the key is not on them, and
+   * what IS on them — Ready, and the model ids the endpoint served — is the
+   * reconciler's observation rather than a guess made here.
    */
   listCredentials = (): Promise<Credential[]> =>
     this.run(async (client) => {
-      const secrets = await client.listAll<KubeObject & { data?: Record<string, string> }>(SECRETS, {
-        namespace: SECRET_NAMESPACE,
-      })
-      const out: Credential[] = []
-      for (const sec of secrets) {
-        const secretName = sec.metadata?.name ?? ''
-        if (!secretName.startsWith(CREDENTIAL_PREFIX)) continue
-        const get = (k: string) => decodeBase64(sec.data?.[k] ?? '').trim()
-        out.push({
-          name: secretName.slice(CREDENTIAL_PREFIX.length),
-          provider: get('provider'),
-          baseURL: get('baseURL'),
-          model: get('model'),
-          hasAPIKey: get('apiKey') !== '',
-        })
-      }
+      const items = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
+      const out = items.map(credentialView)
       out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
       return out
     })
 
+  /**
+   * saveCredential writes the Secret and then the ModelCredential.
+   *
+   * That order on purpose, and the same one createConnection uses: the
+   * reconciler reacts to the object, and an object whose Secret is not there
+   * yet parks in SecretResolved=False until one is. Writing the object first
+   * would flag a credential that is about to be fine.
+   *
+   * A model id is NOT required here. The first save is what makes the
+   * credential probeable at all — "which models does this endpoint serve?"
+   * needs a saved object to ask of — so the editor saves, discovers, and saves
+   * again with the chosen id.
+   */
   saveCredential = (body: CredentialWrite): Promise<Credential> =>
     this.run(async (client) => {
       const name = (body.name ?? '').trim()
       const provider = (body.provider ?? '').trim() || 'openai-compatible'
       const baseURL = (body.baseURL ?? '').trim()
-      const model = (body.model ?? '').trim()
-      let apiKey = (body.apiKey ?? '').trim()
+      const apiKey = (body.apiKey ?? '').trim()
       if (!name) throw validationError('name is required')
-      if (!model) throw validationError('model is required')
-      if (!apiKey) {
-        // An edit that does not retype the key keeps the stored one — the key
-        // is write-only everywhere else, so there is nothing for the form to
-        // round-trip.
-        try {
-          const existing = await client.get<KubeObject & { data?: Record<string, string> }>(
-            SECRETS,
-            credentialSecretName(name),
-            { namespace: SECRET_NAMESPACE },
-          )
-          apiKey = decodeBase64(existing.data?.apiKey ?? '')
-        } catch (error) {
-          if (!isKubeNotFound(error)) throw error
-        }
-        if (!apiKey) throw validationError('apiKey is required')
+      if (!baseURL) throw validationError('baseURL is required')
+
+      // The stored object decides which Secret to write into: an edit must not
+      // silently move a credential onto this writer's default name when it was
+      // pointed somewhere else.
+      let existing: (KubeModelCredential & KubeObject) | null = null
+      try {
+        existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name)
+      } catch (error) {
+        if (!isKubeNotFound(error)) throw error
       }
-      // force: credentials stored before this moved to kcp are owned by the
-      // provider backend's writer, and an un-forced apply would 409 on every
-      // key rather than editing them. The four keys ARE the credential, so
-      // taking ownership of all of them is what "save" means here.
-      await client.apply(
-        SECRETS,
-        {
-          apiVersion: 'v1',
-          kind: 'Secret',
-          metadata: { name: credentialSecretName(name), namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
-          type: 'Opaque',
-          stringData: { provider, baseURL, model, apiKey },
-        } as KubeObject,
-        { namespace: SECRET_NAMESPACE, force: true },
-      )
-      return { name, provider, baseURL, model, hasAPIKey: true }
+      const secretName = (existing?.spec?.secretRef?.name ?? '').trim() || credentialSecretName(name)
+      const secretKey = (existing?.spec?.secretKey ?? '').trim() || DEFAULT_CREDENTIAL_KEY
+
+      if (apiKey) {
+        // force: a Secret left behind by an earlier credential of this name
+        // carries field ownership from whoever wrote it, and an un-forced
+        // apply would 409 on the very key being replaced.
+        await client.apply(
+          SECRETS,
+          {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: secretName, namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
+            type: 'Opaque',
+            stringData: { [secretKey]: apiKey },
+          } as KubeObject,
+          { namespace: SECRET_NAMESPACE, force: true },
+        )
+      } else if (!existing) {
+        throw validationError('apiKey is required')
+      }
+
+      const model = body.model === undefined ? undefined : body.model.trim()
+      if (existing) {
+        // A merge patch spells "no default model" as null, which is exactly
+        // what clearing the field means.
+        const spec: Record<string, unknown> = { provider, baseURL, secretRef: { name: secretName }, secretKey }
+        if (model !== undefined) spec.model = model || null
+        const patched = await client.patch<KubeModelCredential & KubeObject>(
+          MODELCREDENTIALS, name, { spec }, { type: 'merge' },
+        )
+        return credentialView(patched)
+      }
+      const created = await client.create<KubeModelCredential & KubeObject>(MODELCREDENTIALS, {
+        apiVersion: API_VERSION,
+        kind: 'ModelCredential',
+        metadata: { name },
+        spec: defined({ provider, baseURL, model: model || undefined, secretRef: { name: secretName }, secretKey }),
+      } as unknown as KubeModelCredential & KubeObject)
+      return credentialView(created)
     })
 
+  /**
+   * deleteCredential removes the object and the Secret it pointed at, in that
+   * order: an orphaned Secret is harmless, an object pointing at a key that is
+   * gone reports itself broken until someone deletes it.
+   */
   deleteCredential = (name: string): Promise<void> =>
     this.run(async (client) => {
-      await client.delete(SECRETS, credentialSecretName(name), { namespace: SECRET_NAMESPACE })
+      let secretName = credentialSecretName(name)
+      try {
+        const existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name)
+        secretName = (existing.spec?.secretRef?.name ?? '').trim() || secretName
+      } catch (error) {
+        if (!isKubeNotFound(error)) throw error
+      }
+      await client.delete(MODELCREDENTIALS, name)
+      try {
+        await client.delete(SECRETS, secretName, { namespace: SECRET_NAMESPACE })
+      } catch (error) {
+        if (!isKubeNotFound(error)) throw error
+      }
     })
+}
+
+/** KubeModelCredential is the object as kcp stores it. */
+interface KubeModelCredential {
+  metadata?: { name?: string }
+  spec?: {
+    provider?: string
+    baseURL?: string
+    model?: string
+    secretRef?: { name?: string }
+    secretKey?: string
+  }
+  status?: {
+    conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>
+    models?: string[]
+  }
+}
+
+/**
+ * credentialView projects a ModelCredential onto what the views render.
+ *
+ * Every field is optional-guarded: this reads an API object, and one written a
+ * moment ago (or by an older provider, before its reconciler has seen it) must
+ * render as a credential with an unknown verdict rather than fault the page.
+ * `ready` is deliberately undefined until a condition says otherwise, so "not
+ * checked yet" and "checked and broken" are distinguishable.
+ */
+function credentialView(object: KubeModelCredential): Credential {
+  const conditions = object.status?.conditions ?? []
+  const find = (type: string) => conditions.find((c) => c.type === type)
+  const ready = find(CONDITION_READY)
+  const secretResolved = find(CONDITION_SECRET_RESOLVED)
+  const reachable = find(CONDITION_REACHABLE)
+  const firstProblem = [secretResolved, reachable, ready].find((c) => c && c.status !== 'True')
+  return {
+    name: object.metadata?.name ?? '',
+    provider: object.spec?.provider ?? '',
+    baseURL: object.spec?.baseURL ?? '',
+    model: object.spec?.model ?? '',
+    secretRef: object.spec?.secretRef?.name ?? '',
+    secretKey: object.spec?.secretKey ?? '',
+    ready: ready ? ready.status === 'True' : undefined,
+    secretResolved: secretResolved ? secretResolved.status === 'True' : undefined,
+    statusMessage: firstProblem?.message ?? '',
+    discovered: object.status?.models ?? [],
+  }
 }
 
 /** rfc3339 validates a timestamp the way time.Parse(time.RFC3339, …) did. */
@@ -908,14 +1005,3 @@ function newSigningSecret(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-/** decodeBase64 reads a Secret `data` value. Returns "" for anything undecodable. */
-function decodeBase64(value: string): string {
-  if (!value) return ''
-  try {
-    const binary = atob(value)
-    const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0))
-    return new TextDecoder().decode(bytes)
-  } catch {
-    return ''
-  }
-}

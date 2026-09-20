@@ -196,6 +196,49 @@ func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
 	}
 }
 
+// The agents data plane's probe verbs are a grant on modelcredentials and
+// nothing else. Agents used to carry them as agents/model-test and
+// agents/model-discover, which meant an MCP token holding "may test a model
+// credential" held it on the AGENT — the same object chat and run hang off.
+// Now the credential is an object of its own and the grant says so, and no
+// other agents.railgrid.ai resource picks up a subresource by sharing the
+// group.
+func TestBuildRules_AgentsGrantsOnlyModelCredentialProbes(t *testing.T) {
+	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+		bound("agents.railgrid.ai", "agents"),
+		bound("agents.railgrid.ai", "modelcredentials"),
+		bound("agents.railgrid.ai", "runs"),
+		bound("agents.railgrid.ai", "connections"),
+	}, nil, false)
+	assertNoWildcards(t, rules)
+
+	probe := findRule(t, rules, "agents.railgrid.ai", "modelcredentials/test")
+	if probe == nil || !slices.Equal(probe.Verbs, []string{"create"}) ||
+		!slices.Equal(probe.Resources, []string{"modelcredentials/test", "modelcredentials/discover"}) {
+		t.Fatalf("agents data-plane rule = %+v, want create on modelcredentials/{test,discover}", probe)
+	}
+	// The retired coordinates, and everything else the data plane serves that
+	// an MCP token has no business invoking.
+	for _, res := range []string{
+		"agents/model-test", "agents/model-discover",
+		"agents/chat", "agents/run", "agents/inbox-resolve",
+		"connections/test", "runs/cancel",
+	} {
+		if r := findRule(t, rules, "agents.railgrid.ai", res); r != nil {
+			t.Fatalf("%s must not be granted: %+v", res, r)
+		}
+	}
+
+	// readOnly servers invoke nothing: a probe is still a call out to a third
+	// party with the tenant's key.
+	ro := buildRules([]apisv1alpha2.BoundAPIResource{
+		bound("agents.railgrid.ai", "modelcredentials"),
+	}, nil, true)
+	if r := findRule(t, ro, "agents.railgrid.ai", "modelcredentials/test"); r != nil {
+		t.Fatalf("readOnly server must not get a probe grant: %+v", r)
+	}
+}
+
 // With the instance resource unbound the group's data-plane grant yields
 // nothing at all, rather than falling back to whatever else is bound.
 func TestBuildRules_ExecSkippedWhenTheInstanceResourceIsNotBound(t *testing.T) {

@@ -361,6 +361,12 @@ type ProviderProxy struct {
 	// it; nil means grant-bearing requests are refused.
 	uiGrantKeys serviceaccounts.ProofKeySource
 
+	// integrityObserver, on the UI proxy, is told the SRI pin of the
+	// /main.js body this proxy actually streamed. See
+	// SetMainJSIntegrityObserver; nil leaves the pin to the reconcile loop
+	// alone.
+	integrityObserver MainJSIntegrityObserver
+
 	// denyHubOnlyEndpoints reserves the hub-only path prefixes on a
 	// provider's backend origin. Provider action routes (/actions/*) are a
 	// public data-plane surface and ride this proxy like any other verb —
@@ -376,6 +382,22 @@ type ProviderProxy struct {
 // under /ui/providers/{name}. See NewUIProxy for the rationale.
 func (p *ProviderProxy) SetFallback(h http.Handler) {
 	p.fallback = h
+}
+
+// MainJSIntegrityObserver is told the SRI metadata of the /main.js body the UI
+// proxy actually served for a provider. (*CatalogReconciler) implements it; see
+// ObserveMainJSIntegrity for what it does with the value.
+type MainJSIntegrityObserver interface {
+	ObserveMainJSIntegrity(name, integrity string)
+}
+
+// SetMainJSIntegrityObserver wires the UI proxy to the component that owns the
+// pin. Wire after both exist (see pkg/hub/server.go, where the proxy is built
+// early in Run and the catalog reconciler later); nil leaves the pin entirely
+// to the reconcile loop. Calling it on the backend proxy has no effect — only
+// the UI proxy serves /main.js.
+func (p *ProviderProxy) SetMainJSIntegrityObserver(o MainJSIntegrityObserver) {
+	p.integrityObserver = o
 }
 
 func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -490,6 +512,14 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	basePath := p.pathPrefix + "/" + name
 
+	// The pin the portal holds has to match the body the browser receives, and
+	// this is the only place that knows what that body is. Hash it on the way
+	// past and correct the pin when it disagrees (see observeMainJS).
+	var modifyResponse func(*http.Response) error
+	if p.fallbackForSPA && p.integrityObserver != nil && isMainJSPath(rest) {
+		modifyResponse = p.observeMainJS(prov)
+	}
+
 	rp := &httputil.ReverseProxy{
 		// Flush every write immediately (no response buffering). Required for
 		// provider responses that stream: log-follow, and — once edge
@@ -516,6 +546,7 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				setDelegatedAuthorization(req.Header, delegated)
 			}
 		},
+		ModifyResponse: modifyResponse,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.log.Error(err, "upstream error", "provider", name, "target", target.String())
 			http.Error(w, "provider upstream error", http.StatusBadGateway)

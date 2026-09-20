@@ -381,3 +381,40 @@ func greeting(name string) *unstructured.Unstructured {
 		"metadata":   map[string]any{"name": name, "uid": "uid-" + name},
 	}}
 }
+
+// The hub revalidates its Subresource Integrity pin for main.js with a
+// conditional GET on every reconcile, so a portal asset must carry a strong
+// ETag that changes with the bytes and answer If-None-Match with 304.
+func TestPortalAssetsCarryAnETagAndAnswerConditionalGets(t *testing.T) {
+	h := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/main.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /main.js = %d, want 200", rec.Code)
+	}
+	etag := rec.Header().Get("ETag")
+	if etag == "" || !strings.HasPrefix(etag, `"`) {
+		t.Fatalf("GET /main.js ETag = %q, want a quoted strong validator", etag)
+	}
+	if rec.Body.String() != "export const x = 1" {
+		t.Fatalf("GET /main.js body = %q", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/main.js", nil)
+	req.Header.Set("If-None-Match", etag)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("conditional GET /main.js = %d, want 304", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("304 carried a body of %d bytes", rec.Body.Len())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/app-1.css", nil))
+	if other := rec.Header().Get("ETag"); other == "" || other == etag {
+		t.Fatalf("assets/app-1.css ETag = %q, want a distinct validator (main.js has %q)", other, etag)
+	}
+}

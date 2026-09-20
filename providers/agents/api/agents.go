@@ -703,16 +703,17 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 var errNoCredential = errors.New("this agent has no model credential assigned — pick one on the Models tab")
 
 // buildChatModelCtx builds the model for an ordinary (chat-purpose) run.
-func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent) (einomodel.BaseChatModel, error) {
+func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent) (einomodel.BaseChatModel, error) {
 	return s.buildModelForPurpose(ctx, creds, agent, llm.PurposeChat)
 }
 
 // buildModelForPurpose resolves the agent's named model credential for a run
 // purpose and builds the Eino model from it. Agents reference a credential by
-// name in spec.models[purpose]; the credential is its own Secret
-// (railgrid-agents-model-<name>). A purpose the agent did not map falls back to
-// "chat", so mapping only "chat" keeps working everywhere.
-func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
+// name in spec.models[purpose]; the name is a ModelCredential in this
+// workspace, whose spec.secretRef points at the Secret holding the key. A
+// purpose the agent did not map falls back to "chat", so mapping only "chat"
+// keeps working everywhere.
+func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
 	primary := strings.TrimSpace(agent.Spec.Models[purpose])
 	if primary == "" {
 		primary = strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
@@ -761,18 +762,26 @@ func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.SecretGette
 // primaryModelName resolves the model id of the agent's primary chat credential
 // for cost attribution. Best-effort: returns "" when unresolvable (cost then
 // falls back to 0 rather than erroring the run).
-func (s *Server) primaryModelName(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent) string {
+func (s *Server) primaryModelName(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent) string {
 	return s.modelNameForPurpose(ctx, creds, agent, llm.PurposeChat)
+}
+
+// credentialNameForPurpose resolves which ModelCredential a run purpose lands
+// on, following the same purpose → chat fallback as buildModelForPurpose. It
+// reads nothing: the answer is on the agent's spec, which is what makes it
+// usable on an error path where a kube read would be one failure too late.
+func credentialNameForPurpose(agent *agentsv1alpha1.Agent, purpose string) string {
+	if name := strings.TrimSpace(agent.Spec.Models[purpose]); name != "" {
+		return name
+	}
+	return strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
 }
 
 // modelNameForPurpose resolves the model id behind a run purpose, following the
 // same purpose → chat fallback as buildModelForPurpose so cost attribution and
 // context-window sizing name the model that will actually be called.
-func (s *Server) modelNameForPurpose(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent, purpose string) string {
-	name := strings.TrimSpace(agent.Spec.Models[purpose])
-	if name == "" {
-		name = strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
-	}
+func (s *Server) modelNameForPurpose(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent, purpose string) string {
+	name := credentialNameForPurpose(agent, purpose)
 	if name == "" {
 		return ""
 	}
@@ -793,6 +802,12 @@ func (s *Server) credentialsError(err error) bool {
 	if errors.Is(err, llm.ErrNotConfigured) || errors.Is(err, errNoCredential) {
 		return true
 	}
-	m := strings.ToLower(err.Error())
-	return strings.Contains(m, "not found") && strings.Contains(m, llm.ModelCredentialPrefix)
+	if errors.Is(err, llm.ErrCredentialNotFound) {
+		return true
+	}
+	// A credential that resolves to nothing arrives as an apiserver NotFound
+	// on either half of the pair (the ModelCredential or its Secret), which is
+	// a configuration gap rather than a fault — the caller shows "configure a
+	// model" instead of an apiserver error.
+	return apierrors.IsNotFound(err)
 }

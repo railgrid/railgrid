@@ -860,6 +860,39 @@ export const useProvidersStore = defineStore('providers', () => {
     return items.value.find((p) => p.name === name)
   }
 
+  // refreshMainJSIntegrity re-reads the catalog and answers with the provider's
+  // CURRENT SRI pin, for a bundle whose load the browser just refused.
+  //
+  // A provider's bundle can be rebuilt without its catalog version changing, so
+  // the pin this page holds can describe bytes the hub no longer serves. The
+  // hub re-pins from what it actually served the moment a browser asks for the
+  // new bundle (pkg/hub/providers/proxy.go), which means the answer to that
+  // refused load is already waiting in /api/providers by the time we ask.
+  //
+  // This is deliberately a plain read rather than load(): load() coalesces with
+  // an in-flight catalog request and would hand back the same stale pin that
+  // just failed, which the loader reads as "nothing changed, do not retry". The
+  // catalog IS refreshed from the response, but only when no other request has
+  // started or finished meanwhile, so this can never resurrect another scope's
+  // items. Errors propagate: the loader treats a failed refresh as "no retry".
+  async function refreshMainJSIntegrity(name: string): Promise<string | null> {
+    const targetOrgUUID = readTenantSelection().orgUUID
+    const requestSequence = catalogRequestSequence
+    const res = await authFetch('/api/providers', {
+      headers: targetOrgUUID ? { 'X-Railgrid-Org': targetOrgUUID } : undefined,
+    })
+    if (!res.ok) {
+      throw new Error(`provider list failed: ${res.status} ${res.statusText}`)
+    }
+    const body = (await res.json()) as ProvidersResponse
+    const fresh = body.items ?? []
+    if (requestSequence === catalogRequestSequence && catalogOrgUUID.value === targetOrgUUID) {
+      items.value = fresh
+      categories.value = body.categories ?? []
+    }
+    return fresh.find((p) => p.name === name)?.mainJSIntegrity ?? null
+  }
+
   return {
     items,
     categories,
@@ -901,5 +934,6 @@ export const useProvidersStore = defineStore('providers', () => {
     enable,
     disable,
     byName,
+    refreshMainJSIntegrity,
   }
 })

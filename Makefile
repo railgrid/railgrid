@@ -270,7 +270,6 @@ run-provider-edges: build-edges-provider ## Run the edges provider (needs: hub +
 	EDGES_INTERNAL_PORT=$(EDGES_INTERNAL_PORT) \
 	RAILGRID_HUB_URL=$(EDGES_HUB_URL) \
 	RAILGRID_HUB_EXTERNAL_URL=$(EDGES_HUB_EXTERNAL_URL) \
-	RAILGRID_HUB_TOKEN=$(EDGES_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=edges \
 	RAILGRID_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
@@ -477,7 +476,7 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./hack/apigen.sh --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
-	@for r in agents connections schedules triggers toolsets runs; do \
+	@for r in agents connections modelcredentials schedules triggers toolsets runs; do \
 		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.railgrid.ai.yaml \
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.railgrid.ai.yaml; \
 	done
@@ -1163,7 +1162,6 @@ run-provider-quickstart: build-quickstart-provider ## Run the quickstart provide
 	@echo "  token: $(QUICKSTART_TOKEN)"
 	PORT=$(QUICKSTART_PORT) \
 	RAILGRID_HUB_URL=$(QUICKSTART_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(QUICKSTART_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=quickstart \
 	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
@@ -1670,7 +1668,6 @@ run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (
 	echo "  store: postgres ($$STORE_DSN)"; \
 	PORT=$(KUERY_PORT) \
 	RAILGRID_HUB_URL=$(KUERY_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(KUERY_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=kuery \
 	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
@@ -1828,7 +1825,6 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-br
 	fi
 	PORT=$(KROMC_PORT) \
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=infrastructure \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
@@ -1851,7 +1847,6 @@ run-provider-infrastructure-operator: build-infrastructure-provider app-studio-p
 	@# first. It then reconciles the in-workspace bootstrap and seeds kro itself.
 	PORT=$(KROMC_PORT) \
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=infrastructure \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
@@ -1981,7 +1976,6 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		PORT=$(APP_STUDIO_PORT) \
 		RAILGRID_HUB_URL=$(APP_STUDIO_HUB_URL) \
 		RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL}" \
-		RAILGRID_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
 		RAILGRID_HUB_INSECURE=true \
 		RAILGRID_PROVIDER_NAME=app-studio \
@@ -1997,7 +1991,6 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		PORT=$(APP_STUDIO_PORT) \
 		RAILGRID_HUB_URL=$(APP_STUDIO_HUB_URL) \
 		RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL}" \
-		RAILGRID_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
 		RAILGRID_HUB_INSECURE=true \
 		RAILGRID_PROVIDER_NAME=app-studio \
@@ -2104,7 +2097,6 @@ run-provider-agents: build-agents-provider agents-db-up ## Run the agents provid
 	fi; \
 	PORT=$(AGENTS_PORT) \
 	RAILGRID_HUB_URL=$(AGENTS_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(AGENTS_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=agents \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
@@ -2258,7 +2250,6 @@ serve-provider-code: ## Run the already-built code provider
 	set -a; [ -f providers/code/.env ] && . ./providers/code/.env || true; set +a; \
 	PORT=$(CODE_PORT) \
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
-	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=code \
 	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \

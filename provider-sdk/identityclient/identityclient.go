@@ -145,9 +145,11 @@ type Options struct {
 	// Provider is the provider's own name, as its CatalogEntry registers it.
 	Provider string
 	// Token is the provider's own service-account bearer. Empty resolves it
-	// with hubclient.ResolveHubToken, the same credential the heartbeat uses —
-	// which is not a coincidence: the hub authenticates this endpoint with the
-	// same TokenReview the heartbeat gets.
+	// with hubclient.ResolveProviderIdentityToken: the bearer of the provider
+	// kubeconfig first, RAILGRID_HUB_TOKEN only without one. The hub attests
+	// this endpoint's caller as the provider's ServiceAccount and refuses any
+	// other identity (wrong_identity), so the user token dev setups put in
+	// RAILGRID_HUB_TOKEN for heartbeats must never be what is presented here.
 	Token string
 	// Insecure skips TLS verification. Empty reads RAILGRID_HUB_INSECURE.
 	Insecure *bool
@@ -175,7 +177,7 @@ func New(opts Options) (*Client, error) {
 	}
 	token := strings.TrimSpace(opts.Token)
 	if token == "" {
-		resolved, err := hubclient.ResolveHubToken()
+		resolved, err := hubclient.ResolveProviderIdentityToken()
 		if err != nil {
 			return nil, fmt.Errorf("resolving the provider's own token: %w", err)
 		}

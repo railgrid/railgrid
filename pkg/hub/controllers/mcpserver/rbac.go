@@ -88,6 +88,18 @@ var dataPlaneGrants = map[string][]dataPlaneGrant{
 		{resources: []string{"linuxservers"}, subresources: []string{"k8s", "ssh"}},
 		{resources: []string{"services"}, subresources: []string{"proxy", "mcp"}},
 	},
+	// providers/agents/api/dataplane.go routes(). The agents data plane serves
+	// verbs on agents, runs, connections, schedules, triggers and
+	// modelcredentials, but only the model-credential probes belong to an MCP
+	// token: they answer "does this credential work?" and cost nothing but a
+	// round-trip to the model endpoint. Everything else on that group either
+	// spends the tenant's money (agents/chat, agents/run), resolves an
+	// approval, or reaches a messaging platform, and none of those is a side
+	// effect an AI client should be able to cause by itself.
+	//
+	// modelcredentials is named explicitly so binding a new resource in the
+	// group never widens this to <newresource>/test.
+	"agents.railgrid.ai": {{resources: []string{"modelcredentials"}, subresources: []string{"test", "discover"}}},
 	// The infrastructure data plane gates "create" on instances/{verb} for
 	// every verb (providers/infrastructure/dataplane/handler.go); exec is the
 	// one an MCP token may hold. instances is the only resource the data plane

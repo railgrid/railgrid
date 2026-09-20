@@ -49,6 +49,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&TriggerList{},
 		&Toolset{},
 		&ToolsetList{},
+		&ModelCredential{},
+		&ModelCredentialList{},
 		&Run{},
 		&RunList{},
 	)

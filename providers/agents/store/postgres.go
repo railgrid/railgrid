@@ -16,6 +16,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	// Registers the "postgres" database/sql driver that OpenPostgres names. The
+	// import used to ride along with a pq.Array call; when that call went, so
+	// did the driver, and the provider failed at startup with "unknown driver".
+	_ "github.com/lib/pq"
 )
 
 // PostgresStore is the durable production Store. Schema is created/updated by

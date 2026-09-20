@@ -1150,6 +1150,12 @@ func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project
 func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id identity, p *aiv1alpha1.Project, name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), projectSandboxSyncTimeout)
 	defer cancel()
+	// A fresh context carries no working-copy ledger, and the store refuses to
+	// read or advance the tree without one (RequireContextLedger in main.go).
+	// Attach the caller's, as every request path does; without it every
+	// post-edit sync failed with "ledger is not configured" and the sandbox
+	// kept running the previous code.
+	ctx = s.withProjectLedger(ctx, id)
 	lock := s.developmentSyncLock(id, p)
 	lock.Lock()
 	target, err := s.projectDevelopmentTarget(ctx, c, p, id)

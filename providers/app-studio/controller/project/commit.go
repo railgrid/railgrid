@@ -379,6 +379,30 @@ func shortSHA(sha string) string {
 // repositoryCommitGVK is the Code provider's RepositoryCommit resource.
 var repositoryCommitGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: "v1alpha1", Kind: "RepositoryCommit"}
 
+// readRepositoryCommit reads one RepositoryCommit by name as the project
+// identity: a Get when the identity holds a named grant, otherwise the
+// composition's unnamed list, reduced to the requested name. A commit absent
+// from that list is reported as NotFound, exactly as the Get would.
+func readRepositoryCommit(ctx context.Context, tc client.Client, name string) (*unstructured.Unstructured, error) {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(repositoryCommitGVK)
+	err := tc.Get(ctx, types.NamespacedName{Name: name}, obj)
+	if err == nil || !apierrors.IsForbidden(err) {
+		return obj, err
+	}
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(repositoryCommitGVK.GroupVersion().WithKind(repositoryCommitGVK.Kind + "List"))
+	if listErr := tc.List(ctx, list); listErr != nil {
+		return nil, fmt.Errorf("%w (and listing commits instead: %v)", err, listErr)
+	}
+	for i := range list.Items {
+		if list.Items[i].GetName() == name {
+			return &list.Items[i], nil
+		}
+	}
+	return nil, apierrors.NewNotFound(schema.GroupResource{Group: repositoryCommitGVK.Group, Resource: "repositorycommits"}, name)
+}
+
 // patchProjectAnnotation sets (or, with an empty value, removes) one
 // annotation with a merge patch rather than an Update of the whole object.
 //
@@ -425,16 +449,19 @@ func (r *Reconciler) clearPendingCommit(ctx context.Context, scope workspace.Sco
 // so a fresh commit may be sent). A still-running commit stays recorded and
 // is re-read when its watch event arrives.
 //
-// The read is tc — the tenant workspace, as the project identity, which holds
-// a named `get` on exactly this commit — while every write here is c, the
-// Project's own virtual workspace.
+// The read is tc — the tenant workspace, as the project identity — while every
+// write here is c, the Project's own virtual workspace. The identity's grant on
+// repositorycommits is the composition's unnamed `list`/`watch`: a named `get`
+// on THIS commit cannot be minted before the commit exists, and the identity
+// is not re-minted per commit. So a Get that the workspace refuses falls back
+// to the list the identity does hold, filtered to the one name. An identity
+// that has since been refreshed with the name keeps using the cheaper Get.
 func (r *Reconciler) resolvePendingCommit(ctx context.Context, c, tc client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (bool, error) {
 	if c == nil || tc == nil {
 		return false, nil
 	}
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(repositoryCommitGVK)
-	if err := tc.Get(ctx, types.NamespacedName{Name: pending.Name}, obj); err != nil {
+	obj, err := readRepositoryCommit(ctx, tc, pending.Name)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Printf("app-studio project %s: pending RepositoryCommit %s is gone; a fresh commit will be sent", scope.ProjectName, pending.Name)
 			return true, r.clearPendingCommit(ctx, scope)

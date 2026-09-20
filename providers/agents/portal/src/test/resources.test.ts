@@ -75,10 +75,6 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
-function b64(value: string): string {
-  return btoa(value)
-}
-
 const CLUSTER = 'cluster-xyz'
 
 let kcp: FakeKcp
@@ -337,7 +333,8 @@ describe('connections', () => {
     type labelled = { metadata: { labels: Record<string, string> } }
     await resources.createConnection({ name: 'gh2', type: 'github', secret: 'ghp_x' })
     expect((kcp.last('/secrets').body as labelled).metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
-    await resources.saveCredential({ name: 'primary', model: 'gpt-4o', apiKey: 'sk-x' })
+    kcp.fail('GET /modelcredentials/primary', 404, 'NotFound')
+    await resources.saveCredential({ name: 'primary', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: 'sk-x' })
     expect((kcp.last('/secrets').body as labelled).metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
   })
 
@@ -361,40 +358,155 @@ describe('connections', () => {
 })
 
 describe('model credentials', () => {
-  it('projects the Secret onto a key-free view and ignores unrelated Secrets', async () => {
-    kcp.reply('GET /secrets', {
+  it('reads the objects, not the Secrets, and projects the reconciler\'s verdict', async () => {
+    // The old shape listed every Secret in the namespace and filtered by name
+    // prefix, which pulled real API keys into the browser on every page load
+    // just to answer "is one set?". Objects carry no key, and they carry
+    // something the Secret never could: whether the endpoint answers.
+    kcp.reply('GET /modelcredentials', {
       items: [
         {
-          metadata: { name: 'railgrid-agents-model-primary' },
-          data: { provider: b64('openai-compatible'), model: b64('gpt-5'), apiKey: b64('sk-secret') },
+          metadata: { name: 'primary' },
+          spec: {
+            provider: 'openai-compatible',
+            baseURL: 'https://api.openai.com/v1',
+            model: 'gpt-5',
+            secretRef: { name: 'railgrid-agents-model-primary' },
+            secretKey: 'apiKey',
+          },
+          status: {
+            models: ['gpt-5', 'gpt-4o'],
+            conditions: [
+              { type: 'SecretResolved', status: 'True', reason: 'SecretResolved' },
+              { type: 'Reachable', status: 'True', reason: 'Reachable' },
+              { type: 'Ready', status: 'True', reason: 'Ready' },
+            ],
+          },
         },
-        { metadata: { name: 'railgrid-agents-conn-gh' }, data: { token: b64('ghp_x') } },
-        { metadata: { name: 'unrelated' }, data: {} },
+        {
+          metadata: { name: 'broken' },
+          spec: { provider: 'openai-compatible', baseURL: 'https://x.example/v1', secretRef: { name: 's' } },
+          status: {
+            conditions: [
+              { type: 'SecretResolved', status: 'False', reason: 'SecretUnreadable', message: 'secret "s" is not readable' },
+              { type: 'Ready', status: 'False', reason: 'NotReady', message: 'secret "s" is not readable' },
+            ],
+          },
+        },
       ],
     })
     const creds = await resources.listCredentials()
     expect(creds).toEqual([
-      { name: 'primary', provider: 'openai-compatible', baseURL: '', model: 'gpt-5', hasAPIKey: true },
+      {
+        name: 'broken', provider: 'openai-compatible', baseURL: 'https://x.example/v1', model: '',
+        secretRef: 's', secretKey: '', ready: false, secretResolved: false,
+        statusMessage: 'secret "s" is not readable', discovered: [],
+      },
+      {
+        name: 'primary', provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5',
+        secretRef: 'railgrid-agents-model-primary', secretKey: 'apiKey', ready: true, secretResolved: true,
+        statusMessage: '', discovered: ['gpt-5', 'gpt-4o'],
+      },
     ])
-    expect(JSON.stringify(creds)).not.toContain('sk-secret')
+    // No Secret is read at all on a list.
+    expect(kcp.calls.filter((c) => c.url.includes('/secrets'))).toHaveLength(0)
   })
 
-  it('keeps the stored key when an edit does not retype it', async () => {
-    kcp.reply('GET /secrets/railgrid-agents-model-primary', {
-      metadata: { name: 'railgrid-agents-model-primary' },
-      data: { apiKey: b64('sk-stored') },
+  it('leaves a credential the reconciler has not seen yet with an unknown verdict', async () => {
+    // "not checked yet" and "checked and broken" must stay distinguishable, or
+    // a credential saved a second ago renders as a failure.
+    kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'fresh' }, spec: { baseURL: 'https://x/v1' } }] })
+    const [cred] = await resources.listCredentials()
+    expect(cred.ready).toBeUndefined()
+    expect(cred.secretResolved).toBeUndefined()
+  })
+
+  it('writes the Secret before the object that references it', async () => {
+    // The reconciler reacts to the object; one whose Secret is not there yet
+    // parks in SecretResolved=False. The other order flags a credential that
+    // is about to be fine.
+    kcp.fail('GET /modelcredentials/new', 404, 'NotFound')
+    await resources.saveCredential({ name: 'new', baseURL: 'https://api.openai.com/v1', apiKey: 'sk-x' })
+    const order = kcp.calls.filter((c) => c.method === 'PATCH' || c.method === 'POST').map((c) => c.url)
+    expect(order[0]).toContain('/secrets')
+    expect(order[1]).toContain('/modelcredentials')
+    const created = kcp.lastOf('POST').body as { spec: Record<string, unknown> }
+    expect(created.spec).toEqual({
+      provider: 'openai-compatible',
+      baseURL: 'https://api.openai.com/v1',
+      secretRef: { name: 'railgrid-agents-model-new' },
+      secretKey: 'apiKey',
     })
-    await resources.saveCredential({ name: 'primary', model: 'gpt-5' })
-    const body = kcp.lastOf('PATCH').body as { stringData: Record<string, string> }
-    expect(body.stringData.apiKey).toBe('sk-stored')
   })
 
-  it('refuses to store a credential with no key at all', async () => {
-    kcp.fail('GET /secrets/railgrid-agents-model-new', 404, 'NotFound')
-    await expect(resources.saveCredential({ name: 'new', model: 'gpt-5' })).rejects.toMatchObject({ status: 400 })
+  it('follows the stored secretRef on an edit instead of recomputing the name', async () => {
+    // A hand-written credential may point its key anywhere. An edit that
+    // silently moved it onto this writer's default name would write the new
+    // key into a Secret nothing reads.
+    kcp.reply('GET /modelcredentials/byo', {
+      metadata: { name: 'byo' },
+      spec: { baseURL: 'https://api.openai.com/v1', secretRef: { name: 'team-shared-key' }, secretKey: 'token' },
+    })
+    await resources.saveCredential({ name: 'byo', baseURL: 'https://api.openai.com/v1', apiKey: 'sk-new', model: 'gpt-5' })
+    const secret = kcp.last('/secrets')
+    expect(secret.url).toContain('team-shared-key')
+    expect((secret.body as { stringData: Record<string, string> }).stringData).toEqual({ token: 'sk-new' })
+    const patched = kcp.last('/modelcredentials/byo').body as { spec: Record<string, unknown> }
+    expect(patched.spec).toMatchObject({ secretRef: { name: 'team-shared-key' }, secretKey: 'token', model: 'gpt-5' })
   })
 
-  it('requires a model, which is the thing an agent references', async () => {
+  it('does not touch the Secret when an edit does not retype the key', async () => {
+    kcp.reply('GET /modelcredentials/primary', {
+      metadata: { name: 'primary' },
+      spec: { baseURL: 'https://api.openai.com/v1', secretRef: { name: 'railgrid-agents-model-primary' } },
+    })
+    await resources.saveCredential({ name: 'primary', baseURL: 'https://api.openai.com/v1', model: 'gpt-5' })
+    expect(kcp.calls.filter((c) => c.url.includes('/secrets'))).toHaveLength(0)
+  })
+
+  it('saves without a model, which is what makes the endpoint askable', async () => {
+    // A credential must exist before "which models do you serve?" can be asked
+    // of it, so the first save cannot require the answer.
+    kcp.fail('GET /modelcredentials/first', 404, 'NotFound')
+    await expect(
+      resources.saveCredential({ name: 'first', baseURL: 'https://api.openai.com/v1', apiKey: 'sk-x' }),
+    ).resolves.toMatchObject({ name: 'ok' })
+  })
+
+  it('clears the model with a null so a merge patch actually removes it', async () => {
+    kcp.reply('GET /modelcredentials/primary', {
+      metadata: { name: 'primary' },
+      spec: { baseURL: 'https://api.openai.com/v1', model: 'gpt-5', secretRef: { name: 's' } },
+    })
+    await resources.saveCredential({ name: 'primary', baseURL: 'https://api.openai.com/v1', model: '' })
+    expect((kcp.lastOf('PATCH').body as { spec: { model: unknown } }).spec.model).toBeNull()
+  })
+
+  it('refuses to create a credential with no key at all', async () => {
+    kcp.fail('GET /modelcredentials/new', 404, 'NotFound')
+    await expect(
+      resources.saveCredential({ name: 'new', baseURL: 'https://api.openai.com/v1' }),
+    ).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('requires an endpoint, which is the thing the probe calls', async () => {
     await expect(resources.saveCredential({ name: 'primary', apiKey: 'sk-x' })).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('deletes the object and the Secret it pointed at', async () => {
+    kcp.reply('GET /modelcredentials/primary', {
+      metadata: { name: 'primary' },
+      spec: { baseURL: 'https://x/v1', secretRef: { name: 'team-shared-key' } },
+    })
+    await resources.deleteCredential('primary')
+    expect(kcp.calls.filter((c) => c.method === 'DELETE').map((c) => c.url.split('/').pop())).toEqual([
+      'primary',
+      'team-shared-key',
+    ])
+  })
+
+  it('tolerates a credential whose Secret was already removed', async () => {
+    kcp.fail('DELETE /secrets', 404, 'NotFound')
+    await expect(resources.deleteCredential('primary')).resolves.toBeUndefined()
   })
 })

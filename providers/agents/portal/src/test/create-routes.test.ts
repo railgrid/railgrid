@@ -219,9 +219,9 @@ describe('route-owned creation surfaces', () => {
     expect(createToolset).toHaveBeenCalledWith(expect.objectContaining({ name: 'dev-tools', connections: [], families: ['core'] }))
   })
 
-  it('renders model creation separately and retains the verified credential payload', async () => {
+  it('renders model creation separately and saves the typed credential payload', async () => {
     const saveCredential = vi.fn().mockResolvedValue({ name: 'main', provider: 'openai-compatible', model: 'gpt-5' })
-    const api = stubApi({ saveCredential, testCredentialDraft: () => Promise.resolve({ ok: true }), catalog: () => Promise.resolve([]), usage: () => Promise.resolve({ windowDays: 30, total: { key: 'total', runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0, latencyP50MS: 0, latencyP95MS: 0 }, byAgent: [], byModel: [], series: [] }) })
+    const api = stubApi({ saveCredential, catalog: () => Promise.resolve([]), usage: () => Promise.resolve({ windowDays: 30, total: { key: 'total', runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0, latencyP50MS: 0, latencyP95MS: 0 }, byAgent: [], byModel: [], series: [] }) })
     const store = makeStore(api)
     const el = await mount<Models>('agents-models', { store, api, routeOwned: true, createRoute: true })
     expect(el.querySelector('.k-create-page')).not.toBeNull()
@@ -242,8 +242,10 @@ describe('route-owned creation surfaces', () => {
     await settle(el)
     document.querySelector<HTMLElement>('[role="option"]')!.click()
     await settle(el)
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test connection')!.click()
-    await settle(el)
+    // Testing is a verb on a SAVED credential, so it is unavailable here and
+    // saving does not wait for it: a person who already knows the model id
+    // gets through in one step.
+    expect([...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test connection')!.disabled).toBe(true)
     el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 5)
     expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({ name: 'main', model: 'gpt-5', apiKey: 'secret' }))

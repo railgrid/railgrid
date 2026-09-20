@@ -269,6 +269,131 @@ test('loads an unpinned bundle with a warning when the catalog carries no hash',
   }
 })
 
+// A provider bundle can be rebuilt without its catalog version changing (every
+// Tilt rebuild), which leaves an open page holding a pin the browser refuses.
+// The hub re-pins from the bundle it actually served, so one refresh-and-retry
+// recovers the page without a reload — but exactly one, and only on a pin that
+// actually changed.
+test('retries once with the pin the hub corrected after a pinned load fails', async () => {
+  const doc = providerDocument()
+  const stale = 'sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb'
+  const corrected = 'sha384-VbxVaw3bZ6ZS8Z4JtxWYAC0Gau6EYGwPRC5rpGXSlbBhnUSHtlL0KAOMRiHSZ5gF'
+  let refreshes = 0
+  const load = loadProviderScript('quickstart', '9', doc, 15_000, {
+    integrity: stale,
+    refreshIntegrity: async () => {
+      refreshes += 1
+      return corrected
+    },
+  })
+  await Promise.resolve()
+  assert.equal(doc.appended.length, 1)
+  assert.equal(doc.appended[0].integrity, stale)
+  const staleGeneration = doc.appended[0].dataset.railgridProviderBootstrapGeneration
+
+  // The browser refuses the bundle: "Failed to find a valid digest in the
+  // 'integrity' attribute" surfaces as an ordinary load error.
+  doc.appended[0].onerror()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(refreshes, 1)
+  assert.equal(doc.appended.length, 2)
+  const retry = doc.appended[1]
+  assert.equal(retry.integrity, corrected)
+  assert.equal(retry.src, '/ui/providers/quickstart/main.js?v=9')
+  assert.equal(retry.crossOrigin, undefined)
+  // The retry must carry a live bootstrap generation; the failed attempt
+  // revoked its own, and a generation-aware bundle checks it before installing.
+  assert.notEqual(retry.dataset.railgridProviderBootstrapGeneration, staleGeneration)
+  assert.equal(
+    doc.defaultView.__railgridProviderBootstrapGenerationsV1.quickstart,
+    retry.dataset.railgridProviderBootstrapGeneration,
+  )
+
+  retry.onload()
+  await load
+
+  // One retry only: a second failure is terminal.
+  assert.equal(refreshes, 1)
+  assert.equal(doc.appended.length, 2)
+})
+
+test('does not retry when the refreshed pin is unchanged', async () => {
+  const doc = providerDocument()
+  const integrity = 'sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb'
+  let refreshes = 0
+  const load = loadProviderScript('quickstart', '10', doc, 15_000, {
+    integrity,
+    refreshIntegrity: async () => {
+      refreshes += 1
+      return integrity
+    },
+  })
+  await Promise.resolve()
+  doc.appended[0].onerror()
+
+  // Reinjecting the same pin would fail identically; the original failure is
+  // what the consumer must see.
+  await assert.rejects(load, /failed to load \/ui\/providers\/quickstart\/main\.js\?v=10/)
+  assert.equal(refreshes, 1)
+  assert.equal(doc.appended.length, 1)
+})
+
+test('does not retry when the pin refresh fails or returns nothing', async () => {
+  const integrity = 'sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb'
+
+  const failing = providerDocument()
+  const failed = loadProviderScript('quickstart', '11', failing, 15_000, {
+    integrity,
+    refreshIntegrity: async () => {
+      throw new Error('catalog unreachable')
+    },
+  })
+  await Promise.resolve()
+  failing.appended[0].onerror()
+  // The catalog read failing tells us nothing about the bundle, so the load
+  // stays as terminal as it was and reports its own error, not the refresh's.
+  await assert.rejects(failed, /failed to load \/ui\/providers\/quickstart\/main\.js\?v=11/)
+  assert.equal(failing.appended.length, 1)
+
+  // An unpinned catalog entry is not a reason to reinject: loading whatever
+  // the upstream now serves on no authority would be worse than failing.
+  const unpinned = providerDocument()
+  const nulled = loadProviderScript('quickstart', '12', unpinned, 15_000, {
+    integrity,
+    refreshIntegrity: async () => null,
+  })
+  await Promise.resolve()
+  unpinned.appended[0].onerror()
+  await assert.rejects(nulled, /failed to load \/ui\/providers\/quickstart\/main\.js\?v=12/)
+  assert.equal(unpinned.appended.length, 1)
+})
+
+test('never retries an unpinned load', async () => {
+  const doc = providerDocument()
+  const originalWarn = console.warn
+  console.warn = () => {}
+  let refreshes = 0
+  try {
+    const load = loadProviderScript('quickstart', '13', doc, 15_000, {
+      refreshIntegrity: async () => {
+        refreshes += 1
+        return 'sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb'
+      },
+    })
+    await Promise.resolve()
+    doc.appended[0].onerror()
+    // An unpinned script cannot have been refused over its pin, so a pin is
+    // not the fix — and adopting one here would silently change what "retry"
+    // means for a bundle nobody pinned.
+    await assert.rejects(load, /failed to load \/ui\/providers\/quickstart\/main\.js\?v=13/)
+  } finally {
+    console.warn = originalWarn
+  }
+  assert.equal(refreshes, 0)
+  assert.equal(doc.appended.length, 1)
+})
+
 test('generation fence rejects a stale tile completion after newer props win', async () => {
   const fence = createProviderLoadGeneration()
   const commits = []

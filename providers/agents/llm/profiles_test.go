@@ -96,3 +96,37 @@ func TestBuildModelReasoningEffortPayload(t *testing.T) {
 		})
 	}
 }
+
+// Discovery is curated at this one call, which is what makes the `discover`
+// verb's answer and the reconciler's status.models the same list. An endpoint
+// that serves speech, embeddings and a responses-only family answers with all
+// of them; none of those reach a model picker.
+func TestDiscoverModelsReturnsOnlyChatModels(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"whisper-1"},{"id":"zeta-chat"},{"id":"gpt-4o-mini"},{"id":"dall-e-3"},
+			{"id":"gpt-4o"},{"id":"gpt-5.3-codex"},{"id":"text-embedding-3-small"},
+			{"id":"gpt-4o-mini-tts"},{"id":"o3-pro"},{"id":"gpt-4o-realtime-preview"},
+			{"id":"chatgpt-4o-latest"},{"id":"gpt-3.5-turbo-instruct"},{"id":"alpha-chat"}
+		]}`))
+	}))
+	defer upstream.Close()
+
+	got, _, err := DiscoverModels(t.Context(), upstream.URL, "private-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"gpt-4o", "gpt-4o-mini", "alpha-chat", "zeta-chat"}
+	if len(got) != len(want) {
+		t.Fatalf("discovered %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("discovered %v, want %v (catalog-known first, then alphabetical)", got, want)
+		}
+	}
+}

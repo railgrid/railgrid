@@ -50,7 +50,12 @@ var (
 	TriggerGVR    = agentsGVR("triggers")
 	ToolsetGVR    = agentsGVR("toolsets")
 	RunGVR        = agentsGVR("runs")
-	SecretGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	// ModelCredentialGVR is the named model endpoint an agent runs on. The
+	// key stays in the Secret spec.secretRef names; this object is what the
+	// portal lists, what a reconciler validates, and what the probe verbs are
+	// addressed at.
+	ModelCredentialGVR = agentsGVR("modelcredentials")
+	SecretGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 )
 
 func agentsGVR(resource string) schema.GroupVersionResource {
@@ -63,6 +68,7 @@ var (
 	scheduleResource = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
 	triggerResource  = tenant.Resource{GVR: TriggerGVR, Kind: "Trigger", Plural: "Triggers", Namespaced: false}
 	toolsetResource  = tenant.Resource{GVR: ToolsetGVR, Kind: "Toolset", Plural: "Toolsets", Namespaced: false}
+	modelCredRes     = tenant.Resource{GVR: ModelCredentialGVR, Kind: "ModelCredential", Plural: "ModelCredentials", Namespaced: false}
 	secretResource   = tenant.Resource{GVR: SecretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
 )
 
@@ -115,6 +121,21 @@ func (c *Client) Toolsets() *TypedResource[agentsv1alpha1.Toolset, agentsv1alpha
 		scope: c.scope, res: toolsetResource,
 		gvk: ToolsetGVR.GroupVersion().WithKind("Toolset"),
 	}
+}
+
+// ModelCredentials returns a typed interface for ModelCredential resources.
+func (c *Client) ModelCredentials() *TypedResource[agentsv1alpha1.ModelCredential, agentsv1alpha1.ModelCredentialList] {
+	return &TypedResource[agentsv1alpha1.ModelCredential, agentsv1alpha1.ModelCredentialList]{
+		scope: c.scope, res: modelCredRes,
+		gvk: ModelCredentialGVR.GroupVersion().WithKind("ModelCredential"),
+	}
+}
+
+// GetModelCredential reads one ModelCredential by name, which is what
+// llm.CredentialResolver needs. It is spelled out rather than left to the
+// caller so the whole provider resolves a credential name the same way.
+func (c *Client) GetModelCredential(ctx context.Context, name string) (*agentsv1alpha1.ModelCredential, error) {
+	return c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
 }
 
 // GetSecret fetches a Secret from the tenant workspace namespace.

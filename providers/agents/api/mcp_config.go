@@ -533,7 +533,10 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, credentialSummary{}, err
 		}
-		return nil, credentialSummary{Name: cred.Name, Provider: cred.Provider, Model: cred.Model, HasAPIKey: cred.HasAPIKey}, nil
+		// Ready is deliberately absent here: the reconciler has not seen the
+		// object yet, and claiming readiness a moment before anything verified
+		// it is the mistake hasAPIKey used to make.
+		return nil, credentialSummary{Name: cred.Name, Provider: cred.Provider, BaseURL: cred.BaseURL, Model: cred.Model}, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -547,7 +550,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			return nil, deletedOutput{}, err
 		}
 		name := strings.TrimSpace(in.Name)
-		if err := c.DeleteSecret(ctx, llm.SecretNamespace, llm.CredentialSecretName(name)); err != nil {
+		if err := deleteCredential(ctx, c, name); err != nil {
 			return nil, deletedOutput{}, err
 		}
 		return nil, deletedOutput{Deleted: name}, nil
@@ -556,7 +559,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "test_model_credential",
 		Title:       "Test a model credential",
-		Description: "Health-check a model credential by listing the models its endpoint serves. Returns latency and, on success, the available model ids.",
+		Description: "Health-check a model credential by listing the models its endpoint serves. Returns latency and, on success, the chat-capable model ids (the endpoint's speech, embedding, image and responses-only models are filtered out — this provider runs agents on Chat Completions).",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in nameInput) (*mcp.CallToolResult, testResultOutput, error) {
 		c, err := s.mcpClient(r)
@@ -567,7 +570,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, testResultOutput{OK: false, Error: "credential not configured: " + err.Error()}, nil
 		}
-		models, latency, perr := probeOpenAIModels(ctx, profile.BaseURL, profile.APIKey)
+		models, latency, perr := llm.DiscoverModels(ctx, profile.BaseURL, profile.APIKey)
 		if perr != nil {
 			return nil, testResultOutput{OK: false, LatencyMS: latency.Milliseconds(), Error: perr.Error()}, nil
 		}

@@ -9,8 +9,8 @@
 package main
 
 // Multicluster controller manager — reconciles the agents provider's
-// tenant-authored CRs (Schedule / Connection / Agent / Toolset / Trigger)
-// across EVERY tenant workspace that has bound this provider's APIExport.
+// tenant-authored CRs (Schedule / Connection / Agent / Toolset / Trigger /
+// ModelCredential) across EVERY tenant workspace that has bound this provider's APIExport.
 //
 // The CRs live in tenant workspaces, so we use the kcp apiexport multicluster
 // provider (provider-sdk/apiexportprovider): it watches the provider's
@@ -57,6 +57,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/controller/agent"
 	"github.com/railgrid/provider-agents/controller/connection"
+	"github.com/railgrid/provider-agents/controller/modelcredential"
 	runctl "github.com/railgrid/provider-agents/controller/run"
 	"github.com/railgrid/provider-agents/controller/schedule"
 	"github.com/railgrid/provider-agents/controller/toolset"
@@ -159,6 +160,13 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 	}
 	if err := (&toolset.Reconciler{}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("toolset controller: %w", err)
+	}
+	// Model credentials are validated with the provider's own identity rather
+	// than a caller's, because that is the identity an unattended run will use:
+	// a credential that only the person who typed it can read is exactly the
+	// failure this condition exists to catch.
+	if err := (&modelcredential.Reconciler{}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("model credential controller: %w", err)
 	}
 	if err := newRunReconciler(deps).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("run controller: %w", err)

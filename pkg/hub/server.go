@@ -991,7 +991,7 @@ func (s *Server) Run(ctx context.Context) error {
 		// provider's Helm init applies the in-workspace objects. The catalog
 		// controller only maintains the registry + resolves the workspace
 		// cluster ID for the Enable flow.
-		if err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
+		catalogReconciler, err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
 			HubExternalURL: s.opts.HubExternalURL,
 			HubInternalURL: s.opts.HubInternalURL,
 			// Org-owned providers are reached over their edge tunnel. The
@@ -1004,9 +1004,16 @@ func (s *Server) Run(ctx context.Context) error {
 			// once their grace period lapses, so it needs the same Provisioner
 			// configuration as the paths that mint them.
 			Provisioner: s.providerProvisionerOptions(),
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("setting up provider catalog controller: %w", err)
 		}
+		// A provider bundle can change behind spec.ui.url without its version
+		// changing (any image rebuild at the same chart version), and until the
+		// next reconcile notices, the pin the portal holds refuses the bundle in
+		// every browser. The UI proxy is the only component that sees the bytes
+		// the browser gets, so it corrects the pin from what it actually served.
+		uiProxy.SetMainJSIntegrityObserver(catalogReconciler)
 		go func() {
 			logger.Info("Starting providers multicluster manager")
 			if err := providersMgr.Start(ctx); err != nil {

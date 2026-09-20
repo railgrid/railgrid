@@ -73,18 +73,6 @@ import type {
   UsageResponse,
 } from './types'
 
-/**
- * CredentialDraft is a model credential being edited but not yet saved, or a
- * saved one being re-probed against a changed model. `existingName` lets the
- * editor reuse the stored key without the browser ever seeing it.
- */
-export interface CredentialDraft {
-  provider: string
-  baseURL: string
-  model: string
-  apiKey: string
-  existingName?: string
-}
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
 import { Resources } from './resources'
 
@@ -206,24 +194,6 @@ export class ApiClient {
   // second CR whose deletion semantics have to track the run's buys nothing a
   // tenant can authorize. So unlike runs, they have no object to list.
   private readonly inboxAgents = new Map<string, string>()
-
-  // probeAgent picks the agent a model probe is addressed to. WHICH agent is
-  // an implementation detail — the question being asked is "is this credential
-  // reachable from this workspace?" — but there has to be one, because the
-  // grammar addresses an object and the provider gates the probe on it. The
-  // first agent by name keeps the choice stable across calls.
-  //
-  // A workspace with no agents yet cannot probe. That is a real consequence of
-  // the model and not a bug to route around: the credential can still be SAVED
-  // (it is a Secret, written through kcp), and tested as soon as there is an
-  // agent to test it for.
-  private async probeAgent(): Promise<string> {
-    const names = (await this.agentNames()).sort()
-    if (!names.length) {
-      throw new ApiError(409, 'create an agent first — testing a model credential runs as one of this workspace\'s agents')
-    }
-    return names[0]
-  }
 
   private async agentForInboxItem(id: string): Promise<string> {
     const known = this.inboxAgents.get(id)
@@ -350,24 +320,39 @@ export class ApiClient {
   listMessages = (agent: string, session: string, limit = 200): Promise<TranscriptMessage[]> =>
     this.list<TranscriptMessage>(this.dp('agents', agent, 'messages', '', `?session=${enc(session)}&limit=${limit}`))
 
-  // Model credentials are Secrets in the tenant workspace, written through kcp.
+  // Model credentials are ModelCredential objects in the tenant workspace,
+  // written through kcp; the API key stays in the Secret each one points at.
+  //
   // What stays on the backend is the live probe, because it needs the key to
-  // reach the model endpoint and the browser must not hold a key long enough to
-  // call a third party with it. The probe is a verb on the AGENT: the agent is
-  // what the caller is really asking about ("can this agent reach a model?"),
-  // it is a bound CR of the provider's own group, and `create` on
-  // agents/model-test is a grant a tenant can reason about. Secrets could not
-  // be the subject — they are namespaced core objects the grammar does not
-  // address, and a verb on them would reach every Secret in the workspace.
+  // reach the model endpoint and the browser must not hold a key long enough
+  // to call a third party with it. Both probes are verbs on the CREDENTIAL:
+  // `create` on modelcredentials/test is a grant about the thing being
+  // probed, and — the reason the shape changed — a credential exists before
+  // any agent does, so first-run works. They used to hang off an arbitrary
+  // Agent, which meant an empty workspace could save a credential and then had
+  // nothing to test it with.
   listCredentials = (): Promise<Credential[]> => this.resources.listCredentials()
   saveCredential = (body: CredentialWrite): Promise<Credential> => this.resources.saveCredential(body)
   deleteCredential = (name: string): Promise<void> => this.resources.deleteCredential(name)
-  testCredential = async (name: string): Promise<CredentialTestResult> =>
-    this.send('POST', this.dp('agents', await this.probeAgent(), 'model-test'), { credential: name })
-  testCredentialDraft = async (body: CredentialDraft): Promise<CredentialTestResult> =>
-    this.send('POST', this.dp('agents', await this.probeAgent(), 'model-test'), body)
-  discoverCredentialDraft = async (body: CredentialDraft): Promise<CredentialTestResult> =>
-    this.send('POST', this.dp('agents', await this.probeAgent(), 'model-discover'), body)
+  /**
+   * testCredential runs one real chat round-trip against the saved credential.
+   *
+   * `model` overrides the model for THAT probe only — the endpoint and the key
+   * still come from the saved object and its Secret. It exists so the editor
+   * can verify the model a person just picked before "Save changes" writes it:
+   * without it, the first thing that ever exercised a pick was the first agent
+   * run, which is where a model the endpoint lists but will not chat on
+   * surfaces as a 404 in someone's chat window.
+   */
+  testCredential = (name: string, model?: string): Promise<CredentialTestResult> =>
+    this.send('POST', this.dp('modelcredentials', name, 'test'), model ? { model } : undefined)
+  /**
+   * discoverCredential asks the endpoint what it serves. It also refreshes the
+   * object's status.models, so the list a person just saw and the list the
+   * object reports are the same one.
+   */
+  discoverCredential = (name: string): Promise<CredentialTestResult> =>
+    this.send('POST', this.dp('modelcredentials', name, 'discover'))
 
   // The curated catalog is compiled-in reference data — prices, context
   // windows, capabilities — with no tenant content, so it ships in the bundle

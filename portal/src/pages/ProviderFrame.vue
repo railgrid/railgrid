@@ -345,7 +345,13 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
       ? await resolveProviderBundle(entry.value, authFetch)
       : {}
     if (!isCurrentMount(generation, name)) return
-    await loadProviderScript(name, version, document, undefined, bundle)
+    // refreshIntegrity lets one refused load recover on its own: a bundle
+    // rebuilt at an unchanged version leaves this page holding a pin the
+    // browser rejects, and the hub re-pins from what it served.
+    await loadProviderScript(name, version, document, undefined, {
+      ...bundle,
+      refreshIntegrity: () => providers.refreshMainJSIntegrity(name),
+    })
 
     // 5s timeout so a script that loaded but never called customElements.define
     // doesn't hang the loader forever.

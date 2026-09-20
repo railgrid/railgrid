@@ -48,8 +48,10 @@ type Deps struct {
 	Scope store.Scope
 	Agent *agentsv1alpha1.Agent
 	CR    CRAccess
-	// Secrets reads tenant Secrets (connection credentials).
-	Secrets llm.SecretGetter
+	// Secrets reads tenant Secrets (connection credentials) and resolves
+	// ModelCredentials, which is what a delegated or spawned sub-run needs to
+	// build its own model.
+	Secrets llm.CredentialResolver
 	// ConnSecretName maps a Connection name to its Secret name.
 	ConnSecretName func(name string) string
 	// RunID is the executing run — recorded on sub-agent runs as the parent.

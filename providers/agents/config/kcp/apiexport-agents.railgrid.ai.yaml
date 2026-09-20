@@ -43,6 +43,11 @@ spec:
     storage:
       crd: {}
   - group: agents.railgrid.ai
+    name: modelcredentials
+    schema: v260920-3db34be6.modelcredentials.agents.railgrid.ai
+    storage:
+      crd: {}
+  - group: agents.railgrid.ai
     name: runs
     schema: v260919-e478625c.runs.agents.railgrid.ai
     storage:

@@ -79,31 +79,27 @@ spec:
     # claims either: service callers use the same data-plane verb and gates as
     # everyone else, so the provider no longer runs its own reviews.
     permissionClaims:
-      # Secrets, and ONLY the ones labelled railgrid.ai/owner: agents. Three
-      # names, all under this provider's own prefixes in the tenant workspace:
+      # Secrets, and ONLY the ones labelled railgrid.ai/owner: agents. Two
+      # kinds of Secret in the tenant workspace:
       #
-      #   railgrid-agents-model-<name>   the LLM credential. Written by the
-      #                                  tenant (this provider's portal, or its
-      #                                  own settings API, both AS THE CALLER)
-      #                                  and read by the provider, including on
-      #                                  unattended runs where there is no
-      #                                  caller to borrow — so it stays inside
-      #                                  the claim, and every writer stamps the
-      #                                  owner label (portal/src/resources.ts,
-      #                                  api/settings.go). The model-test and
-      #                                  model-discover verbs read it as the
-      #                                  caller and need no claim at all.
-      #   railgrid-agents-conn-<name>    one per Connection. PROVIDER-WRITTEN:
-      #                                  the OAuth callback stores the access and
-      #                                  refresh tokens here (api/oauth.go), and
-      #                                  the Connection reconciler generates the
-      #                                  Telegram secret_token / Slack signing
-      #                                  secret that make an inbound webhook
-      #                                  verifiable.
-      #   railgrid-agents-llm            the legacy single-credential Secret,
-      #                                  read for workspaces that predate
-      #                                  per-name credentials. A workspace still
-      #                                  on it must label it to keep it visible.
+      #   a ModelCredential's spec.secretRef target — the model API key. This
+      #     provider's own writers default the name to
+      #     railgrid-agents-model-<name>, but the object says where its key is,
+      #     so a hand-written credential may point anywhere. TENANT-WRITTEN
+      #     (this provider's portal, or its MCP tools, both AS THE CALLER) and
+      #     read by the provider: by the ModelCredential reconciler, which
+      #     decides SecretResolved / Reachable / Ready, and by unattended runs,
+      #     which have no caller to borrow. So it stays inside the claim, and
+      #     every writer stamps the owner label (portal/src/resources.ts,
+      #     api/settings.go) — a credential whose Secret lacks it is reported
+      #     as SecretResolved=False rather than failing at run time. The
+      #     modelcredentials test and discover verbs read it as the caller and
+      #     need no claim at all.
+      #   railgrid-agents-conn-<name> — one per Connection. PROVIDER-WRITTEN:
+      #     the OAuth callback stores the access and refresh tokens here
+      #     (api/oauth.go), and the Connection reconciler generates the
+      #     Telegram secret_token / Slack signing secret that make an inbound
+      #     webhook verifiable.
       #
       # kcp claims are per resource, not per name, so the label is what stands
       # in for the name prefixes above: without the selector this claim is
@@ -160,12 +156,12 @@ spec:
         description: "Follow the agent's run and inbox activity as it happens."
         stream: true
         readOnly: true
-      - resource: agents
-        verb: model-test
-        description: "Probe a model credential the agent uses with a real request."
-      - resource: agents
-        verb: model-discover
-        description: "List the model ids a model credential's endpoint serves."
+      - resource: modelcredentials
+        verb: test
+        description: "Probe the model credential with a real chat round-trip. Optionally POST {\"model\": \"<id>\"} to probe a chat-capable model id instead of the saved one."
+      - resource: modelcredentials
+        verb: discover
+        description: "List the chat-capable model ids the credential's endpoint serves, and refresh its status."
         readOnly: true
       - resource: runs
         verb: trace
