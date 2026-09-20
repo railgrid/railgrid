@@ -253,7 +253,7 @@ func TestNameLabelIsStampedFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !res.Requeue {
+	if res.IsZero() {
 		t.Fatal("label stamp should requeue for the status pass")
 	}
 	if got := getLinuxServer(t, c); got.Labels[edgesv1alpha1.LabelName] != testEdge {

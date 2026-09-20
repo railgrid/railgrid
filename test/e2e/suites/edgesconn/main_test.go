@@ -227,7 +227,14 @@ func TestMain(m *testing.M) {
 		"PORT="+providerPort,
 		"RAILGRID_HUB_URL="+hubURL,
 		"RAILGRID_HUB_EXTERNAL_URL="+hubURL,
-		"RAILGRID_HUB_TOKEN="+staticToken,
+		// No RAILGRID_HUB_TOKEN. It wins over the kubeconfig in
+		// hubclient.ResolveHubToken, and the static token is a TENANT USER's
+		// — so every hub call the provider makes as itself arrives as that
+		// person. The identity service refuses those with wrong_identity
+		// (403), which the provider retries through until the edge tunnel
+		// happens to come up. Unset, the provider authenticates with its own
+		// ServiceAccount token out of RAILGRID_PROVIDER_KUBECONFIG, which is
+		// what a deployed provider does.
 		"RAILGRID_HUB_INSECURE=true",
 		"RAILGRID_PROVIDER_NAME=edges",
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,

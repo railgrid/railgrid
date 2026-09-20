@@ -55,6 +55,12 @@ type ReplaceTreeOptions struct {
 	// replacement writes but never deletes. Use it when the source cannot say
 	// exactly which paths it left out (a truncated skip list).
 	PreserveOmitted bool
+	// Committed marks the incoming tree as the repository's own content, so
+	// the changed paths do NOT enter the dirty set — and any dirty entry they
+	// already had is cleared, because the local bytes are now git's bytes.
+	// Hydration sets it; a restore to an older commit does not, since that
+	// tree really does differ from the branch and has to be committed.
+	Committed bool
 }
 
 // ReplaceTreeResult describes the paths changed by an exact tree replacement.
@@ -76,15 +82,6 @@ type treeEntry struct {
 	backupPath string
 	backedUp   bool
 	committed  bool
-}
-
-type treeMetadataSnapshot struct {
-	revisionPath string
-	revisionRaw  []byte
-	revisionSet  bool
-	statePath    string
-	stateRaw     []byte
-	stateSet     bool
 }
 
 // ReplaceTree atomically replaces every managed source file in a project
@@ -112,10 +109,6 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 		return ReplaceTreeResult{}, err
 	}
 	currentRevision, err := s.sourceRevision(ctx, scope)
-	if err != nil {
-		return ReplaceTreeResult{}, err
-	}
-	metadata, err := s.snapshotTreeMetadata(scope)
 	if err != nil {
 		return ReplaceTreeResult{}, err
 	}
@@ -176,20 +169,20 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 		}
 		entry.targetPath = filepath.Join(dir, filepath.FromSlash(entry.path))
 		if err := ctx.Err(); err != nil {
-			return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, err)
+			return ReplaceTreeResult{}, s.rollbackTree(entries, err)
 		}
 		if s.managedTransactionHook != nil {
 			change := ManagedFileChange{Path: entry.path, Operation: entry.operation, Content: string(entry.content)}
 			if err := s.managedTransactionHook(change); err != nil {
-				return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, err)
+				return ReplaceTreeResult{}, s.rollbackTree(entries, err)
 			}
 		}
 		entry.backupPath = filepath.Join(backupDir, fmt.Sprintf("%08d", index))
 		if err := os.MkdirAll(filepath.Dir(entry.backupPath), 0o700); err != nil {
-			return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, fmt.Errorf("prepare backup for %q: %w", entry.path, err))
+			return ReplaceTreeResult{}, s.rollbackTree(entries, fmt.Errorf("prepare backup for %q: %w", entry.path, err))
 		}
 		if err := os.Rename(entry.targetPath, entry.backupPath); err != nil {
-			return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, fmt.Errorf("backup %q: %w", entry.path, err))
+			return ReplaceTreeResult{}, s.rollbackTree(entries, fmt.Errorf("backup %q: %w", entry.path, err))
 		}
 		entry.backedUp = true
 		if entry.operation == ManagedFileDelete {
@@ -207,22 +200,22 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 		}
 		entry.targetPath = filepath.Join(dir, filepath.FromSlash(entry.path))
 		if err := ctx.Err(); err != nil {
-			return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, err)
+			return ReplaceTreeResult{}, s.rollbackTree(entries, err)
 		}
 		if entry.operation == ManagedFileCreate && s.managedTransactionHook != nil {
 			change := ManagedFileChange{Path: entry.path, Operation: entry.operation, Content: string(entry.content)}
 			if err := s.managedTransactionHook(change); err != nil {
-				return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, err)
+				return ReplaceTreeResult{}, s.rollbackTree(entries, err)
 			}
 		}
 		if err := ensureWithin(dir, entry.targetPath); err != nil {
-			return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, err)
+			return ReplaceTreeResult{}, s.rollbackTree(entries, err)
 		}
 		if err := mkdirAllForFile(dir, entry.path); err != nil {
-			return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, fmt.Errorf("create parent for %q: %w", entry.path, err))
+			return ReplaceTreeResult{}, s.rollbackTree(entries, fmt.Errorf("create parent for %q: %w", entry.path, err))
 		}
 		if err := rejectSymlinkComponents(dir, entry.path, false); err != nil {
-			return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, err)
+			return ReplaceTreeResult{}, s.rollbackTree(entries, err)
 		}
 		// Backing up nested files can leave an empty directory where the
 		// selected commit contains a file (for example src/main.go -> src).
@@ -230,27 +223,32 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 		// reserved data such as node_modules and must fail closed instead.
 		if info, statErr := os.Lstat(entry.targetPath); statErr == nil && info.IsDir() {
 			if err := os.Remove(entry.targetPath); err != nil {
-				return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, fmt.Errorf("replace directory with file %q: %w", entry.path, err))
+				return ReplaceTreeResult{}, s.rollbackTree(entries, fmt.Errorf("replace directory with file %q: %w", entry.path, err))
 			}
 		} else if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
-			return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, fmt.Errorf("stat restore target %q: %w", entry.path, statErr))
+			return ReplaceTreeResult{}, s.rollbackTree(entries, fmt.Errorf("stat restore target %q: %w", entry.path, statErr))
 		}
 		if err := os.Rename(entry.stagePath, entry.targetPath); err != nil {
-			return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, fmt.Errorf("write %q: %w", entry.path, err))
+			return ReplaceTreeResult{}, s.rollbackTree(entries, fmt.Errorf("write %q: %w", entry.path, err))
 		}
 		entry.committed = true
 	}
 
-	if err := s.bumpSourceRevision(ctx, scope); err != nil {
-		return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, err)
-	}
-	if _, err := s.addUncommittedPaths(ctx, scope, changedPaths); err != nil {
-		return ReplaceTreeResult{}, s.rollbackReplaceTree(entries, metadata, fmt.Errorf("record restored source paths: %w", err))
+	// One ledger update, not two. The revision advance and the dirty-path
+	// union describe the same transition, and a crash between two separate
+	// writes would leave a tree whose revision says it moved but whose dirty
+	// set says nothing changed — exactly the state a commit would skip.
+	// opts.ExpectedSourceRevision is re-checked inside it, so a foreign writer
+	// that moved the project between the fail-fast check above and here loses
+	// the race here instead of silently winning it.
+	revision, err := s.advanceAndRecord(ctx, scope, opts.ExpectedSourceRevision, changedPaths, opts.Committed)
+	if err != nil {
+		return ReplaceTreeResult{}, s.rollbackTree(entries, err)
 	}
 	return ReplaceTreeResult{
 		Written:        written,
 		Deleted:        deleted,
-		SourceRevision: currentRevision + 1,
+		SourceRevision: revision,
 	}, nil
 }
 
@@ -417,68 +415,6 @@ func (s *FileStore) verifyTreeBaseline(ctx context.Context, scope Scope, dir str
 		}
 	}
 	return nil
-}
-
-func (s *FileStore) snapshotTreeMetadata(scope Scope) (treeMetadataSnapshot, error) {
-	_, revisionPath, err := s.sourceRevisionPath(scope)
-	if err != nil {
-		return treeMetadataSnapshot{}, err
-	}
-	_, statePath, err := s.sourceStatePath(scope)
-	if err != nil {
-		return treeMetadataSnapshot{}, err
-	}
-	revisionRaw, revisionSet, err := readTreeMetadataFile(revisionPath)
-	if err != nil {
-		return treeMetadataSnapshot{}, fmt.Errorf("snapshot workspace source revision: %w", err)
-	}
-	stateRaw, stateSet, err := readTreeMetadataFile(statePath)
-	if err != nil {
-		return treeMetadataSnapshot{}, fmt.Errorf("snapshot workspace source state: %w", err)
-	}
-	return treeMetadataSnapshot{
-		revisionPath: revisionPath,
-		revisionRaw:  revisionRaw,
-		revisionSet:  revisionSet,
-		statePath:    statePath,
-		stateRaw:     stateRaw,
-		stateSet:     stateSet,
-	}, nil
-}
-
-func readTreeMetadataFile(path string) ([]byte, bool, error) {
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	return raw, true, nil
-}
-
-func (s *FileStore) rollbackReplaceTree(entries []treeEntry, metadata treeMetadataSnapshot, cause error) error {
-	rollbackErr := s.rollbackTree(entries, cause)
-	if err := restoreTreeMetadataFile(metadata.revisionPath, metadata.revisionRaw, metadata.revisionSet); err != nil {
-		rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore workspace source revision: %w", err))
-	}
-	if err := restoreTreeMetadataFile(metadata.statePath, metadata.stateRaw, metadata.stateSet); err != nil {
-		rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore workspace source state: %w", err))
-	}
-	return rollbackErr
-}
-
-func restoreTreeMetadataFile(path string, raw []byte, exists bool) error {
-	if !exists {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return writeFileAtomically(filepath.Dir(path), path, raw, 0o600, false)
 }
 
 func (s *FileStore) rollbackTree(entries []treeEntry, cause error) error {

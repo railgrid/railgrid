@@ -15,12 +15,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
@@ -28,6 +26,7 @@ import (
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/commitbundle"
+	"github.com/railgrid/provider-code/commitexec"
 )
 
 var (
@@ -36,8 +35,6 @@ var (
 )
 
 const (
-	// maxCommitMessageLength matches RepositoryCommit spec.message MaxLength.
-	maxCommitMessageLength = 512
 	// commitWaitTimeout bounds how long commit_files waits for a terminal phase.
 	commitWaitTimeout = 75 * time.Second
 )
@@ -291,37 +288,6 @@ func deleteCR(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersio
 }
 
 func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundle.Store, tenantScope string, in commitFilesInput) (*mcp.CallToolResult, commitFilesOutput, error) {
-	if bundles == nil {
-		return nil, commitFilesOutput{}, fmt.Errorf("commit bundle store is unavailable")
-	}
-	tenantScope = strings.TrimSpace(tenantScope)
-	if tenantScope == "" {
-		return nil, commitFilesOutput{}, fmt.Errorf("tenant identity is required")
-	}
-	in.RepositoryRef = strings.TrimSpace(in.RepositoryRef)
-	if in.RepositoryRef == "" {
-		return nil, commitFilesOutput{}, fmt.Errorf("repositoryRef is required")
-	}
-	if len(in.Files) == 0 && len(in.DeletePaths) == 0 {
-		return nil, commitFilesOutput{}, fmt.Errorf("at least one file or delete path is required")
-	}
-	// Mirror the RepositoryCommit spec.message limit, which counts characters,
-	// so an over-long message fails here instead of after the bundle is written.
-	in.Message = strings.TrimSpace(in.Message)
-	if n := utf8.RuneCountInString(in.Message); n > maxCommitMessageLength {
-		return nil, commitFilesOutput{}, fmt.Errorf("commit message is %d characters; the limit is %d — shorten the body", n, maxCommitMessageLength)
-	}
-	// Reject an unknown encoding before any lookup; the bundle store then
-	// strictly decodes base64 and enforces the size limits on decoded bytes.
-	for _, f := range in.Files {
-		if _, err := commitbundle.NormalizeEncoding(f.Encoding); err != nil {
-			return nil, commitFilesOutput{}, fmt.Errorf("file %q: %w", f.Path, err)
-		}
-	}
-	repo, err := getRepository(ctx, dyn, in.RepositoryRef)
-	if err != nil {
-		return nil, commitFilesOutput{}, err
-	}
 	files := make([]commitbundle.File, 0, len(in.Files)+len(in.DeletePaths))
 	for _, f := range in.Files {
 		files = append(files, commitbundle.File{Path: f.Path, Content: f.Content, Encoding: f.Encoding})
@@ -329,49 +295,25 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	for _, path := range in.DeletePaths {
 		files = append(files, commitbundle.File{Path: path, Delete: true})
 	}
-	bundle, err := bundles.Put(ctx, tenantScope, files)
+	created, err := commitexec.Create(ctx, dyn, bundles, tenantScope, commitexec.Request{
+		RepositoryRef: in.RepositoryRef,
+		Message:       in.Message,
+		Branch:        in.Branch,
+		Files:         files,
+	})
 	if err != nil {
 		return nil, commitFilesOutput{}, err
 	}
-	obj := repositoryCommitObject(repo, bundle, in)
-	created, err := dyn.Resource(repositoryCommitsGVR).Create(ctx, obj, metav1.CreateOptions{})
-	if err != nil {
-		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
-		if apierrors.IsNotFound(err) {
-			return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: RepositoryCommit API is not available in this workspace; enable or re-register the Code provider so repositorycommits.code.railgrid.ai is published: %w", err)
-		}
-		return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: %w", err)
-	}
-	storageScope := repositoryCommitBundleStorageScope(tenantScope, created)
-	if storageScope == "" {
-		_ = dyn.Resource(repositoryCommitsGVR).Delete(ctx, created.GetName(), metav1.DeleteOptions{})
-		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
-		return nil, commitFilesOutput{}, fmt.Errorf("created RepositoryCommit %q did not include kcp.io/cluster", created.GetName())
-	}
-	if _, err := bundles.Put(ctx, storageScope, files); err != nil {
-		_ = dyn.Resource(repositoryCommitsGVR).Delete(ctx, created.GetName(), metav1.DeleteOptions{})
-		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
-		return nil, commitFilesOutput{}, fmt.Errorf("store RepositoryCommit bundle: %w", err)
-	}
-	// Remove the staging copy only when it lives under a different scope
-	// than the controller will read. The RepositoryCommit controller reads
-	// the bundle under storageScope (the commit's kcp.io/cluster ID), and the
-	// staging scope is X-Railgrid-Cluster — the same logical-cluster ID — so
-	// the two normally agree and deleting here would remove the only copy,
-	// leaving the controller to fail with "bundle not found".
-	if tenantScope != storageScope {
-		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
-	}
 	out := commitFilesOutput{
-		RepositoryRef: in.RepositoryRef,
-		Name:          created.GetName(),
+		RepositoryRef: strings.TrimSpace(in.RepositoryRef),
+		Name:          created.Name,
 		Phase:         string(codev1alpha1.RepositoryCommitPhasePending),
-		BundleRef:     bundle.Name,
-		BundleDigest:  bundle.Digest,
-		Files:         bundleFilePaths(bundle.Files),
-		DeletedPaths:  bundleDeletedPaths(bundle.Files),
+		BundleRef:     created.Bundle.Name,
+		BundleDigest:  created.Bundle.Digest,
+		Files:         commitexec.BundleFilePaths(created.Bundle.Files),
+		DeletedPaths:  commitexec.BundleDeletedPaths(created.Bundle.Files),
 	}
-	waited, err := waitRepositoryCommit(ctx, dyn, created.GetName(), commitWaitTimeout)
+	waited, err := waitRepositoryCommit(ctx, dyn, created.Name, commitWaitTimeout)
 	if err != nil {
 		return nil, out, err
 	}
@@ -413,59 +355,6 @@ func rateLimitDeadline(obj *unstructured.Unstructured) time.Time {
 		start = time.Now()
 	}
 	return start.Add(codev1alpha1.RepositoryCommitRateLimitWindow)
-}
-
-func repositoryCommitBundleStorageScope(tenantScope string, created metav1.Object) string {
-	if created != nil {
-		if cluster := strings.TrimSpace(created.GetAnnotations()["kcp.io/cluster"]); cluster != "" {
-			return cluster
-		}
-	}
-	return ""
-}
-
-func repositoryCommitObject(repo *codev1alpha1.Repository, bundle commitbundle.BundleRef, in commitFilesInput) *unstructured.Unstructured {
-	labels := map[string]string{}
-	for k, v := range repo.Labels {
-		labels[k] = v
-	}
-	labels[codev1alpha1.LabelRepository] = in.RepositoryRef
-	labelValues := make(map[string]any, len(labels))
-	for k, v := range labels {
-		labelValues[k] = v
-	}
-	metadata := map[string]any{
-		"name":   commitObjectName(in.RepositoryRef, bundle.Digest, time.Now()),
-		"labels": labelValues,
-	}
-	if repo.UID != "" {
-		metadata["ownerReferences"] = []map[string]any{{
-			"apiVersion":         codev1alpha1.SchemeGroupVersion.String(),
-			"kind":               "Repository",
-			"name":               repo.Name,
-			"uid":                string(repo.UID),
-			"controller":         false,
-			"blockOwnerDeletion": false,
-		}}
-	}
-	bundleRef := map[string]any{
-		"name":   bundle.Name,
-		"digest": bundle.Digest,
-	}
-	spec := map[string]any{
-		"repositoryRef": in.RepositoryRef,
-		"source": map[string]any{
-			"bundleRef": bundleRef,
-		},
-	}
-	putIf(spec, "message", in.Message)
-	putIf(spec, "branch", in.Branch)
-	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": codev1alpha1.SchemeGroupVersion.String(),
-		"kind":       "RepositoryCommit",
-		"metadata":   metadata,
-		"spec":       spec,
-	}}
 }
 
 func repositorySpec(in createRepositoryInput, repoName string) map[string]any {
@@ -538,24 +427,6 @@ func repositoryCommitFilePaths(obj *unstructured.Unstructured) []string {
 	return paths
 }
 
-func bundleFilePaths(files []commitbundle.FileMeta) []string {
-	paths := make([]string, 0, len(files))
-	for _, f := range files {
-		paths = append(paths, f.Path)
-	}
-	return paths
-}
-
-func bundleDeletedPaths(files []commitbundle.FileMeta) []string {
-	paths := make([]string, 0)
-	for _, file := range files {
-		if file.Delete {
-			paths = append(paths, file.Path)
-		}
-	}
-	return paths
-}
-
 func repositoryCommitConditionMessage(obj *unstructured.Unstructured) string {
 	if msg, ok := repositoryCommitReadyCondition(obj)["message"].(string); ok && msg != "" {
 		return msg
@@ -575,47 +446,6 @@ func repositoryCommitReadyCondition(obj *unstructured.Unstructured) map[string]a
 		}
 	}
 	return nil
-}
-
-func commitObjectName(repositoryRef, digest string, now time.Time) string {
-	base := strings.Trim(repositoryRef, "-")
-	if base == "" {
-		base = "repository"
-	}
-	sum := strings.TrimPrefix(digest, "sha256:")
-	if len(sum) > 12 {
-		sum = sum[:12]
-	}
-	if sum == "" {
-		sum = "bundle"
-	}
-	suffix := fmt.Sprintf("%s-%x", sum, now.UnixNano())
-	maxBase := 253 - len("-commit-") - len(suffix)
-	if maxBase < 1 {
-		maxBase = 1
-	}
-	if len(base) > maxBase {
-		base = strings.Trim(base[:maxBase], "-")
-	}
-	if base == "" {
-		base = "repository"
-	}
-	return base + "-commit-" + suffix
-}
-
-func getRepository(ctx context.Context, dyn dynamic.Interface, name string) (*codev1alpha1.Repository, error) {
-	u, err := dyn.Resource(repositoriesGVR).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("repository %q not found", name)
-		}
-		return nil, fmt.Errorf("get repository %q: %w", name, err)
-	}
-	var repo codev1alpha1.Repository
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &repo); err != nil {
-		return nil, fmt.Errorf("decode repository %q: %w", name, err)
-	}
-	return &repo, nil
 }
 
 func putIf(m map[string]any, k, v string) {

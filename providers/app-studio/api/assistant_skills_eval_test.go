@@ -250,6 +250,7 @@ func newEvaluationSkillRouter(t *testing.T) (*mux.Router, *workspace.FileStore) 
 	server := NewWithWorkspace(proxy.Client(), nil, files, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
+	bindTestProjectLedger(t, files, proxy.Client(), "cluster-a", "alice-token")
 	router := mux.NewRouter()
 	server.Register(router)
 	return router, files

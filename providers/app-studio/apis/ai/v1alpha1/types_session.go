@@ -78,6 +78,21 @@ type SessionStatus struct {
 	// UpdatedAt is the thread's last store update the mirror observed.
 	// +optional
 	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+
+	// TurnCount is how many turns the thread has recorded. It makes the size
+	// of a conversation visible from the control plane without reading the
+	// store.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	TurnCount int32 `json:"turnCount,omitempty"`
+
+	// LastActivityAt is when the conversation last moved — the newest of the
+	// thread's own update and its turns'. Retention is measured from here:
+	// the Session reconciler wakes at lastActivityAt + retention and purges
+	// that one conversation, so retention is a per-session deadline rather
+	// than a fleet-wide cutoff sweep.
+	// +optional
+	LastActivityAt *metav1.Time `json:"lastActivityAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true

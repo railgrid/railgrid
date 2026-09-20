@@ -261,7 +261,7 @@ func (p *PostgresStore) ListMessages(ctx context.Context, scope Scope, sessionID
 	if err != nil {
 		return Page{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var items []Message
 	for rows.Next() {
 		m, err := scanMessage(rows, scope.AgentName)
@@ -294,7 +294,7 @@ func (p *PostgresStore) LoadRecentMessages(ctx context.Context, scope Scope, ses
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var items []Message
 	for rows.Next() {
 		m, err := scanMessage(rows, scope.AgentName)
@@ -348,7 +348,7 @@ func (p *PostgresStore) ListSessions(ctx context.Context, scope Scope, limit int
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Session
 	for rows.Next() {
 		var s Session
@@ -543,7 +543,7 @@ func (p *PostgresStore) ListRuns(ctx context.Context, scope Scope, limit int) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Run
 	for rows.Next() {
 		run, err := scanRun(rows)
@@ -599,7 +599,7 @@ func (p *PostgresStore) QueryRuns(ctx context.Context, scope Scope, q RunQuery) 
 	if err != nil {
 		return RunPage{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Run
 	for rows.Next() {
 		run, err := scanRun(rows)
@@ -705,7 +705,7 @@ func (p *PostgresStore) ListMemories(ctx context.Context, scope Scope, limit int
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Memory
 	for rows.Next() {
 		var m Memory
@@ -795,7 +795,7 @@ func (p *PostgresStore) ListInbox(ctx context.Context, scope Scope, state InboxI
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []InboxItem
 	for rows.Next() {
 		var it InboxItem
@@ -867,7 +867,7 @@ func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID st
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ToolCall
 	for rows.Next() {
 		var tc ToolCall

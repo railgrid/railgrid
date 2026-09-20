@@ -156,9 +156,8 @@ var (
 // kubeconfig minted from this SA's token.
 const ProviderSAName = "provider"
 
-// ProviderSANamespace is the namespace ProviderSAName lives in. The
-// Enable-time edge-proxy grant derives the SA's qualified identity from
-// this tuple, so it must stay in lockstep with EnsureProviderSA.
+// ProviderSANamespace is the namespace ProviderSAName lives in. It must stay
+// in lockstep with EnsureProviderSA, which is what actually creates the SA.
 const ProviderSANamespace = "default"
 
 // ProviderTokenSecretSuffix is appended to the SA name to form the
@@ -827,8 +826,8 @@ func EncodeKubeconfig(kc []byte) string {
 // EnsureProviderWorkspace creates root:railgrid:providers/{name} if it does not
 // exist and waits for it to reach phase Ready. Idempotent. Returns the
 // workspace's logical cluster ID (Workspace.spec.cluster) — the cluster name
-// kcp embeds in the provider SA's token claims, which the Enable-time
-// edges-proxy grant needs to build the qualified RBAC subject.
+// kcp embeds in the provider SA's token claims, recorded in the registry and
+// reported by the admin providers API.
 func (p *Provisioner) EnsureProviderWorkspace(ctx context.Context, name string) (string, error) {
 	parent, err := p.clientFor(providersParentWorkspace)
 	if err != nil {
@@ -992,8 +991,8 @@ func (p *Provisioner) ResolveClusterPath(ctx context.Context, clusterID string) 
 // ResolveWorkspaceCluster returns the logical cluster ID of the provider's
 // sub-workspace (root:railgrid:providers/{name}), read-only. Returns "" (no error)
 // when the workspace does not exist yet — i.e. the provider has not been
-// onboarded. The catalog reconciler feeds this into the registry so the Enable
-// endpoint can build the edges-proxy RBAC subject without the hub provisioning
+// onboarded. The catalog reconciler feeds this into the registry so the admin
+// providers API can report a provider's workspace without the hub provisioning
 // anything.
 func (p *Provisioner) ResolveWorkspaceCluster(ctx context.Context, name string) (string, error) {
 	parent, err := p.clientFor(providersParentWorkspace)

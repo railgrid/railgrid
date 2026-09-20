@@ -38,9 +38,9 @@ import (
 //     a one-minute list-and-sweep ticker;
 //   - "who is syncing what" is answerable with kubectl.
 //
-// The Registry is deliberately usable on every replica, not just the leader:
-// the controllers are behind the provider's controller lease, but every
-// replica serves queries and every query needs the engaged set.
+// The Registry is used on every replica, for both halves of the job: every
+// replica serves queries and every query needs the engaged set, and every
+// replica engages edges and records what it engaged.
 
 // StoreName and SplitStoreName are the index package's, re-exported so the
 // controller's call sites read as one vocabulary.
@@ -72,8 +72,12 @@ func NewScheme() *runtime.Scheme {
 
 // Registry reads and writes Engagement records in kuery's own workspace.
 //
-// Reads answer "which edges may this caller query" on the request path;
-// writes happen only on the replica that holds the controller lease.
+// Reads answer "which edges may this caller query" on the request path.
+// Writes come from every replica, so they are written to be concurrent:
+// Ensure tolerates a peer creating the record first and never clobbers its
+// status, and SetStatus skips a write that changes nothing and treats a
+// conflict as "the other write won, and mine repeats". Which replica may
+// claim an edge as ITS own is decided by the edge.s sharding claim, not here.
 type Registry struct {
 	client client.Client
 }
@@ -123,8 +127,9 @@ func (r *Registry) EngagedEdges(ctx context.Context, cluster string) ([]string, 
 	return edges, nil
 }
 
-// List returns every Engagement, for the rebuild pass a fresh leadership term
-// runs before it trusts its in-process state.
+// List returns every Engagement — what a replica reads when it needs the
+// whole picture rather than its own share of it (dropping a workspace, the
+// query path answering "which edges may this caller see").
 func (r *Registry) List(ctx context.Context) ([]kueryv1alpha1.Engagement, error) {
 	list := &kueryv1alpha1.EngagementList{}
 	if err := r.client.List(ctx, list); err != nil {

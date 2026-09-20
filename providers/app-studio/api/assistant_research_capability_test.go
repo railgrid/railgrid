@@ -36,7 +36,7 @@ func TestProjectAssistantResearchPhraseRequested(t *testing.T) {
 		{"RESEARCH: swipe patterns", true},
 		{"do a deep reseach on docs page again", true},
 		{"resarch the competitors", true},
-		{"deep reserach please", true},
+		{"deep researhc please", true},
 		{"researh this", true},
 		{"run a few researches on pricing", true},
 		{"investigate the swipe UX market", true},

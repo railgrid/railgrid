@@ -198,7 +198,7 @@ func RunHeartbeat(ctx context.Context, cfg HeartbeatConfig) {
 			}
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		switch {
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 			reason, _ := io.ReadAll(io.LimitReader(resp.Body, maxHeartbeatErrorBody))

@@ -55,7 +55,9 @@ func (s *Server) createProjectStream(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+		// A write error means the client is gone; the next sendEvent is a
+		// no-op and onStatus stops the create on the cancelled request context.
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 		flusher.Flush()
 	}
 

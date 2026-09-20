@@ -113,20 +113,20 @@ func (c *relayConn) Read(p []byte) (int, error) {
 // ConnHandler; a peer → a proxied WebSocket upgrade to that peer's internal
 // listener, resolved through its presence lease. Unknown or dead replicas get
 // 502 — the agent reports pickup-failed and the pending Dial errors cleanly.
-func (s *Server) pickupRouter(local http.Handler) http.Handler {
+func (p *Server) pickupRouter(local http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		replicaID := strings.TrimPrefix(r.URL.Path, agentPickupRoute+"/")
 		if replicaID == "" || strings.Contains(replicaID, "/") {
 			http.Error(w, "invalid pickup path", http.StatusBadRequest)
 			return
 		}
-		if s.registry == nil || replicaID == s.replicaID {
+		if p.registry == nil || replicaID == p.replicaID {
 			local.ServeHTTP(w, r)
 			return
 		}
-		addr, ok := s.registry.ReplicaAddr(r.Context(), replicaID)
+		addr, ok := p.registry.ReplicaAddr(r.Context(), replicaID)
 		if !ok {
-			s.logger.Info("pickup for unknown or dead replica", "replica", replicaID)
+			p.logger.Info("pickup for unknown or dead replica", "replica", replicaID)
 			http.Error(w, "unknown replica", http.StatusBadGateway)
 			return
 		}
@@ -145,10 +145,10 @@ func (s *Server) pickupRouter(local http.Handler) http.Handler {
 // relayHandler serves the owning side of the relay: authenticate the peer,
 // dial the LOCAL tunnel (never recursing into another relay), hijack, 101,
 // and pipe until either side closes.
-func (s *Server) relayHandler() http.HandlerFunc {
+func (p *Server) relayHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.relayToken == "" ||
-			subtle.ConstantTimeCompare([]byte(extractBearerToken(r)), []byte(s.relayToken)) != 1 {
+		if p.relayToken == "" ||
+			subtle.ConstantTimeCompare([]byte(extractBearerToken(r)), []byte(p.relayToken)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -157,7 +157,7 @@ func (s *Server) relayHandler() http.HandlerFunc {
 			http.Error(w, "missing key", http.StatusBadRequest)
 			return
 		}
-		dialer, ok := s.edgeConnManager.LoadLocal(key)
+		dialer, ok := p.edgeConnManager.LoadLocal(key)
 		if !ok {
 			// The forwarding replica acted on a stale lease; it will re-resolve
 			// after its cache TTL.

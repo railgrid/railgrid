@@ -101,6 +101,13 @@ func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (id
 	}
 	s.resolveWorkspace(r.Context(), &id)
 	s.resolveActor(r.Context(), &id)
+	// Every handler that resolves a caller can also touch that caller's
+	// project working-copy ledger, which since §9 Cut D.3 is
+	// `Project.status.workspace` rather than a file beside the tree
+	// (api/project_ledger.go). Attaching it to the request here is what keeps
+	// the ~20 workspace-store call sites free of control-plane plumbing; the
+	// ledger is lazy, so a request that never touches it builds no client.
+	*r = *r.WithContext(s.withProjectLedger(r.Context(), id))
 	return id, true
 }
 

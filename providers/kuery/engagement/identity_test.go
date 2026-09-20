@@ -148,6 +148,20 @@ func (s *staticCredential) saw(edge string) bool {
 	return slices.Contains(s.observed, edge)
 }
 
+// observations counts how often the edge was named to the identity. Naming is
+// the last thing that happens before a dial, so it counts engage ATTEMPTS.
+func (s *staticCredential) observations(edge string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, seen := range s.observed {
+		if seen == edge {
+			n++
+		}
+	}
+	return n
+}
+
 func (s *staticCredential) forgot(edge string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

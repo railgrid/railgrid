@@ -187,7 +187,17 @@ async function writeCredential(client: KubeClient, id: string, apiKey: string): 
     {
       apiVersion: 'v1',
       kind: 'Secret',
-      metadata: { name: credentialSecretName(id), namespace: SECRET_NAMESPACE },
+      metadata: {
+        name: credentialSecretName(id),
+        namespace: SECRET_NAMESPACE,
+        // The provider's `secrets` permission claim is selector-scoped to
+        // railgrid.ai/owner: app-studio (manifest.yaml). This Secret is
+        // written by the tenant AS THE CALLER, so nothing else stamps the
+        // label, and an unlabelled one is invisible to the Studio reconciler
+        // through the APIExport virtual workspace — the model would never
+        // report `configured`.
+        labels: { 'railgrid.ai/owner': 'app-studio' },
+      },
       type: 'Opaque',
       stringData: { [CREDENTIAL_KEY]: apiKey },
     } as KubeObject,

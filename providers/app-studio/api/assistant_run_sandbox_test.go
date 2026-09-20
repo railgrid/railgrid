@@ -167,60 +167,6 @@ func TestProjectAssistantRunSandboxDirtyUsesRemoteCheckpointFence(t *testing.T) 
 		})
 	}
 }
-
-func TestProjectAssistantRunSandboxOwnerReferenceIsDurableAndRejectsCollision(t *testing.T) {
-	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop", UID: "project-uid"}}
-	instance := newRunSandboxTestInstance("cache", projectAssistantRunSandboxCacheStateCached, time.Now().UTC())
-	changed, err := ensureProjectAssistantRunSandboxOwner(instance, project)
-	if err != nil || !changed {
-		t.Fatalf("attach owner changed=%t err=%v", changed, err)
-	}
-	refs := instance.GetOwnerReferences()
-	if len(refs) != 1 || refs[0].Name != project.Name || refs[0].UID != project.UID || refs[0].Controller == nil || !*refs[0].Controller {
-		t.Fatalf("owner references = %#v", refs)
-	}
-	if changed, err := ensureProjectAssistantRunSandboxOwner(instance, project); err != nil || changed {
-		t.Fatalf("idempotent owner changed=%t err=%v", changed, err)
-	}
-	other := project.DeepCopy()
-	other.UID = "other-project-uid"
-	if _, err := ensureProjectAssistantRunSandboxOwner(instance, other); !errors.Is(err, errProjectAssistantRunSandboxConflict) {
-		t.Fatalf("owner collision error = %v, want conflict", err)
-	}
-}
-
-func TestDeleteProjectAssistantRunSandboxCacheDeletesExactLegacyCache(t *testing.T) {
-	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop", UID: "project-uid"}}
-	id := identity{orgUUID: "org", workspaceUUID: "ws"}
-	scope := projectWorkspaceScope(id, project)
-	name := projectAssistantRunSandboxName(scope, project, "legacy-run")
-	cache := newRunSandboxTestInstance(name, projectAssistantRunSandboxCacheStateCached, time.Now().UTC())
-	client := newRunSandboxTestClient(cache)
-	if err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).deleteProjectAssistantRunSandboxCache(context.Background(), client, id, project); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.Resource(runSandboxInstancesResource, "").Get(context.Background(), name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("deleted cache lookup = %v, want NotFound", err)
-	}
-}
-
-func TestDeleteProjectAssistantRunSandboxCacheRefusesNameCollision(t *testing.T) {
-	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop", UID: "project-uid"}}
-	id := identity{orgUUID: "org", workspaceUUID: "ws"}
-	name := projectAssistantRunSandboxName(projectWorkspaceScope(id, project), project, "")
-	collision := newRunSandboxTestInstance(name, projectAssistantRunSandboxCacheStateCached, time.Now().UTC())
-	annotations := collision.GetAnnotations()
-	delete(annotations, projectAssistantRunSandboxLabel)
-	collision.SetAnnotations(annotations)
-	client := newRunSandboxTestClient(collision)
-	if err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).deleteProjectAssistantRunSandboxCache(context.Background(), client, id, project); !errors.Is(err, errProjectAssistantRunSandboxConflict) {
-		t.Fatalf("collision delete error = %v, want conflict", err)
-	}
-	if _, err := client.Resource(runSandboxInstancesResource, "").Get(context.Background(), name, metav1.GetOptions{}); err != nil {
-		t.Fatalf("collision instance was deleted: %v", err)
-	}
-}
-
 func TestProjectAssistantRunSandboxNameReservesInfrastructureChildServiceBudget(t *testing.T) {
 	projects := []string{
 		"launch-readiness-sandbox-e2e",

@@ -10,45 +10,33 @@ You may obtain a copy of the License at
 
 package workspace
 
+// The in-flight commit.
+//
+// A RepositoryCommit the Code provider accepted but has not finished is the
+// same ledger one step before settlement: the content digest and paths a
+// commit carried, waiting for the commit to land. It lives on the Project's
+// status beside the settlement receipt and the dirty set it will clear, so the
+// replica that follows the commit up does not have to be the replica that sent
+// it.
+
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
-// workspacePendingCommitFile records a RepositoryCommit the Code provider
-// accepted but had not finished when the reconciler sent it. It sits next
-// to the settlement receipt because it is the same ledger one step earlier:
-// the content digest and paths a commit carried, waiting for the commit to
-// land before they can be settled.
-const workspacePendingCommitFile = "pending-commit.json"
-
-// PendingCommit is a RepositoryCommit in flight for a project workspace.
-type PendingCommit struct {
-	// Name is the RepositoryCommit object's name in the tenant workspace.
-	Name string `json:"name"`
-	// RepositoryRef names the Repository the commit targets.
-	RepositoryRef string `json:"repositoryRef"`
-	// WorkspaceDigest and Paths are the workspace content the commit carried;
-	// they become the settlement receipt once the commit succeeds.
-	WorkspaceDigest string   `json:"workspaceDigest"`
-	Paths           []string `json:"paths"`
-}
-
 // RecordPendingCommit durably remembers an in-flight RepositoryCommit so a
-// later reconcile (or process) follows it up by name instead of resending.
+// later reconcile (or process, or replica) follows it up by name instead of
+// resending.
 func (s *FileStore) RecordPendingCommit(ctx context.Context, scope Scope, pending PendingCommit) error {
 	if s == nil {
 		return errors.New("project workspace store is not configured")
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
 		return err
 	}
 	pending.Name = strings.TrimSpace(pending.Name)
@@ -70,18 +58,11 @@ func (s *FileStore) RecordPendingCommit(ctx context.Context, scope Scope, pendin
 		return errors.New("pending commit paths are required")
 	}
 	pending.Paths = sortedWorkspaceSourcePaths(pathSet)
-	dir, target, err := s.pendingCommitPath(scope)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create workspace pending commit directory: %w", err)
-	}
-	raw, err := json.Marshal(pending)
-	if err != nil {
-		return fmt.Errorf("encode workspace pending commit: %w", err)
-	}
-	if err := writeFileAtomically(dir, target, raw, 0o600, false); err != nil {
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		recorded := pending
+		record.PendingCommit = &recorded
+		return true, nil
+	}); err != nil {
 		return fmt.Errorf("persist workspace pending commit: %w", err)
 	}
 	return nil
@@ -94,24 +75,18 @@ func (s *FileStore) PendingCommit(ctx context.Context, scope Scope) (PendingComm
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return PendingCommit{}, false, err
-	}
-	_, target, err := s.pendingCommitPath(scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return PendingCommit{}, false, err
 	}
-	raw, err := os.ReadFile(target)
-	if errors.Is(err, fs.ErrNotExist) {
-		return PendingCommit{}, false, nil
-	}
+	record, err := ledger.Read(ctx, scope)
 	if err != nil {
 		return PendingCommit{}, false, fmt.Errorf("read workspace pending commit: %w", err)
 	}
-	var pending PendingCommit
-	if err := json.Unmarshal(raw, &pending); err != nil {
-		return PendingCommit{}, false, fmt.Errorf("decode workspace pending commit: %w", err)
+	if record.PendingCommit == nil {
+		return PendingCommit{}, false, nil
 	}
+	pending := *record.PendingCommit
 	pathSet := make(map[string]struct{}, len(pending.Paths))
 	for _, rawPath := range pending.Paths {
 		clean, err := cleanProjectPath(rawPath)
@@ -136,23 +111,18 @@ func (s *FileStore) ClearPendingCommit(ctx context.Context, scope Scope) error {
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, target, err := s.pendingCommitPath(scope)
+	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		if record.PendingCommit == nil {
+			return false, nil
+		}
+		record.PendingCommit = nil
+		return true, nil
+	}); err != nil {
 		return fmt.Errorf("clear workspace pending commit: %w", err)
 	}
 	return nil
-}
-
-func (s *FileStore) pendingCommitPath(scope Scope) (string, string, error) {
-	dir, err := s.snapshotProjectDir(scope)
-	if err != nil {
-		return "", "", err
-	}
-	return dir, filepath.Join(dir, workspacePendingCommitFile), nil
 }

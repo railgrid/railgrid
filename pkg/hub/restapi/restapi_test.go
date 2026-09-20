@@ -292,14 +292,6 @@ func (f *fakeOps) DeleteProviderAPIBinding(_ context.Context, orgUUID, wsUUID, p
 	return nil
 }
 
-func (f *fakeOps) EnsureProviderEdgeProxyGrant(_ context.Context, _, _, _, _ string) error {
-	return nil
-}
-
-func (f *fakeOps) RemoveProviderEdgeProxyGrant(_ context.Context, _, _, _ string) error {
-	return nil
-}
-
 func (f *fakeOps) ListAppAccessGrants(_ context.Context, _, _ string) ([]kcp.AppAccessGrant, error) {
 	return nil, nil
 }

@@ -66,12 +66,20 @@ import (
 	"github.com/railgrid/provider-sdk/vwhealth"
 )
 
-// controllerLeaseName gates the write loops — the engagement controller, the
-// savedview reconciler and the Engagement record reconciler — on a Lease in
-// the provider's own workspace, so scaling the deployment keeps every object
-// single-writer. Non-leaders keep serving queries, MCP and the portal: the
-// request path reads the shared store and the Engagement records, neither of
-// which needs this replica to be the leader.
+// controllerLeaseName gates the SINGLE-WRITER loops — the savedview
+// reconciler and the Engagement record reconciler — on a Lease in the
+// provider's own workspace.
+//
+// It deliberately does NOT gate edge engagement any more. Engagement is
+// sharded per edge instead (provider-sdk/sharding), which is a better fit than
+// a lease for the same reason a lease was never a good fit for it: the work is
+// divisible. One writer per Engagement record is still guaranteed, by the
+// edge's claim rather than by this Lease, and the replicas share the syncing
+// instead of queueing for it.
+//
+// Every replica serves queries, MCP and the portal regardless: the request
+// path reads the shared store and the Engagement records, neither of which
+// needs this replica to hold anything.
 const controllerLeaseName = "kuery-controllers"
 
 // envOr returns the env value or a default.
@@ -180,10 +188,13 @@ func runServe() {
 	}
 
 	// Readiness: can THIS process reach the APIExport virtual workspace it
-	// watches? While this replica is leader the multicluster provider is
-	// attached too, so /readyz and the heartbeat both report whether tenant
-	// workspaces are actually being watched rather than merely whether the
-	// process is up.
+	// watches? Engagement runs on every replica and attaches its multicluster
+	// provider for the life of the process, so /readyz and the heartbeat both
+	// report whether THIS replica is really watching tenant workspaces rather
+	// than merely whether it is up. That check matters more now than it did
+	// when only the leader engaged: a replica whose virtual-workspace URL is
+	// unreachable syncs none of the edges it claimed, and no peer is covering
+	// for it.
 	ready := &vwhealth.Readiness{}
 	go vwhealth.Watch(ctx, providerCfg, apiExportName, ready, 0)
 
@@ -208,19 +219,38 @@ func runServe() {
 		log.Fatalf("engagement controller: %v", err)
 	}
 
-	// The controllers are singletons; the manager is rebuilt each term because
-	// a stopped controller-runtime manager cannot be restarted.
+	// Edge engagement runs on EVERY replica, not behind the controller lease.
+	// The per-edge claims (provider-sdk/sharding) are what make that safe and
+	// what make it worth doing: every replica watches every enabled workspace,
+	// but each one engages only the edges whose claim it wins, so N replicas
+	// divide the fleet's sync work instead of N-1 of them idling while the
+	// leader carries all of it. A replica that dies costs its share of the
+	// edges one handover; one that stops cleanly costs nothing, because it
+	// releases its claims on the way out.
+	go func() {
+		if err := engagementCtl.Run(ctx); err != nil {
+			log.Printf("edge engagement exited: %v", err)
+		}
+	}()
+
+	// Behind the lease stays only what must have exactly one writer: the
+	// SavedView reconciler (a tenant object's status) and the Engagement
+	// reconciler (the garbage collector — it deletes a purged engagement's
+	// index rows and record). Neither is on the sync path, so a gap between
+	// terms delays a status stamp or a purge and nothing else. The manager is
+	// rebuilt each term because a stopped controller-runtime manager cannot be
+	// restarted.
 	go func() {
 		if err := leaderelection.Run(ctx, leaderelection.Options{
 			Config:    providerCfg,
 			Namespace: leaderelection.DefaultNamespace,
 			Name:      controllerLeaseName,
 		}, func(termCtx context.Context) {
-			if err := engagementCtl.Run(termCtx); err != nil {
-				log.Printf("controllers exited: %v", err)
+			if err := engagementCtl.RunSingletons(termCtx); err != nil {
+				log.Printf("singleton controllers exited: %v", err)
 			}
 		}); err != nil {
-			log.Printf("controller leader election failed; controllers are not running: %v", err)
+			log.Printf("controller leader election failed; the SavedView and Engagement reconcilers are not running: %v", err)
 		}
 	}()
 

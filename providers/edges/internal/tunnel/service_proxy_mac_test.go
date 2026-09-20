@@ -126,7 +126,7 @@ func TestMacOSServiceProxyUsesTheMacTunnelAndHostLoopback(t *testing.T) {
 		"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy/api/ping", nil)
 	rr := httptest.NewRecorder()
 
-	s.serveService(rr, req, "caller-token", svcRequest("proxy", "api/ping"), svcObject(macOSServerKind, "mac-1"))
+	s.serveService(rr, req, svcRequest("proxy", "api/ping"), svcObject(macOSServerKind, "mac-1"))
 
 	if rr.Code != http.StatusOK || rr.Body.String() != "ok" {
 		t.Fatalf("service proxy response = %d %q, want 200 %q", rr.Code, rr.Body.String(), "ok")
@@ -163,7 +163,7 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 			"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy?tab=1", nil)
 		rr := httptest.NewRecorder()
 
-		s.serveService(rr, req, "caller-token", svcRequest("proxy", ""), svcObject(macOSServerKind, "mac-1"))
+		s.serveService(rr, req, svcRequest("proxy", ""), svcObject(macOSServerKind, "mac-1"))
 
 		if rr.Code != http.StatusMovedPermanently {
 			t.Fatalf("status = %d (body %q), want 301", rr.Code, rr.Body.String())
@@ -184,7 +184,7 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 			"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy", nil)
 		rr := httptest.NewRecorder()
 
-		s.serveService(rr, req, "caller-token", svcRequest("proxy", ""), svcObject(macOSServerKind, "mac-1"))
+		s.serveService(rr, req, svcRequest("proxy", ""), svcObject(macOSServerKind, "mac-1"))
 
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d (body %q), want 200", rr.Code, rr.Body.String())
@@ -208,7 +208,7 @@ func TestServiceProxyRejectsUnknownEdgeKindBeforeDialing(t *testing.T) {
 		"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy", nil)
 	rr := httptest.NewRecorder()
 
-	s.serveService(rr, req, "caller-token", svcRequest("proxy", ""), svcObject("UnexpectedKind", "mac-1"))
+	s.serveService(rr, req, svcRequest("proxy", ""), svcObject("UnexpectedKind", "mac-1"))
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("unknown edge kind status = %d, want 400 (body %q)", rr.Code, rr.Body.String())

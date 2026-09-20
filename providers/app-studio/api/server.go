@@ -158,11 +158,11 @@ type Server struct {
 	// far a plain (non-App Studio) sync pushed the agent's applied revision
 	// ahead of the FileStore revision. See developmentSyncRevision.
 	developmentSyncRevisionOffsets map[string]uint64
-	// codeCommitBinary / codeCheckoutBinary cache, per workspace cluster,
-	// whether the Code provider's commit_files / checkout_repository tools
-	// advertise base64 binaries. syncBinary caches, per development
-	// component, whether its agent's /status advertises base64 sync.
-	codeCommitBinary   hubmcp.CapabilityCache
+	// codeCheckoutBinary caches, per workspace cluster, whether the Code
+	// provider's checkout_repository tool advertises base64 binaries. Commit
+	// is not cached because it is not probed: it is an action whose schema
+	// declares the encoding. syncBinary caches, per development component,
+	// whether its agent's /status advertises base64 sync.
 	codeCheckoutBinary hubmcp.CapabilityCache
 	syncBinary         hubmcp.CapabilityCache
 	// syncBinaryNotices remembers components already told (in the log) that

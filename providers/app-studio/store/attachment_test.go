@@ -311,7 +311,8 @@ func TestPostgresAttachmentWorkspaceLockKeyIsBinaryAndNulSafe(t *testing.T) {
 	if postgresAttachmentWorkspaceLockKey(withNUL) == postgresAttachmentWorkspaceLockKey(withoutNUL) {
 		t.Fatal("workspace lock key aliases NUL-containing and adjacent fields")
 	}
-	if postgresAttachmentWorkspaceLockKey(withNUL) != postgresAttachmentWorkspaceLockKey(withNUL) {
+	first, second := postgresAttachmentWorkspaceLockKey(withNUL), postgresAttachmentWorkspaceLockKey(withNUL)
+	if first != second {
 		t.Fatal("workspace lock key is not deterministic")
 	}
 }
@@ -326,7 +327,8 @@ func TestPostgresAttachmentLockKeysAreDeterministicAndNulSafe(t *testing.T) {
 	if postgresAttachmentProjectLockKey(withNUL) == postgresAttachmentProjectLockKey(withoutNUL) {
 		t.Fatal("project lock key aliases NUL-containing and adjacent fields")
 	}
-	if postgresAttachmentProjectLockKey(scope) != postgresAttachmentProjectLockKey(scope) {
+	first, second := postgresAttachmentProjectLockKey(scope), postgresAttachmentProjectLockKey(scope)
+	if first != second {
 		t.Fatal("project lock key is not deterministic")
 	}
 	otherProject := scope

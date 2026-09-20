@@ -10,6 +10,7 @@ package engagement
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,11 +40,17 @@ import (
 //
 // This watch is the authority on the workspace's edges. A freshly opened watch
 // replays every object as ADDED, so it IS the list — the reconciler does not
-// fetch one — and every engage, disengage, claim renewal and Engagement status
-// write for the workspace happens on this goroutine. That is what removed the
-// twenty-second per-binding requeue: the only periodic work left is one
-// renewal ticker per workspace, which exists because a Lease must be renewed,
-// not because anything needs re-listing.
+// fetch one — and every engage, disengage and Engagement status write driven
+// by an edge's own state happens on this goroutine. That is what removed the
+// twenty-second per-binding requeue.
+//
+// It is NOT the authority on which replica syncs which edge: that is the claim
+// shard (provider-sdk/sharding), which renews on its own clock and delivers
+// ownership changes as events, so a workspace whose watch is down still keeps
+// the edges it holds. The only periodic work left here is one pass per
+// workspace that re-asserts the index rows and the Engagement heartbeat —
+// derived state that kuery's own writes keep clobbering — not a re-list and
+// not a renewal.
 
 // edgeGVR is the resource form of edgeGVK, for the dynamic watch.
 var edgeGVR = edgeGVK.GroupVersion().WithResource("kubernetesclusters")
@@ -54,11 +61,24 @@ type edgeWatch struct {
 	cancel   context.CancelFunc
 }
 
+// edgeObservation is everything about one edge that this consumer acts on:
+// whether the edge is up, and where the owning provider says to reach it.
+// Comparable on purpose — the watch skips an event that changes neither.
+type edgeObservation struct {
+	connected bool
+	statusURL string
+}
+
 // edgeWatchBackoff bounds the retry delay after a failed watch dial.
 const (
 	edgeWatchMinBackoff = time.Second
 	edgeWatchMaxBackoff = 30 * time.Second
 )
+
+// noStatusURLMessage is what an Engagement says while the owning provider has
+// not published the edge's data-plane coordinate. It is a waiting state, not a
+// failure: the watch event that adds status.url is what ends it.
+const noStatusURLMessage = "waiting for the edge to publish status.url"
 
 // tenantDynamic builds the dynamic client the edge watch uses: the
 // workspace's own API surface, as the workspace's engagement identity.
@@ -90,10 +110,10 @@ func (c *Controller) ensureEdgeWatch(tenantCluster string, identity credential) 
 		existing.cancel()
 		delete(c.edgeWatches, tenantCluster)
 	}
-	parent := c.termCtx
+	parent := c.runCtx
 	if parent == nil {
 		c.mu.Unlock()
-		return nil // the term ended; the next leader opens the watch
+		return nil // this replica stopped engaging; nothing to watch with
 	}
 	c.mu.Unlock()
 
@@ -128,8 +148,8 @@ func (c *Controller) stopEdgeWatch(tenantCluster string) {
 }
 
 // runEdgeWatch follows one workspace's KubernetesCluster edges until ctx ends,
-// re-dialing with backoff whenever the watch drops, and renews this replica's
-// claims on the edges it owns every renewInterval.
+// re-dialing with backoff whenever the watch drops, and re-asserts what this
+// replica syncs for the workspace every renewInterval.
 func (c *Controller) runEdgeWatch(ctx context.Context, tenantCluster string, identity credential, dyn dynamic.Interface) {
 	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster)
 	renew := time.NewTicker(renewInterval)
@@ -147,10 +167,11 @@ func (c *Controller) runEdgeWatch(ctx context.Context, tenantCluster string, ide
 			case <-ctx.Done():
 				return
 			case <-renew.C:
-				// Keep the claims alive across a watch outage: the edges we
-				// already sync are still ours, and letting them expire would
-				// hand them to a peer that cannot see them either.
-				c.renewClaims(ctx, tenantCluster, identity)
+				// Keep the heartbeat going across a watch outage: the edges
+				// we already sync are still ours (the claim shard renews them
+				// regardless), so their Engagements must not go stale merely
+				// because this workspace cannot be watched right now.
+				c.reassertEngaged(ctx, tenantCluster)
 			case <-time.After(backoff):
 			}
 			backoff = min(backoff*2, edgeWatchMaxBackoff)
@@ -173,13 +194,19 @@ func (c *Controller) followEdgeWatch(
 	renew <-chan time.Time,
 ) {
 	defer stream.Stop()
-	connected := map[string]bool{} // edge name → last observed status.connected
+	// Per edge, the last state this watch acted on. status.url is part of it,
+	// not just status.connected: an edge is routinely created before the edges
+	// provider stamps the coordinate it serves it on, and the update that adds
+	// the URL leaves status.connected exactly as it was. Keying the dedup on
+	// connected alone swallowed that update, so such an edge was attempted once
+	// against an empty URL and then never again.
+	observed := map[string]edgeObservation{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-renew:
-			c.renewClaims(ctx, tenantCluster, identity)
+			c.reassertEngaged(ctx, tenantCluster)
 		case evt, ok := <-stream.ResultChan():
 			// A ready event can win the select over a done context.
 			if !ok || ctx.Err() != nil {
@@ -198,7 +225,7 @@ func (c *Controller) followEdgeWatch(
 			}
 			name := object.GetName()
 			if evt.Type == watch.Deleted {
-				delete(connected, name)
+				delete(observed, name)
 				// Drop the name from the identity's rules too: an edge that no
 				// longer exists is one this workspace's credential stops
 				// naming on its next refresh. RBAC written create-if-absent
@@ -209,20 +236,43 @@ func (c *Controller) followEdgeWatch(
 			}
 			now, _, _ := unstructured.NestedBool(object.Object, "status", "connected")
 			// The edges provider publishes the exact data-plane coordinate it
-			// serves this edge on in status.url. Reading it is contract 3
-			// rule 5: a consumer resolves the target from what the owning
-			// provider publishes, never from a format string of its own.
-			statusURL, _, _ := unstructured.NestedString(object.Object, "status", "url")
-			previous, known := connected[name]
-			connected[name] = now
-			// Heartbeat status updates on a steadily connected edge are not
-			// acted on: the renewal ticker already re-asserts those.
-			if known && previous == now {
+			// serves this edge on. Reading it is contract 3 rule 5: a consumer
+			// resolves the target from what the owning provider publishes,
+			// never from a format string of its own.
+			current := edgeObservation{connected: now, statusURL: edgeStatusURL(object)}
+			previous, known := observed[name]
+			observed[name] = current
+			// Heartbeat status updates on an otherwise unchanged edge are not
+			// acted on: the re-assert pass already keeps those rows and heartbeats
+			// current. A changed connected flag OR a changed coordinate is.
+			if known && previous == current {
 				continue
 			}
-			c.observeEdge(ctx, tenantCluster, identity, name, statusURL, now)
+			c.observeEdge(ctx, tenantCluster, identity, name, current.statusURL, current.connected)
 		}
 	}
+}
+
+// edgeStatusURL reads the data-plane coordinate an edge publishes.
+//
+// The field is spelled status.URL: edges.railgrid.ai/KubernetesCluster embeds
+// the shared ConnectionStatus, whose Go field URL carries the JSON tag "URL",
+// and that capitalised key is what the served CRD schema and every stored
+// object actually have. Reading "url" instead — which this consumer did — found
+// nothing on every edge that ever existed, so no edge was ever engageable; the
+// symptom was a single "publishes no status.url yet" per edge.
+//
+// The lower-case spelling is accepted as a fallback rather than replaced,
+// because sibling kinds in the same group (Service) do publish "url", and a
+// consumer that resolves the target from what the provider publishes should
+// not break the day the owning provider normalises its casing.
+func edgeStatusURL(object *unstructured.Unstructured) string {
+	for _, key := range []string{"URL", "url"} {
+		if value, _, _ := unstructured.NestedString(object.Object, "status", key); strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // observeEdge maps one edge's observed state onto the Engagement record and
@@ -266,24 +316,74 @@ func (c *Controller) forgetEdge(ctx context.Context, tenantCluster, edge string)
 	}
 }
 
-// claimAndEngage takes the edge's Lease if it is free, engages the edge when
-// it holds it, and records the result. Declining a foreign claim is the
+// claimAndEngage takes the edge's claim if it is free, engages the edge when
+// it holds it, and records the result. Declining a peer's claim is the
 // sharding: exactly one replica syncs each edge.
+//
+// Every way an edge can fail to be synced here leaves it in c.wanted rather
+// than dropping it — a peer holds the claim, or the edge has not published a
+// coordinate to dial. That is what makes both of the events that can change
+// the answer — the shard's Available and the edge's own status.url update —
+// enough on their own, with nothing polling in between.
 func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster string, identity credential, edge, statusURL string) {
 	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster, "edge", edge)
 	name := EngagementName(tenantCluster, edge)
+	storeName := StoreName(tenantCluster, edge)
 
-	held, err := c.claims.tryAcquire(ctx, name)
-	if err != nil {
-		logger.Error(err, "claiming edge")
-		return
-	}
+	held, _ := c.claims.Claim(ctx, storeName)
 	if !held {
-		// A peer owns it. If we used to, hand it over locally; the new owner's
-		// own pass re-asserts the row.
-		c.dropLocal(ctx, StoreName(tenantCluster, edge), false)
+		// A peer owns it. Record what it would take to engage this edge, so
+		// the shard's Available event is enough to take it over when that peer
+		// releases it or dies, and hand it over locally if we used to sync it;
+		// the new owner's own pass re-asserts the row.
+		c.mu.Lock()
+		c.wanted[storeName] = statusURL
+		c.mu.Unlock()
+		c.dropLocal(ctx, storeName, false)
 		return
 	}
+
+	if strings.TrimSpace(statusURL) == "" {
+		// The owning provider has not stamped this edge's data-plane
+		// coordinate yet — a brand-new edge whose lifecycle reconciler has not
+		// run. There is nothing to dial, so nothing is attempted and no error
+		// is raised: the edge is WANTED, and the very watch that delivered this
+		// event delivers the update that adds the coordinate. That update is
+		// what engages it. There is no timer in this path and no retry to
+		// schedule.
+		//
+		// The claim is KEPT rather than handed back. This replica's watch is
+		// the one that will see the update, no peer can do better (the field is
+		// absent for all of them), and an unclaimed record is exactly what the
+		// Engagement reconciler reaps as an orphan — which would delete the
+		// very record that says what the edge is waiting for.
+		c.mu.Lock()
+		_, engagedHere := c.engaged[storeName]
+		if !engagedHere {
+			c.wanted[storeName] = ""
+		}
+		c.mu.Unlock()
+		if engagedHere {
+			// Already syncing on the coordinate this edge published earlier. A
+			// field that momentarily reads empty is not a reason to tear a
+			// working connection down.
+			return
+		}
+		now := metav1.Now()
+		if err := c.registry.SetStatus(ctx, name, func(status *kueryv1alpha1.EngagementStatus) {
+			status.Phase = kueryv1alpha1.EngagementPhasePending
+			status.Owner = c.claims.Identity()
+			status.LastSeen = &now
+			status.Message = noStatusURLMessage
+		}); err != nil {
+			logger.Error(err, "recording an edge that has published no coordinate")
+		}
+		return
+	}
+
+	c.mu.Lock()
+	delete(c.wanted, storeName)
+	c.mu.Unlock()
 	// This replica is about to talk to the edge, so the workspace's identity
 	// has to name it: the edges data plane's first gate is a real GET of the
 	// edge as the caller, and its second is create on kubernetesclusters/k8s
@@ -297,7 +397,7 @@ func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster string, i
 		logger.Error(err, "engaging edge")
 		if statusErr := c.registry.SetStatus(ctx, name, func(status *kueryv1alpha1.EngagementStatus) {
 			status.Phase = kueryv1alpha1.EngagementPhasePending
-			status.Owner = c.claims.identity
+			status.Owner = c.claims.Identity()
 			status.Message = "engage failed; retrying"
 		}); statusErr != nil {
 			logger.Error(statusErr, "recording failed engage")
@@ -307,13 +407,13 @@ func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster string, i
 	// Owner heartbeat: kuery's engine marks rows stale when a previous owner's
 	// context ended, and its own upserts wipe the labels column, so the row
 	// must be continuously re-asserted by the syncing replica.
-	if err := c.assertClusterRow(ctx, StoreName(tenantCluster, edge), tenantCluster); err != nil {
+	if err := c.assertClusterRow(ctx, storeName, tenantCluster); err != nil {
 		logger.Error(err, "re-asserting cluster row")
 	}
 	now := metav1.Now()
 	if err := c.registry.SetStatus(ctx, name, func(status *kueryv1alpha1.EngagementStatus) {
 		status.Phase = kueryv1alpha1.EngagementPhaseEngaged
-		status.Owner = c.claims.identity
+		status.Owner = c.claims.Identity()
 		status.LastSeen = &now
 		status.Message = ""
 	}); err != nil {
@@ -321,29 +421,50 @@ func (c *Controller) claimAndEngage(ctx context.Context, tenantCluster string, i
 	}
 }
 
-// renewClaims is the one periodic pass left: it re-acquires and renews the
-// Lease of every edge this replica syncs for the workspace, re-asserts the
-// index rows, and stamps the Engagement heartbeat the stale sweep keys off.
+// reassertEngaged is the one periodic pass left. It does NOT touch the claims
+// — the shard renews those on its own clock, independently of whether this
+// workspace's edge watch is even connected — it re-asserts the index rows
+// (kuery's own cluster upserts wipe the labels column, and its engine marks
+// rows stale when a previous owner's context ended) and stamps the Engagement
+// heartbeat that the stale sweep keys off.
 //
 // It iterates this replica's own engaged set rather than re-listing edges,
-// because the watch already owns that question. An edge a peer let expire is
-// picked up when the watch next re-dials or when the peer's own Engagement
-// goes Stale and the tenant's watch re-observes it.
-func (c *Controller) renewClaims(ctx context.Context, tenantCluster string, identity credential) {
+// because the edge watch already owns that question and the shard owns the
+// ownership one. An edge whose owner died is not found here: it arrives as an
+// Available event on the claim shard.
+func (c *Controller) reassertEngaged(ctx context.Context, tenantCluster string) {
 	prefix := tenantCluster + "/"
 	c.mu.Lock()
-	edges := make([]engagedEdge, 0, len(c.engaged))
-	for key, entry := range c.engaged {
-		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
-			edges = append(edges, entry)
+	names := make([]string, 0, len(c.engaged))
+	for key := range c.engaged {
+		if strings.HasPrefix(key, prefix) && len(key) > len(prefix) {
+			names = append(names, key)
 		}
 	}
 	c.mu.Unlock()
 
-	for _, edge := range edges {
+	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster)
+	for _, storeName := range names {
 		if ctx.Err() != nil {
 			return
 		}
-		c.claimAndEngage(ctx, tenantCluster, identity, edge.edgeName, edge.statusURL)
+		if !c.claims.Held(storeName) {
+			// The claim moved while this pass was being assembled; the shard's
+			// Lost event is what drops the sync, not this loop.
+			continue
+		}
+		_, edge := SplitStoreName(storeName)
+		if err := c.assertClusterRow(ctx, storeName, tenantCluster); err != nil {
+			logger.Error(err, "re-asserting cluster row", "edge", edge)
+		}
+		now := metav1.Now()
+		if err := c.registry.SetStatus(ctx, EngagementName(tenantCluster, edge), func(status *kueryv1alpha1.EngagementStatus) {
+			status.Phase = kueryv1alpha1.EngagementPhaseEngaged
+			status.Owner = c.claims.Identity()
+			status.LastSeen = &now
+			status.Message = ""
+		}); err != nil {
+			logger.Error(err, "recording engagement heartbeat", "edge", edge)
+		}
 	}
 }

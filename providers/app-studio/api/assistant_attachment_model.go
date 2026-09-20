@@ -144,7 +144,7 @@ func (r projectAssistantStoreAttachmentReader) ReadAttachment(ctx context.Contex
 		return projectAssistantAttachmentRead{}, err
 	}
 	if attachment.ID != receipt.ID || attachment.Filename != receipt.Filename ||
-		strings.ToLower(attachment.ContentType) != strings.ToLower(receipt.ContentType) ||
+		!strings.EqualFold(attachment.ContentType, receipt.ContentType) ||
 		attachment.SizeBytes != receipt.SizeBytes || !strings.EqualFold(attachment.SHA256, receipt.SHA256) {
 		return projectAssistantAttachmentRead{}, errors.New("attachment receipt does not match stored object")
 	}

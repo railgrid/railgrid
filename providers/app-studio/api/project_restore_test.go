@@ -63,6 +63,7 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 	commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 	workspaces := workspace.NewFileStore(t.TempDir())
+	bindTestProjectLedgerTo(workspaces, client)
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "stale.txt", Content: "remove\n"}); err != nil {
 		t.Fatal(err)
@@ -179,6 +180,8 @@ func TestRestoreProjectWorkspaceKeepsSkippedFiles(t *testing.T) {
 			commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 			client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 			workspaces := workspace.NewFileStore(t.TempDir())
+			bindTestProjectLedgerTo(workspaces, client)
+			bindTestProjectLedgerTo(workspaces, client)
 			scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 			if _, err := workspaces.PutFile(ctx, scope, workspace.PutOptions{Path: "public/logo.png", Data: logo}); err != nil {
 				t.Fatal(err)
@@ -241,6 +244,7 @@ func TestRestoreProjectWorkspaceRejectsMutationDuringCheckout(t *testing.T) {
 	commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 	workspaces := workspace.NewFileStore(t.TempDir())
+	bindTestProjectLedgerTo(workspaces, client)
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "app.txt", Content: "before\n"}); err != nil {
 		t.Fatal(err)
@@ -286,6 +290,7 @@ func TestRestoreProjectWorkspaceRejectsStaleHistorySelectionBeforeCheckout(t *te
 	commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 	workspaces := workspace.NewFileStore(t.TempDir())
+	bindTestProjectLedgerTo(workspaces, client)
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "app.txt", Content: "newer edit\n"}); err != nil {
 		t.Fatal(err)
@@ -400,6 +405,7 @@ func TestRestoreProjectWorkspaceAcceptsQuotedSourceRevision(t *testing.T) {
 	commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
 	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
 	workspaces := workspace.NewFileStore(t.TempDir())
+	bindTestProjectLedgerTo(workspaces, client)
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "stale.txt", Content: "remove\n"}); err != nil {
 		t.Fatal(err)

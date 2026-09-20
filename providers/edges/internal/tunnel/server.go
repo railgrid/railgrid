@@ -177,9 +177,9 @@ type Server struct {
 // (the edge lifecycle reconciler's only liveness input), pickup paths stay
 // un-addressed and a tunnel held by another replica reports as absent. This
 // is the single-replica / no-POD_IP mode. Call once before serving.
-func (s *Server) EnableRegistry(reg *Registry) {
-	s.registry = reg
-	s.edgeConnManager.SetRegistry(reg, "")
+func (p *Server) EnableRegistry(reg *Registry) {
+	p.registry = reg
+	p.edgeConnManager.SetRegistry(reg, "")
 }
 
 // EnableReplicaRouting turns on multi-replica tunnel routing on top of the
@@ -188,24 +188,24 @@ func (s *Server) EnableRegistry(reg *Registry) {
 // internal listener (see InternalHandler) serves the relay + forwarded
 // pickups. relayToken is the shared provider bearer peers authenticate relays
 // with. Call once before serving.
-func (s *Server) EnableReplicaRouting(reg *Registry, relayToken string) {
-	s.registry = reg
-	s.replicaID = reg.ReplicaID()
-	s.relayToken = relayToken
-	s.edgeConnManager.SetRegistry(reg, relayToken)
+func (p *Server) EnableReplicaRouting(reg *Registry, relayToken string) {
+	p.registry = reg
+	p.replicaID = reg.ReplicaID()
+	p.relayToken = relayToken
+	p.edgeConnManager.SetRegistry(reg, relayToken)
 }
 
 // InternalHandler serves the pod-to-pod surface on the internal listener
 // (never mounted on the public Service): the tunnel relay and forwarded
 // revdial pickups.
-func (s *Server) InternalHandler() http.Handler {
+func (p *Server) InternalHandler() http.Handler {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return utilhttp.CheckSameOrAllowedOrigin(r, []url.URL{})
 		},
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc(relayPath, s.relayHandler())
+	mux.HandleFunc(relayPath, p.relayHandler())
 	// Forwarded pickups land here; the revdial dialer id in the query is the
 	// capability (same model as the public pickup path).
 	mux.Handle("/agent-pickup", revdial.ConnHandler(upgrader))
@@ -358,13 +358,13 @@ func (p *Server) gvrForResource(resource string) (gvr schema.GroupVersionResourc
 
 // Start launches background maintenance (the stale-tunnel sweeper). Call once;
 // the goroutine exits when stop is closed.
-func (s *Server) Start(stop <-chan struct{}) {
-	s.edgeConnManager.StartSweeper(stop)
+func (p *Server) Start(stop <-chan struct{}) {
+	p.edgeConnManager.StartSweeper(stop)
 }
 
 // ConnManager exposes the shared tunnel registry so the provider's edge
 // controllers can check whether a given edge tunnel is live.
-func (s *Server) ConnManager() *ConnManager { return s.edgeConnManager }
+func (p *Server) ConnManager() *ConnManager { return p.edgeConnManager }
 
 // AgentIngressHandler terminates agent reverse tunnels: Pillar 2 class (f).
 // Mounted (behind the hub backend proxy) at /services/providers/edges/agent/,
@@ -374,8 +374,8 @@ func (s *Server) ConnManager() *ConnManager { return s.edgeConnManager }
 //	/agent/clusters/{cluster}/{resource}/{name}/proxy   control tunnel
 //	/agent/proxy                                        revdial pickup
 //	/agent/proxy/{replica}                              replica-addressed pickup
-func (s *Server) AgentIngressHandler() http.Handler {
-	return s.buildEdgeAgentProxyHandler()
+func (p *Server) AgentIngressHandler() http.Handler {
+	return p.buildEdgeAgentProxyHandler()
 }
 
 // EdgeProxyHandler serves the consumer data plane: Pillar 2 class (a).
@@ -383,14 +383,14 @@ func (s *Server) AgentIngressHandler() http.Handler {
 // /services/providers/edges/dataplane/, with the path UNMODIFIED:
 //
 //	/dataplane/clusters/{cluster}/{resource}/{name}/{verb}[/{tail}]
-func (s *Server) EdgeProxyHandler() http.Handler {
-	return s.buildEdgesProxyHandler()
+func (p *Server) EdgeProxyHandler() http.Handler {
+	return p.buildEdgesProxyHandler()
 }
 
 // ProviderMCPHandler serves the provider's AGGREGATE MCP endpoint. Mounted
 // (behind the hub backend proxy) at /services/providers/edges/mcp — the URL the
 // hub's MCP aggregate federates. Exposes kube tools across every connected
 // KubernetesCluster edge in the caller's tenant.
-func (s *Server) ProviderMCPHandler() http.Handler {
-	return s.buildProviderMCPHandler()
+func (p *Server) ProviderMCPHandler() http.Handler {
+	return p.buildProviderMCPHandler()
 }

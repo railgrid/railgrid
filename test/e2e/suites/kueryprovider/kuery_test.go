@@ -26,6 +26,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -273,12 +275,21 @@ func TestACatalogProvisioning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CatalogEntry/kuery not found: %v", err)
 	}
-	// edgeProxyAccess is what makes the hub grant the provider SA the "proxy"
-	// verb on edges at Enable time; kuery's engagement controller depends on
-	// it, so a silent flip to false would break fleet sync in production.
-	if v, found, _ := unstructured.NestedBool(ce.Object, "spec", "edgeProxyAccess"); !found || !v {
-		t.Errorf("CatalogEntry spec.edgeProxyAccess = %v (found=%v), want true", v, found)
+	// edgeProxyAccess must be ABSENT. It used to grant kuery's provider SA the
+	// `proxy` verb on edges at Enable time, but that SA was never the
+	// credential on the engagement path — the edges data plane cannot
+	// authenticate a foreign workspace's provider SA at all. Kuery now reaches
+	// each tenant's edges as a hub-minted scoped identity owned by that
+	// workspace's kuery APIBinding, carrying the clause E composition declared
+	// below (provider-contract remediation §10 / docs/roadmap). A manifest that
+	// re-grows the flag is asking for a capability nothing uses.
+	if v, found, _ := unstructured.NestedBool(ce.Object, "spec", "edgeProxyAccess"); found && v {
+		t.Errorf("CatalogEntry spec.edgeProxyAccess = true, want it absent: kuery reaches edges through a hub-minted scoped identity, not an Enable-time proxy grant")
 	}
+	// The composition that replaced it: read-only on the edges provider's
+	// KubernetesClusters, declared as a dependency so a workspace admin
+	// accepts it at Enable and can revoke it.
+	assertKueryEdgesComposition(t, ce.Object)
 	if name, _, _ := unstructured.NestedString(ce.Object, "spec", "apiExport", "name"); name != apiExportName {
 		t.Errorf("CatalogEntry spec.apiExport.name = %q, want %q", name, apiExportName)
 	}
@@ -346,6 +357,41 @@ func TestACatalogProvisioning(t *testing.T) {
 	if len(list.Items) == 0 {
 		t.Error("no APIResourceSchemas in the kuery sub-workspace; init did not apply the schemas dir")
 	}
+}
+
+// assertKueryEdgesComposition pins the clause E declaration that replaced
+// edgeProxyAccess: kuery composes the edges provider's KubernetesClusters,
+// read-only. The hub's identity policy reads these verbs fresh on every mint
+// (pkg/hub/identity/policy.go, clause E), so the declaration IS the bound on
+// what kuery's engagement identity can ever hold — a `create` or `delete`
+// creeping in here would widen every tenant's identity on the next refresh.
+func assertKueryEdgesComposition(t *testing.T, entry map[string]any) {
+	t.Helper()
+	dependencies, found, _ := unstructured.NestedSlice(entry, "spec", "dependencies")
+	if !found || len(dependencies) == 0 {
+		t.Fatal("CatalogEntry spec.dependencies is empty; kuery must declare the edges composition it engages through")
+	}
+	for _, raw := range dependencies {
+		dependency, ok := raw.(map[string]any)
+		if !ok || dependency["name"] != "edges" {
+			continue
+		}
+		composes, _, _ := unstructured.NestedSlice(dependency, "composes")
+		for _, rawComposition := range composes {
+			composition, ok := rawComposition.(map[string]any)
+			if !ok || composition["group"] != "edges.railgrid.ai" || composition["resource"] != "kubernetesclusters" {
+				continue
+			}
+			verbs, _, _ := unstructured.NestedStringSlice(composition, "verbs")
+			sorted := append([]string(nil), verbs...)
+			sort.Strings(sorted)
+			if want := []string{"get", "list", "watch"}; !reflect.DeepEqual(sorted, want) {
+				t.Errorf("composition edges.railgrid.ai/kubernetesclusters verbs = %v, want exactly %v (read-only)", verbs, want)
+			}
+			return
+		}
+	}
+	t.Errorf("CatalogEntry declares no composition of edges.railgrid.ai/kubernetesclusters on dependency \"edges\": %v", dependencies)
 }
 
 // TestBAPIProvidersDTO asserts kuery shows up in the hub's provider catalog

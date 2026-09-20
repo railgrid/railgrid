@@ -37,7 +37,7 @@ credential model:
 | `boundResource` | Exact API version, kind, and resource whose identity is supplied by the Project binding. |
 | `inputSchema`, `outputSchema` | JSON Schemas for caller input and provider result. Schemas are local, bounded, and compiled by the hub. |
 | `schemaDigest` | `sha256:` digest over the canonical input/output schema envelope. The hub recomputes it at catalog admission; App Studio pins it at grant time and re-verifies it on every invoke. |
-| `executionMode` | `sync` or `async`; the current hub transport accepts `sync` only. |
+| `executionMode` | `sync` (the result is the effect) or `async` (the call records intent and a controller applies it later, e.g. code's `commit/v1` creates a `RepositoryCommit` the controller then pushes). The transport is the same for both; the mode tells the caller whether to poll the bound object for the outcome. |
 | `readOnly` | Provider declaration that the action does not mutate the bound resource. |
 | `risk` | `low`, `medium`, or `high`, used by consent and UI policy. |
 | `idempotency` | `inherent`, `keyed`, or `none`; keyed idempotency returns `501` until durable deduplication exists. |
@@ -63,21 +63,28 @@ optional `truncated` flag. The declaration's schema digest is
 
 ### Uncatalogued large-upload verbs
 
-One verb in the tree is served on the action grammar and gated exactly like a
-catalogued action, yet appears in no `CatalogEntry`: the code provider's
-`stage_snapshot`. It uploads a git bundle (25 MiB decoded, 36 MiB on the wire)
-and returns an opaque `bundleRef` that the catalogued `prepare_snapshot` and
-`publish_snapshot` then name in their own small inputs.
+Two verbs in the tree are served on the action grammar and gated exactly like a
+catalogued action, yet appear in no `CatalogEntry`. Both belong to the code
+provider:
 
-It is uncatalogued because the catalog cannot describe it honestly.
+- `stage_snapshot` uploads a git bundle (25 MiB decoded, 36 MiB on the wire)
+  and returns an opaque `bundleRef` that the catalogued `prepare_snapshot` and
+  `publish_snapshot` then name in their own small inputs.
+- `stage_commit_bundle` uploads a source tree (48 MiB decoded, 68 MiB on the
+  wire, 500 files) into the provider's commit-bundle store and returns the
+  `bundleRef`/`bundleDigest` pair the catalogued `commit` names instead of
+  inline `files`. A commit whose files fit the 1 MiB ceiling never touches it;
+  App Studio, which commits whole generated applications, normally does.
+
+They are uncatalogued because the catalog cannot describe them honestly.
 `limits.maxInputBytes` is capped at 1 MiB by the CatalogEntry API itself
 (`validateProviderActionLimits` in `apis/providers/v1alpha1/actions.go`, and
 the CRD's `maximum: 1048576`), and the hub fails a whole CatalogEntry closed
 when one declaration is malformed. Declaring 64 KiB for a 25 MiB upload would
 be a lie the hub compiles and App Studio pins a schema digest over; declaring
-25 MiB would be rejected, taking the provider's other twelve actions down with
-it. The honest declaration does not exist, so the verb is documented here
-instead of misdeclared there.
+25 MiB would be rejected, taking the provider's other fourteen actions down
+with it. The honest declaration does not exist, so the verbs are documented
+here instead of misdeclared there.
 
 The exception is narrow. A verb qualifies only when all four hold:
 
@@ -94,9 +101,13 @@ The exception is narrow. A verb qualifies only when all four hold:
    of the flow a consumer binds to stays in the catalog.
 
 A verb that misses any of the four is catalogued or removed. The cost of the
-exception is real and intended: because it is not in the catalog, App Studio
-cannot grant it through a project binding, so only a caller whose workspace
-RBAC already allows `create` on `repositories/stage_snapshot` can invoke it.
+exception is real and intended: because they are not in the catalog, App Studio
+cannot grant them through a project binding, so only a caller whose workspace
+RBAC already allows `create` on `repositories/stage_snapshot` or
+`repositories/stage_commit_bundle` can invoke them. A project identity that
+needs to commit more than a mebibyte therefore carries the staging verb as an
+explicit clause-C rule next to `repositories/commit`, and a consumer that only
+ever commits small inputs carries neither.
 
 ## Project grants and audit
 

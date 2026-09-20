@@ -824,6 +824,10 @@ export const api = {
       metadata: {
         name: secretName,
         namespace: CRED_NAMESPACE,
+        // The provider's secrets claim is label-scoped to what it owns; it
+        // refreshes this token, so the Secret must carry the owner label even
+        // though the portal (as the user) is the one creating it.
+        labels: { 'railgrid.ai/owner': 'code' },
         ownerReferences: [{ apiVersion: `${GROUP}/${VERSION}`, kind: 'Connection', name, uid: conn.metadata.uid }],
       },
       type: 'Opaque',

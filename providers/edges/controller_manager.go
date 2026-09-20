@@ -274,10 +274,10 @@ func runEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *sd
 	// aggregator rolls per-edge Placement statuses back up. Each edge's agent
 	// applies the derived Deployment locally and reports Placement status.
 	if err := scheduler.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("Workload scheduler: %w", err)
+		return fmt.Errorf("workload scheduler: %w", err)
 	}
 	if err := status.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("Workload status aggregator: %w", err)
+		return fmt.Errorf("workload status aggregator: %w", err)
 	}
 
 	// EdgeService controllers (LinuxServer and MacOSServer edges): the discovery
@@ -297,7 +297,7 @@ func runEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *sd
 	// nothing from hub-side intent alone — see internal/addonctrl and
 	// docs/edge-addons.md.
 	if err := addonctrl.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("Addon controller: %w", err)
+		return fmt.Errorf("addon controller: %w", err)
 	}
 
 	log.Printf("edges controller manager starting (leader, endpointSlice=%s)", endpointSliceName)

@@ -51,6 +51,7 @@ package project
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -77,7 +78,7 @@ import (
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/bindings"
 	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
-	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/internal/projectledger"
 	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
 	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 	"github.com/railgrid/provider-app-studio/store"
@@ -85,8 +86,11 @@ import (
 )
 
 const (
-	// finalizer guards instance teardown on Project deletion.
-	finalizer = "ai.railgrid.ai/instances"
+	// finalizer guards the whole teardown chain a deleted Project owns
+	// (teardown.go). It is declared on the API type because the API layer
+	// stamps it at creation time, so a Project deleted a second later still
+	// has a cleanup owner.
+	finalizer = aiv1alpha1.ProjectFinalizer
 	// instanceConvergenceMaxAttempts bounds optimistic-concurrency recovery.
 	// A fresh GET/recompute is enough to absorb the provider's usual computed
 	// field update; persistent contention is surfaced to a rate-limited
@@ -116,6 +120,15 @@ type Reconciler struct {
 	// Workspace is the shared on-disk project file store (nil disables
 	// commit convergence).
 	Workspace *workspace.FileStore
+	// Store is the conversation store a deleted project's finalizer purges:
+	// its threads, transcripts, runs and preview thumbnail. Nil leaves the
+	// rows in place, which is only ever a REST-less test wiring.
+	Store store.Store
+	// StopAssistant interrupts an assistant turn still running for a project
+	// that is being deleted. The old delete VERB refused with a 409 instead;
+	// a CR delete cannot refuse, so the run is stopped and the teardown waits
+	// for Busy to go false. Nil means there is no supervisor to ask.
+	StopAssistant func(context.Context, workspace.Scope) error
 	// Attachments owns the durable project attachment scope. The controller adds
 	// its finalizer only after the Project's tenant scope and UID are available;
 	// API-created Projects carry the finalizer from creation time so an immediate
@@ -141,15 +154,12 @@ type Reconciler struct {
 	// Signals carries "this project changed" events from the HTTP/assistant
 	// layer: a turn ended, files were written. Nil means no signals.
 	Signals *reconcilesignal.Bus
-	// binaryCommits caches, per workspace cluster, whether the Code
-	// provider's code__commit_files accepts base64 file items.
-	binaryCommits hubmcp.CapabilityCache
 	// skipNotices remembers the last skipped-path notice per project so an
 	// unchanged skip is logged once rather than on every reconcile.
 	noticeMu    sync.Mutex
 	skipNotices map[string]string
-	// HubBase / HubInsecure address the hub for MCP commit calls and for the
-	// tenant-path client below.
+	// HubBase / HubInsecure address the hub for the commit action calls
+	// (commitaction.go) and for the tenant-path client below.
 	HubBase     string
 	HubInsecure bool
 	// Identities mints the per-project identity this loop acts as inside the
@@ -290,6 +300,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("cluster %q: %w", req.ClusterName, err)
 	}
 	c := cl.GetClient()
+
+	// Every working-copy ledger read and write in this pass goes through the
+	// project's own CR, over this same client. Attaching it here is what lets
+	// the workspace store's commit paths stay free of control-plane types
+	// (workspace/ledger.go).
+	ctx = workspace.ContextWithLedger(ctx, projectledger.FromControllerClient(c))
 
 	var p aiv1alpha1.Project
 	if err := c.Get(ctx, req.NamespacedName, &p); err != nil {
@@ -571,10 +587,10 @@ func (r *Reconciler) actionsTenantPath(ctx context.Context, c client.Client, p *
 	}
 	annotations := p.GetAnnotations()
 	if annotated := strings.TrimSpace(annotations[bindings.OrgUUIDAnnotation]); annotated != "" && annotated != org {
-		return "", fmt.Errorf("Project %q organization annotation does not match authoritative tenant path", p.Name)
+		return "", fmt.Errorf("the organization annotation on Project %q does not match the authoritative tenant path", p.Name)
 	}
 	if annotated := strings.TrimSpace(annotations[bindings.WorkspaceUUIDAnnotation]); annotated != "" && annotated != workspace {
-		return "", fmt.Errorf("Project %q workspace annotation does not match authoritative tenant path", p.Name)
+		return "", fmt.Errorf("the workspace annotation on Project %q does not match the authoritative tenant path", p.Name)
 	}
 	return strings.TrimSpace(path), nil
 }
@@ -617,13 +633,13 @@ func resolveLogicalClusterPath(ctx context.Context, c client.Client, clusterName
 
 	annotations := matches[0].GetAnnotations()
 	if got := strings.TrimSpace(annotations["kcp.io/cluster"]); got == "" {
-		return "", fmt.Errorf("App Studio APIBinding has no kcp.io/cluster annotation")
+		return "", fmt.Errorf("the App Studio APIBinding has no kcp.io/cluster annotation")
 	} else if got != clusterName {
-		return "", fmt.Errorf("App Studio APIBinding cluster %q does not match request cluster %q", got, clusterName)
+		return "", fmt.Errorf("the App Studio APIBinding cluster %q does not match request cluster %q", got, clusterName)
 	}
 	path := strings.TrimSpace(annotations[core.LogicalClusterPathAnnotationKey])
 	if path == "" {
-		return "", fmt.Errorf("App Studio APIBinding has no %s annotation", core.LogicalClusterPathAnnotationKey)
+		return "", fmt.Errorf("the App Studio APIBinding has no %s annotation", core.LogicalClusterPathAnnotationKey)
 	}
 	return path, nil
 }
@@ -729,15 +745,41 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, p *aiv
 	return nil, fmt.Errorf("instance convergence retry budget exhausted")
 }
 
-// finalize deletes bound instances, then releases the finalizer. The
-// infrastructure provider's template owns the runtime namespace and
-// garbage-collects every materialized workload when the instance goes away.
+// finalize runs the teardown chain a deleted Project owns and then releases
+// the finalizer. The order is by dependency, and every step is idempotent
+// because a failure re-runs the chain from the top (teardown.go explains why
+// this is a finalizer and not the HTTP handler it used to be):
+//
+//  1. stop the assistant — an in-flight turn owns the workspace tree and is
+//     still writing conversation rows;
+//  2. release (or, on explicit request, delete) the Code Repository, before
+//     the instances, because it is the only step that can still be undone;
+//  3. delete the infrastructure instances the project provisioned — the
+//     template owns the runtime namespace and garbage-collects the workloads;
+//  4. purge the conversation rows, attachments and preview thumbnail;
+//  5. revoke the project's hub identity;
+//  6. remove this replica's working copy of the files.
+//
+// The coding-sandbox cache Instance is absent on purpose: it carries a Project
+// ownerReference, so kcp's garbage collector takes it.
 func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha1.Project, clusterName string) (ctrl.Result, error) {
 	instanceFinalizer := controllerutil.ContainsFinalizer(p, finalizer)
 	attachmentFinalizer := controllerutil.ContainsFinalizer(p, store.AttachmentStorageFinalizer)
 	if !instanceFinalizer && !attachmentFinalizer {
 		return ctrl.Result{}, nil
 	}
+
+	// Step 1. Nothing below may run while a turn is still in flight.
+	if scope, ok := scopeOf(p); ok {
+		if err := r.quiesceAssistant(ctx, scope); err != nil {
+			if errors.Is(err, errProjectAssistantBusy) {
+				log.Printf("app-studio project %s: deletion is waiting for the assistant turn to finish", p.Name)
+				return ctrl.Result{}, nil
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
 	if attachmentFinalizer {
 		if r.Attachments == nil {
 			return ctrl.Result{}, fmt.Errorf("attachment storage finalizer present but attachment store is unavailable")
@@ -759,22 +801,28 @@ func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha
 			controllerutil.RemoveFinalizer(p, store.AttachmentStorageFinalizer)
 		}
 	}
+
 	if instanceFinalizer {
-		if bound := providerBindings(p); len(bound) > 0 {
-			// Teardown goes through the tenant-path client like every other
-			// instance write. Blocking on the identity is deliberate: a
-			// claimed-VW path treated an unserved resource's 404 as "already
-			// gone" and released the finalizer over live instances.
+		// Steps 2 and 3 share one workspace client, and both are skipped
+		// together when there is no identity to act as — the same deployment
+		// that never created any of it.
+		//
+		// Teardown goes through the tenant-path client like every other
+		// dependency write. Blocking on the identity is deliberate: a
+		// claimed-VW path treated an unserved resource's 404 as "already
+		// gone" and released the finalizer over live instances.
+		bound := providerBindings(p)
+		if len(bound) > 0 || p.Spec.Repository != nil {
 			tc, _, err := r.crossProviderAccess(ctx, clusterName, p)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
 			if tc == nil {
-				// No hub identity, so nothing was ever created here either
-				// (Reconcile skips the same half). Releasing the finalizer is
-				// what keeps a delete the tenant asked for from wedging.
 				log.Printf("app-studio project %s: releasing the instance finalizer without teardown because no hub identity is configured", p.Name)
 			} else {
+				if err := r.settleRepository(ctx, tc, p); err != nil {
+					return ctrl.Result{}, err
+				}
 				for _, env := range bound {
 					for _, binding := range env.bindings {
 						want, _, err := bindings.Desired(p, binding)
@@ -793,14 +841,30 @@ func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha
 			}
 		}
 	}
-	// Revoke the identity now rather than leaving it live until the hub's
-	// sweep notices the Project is gone. A failure here is logged and not
-	// escalated: the sweep is the backstop, and a hub blip must not wedge a
-	// deletion the tenant asked for.
+
+	// Step 4. The conversation rows are keyed by the same scope as the
+	// attachments, and purging them is what makes the deletion final rather
+	// than merely invisible.
+	if scope, ok := attachmentScopeForProject(p); ok {
+		if err := r.purgeConversations(ctx, scope); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Step 5. Revoke the identity now rather than leaving it live until the
+	// hub's sweep notices the Project is gone. A failure here is logged and
+	// not escalated: the sweep is the backstop, and a hub blip must not wedge
+	// a deletion the tenant asked for.
 	if err := r.releaseIdentity(ctx, clusterName, p); err != nil {
 		log.Printf("app-studio project %s: releasing the project identity: %v", p.Name, err)
 	}
 	r.noIdentityNotices.Delete(clusterName + "/" + p.Name)
+
+	// Step 6.
+	if scope, ok := scopeOf(p); ok {
+		r.removeWorkspaceTree(ctx, scope)
+	}
+
 	if instanceFinalizer {
 		controllerutil.RemoveFinalizer(p, finalizer)
 	}

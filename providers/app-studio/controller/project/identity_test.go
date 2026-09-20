@@ -179,7 +179,7 @@ func TestProjectIdentityRulesCarryTheDeclaredComposition(t *testing.T) {
 		wantObjectRule bool
 	}{
 		{infraAPIGroup, "instances", "create,list,watch", "get,update,delete", "demo-dev,demo-prod", true},
-		{codeAPIGroup, "repositories", "create,list,watch", "get,update", "demo-repo", true},
+		{codeAPIGroup, "repositories", "create,list,watch", "get,update,delete", "demo-repo", true},
 		// Repositories are never deleted: they hold user code and outlive the
 		// project, so no delete is asked for and none can be granted.
 		{codeAPIGroup, "repositorycommits", "list,watch", "", "", false},
@@ -210,6 +210,23 @@ func TestProjectIdentityRulesCarryTheDeclaredComposition(t *testing.T) {
 		if namesOf(rule) != "demo-dev,demo-prod" {
 			t.Fatalf("instances/%s is not name-scoped: %#v", verb, rule.ResourceNames)
 		}
+	}
+
+	// Clause C on the Repository: the two verbs a commit pass invokes. The
+	// commit itself is one of them, which is why the composition on
+	// repositorycommits still carries no create — the Code provider writes
+	// that object once this grant is proven.
+	for _, action := range codeRepositoryActions {
+		rule, ok := ruleFor(rules, codeAPIGroup, "repositories/"+action, true)
+		if !ok || verbs(rule) != "create" {
+			t.Fatalf("clause C rule for repositories/%s = %#v (ok=%v)", action, rule, ok)
+		}
+		if namesOf(rule) != "demo-repo" {
+			t.Fatalf("repositories/%s is not name-scoped: %#v", action, rule.ResourceNames)
+		}
+	}
+	if commits, ok := ruleFor(rules, codeAPIGroup, "repositorycommits", false); !ok || strings.Contains(verbs(commits), "create") {
+		t.Fatalf("repositorycommits composition = %#v (ok=%v); the provider creates the commit, not this identity", commits, ok)
 	}
 
 	// Clause B and C on the Connection: read it, and ask it for a registry
@@ -292,12 +309,14 @@ func TestProjectIdentityRulesFollowThePendingCommit(t *testing.T) {
 	if _, ok := ruleFor(projectIdentityRules(p), codeAPIGroup, "repositorycommits", true); ok {
 		t.Fatal("a project with no pending commit holds a named commit read")
 	}
-	p.Annotations = map[string]string{pendingCommitAnnotation: "commit-1"}
+	p.Status.Workspace = &aiv1alpha1.ProjectWorkspaceStatus{
+		PendingCommit: &aiv1alpha1.ProjectPendingCommit{Name: "commit-1"},
+	}
 	rule, ok := ruleFor(projectIdentityRules(p), codeAPIGroup, "repositorycommits", true)
 	if !ok || verbs(rule) != "get" || namesOf(rule) != "commit-1" {
 		t.Fatalf("pending-commit read = %#v (ok=%v)", rule, ok)
 	}
-	delete(p.Annotations, pendingCommitAnnotation)
+	p.Status.Workspace.PendingCommit = nil
 	if _, ok := ruleFor(projectIdentityRules(p), codeAPIGroup, "repositorycommits", true); ok {
 		t.Fatal("the named commit read outlived the commit it was for")
 	}

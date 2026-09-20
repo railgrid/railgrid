@@ -375,7 +375,7 @@ func (p *Proxy) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "app access exchange unavailable", http.StatusBadGateway)
 		return
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusGone {
 		// Expired or replayed code: restart the flow. With a live hub shared
 		// session this is a silent redirect loop of exactly one extra hop.

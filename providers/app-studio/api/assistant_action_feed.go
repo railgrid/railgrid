@@ -774,23 +774,23 @@ func projectAssistantActionFeedItemKind(name string) string {
 	if browserPresentation, ok := projectAssistantBrowserActionFeedPresentationForTool(name); ok {
 		return browserPresentation.kind
 	}
-	switch base := projectToolBaseName(name); {
-	case base == projectToolAskFollowUp:
+	switch projectToolBaseName(name) {
+	case projectToolAskFollowUp:
 		return projectAssistantActionFeedItemClarify
-	case base == projectToolPlanProjectChanges:
+	case projectToolPlanProjectChanges:
 		return projectAssistantActionFeedItemPlan
-	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment ||
-		base == projectToolVerifyDevelopmentRuntime || base == projectToolGetRuntimeStatus ||
-		base == projectToolGetPreviewURL || base == projectToolInspectDevelopmentPreview || base == projectToolInteractDevelopmentPreview || base == projectToolGetRuntimeLogs ||
-		base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv || base == projectToolExecCommand:
+	case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment,
+		projectToolVerifyDevelopmentRuntime, projectToolGetRuntimeStatus,
+		projectToolGetPreviewURL, projectToolInspectDevelopmentPreview, projectToolInteractDevelopmentPreview, projectToolGetRuntimeLogs,
+		projectToolRestartRuntime, projectToolSetRuntimeEnv, projectToolExecCommand:
 		return projectAssistantActionFeedItemRun
-	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
+	case projectToolCommitProjectFiles, projectToolCommitFiles:
 		return projectAssistantActionFeedItemCommit
-	case base == projectToolCreateFile || base == projectToolReplaceFile || base == projectToolEditFile || base == projectToolDeleteFile || base == projectToolMoveFile ||
-		base == projectToolImportAttachment || base == projectToolDownloadFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
+		projectToolImportAttachment, projectToolDownloadFile:
 		return projectAssistantActionFeedItemEdit
-	case base == projectToolLS || base == projectToolReadFile || base == projectToolGlob || base == projectToolGrep ||
-		base == projectToolLoadSkill || base == projectToolReadSkillResource:
+	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
+		projectToolLoadSkill, projectToolReadSkillResource:
 		return projectAssistantActionFeedItemInspect
 	default:
 		return projectAssistantActionFeedItemOther

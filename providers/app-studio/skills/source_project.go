@@ -275,8 +275,7 @@ func (s *ProjectSource) List(ctx context.Context, maxPackages int) (PackageList,
 		if packagePath == "." {
 			continue
 		}
-		packagePath, cleanErr := cleanPublicPackagePath(packagePath)
-		if cleanErr != nil {
+		if _, cleanErr := cleanPublicPackagePath(packagePath); cleanErr != nil {
 			continue
 		}
 		resourceFiles = append(resourceFiles, info)

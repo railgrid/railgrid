@@ -142,6 +142,15 @@ per-project ServiceAccount.
 - [x] 3.3 `hubmcp/` — MCP JSON-RPC client for `code__commit_files` via the
       hub's per-tenant aggregate MCPServer (port of vibe's
       provision/codemcp.go; the api layer keeps its own caller-token path).
+      **Superseded for the reconciler (2026-09-20, §9 Cut D.1).** The
+      convergence loop no longer speaks MCP: it invokes the Code provider's
+      `repositories/commit/v1` action (`controller/project/commitaction.go`),
+      staging through `repositories/stage_commit_bundle` when the payload is
+      past the catalogue's 1 MiB input ceiling. `hubmcp` stays for its wire
+      constants and encoding helpers, which the api layer and the bundle
+      builder still share, and for the api layer's own MCP tools (checkout,
+      build status, rebuild) — including the assistant's
+      `commit_project_files`, which has NOT moved.
 - [x] 3.4 `controller/project/identity.go` — per-PROJECT ServiceAccount
       (vibe's is per-session; app-studio has no Session CR): SA +
       ClusterRole (infra RO, code RW) + binding + legacy token Secret, all
@@ -176,13 +185,19 @@ per-project ServiceAccount.
       release only). Adoption itself stays caller-side (claims an existing
       CR, needs the importing user's view).
 - [x] 3.6 `controller/project/commit.go` — commit convergence: workspace
-      `UncommittedPaths` → `code__commit_files` as the project SA, gated on
+      `UncommittedPaths` → `repositories/commit/v1` as the project identity
+      (was `code__commit_files`; see 3.3), gated on
       (a) repository Ready, (b) project idle via `api.Server.AssistantBusy`
       (run manager + supervisor reservations), sharing the workspace
       settlement ledger (`RecordCommitSettlement`/`ReconcileCommitSettlement`)
       with the assistant's interactive commit tool so neither double-commits.
-      Missing files → deletePaths; binary/oversized files stay dirty for an
-      interactive commit. Scope bridge: `ai.railgrid.ai/org-uuid` +
+      Missing files → `{path, delete: true}` entries; oversized files stay
+      dirty for an interactive commit, and binaries always travel base64
+      (the action's schema declares the encoding, so there is no capability
+      probe any more). Every commit is pending when it is made: the action
+      returns the `RepositoryCommit`'s name and the existing watch settles
+      it, so the rate-limited case is no longer a separate path through a
+      parsed error string. Scope bridge: `ai.railgrid.ai/org-uuid` +
       `/workspace-uuid` annotations stamped on the Project at create
       (legacy Projects without them are skipped silently).
 - [x] 3.7 Wiring: shared workspace FileStore instance (HTTP layer +
@@ -280,3 +295,138 @@ rebind or the APIBinding to pick up the new schemas.
   All module tests/vet/build/chart green. Live verification (2.9) now
   covers Phase 3 too: expect the repo to appear without the handler
   creating it, and a dirty workspace to self-commit once idle.
+- 2026-09-20: Cut D.1 and D.4 (remediation §9). **D.1** — one commit path:
+  `internal/codecommit` makes the Code provider's `repositories/commit/v1`
+  call (staging oversized payloads through `stage_commit_bundle`), and both
+  the Project reconciler and the assistant's `commit_project_files` tool go
+  through it, differing only in whose bearer they carry. `code__commit_files`
+  now has no caller in this provider, which retires the base64 capability
+  probe with it — the action's schema declares the encoding. The assistant no
+  longer settles the workspace ledger at the tool boundary: the action does
+  not wait for the commit to land, so it records the pending commit and the
+  `RepositoryCommit` watch settles it, the same as the reconciler's own
+  commits. **D.4** — deleting a project is a DELETE of the Project CR. The
+  `projects/{p}/delete` verb is gone from `api/dataplane_table.go`,
+  `manifest.yaml` and the chart's `catalogentry.yaml`; the portal deletes the
+  object with the kube client (UID as a precondition, the repository-deletion
+  opt-in stamped as an annotation first) and polls until it disappears. The
+  teardown is `controller/project/teardown.go`: stop the assistant, release or
+  delete the Code Repository, delete the instances, purge conversations and
+  attachments, revoke the identity, remove the working tree. The
+  coding-sandbox cache is left to its Project ownerReference. Composition
+  widened by one verb — `delete`, name-scoped, on `repositories` — because the
+  human's own `delete` through the verb became the project identity's;
+  `manifest.yaml`, the chart and `internal/crossprovider` are in step and
+  `TestCompositionRulesMatchTheManifest` pins it. Also in this change set: the
+  `secrets` claim is selector-scoped to `railgrid.ai/owner: app-studio`, the
+  portal's LLM-credential writer stamps that label, and the promotion's
+  registry pull Secret stamps `railgrid.ai/owner: infrastructure` because the
+  infrastructure provider is what reads it.
+- Not done in that change set (both have since landed — see the D.2 and D.3
+  entries below): **D.3** (source-tree authority off the PVC) and **D.2**
+  (`Session` as thread owner, `LISTEN/NOTIFY` behind SSE, retention as a
+  `Session` reconciler). See `app-studio-replica-awareness.md` §"What still
+  requires affinity".
+- 2026-09-20: Cut D.2 (remediation §9), plus the module taken to a clean
+  golangci-lint run. **D.2** — `SessionStatus` gained `turnCount` and
+  `lastActivityAt` (schema bumped to `v260920-91c16a31.sessions.ai.railgrid.ai`;
+  the fields are fed by a new `store.AssistantThreadActivityReader`, one query
+  in Postgres and a map fold in memory). The SSE stream's 250 ms per-connection
+  poll (`api/assistant_threads.go`) became Postgres `LISTEN/NOTIFY`: an append
+  issues `pg_notify` on `app_studio_assistant_thread_events` with a
+  length-prefixed thread key, one `pq.Listener` per process fans it out through
+  `store/thread_notify.go`, and the memory store implements the same
+  `AssistantThreadEventWatcher` with the broadcaster alone. The signal carries
+  no payload — every reader re-reads from its own cursor, so coalescing is
+  correct — and the 15 s keepalive is the safety net, which is also how a
+  listener reconnect (lib/pq's nil notification wakes every subscriber) is
+  covered. `runRetention` is deleted from `main.go`: retention is the Session
+  reconciler's computed-deadline `RequeueAfter` at
+  `status.lastActivityAt + APP_STUDIO_MESSAGE_RETENTION`, deleting the Session
+  so the existing purge finalizer does the work — one owner (the leader), one
+  conversation at a time, and an in-flight turn has no deadline at all. That is
+  a semantic change from a fleet-wide message cutoff to per-conversation
+  retention, documented in `deploy/chart/values.yaml` next to `messageRetention`
+  and in `app-studio-runtime-decoupling.md`. `runAttachmentRetention` stays a
+  sweep, deliberately: an unclaimed draft has no owning Session.
+  **Lint** — `hack/tools/golangci-lint run ./...` went from 151 uncapped
+  findings to 1, with no `//nolint`: every unchecked error handled or discarded
+  with a reason, ~50 dead declarations deleted (including the whole unused
+  `prepareSnapshotFile*`/`restoreFileState` chain in `workspace/snapshot.go`
+  and three `recoverProjectAssistantStartReplay*` wrappers), the deprecated
+  `net.Error.Temporary` and `ModelContext.Tools` uses removed (state.ToolInfos
+  is the source of truth, so `refreshExecutableToolContext` stopped taking a
+  ModelContext at all), `ParamsOneOf` audit contracts marshalled from
+  `ToJSONSchema()` instead of an opaque struct that encoded as `{}`, and a dead
+  `lastSeen` fence removed from the run-sandbox watch. The one remaining
+  finding is SA1019 on `adk.State` in `api/assistant_eino_callbacks.go`: it is
+  a deprecated alias for an UNEXPORTED eino type, `compose.ProcessState`
+  requires exact type identity, and the callback is the only hook that can
+  strip attachment bytes from the graph state while leaving them in the model
+  input. The non-deprecated route is to inject attachments in a `WrapModel`
+  wrapper instead of in `BeforeModelRewriteState` — a real refactor of the
+  vision path, not a lint fix.
+- 2026-09-20: Cut D.3 (remediation §9) — the working-copy ledger is off the
+  PVC. **The type, and why it is not `RepositoryCheckout`.** The handover
+  proposed new fields on the Code provider's `RepositoryCheckout`; that kind is
+  a one-shot operation object (spec: a repositoryRef plus a ref; status: the
+  checkout's own result) with no home for "the revision this project's working
+  copy is at", and putting it there would have meant new fields on another
+  provider's CRD, a `repositorycheckouts` entry in `dependencies[].composes`
+  and a clause E, for state that provider never reads. The ledger is App
+  Studio's own state about a project App Studio owns, so it is
+  `Project.status.workspace {sourceRevision, uncommittedPaths[], pendingCommit,
+  settlement}` — clause A, no composition change, no code-provider change.
+  `uncommittedPaths` is bounded honestly rather than arbitrarily: the tree is
+  capped at 500 files, so the largest single transition is ≤500 writes + ≤500
+  deletions, `MaxItems: 1024` clears it, and each entry is capped at the 1024
+  bytes `workspace.MaxProjectPathBytes` already accepts so nothing the store
+  admits can fail to record. (The handover suggested 512; that would have
+  rejected paths the store accepts.) Overflow is an error, never a truncation:
+  a dropped path is a file that never reaches git.
+  **Mechanism.** `workspace.Ledger` is an interface; `internal/projectledger`
+  implements it over the status subresource with merge patches that carry
+  their `resourceVersion`, so every update is a compare-and-swap that retries
+  the loser instead of overwriting the winner. Which client to use is a
+  per-call question, so the ledger rides the context and is attached in exactly
+  three places: `identityFromRequest` (every handler that resolves a caller
+  gets the CALLER's, lazily — no client is built unless the ledger is touched),
+  `runProjectAssistantWorker` (a turn outlives its request), and `Reconcile`
+  (the manager's client). `NewFileStore` keeps an in-process ledger for tests
+  and local runs; `main.go` calls `RequireContextLedger()`, so in a deployment
+  a path that forgot to attach one is an error rather than a silent return to
+  pod-local authority.
+  **Two simplifications fell out.** The `ai.railgrid.ai/pending-commit`
+  annotation is gone: the pointer and the record it pointed at are one member
+  of one object now, the reconciler branch for the two disagreeing is deleted,
+  and the project identity's named `get` grant reads the same record the
+  convergence loop follows. `InitializeRepositorySource` lost its
+  `initial-repository` receipt file; the Project annotation the caller stamps
+  is the once-only record, and the reconciler clears it.
+  **One bug the move exposed and fixed**: the reconciler held `p` across ledger
+  writes and then `Update`d it, which now loses a race with its own status
+  write every time. Annotation writes are merge patches
+  (`patchProjectAnnotation`).
+  **Hydration is one `ReplaceTree`, not a `PutFile` per file** — a
+  file-at-a-time rebuild would be a control-plane write per checked-out file —
+  and it is marked `Committed`, a new option meaning "these bytes ARE the
+  repository's": the paths come back CLEAN instead of queued for a commit that
+  would push git's own content back to git.
+  **What stays pod-local**: the tree itself, plus one honest cache tag
+  (`workspace/tree_revision.go`) recording which revision THIS directory's
+  bytes were written at — the comparison that moving the revision to the
+  control plane took away, since the ledger's number is now the same
+  everywhere. Absent, behind or untagged all read as stale and rebuild.
+  **Chart**: `strategy: Recreate` and `replicaCount: 1` stay, for the shared
+  single-session Playwright Browser alone, and `values.yaml` now says that in
+  those words; the `runSandbox.mode=force` + `replicaCount > 1` `fail` stays
+  (no distributed CAS); the `ReadWriteOnce` claim stays because a project with
+  no repository yet has nothing to rebuild from, and `emptyDir: true` became a
+  supportable production choice for installations where every project has one.
+  Project affinity is kept as a cache-locality optimization and documented as
+  one: correctness no longer depends on it, but rebuilding per request under
+  round-robin would be a git checkout per request.
+  Full module build/vet/tests green (17 packages), `golangci-lint` back at the
+  single justified `adk.State` finding, `helm template` renders, codegen
+  idempotent (the same run also regenerated the Session CRD, which Cut D.2 had
+  left behind).

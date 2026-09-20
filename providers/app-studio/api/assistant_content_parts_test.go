@@ -82,7 +82,7 @@ func TestProjectAssistantAnnotationCanonicalizeAndRenderAsUntrusted(t *testing.T
 	if envelope := derived[untrustedStart:untrustedEnd]; strings.Contains(envelope, "comment") || strings.Contains(envelope, "Fix the clipped save action") {
 		t.Fatalf("user-authored annotation comment leaked into untrusted envelope: %q", envelope)
 	}
-	if strings.Index(derived, "[@annotation:annotation-1]") < 0 {
+	if !strings.Contains(derived, "[@annotation:annotation-1]") {
 		t.Fatalf("model-visible annotation is missing stable reference: %q", derived)
 	}
 

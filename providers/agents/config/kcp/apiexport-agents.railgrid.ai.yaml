@@ -20,7 +20,10 @@ metadata:
   name: agents.railgrid.ai
 spec:
   permissionClaims:
-  - resource: secrets
+  - defaultSelector:
+      matchLabels:
+        railgrid.ai/owner: agents
+    resource: secrets
     verbs:
     - get
     - list

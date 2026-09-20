@@ -27,6 +27,7 @@ import (
 
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-code/commitbundle"
 	"github.com/railgrid/provider-code/tenant"
 	"github.com/railgrid/provider-sdk/actionwire"
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -49,6 +50,10 @@ const StageSnapshot = "stage_snapshot"
 // MaxInputBytes bounds the stage_snapshot body: a 25 MiB decoded bundle plus
 // its base64 expansion and the surrounding JSON.
 const MaxInputBytes = 36 << 20
+
+// MaxCatalogInputBytes is the largest input a CatalogEntry may declare
+// (apis/providers/v1alpha1/actions.go caps limits.maxInputBytes at 1 MiB).
+const MaxCatalogInputBytes = 1 << 20
 
 // MaxOutputBytes is the declared output bound shared by every action.
 const MaxOutputBytes = 512 << 10
@@ -73,6 +78,20 @@ var served = map[string]dataplane.Limits{
 	"reply_to_review":     jsonAction(50),
 	"prepare_snapshot":    jsonAction(50),
 	"publish_snapshot":    jsonAction(50),
+	// commit takes the catalogue's whole 1 MiB input ceiling: a small
+	// generated app fits inline, and anything larger arrives as a bundleRef
+	// staged through StageCommitBundle.
+	Commit: {
+		Timeout:        actionTimeout,
+		MaxInputBytes:  MaxCatalogInputBytes,
+		MaxOutputBytes: MaxOutputBytes,
+		MaxResultItems: 50,
+	},
+	StageCommitBundle: {
+		Timeout:        actionTimeout,
+		MaxInputBytes:  MaxCommitBundleInputBytes,
+		MaxOutputBytes: MaxOutputBytes,
+	},
 	StageSnapshot: {
 		Timeout:        actionTimeout,
 		MaxInputBytes:  MaxInputBytes,
@@ -108,7 +127,12 @@ var connectionActions = map[string]dataplane.Limits{
 
 // snapshotActions share one memory admission slot: decoding, staging and
 // loading a bundle all hold it, including any git subprocess using it.
-var snapshotActions = map[string]bool{StageSnapshot: true, "prepare_snapshot": true, "publish_snapshot": true}
+var snapshotActions = map[string]bool{
+	StageSnapshot:      true,
+	StageCommitBundle:  true,
+	"prepare_snapshot": true,
+	"publish_snapshot": true,
+}
 
 // statusFor maps a typed action failure to its HTTP status. Every code here
 // is one this package produces; anything else is treated as a backend outcome
@@ -121,6 +145,8 @@ var statusFor = map[string]int{
 	"unsupported_action":           http.StatusUnprocessableEntity,
 	"invalid_snapshot":             http.StatusUnprocessableEntity,
 	"snapshot_unavailable":         http.StatusUnprocessableEntity,
+	"bundle_unavailable":           http.StatusUnprocessableEntity,
+	"commit_not_created":           http.StatusBadGateway,
 	"upstream_outcome_unconfirmed": http.StatusBadGateway,
 }
 
@@ -134,8 +160,11 @@ type Server struct {
 	// takes the resource being pinned because an action may be bound to a
 	// Repository or to a Connection, and the endpoint is found by proving the
 	// named object is readable through it.
-	Authority     func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error)
-	Backends      *backend.Registry
+	Authority func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error)
+	Backends  *backend.Registry
+	// Bundles is this provider's own source-bundle store, which the commit
+	// verbs write into. A RepositoryCommit is only a pointer at it.
+	Bundles       commitbundle.Store
 	Credentials   tenant.CredentialResolver
 	SnapshotDir   string
 	slots         chan struct{}
@@ -255,6 +284,16 @@ func wireError(code string) *actionwire.Error {
 // run is the executor dataplane.Serve calls once the gates have passed and the
 // body has been decoded to its "input" member.
 func (s *Server) run(ctx context.Context, r *http.Request, req dataplane.Request, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
+	// The commit verbs take their own input and never reach a git host: they
+	// write this provider's bundle store and a RepositoryCommit, which the
+	// commit controller applies. They therefore skip resolve() — there is no
+	// credential to load — and pin the Repository themselves (commit.go).
+	switch req.Verb {
+	case Commit:
+		return s.commit(ctx, req, visible, raw)
+	case StageCommitBundle:
+		return s.stageCommitBundle(ctx, req, visible, raw)
+	}
 	in, err := decodeInput(raw)
 	if err != nil {
 		return nil, wireError("invalid_action_input")

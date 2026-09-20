@@ -96,25 +96,6 @@ func (s *Server) projectAttachmentStore(w http.ResponseWriter) (store.Attachment
 	return nil, false
 }
 
-// bindProjectAssistantAttachment is the turn-admission adapter. The caller
-// must convert the HTTP receipt into store.AttachmentReceipt, including its
-// CreatedAt value, before invoking this method. Binding verifies every
-// immutable field under the authenticated actor and atomically promotes a
-// draft to retained storage; repeated identical binds are safe.
-func (s *Server) bindProjectAssistantAttachment(ctx context.Context, id identity, project *aiv1alpha1.Project, receipt store.AttachmentReceipt) (store.Attachment, error) {
-	if s == nil || project == nil {
-		return store.Attachment{}, store.ErrAttachmentNotFound
-	}
-	attachmentStore := s.attachments
-	if attachmentStore == nil && s.store != nil {
-		attachmentStore, _ = s.store.(store.AttachmentStore)
-	}
-	if attachmentStore == nil {
-		return store.Attachment{}, fmt.Errorf("project attachment store is not configured")
-	}
-	return attachmentStore.BindAttachment(ctx, projectMessageScope(id.orgUUID, id.workspaceUUID, project), receipt, id.user)
-}
-
 // bindProjectAssistantContentPartAttachments is the durable admission boundary
 // for attachment-bearing turns. It verifies the complete set before promoting
 // any draft, so a stale or forged receipt cannot leave a partially-bound turn.
@@ -268,7 +249,9 @@ func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http
 		return
 	}
 	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+		// Best effort: the temp files are removed on a timer by the OS anyway,
+		// and a failure here must not change the response.
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
 	}
 	attachmentID, err := parseClientAttachmentID(r)
 	if err != nil {
@@ -280,7 +263,9 @@ func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "multipart field file is required")
 		return
 	}
-	defer file.Close()
+	// Read-only multipart part: a close error carries no information the
+	// handler can act on.
+	defer func() { _ = file.Close() }()
 	data, err := io.ReadAll(io.LimitReader(file, store.AttachmentMaxBytes+1))
 	if err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "read attachment: "+err.Error())

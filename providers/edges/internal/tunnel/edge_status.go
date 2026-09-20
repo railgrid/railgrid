@@ -34,7 +34,13 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
+	"github.com/railgrid/provider-sdk/claimscope"
 )
+
+// edgesProviderName is this provider's CatalogEntry name, and therefore the
+// value of the railgrid.ai/owner label on every Secret it owns. It must match
+// the permission-claim selector in manifest.yaml.
+const edgesProviderName = "edges"
 
 // markEdgeConnected records, on tunnel open, the observations only the
 // agent-ingress handler has and that must be durable at once: it clears the
@@ -273,7 +279,15 @@ func (p *Server) storeSSHCredentials(ctx context.Context, cfg *rest.Config, clus
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
 			Namespace: ns,
-			Labels:    map[string]string{"edges.railgrid.ai/edge": edgeName},
+			// The owner label is what keeps this Secret inside this
+			// provider's `secrets` permission claim, which is scoped to it
+			// (manifest.yaml). Without it the provider writes a credential
+			// it can no longer read back: kcp's APIExport virtual workspace
+			// filters LIST/WATCH by the claim and answers GET with a 404.
+			Labels: claimscope.WithOwner(
+				map[string]string{"edges.railgrid.ai/edge": edgeName},
+				edgesProviderName,
+			),
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: secretData,

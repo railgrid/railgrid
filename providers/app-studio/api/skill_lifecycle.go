@@ -728,15 +728,6 @@ func (s *Server) projectSkillMetadataChangeForScope(ctx context.Context, scope w
 	return change, nil
 }
 
-func (s *Server) updateProjectSkillActivation(ctx context.Context, scope workspace.Scope, packageName string, activation appskills.Activation, remove ...bool) error {
-	metadataChange, err := s.projectSkillMetadataChange(ctx, scope, packageName, activation, len(remove) > 0 && remove[0])
-	if err != nil {
-		return err
-	}
-	_, err = s.workspaces.ApplyManagedTransaction(ctx, scope, []workspace.ManagedFileChange{metadataChange})
-	return err
-}
-
 func (s *Server) updateProjectSkillActivationForScope(ctx context.Context, scope workspace.Scope, skillScope appskills.Scope, packageName string, activation appskills.Activation) error {
 	metadataChange, err := s.projectSkillMetadataChangeForScope(ctx, scope, skillScope, packageName, activation, false)
 	if err != nil {

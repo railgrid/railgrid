@@ -18,8 +18,12 @@
 // their view the moment they save it rather than the next time they run it.
 //
 // It runs on the APIExport virtual workspace's multicluster manager, one
-// reconcile per (tenant workspace, view), and is gated behind the provider's
-// controller lease like every other write loop.
+// reconcile per (tenant workspace, view). It is one of the two loops kuery
+// still keeps behind the provider's controller lease: every replica would
+// compute the same verdict, so running it everywhere would put N writers on
+// one tenant object's status and N caches on every tenant's SavedViews to no
+// purpose. Edge engagement, which IS divisible, is sharded instead and runs
+// on every replica (engagement/).
 package savedview
 
 import (

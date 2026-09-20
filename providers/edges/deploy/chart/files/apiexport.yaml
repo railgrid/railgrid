@@ -26,7 +26,10 @@ spec:
     - list
     - watch
     - create
-  - resource: secrets
+  - defaultSelector:
+      matchLabels:
+        railgrid.ai/owner: edges
+    resource: secrets
     verbs:
     - get
     - list

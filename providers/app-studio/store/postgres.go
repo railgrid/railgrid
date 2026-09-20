@@ -64,6 +64,19 @@ type PostgresStore struct {
 	db              *sql.DB
 	attachmentQuota AttachmentQuota
 	quotaMu         sync.RWMutex
+
+	// dsn is kept because LISTEN needs a dedicated connection of its own: a
+	// pooled *sql.DB connection can be handed back and reused between
+	// notifications, which silently drops the subscription.
+	dsn string
+	// threadEvents fans Postgres NOTIFY payloads out to the streams this
+	// process is serving. listenOnce starts the single listener on the first
+	// subscription so a provider that never streams pays nothing for it.
+	threadEvents threadEventBroadcaster
+	listenOnce   sync.Once
+	listenErr    error
+	listener     *pq.Listener
+	listenMu     sync.Mutex
 }
 
 // OpenPostgres opens a Postgres-backed store, initializes the schema, and
@@ -81,7 +94,7 @@ func OpenPostgres(ctx context.Context, dsn string) (*PostgresStore, error) {
 	db.SetMaxIdleConns(4)
 	db.SetMaxOpenConns(8)
 
-	store := &PostgresStore{db: db, attachmentQuota: DefaultAttachmentQuota()}
+	store := &PostgresStore{db: db, dsn: dsn, attachmentQuota: DefaultAttachmentQuota()}
 	if err := store.EnsureSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -94,7 +107,17 @@ func OpenPostgres(ctx context.Context, dsn string) (*PostgresStore, error) {
 }
 
 func (s *PostgresStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
+		return nil
+	}
+	s.listenMu.Lock()
+	listener := s.listener
+	s.listener = nil
+	s.listenMu.Unlock()
+	if listener != nil {
+		_ = listener.Close()
+	}
+	if s.db == nil {
 		return nil
 	}
 	return s.db.Close()
@@ -432,7 +455,9 @@ func (s *PostgresStore) ensureAssistantLookupIndexes(ctx context.Context) error 
 	if err != nil {
 		return fmt.Errorf("acquire assistant lookup index connection: %w", err)
 	}
-	defer conn.Close()
+	// Returning the pooled connection cannot fail in a way this migration can
+	// act on; the index statements above already reported their own errors.
+	defer func() { _ = conn.Close() }()
 	lockRetry := time.NewTicker(100 * time.Millisecond)
 	defer lockRetry.Stop()
 	for {
@@ -1393,7 +1418,9 @@ func (s *PostgresStore) ListAssistantRunEvents(ctx context.Context, scope Scope,
 	if err != nil {
 		return nil, fmt.Errorf("list assistant run events: %w", err)
 	}
-	defer rows.Close()
+	// Discarded: rows.Err() below reports any iteration failure, and a
+	// second report from Close would only duplicate it.
+	defer func() { _ = rows.Close() }()
 	events := make([]AssistantRunEvent, 0)
 	for rows.Next() {
 		event, err := scanAssistantRunEvent(rows, scope)
@@ -1760,7 +1787,9 @@ func (s *PostgresStore) ListAttachments(ctx context.Context, scope Scope) ([]Att
 	if err != nil {
 		return nil, fmt.Errorf("list attachments: %w", err)
 	}
-	defer rows.Close()
+	// Discarded: rows.Err() below reports any iteration failure, and a
+	// second report from Close would only duplicate it.
+	defer func() { _ = rows.Close() }()
 	attachments := make([]Attachment, 0)
 	for rows.Next() {
 		var attachment Attachment

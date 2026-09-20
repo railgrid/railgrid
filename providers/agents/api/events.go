@@ -102,7 +102,10 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	ch, unsubscribe := s.events.subscribe(id.scope(""))
 	defer unsubscribe()
 
-	fmt.Fprint(w, ": connected\n\n")
+	// Write errors on an SSE stream are not actionable: the only cause is a
+	// client that has gone away, and that is already the loop's exit
+	// condition via r.Context().Done(). Discard them explicitly.
+	_, _ = fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
 
 	keepalive := time.NewTicker(15 * time.Second)
@@ -113,7 +116,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-keepalive.C:
-			fmt.Fprint(w, ": keepalive\n\n")
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		case ev := <-ch:
 			if !eventNamesAgent(ev, agentName) {
@@ -121,7 +124,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			seq++
 			b, _ := json.Marshal(ev.Data)
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, ev.Type, b)
+			_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, ev.Type, b)
 			flusher.Flush()
 		}
 	}

@@ -62,7 +62,9 @@ API **without any admin/root client**. It uses one of two scoped mechanisms:
 - **(2a) Controller / sync** — a non-privileged ServiceAccount minted in the
   provider's own workspace (`root:railgrid:providers:{name}`), driving a
   multicluster manager off the provider's **APIExportEndpointSlice** virtual
-  workspace, bounded by the APIExport's `tenantScoped` permission claims.
+  workspace, bounded by the APIExport's `tenantScoped` permission claims —
+  and, for a core-group claim on `secrets`, by that claim's **label selector**
+  (see "Label-scoped claims" below).
 - **(2b) Per-request** — the provider drops its own credential and acts **as
   the caller**, using the bearer token forwarded by the hub, scoped to the
   workspace whose kcp logical-cluster ID arrives in `X-Railgrid-Tenant` /
@@ -128,6 +130,18 @@ Rules:
    authorization from them. Where the path carries the cluster ID, **the path
    wins and must equal the header** — a request whose header disagrees is
    refused before any gate runs.
+
+   Which cluster the hub injects therefore follows the path. On a route that
+   names one — `/{root}/clusters/{id}/…`, the grammar of contract 4 — the hub
+   injects **that** ID, after authorizing the caller for it with the same
+   membership check the kcp proxy applies to `/clusters/{id}`; a caller who is
+   not a member is refused with **403 at the hub**, before the provider is
+   dialled. An `X-Railgrid-Org` / `X-Railgrid-Workspace` selection (the
+   portal's sidebar) **loses to the path** on such a route: it steers the
+   default, and the default is not what is being addressed. Every other route
+   — MCP, OAuth callbacks, webhooks, `/healthz` — names no cluster and keeps
+   the caller's resolved workspace, selection headers included. An anonymous
+   request is unchanged: no identity headers, no hub-side refusal.
 3. **Two gates, as the caller, on every verb.** Gate 1: a **real GET** of the
    addressed resource with the caller's token, which proves visibility
    against the live object *and* yields the object, so the handler can pin
@@ -187,7 +201,14 @@ than keeping a stale, wider verb surface.
 Actions (`spec.actions`) and data-plane verbs (`spec.dataPlane.verbs`) are two
 declarations of the same RBAC coordinate. An action is versioned, schema'd and
 request/response; a data-plane verb is unversioned and streaming or proxying.
-Declare each capability as exactly one of them.
+Declare each capability as exactly one of them. A verb served on the *actions*
+grammar whose body is too large to describe under `limits.maxInputBytes` —
+an uncatalogued large-upload verb, like the code provider's
+`repositories/stage_snapshot` and `repositories/stage_commit_bundle` — is
+still declared, as a data-plane verb, because clause C mints nothing for a
+coordinate that appears in neither list (see
+[provider-actions.md](./provider-actions.md) §"Uncatalogued large-upload
+verbs").
 
 The shared server-kit that parses these paths, runs the two gates, enforces
 declared limits and writes the envelope is `provider-sdk/dataplane`, landing
@@ -247,7 +268,7 @@ Two proxies back every provider, defined in
 | Proxy | Path | Token handling |
 |-------|------|----------------|
 | **UI proxy** (`NewUIProxy`, `proxy.go:52`) | `/ui/providers/{name}/*` | Static assets only. Injects `X-Railgrid-Base-Path`. **No token forwarded.** First-party providers are served from an embedded FS (`LocalUIAssets`). |
-| **Backend proxy** (`NewBackendProxy`, `proxy.go:90`) | `/services/providers/{name}/*` | **Forwards the caller's `Authorization` header as-is**, and additionally injects `X-Railgrid-User` plus the tenant workspace's kcp logical-cluster ID as both `X-Railgrid-Tenant` and `X-Railgrid-Cluster`, resolved from the token. Inbound `X-Railgrid-*` headers are **always stripped** first (anti-spoofing, `proxy.go:114`). |
+| **Backend proxy** (`NewBackendProxy`, `proxy.go:90`) | `/services/providers/{name}/*` | **Forwards the caller's `Authorization` header as-is**, and additionally injects `X-Railgrid-User` plus a kcp logical-cluster ID as both `X-Railgrid-Tenant` and `X-Railgrid-Cluster`. On a data-plane route (`/{root}/clusters/{id}/…`) that ID is the one **in the path**, injected only after the caller is authorized for it (403 otherwise); on any other route it is the workspace resolved from the token. Inbound `X-Railgrid-*` headers are **always stripped** first (anti-spoofing, `proxy.go:114`). |
 
 The identity injected by the backend proxy is resolved by the
 **TenantResolver** ([`pkg/hub/provider_tenant_resolver.go`](../pkg/hub/provider_tenant_resolver.go),
@@ -422,6 +443,97 @@ it), authenticate as the **caller**, and let the binding decide which
 provider's backend answers. The shape that doesn't: a kubeconfig / DSN / URL
 in provider A's config that points straight at provider B's cluster, DB, or
 internal Service.
+
+---
+
+## Label-scoped claims — a claim is per resource, not per name
+
+A kcp permission claim names a **group/resource**. It has no notion of a name
+or a prefix. So a provider that needs to write one Secret used to be granted
+every Secret, in every workspace that enabled it — the tenant's own cloud
+credentials, and every other provider's backend credential alongside them.
+That is mechanism M3 in
+[cross-provider-simplification.md](./cross-provider-simplification.md), the
+side-door behind every implicit credential hand-off the audit found, and the
+thing that made it possible for one provider to read another's git PAT without
+the owning provider ever being consulted.
+
+The fix is the selector kcp added to permission claims. **Every Secret a
+provider owns carries `railgrid.ai/owner: <provider>`, and the claim is scoped
+to that label.**
+
+```yaml
+# manifest.yaml — the one place a claim is written
+permissionClaims:
+  - resource: secrets
+    verbs: [get, list, watch, create, update, delete]
+    tenantScoped: true
+    selector:
+      matchLabels:
+        railgrid.ai/owner: agents
+```
+
+`provider-sdk/cmd/apiexportgen` renders that as the kcp APIExport claim's
+`defaultSelector`; the hub writes the same `matchLabels` onto the accepted
+claim's `selector` in each tenant's `APIBinding`
+([`pkg/hub/kcp/bootstrap.go`](../pkg/hub/kcp/bootstrap.go), `claimSelector`).
+The label key and its helpers live in
+[`provider-sdk/claimscope`](../provider-sdk/claimscope/claimscope.go).
+
+**What kcp actually enforces**, in both directions of the APIExport virtual
+workspace:
+
+| Direction | Behaviour |
+|---|---|
+| Labelling | kcp's permission-claim labeler stamps the internal `claimed.internal.apis.kcp.io/<export>` marker on an object **only if the accepted claim's selector matches its labels** (`pkg/permissionclaim`, `LabelsFor`). The selector is not part of the claim's hash, so narrowing a claim never invalidates the marker on objects that still match. |
+| Read | The virtual workspace ANDs that marker into every LIST/WATCH/DELETECOLLECTION, and a GET on an object without it returns **404, not 403** (`virtual-workspace-framework`, `forwardingregistry.WithLabelSelector`). An unlabelled Secret does not exist as far as the provider is concerned. |
+| Write | Virtual-workspace admission **adds** the claim's `matchLabels` to an object the provider creates or updates, refuses the write if a key is already present with a different value ("protected label … must have value …"), and refuses a CREATE/UPDATE/DELETE whose object does not match the selector (`pkg/virtual/apiexport/admission`). |
+
+Two consequences worth stating plainly:
+
+- **A write that goes through the export does not need the label set in Go** —
+  kcp adds it. A write that goes anywhere else does: the portal writing as the
+  user, the provider's own workspace-admin client, an edge agent with its own
+  credential. Those are stamped explicitly, because a Secret written without
+  the label saves without complaint and is then invisible to the provider
+  forever. Every such writer in this tree sets it.
+- **`matchExpressions` is not offered.** kcp deliberately does not synthesize
+  labels for one, so a provider declaring a `matchExpressions` selector could
+  not create the objects it claims. `matchLabels` only.
+
+**Tenant-written Secrets the provider must READ** are not solved by the claim.
+Three routes, in order of preference:
+
+1. **Read as the caller** through a data-plane verb — the provider drops its
+   own credential and kcp's ordinary RBAC decides. The agents provider's
+   `model-test` and `model-discover` verbs do this, as does infrastructure's
+   `cloud-credentials` read; neither needs a claim at all.
+2. **Have the tenant label it.** Where there is no caller to borrow — an
+   unattended agent run, a reconciler acting on a `spec.…SecretRef` — the
+   tenant (or the provider's own portal) writes `railgrid.ai/owner: <provider>`
+   on the Secret. The label *is* the consent, and it is per Secret rather than
+   per workspace.
+3. **Not the hub identity service.** It never mints a core-group rule for
+   anyone (`pkg/hub/identity/policy.go`, `core_group_forbidden`), so there is
+   no scoped-identity path to a Secret.
+
+**Enforcement.** `hack/verify-provider-contract.mjs` (`claim-selector`)
+refuses a core-group `secrets` claim with no `selector.matchLabels` at review
+time, and `provider-sdk/install.ValidateClaimScopes` refuses the same export at
+provider init. `claims-parity` compares the scope on both copies, so a manifest
+that narrows a claim and an APIExport that does not is a violation, not a
+silent blanket grant.
+
+**Upgrades.** kcp makes an accepted claim's selector **immutable**, and the hub
+only ever creates a tenant `APIBinding` (it no-ops on AlreadyExists). A
+workspace that enabled the provider before its claim was narrowed therefore
+keeps its wider `matchAll` binding until the provider is disabled and
+re-enabled there; kcp reports the gap as `PermissionClaimsValid=False` /
+`PermissionClaimsMismatch` on the binding, which does not stop it being
+`Bound`. Re-accept
+(`POST /api/admin/providers/{name}/claims/reaccept`) does not fix it either,
+for the same reason: it preserves the selector on claims the binding already
+carries.
 
 ---
 

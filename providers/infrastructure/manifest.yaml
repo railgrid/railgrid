@@ -87,14 +87,40 @@ spec:
     healthPath: "/readyz"
   apiExport:
     name: "infrastructure.providers.railgrid.ai"
-    # secrets get/list/watch with tenantScoped: true is what lets the
-    # provider read the per-tenant `cloud-credentials` Secret when
-    # brokering a template (phase 3). tenantScoped: true triggers
-    # auto-accept per docs/providers.md decision #9.
+    # Secrets, read-only, and ONLY the ones labelled
+    # railgrid.ai/owner: infrastructure. This provider writes no Secret in a
+    # tenant workspace at all — every Secret it creates lives in its own
+    # runtime cluster — so here the owner label does not mean "written by
+    # infrastructure", it means "entrusted TO infrastructure": the tenant's
+    # (or another provider's) explicit hand-over of one named credential,
+    # which is exactly the consent a blanket claim skipped
+    # (docs/cross-provider-simplification.md §2.1 finding 1, X-4).
+    #
+    # Two Secrets reach this claim, both named by a typed field on the
+    # Instance and both read by the instance controller
+    # (controller/instance/bridge.go):
+    #
+    #   spec.imagePullSecretRef   a dockerconfigjson pull credential. App
+    #     Studio mints it on promote, AS THE CALLER, and labels it for this
+    #     provider; naming it on the Instance and labelling it are the same
+    #     act of hand-over.
+    #   spec.oidcBridgeSecretRef  a BYO OIDC client secret the tenant writes
+    #     by hand. The tenant labels it; an unlabelled one comes back as
+    #     SecretsBridged=False/SecretRefNotFound rather than being read.
+    #
+    # The `cloud-credentials` Secret is NOT in this claim and never was in
+    # practice: tenant/credentials.go reads it as the CALLER through the hub
+    # kcp proxy, so kcp's own RBAC decides, and no claim is involved.
+    #
+    # tenantScoped: true triggers auto-accept per docs/providers.md
+    # decision #9.
     permissionClaims:
       - resource: secrets
         verbs: [get, list, watch]
         tenantScoped: true
+        selector:
+          matchLabels:
+            railgrid.ai/owner: infrastructure
     # No static schemas. The provider's own `init` installs the Template and
     # Instance schemas and upserts the APIExport. The Template controller does
     # NOT touch the APIExport: tenants author the single flattened Instance

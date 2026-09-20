@@ -1,12 +1,17 @@
 # Provider authoring: as smooth as `helm install`
 
-Status: **NOT IMPLEMENTED.** Proposal written 12 September 2026; no phase has
-started. Nothing in this document describes shipped behaviour: there is no
-`railgrid provider` command group, no `provider-sdk/runtime` package, no
-`railgrid-provider` library chart, and the CatalogEntry still exists in three
-copies. Sections 2.1 to 2.3 describe the current state and are accurate as of
-the date above; everything from section 3 on is a plan. When a phase lands,
-update this line and move the document out of `docs/roadmap/`.
+Status: **PARTIALLY IMPLEMENTED.** Proposal written 12 September 2026;
+updated 20 September 2026. Two of the seven pain points in §2.2 — **P1**
+(three copies of one object) and **P4** (the runtime is boilerplate) — were
+substantially solved on the `provider.contracts` branch by
+`provider-sdk/cmd/apiexportgen`, `provider-sdk/serve` and
+`hack/verify-provider-contract.mjs`; both are rewritten below as *state after
+2026-09-19* rather than as open pain. **P2, P3, P5, P6 and P7 are untouched**:
+there is still no `railgrid provider` command group, no `railgrid-provider`
+library chart, and no laptop story. §3.1 and §3.2 are rewritten to describe
+what is left *on top of* the shipped pieces; §3.3 to §3.6 are unchanged plans.
+When the rest lands, update this line and move the document out of
+`docs/roadmap/`.
 
 Companion to [providers.md](../providers.md), [byo-providers.md](../byo-providers.md)
 and [provider-publishing.md](../provider-publishing.md).
@@ -68,10 +73,35 @@ toil with no design content.
 
 ### 2.2 The pain, grouped
 
-**P1. Three copies of one object.** The CatalogEntry lives in `manifest.yaml`,
-in `deploy/chart/templates/catalogentry.yaml`, and its claims live a third time
-in `init_cmd.go`. `AGENTS.md:173-203` documents the drift because it has already
-bitten in production (missing sidebar items, stale claim sets).
+**P1. Three copies of one object — largely solved (state after 2026-09-19).**
+It *was* three: the CatalogEntry in `manifest.yaml`, again in
+`deploy/chart/templates/catalogentry.yaml`, and its claims a third time as a
+hand-written `sdkinstall.PermissionClaim` list in each `init_cmd.go`.
+`AGENTS.md:173-203` documented the drift because it had already bitten in
+production (missing sidebar items, stale claim sets).
+
+Two of the three copies are gone as *hand-written* sources:
+
+- **The claim list in `init_cmd.go` is deleted.** A provider now ships exactly
+  two declarative objects, and `init` applies them verbatim. The APIExport is
+  **generated**: `provider-sdk/cmd/apiexportgen` runs after kcp's `apigen` in
+  every `codegen-<name>-provider` target, reads `manifest.yaml`, renames the
+  export to `spec.apiExport.name`, and stamps `spec.permissionClaims` from the
+  manifest. `provider-sdk/install.Bootstrap` reads that file and applies it as
+  generated. The manifest is now the only place a claim is written by hand.
+- **The chart copy is an output, checked.**
+  `hack/verify-provider-contract.mjs` (in `make verify`) asserts
+  `manifest-chart-parity` (manifest `spec` == the CatalogEntry the chart
+  renders, modulo per-release coordinates), `claims-parity` (manifest claims ==
+  the generated APIExport's) and `export-copy`
+  (`deploy/chart/files/apiexport.yaml` byte-identical to the generated file).
+  It runs across all seven in-tree providers with an empty exception registry,
+  so drift is now a build failure rather than a review miss.
+
+**What is left.** The chart still *renders* its own `catalogentry.yaml` — it is
+verified against the manifest rather than derived from it, so the two files are
+still edited in lockstep by hand. §3.1 is now only about closing that last gap:
+embedding the manifest and deleting the chart template.
 
 **P2. Registration is not one action.** Platform onboarding is two kcp objects
 applied with an admin kubeconfig, then a separate kubeconfig download
@@ -87,10 +117,29 @@ subcommand — use curl" for rotation.
 hub, `railgrid install` installs an agent, `railgrid dev init` builds a kind cluster.
 The root command tree (`pkg/cli/cmd/root.go:89-131`) has no provider group.
 
-**P4. The runtime is boilerplate.** Every provider `main.go` re-implements the
-same init/serve switch, healthz, log middleware, portal static serving with
-index fallback, heartbeat wiring and graceful shutdown. Quickstart is 258 lines
-of which about 30 are the provider's own logic.
+**P4. The runtime is boilerplate — largely solved (state after 2026-09-19).**
+Every provider `main.go` used to re-implement the same healthz, log middleware,
+portal static serving with index fallback, and route wiring; quickstart was 258
+lines of which about 30 were the provider's own logic. The copies had drifted
+badly enough to be a security problem, not just duplication: one provider
+mounted its data plane on an `http.ServeMux` (which rewrites the `..` and `//`
+the grammar exists to refuse), another grew an `/api/*` facade for its portal.
+
+`provider-sdk/serve` ended that. `serve.New(Options{…})` returns the provider's
+complete `http.Handler` with the fixed, closed layout — `/healthz`, `/readyz`,
+`/mcp` + `/mcp/sse`, `/dataplane/`, `/actions/`, `/workload-identities/*`,
+`/oauth/`, `/agent/`, `/webhooks/`, and the portal file server with SPA index
+fallback — plus request logging, and a `ServeHTTP` that matches the grammar
+prefixes on the **raw** path before any mux can clean it. It *refuses to
+register* anything outside that list: `New` returns an error for an `/api/*`
+route, a missing `Readiness`, a duplicate mount, or a hub-only path the hub
+proxy would not deny to callers. All seven in-tree providers serve through it,
+and `dataplane/conformance.Test` runs against the real server.
+
+**What is left.** `serve` owns the *server*; it does not own the *process*.
+The `init`/`serve` subcommand switch, heartbeat wiring, leader election and
+graceful shutdown are still assembled by hand in each `main.go`. That
+remainder is what §3.2 is now about.
 
 **P5. Local dev needs the monorepo.** Running one provider needs `make
 run-hub-embedded-static`, `make install-provider-X`, `make init-provider-X`,
@@ -151,33 +200,55 @@ is a target of every one of them, not a special case at the end.
 
 ### 3.1 One manifest, embedded in the binary
 
-`manifest.yaml` becomes the single CatalogEntry. It is `//go:embed`-ed into the
-provider binary, and `init` applies it from there. The chart stops rendering
-its own copy.
+**Already shipped** (see P1 above): the generated APIExport, claims read from
+`manifest.yaml` by `apiexportgen`, the deleted `sdkinstall.PermissionClaim`
+lists, and `hack/verify-provider-contract.mjs` holding manifest, chart and
+generated export in parity. What remains is the *last* copy — the chart's
+hand-written `catalogentry.yaml`, which today is verified against the manifest
+instead of derived from it.
+
+Close it by making the manifest the only source the chart cannot restate:
+`manifest.yaml` is `//go:embed`-ed into the provider binary and `init` applies
+it from there.
 
 - The chart passes only what it knows and the manifest cannot: the in-cluster
   URLs and the version. Two env vars on the init container, `RAILGRID_UI_URL` and
   `RAILGRID_BACKEND_URL`, plus `RAILGRID_PROVIDER_VERSION` which already exists.
   `init` patches `spec.ui.url`, `spec.backend.url`, `spec.version` and
-  `spec.selfHosting.chart.version` before applying.
-- Claims come from the manifest. `sdkinstall.Bootstrap` grows a
-  `ClaimsFromCatalogEntry` mode that maps `ProviderPermissionClaim` to
-  `PermissionClaim`. Identity hashes for first-party claim groups, which the
+  `spec.selfHosting.chart.version` before applying. These are precisely the
+  fields `manifest-chart-parity` already has to skip because their chart value
+  is a Helm expression — so the split is the one the verifier discovered
+  empirically.
+- Claims need no new plumbing: `apiexportgen` already stamps them onto the
+  generated export, and `install.Bootstrap` already applies that file as
+  generated. Identity hashes for first-party claim groups, which the
   CatalogEntry type deliberately does not carry, come from env
   (`RAILGRID_CLAIM_IDENTITY_HASH_<GROUP>`), which the chart sets from values
   exactly as `selfHosting.requiredValues[].identityFor` already describes.
+- Infrastructure has already proved the pattern in the other direction: its
+  chart renders its CatalogEntry from `deploy/chart/files/manifest.yaml`, a
+  copy of `manifest.yaml` that the verifier holds identical.
 - GitOps users who manage the CatalogEntry separately keep
   `catalogEntry.enabled=false`; `RAILGRID_CATALOGENTRY_FILE` still overrides the
   embedded copy.
 
-Result: P1 disappears. `deploy/chart/templates/catalogentry.yaml` is deleted,
-`init_cmd.go` no longer lists claims, and `AGENTS.md:173-203` shrinks to one
-sentence.
+Result: the last copy disappears. `deploy/chart/templates/catalogentry.yaml`
+is deleted, `manifest-chart-parity` becomes unnecessary (there is nothing to
+compare), and `AGENTS.md:173-203` shrinks to one sentence.
 
-### 3.2 `provider-sdk/runtime`: the provider entrypoint
+### 3.2 `provider-sdk/runtime`: the provider *process*
 
-A new SDK package owns everything in `main.go` that is not the provider's own
-logic:
+**Already shipped** (see P4 above): `provider-sdk/serve` owns the server — the
+closed route layout, the raw-path dispatch the grammar depends on, the portal
+file server with index fallback, request logging, and the refusal to register
+anything the contract does not have. Every in-tree provider serves through it.
+
+What `serve` does **not** own is the process around the handler: the
+`init`/`serve` subcommand switch, heartbeat wiring, leader election, the
+`vwhealth` readiness that `serve.Options.Readiness` is handed, and graceful
+shutdown. Those are still hand-assembled in every `main.go`, and that is the
+remaining duplication `provider-sdk/runtime` removes. It composes `serve`
+rather than replacing it:
 
 ```go
 //go:embed manifest.yaml
@@ -191,8 +262,10 @@ func main() {
         Manifest: manifest,          // name, version, export, claims all come from here
         Portal:   portal,            // optional; nil for a UI-less provider
         Schemas:  schemas,           // optional embed.FS of APIResourceSchemas
-        Routes: func(mux *http.ServeMux, rt runtime.Context) {
-            mux.HandleFunc("/api/hello", hello)
+        Serve: func(rt runtime.Context) serve.Options {
+            // the provider fills in only its own handlers; the layout,
+            // /healthz, /readyz and the portal come from serve.New
+            return serve.Options{DataPlane: dp(rt), MCP: mcp(rt)}
         },
         // escape hatches for the big providers
         BeforeInit: nil, AfterInit: nil, Subcommands: nil,
@@ -200,14 +273,18 @@ func main() {
 }
 ```
 
-`runtime.Main` provides: `init` and `serve` subcommands, `/healthz`, structured
-request logging, portal static serving with index fallback and SRI-stable
-`main.js`, heartbeat via `hubclient` (skipped automatically when the kubeconfig
-path is under `:tenants:`, so a BYO copy never beats the platform endpoint),
-graceful shutdown, and a `tenantaccess` dynamic-client factory on
-`runtime.Context`. The generated APIExport and its schemas embed into the binary
-too, so the Dockerfile stops copying `deploy/chart/files` and `RAILGRID_KCP_DIR`
-becomes an override.
+`runtime.Main` provides what is left: the `init` and `serve` subcommands,
+`apiexportprovider` + `leaderelection` wiring, a `vwhealth` readiness passed
+straight into `serve.Options.Readiness`, heartbeat via `hubclient` with
+`CanSend` bound to that same readiness (so a provider cannot beat while its
+watches are dead) and skipped automatically when the kubeconfig path is under
+`:tenants:` so a BYO copy never beats the platform endpoint, graceful
+shutdown, and a `tenantaccess` dynamic-client factory on `runtime.Context`.
+The route layout itself stays in `serve`, which stays usable on its own — a
+provider that wants only the server keeps calling `serve.New` directly, as
+they all do today. The generated APIExport and its schemas embed into the
+binary too, so the Dockerfile stops copying `deploy/chart/files` and
+`RAILGRID_KCP_DIR` becomes an override.
 
 Quickstart's `main.go` drops to roughly 40 lines and `init_cmd.go` is deleted.
 The infrastructure provider's 279-line init keeps working via the hooks; nothing

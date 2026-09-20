@@ -29,6 +29,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -100,12 +101,20 @@ type controllerDeps struct {
 	Owns        func(workspace.Scope) bool
 	OnCommitted func(context.Context, workspace.Scope, project.CommitResult)
 	Store       store.Store
-	HubBase     string
-	HubInsecure bool
+	// StopAssistant interrupts an assistant run for a project being deleted.
+	// The Project finalizer calls it before purging anything the turn might
+	// still be writing to.
+	StopAssistant func(context.Context, workspace.Scope) error
+	HubBase       string
+	HubInsecure   bool
 	// SessionSignals / ProjectSignals wake the Session and Project
 	// reconcilers on assistant and workspace transitions (nil: resync only).
 	SessionSignals *reconcilesignal.Bus
 	ProjectSignals *reconcilesignal.Bus
+	// SessionRetention is how long a conversation survives its last activity
+	// before the Session reconciler deletes it (and its finalizer purges the
+	// store). Zero keeps conversations indefinitely.
+	SessionRetention time.Duration
 }
 
 // dependencyWatches builds the per-workspace watch hub the Project and Studio
@@ -236,21 +245,23 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 	identities := scopedIdentities(deps)
 	watches := dependencyWatches(deps)
 	if err := (&project.Reconciler{
-		Actions:     deps.Actions,
-		Workspace:   deps.Workspace,
-		Busy:        deps.Busy,
-		Owns:        deps.Owns,
-		OnCommitted: deps.OnCommitted,
-		Attachments: attachments,
-		HubBase:     deps.HubBase,
-		HubInsecure: deps.HubInsecure,
-		Watches:     watches,
-		Signals:     deps.ProjectSignals,
-		Identities:  identities,
+		Actions:       deps.Actions,
+		Workspace:     deps.Workspace,
+		Busy:          deps.Busy,
+		Owns:          deps.Owns,
+		OnCommitted:   deps.OnCommitted,
+		Attachments:   attachments,
+		Store:         deps.Store,
+		StopAssistant: deps.StopAssistant,
+		HubBase:       deps.HubBase,
+		HubInsecure:   deps.HubInsecure,
+		Watches:       watches,
+		Signals:       deps.ProjectSignals,
+		Identities:    identities,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("project controller: %w", err)
 	}
-	if err := (&session.Reconciler{Store: deps.Store, Signals: deps.SessionSignals}).SetupWithManager(mgr); err != nil {
+	if err := (&session.Reconciler{Store: deps.Store, Signals: deps.SessionSignals, Retention: deps.SessionRetention}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("session controller: %w", err)
 	}
 	if err := (&studio.Reconciler{

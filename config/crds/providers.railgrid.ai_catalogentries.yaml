@@ -290,6 +290,38 @@ spec:
                           description: Resource is the resource name (plural).
                           minLength: 1
                           type: string
+                        selector:
+                          description: |-
+                            Selector narrows the claim from "every object of this resource in the
+                            tenant's workspace" to "the objects carrying these labels". It is the
+                            difference between a provider that can read every Secret a tenant holds
+                            and one that can only reach the Secrets it owns
+                            (docs/cross-provider-simplification.md X-4).
+
+                            kcp enforces it on both sides of the APIExport virtual workspace:
+                            the permission-claim labeler only stamps the internal
+                            `claimed.internal.apis.kcp.io/<export>` label on objects the selector
+                            matches, and the virtual workspace filters LIST/WATCH and 404s GET on
+                            anything without that label. Writes through the virtual workspace are
+                            mutated to carry the matchLabels (and refused if they carry a
+                            conflicting value), so a provider cannot create an object outside its
+                            own selector.
+
+                            A claim on the CORE group's `secrets` MUST carry one; see
+                            hack/verify-provider-contract.mjs (`claim-selector`).
+                          properties:
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                MatchLabels is the label set a claimed object must carry, ANDed.
+                                The conventional key is `railgrid.ai/owner`, whose value is the
+                                provider's own name.
+                              minProperties: 1
+                              type: object
+                          required:
+                          - matchLabels
+                          type: object
                         tenantScoped:
                           description: |-
                             TenantScoped declares the claim is bounded to the binding tenant's own
@@ -598,17 +630,6 @@ spec:
                   catalog.
                 maxLength: 128
                 type: string
-              edgeProxyAccess:
-                description: |-
-                  EdgeProxyAccess requests that, when a tenant enables this provider,
-                  the hub grants the provider's ServiceAccount the "proxy" verb on
-                  edges.railgrid.ai in the tenant's workspace. This lets the
-                  provider open background connections to the tenant's edge clusters
-                  through the hub's edges-proxy (e.g. the kuery provider's informer
-                  sync). The grant is materialized as a ClusterRole/ClusterRoleBinding
-                  in the tenant workspace on Enable and removed on Disable; like
-                  permission claims, it is surfaced in the portal's Enable dialog.
-                type: boolean
               hubAccess:
                 description: |-
                   HubAccess requests hub REST capabilities the provider may exercise with

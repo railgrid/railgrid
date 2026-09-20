@@ -33,10 +33,15 @@ package project
 //     the reconcilers do to Instances, Repositories and RepositoryCommits in
 //     this workspace, and what the per-workspace dependency watch lists and
 //     watches (controller/tenantwatch);
-//   - asking the Code provider to commit the workspace, through the MCP
-//     aggregate (commit.go) — the aggregate admits a caller on `use` of the
-//     workspace's MCPServer and then forwards this bearer, so the commit is
-//     authorized as the project rather than as this provider;
+//   - asking the Code provider to commit the workspace, on the action grammar
+//     (commitaction.go): `create` on repositories/commit — and on
+//     repositories/stage_commit_bundle, for a payload past the catalogue's
+//     1 MiB input ceiling — so the commit is authorized as the project rather
+//     than as this provider, and the provider writes the RepositoryCommit
+//     itself;
+//   - the remaining Code MCP tools (checkout, build status, rebuild) through
+//     the workspace's MCP aggregate, which admits a caller on `use` of the
+//     MCPServer and then forwards this bearer;
 //   - the project's workload calling a data-plane verb on its own instance,
 //     where the serving provider re-reads the addressed object AS THE CALLER
 //     (gate 1) before it will run anything (gate 2).
@@ -78,6 +83,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/bindings"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-app-studio/internal/crossprovider"
 )
 
@@ -126,17 +132,34 @@ const (
 // here: nothing in this provider calls it.
 var instanceDataPlaneVerbs = []string{"env", "exec", "log", "process", "proxy", "restart", "sync", "workspace"}
 
-// codeConnectionActions are the code-provider ACTIONS App Studio invokes, as
-// {resource}/{action} coordinates.
-//
-// There is exactly one, and it is on connections rather than repositories:
-// `mint_registry_token` (api/project_promote.go), which issues the image-pull
-// credential a promotion needs. Everything else App Studio asks the code
-// provider for — commit_files, checkout_repository, build_status, rebuild — is
-// an MCP TOOL, not a declared action, so it is reached through the aggregate
-// (clause D) and authorized by the code provider against this identity's own
-// RBAC rather than by a {resource}/{verb} capability.
+// codeConnectionActions are the code-provider actions App Studio invokes on a
+// Connection. There is exactly one: `mint_registry_token`
+// (api/project_promote.go), which issues the image-pull credential a
+// promotion needs.
 var codeConnectionActions = []string{"mint_registry_token"}
+
+// codeRepositoryActions are the code-provider actions App Studio invokes on
+// the project's Repository, as clause-C {resource}/{verb} capabilities.
+//
+//	commit               creates the RepositoryCommit for a convergence pass
+//	                     (commit.go). The provider writes the CR itself once
+//	                     this grant is proven, which is why the composition on
+//	                     repositorycommits still carries no create.
+//	stage_commit_bundle  uploads a payload past the catalogue's 1 MiB input
+//	                     ceiling and hands back the handle `commit` names. It
+//	                     is UNCATALOGUED (docs/provider-actions.md
+//	                     §"Uncatalogued large-upload verbs"): App Studio cannot
+//	                     grant it through a project binding, so the project's
+//	                     own identity is the only thing that carries it, and a
+//	                     generated application is exactly the payload that
+//	                     needs it.
+//
+// The rest of what App Studio asks the code provider for — checkout_repository,
+// build_status, rebuild — is an MCP TOOL, not a declared action, so it is
+// reached through the aggregate (clause D) and authorized by the code provider
+// against this identity's own RBAC rather than by a {resource}/{verb}
+// capability.
+var codeRepositoryActions = []string{codecommit.Action, codecommit.StageBundleAction}
 
 // projectOwner is the tuple the hub verifies before it mints anything: the
 // Project must exist in this workspace with this UID. The ServiceAccount name
@@ -175,8 +198,9 @@ func projectOwner(p *aiv1alpha1.Project, clusterName string) identityclient.Owne
 //     serving side is a real GET as the caller, so an identity that cannot see
 //     the object cannot invoke a verb on it.
 //   - C (foreign verb): `create` on the declared {resource}/{verb}
-//     subresources of the bound instances and that Connection, which is how the
-//     data plane expresses "may run this verb on this one".
+//     subresources of the bound instances, the project's Repository and that
+//     Connection, which is how the data plane expresses "may run this verb on
+//     this one".
 //
 // Nothing on this provider's own group: the Project itself is read and written
 // over the APIExport virtual workspace, where this provider is already the
@@ -248,6 +272,15 @@ func projectIdentityRules(p *aiv1alpha1.Project) []rbacv1.PolicyRule {
 	if repository := projectRepositoryRef(p); repository != "" {
 		if rule, ok := crossprovider.RepositoryObjectRule([]string{repository}); ok {
 			rules = append(rules, rule)
+		}
+		// Clause C on the same object: the verbs the commit pass invokes.
+		for _, action := range codeRepositoryActions {
+			rules = append(rules, rbacv1.PolicyRule{
+				APIGroups:     []string{codeAPIGroup},
+				Resources:     []string{crossprovider.RepositoriesResource + "/" + action},
+				ResourceNames: []string{repository},
+				Verbs:         []string{"create"},
+			})
 		}
 	}
 	// The RepositoryCommit a commit pass is following up, by name. It appears
@@ -326,9 +359,15 @@ func projectConnectionRef(p *aiv1alpha1.Project) string {
 }
 
 // projectPendingCommitRef names the RepositoryCommit this project is waiting
-// on, from the pointer commit.go mirrors onto the Project.
+// on. It reads the working-copy ledger on the project's own status, which
+// since §9 Cut D.3 is where the pending commit is recorded — the same record
+// the convergence loop follows, so the grant and the follow-up can no longer
+// name different commits.
 func projectPendingCommitRef(p *aiv1alpha1.Project) string {
-	return strings.TrimSpace(p.Annotations[pendingCommitAnnotation])
+	if p.Status.Workspace == nil || p.Status.Workspace.PendingCommit == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.Status.Workspace.PendingCommit.Name)
 }
 
 // identityToken returns the project's current token, minting or refreshing it

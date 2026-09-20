@@ -384,7 +384,7 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 	} else {
 		spec := t.tool.Spec()
 		args := map[string]any{}
-		durableArgs := any(args)
+		var durableArgs any
 		if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 			durableArgs = map[string]any{"invalidArguments": argumentsInJSON}
 		} else {
@@ -682,7 +682,7 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		result, err = t.tool.Call(ctx, callRequest)
 	} else {
 		if t.req.ToolPort == nil {
-			modelResult, durableErr := t.finishDurableToolCall(ctx, ledgerDecision, "", errors.New("App Studio tool port is not configured"))
+			modelResult, durableErr := t.finishDurableToolCall(ctx, ledgerDecision, "", errors.New("the App Studio tool port is not configured"))
 			_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 			return modelResult, durableErr
 		}
@@ -744,7 +744,7 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 		return modelResult, durableErr
 	}
-	modelResult := result
+	var modelResult string
 	if projectAssistantNativeBrowserToolName(spec.Name) {
 		modelResult = t.runState.RegisterNativeBrowserReceipt(spec.Name, result)
 	} else {
@@ -825,6 +825,21 @@ func (t projectEinoAssistantTool) recordV2CommitSettlement(
 	return nil
 }
 
+// recoverV2CommitSettlement advances run-local state after a commit tool call.
+//
+// It no longer settles the durable ledger, and that is the point of Cut D.1:
+// the commit tool asks the Code provider for a commit and gets back the
+// RepositoryCommit that will carry it, not a landed SHA. Clearing the
+// uncommitted-path set here would clear it for a commit that has not happened
+// yet — a failed commit would then have silently discarded the record of what
+// needed committing. The tool records the commit as the workspace's pending
+// commit instead (api/llm.go), and the Project reconciler's watch on that
+// object settles the digest and paths when it reaches Succeeded
+// (controller/project/commit.go, resolvePendingCommit). One settlement path,
+// whoever asked for the commit.
+//
+// What stays run-local is the run's own view: the attempt was made at this
+// source revision, so a later turn does not re-propose the same commit.
 func (t projectEinoAssistantTool) recoverV2CommitSettlement(
 	ctx context.Context,
 	spec projectAssistantToolSpec,
@@ -832,57 +847,15 @@ func (t projectEinoAssistantTool) recoverV2CommitSettlement(
 	succeeded bool,
 	results ...string,
 ) error {
+	_, _ = ctx, results
 	if t.runState == nil || !projectEinoAssistantCommitTool(spec.Name) {
 		return nil
 	}
 	revision, _ := t.runState.SourceMutationRevisions()
 	t.runState.RecordSourceCommitAttempt(revision)
 	if succeeded {
-		workspaceDigest := projectToolString(args["workspaceDigest"])
-		paths := projectToolStringList(args["paths"])
-		settlementDigest := workspaceDigest
-		settlementBlocker := ""
-		settle := t.req.Workspace != nil
-		if skipped := projectCommitSkippedBinaryPaths(strings.Join(results, "")); len(skipped) > 0 && settle {
-			// Binaries the Code provider could not accept were not committed:
-			// settle only the committed paths so the binaries stay dirty. The
-			// approved digest covers every path, so bind the narrower set to
-			// its current content (the run still owns the workspace).
-			paths = projectStringsWithout(paths, skipped)
-			if len(paths) == 0 {
-				settle = false
-			} else if digest, err := t.req.Workspace.WorkspaceDigest(ctx, t.req.WorkspaceScope, paths); err == nil {
-				settlementDigest = digest
-			} else {
-				settlementBlocker = "repository commit succeeded but local workspace settlement could not bind the committed paths"
-				settle = false
-			}
-		}
-		if settle {
-			// Persist the cleanup obligation before advancing run-local state. If
-			// cleanup is interrupted, the next turn reconciles this receipt by
-			// digest without repeating the already successful repository effect.
-			settlementCtx, cancelSettlement := detachedProjectPersistenceContext(ctx)
-			if err := t.req.Workspace.RecordCommitSettlement(
-				settlementCtx,
-				t.req.WorkspaceScope,
-				settlementDigest,
-				paths,
-			); err != nil {
-				settlementBlocker = "repository commit succeeded but local workspace settlement could not be persisted"
-			} else if _, err := t.req.Workspace.ReconcileCommitSettlement(settlementCtx, t.req.WorkspaceScope); err != nil {
-				settlementBlocker = "repository commit succeeded but local workspace settlement is pending"
-			}
-			cancelSettlement()
-		}
-		t.runState.RecordSourceCommit(workspaceDigest)
+		t.runState.RecordSourceCommit(projectToolString(args["workspaceDigest"]))
 		t.runState.ClearSuccessfulMutationPaths()
-		if settlementBlocker != "" {
-			// The repository effect and durable ledger outcome remain successful,
-			// so never expose a tool error that could provoke a second commit ID.
-			// Keep the local reconciliation problem server-owned and checkpointed.
-			t.runState.RecordVerificationBindingFailure(settlementBlocker)
-		}
 	}
 	return nil
 }
@@ -1205,21 +1178,6 @@ func (t projectEinoAssistantTool) v2CommitWorkspaceDigest(ctx context.Context, a
 
 func projectEinoAssistantWorkspaceDigest(ctx context.Context, store *workspace.FileStore, scope workspace.Scope, paths []string) (string, error) {
 	return store.WorkspaceDigest(ctx, scope, paths)
-}
-
-// projectStringsWithout returns values minus every entry of remove.
-func projectStringsWithout(values, remove []string) []string {
-	drop := make(map[string]struct{}, len(remove))
-	for _, value := range remove {
-		drop[value] = struct{}{}
-	}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if _, skip := drop[value]; !skip {
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 func projectAssistantMutationFromSuccessfulResult(name, result string, successful bool) *projectAssistantMutation {

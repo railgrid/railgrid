@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	kcpproxy "github.com/railgrid/railgrid/pkg/server/proxy"
 )
@@ -359,5 +360,37 @@ func TestKCPTenantResolverRejectsUnavailableWorkloadIdentity(t *testing.T) {
 	req.Header.Set(headerRailgridWorkspace, "workspace")
 	if _, _, err := r.resolve(req); err == nil || errors.Is(err, ErrAnonymousProviderCaller) {
 		t.Fatalf("resolve error = %v, want fail-closed workload error", err)
+	}
+}
+
+// The backend proxy adopts the resolver as its cluster authorizer by type
+// assertion (providers.SetTenantResolver), so the resolver has to satisfy both
+// interfaces as a value — a TenantResolverFunc would satisfy only one, and the
+// path-cluster authorization would silently never run.
+var (
+	_ providers.TenantResolver    = (*kcpTenantResolver)(nil)
+	_ providers.ClusterAuthorizer = (*kcpTenantResolver)(nil)
+)
+
+func TestNewKCPTenantResolverAuthorizesClusters(t *testing.T) {
+	r := newKCPTenantResolver(nil, nil, nil, nil)
+	if _, ok := r.(providers.ClusterAuthorizer); !ok {
+		t.Fatal("the wired resolver does not authorize clusters; the backend proxy would leave data-plane paths unauthorized")
+	}
+}
+
+func TestKCPTenantResolverAuthorizeClusterFailsClosed(t *testing.T) {
+	// No kcp proxy (so no membership index), no user, no cluster: each is a
+	// "no". Authorization is what stands between a caller and another
+	// tenant's workspace, so it must never default to yes.
+	r := &kcpTenantResolver{}
+	for name, tc := range map[string]struct{ user, cluster string }{
+		"no proxy wired": {user: "alice", cluster: "1dwl9p41626ptykp"},
+		"no user":        {user: "", cluster: "1dwl9p41626ptykp"},
+		"no cluster":     {user: "alice", cluster: ""},
+	} {
+		if r.AuthorizeCluster(context.Background(), tc.user, tc.cluster) {
+			t.Errorf("%s: AuthorizeCluster = true, want false", name)
+		}
 	}
 }

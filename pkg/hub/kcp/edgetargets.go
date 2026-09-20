@@ -27,7 +27,7 @@ package kcp
 //
 // The hub reads the tenant's edges DIRECTLY with its kcp-admin client rather
 // than through the edges provider. It already does this for every other
-// workspace-scoped operation (EnsureProviderEdgeProxyGrant and friends), and
+// workspace-scoped operation (EnsureProviderAPIBinding and friends), and
 // going through the provider would make provider availability a precondition
 // of *asking the question* — the opposite of failing fast.
 

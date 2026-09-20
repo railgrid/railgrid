@@ -1,14 +1,15 @@
 # Provider horizontal scaling — beyond leader election
 
 Status: **largely implemented** · Design note dated 2026-08-17, status refreshed
-2026-09-19 against the tree.
+2026-09-20 against the tree (P2 built and adopted by kuery).
 Related: [`provider-connectivity-contract.md`](./provider-connectivity-contract.md),
 [`platform-internal-networking.md`](./platform-internal-networking.md) (tunnel-HA
 prior art), [`cross-provider-simplification.md`](./cross-provider-simplification.md),
 [`helm.md`](./helm.md) §HA (the hub's own scaling model),
 [`roadmap/provider-contract-remediation.md`](./roadmap/provider-contract-remediation.md)
 (§5, §6, §8, §9 Cut A landed the work below),
-`provider-sdk/leaderelection` (the first HA primitive).
+`provider-sdk/leaderelection` (the first HA primitive),
+`provider-sdk/sharding` (P2 below: per-item ownership claims).
 
 ## Where this stands (2026-09-19)
 
@@ -16,12 +17,17 @@ Every in-tree provider now runs its write loops under
 `provider-sdk/leaderelection.Run`, rebuilt per term, with the HTTP surface
 serving on every replica — `providers/{quickstart,code,infrastructure,edges,kuery,agents,app-studio}`
 (and `providers/infrastructure/operator.go` for the operator's own manager).
+kuery is the first to go past that: the loop that does the *divisible* work —
+edge engagement — came off the lease entirely and is sharded per edge across
+all replicas, leaving only its two single-writer reconcilers elected. That is
+the shape this document was aiming at, and the shape edges' tunnels can take
+next.
 The four structural blockers this doc was written about resolved as follows:
 
 | Provider | Blocker in Aug 2026 | Now |
 |---|---|---|
 | **edges** | process-global revdial dialer map | **Solved, but not by the tunnel-per-replica design below.** The agent still dials ONE replica; that replica claims the tunnel in a `Lease` and every other replica relays pickups and data-plane requests to the owner over a pod-to-pod internal listener (`providers/edges/main.go:216-288`, `providers/edges/internal/tunnel/haclient.go`). The tenant-config resolver is a controller-free multicluster manager that runs active-active on every replica (`providers/edges/controller_manager.go:143-183`), so the serving path no longer depends on the leader's manager. Reconcilers are leader-elected (`:129-141`). |
-| **kuery** | per-replica engagement state; dead sync path | **Solved.** The sync path reads each edge's coordinate from `KubernetesCluster.status.url` (`providers/kuery/engagement/controller.go:669-695`), engagement is a provider-private `Engagement` kind, and per-edge `coordination.k8s.io` Leases shard the edges (`providers/kuery/engagement/claims.go`). Controllers are leader-elected (`providers/kuery/main.go:208-218`); queries, MCP and the portal are answered from the shared store on every replica. |
+| **kuery** | per-replica engagement state; dead sync path | **Solved, and it is the first provider to shard rather than fail over.** The sync path reads each edge's coordinate from `KubernetesCluster.status.url`, engagement is a provider-private `Engagement` kind, and the edges are divided across replicas through **`provider-sdk/sharding`** — the P2 primitive below, now real. `engagement.Run` is **not** leader-elected: it runs on every replica, each syncing the edges whose claim it wins (`providers/kuery/main.go`). Only the two single-writer loops (SavedView + Engagement reconcilers) stay behind the lease, via `engagement.RunSingletons`. Queries, MCP and the portal are answered from the shared store on every replica, and `/readyz`/heartbeat report each replica's own engagement watch. |
 | **app-studio** | in-process run ownership; pod-local workspace tree | **Solved for the common path.** Controllers are leader-elected (`providers/app-studio/controller_manager.go:155-168`); everything that touches a project's workspace tree rides project affinity + peer forwarding over `internalPort` (`providers/app-studio/api/dataplane_routes.go:220-237`). |
 | **databricks** | authority resolved through the running manager | **Not started** — it lives in `railgrid/providers` and is §3 of the remediation plan, which has not begun. The audit finding below still applies to it verbatim. |
 
@@ -46,21 +52,24 @@ from claimed Runs, and the 30 s stale-run sweep became a computed-deadline
    `assistant.runSandbox.mode=force`, because coding-sandbox claims have no
    distributed CAS (`deploy/chart/templates/deployment.yaml:9-10`), and the
    shared single-session Playwright browser is serialized per process.
-2. **kuery's per-edge sharding is not an SDK primitive.** `engagement/claims.go`
-   is a local try-acquire/renew/release over Leases, and it currently shards
-   only *within* a leadership term, because the whole engagement controller sits
-   under one lease. It becomes load-sharing rather than handover insurance once
-   `provider-sdk` grows the P2 primitive below and the sync half can run
-   off-leader (`providers/kuery/deploy/chart/values.yaml:14-26`).
+2. **kuery's leader now runs two reconcilers, not a fleet.** Resolved: edge
+   engagement came off the lease entirely and runs on every replica, sharded
+   per edge. The leader keeps only the SavedView reconciler and the
+   Engagement garbage collector. The cost paid for it is a second multicluster
+   manager on the leader replica (the two halves have different lifetimes —
+   process-long vs per-term — so neither can borrow the other's manager);
+   if that ever matters, the Engagement reconciler could move to a plain
+   local manager over the provider workspace, leaving only SavedView on a
+   multicluster one.
 3. **Chart defaults are still `replicaCount: 1`** for edges, kuery and
    app-studio. Scaling is supported, not yet the default; kuery additionally
    refuses `>1` without `store.driver=postgres`
    (`providers/kuery/deploy/chart/templates/deployment.yaml:1-2`).
-4. **`sharedstore` (P1) and the generalized `ownership` registry (P2) were never
-   ported to `provider-sdk`.** Each provider solved its own case: edges with
-   registry Leases, kuery with per-edge Leases, app-studio with project
-   affinity. P3 (peer addressing + forwarding) exists twice, hand-rolled, as
-   edges' internal listener and app-studio's `internalPort` forwarder.
+4. **`sharedstore` (P1) was never ported to `provider-sdk`.** P2 has landed as
+   `provider-sdk/sharding` (below) and kuery is its first adopter; edges'
+   tunnel registry is the next candidate and has not been migrated. P3 (peer
+   addressing + forwarding) still exists twice, hand-rolled, as edges'
+   internal listener and app-studio's `internalPort` forwarder.
 
 The rest of this document is the **August 2026 audit and design**. It is kept
 for its reasoning and its survey of the alternatives; read the table above for
@@ -188,13 +197,78 @@ primitives in `provider-sdk` (Phase 0 below).
 for: app-studio preview-bridge sessions, small cross-replica memos. (~250
 lines + tests, mechanical port.)
 
-**P2 — `ownership` claims registry.** A tiny claim/renew/release API for
-*sharded* singletons — "replica R owns item X until TTL" — with the item set
-defined by the provider (edge names, cluster names, run keys). Two backends:
-kcp Leases in the provider workspace (no new deps; same RBAC the
-leader-election work already granted) for small cardinality, and a SQL table
-for providers that already run one (kuery, app-studio). This is
-leader-election generalized from one lease to N.
+**P2 — `ownership` claims registry. → Built, as `provider-sdk/sharding`
+(2026-09-20).** "Replica R owns item X until TTL", with the item set defined by
+the provider (edge names, tunnel keys, run keys). One backend, not two: kcp
+Leases in the provider's own workspace, which needs no new dependency and no
+RBAC beyond what leader election already had. The SQL backend the original
+plan hedged on was dropped — a provider with its own database can still use
+one, but making the shared primitive backend-agnostic would have bought an
+interface and no adopter.
+
+The shape:
+
+```go
+shard, _ := sharding.New(cfg, sharding.Options{
+    Namespace: "default",       // defaults to the provider workspace's "default"
+    Prefix:    "kuery-engage-", // one shard's key space; also the watch selector
+    Identity:  replicaID,       // → holderIdentity; use a relay ADDRESS if peers must reach you
+    TTL:       60 * time.Second,
+    Renew:     20 * time.Second,
+    Steal:     false,           // true: local truth outranks the registry (see edges below)
+})
+shard.Start(ctx)                       // one Lease watch for the whole key space
+held, release := shard.Claim(ctx, key) // non-blocking; declining is a normal answer
+shard.Held(key)                        // local truth, no API call
+shard.Holder(ctx, key) / shard.List(ctx) // who owns what, fleet-wide
+shard.Events()                         // Acquired / Lost / Available, per key
+shard.Close(ctx)                       // releases everything; restartable per term
+```
+
+Two properties are worth calling out, because they are what made the
+hand-rolled versions periodic:
+
+- **Watch-driven, not scanned.** Losing a claim arrives as a `Lost` event from
+  the shard's own Lease watch; a key coming free arrives as `Available`. The
+  one ownership change no watch can deliver — a holder that dies writes
+  nothing — is covered by a single per-key deadline armed from that holder's
+  own Lease and re-armed by every renewal it writes. Renewal (one goroutine
+  per held key) is the only clock in the package.
+- **Claims survive their caller's lifecycle.** The shard is built once per
+  process, started and stopped per leadership term, and keeps one identity
+  throughout — so a controller that must be rebuilt per term (as a
+  controller-runtime manager must) does not change owner underneath the work
+  it is still doing.
+
+Why not extend `leaderelection`: it wraps client-go's elector, which is one
+blocking campaign per lock that polls until it wins and reports nothing else.
+One elector per key would be a retry loop per item — exactly the scan this
+primitive exists to avoid — and there is no "decline and move on" in its API.
+
+**Adopters.** kuery shards edge engagement on `{clusterID}/{edgeName}`
+(`providers/kuery/engagement/`), with `engagement.Run` started on every replica
+and only `engagement.RunSingletons` behind the controller lease — the first
+place in the tree where a provider's replicas divide work instead of one
+carrying it. **edges' tunnel ownership is the next candidate** and is not
+migrated yet; the primitive was designed against it, so the mapping is already
+known:
+
+| `providers/edges/internal/tunnel/registry.go` | `provider-sdk/sharding` |
+|---|---|
+| tunnel Leases `edge-tunnel-<sha>` | a shard with `Prefix: "edge-tunnel-"`; the key is the edge conn key and `LeaseName` hashes it exactly as today |
+| `TunnelLeaseKeyAnnotation` | `sharding.KeyAnnotation`, written on every claim, so the lifecycle reconciler's Lease watch still maps an event to its edge with no index |
+| `TunnelLeaseLabel` selector | `shard.Selector()`, derived from the prefix |
+| `ClaimTunnel` (unconditional: a live agent socket is ground truth) | `Options{Steal: true}` + `Claim` |
+| `ReleaseTunnel` (holder-guarded delete) | `Release`, which is holder- and UID-guarded |
+| `RenewOwned` on the 30s ConnManager sweep | the shard's own per-key renewal; the sweeper keeps only its real job, evicting dead local dialers |
+| `LookupTunnel` / `ListTunnels` | `Holder` / `List`, with `Options.Identity` set to the replica's `ip:internalPort` so the value read back is the relay address, as today |
+| presence Leases `edge-replica-<id>` | a second shard, `Prefix: "edge-replica-"`, where each replica claims its own ID |
+| the 3s `registryCacheTTL` read cache | stays in edges: it is a data-path concern (one Lease GET per key per interval under kubectl load), not an ownership one |
+
+The one thing edges gains for free is the `Lost` event: today a replica whose
+agent reconnected elsewhere finds out when its socket dies, and `Available`
+would let a replica notice a peer's tunnel Lease expiring without the
+lifecycle reconciler's Lease watch doing it by hand.
 
 **P3 — peer addressing + forwarding.** A headless Service per provider chart
 (`clusterIP: None`, pod DNS) plus a small HTTP helper: "not my item → 307/

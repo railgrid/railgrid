@@ -16,9 +16,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,7 +25,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/mux"
 	"github.com/railgrid/provider-sdk/modelcatalog"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -83,17 +79,6 @@ type PatchProjectLLMModelRequest struct {
 
 type SetDefaultProjectLLMModelRequest struct {
 	ModelID string `json:"modelID"`
-}
-
-type projectLLMStoredModel struct {
-	ID         string `json:"id"`
-	RevisionID string `json:"revisionID,omitempty"`
-	Archived   bool   `json:"archived,omitempty"`
-	Name       string `json:"name"`
-	Provider   string `json:"provider"`
-	BaseURL    string `json:"baseURL"`
-	Model      string `json:"model"`
-	APIKey     string `json:"apiKey,omitempty"`
 }
 
 type projectLLMModelSettings struct {
@@ -166,17 +151,6 @@ func (r projectLLMRegistry) selectedSettings(id, revisionID string) (projectLLMS
 	settings.RetryBackoff = r.Runtime.RetryBackoff
 	settings.StreamIdleTimeout = r.Runtime.StreamIdleTimeout
 	return settings, nil
-}
-
-func (r projectLLMRegistry) selectedModelID(requested string) (string, error) {
-	model, ok := r.model(requested)
-	if !ok {
-		return "", newValidationError("selected model configuration was not found")
-	}
-	if strings.TrimSpace(model.Settings.APIKey) == "" {
-		return "", newValidationError("selected model configuration does not have a credential")
-	}
-	return model.ID, nil
 }
 
 func (r projectLLMRegistry) selectedModel(requested string) (projectLLMModelSettings, error) {
@@ -252,13 +226,6 @@ func projectLLMModelID(value string) string {
 		return projectLLMLegacyDefaultModelID
 	}
 	return value
-}
-
-func projectLLMLegacyRevision(item projectLLMStoredModel) string {
-	item.RevisionID = ""
-	raw, _ := json.Marshal(item)
-	sum := sha256.Sum256(raw)
-	return "legacy-" + hex.EncodeToString(sum[:16])
 }
 
 func normalizeProjectLLMModel(model *projectLLMModelSettings, runtime projectLLMSettings) error {
@@ -485,8 +452,4 @@ func writeProjectLLMConnectionTestError(w http.ResponseWriter, err error) {
 	default:
 		writeStatus(w, http.StatusBadGateway, "BadGateway", connectionErr.Error())
 	}
-}
-
-func muxVar(r *http.Request, key string) string {
-	return mux.Vars(r)[key]
 }

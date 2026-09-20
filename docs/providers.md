@@ -1135,6 +1135,38 @@ There is no third copy: a permission claim is written in `manifest.yaml`, and
 nowhere else. The chart's `catalogentry.yaml` still mirrors the manifest's whole
 spec, because that rendering is what reaches production.
 
+**Claims are per resource, not per name — so scope them.** A claim on
+`secrets` with nothing else on it grants the provider's ServiceAccount
+read-write access to *every* Secret in *every* workspace that enables the
+provider: the tenant's cloud credentials and every other provider's backend
+credential included. That is why a claim carries a label selector:
+
+```yaml
+permissionClaims:
+  - resource: secrets
+    verbs: [get, list, watch, create, update, delete]
+    tenantScoped: true
+    selector:
+      matchLabels:
+        railgrid.ai/owner: agents   # the provider's own name
+```
+
+Every Secret the provider owns carries `railgrid.ai/owner: <provider>`
+(`provider-sdk/claimscope`); `apiexportgen` renders the selector as the kcp
+claim's `defaultSelector` and the hub writes the same `matchLabels` onto the
+accepted claim in each tenant's `APIBinding`. kcp then labels, filters and
+admission-checks against it: an unlabelled Secret is a **404** through the
+provider's virtual workspace, not a 403, and a write outside the selector is
+refused. A core-group `secrets` claim with no selector fails
+`hack/verify-provider-contract.mjs` (`claim-selector`) at review time and
+`provider-sdk/install` at provider init. A Secret the *tenant* writes and the
+provider must read is either read as the caller through a data-plane verb, or
+labelled by the tenant — the label is the per-Secret consent. See
+[provider-connectivity-contract.md §"Label-scoped claims"](./provider-connectivity-contract.md)
+for what kcp enforces and for the upgrade caveat (an accepted claim's selector
+is immutable, so an already-enabled workspace keeps its wider binding until the
+provider is disabled and re-enabled there).
+
 ```
 provider-cost-insights/
 ├── Chart.yaml

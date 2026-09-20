@@ -115,7 +115,7 @@ func probeOpenAIModels(ctx context.Context, baseURL, apiKey string) ([]string, t
 	if err != nil {
 		return nil, latency, err
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer func() { _ = resp.Body.Close() }()
 	// 8MB cap: aggregator /models responses are huge (OpenRouter ships several
 	// MB of per-model metadata) and a truncated body fails to parse, which used
 	// to report "healthy, zero served models".

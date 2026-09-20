@@ -54,16 +54,30 @@
 //     stop its edge watch; it never lists edges.
 //   - The per-workspace edge watch is the authority on which edges exist and
 //     which are connected. A fresh watch replays every edge, so it IS the
-//     list. It creates the Engagement for each edge, claims the edge's Lease,
-//     engages it, and renews both on one ticker — the only heartbeat left.
+//     list. It creates the Engagement for each edge, claims the edge through
+//     provider-sdk/sharding, and engages the ones it wins.
+//   - The claim shard is the authority on which replica syncs which edge. It
+//     watches its own Leases, so losing an edge to a peer and picking up a
+//     dead peer's edge both arrive as events; the only periodic work left is
+//     one pass per workspace that re-asserts the index rows and stamps the
+//     Engagement heartbeat.
 //   - The Engagement reconciler (engagementctl.go) runs on the provider's own
 //     workspace and watches the per-edge Leases. An expired Lease is what
 //     makes an engagement Stale, and a stale engagement's rows are purged by a
 //     RequeueAfter rather than by a five-minute garbage-collection ticker.
 //
-// The controllers are singletons: main wraps Run in provider-sdk's
-// leaderelection, and Run builds a fresh multicluster manager per term
-// because a stopped controller-runtime manager cannot be restarted.
+// # What runs where
+//
+// Engagement is NOT a singleton. Run starts on every replica and stays up for
+// the life of the process: each replica watches every enabled workspace's
+// edges and syncs the ones whose claim it wins, so the fleet is divided rather
+// than duplicated, and a replica failing costs its share of the edges one
+// handover instead of costing the platform its only syncing process.
+//
+// What stays behind the provider's controller lease is RunSingletons — the
+// SavedView reconciler and the Engagement (garbage-collecting) reconciler,
+// which want exactly one writer. It builds a fresh multicluster manager per
+// term, because a stopped controller-runtime manager cannot be restarted.
 package engagement
 
 import (
@@ -88,6 +102,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/railgrid/provider-sdk/identityclient"
+	"github.com/railgrid/provider-sdk/sharding"
 	"github.com/railgrid/provider-sdk/vwhealth"
 
 	apiskcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
@@ -128,6 +143,31 @@ var edgeGVK = schema.GroupVersionKind{Group: "edges.railgrid.ai", Version: "v1al
 // Engagement reconciler purges them (matches kuery's own default TTL).
 const clusterTTLSeconds = 3600
 
+// Edge sharding: one coordination.k8s.io Lease per engaged edge, held in the
+// provider's own kcp workspace by the replica syncing that edge, through
+// provider-sdk/sharding. Whichever replica wins an edge's claim syncs it; the
+// others are told to keep their hands off it, and a dead replica's edges are
+// taken over within claimTTL — or immediately, if it shut down cleanly.
+//
+// The shard key is the store name ("{cluster}/{edge}"), which is also how the
+// engaged map, the index rows and kuery's own cluster registration are keyed,
+// so an ownership event names the edge it is about without a lookup table.
+const (
+	// claimNamespace is where the per-edge Leases live. kcp creates the
+	// "default" namespace in every logical cluster.
+	claimNamespace = sharding.DefaultNamespace
+	// claimTTL is how long a claim survives without renewal before a peer may
+	// take it over. Handover costs one TTL plus an engage.
+	claimTTL = 60 * time.Second
+	// renewInterval is how often the owning replica re-asserts the engaged
+	// rows and the Engagement heartbeat. The claims themselves are renewed by
+	// the shard, which is the only other clock in this package.
+	renewInterval = 20 * time.Second
+	// leasePrefix namespaces kuery's per-edge Leases inside the provider
+	// workspace's default namespace, where the controller lease also lives.
+	leasePrefix = "kuery-engage-"
+)
+
 // Config wires the engagement controller.
 type Config struct {
 	// ProviderConfig is the minted provider kubeconfig's rest.Config. Its
@@ -162,7 +202,7 @@ type Config struct {
 	// rebuildable from the Engagements plus a resync, which is why the
 	// Engagement reconciler may purge a stale cluster's rows outright.
 	Store kuerystore.Store
-	// Readiness, when set, learns whether this term's multicluster provider is
+	// Readiness, when set, learns whether THIS replica.s multicluster provider is
 	// actually watching tenant workspaces, for /readyz and the heartbeat.
 	Readiness *vwhealth.Readiness
 }
@@ -173,7 +213,7 @@ type Config struct {
 type Controller struct {
 	cfg      Config
 	hubBase  string // ProviderConfig host with the /clusters/... suffix stripped
-	claims   *edgeClaims
+	claims   *sharding.Shard
 	registry *Registry
 	// identityCache holds one refreshing hub-minted token source per enabled
 	// workspace. Nil when no hub identity service is configured, which makes
@@ -185,9 +225,15 @@ type Controller struct {
 	// workspace's hub-minted engagement identity.
 	tenantDynamicFor func(clusterName string, id credential) (dynamic.Interface, error)
 
-	mu          sync.Mutex
-	mgr         mcmanager.Manager             // this term's manager; nil between terms
-	termCtx     context.Context               // parents every edge watch of this term
+	mu     sync.Mutex
+	mgr    mcmanager.Manager // the engagement manager; nil when not running
+	runCtx context.Context   // parents every edge watch this replica opens
+	// wanted is every edge this replica would sync but currently does not:
+	// one a peer holds the claim for, and one whose owning provider has not
+	// published a status.url yet. Store name → the last coordinate seen for
+	// it, which is "" for the second case. It is what a shard Available event
+	// and a later status.url update are both re-evaluated against.
+	wanted      map[string]string
 	engaged     map[string]engagedEdge        // "{tenantCluster}/{edgeName}" → handle
 	edgeWatches map[string]edgeWatch          // tenantCluster → running edge watch
 	identities  map[string]*workspaceIdentity // tenantCluster → its engagement identity
@@ -208,9 +254,10 @@ type engagedEdge struct {
 	statusURL string
 }
 
-// New builds the controller. It does NOT build a manager: Run does, once per
-// leadership term, because a stopped controller-runtime manager cannot be
-// restarted.
+// New builds the controller. It does NOT build a manager: Run builds the
+// engagement one when this replica starts engaging, and RunSingletons builds
+// a separate one per leadership term, because a stopped controller-runtime
+// manager cannot be restarted.
 func New(cfg Config) (*Controller, error) {
 	if cfg.ProviderConfig == nil || cfg.Sync == nil || cfg.Store == nil {
 		return nil, fmt.Errorf("engagement: ProviderConfig, Sync, and Store are required")
@@ -224,7 +271,14 @@ func New(cfg Config) (*Controller, error) {
 		hubBase = stripClusterSuffix(cfg.ProviderConfig.Host)
 	}
 
-	claims, err := newEdgeClaims(cfg.ProviderConfig)
+	// One shard for the life of the process: the replica's claim identity must
+	// not change under an edge it is still syncing.
+	claims, err := sharding.New(cfg.ProviderConfig, sharding.Options{
+		Namespace: claimNamespace,
+		Prefix:    leasePrefix,
+		TTL:       claimTTL,
+		Renew:     renewInterval,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("engagement claims: %w", err)
 	}
@@ -240,6 +294,7 @@ func New(cfg Config) (*Controller, error) {
 		registry:      registry,
 		identityCache: newIdentityCache(identityHubClient(cfg, hubBase)),
 		engaged:       map[string]engagedEdge{},
+		wanted:        map[string]string{},
 		edgeWatches:   map[string]edgeWatch{},
 		identities:    map[string]*workspaceIdentity{},
 	}, nil
@@ -281,12 +336,14 @@ const defaultProviderName = "kuery"
 // every replica whether or not it holds the controller lease.
 func (c *Controller) Registry() *Registry { return c.registry }
 
-// Run serves one leadership term: it builds the multicluster manager over the
-// APIExport virtual workspace, registers the reconcilers, and blocks in Start
-// until the term's context ends. Everything this replica engaged is released
-// on the way out, so the next leader starts from the Engagements rather than
-// from whatever this process still held.
-func (c *Controller) Run(ctx context.Context) error {
+// newManager builds one multicluster manager over kuery's APIExport virtual
+// workspace, and the provider whose health says whether that workspace is
+// actually being watched.
+//
+// Both halves of this package need one and neither can borrow the other's:
+// Run's manager lives as long as the process, RunSingletons' is rebuilt every
+// leadership term (a stopped controller-runtime manager cannot be restarted).
+func (c *Controller) newManager() (mcmanager.Manager, *apiexportprovider.Provider, error) {
 	scheme := NewScheme()
 	// Edge objects are read unstructured, but the apiexport multicluster
 	// provider builds a typed cache over APIExportEndpointSlice (v1alpha1) and
@@ -301,25 +358,49 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	provider, err := apiexportprovider.New(c.cfg.ProviderConfig, c.cfg.APIExportName, apiexportprovider.Options{Scheme: scheme})
 	if err != nil {
-		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
-	}
-	// For exactly this term, readiness reports whether tenant workspaces are
-	// really being watched. Without it a leader whose virtual-workspace URL is
-	// unreachable stays green while nothing reconciles.
-	if c.cfg.Readiness != nil {
-		defer c.cfg.Readiness.Attach("controllers", provider)()
+		return nil, nil, fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}
 
 	skipNameValidation := true
 	mgr, err := mcmanager.New(c.cfg.ProviderConfig, provider, manager.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
-		// Controller names register process-globally; the manager built for a
-		// later leadership term must skip that check.
+		// Controller names register process-globally; a manager built for a
+		// later leadership term — or a second manager in the same process —
+		// must skip that check.
 		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
 	})
 	if err != nil {
-		return fmt.Errorf("creating multicluster manager: %w", err)
+		return nil, nil, fmt.Errorf("creating multicluster manager: %w", err)
+	}
+	return mgr, provider, nil
+}
+
+// Run is the engagement half, and it runs on EVERY replica for the life of the
+// process — not behind the controller lease. Sharding is what makes that safe:
+// each replica watches the same edges but engages only the ones whose claim it
+// wins (provider-sdk/sharding), so replicas divide the fleet instead of
+// duplicating it. Two replicas observing the same edge therefore do not race;
+// they agree, because the Lease decides and everything else is idempotent
+// (Registry.Ensure tolerates a peer creating the record first, SetStatus skips
+// a write that changes nothing).
+//
+// It blocks until ctx ends, and everything this replica engaged is released on
+// the way out, so a peer picks those edges up in one watch event rather than
+// after a claim TTL.
+func (c *Controller) Run(ctx context.Context) error {
+	mgr, provider, err := c.newManager()
+	if err != nil {
+		return err
+	}
+	// Readiness now reports whether THIS replica is really watching tenant
+	// workspaces — not whether the leader is. That is the point of moving
+	// engagement off the lease: a replica whose virtual-workspace URL is
+	// unreachable syncs nothing, and both /readyz and the hub heartbeat
+	// (main.go wires CanSend to the same answer) have to say so, because no
+	// other replica is covering for it any more.
+	if c.cfg.Readiness != nil {
+		defer c.cfg.Readiness.Attach("engagement", provider)()
 	}
 
 	// Drive workspace discovery off the consumer's APIBinding to kuery's own
@@ -333,28 +414,113 @@ func (c *Controller) Run(ctx context.Context) error {
 		Complete(c); err != nil {
 		return fmt.Errorf("registering engagement reconciler: %w", err)
 	}
-	if err := savedview.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("registering savedview reconciler: %w", err)
+
+	// The claim shard's own Lease watch: it is what turns "a peer took this
+	// edge" and "the replica that had this edge is gone" into events instead
+	// of things a ticker has to go looking for.
+	if err := c.claims.Start(ctx); err != nil {
+		return fmt.Errorf("starting the edge claim shard: %w", err)
 	}
-	// The Engagement records and the per-edge Leases live in the provider's
-	// OWN workspace, which is the local manager's cluster, not a tenant's.
-	if err := setupEngagementReconciler(mgr.GetLocalManager(), c); err != nil {
-		return fmt.Errorf("registering engagement record reconciler: %w", err)
-	}
+	go c.followClaims(ctx)
 
 	c.mu.Lock()
 	c.mgr = mgr
-	c.termCtx = ctx
+	c.runCtx = ctx
 	c.mu.Unlock()
-	defer c.endTerm()
+	defer c.stopEngagement()
 
 	return mgr.Start(ctx)
 }
 
-// endTerm tears down everything this replica engaged. Leases are released
-// rather than left to expire, so the next leader picks the edges up in one
-// reconcile instead of after claimTTL.
-func (c *Controller) endTerm() {
+// RunSingletons serves one leadership term of the reconcilers that must have
+// exactly one writer, on a manager built fresh for the term. It is the only
+// thing kuery still puts behind the controller lease:
+//
+//   - the SavedView reconciler, because it writes a tenant-owned object's
+//     status. Every replica would compute the same verdict, so running it
+//     everywhere would be correct but would put N writers on one object's
+//     status and N caches on every tenant's SavedViews to no purpose;
+//   - the Engagement reconciler, because it is the garbage collector. It
+//     marks index rows stale and DELETES a purged engagement's rows and
+//     record — destructive, deadline-driven work whose whole premise is that
+//     nobody owns the edge. One writer makes "nobody owns it" a decision
+//     rather than a race, and it is deliberately not on the replica that owns
+//     the edges: it reconciles what the Leases say, and never engages
+//     anything itself.
+//
+// Both are cheap and neither is on the sync path, so a term gap costs a
+// delayed status stamp and a delayed purge — never a missed edge.
+func (c *Controller) RunSingletons(ctx context.Context) error {
+	mgr, _, err := c.newManager()
+	if err != nil {
+		return err
+	}
+	if err := savedview.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("registering savedview reconciler: %w", err)
+	}
+	// The Engagement records and the per-edge claim Leases live in the
+	// provider's OWN workspace, which is the local manager's cluster, not a
+	// tenant's.
+	if err := setupEngagementReconciler(mgr.GetLocalManager(), c); err != nil {
+		return fmt.Errorf("registering engagement record reconciler: %w", err)
+	}
+	return mgr.Start(ctx)
+}
+
+// followClaims turns ownership changes into sync changes for as long as this
+// replica is engaging.
+// It is the reason nothing here re-lists edges to find out what it owns: the
+// claim shard says so.
+func (c *Controller) followClaims(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-c.claims.Events():
+			if !ok {
+				return
+			}
+			switch event.Type {
+			case sharding.Lost:
+				// A peer owns the edge now. Stop syncing it here WITHOUT
+				// releasing anything or touching the shared rows — the new
+				// owner re-asserts them on its own pass.
+				klog.FromContext(ctx).Info("edge claim lost to a peer", "edge", event.Key)
+				c.dropLocal(ctx, event.Key, false)
+			case sharding.Available:
+				// The replica that held the edge released it or died. This is
+				// the handover that used to wait for a renewal pass.
+				c.takeOver(ctx, event.Key)
+			}
+		}
+	}
+}
+
+// takeOver engages an edge whose previous owner is gone, using the coordinate
+// that edge published the last time this replica saw it. An edge this replica
+// never observed is not taken over: some other replica's edge watch has the
+// workspace, and this one has nothing to dial. An edge that is wanted but has
+// published no coordinate yet is re-evaluated like any other and stays wanted
+// — the status.url update is what engages it, here as everywhere else.
+func (c *Controller) takeOver(ctx context.Context, storeName string) {
+	tenantCluster, edge := SplitStoreName(storeName)
+	c.mu.Lock()
+	statusURL, wanted := c.wanted[storeName]
+	identity, known := c.identities[tenantCluster]
+	c.mu.Unlock()
+	if !wanted || !known {
+		return
+	}
+	klog.FromContext(ctx).Info("taking an edge over from a departed replica", "edge", storeName)
+	c.claimAndEngage(ctx, tenantCluster, identity, edge, statusURL)
+}
+
+// stopEngagement tears down everything this replica engaged. Claims are
+// released rather than left to expire, so a PEER picks those edges up in one
+// watch event instead of after claimTTL — which is the whole difference
+// between a rolling update costing the fleet a minute of blind edges and
+// costing it nothing.
+func (c *Controller) stopEngagement() {
 	c.mu.Lock()
 	watches := c.edgeWatches
 	c.edgeWatches = map[string]edgeWatch{}
@@ -363,19 +529,24 @@ func (c *Controller) endTerm() {
 		keys = append(keys, key)
 	}
 	c.mgr = nil
-	c.termCtx = nil
+	c.runCtx = nil
 	c.mu.Unlock()
 
 	for _, watch := range watches {
 		watch.cancel()
 	}
-	// The term's context is already cancelled, so the release work needs its
-	// own bounded one.
+	// The run context is already cancelled, so the release work needs its own
+	// bounded one.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	for _, key := range keys {
 		c.dropLocal(ctx, key, true)
 	}
+	// Stops the claim watch and hands back anything the loop above did not.
+	c.claims.Close(ctx)
+	c.mu.Lock()
+	c.wanted = map[string]string{}
+	c.mu.Unlock()
 }
 
 // EngagedCount reports how many edges THIS replica currently syncs.
@@ -396,7 +567,7 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	mgr := c.manager()
 	if mgr == nil {
-		// The term ended between the enqueue and here.
+		// Engagement stopped between the enqueue and here.
 		return ctrl.Result{}, nil
 	}
 	cl, err := mgr.GetCluster(ctx, req.ClusterName)
@@ -511,16 +682,28 @@ func (c *Controller) dropCluster(ctx context.Context, tenantCluster string) {
 	c.releaseIdentity(ctx, tenantCluster)
 
 	prefix := tenantCluster + "/"
-	var gone []string
+	var gone, unwanted []string
 	c.mu.Lock()
 	for key := range c.engaged {
 		if strings.HasPrefix(key, prefix) {
 			gone = append(gone, key)
 		}
 	}
+	// Edges of this workspace a peer holds stop being this replica's business
+	// too: the workspace disabled kuery, so being offered one back would be an
+	// invitation to engage an edge we may no longer read.
+	for key := range c.wanted {
+		if strings.HasPrefix(key, prefix) {
+			unwanted = append(unwanted, key)
+			delete(c.wanted, key)
+		}
+	}
 	c.mu.Unlock()
 	for _, key := range gone {
 		c.dropLocal(ctx, key, true)
+	}
+	for _, key := range unwanted {
+		c.claims.Forget(key)
 	}
 
 	engagements, err := c.registry.List(ctx)
@@ -572,17 +755,34 @@ func (c *Controller) releaseIdentity(ctx context.Context, tenantCluster string) 
 func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, statusURL string, identity credential) error {
 	storeName := StoreName(tenantCluster, edgeName)
 	c.mu.Lock()
-	if _, ok := c.engaged[storeName]; ok {
+	existing, wasEngaged := c.engaged[storeName]
+	if wasEngaged && existing.statusURL == statusURL {
 		c.mu.Unlock()
 		return nil // already engaged; reconnects surface as connected=false first
 	}
-	parent := c.termCtx
+	if wasEngaged {
+		delete(c.engaged, storeName)
+	}
+	parent := c.runCtx
 	c.mu.Unlock()
 	if parent == nil {
-		return fmt.Errorf("engage %s: leadership term has ended", storeName)
+		return fmt.Errorf("engage %s: the engagement controller has stopped", storeName)
 	}
 
 	logger := klog.FromContext(ctx).WithValues("edge", storeName)
+	if wasEngaged {
+		// The edges provider republished this edge on a different coordinate.
+		// The running client is pinned to the old one, so it is torn down and
+		// re-dialled rather than left talking to an endpoint that no longer
+		// serves the edge. Disengage also clears the engine's per-process
+		// cluster registration; without it the re-engage below would be
+		// silently deduplicated.
+		existing.cancel()
+		if err := c.cfg.Sync.Disengage(ctx, storeName); err != nil {
+			logger.Error(err, "disengaging an edge whose status.url changed")
+		}
+		logger.Info("re-dialling edge on a changed status.url", "from", existing.statusURL, "to", statusURL)
+	}
 	logger.Info("engaging edge into kuery")
 
 	cfg, err := edgeProxyConfig(c.hubBase, tenantCluster, edgeName, statusURL, identity, c.cfg.ProviderConfig.Insecure)
@@ -595,8 +795,8 @@ func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, status
 		return fmt.Errorf("creating cluster client: %w", err)
 	}
 
-	// The cluster's informers live until disengage or the end of the term —
-	// deliberately NOT the reconcile ctx, which ends with the call.
+	// The cluster's informers live until disengage or until this replica stops
+	// engaging — deliberately NOT the reconcile ctx, which ends with the call.
 	clusterCtx, cancel := context.WithCancel(parent)
 	go func() {
 		if err := cl.Start(clusterCtx); err != nil {
@@ -645,18 +845,31 @@ func (c *Controller) assertClusterRow(ctx context.Context, storeName, tenant str
 	})
 }
 
-// dropLocal stops this replica's sync of an edge, if it has one. When the edge
-// is gone for good (deleted or disconnected — releaseClaim=true) the claim is
-// released so no replica re-engages; on a lost claim (releaseClaim=false) the
-// new owner immediately re-asserts the row, so the stale status Disengage
-// writes lasts at most one of its renew passes.
+// dropLocal stops this replica's sync of an edge, if it has one.
+//
+// When the edge is gone for good (deleted or disconnected — releaseClaim=true)
+// the claim is released so no replica re-engages, and this replica stops
+// wanting it. On a lost claim (releaseClaim=false) the claim is left exactly
+// where it is — a peer owns it — but the edge stays wanted, so the shard tells
+// this replica if that peer ever lets go.
 func (c *Controller) dropLocal(ctx context.Context, storeName string, releaseClaim bool) {
 	c.mu.Lock()
 	entry, ok := c.engaged[storeName]
 	if ok {
 		delete(c.engaged, storeName)
 	}
+	switch {
+	case releaseClaim:
+		delete(c.wanted, storeName)
+	case ok:
+		c.wanted[storeName] = entry.statusURL
+	}
 	c.mu.Unlock()
+	if releaseClaim {
+		// Hand the claim back whether or not this replica was syncing the edge:
+		// a claim held for an edge nobody engages is one no peer can take.
+		c.claims.Release(ctx, storeName)
+	}
 	if !ok {
 		return
 	}
@@ -666,10 +879,6 @@ func (c *Controller) dropLocal(ctx context.Context, storeName string, releaseCla
 	// deduplicated.
 	if err := c.cfg.Sync.Disengage(ctx, storeName); err != nil {
 		klog.FromContext(ctx).Error(err, "disengaging edge", "edge", storeName)
-	}
-	if releaseClaim {
-		cluster, edge := SplitStoreName(storeName)
-		c.claims.release(ctx, EngagementName(cluster, edge))
 	}
 	klog.FromContext(ctx).Info("edge disengaged", "edge", storeName)
 }

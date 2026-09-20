@@ -32,7 +32,7 @@ func lifecycleDue(now time.Time, created metav1.Time, development *infrav1alpha1
 	if development == nil || created.IsZero() {
 		return "", false
 	}
-	if development.MaxLifetimeSeconds > 0 && !now.Before(created.Time.Add(time.Duration(development.MaxLifetimeSeconds)*time.Second)) {
+	if development.MaxLifetimeSeconds > 0 && !now.Before(created.Add(time.Duration(development.MaxLifetimeSeconds)*time.Second)) {
 		return "SandboxExpired", true
 	}
 	last := created.Time
@@ -63,7 +63,7 @@ func lifecycleRequeueAfter(now time.Time, created metav1.Time, development *infr
 	}
 	deadline := time.Time{}
 	if development.MaxLifetimeSeconds > 0 {
-		deadline = created.Time.Add(time.Duration(development.MaxLifetimeSeconds) * time.Second)
+		deadline = created.Add(time.Duration(development.MaxLifetimeSeconds) * time.Second)
 	}
 	last := created.Time
 	if runtimeObj != nil {

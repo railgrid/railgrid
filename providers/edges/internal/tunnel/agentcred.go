@@ -121,7 +121,7 @@ func DecodeAgentCredential(encoded string) (AgentCredential, error) {
 // agent credentials through. Nil leaves the join path without a credential to
 // hand out, which is a dev/test posture: the agent then keeps using whatever
 // it connected with.
-func (s *Server) SetIdentityClient(client *identityclient.Client) { s.identities = client }
+func (p *Server) SetIdentityClient(client *identityclient.Client) { p.identities = client }
 
 // mintAgentCredential asks the hub for this edge's scoped identity and renders
 // the enrolment bundle.

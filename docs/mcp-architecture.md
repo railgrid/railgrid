@@ -44,6 +44,11 @@ has its own `/mcp` endpoint fetched over HTTP and its tools re-exposed as
 > `providers/edges/internal/tunnel/mcp_root.go` and `mcp_service.go`. Nothing
 > compiles a tool into the hub binary.
 
+Alongside the tools, the aggregate serves a **declaration**: the resource
+`railgrid://providers/capabilities` lists what every visible provider says it
+can do, straight from the validated catalog — see
+[Capability discovery](#capability-discovery-railgridproviderscapabilities).
+
 Every tool runs **as the caller**, authorized by the caller's RBAC in the
 tenant workspace. There is no provider-wide identity. Platform providers receive
 the caller's own bearer; an organization's own (bring-your-own) providers
@@ -146,6 +151,129 @@ skipped** — one bad provider never poisons the aggregate.
 The provider's own MCP handler — e.g.
 [`providers/infrastructure/mcpserver/server.go`](https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/mcpserver/server.go) — is an ordinary
 streamable-HTTP MCP server built fresh per request.
+
+## Capability discovery: `railgrid://providers/capabilities`
+
+`tools/list` answers *"what can I call right now"*. It does not answer *"what
+does this platform declare it can do"* — that question is about the contract,
+and the tool list is a poor proxy for it: a provider that is Ready but slow to
+answer `tools/list` contributes nothing, tool names are provider-local prose,
+and a data-plane verb (`kubernetesclusters/ssh`) usually has no tool at all.
+
+The second question is answered from the **validated provider registry** — the
+same `CatalogEntry` declarations the hub already admits and enforces against.
+The aggregate serves them as an MCP resource
+([`pkg/hub/mcpaggregate/capabilities.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/mcpaggregate/capabilities.go)):
+
+```
+railgrid://providers/capabilities      application/json
+```
+
+Its scope is exactly federation's scope: one entry per **Ready** provider
+**visible to the verified caller's Org**, in the same sorted enumeration order,
+projected by `RegistryEnumerator` from `spec.actions` and
+`spec.dataPlane.verbs`. A provider that declares neither is omitted rather than
+listed empty.
+
+```json
+{
+  "tenant": "2v9k1q...",
+  "mcpServer": "default",
+  "providers": [
+    {
+      "provider": "code",
+      "displayName": "Code",
+      "actions": [
+        {
+          "id": "branches/v1",
+          "name": "branches",
+          "version": "v1",
+          "displayName": "List branches",
+          "description": "List a bounded page of branch names from a registered repository.",
+          "boundResource": {
+            "apiVersion": "code.railgrid.ai/v1alpha1",
+            "kind": "Repository",
+            "resource": "repositories"
+          },
+          "readOnly": true,
+          "risk": "low",
+          "consent": { "required": false },
+          "schemaDigest": "sha256:9f2c…"
+        }
+      ],
+      "verbs": []
+    },
+    {
+      "provider": "infrastructure",
+      "displayName": "Infrastructure",
+      "actions": [],
+      "verbs": [
+        {
+          "coordinate": "instances/log",
+          "resource": "instances",
+          "verb": "log",
+          "description": "Stream the instance's logs.",
+          "stream": true,
+          "readOnly": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+**It is a declaration, not a directory.** No provider URL, no data-plane path,
+no credential, no transport handle of any kind crosses this boundary — nor do
+the registry's compiled schema validators or execution limits. A coordinate is
+an identifier the hub owns; reaching it still goes through the federated tool,
+the action transport or the data-plane route, and is still authorized there by
+the caller's own RBAC. Publishing a coordinate grants nothing.
+
+A verb carries no schema and no digest, deliberately: a data-plane verb is a
+coordinate and a transport, not a request/response contract. That is what an
+action is, and an action's `schemaDigest` is what pins it to a contract
+version.
+
+The `coordinate` spelling — `<resource>/<verb>` — is not cosmetic. It is the
+same string the hub uses for the RBAC subresource and for a scoped-identity
+capability, so what a model reads here is literally what an operator would
+grant.
+
+### Joining the declaration to the tool list
+
+A model that has read the resource still has to know *which tool implements
+which declaration*. Names do not tell it: `code__list_branches` backs
+`branches/v1`, and nothing in either string says so.
+
+So a provider names the coordinate on its own tool's `_meta`, as a plain
+string:
+
+```json
+{ "name": "list_branches", "_meta": { "railgrid": { "action": "branches/v1" } } }
+{ "name": "dev_logs",      "_meta": { "railgrid": { "verb":   "instances/log" } } }
+```
+
+**That claim is a hint, never trusted as given.** The aggregate resolves it
+against the coordinates the hub has *admitted* for that provider, and what it
+writes on the proxy tool is the registry's value, not the provider's:
+
+```json
+{
+  "name": "code__list_branches",
+  "_meta": {
+    "railgrid": {
+      "provider": "code",
+      "action": { "id": "branches/v1", "…": "…", "schemaDigest": "sha256:9f2c…" }
+    }
+  }
+}
+```
+
+A tool claiming a coordinate its provider does not declare — or another
+provider's coordinate, or a malformed claim — gets **no `_meta` at all**. A
+provider therefore cannot advertise a contract it never published, borrow a
+neighbour's coordinate, or assert a schema digest it did not register. Nothing
+else from a provider's `_meta` is forwarded.
 
 ### Org-owned (bring-your-own) providers
 
@@ -303,9 +431,12 @@ Two consequences:
   > (`kubernetesclusters/k8s`, `kubernetesclusters/mcp`, `services/proxy`,
   > `services/mcp`, …). Until `dataPlaneGrants` emits those subresources, an
   > MCPServer token is denied on the edges data plane and the `proxy` rule it
-  > does get authorizes nothing. The Enable-time grant in
-  > `pkg/hub/kcp/bootstrap.go` was already moved to the per-verb shape; this
-  > one was not.
+  > does get authorizes nothing. The coordinates to emit are no longer a
+  > guess: they are exactly the `{resource}/{verb}` pairs the edges provider
+  > publishes at `railgrid://providers/capabilities` (below). The Enable-time
+  > `edges-proxy` ClusterRole that used to carry a parallel copy of this
+  > grant was deleted on 2026-09-20 — it granted the *provider's*
+  > ServiceAccount, and no provider authenticates that way any more.
 - **No provider-wide identity.** A federated provider must perform its tenant
   work as the forwarded caller token, scoped to the workspace whose cluster ID
   is in `X-Railgrid-Cluster` / `X-Railgrid-Tenant`. The infrastructure provider does this in
@@ -354,7 +485,11 @@ There is one way in: **be a provider**. Tools cannot be compiled into the hub.
    - the `railgrid://about` resource is added,
    - federation enumerates the Ready providers visible to the verified caller
      and registers their `/mcp` tools as `<provider>__<tool>`, merging their
-     server-level instructions.
+     server-level instructions and stamping each tool's validated
+     `_meta.railgrid` coordinate,
+   - `railgrid://providers/capabilities` is added from the same enumeration —
+     from the registry, so a Ready provider whose `/mcp` is slow or absent
+     still has its declared contract published.
 4. The composed server answers `tools/list` / `tools/call`.
 5. Federated `tools/call` is forwarded to the provider's `/mcp` with
    `X-Railgrid-Tenant` / `X-Railgrid-Cluster` (the cluster ID) and — for a platform
@@ -382,6 +517,7 @@ There is one way in: **be a provider**. Tools cannot be compiled into the hub.
 | Tenant-scoped provider enumerator | `pkg/hub/mcpaggregate/enumerator.go` |
 | Bearer verification + verified caller | `pkg/hub/mcpaggregate/verifier.go` |
 | Federation (tools/list, tools/call, instructions) | `pkg/hub/mcpaggregate/federation.go` |
+| Capability resource + tool `_meta` coordinates | `pkg/hub/mcpaggregate/capabilities.go` |
 | Per-caller tool/instruction discovery cache | `pkg/hub/mcpaggregate/discovery.go` |
 | Org-owned provider route (edge hop + delegated token) | `pkg/hub/providers/org_provider_route.go`, `pkg/hub/providers/proxy_edge.go` |
 | Edge tools + per-edge MCP verb | `providers/edges/internal/tunnel/mcp_root.go`, `mcp_service.go`, `grammar.go` |

@@ -180,6 +180,9 @@ func Bootstrap(ctx context.Context, opts Options) error {
 	if err := ApplySchemasFromDir(ctx, cl, opts.KCPDir); err != nil {
 		return fmt.Errorf("install: apply schemas: %w", err)
 	}
+	if err := ValidateClaimScopes(export); err != nil {
+		return fmt.Errorf("install: %w", err)
+	}
 	if err := StampIdentityHashes(export, opts.IdentityHashes); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
@@ -349,6 +352,53 @@ const firstPartyGroupSuffix = ".railgrid.ai"
 // APIExport (and therefore needs an identityHash on any claim against it).
 func IsFirstPartyGroup(group string) bool {
 	return group == "railgrid.ai" || strings.HasSuffix(group, firstPartyGroupSuffix)
+}
+
+// ScopedCoreResources are the core-group (built-in Kubernetes) resources a
+// provider may only claim with a defaultSelector.
+//
+// Secrets are the whole list for a reason. A blanket `secrets` claim is the
+// credential side-door every cross-provider hand-off used to go through
+// (docs/cross-provider-simplification.md, mechanism M3): it hands the
+// provider's ServiceAccount read-write access to EVERY Secret in EVERY tenant
+// workspace that enables it, including credentials written by the tenant and by
+// other providers. Narrowing it to a label the provider stamps on its own
+// Secrets is X-4 of that document.
+var ScopedCoreResources = map[string]bool{"secrets": true}
+
+// ValidateClaimScopes refuses an APIExport that claims a core-group resource in
+// ScopedCoreResources without a defaultSelector.
+//
+// It runs at init, before the export is applied, because kcp will not refuse it
+// for us: an unscoped claim is perfectly valid to kcp and simply grants more
+// than the provider needs, silently, in every workspace that binds the export.
+// The generated file is an output of the manifest, so the fix is always the
+// same — add spec.apiExport.permissionClaims[].selector.matchLabels to
+// manifest.yaml and re-run codegen.
+func ValidateClaimScopes(export *unstructured.Unstructured) error {
+	claims, found, err := unstructured.NestedSlice(export.Object, "spec", "permissionClaims")
+	if err != nil {
+		return fmt.Errorf("reading spec.permissionClaims on APIExport %s: %w", export.GetName(), err)
+	}
+	if !found {
+		return nil
+	}
+	for _, claim := range claims {
+		entry, ok := claim.(map[string]any)
+		if !ok {
+			return fmt.Errorf("APIExport %s: spec.permissionClaims entry is not a mapping", export.GetName())
+		}
+		group, _ := entry["group"].(string)
+		resource, _ := entry["resource"].(string)
+		if group != "" || !ScopedCoreResources[resource] {
+			continue
+		}
+		matchLabels, _, _ := unstructured.NestedStringMap(entry, "defaultSelector", "matchLabels")
+		if len(matchLabels) == 0 {
+			return fmt.Errorf("APIExport %s claims the core resource %q with no defaultSelector.matchLabels: a claim on %s must be narrowed to the objects this provider owns (add spec.apiExport.permissionClaims[].selector.matchLabels to manifest.yaml and re-run codegen)", export.GetName(), resource, resource)
+		}
+	}
+	return nil
 }
 
 // StampIdentityHashes writes the per-installation identityHash onto every

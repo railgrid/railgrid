@@ -2,7 +2,8 @@
 {{- $actionsCABundleConfigMap := .Values.hub.actionsCABundleConfigMap.name -}}
 {{- /*
   The controllers are leader-elected, so extra replicas are fine for them, and
-  workspace-touching work rides project affinity. Coding-sandbox claims are the
+  a project's working-copy ledger is on its own CR (§9 Cut D.3), so no replica
+  holds authority over a project's files either. Coding-sandbox claims are the
   one remaining exception: they have no distributed CAS, so two replicas can
   both believe they own a sandbox. Refuse only that combination.
 */ -}}
@@ -17,10 +18,13 @@ metadata:
     {{- include "appstudio.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  # The workspace's shared Playwright Browser is single-session and browser
-  # ownership is process-local. Recreate prevents a rolling update from
-  # briefly running two provider pods against that browser; the controllers
-  # themselves are leader-elected and safe either way.
+  # Recreate is here for ONE reason now: the workspace's shared Playwright
+  # Browser is single-session and its ownership is process-local, so a rolling
+  # update must not briefly run two provider pods against it. The controllers
+  # are leader-elected and safe either way, and since §9 Cut D.3 the working-copy
+  # ledger is on the Project rather than on this pod's volume, so neither the
+  # reconcilers nor the file tree need this any more. It goes when browser
+  # ownership becomes durable or distributed (replica-awareness note, Phase D).
   strategy:
     type: Recreate
   selector:

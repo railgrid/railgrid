@@ -25,6 +25,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/internal/projectledger"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,7 +64,15 @@ func TestProjectAdoptionPreservesRetainedSource(t *testing.T) {
 			}
 			id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", clusterID: "cluster-a"}
 			root := t.TempDir()
+			// The previous owner and the adopting replica share one
+			// working-copy ledger — the Project's own status — and nothing
+			// else. Before §9 Cut D.3 they shared a file on the volume, which
+			// is why this test could only ever describe a PVC that moved with
+			// the pod.
+			ledger := projectledger.FromProjects(c.Projects())
+			ctx = workspace.ContextWithLedger(ctx, ledger)
 			disk := workspace.NewFileStore(root)
+			disk.SetLedger(ledger)
 			scope := projectWorkspaceScope(id, p)
 			floor := uint64(1)
 			if state == "metadata-only" {

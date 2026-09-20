@@ -165,7 +165,7 @@ func postCallback(ctx context.Context, client *http.Client, cb *runCallback, bod
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("callback returned HTTP %d", resp.StatusCode)
 	}

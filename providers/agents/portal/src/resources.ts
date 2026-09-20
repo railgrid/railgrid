@@ -94,6 +94,19 @@ const FIELD_MANAGER = 'railgrid-agents-portal'
 const SECRET_NAMESPACE = 'default'
 const CREDENTIAL_PREFIX = 'railgrid-agents-model-'
 const CONNECTION_PREFIX = 'railgrid-agents-conn-'
+
+/**
+ * OWNER_LABELS marks a Secret as belonging to the agents provider.
+ *
+ * It is not decoration. The provider's `secrets` permission claim is scoped to
+ * this exact label (manifest.yaml, provider-sdk/claimscope), so kcp shows the
+ * provider only the Secrets carrying it: an unlabelled model credential would
+ * save without complaint here and then be invisible to every unattended run,
+ * which is the one path that cannot borrow the caller's token to read it.
+ * These writes go to the hub kcp proxy as the user, not through the provider's
+ * virtual workspace, so nothing stamps the label for us.
+ */
+const OWNER_LABELS = { 'railgrid.ai/owner': 'agents' } as const
 /** The Secret key holding a Slack app signing secret or a generated Telegram secret_token. */
 const SIGNING_SECRET_KEY = 'signing_secret'
 
@@ -684,7 +697,7 @@ export class Resources {
           {
             apiVersion: 'v1',
             kind: 'Secret',
-            metadata: { name: secretRef, namespace: SECRET_NAMESPACE },
+            metadata: { name: secretRef, namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
             type: 'Opaque',
             stringData: secretData,
           } as KubeObject,
@@ -769,7 +782,13 @@ export class Resources {
   private async mergeConnectionSecret(client: KubeClient, name: string, updates: Record<string, string>) {
     const secretName = connectionSecretName(name)
     try {
-      await client.patch(SECRETS, secretName, { stringData: updates }, {
+      // The labels go in with the merge patch so a Secret written before the
+      // claim was scoped is adopted on the next edit rather than silently
+      // staying outside it.
+      await client.patch(SECRETS, secretName, {
+        metadata: { labels: { ...OWNER_LABELS } },
+        stringData: updates,
+      }, {
         namespace: SECRET_NAMESPACE,
         type: 'merge',
       })
@@ -782,7 +801,7 @@ export class Resources {
       {
         apiVersion: 'v1',
         kind: 'Secret',
-        metadata: { name: secretName, namespace: SECRET_NAMESPACE },
+        metadata: { name: secretName, namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
         type: 'Opaque',
         stringData: updates,
       } as KubeObject,
@@ -857,7 +876,7 @@ export class Resources {
         {
           apiVersion: 'v1',
           kind: 'Secret',
-          metadata: { name: credentialSecretName(name), namespace: SECRET_NAMESPACE },
+          metadata: { name: credentialSecretName(name), namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
           type: 'Opaque',
           stringData: { provider, baseURL, model, apiKey },
         } as KubeObject,

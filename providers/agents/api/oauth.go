@@ -38,6 +38,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-sdk/claimscope"
 	"github.com/railgrid/provider-sdk/statuspage"
 )
 
@@ -358,7 +359,7 @@ func postOAuthForm(ctx context.Context, tokenURL string, form url.Values) (oauth
 	if err != nil {
 		return oauthToken{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	var tok oauthToken
 	if err := json.Unmarshal(raw, &tok); err != nil {
@@ -388,12 +389,21 @@ func updateSecretKeys(ctx context.Context, dyn dynamic.Interface, name string, u
 		for k, v := range updates {
 			data[k] = base64.StdEncoding.EncodeToString([]byte(v))
 		}
+		// The owner label is what keeps this Secret inside the provider's
+		// `secrets` permission claim, which is scoped to it. kcp's virtual
+		// workspace admission would stamp it on this create, but a Secret that
+		// depended on that would vanish from the provider's view the moment it
+		// were written any other way, so it is set here explicitly.
 		sec := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "v1",
 			"kind":       "Secret",
-			"metadata":   map[string]any{"name": name, "namespace": llm.SecretNamespace},
-			"type":       string(corev1.SecretTypeOpaque),
-			"data":       data,
+			"metadata": map[string]any{
+				"name":      name,
+				"namespace": llm.SecretNamespace,
+				"labels":    map[string]any{claimscope.OwnerLabel: agentsclient.ProviderName},
+			},
+			"type": string(corev1.SecretTypeOpaque),
+			"data": data,
 		}}
 		_, cerr := res.Create(ctx, sec, metav1.CreateOptions{})
 		return cerr

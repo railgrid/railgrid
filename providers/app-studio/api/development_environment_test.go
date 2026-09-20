@@ -12,7 +12,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -150,17 +149,4 @@ func TestProjectAssistantPreviewRefreshNeededUsesSuccessfulMutatingToolCalls(t *
 	}}) {
 		t.Fatal("preview refresh = true, want false after read-only tool")
 	}
-}
-
-type previewOverlayProbeEngine struct {
-	previewURL string
-}
-
-func (e *previewOverlayProbeEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	e.previewURL = projectAssistantRuntimePreviewURL(req.Project)
-	return projectAssistantRunResult{Content: "ok"}, nil
-}
-
-func (e *previewOverlayProbeEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, fmt.Errorf("unexpected resume")
 }

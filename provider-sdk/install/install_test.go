@@ -297,3 +297,65 @@ func TestMergeAPIExportResources(t *testing.T) {
 		t.Error("stale 'coderepos' entry in an owned group was not pruned")
 	}
 }
+
+// TestValidateClaimScopes covers the one thing an unscoped core-group Secrets
+// claim does NOT do: fail. kcp accepts it and grants the provider every Secret
+// in every workspace that binds the export, so init is the last place that can
+// refuse it (docs/cross-provider-simplification.md X-4).
+func TestValidateClaimScopes(t *testing.T) {
+	export := func(claims ...any) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apis.kcp.io/v1alpha2",
+			"kind":       "APIExport",
+			"metadata":   map[string]any{"name": "x.providers.railgrid.ai"},
+			"spec":       map[string]any{"permissionClaims": claims},
+		}}
+	}
+	scoped := map[string]any{
+		"resource": "secrets",
+		"verbs":    []any{"get"},
+		"defaultSelector": map[string]any{
+			"matchLabels": map[string]any{"railgrid.ai/owner": "x"},
+		},
+	}
+
+	if err := ValidateClaimScopes(export(scoped)); err != nil {
+		t.Errorf("a scoped secrets claim was refused: %v", err)
+	}
+
+	err := ValidateClaimScopes(export(map[string]any{"resource": "secrets", "verbs": []any{"get"}}))
+	if err == nil || !strings.Contains(err.Error(), "secrets") {
+		t.Errorf("err = %v, want a refusal naming the resource", err)
+	}
+
+	// An empty selector is not a selector: it would be written into kcp as a
+	// label selector matching nothing, which is a different bug, not a scope.
+	if err := ValidateClaimScopes(export(map[string]any{
+		"resource":        "secrets",
+		"verbs":           []any{"get"},
+		"defaultSelector": map[string]any{"matchLabels": map[string]any{}},
+	})); err == nil {
+		t.Error("an empty matchLabels was accepted as a scope")
+	}
+
+	// Only the core group's credential-bearing resources are covered: a
+	// first-party claim is already pinned by identityHash to one export's
+	// types, and configmaps are not in the list.
+	for _, claim := range []any{
+		map[string]any{"group": "edges.railgrid.ai", "resource": "kubernetesclusters", "verbs": []any{"get"}},
+		map[string]any{"resource": "namespaces", "verbs": []any{"get"}},
+		map[string]any{"resource": "configmaps", "verbs": []any{"get"}},
+	} {
+		if err := ValidateClaimScopes(export(claim)); err != nil {
+			t.Errorf("claim %+v was refused: %v", claim, err)
+		}
+	}
+
+	// A claimless export (quickstart) is fine.
+	if err := ValidateClaimScopes(&unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIExport",
+		"metadata": map[string]any{"name": "bare"}, "spec": map[string]any{},
+	}}); err != nil {
+		t.Errorf("ValidateClaimScopes on a claimless export: %v", err)
+	}
+}

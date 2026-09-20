@@ -158,7 +158,7 @@ func TestProjectAssistantExecCommandSandboxPresentationPinsWorkspace(t *testing.
 		t.Fatalf("sandbox component enum = %#v, want [workspace]", component["enum"])
 	}
 
-	generated, err := info.ParamsOneOf.ToJSONSchema()
+	generated, err := info.ToJSONSchema()
 	if err != nil {
 		t.Fatalf("generate sandbox exec schema: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestProjectAssistantExecCommandMultiComponentPresentationRemainsGeneric(t *
 	if strings.Contains(info.Desc, "active per-run universal sandbox") || strings.Contains(info.Desc, `ALWAYS pass component="workspace"`) {
 		t.Fatalf("ordinary exec description was narrowed to run sandbox: %q", info.Desc)
 	}
-	generated, err := info.ParamsOneOf.ToJSONSchema()
+	generated, err := info.ToJSONSchema()
 	if err != nil {
 		t.Fatalf("generate project exec schema: %v", err)
 	}

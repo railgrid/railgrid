@@ -559,7 +559,8 @@ func (s *projectAssistantSupervisor) EnqueueSteering(
 		s.mu.Unlock()
 		return run, receipt, assistant, true, nil
 	}
-	run, assistant := active.run, active.message
+	run := active.run
+	var assistant store.Message
 	s.mu.Unlock()
 	durableReceipt, found, receiptErr := findProjectAssistantSteeringReceipt(ctx, s.store, scope, run, actor, content, clientRequestID)
 	s.mu.Lock()

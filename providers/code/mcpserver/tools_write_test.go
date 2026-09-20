@@ -371,49 +371,6 @@ func TestCodeToolSchemas(t *testing.T) {
 	}
 }
 
-func TestRepositoryCommitObjectKeepsAuthoritativeRepositoryLabel(t *testing.T) {
-	repo := &codev1alpha1.Repository{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "demo-app",
-			Labels: map[string]string{
-				codev1alpha1.LabelRepository:        "stale-repo",
-				"app-studio.ai.railgrid.ai/project": "demo-project",
-			},
-		},
-	}
-	obj := repositoryCommitObject(repo, commitbundle.BundleRef{
-		Name:   "bundle-123",
-		Digest: "sha256:123",
-	}, commitFilesInput{
-		RepositoryRef: "demo-app",
-		Message:       "Initial app",
-	})
-	if got := obj.GetLabels()[codev1alpha1.LabelRepository]; got != "demo-app" {
-		t.Fatalf("repository label = %q, want demo-app", got)
-	}
-	if got := obj.GetLabels()["app-studio.ai.railgrid.ai/project"]; got != "demo-project" {
-		t.Fatalf("project label = %q, want demo-project", got)
-	}
-	scope, _, _ := unstructured.NestedString(obj.Object, "spec", "source", "bundleRef", "scope")
-	if scope != "" {
-		t.Fatalf("RepositoryCommit spec exposed bundle scope %q", scope)
-	}
-}
-
-func TestRepositoryCommitBundleStorageScope(t *testing.T) {
-	obj := &unstructured.Unstructured{}
-	obj.SetAnnotations(map[string]string{"kcp.io/cluster": " logical-cluster "})
-	if got := repositoryCommitBundleStorageScope("root:acme", obj); got != "logical-cluster" {
-		t.Fatalf("scope = %q, want logical-cluster", got)
-	}
-	if got := repositoryCommitBundleStorageScope("root:acme", &unstructured.Unstructured{}); got != "" {
-		t.Fatalf("fallback scope = %q, want empty", got)
-	}
-	if got := repositoryCommitBundleStorageScope("root:acme", nil); got != "" {
-		t.Fatalf("nil fallback scope = %q, want empty", got)
-	}
-}
-
 func TestRepositorySpecDefaultsAutoInit(t *testing.T) {
 	spec := repositorySpec(createRepositoryInput{
 		ConnectionRef: "github",
@@ -429,15 +386,5 @@ func TestRepositorySpecDefaultsAutoInit(t *testing.T) {
 	}, "demo-app")
 	if _, ok := spec["autoInit"]; ok {
 		t.Fatalf("autoInit present for explicit false: %#v", spec)
-	}
-}
-
-func TestCommitObjectName(t *testing.T) {
-	name := commitObjectName(strings.Repeat("a", 260), "sha256:1234567890abcdef", time.Unix(1, 2))
-	if len(name) > 253 {
-		t.Fatalf("name length = %d, want <= 253", len(name))
-	}
-	if !strings.Contains(name, "-commit-1234567890ab-") {
-		t.Fatalf("name = %q, want digest suffix", name)
 	}
 }

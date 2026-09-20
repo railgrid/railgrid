@@ -79,7 +79,7 @@ func newFakeLLM(t *testing.T, reply string) *fakeLLM {
 		flush, _ := w.(http.Flusher)
 		chunk := func(v any) {
 			b, _ := json.Marshal(v)
-			fmt.Fprintf(w, "data: %s\n\n", b)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 			if flush != nil {
 				flush.Flush()
 			}
@@ -95,7 +95,7 @@ func newFakeLLM(t *testing.T, reply string) *fakeLLM {
 			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}},
 			"usage":   map[string]any{"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
 		})
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		if flush != nil {
 			flush.Flush()
 		}

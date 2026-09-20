@@ -261,24 +261,24 @@ func (s *PostgresStore) TakeOverReplicaClaim(ctx context.Context, claim ReplicaC
 
 // ---- Memory ----
 
-func (m *MemoryStore) RelinquishReplicaClaims(_ context.Context, kind, ownerReplica string) (int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (s *MemoryStore) RelinquishReplicaClaims(_ context.Context, kind, ownerReplica string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var n int64
-	for key, c := range m.replicaClaims {
+	for key, c := range s.replicaClaims {
 		if c.Kind == kind && c.OwnerReplica == ownerReplica {
 			c.HeartbeatAt = replicaClaimRelinquishedAt
-			m.replicaClaims[key] = c
+			s.replicaClaims[key] = c
 			n++
 		}
 	}
 	return n, nil
 }
 
-func (m *MemoryStore) TakeOverReplicaClaim(_ context.Context, claim ReplicaClaim, expectedOwner string) (ReplicaClaim, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	current, exists := m.replicaClaims[claim.Key]
+func (s *MemoryStore) TakeOverReplicaClaim(_ context.Context, claim ReplicaClaim, expectedOwner string) (ReplicaClaim, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, exists := s.replicaClaims[claim.Key]
 	if !exists {
 		return ReplicaClaim{}, false, nil
 	}
@@ -289,61 +289,61 @@ func (m *MemoryStore) TakeOverReplicaClaim(_ context.Context, claim ReplicaClaim
 	current.OwnerAddr = claim.OwnerAddr
 	current.Detail = claim.Detail
 	current.HeartbeatAt = time.Now().UTC()
-	m.replicaClaims[claim.Key] = current
+	s.replicaClaims[claim.Key] = current
 	return current, true, nil
 }
 
-func (m *MemoryStore) TryClaimReplica(_ context.Context, claim ReplicaClaim, staleAfter time.Duration) (ReplicaClaim, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.replicaClaims == nil {
-		m.replicaClaims = map[string]ReplicaClaim{}
+func (s *MemoryStore) TryClaimReplica(_ context.Context, claim ReplicaClaim, staleAfter time.Duration) (ReplicaClaim, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.replicaClaims == nil {
+		s.replicaClaims = map[string]ReplicaClaim{}
 	}
 	now := time.Now().UTC()
-	current, exists := m.replicaClaims[claim.Key]
+	current, exists := s.replicaClaims[claim.Key]
 	if exists && current.OwnerReplica != claim.OwnerReplica && current.Live(now, staleAfter) {
 		return current, false, nil
 	}
 	claim.Revision = current.Revision // preserved across takeovers
 	claim.HeartbeatAt = now
-	m.replicaClaims[claim.Key] = claim
+	s.replicaClaims[claim.Key] = claim
 	return claim, true, nil
 }
 
-func (m *MemoryStore) RenewReplicaClaim(_ context.Context, claimKey, ownerReplica string) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	current, exists := m.replicaClaims[claimKey]
+func (s *MemoryStore) RenewReplicaClaim(_ context.Context, claimKey, ownerReplica string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, exists := s.replicaClaims[claimKey]
 	if !exists || current.OwnerReplica != ownerReplica {
 		return false, nil
 	}
 	current.HeartbeatAt = time.Now().UTC()
-	m.replicaClaims[claimKey] = current
+	s.replicaClaims[claimKey] = current
 	return true, nil
 }
 
-func (m *MemoryStore) ReleaseReplicaClaim(_ context.Context, claimKey, ownerReplica string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if current, exists := m.replicaClaims[claimKey]; exists && current.OwnerReplica == ownerReplica {
-		delete(m.replicaClaims, claimKey)
+func (s *MemoryStore) ReleaseReplicaClaim(_ context.Context, claimKey, ownerReplica string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if current, exists := s.replicaClaims[claimKey]; exists && current.OwnerReplica == ownerReplica {
+		delete(s.replicaClaims, claimKey)
 	}
 	return nil
 }
 
-func (m *MemoryStore) GetReplicaClaim(_ context.Context, claimKey string) (ReplicaClaim, bool, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	c, ok := m.replicaClaims[claimKey]
+func (s *MemoryStore) GetReplicaClaim(_ context.Context, claimKey string) (ReplicaClaim, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.replicaClaims[claimKey]
 	return c, ok, nil
 }
 
-func (m *MemoryStore) LiveReplicaClaims(_ context.Context, scopeKey string, staleAfter time.Duration) ([]ReplicaClaim, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (s *MemoryStore) LiveReplicaClaims(_ context.Context, scopeKey string, staleAfter time.Duration) ([]ReplicaClaim, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	now := time.Now().UTC()
 	var out []ReplicaClaim
-	for _, c := range m.replicaClaims {
+	for _, c := range s.replicaClaims {
 		if c.ScopeKey == scopeKey && c.Live(now, staleAfter) {
 			out = append(out, c)
 		}
@@ -351,46 +351,46 @@ func (m *MemoryStore) LiveReplicaClaims(_ context.Context, scopeKey string, stal
 	return out, nil
 }
 
-func (m *MemoryStore) BumpReplicaClaimRevision(_ context.Context, claimKey, ownerReplica string, revision int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if current, exists := m.replicaClaims[claimKey]; exists && current.OwnerReplica == ownerReplica && revision > current.Revision {
+func (s *MemoryStore) BumpReplicaClaimRevision(_ context.Context, claimKey, ownerReplica string, revision int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if current, exists := s.replicaClaims[claimKey]; exists && current.OwnerReplica == ownerReplica && revision > current.Revision {
 		current.Revision = revision
-		m.replicaClaims[claimKey] = current
+		s.replicaClaims[claimKey] = current
 	}
 	return nil
 }
 
 // ---- Encryption wrapper (claims carry no user content — pure delegation) ----
 
-func (e *encryptedStore) TryClaimReplica(ctx context.Context, claim ReplicaClaim, staleAfter time.Duration) (ReplicaClaim, bool, error) {
-	return e.inner.TryClaimReplica(ctx, claim, staleAfter)
+func (s *encryptedStore) TryClaimReplica(ctx context.Context, claim ReplicaClaim, staleAfter time.Duration) (ReplicaClaim, bool, error) {
+	return s.inner.TryClaimReplica(ctx, claim, staleAfter)
 }
 
-func (e *encryptedStore) RenewReplicaClaim(ctx context.Context, claimKey, ownerReplica string) (bool, error) {
-	return e.inner.RenewReplicaClaim(ctx, claimKey, ownerReplica)
+func (s *encryptedStore) RenewReplicaClaim(ctx context.Context, claimKey, ownerReplica string) (bool, error) {
+	return s.inner.RenewReplicaClaim(ctx, claimKey, ownerReplica)
 }
 
-func (e *encryptedStore) ReleaseReplicaClaim(ctx context.Context, claimKey, ownerReplica string) error {
-	return e.inner.ReleaseReplicaClaim(ctx, claimKey, ownerReplica)
+func (s *encryptedStore) ReleaseReplicaClaim(ctx context.Context, claimKey, ownerReplica string) error {
+	return s.inner.ReleaseReplicaClaim(ctx, claimKey, ownerReplica)
 }
 
-func (e *encryptedStore) GetReplicaClaim(ctx context.Context, claimKey string) (ReplicaClaim, bool, error) {
-	return e.inner.GetReplicaClaim(ctx, claimKey)
+func (s *encryptedStore) GetReplicaClaim(ctx context.Context, claimKey string) (ReplicaClaim, bool, error) {
+	return s.inner.GetReplicaClaim(ctx, claimKey)
 }
 
-func (e *encryptedStore) LiveReplicaClaims(ctx context.Context, scopeKey string, staleAfter time.Duration) ([]ReplicaClaim, error) {
-	return e.inner.LiveReplicaClaims(ctx, scopeKey, staleAfter)
+func (s *encryptedStore) LiveReplicaClaims(ctx context.Context, scopeKey string, staleAfter time.Duration) ([]ReplicaClaim, error) {
+	return s.inner.LiveReplicaClaims(ctx, scopeKey, staleAfter)
 }
 
-func (e *encryptedStore) RelinquishReplicaClaims(ctx context.Context, kind, ownerReplica string) (int64, error) {
-	return e.inner.RelinquishReplicaClaims(ctx, kind, ownerReplica)
+func (s *encryptedStore) RelinquishReplicaClaims(ctx context.Context, kind, ownerReplica string) (int64, error) {
+	return s.inner.RelinquishReplicaClaims(ctx, kind, ownerReplica)
 }
 
-func (e *encryptedStore) TakeOverReplicaClaim(ctx context.Context, claim ReplicaClaim, expectedOwner string) (ReplicaClaim, bool, error) {
-	return e.inner.TakeOverReplicaClaim(ctx, claim, expectedOwner)
+func (s *encryptedStore) TakeOverReplicaClaim(ctx context.Context, claim ReplicaClaim, expectedOwner string) (ReplicaClaim, bool, error) {
+	return s.inner.TakeOverReplicaClaim(ctx, claim, expectedOwner)
 }
 
-func (e *encryptedStore) BumpReplicaClaimRevision(ctx context.Context, claimKey, ownerReplica string, revision int64) error {
-	return e.inner.BumpReplicaClaimRevision(ctx, claimKey, ownerReplica, revision)
+func (s *encryptedStore) BumpReplicaClaimRevision(ctx context.Context, claimKey, ownerReplica string, revision int64) error {
+	return s.inner.BumpReplicaClaimRevision(ctx, claimKey, ownerReplica, revision)
 }

@@ -1726,7 +1726,7 @@ func TestProjectAssistantVerifyRuntimeSchemaDoesNotExposeWorkspaceEvidenceContro
 	if err != nil {
 		t.Fatalf("read graph tool info: %v", err)
 	}
-	generated, err := info.ParamsOneOf.ToJSONSchema()
+	generated, err := info.ToJSONSchema()
 	if err != nil {
 		t.Fatalf("generate graph tool schema: %v", err)
 	}

@@ -1,7 +1,7 @@
 .PHONY: sync-portalkit verify-portalkit verify-provider-contract verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
 .PHONY: build-access-proxy docker-build-access-proxy
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin build-runner-linux
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider
+.PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -580,6 +580,17 @@ fix-lint-code-provider: $(GOLANGCI_LINT) ## Format and auto-fix the standalone C
 
 lint: $(GOLANGCI_LINT) ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...
+
+PROVIDER_MODULES := quickstart code infrastructure edges kuery agents app-studio
+
+lint-providers: $(GOLANGCI_LINT) ## Run golangci-lint in every standalone provider module (separate go.mod, not covered by lint)
+	@rc=0; for p in $(PROVIDER_MODULES); do \
+		echo "== providers/$$p"; \
+		(cd providers/$$p && $(CURDIR)/$(GOLANGCI_LINT) run ./...) || rc=1; \
+	done; exit $$rc
+
+lint-provider-sdk: $(GOLANGCI_LINT) ## Run golangci-lint in provider-sdk
+	cd provider-sdk && $(CURDIR)/$(GOLANGCI_LINT) run ./...
 
 fix-lint: $(GOLANGCI_LINT) ## Run golangci-lint with auto-fix
 	$(GOLANGCI_LINT) run --fix ./...
@@ -1180,7 +1191,7 @@ e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 		echo "ports 19443/16443/18081/2380 are in use; stop any running railgrid-hub/quickstart-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Run --providers flag mechanics suite (dep validation, unknown name,
 ## filtered enable). Each test spawns its own hub on the standard
@@ -1192,7 +1203,7 @@ e2e-provider-flags: build-hub ## Run --providers flag mechanics suite
 		echo "ports 19443/16443/2380 are in use; stop any running railgrid-hub first (e.g. pkill railgrid-hub)"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/providerflags/... -v -timeout $(E2E_PROVIDER_FLAGS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/providerflags/... -v -timeout $(E2E_PROVIDER_FLAGS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Run both provider suites back-to-back (sequential — they share port 2380).
 e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-flags suites sequentially
@@ -1210,7 +1221,30 @@ e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructur
 		echo "ports 19453/16453/18086/2380 are in use; stop any running railgrid-hub/infrastructure-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Hub scoped-identity e2e (embedded kcp + quickstart-provider as the
+## REQUESTING provider). Covers pkg/hub/identity end to end: minting for a
+## Greeting owner under clause A and using the token against /clusters/{id},
+## the refusal codes for rules outside policy, refresh returning a new token
+## for the same ServiceAccount, clause E composition (declared-but-unaccepted
+## is refused, accepted at Enable is admitted, an undeclared verb stays
+## refused), and the sweep collecting an identity whose owner was deleted.
+## The suite registers its own synthetic dependency provider ("fixture") for
+## the composition half — no second provider binary is built. It runs the hub
+## with --provider-hub-access-platform-default=false so "refused until
+## accepted" is a real assertion. The GC test is paced by the reconciler's
+## 2-minute sweep, which is most of the wall time. Shares the embedded-kcp
+## etcd port 2380 with the other subprocess suites — do not run them
+## concurrently.
+E2E_IDENTITY_TIMEOUT ?= 20m
+.PHONY: e2e-identity
+e2e-identity: build-hub build-quickstart-provider ## Run hub scoped-identity e2e suite
+	@test -z "$$(lsof -ti :19503 :16503 :18128 :2380 2>/dev/null)" || { \
+		echo "ports 19503/16503/18128/2380 are in use; stop any running railgrid-hub/quickstart-provider first"; \
+		exit 1; \
+	}
+	go test -count=1 ./test/e2e/suites/identity/... -v -timeout $(E2E_IDENTITY_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Kuery provider e2e (embedded kcp + kuery-provider init/serve subprocesses).
 ## Covers the provider-plumbing half of kuery: provisioning, init bootstrap
@@ -1226,20 +1260,8 @@ e2e-kuery-provider: build-hub build-kuery-provider ## Run kuery provider e2e sui
 		echo "ports 19493/16493/18118/2380 are in use; stop any running railgrid-hub/kuery-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/kueryprovider/... -v -timeout $(E2E_KUERY_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/kueryprovider/... -v -timeout $(E2E_KUERY_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
-## Provider-actions E2E: embedded hub plus host-process App Studio and
-## Databricks providers, a local TLS fake upstream, and a generated Node app
-## invoking the action through the hub. RAILGRID_E2E_KEEP_DATA=true preserves
-## logs and source/readiness/interaction evidence under the suite temp dir.
-E2E_PROVIDER_ACTIONS_TIMEOUT ?= 20m
-.PHONY:
-## Optional bounded smoke against an already-running local hub/provider setup.
-## Set RAILGRID_E2E_PROVIDER_ACTIONS_LIVE=true plus RAILGRID_LIVE_HUB_URL,
-## RAILGRID_LIVE_PROJECT, and RAILGRID_LIVE_ACTIONS_TOKEN_FILE.
-## Optional registry-backed package smoke. The live-only flag keeps TestMain
-## from starting the full hub/provider stack; set RAILGRID_E2E_PROVIDER_ACTIONS_NPM_REGISTRY
-## to use a non-default registry mirror.
 ## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
 ## Covers the control-plane + auth surface of the decoupled edges provider:
 ## provisioning + CatalogEntry Ready, the /api/providers DTO, tenant Enable via
@@ -1254,7 +1276,7 @@ e2e-edges: build-hub build-edges-provider ## Run edges provider e2e suite
 		echo "ports 19463/16463/18088/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/edges/... -v -timeout $(E2E_EDGES_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/edges/... -v -timeout $(E2E_EDGES_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Edges DATA-PLANE connectivity e2e (embedded kcp over HTTPS + edges-provider
 ## + a real railgrid agent against a kind cluster). Proves the reverse tunnel:
@@ -1271,7 +1293,7 @@ e2e-edges-connectivity: build-hub build-edges-provider build-kuery-provider buil
 		echo "ports 19473/16473/18098/18099/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## CLI suite: every user-facing `railgrid` command as a real subprocess against a
 ## live hub (embedded kcp over HTTPS, two static-token users so membership
@@ -1285,7 +1307,7 @@ e2e-cli: build-hub build-edges-provider build-railgrid certs ## Run the railgrid
 		echo "ports 19483/16483/18108/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/cli/... -v -timeout $(E2E_CLI_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/cli/... -v -timeout $(E2E_CLI_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Tilt-cluster suite: runs against an ALREADY-RUNNING operator-deployed,
 ## multi-shard Tilt stack (start it in another terminal with `make tilt-cluster`).
@@ -1330,7 +1352,7 @@ e2e-tilt-cluster: ## Run Tilt-cluster provider e2e (requires `make tilt-cluster`
 		echo "infrastructure provider not reachable at $(E2E_TILT_INFRA_URL); is 'make tilt-cluster' fully up?"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/tiltcluster/... -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/tiltcluster/... -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Opt-in demonstration of using Config Connector CRDs with the infrastructure
 ## operator's KRO runtime. The test creates only a minimal StorageBucket CRD; it
@@ -1358,7 +1380,7 @@ e2e-tilt-cluster-config-connector: ## Run the opt-in Config Connector compositio
 	RAILGRID_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
 	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
 	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
-		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorComposition$$' -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorComposition$$' -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Real-cloud extension of the infrastructure-operator Config Connector
 ## demonstration. Installation imports the caller-supplied service-account JSON
@@ -1416,7 +1438,7 @@ e2e-tilt-cluster-config-connector-gcp-run: ## Create then delete a real Pub/Sub 
 	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
 	RAILGRID_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
 	RAILGRID_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
-		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubLifecycle$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubLifecycle$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Smoke only the already-enabled stable Pub/Sub Template. Installation and
 ## Template enablement are separate manual actions; this target creates and
@@ -1440,7 +1462,7 @@ e2e-tilt-cluster-config-connector-smoke: ## Create then delete one real Pub/Sub 
 	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
 	RAILGRID_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
 	RAILGRID_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
-		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubSmoke$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubSmoke$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-tilt-cluster-config-connector-gcp-smoke: e2e-tilt-cluster-config-connector-smoke
 
@@ -2689,7 +2711,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
+verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 
@@ -2718,28 +2740,28 @@ e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, 
 	RAILGRID_AGENT_IMAGE=ghcr.io/railgrid/railgrid-agent \
 	RAILGRID_AGENT_IMAGE_TAG=test \
 	RAILGRID_AGENT_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-ssh: build ## Run SSH server-mode e2e suite (hub-only cluster)
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, push-to-main only in CI)
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Docs-install e2e. These suites execute the hack/install/ scripts that
 ## docs/install-external-kcp.md and docs/install-embedded-kcp.md quote,
@@ -2755,7 +2777,7 @@ e2e-install-external: build ## Run docs install e2e (two-shard kcp via kcp-opera
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/installexternal/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/installexternal/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-install-embedded: build ## Run docs install e2e (embedded kcp + gateway)
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
@@ -2763,7 +2785,7 @@ e2e-install-embedded: build ## Run docs install e2e (embedded kcp + gateway)
 	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
 	RAILGRID_HUB_IMAGE_TAG=test \
 	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/installembedded/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test -count=1 ./test/e2e/suites/installembedded/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-all: build ## Run all e2e suites
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
@@ -2774,7 +2796,7 @@ e2e-all: build ## Run all e2e suites
 	RAILGRID_AGENT_IMAGE=ghcr.io/railgrid/railgrid-agent \
 	RAILGRID_AGENT_IMAGE_TAG=test \
 	RAILGRID_AGENT_IMAGE_PULL_POLICY=Never \
-	go test ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)
+	go test -count=1 ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)
 
 e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging
 	$(MAKE) e2e-standalone E2E_FLAGS="--keep-clusters"
@@ -2804,9 +2826,6 @@ fix-lint-model-connections: $(GOLANGCI_LINT) ## Format model connection changes 
 test-app-studio-portal: ## Run the App Studio portal regression suite
 	cd providers/app-studio/portal && npm test
 
-.PHONY:
-.PHONY:
-.PHONY:
 .PHONY: package-runner-darwin
 package-runner-darwin: build-runner-darwin ## Package MacOS runner binaries and the local upgrade manager
 	python3 hack/runner-install/package.py $(BINDIR) darwin

@@ -24,9 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -217,7 +215,6 @@ type projectAssistantMutationFailureResult struct {
 const projectAPIInitializingMessage = "App Studio is still initializing for this workspace. Try again shortly."
 const projectMessageMetadataAssistantActionFeed = "assistantActionFeed"
 const projectMessageMetadataAssistantInterrupt = "assistantInterrupt"
-const projectMessageStatusInterrupted = "interrupted"
 const projectMessageStatusPendingPermission = "pending_permission"
 const projectMessageStatusPendingInput = "pending_input"
 const projectMessagePersistTimeout = 5 * time.Second
@@ -357,7 +354,7 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			req.DisplayName = preflight.Naming.DisplayName
 			repoBase = preflight.Naming.RepositoryName
 		}
-	} else if req.Prompt != "" && !(req.DisplayName != "" && selectedTemplate != nil) {
+	} else if req.Prompt != "" && (req.DisplayName == "" || selectedTemplate == nil) {
 		// Skip inference when the caller already committed both a name and a
 		// template — the wizard's blueprint step (POST /api/projects/plan)
 		// already ran the preflight, so re-running it here would double the
@@ -518,20 +515,26 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 
 // projectFinalizersForCreate protects the short interval between a Project
 // create response and its first controller reconcile. API-created Projects
-// already know their tenant annotations, so installing the attachment
-// finalizer here ensures a direct delete cannot bypass blob cleanup. Projects
-// created through KCP do not get a finalizer until the controller has verified
-// the same scope.
+// already know their tenant annotations, so installing the finalizers here
+// ensures a delete that lands before the first reconcile still has a cleanup
+// owner. Projects created directly through kcp do not get one until the
+// controller has verified the same scope.
+//
+// Both finalizers matter now that deletion is a plain CR delete (Cut D.4):
+// ai.railgrid.ai/instances carries the whole teardown chain
+// (controller/project/teardown.go) and the attachment finalizer carries blob
+// cleanup, which may live in a different backend.
 func (s *Server) projectFinalizersForCreate(id identity) []string {
 	if s == nil || strings.TrimSpace(id.orgUUID) == "" || strings.TrimSpace(id.workspaceUUID) == "" {
 		return nil
 	}
+	finalizers := []string{aiv1alpha1.ProjectFinalizer}
 	if s.attachments == nil {
 		if _, ok := s.store.(store.AttachmentStore); !ok {
-			return nil
+			return finalizers
 		}
 	}
-	return []string{store.AttachmentStorageFinalizer}
+	return append(finalizers, store.AttachmentStorageFinalizer)
 }
 
 func resolveProjectCreateTemplate(ctx context.Context, c *asclient.Client, name string, inferred bool) (*projectTemplateInfo, error) {
@@ -611,43 +614,6 @@ func (s *Server) cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Cli
 		_ = c.Projects().Delete(ctx, name, metav1.DeleteOptions{})
 	}
 }
-
-// projectRepositoryForDeletion returns the Code Repository an opt-in
-// deleteRepository request may delete: the one App Studio created for this
-// project and that this project incarnation still claims. It returns "" when
-// there is nothing to delete (no binding, or the Repository is already gone)
-// and a Conflict when the repository is adopted or not owned by the project —
-// adopted repositories are never deleted by App Studio.
-func projectRepositoryForDeletion(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (string, error) {
-	if p == nil || p.Spec.Repository == nil {
-		return "", nil
-	}
-	ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef)
-	if ref == "" {
-		return "", nil
-	}
-	adoptedConflict := newConflictError(fmt.Sprintf("repository %q was adopted (imported) into this project and App Studio never deletes adopted repositories; delete the project without deleteRepository, and remove the repository through the Code provider if needed", ref))
-	if p.Spec.Repository.Adopted {
-		return "", adoptedConflict
-	}
-	repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, ref, metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", nil
-		}
-		return "", codeProviderRequestError("get Code repository", err)
-	}
-	if repositoryAdopted(repo) {
-		return "", adoptedConflict
-	}
-	claimedBy := strings.TrimSpace(repo.GetLabels()[projectRepositoryProjectLabel])
-	claimedUID := strings.TrimSpace(repo.GetAnnotations()[projectRepositoryUIDAnnotation])
-	if claimedBy != strings.TrimSpace(p.Name) || (claimedUID != "" && claimedUID != string(p.UID)) {
-		return "", newConflictError(fmt.Sprintf("repository %q is not owned by project %q; it was not deleted", ref, p.Name))
-	}
-	return ref, nil
-}
-
 func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
@@ -759,163 +725,6 @@ func (s *Server) reserveProjectExternalOperation(
 	}
 	return release, true
 }
-
-func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
-	c, id, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
-	}
-	name := mux.Vars(r)["project"]
-	expectedUID := strings.TrimSpace(r.URL.Query().Get("uid"))
-	if expectedUID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "project UID is required; refresh the project list and try again")
-		return
-	}
-	deleteRepository := false
-	if raw := strings.TrimSpace(r.URL.Query().Get("deleteRepository")); raw != "" {
-		parsed, err := strconv.ParseBool(raw)
-		if err != nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "deleteRepository must be true or false")
-			return
-		}
-		deleteRepository = parsed
-	}
-	p, err := c.Projects().Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	if string(p.UID) != expectedUID {
-		writeStatus(w, http.StatusConflict, "Conflict", "project identity changed; refresh the project list before deleting")
-		return
-	}
-	// Validate an opt-in repository deletion before any side effect, so a
-	// refusal (adopted or foreign repository) leaves the project untouched.
-	deletableRepository := ""
-	if deleteRepository {
-		deletableRepository, err = projectRepositoryForDeletion(r.Context(), c, p)
-		if err != nil {
-			writeProjectError(w, err)
-			return
-		}
-	}
-	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
-	s.forgetProjectThumbnailCapture(id, p)
-	releaseAssistantReservation, ok := s.reserveProjectExternalOperation(w, r.Context(), id, p, "deleting this project")
-	if !ok {
-		return
-	}
-	defer releaseAssistantReservation()
-	// Cached coding environments are intentionally retained after a terminal
-	// assistant turn, but remain owned by the Project. Delete the exact cache
-	// before the Project CR so pre-ownerReference caches cannot become orphans.
-	// New caches also carry a Project ownerReference as the controller/kubectl
-	// deletion backstop.
-	if err := s.deleteProjectAssistantRunSandboxCache(r.Context(), c, id, p); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	// Instances are torn down by the Project reconciler's finalizer when the
-	// CR below is deleted (ownerReferences cover the no-controller case).
-	// App-access RBAC grants reference the instance by name only and become
-	// inert once it is gone; the share dialog can always clean strays.
-	// Repositories deliberately SURVIVE project deletion by default — git is
-	// the durable source of truth, and deleting a workspace UI concept must
-	// never destroy the user's code. Deletion only releases the claim on a
-	// repository this project owns, so the repository becomes importable
-	// again. With deleteRepository=true the caller explicitly asks to delete
-	// the repository App Studio created for this project: the Code
-	// Repository is deleted as the caller through the Code provider's
-	// APIExport, and its finalizer deletes the git-host repository. It is
-	// deleted before the Project so a failure leaves the project in place
-	// and the request retryable.
-	if deletableRepository != "" {
-		if err := c.Resource(codeRepositoryResource, "").Delete(r.Context(), deletableRepository, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			writeProjectError(w, codeProviderRequestError(fmt.Sprintf("delete Code repository %q", deletableRepository), err))
-			return
-		}
-	} else if p.Spec.Repository != nil {
-		if ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef); ref != "" {
-			if repo, err := c.Resource(codeRepositoryResource, "").Get(r.Context(), ref, metav1.GetOptions{}); err == nil &&
-				strings.TrimSpace(repo.GetLabels()[projectRepositoryProjectLabel]) == strings.TrimSpace(p.Name) {
-				if err := releaseProjectRepository(r.Context(), c, ref); err != nil {
-					klog.FromContext(r.Context()).Error(err, "release project repository claim", "project", name, "repository", ref)
-				}
-			}
-		}
-	}
-	const attachmentCleanupFinalizer = store.AttachmentStorageFinalizer
-	if !slices.Contains(p.Finalizers, attachmentCleanupFinalizer) {
-		next := p.DeepCopy()
-		next.Finalizers = append(next.Finalizers, attachmentCleanupFinalizer)
-		p, err = c.Projects().Update(r.Context(), next, metav1.UpdateOptions{})
-		if err != nil {
-			writeProjectError(w, err)
-			return
-		}
-	}
-	uid := p.UID
-	if err := c.Projects().Delete(r.Context(), name, metav1.DeleteOptions{
-		Preconditions: &metav1.Preconditions{UID: &uid},
-	}); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	if s.store != nil {
-		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
-		if err := s.store.DeleteProjectMessages(cleanupCtx, messageScope); err != nil {
-			cancelCleanup()
-			writeStatus(w, http.StatusInternalServerError, "InternalError", "delete project assistant data: "+err.Error())
-			return
-		}
-		cancelCleanup()
-	}
-	// Attachment storage is an optional capability layered beside the message
-	// store. The normal production wiring uses one store and the call above is
-	// atomic with message cleanup; keep this explicit fallback for tests or
-	// deployments that provide a separate attachment backend.
-	if s.attachments != nil && !s.attachmentsInStore {
-		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
-		if err := s.attachments.DeleteProjectAttachments(cleanupCtx, messageScope); err != nil {
-			cancelCleanup()
-			writeStatus(w, http.StatusInternalServerError, "InternalError", "delete project attachments: "+err.Error())
-			return
-		}
-		cancelCleanup()
-	}
-	current, err := c.Projects().Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			writeProjectError(w, err)
-			return
-		}
-		current = nil
-	}
-	if current != nil && slices.Contains(current.Finalizers, attachmentCleanupFinalizer) {
-		next := current.DeepCopy()
-		next.Finalizers = slices.DeleteFunc(next.Finalizers, func(value string) bool { return value == attachmentCleanupFinalizer })
-		if _, err := c.Projects().Update(r.Context(), next, metav1.UpdateOptions{}); err != nil {
-			writeProjectError(w, err)
-			return
-		}
-	}
-	if thumbnailStore, ok := s.projectThumbnailStore(); ok {
-		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
-		if err := thumbnailStore.DeleteProjectThumbnail(cleanupCtx, messageScope); err != nil {
-			klog.FromContext(r.Context()).Error(err, "delete project thumbnail", "project", name)
-		}
-		cancelCleanup()
-	}
-	if s.workspaces != nil {
-		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
-		if err := s.workspaces.DeleteSnapshots(cleanupCtx, projectWorkspaceScope(id, p)); err != nil {
-			klog.FromContext(r.Context()).Error(err, "delete project workspace snapshots", "project", name)
-		}
-		cancelCleanup()
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {

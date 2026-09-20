@@ -123,4 +123,4 @@ func TestRetiredRouteFixtureIsNotASecondRouteTable(t *testing.T) {
 }
 
 // retiredRouteCount is the size of the /api table this migration replaced.
-const retiredRouteCount = 86
+const retiredRouteCount = 85

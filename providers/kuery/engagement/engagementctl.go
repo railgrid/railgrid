@@ -23,6 +23,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/railgrid/provider-sdk/sharding"
+
 	kuerystore "github.com/railgrid/kuery/pkg/store"
 
 	kueryv1alpha1 "github.com/railgrid/provider-kuery/apis/v1alpha1"
@@ -65,30 +67,33 @@ type engagementReconciler struct {
 }
 
 // setupEngagementReconciler registers the reconciler on the provider
-// workspace's manager, watching Engagements and the per-edge Leases whose
-// expiry is what makes an engagement stale.
+// workspace's manager, watching Engagements and the per-edge claim Leases
+// whose expiry is what makes an engagement stale.
 func setupEngagementReconciler(mgr manager.Manager, c *Controller) error {
 	r := &engagementReconciler{client: mgr.GetClient(), controller: c, now: time.Now}
 	return builder.ControllerManagedBy(mgr).
 		Named("kuery-engagement").
 		For(&kueryv1alpha1.Engagement{}).
-		Watches(&coordinationv1.Lease{}, handler.EnqueueRequestsFromMapFunc(engagementForLease)).
+		Watches(&coordinationv1.Lease{}, handler.EnqueueRequestsFromMapFunc(engagementForLease(c.claims))).
 		Complete(r)
 }
 
-// engagementForLease maps a per-edge Lease back to its Engagement. The Lease
-// name is the Engagement name under a fixed prefix precisely so this needs no
-// index; anything else in the namespace (the controller lease, for one) maps
-// to nothing.
-func engagementForLease(_ context.Context, object client.Object) []reconcile.Request {
-	if object.GetNamespace() != claimNamespace {
-		return nil
+// engagementForLease maps a per-edge claim Lease back to its Engagement. The
+// shard stamps the key it claims onto every Lease it writes, so this needs no
+// index and no knowledge of how the Lease was named; anything else in the
+// namespace (the controller lease, for one) maps to nothing.
+func engagementForLease(claims *sharding.Shard) handler.MapFunc {
+	return func(_ context.Context, object client.Object) []reconcile.Request {
+		storeName, ok := claims.KeyFor(object)
+		if !ok {
+			return nil
+		}
+		cluster, edge := SplitStoreName(storeName)
+		if cluster == "" || edge == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: EngagementName(cluster, edge)}}}
 	}
-	name, ok := engagementNameFromLease(object.GetName())
-	if !ok || name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: name}}}
 }
 
 // Reconcile settles one Engagement against its Lease.
@@ -111,7 +116,7 @@ func (r *engagementReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	storeName := StoreName(engagement.Spec.Cluster, engagement.Spec.Edge)
 	now := r.now()
 
-	holder, err := r.leaseHolderFor(ctx, engagement.Name, now)
+	holder, err := r.leaseHolderFor(ctx, storeName, now)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -168,17 +173,21 @@ func (r *engagementReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 // leaseHolderFor reads the edge's claim. A missing Lease is "nobody", not an
-// error: it is exactly what a released or never-taken claim looks like.
-func (r *engagementReconciler) leaseHolderFor(ctx context.Context, engagementName string, now time.Time) (string, error) {
+// error: it is exactly what a released or never-taken claim looks like. An
+// expired one is nobody too, on the Lease's own declared terms — that judgment
+// lives in the SDK, so the reconciler and the replicas holding the claims can
+// never disagree about who owns an edge.
+func (r *engagementReconciler) leaseHolderFor(ctx context.Context, storeName string, now time.Time) (string, error) {
+	claims := r.controller.claims
 	lease := &coordinationv1.Lease{}
-	key := client.ObjectKey{Namespace: claimNamespace, Name: leaseName(engagementName)}
+	key := client.ObjectKey{Namespace: claimNamespace, Name: claims.LeaseName(storeName)}
 	if err := r.client.Get(ctx, key, lease); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", nil
 		}
-		return "", fmt.Errorf("reading claim for %s: %w", engagementName, err)
+		return "", fmt.Errorf("reading claim for %s: %w", storeName, err)
 	}
-	return leaseHolder(lease, now), nil
+	return sharding.HolderOf(lease, now), nil
 }
 
 // staleCheckDelay is when to look again at a healthy engagement: one claim TTL

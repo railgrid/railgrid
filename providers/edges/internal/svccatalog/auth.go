@@ -67,7 +67,7 @@ func Apply(ctx context.Context, dialer haclient.Dialer, target haclient.Target, 
 	case AuthPihole:
 		sid, err := piholeLogin(ctx, dialer, target, token)
 		if err != nil {
-			return fmt.Errorf("Pi-hole login failed: %w", err)
+			return fmt.Errorf("pi-hole login failed: %w", err)
 		}
 		header.Set("X-FTL-SID", sid)
 	case AuthNone:

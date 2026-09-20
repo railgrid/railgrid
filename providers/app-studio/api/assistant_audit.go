@@ -498,9 +498,13 @@ func projectAssistantAuditToolContractDigest(groups ...[]*schema.ToolInfo) strin
 				item.Risk, _ = info.Extra["risk"].(string)
 				item.ParallelSafe, _ = info.Extra["parallelSafe"].(bool)
 			}
+			// ParamsOneOf is opaque (no exported fields); the model-visible
+			// contract is the JSON schema it derives.
 			if item.Parameters == "" && info.ParamsOneOf != nil {
-				if raw, err := json.Marshal(info.ParamsOneOf); err == nil {
-					item.Parameters = string(raw)
+				if parameters, err := info.ToJSONSchema(); err == nil && parameters != nil {
+					if raw, err := json.Marshal(parameters); err == nil {
+						item.Parameters = string(raw)
+					}
 				}
 			}
 			contracts = append(contracts, item)

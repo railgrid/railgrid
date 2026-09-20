@@ -180,6 +180,7 @@ func runServe() {
 
 	codeActions := actions.New(callers, actions.ExportClient(kcpConfig), backends)
 	codeActions.Credentials = credentials
+	codeActions.Bundles = bundles
 	codeActions.SnapshotDir = filepath.Join(bundles.Dir(), "git-snapshots")
 	// Class (d) is three fixed paths under /oauth/, so the flow registers them
 	// on a sub-mux of its own and serve mounts that as the whole class.

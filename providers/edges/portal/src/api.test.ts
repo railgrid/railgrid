@@ -534,7 +534,16 @@ describe('unchanged edge fleet and CRUD contracts', () => {
     expect(calls[0]?.body).toEqual({
       apiVersion: 'v1',
       kind: 'Secret',
-      metadata: { name: 'railgrid-edges-svc-ha', namespace: 'railgrid-system' },
+      // The owner label is what keeps this Secret inside the edges provider's
+      // label-scoped `secrets` permission claim. This write goes through the
+      // hub kcp proxy as the user, so kcp's virtual-workspace admission never
+      // sees it and nothing else would stamp the label — and an unlabelled
+      // token is one the validation reconciler cannot read.
+      metadata: {
+        name: 'railgrid-edges-svc-ha',
+        namespace: 'railgrid-system',
+        labels: { 'railgrid.ai/owner': 'edges' },
+      },
       type: 'Opaque',
       stringData: { token: 'long-lived-token' },
     })

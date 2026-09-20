@@ -100,13 +100,10 @@ func watchRunSandboxInstance(ctx context.Context, rc asclient.ResourceClient, na
 				pause()
 			}
 		} else {
-			done, err, lastSeen := followRunSandboxInstance(ctx, wi, name, condition)
+			done, err := followRunSandboxInstance(ctx, wi, name, condition)
 			wi.Stop()
 			if done || err != nil {
 				return err
-			}
-			if lastSeen != "" {
-				resourceVersion = lastSeen
 			}
 		}
 		// The stream ended without a verdict: re-read so a transition that
@@ -118,32 +115,31 @@ func watchRunSandboxInstance(ctx context.Context, rc asclient.ResourceClient, na
 }
 
 // followRunSandboxInstance consumes one watch stream. It returns the
-// condition's verdict, or (false, nil) when the stream ends without one,
-// along with the last resourceVersion observed.
-func followRunSandboxInstance(ctx context.Context, wi watch.Interface, name string, condition runSandboxInstanceCondition) (done bool, err error, lastSeen string) {
+// condition's verdict, or (false, nil) when the stream ends without one. The
+// resourceVersion the stream reached is deliberately not reported: the caller
+// always re-reads the object before reopening a watch, and that read is what
+// establishes the version to resume from.
+func followRunSandboxInstance(ctx context.Context, wi watch.Interface, name string, condition runSandboxInstanceCondition) (bool, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err(), lastSeen
+			return false, ctx.Err()
 		case ev, ok := <-wi.ResultChan():
 			if !ok {
-				return false, nil, lastSeen
+				return false, nil
 			}
 			obj, isObject := ev.Object.(*unstructured.Unstructured)
-			if isObject && obj.GetResourceVersion() != "" {
-				lastSeen = obj.GetResourceVersion()
-			}
 			switch ev.Type {
 			case watch.Added, watch.Modified, watch.Deleted:
 				if !isObject || obj.GetName() != name {
 					continue
 				}
 				if done, err := condition(obj, ev.Type == watch.Deleted); done || err != nil {
-					return done, err, lastSeen
+					return done, err
 				}
 			case watch.Error:
 				// Expired or otherwise broken: the caller re-reads and reopens.
-				return false, nil, lastSeen
+				return false, nil
 			}
 		}
 	}

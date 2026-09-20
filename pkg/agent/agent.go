@@ -837,13 +837,47 @@ func (a *Agent) newCredentialStore() *tunnel.CredentialStore {
 		},
 	}
 	// A credential from a previous run means this agent has already enrolled;
-	// the join token it was started with (if any) is stale.
+	// the join token it was started with (if any) is stale. That only holds
+	// when the saved credential is for THIS hub and tenant: one left behind by
+	// an agent of the same name pointed at another hub, or at a workspace that
+	// no longer exists, would be presented forever and refused forever.
 	if credential, ok, err := LoadAgentCredential(edgeName); err != nil {
 		klog.Background().Error(err, "could not read the saved agent credential; falling back to the join token")
 	} else if ok {
-		_ = store.Adopt(credential)
+		if reason := a.savedCredentialMismatch(credential); reason != "" {
+			klog.Background().Info("ignoring the saved agent credential; enrolling with the join token",
+				"edgeName", edgeName, "reason", reason)
+		} else {
+			_ = store.Adopt(credential)
+		}
 	}
 	return store
+}
+
+// savedCredentialMismatch reports why a saved credential does not belong to
+// this agent's configured target, or "" when it does. The hub URL is compared
+// without its /clusters/... path (the credential stores the base); the cluster
+// is compared only when the agent was told one explicitly. An expired
+// credential cannot refresh itself and is also a mismatch.
+func (a *Agent) savedCredentialMismatch(credential tunnel.Credential) string {
+	if !credential.ExpiresAt.IsZero() && time.Now().After(credential.ExpiresAt) {
+		return "credential expired at " + credential.ExpiresAt.Format(time.RFC3339)
+	}
+	wantHub := a.opts.HubURL
+	if wantHub == "" && a.hubConfig != nil {
+		wantHub = a.hubConfig.Host
+	}
+	if wantHub != "" && credential.HubURL != "" {
+		wantBase, _ := apiurl.SplitBaseAndCluster(wantHub)
+		gotBase, _ := apiurl.SplitBaseAndCluster(credential.HubURL)
+		if strings.TrimRight(wantBase, "/") != strings.TrimRight(gotBase, "/") {
+			return fmt.Sprintf("credential is for hub %s, agent targets %s", gotBase, wantBase)
+		}
+	}
+	if a.opts.Cluster != "" && credential.ClusterID != "" && credential.ClusterID != a.opts.Cluster {
+		return fmt.Sprintf("credential is for cluster %s, agent targets %s", credential.ClusterID, a.opts.Cluster)
+	}
+	return ""
 }
 
 // refreshHubClientFromCredential rebuilds the agent's kcp client from the

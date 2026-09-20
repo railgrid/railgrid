@@ -125,7 +125,9 @@ func projectAssistantWebFetch(ctx context.Context, raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	// Response bodies are read to completion or abandoned; a close error is
+	// not actionable by the caller.
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, webFetchMaxBody))
 	if err != nil {
 		return "", err
@@ -161,7 +163,9 @@ func (s *Server) projectAssistantWebSearch(ctx context.Context, req projectAssis
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	// Response bodies are read to completion or abandoned; a close error is
+	// not actionable by the caller.
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, webFetchMaxBody))
 	if err != nil {
 		return "", err

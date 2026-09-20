@@ -26,6 +26,7 @@ import (
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/commitbundle"
+	"github.com/railgrid/provider-code/commitexec"
 )
 
 var repositoryCheckoutsGVR = codev1alpha1.SchemeGroupVersion.WithResource("repositorycheckouts")
@@ -112,7 +113,7 @@ func checkoutRepository(ctx context.Context, dyn dynamic.Interface, bundles comm
 	default:
 		return nil, checkoutRepositoryOutput{}, fmt.Errorf("unsupported binaryEncoding %q: use %q or omit it", in.BinaryEncoding, commitbundle.EncodingBase64)
 	}
-	if _, err := getRepository(ctx, dyn, in.RepositoryRef); err != nil {
+	if _, err := commitexec.GetRepository(ctx, dyn, in.RepositoryRef); err != nil {
 		return nil, checkoutRepositoryOutput{}, err
 	}
 

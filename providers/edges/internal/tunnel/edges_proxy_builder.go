@@ -130,7 +130,7 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 		}
 
 		if req.Resource == serviceResource {
-			p.serveService(w, r, token, req, obj)
+			p.serveService(w, r, req, obj)
 			return
 		}
 

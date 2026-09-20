@@ -123,20 +123,20 @@ type Provider struct {
 	// hub renders per-organization install instructions. Nil when the provider
 	// is platform-operated only.
 	SelfHosting *SelfHosting
-
-	// EdgeProxyAccess mirrors CatalogEntry.spec.edgeProxyAccess: on tenant
-	// Enable, the hub grants the provider SA the "proxy" verb on edges in
-	// the tenant workspace (see pkg/hub/restapi/providers_enable.go).
-	EdgeProxyAccess bool
 	// HubAccess mirrors CatalogEntry.spec.hubAccess: the hub REST
 	// capabilities the provider requests. Declaring grants nothing; they are
 	// enforced only as accepted by a tenant (pkg/hub/hubaccess).
 	HubAccess []providersv1alpha1.ProviderHubAccess
 	// WorkspaceCluster is the logical cluster ID of the provider's
-	// sub-workspace (Workspace.spec.cluster of root:railgrid:providers:{name}).
-	// It anchors the qualified RBAC subject the edge-proxy grant binds —
-	// the same cluster ID kcp puts in the provider SA's token claims. Set
-	// via SetWorkspaceCluster after provisioning; empty until then.
+	// sub-workspace (Workspace.spec.cluster of root:railgrid:providers:{name})
+	// — the same cluster name kcp embeds in the provider SA's token claims.
+	// Set via SetWorkspaceCluster after provisioning; empty until then.
+	//
+	// Its one reader today is the admin providers API (pkg/hub/admin), which
+	// shows an operator which workspace a registered provider actually lives
+	// in. It used to anchor the qualified RBAC subject of the Enable-time
+	// edges-proxy grant; that grant was deleted (no provider authenticates as
+	// its own SA against a tenant workspace any more).
 	WorkspaceCluster string
 
 	// CatalogEntryCluster is the logical cluster the provider's CatalogEntry
@@ -287,6 +287,13 @@ type PermissionClaim struct {
 	Resource     string
 	Verbs        []string
 	TenantScoped bool
+	// MatchLabels mirrors the claim's spec selector: the label set a claimed
+	// object must carry for the provider to see or write it. Empty means the
+	// claim covers every object of the resource in the workspace, which the
+	// contract allows only outside ScopedCoreResources
+	// (provider-sdk/install). It is what the hub writes onto the accepted
+	// claim's selector in the tenant's APIBinding.
+	MatchLabels map[string]string
 }
 
 // NavChild mirrors CatalogEntry.spec.ui.children — a single sub-nav
@@ -686,6 +693,7 @@ func cloneProvider(p Provider) Provider {
 	p.PermissionClaims = append([]PermissionClaim(nil), p.PermissionClaims...)
 	for i := range p.PermissionClaims {
 		p.PermissionClaims[i].Verbs = append([]string(nil), p.PermissionClaims[i].Verbs...)
+		p.PermissionClaims[i].MatchLabels = copyLabels(p.PermissionClaims[i].MatchLabels)
 	}
 	p.APIGroups = append([]string(nil), p.APIGroups...)
 	p.Children = append([]NavChild(nil), p.Children...)
@@ -835,4 +843,17 @@ func ParseURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("url %q must be absolute (scheme + host)", raw)
 	}
 	return u, nil
+}
+
+// copyLabels returns an independent copy of a claim selector's label set, or
+// nil for an empty one, so a snapshot never aliases the registry's map.
+func copyLabels(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }

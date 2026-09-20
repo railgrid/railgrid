@@ -216,3 +216,79 @@ func TestSchemaNamesAreSorted(t *testing.T) {
 		t.Errorf("names = %v", names)
 	}
 }
+
+// TestExportClaimsRenderTheSelectorAsDefaultSelector pins the one translation
+// this generator does on a claim's scope: the manifest calls it `selector`,
+// kcp's APIExport calls it `defaultSelector`. Getting the name wrong is silent
+// — kcp ignores an unknown field on a claim and serves the claim unscoped, so
+// the provider would keep blanket access with a manifest that says otherwise.
+func TestExportClaimsRenderTheSelectorAsDefaultSelector(t *testing.T) {
+	claims := ExportClaims([]PermissionClaim{
+		{
+			Resource:     "secrets",
+			Verbs:        []string{"get"},
+			TenantScoped: true,
+			Selector:     &PermissionClaimSelector{MatchLabels: map[string]string{"railgrid.ai/owner": "fixture"}},
+		},
+		{Resource: "configmaps", Verbs: []string{"get"}},
+		{Resource: "namespaces", Verbs: []string{"get"}, Selector: &PermissionClaimSelector{}},
+	})
+
+	scoped := claims[0].(map[string]any)
+	if _, ok := scoped["selector"]; ok {
+		t.Errorf("the manifest spelling leaked into the APIExport: %+v", scoped)
+	}
+	selector, ok := scoped["defaultSelector"].(map[string]any)
+	if !ok {
+		t.Fatalf("defaultSelector = %+v, want a mapping", scoped["defaultSelector"])
+	}
+	matchLabels, ok := selector["matchLabels"].(map[string]any)
+	if !ok {
+		t.Fatalf("matchLabels = %+v, want a mapping", selector["matchLabels"])
+	}
+	if got := matchLabels["railgrid.ai/owner"]; got != "fixture" {
+		t.Errorf("matchLabels[railgrid.ai/owner] = %v, want fixture", got)
+	}
+
+	// No selector, and an empty one, both mean "unscoped" — kcp reads an
+	// absent defaultSelector as matchAll, and writing an empty mapping instead
+	// would be a selector that matches nothing.
+	if _, ok := claims[1].(map[string]any)["defaultSelector"]; ok {
+		t.Errorf("an unscoped claim grew a defaultSelector: %+v", claims[1])
+	}
+	if _, ok := claims[2].(map[string]any)["defaultSelector"]; ok {
+		t.Errorf("an empty selector must be omitted, not written: %+v", claims[2])
+	}
+}
+
+// TestGenerateRoundTripsTheSelector checks the whole path from the manifest
+// file to the rendered YAML, since the field has to survive both the
+// CatalogEntry parse and the export marshal.
+func TestGenerateRoundTripsTheSelector(t *testing.T) {
+	manifest := filepath.Join(t.TempDir(), "manifest.yaml")
+	if err := os.WriteFile(manifest, []byte(`apiVersion: providers.railgrid.ai/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: fixture
+spec:
+  apiExport:
+    name: fixture.providers.railgrid.ai
+    permissionClaims:
+      - resource: secrets
+        verbs: [get]
+        tenantScoped: true
+        selector:
+          matchLabels:
+            railgrid.ai/owner: fixture
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	content, err := Generate(Options{ManifestPath: manifest})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(string(content), "defaultSelector:") ||
+		!strings.Contains(string(content), "railgrid.ai/owner: fixture") {
+		t.Fatalf("the selector did not reach the generated export:\n%s", content)
+	}
+}

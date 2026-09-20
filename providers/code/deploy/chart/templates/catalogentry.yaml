@@ -50,6 +50,12 @@ data:
           - resource: secrets
             verbs: [get, list, watch, create, update, patch, delete]
             tenantScoped: true
+            # Only Secrets this provider wrote (deploy keys, connection tokens);
+            # every writer stamps railgrid.ai/owner=code (docs/provider-connectivity-contract.md
+            # §"Label-scoped claims").
+            selector:
+              matchLabels:
+                railgrid.ai/owner: code
       # Lets an organization run this provider in its own cluster
       # (docs/byo-providers.md). Keep manifest.yaml and
       # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
@@ -66,11 +72,43 @@ data:
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
-      # Twelve catalogued actions, all Repository-bound. The provider also
-      # serves stage_snapshot on the same route, deliberately uncatalogued: its
-      # 25 MiB body cannot be declared under limits.maxInputBytes, which the
+      # Two verbs that are NOT actions. stage_snapshot and stage_commit_bundle are
+      # served on the same actions route as the catalogued verbs below, but their
+      # bodies (a 25 MiB git bundle, a 48 MiB source tree) cannot be described under
+      # limits.maxInputBytes, which the CatalogEntry API caps at 1 MiB — so they are
+      # deliberately absent from spec.actions (docs/provider-actions.md,
+      # "Uncatalogued large-upload verbs").
+      #
+      # Absent from spec.actions is not the same as absent from the CatalogEntry.
+      # The hub's identity policy (pkg/hub/identity/policy.go, clause C) mints
+      # `create` on {resource}/{verb} only for a coordinate the owning provider
+      # DECLARES — as an action OR as a data-plane verb. Undeclared, these two were
+      # ungrantable: no consumer identity (an App Studio project, a factory runner)
+      # could ever be given them, so only a caller whose workspace RBAC already
+      # allowed them could stage an upload at all. Declaring them grants nothing and
+      # serves nothing; it makes the coordinate machine-readable so it CAN be
+      # granted. The two gates in actions/server.go are unchanged.
+      dataPlane:
+        verbs:
+          - resource: repositories
+            verb: stage_snapshot
+            description: "Stage a git bundle and return the opaque bundleRef that the catalogued prepare_snapshot and publish_snapshot then name. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
+            stream: false
+            readOnly: false
+          - resource: repositories
+            verb: stage_commit_bundle
+            description: "Stage a source tree and return the bundleRef/bundleDigest pair the catalogued commit names instead of inline files. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
+            stream: false
+            readOnly: false
+      # Fourteen catalogued actions: thirteen bound to a Repository and one
+      # (mint_registry_token) to a Connection. The provider also serves two
+      # deliberately uncatalogued verbs on the same route, stage_snapshot and
+      # stage_commit_bundle: their bodies (a 25 MiB git bundle, a 48 MiB source
+      # tree) cannot be declared under limits.maxInputBytes, which the
       # CatalogEntry API caps at 1 MiB. See docs/provider-actions.md,
-      # "Uncatalogued large-upload verbs". This list must stay identical to
+      # "Uncatalogued large-upload verbs". Both of those verbs ARE declared,
+      # as data-plane verbs above, so their {resource}/{verb} coordinate stays
+      # grantable. This list must stay identical to
       # providers/code/manifest.yaml (actions_catalog_test.go enforces it).
       actions:
       - id: branches/v1
@@ -626,6 +664,94 @@ data:
       # an image built from a tenant's repository never has to read this
       # provider's Connection Secret to get a credential — see
       # tenant/registry_token.go and docs/code-provider-architecture.md.
+      - id: commit/v1
+        displayName: Commit files
+        description: Write and delete files in a managed Repository. The provider stores
+          the source bundle and creates a RepositoryCommit; the result names that
+          object, which the caller watches for the landed commit. Files over the
+          1 MiB input ceiling are uploaded with stage_commit_bundle and named here
+          as bundleRef.
+        boundResource:
+          apiVersion: code.railgrid.ai/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          properties:
+            repositoryUID:
+              type: string
+              minLength: 1
+              maxLength: 253
+            message:
+              type: string
+              maxLength: 512
+            branch:
+              type: string
+              maxLength: 255
+            files:
+              type: array
+              maxItems: 500
+              items:
+                type: object
+                required:
+                - path
+                properties:
+                  path:
+                    type: string
+                    minLength: 1
+                    maxLength: 1024
+                  content:
+                    type: string
+                  encoding:
+                    type: string
+                    enum:
+                    - utf-8
+                    - base64
+                  delete:
+                    type: boolean
+                additionalProperties: false
+            bundleRef:
+              type: string
+              maxLength: 253
+            bundleDigest:
+              type: string
+              maxLength: 96
+          additionalProperties: false
+        outputSchema:
+          type: object
+          required:
+          - commit
+          properties:
+            commit:
+              type: object
+              required:
+              - name
+              - uid
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                uid:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+              additionalProperties: false
+          additionalProperties: false
+        schemaDigest: sha256:7ee0cdf571702b8014a79bd01a8de43b3950de1fc36e45aed6b1ea0eb5ab77f1
+        executionMode: async
+        readOnly: false
+        risk: high
+        idempotency: none
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 1048576
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
       - id: mint_registry_token/v1
         displayName: Mint a registry pull token
         description: Issue a short-lived image-pull credential for the connection's

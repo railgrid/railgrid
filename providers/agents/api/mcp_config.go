@@ -327,11 +327,9 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, triggerSummary{}, err
 		}
-		req := createTriggerRequest{
-			Name: in.Name, AgentRef: in.AgentRef, Source: in.Source,
-			ConnectionRef: in.ConnectionRef, Filter: in.Filter, Task: in.Task,
-			Suspend: in.Suspend, ChannelRef: in.ChannelRef,
-		}
+		// Field-for-field mirror of createTriggerRequest (only the jsonschema
+		// tags differ), so the conversion keeps the two in lockstep.
+		req := createTriggerRequest(in)
 		t, err := s.applyTriggerCreate(ctx, c, s.mcpIdentity(ctx, r).clusterID, &req)
 		if err != nil {
 			return nil, triggerSummary{}, err
@@ -390,10 +388,9 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, toolsetSummary{}, err
 		}
-		req := toolsetRequest{
-			Name: in.Name, DisplayName: in.DisplayName, Description: in.Description,
-			Families: in.Families, Connections: in.Connections, RequireApproval: in.RequireApproval,
-		}
+		// Field-for-field mirror of toolsetRequest (only the jsonschema tags
+		// differ), so the conversion keeps the two in lockstep.
+		req := toolsetRequest(in)
 		ts, err := applyToolsetCreate(ctx, c, &req)
 		if err != nil {
 			return nil, toolsetSummary{}, err

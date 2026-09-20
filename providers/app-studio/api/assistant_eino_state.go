@@ -251,7 +251,9 @@ func (s *projectEinoAssistantRunState) ConfigureSandboxCapability(eligibility Co
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.configureSandboxCapabilityLocked(nil, eligibility, initializer)
+	s.configureSandboxCapabilityLocked(eligibility, initializer)
+	// No run/segment context owns this setup.
+	s.sandboxInitContext = nil
 }
 
 // ConfigureSandboxCapabilityWithContext configures lazy sandbox setup and the
@@ -264,18 +266,14 @@ func (s *projectEinoAssistantRunState) ConfigureSandboxCapabilityWithContext(run
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.configureSandboxCapabilityLocked(runCtx, eligibility, initializer)
+	s.configureSandboxCapabilityLocked(eligibility, initializer)
+	s.sandboxInitContext = runCtx
 }
 
-func (s *projectEinoAssistantRunState) configureSandboxCapabilityLocked(runCtx context.Context, eligibility CodingSandboxEligibility, initializer func(context.Context) (*projectAssistantRunSandbox, func(), error)) {
+func (s *projectEinoAssistantRunState) configureSandboxCapabilityLocked(eligibility CodingSandboxEligibility, initializer func(context.Context) (*projectAssistantRunSandbox, func(), error)) {
 	copy := eligibility
 	s.sandboxEligibility = &copy
 	s.sandboxInitializer = initializer
-	if runCtx == nil {
-		s.sandboxInitContext = nil
-	} else {
-		s.sandboxInitContext = runCtx
-	}
 }
 
 func (s *projectEinoAssistantRunState) SandboxEligibility() *CodingSandboxEligibility {

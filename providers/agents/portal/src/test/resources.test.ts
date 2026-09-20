@@ -316,9 +316,28 @@ describe('connections', () => {
     const call = kcp.last('/secrets')
     expect(call.method).toBe('PATCH')
     expect(call.contentType).toBe('application/merge-patch+json')
-    expect(call.body).toEqual({ stringData: { token: 'ghp_new' } })
+    // The owner label rides along: the provider's `secrets` claim is scoped to
+    // it, so a Secret written before the claim was narrowed is adopted on the
+    // next rotation rather than staying invisible to the provider forever.
+    expect(call.body).toEqual({
+      metadata: { labels: { 'railgrid.ai/owner': 'agents' } },
+      stringData: { token: 'ghp_new' },
+    })
     // No GET of the Secret: a one-key patch cannot drop the keys it omits.
     expect(kcp.calls.filter((c) => c.method === 'GET' && c.url.includes('/secrets'))).toHaveLength(0)
+  })
+
+  it('stamps the owner label on every Secret it writes', async () => {
+    // Without it the Secret falls outside the provider's label-scoped
+    // `secrets` permission claim: it saves fine here (the browser writes as
+    // the user, through the hub kcp proxy) and is then invisible to the
+    // provider, including to unattended runs, which have no caller token to
+    // borrow. The portal is the only writer of the model credential, so this
+    // assertion is the whole guard.
+    await resources.createConnection({ name: 'gh2', type: 'github', secret: 'ghp_x' })
+    expect(kcp.last('/secrets').body.metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
+    await resources.saveCredential({ name: 'primary', model: 'gpt-4o', apiKey: 'sk-x' })
+    expect(kcp.last('/secrets').body.metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
   })
 
   it('refuses a signing secret on a connection that has no use for one', async () => {

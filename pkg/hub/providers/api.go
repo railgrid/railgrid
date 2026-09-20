@@ -115,11 +115,6 @@ type providerDTO struct {
 	// what the provider's controllers will be able to access in their
 	// workspace before they accept.
 	PermissionClaims []permissionClaimDTO `json:"permissionClaims,omitempty"`
-	// EdgeProxyAccess mirrors CatalogEntry.spec.edgeProxyAccess. Shown in
-	// the Enable confirmation dialog: enabling such a provider grants its
-	// ServiceAccount proxied access to the workspace's edge clusters (verb
-	// "proxy" on edges) for background connections.
-	EdgeProxyAccess bool `json:"edgeProxyAccess,omitempty"`
 	// HubAccess mirrors CatalogEntry.spec.hubAccess: hub REST capabilities
 	// the provider requests, each with the reason the Enable dialog shows.
 	// None applies until the tenant accepts it.
@@ -200,6 +195,12 @@ type permissionClaimDTO struct {
 	Resource     string   `json:"resource"`
 	Verbs        []string `json:"verbs,omitempty"`
 	TenantScoped bool     `json:"tenantScoped,omitempty"`
+	// MatchLabels mirrors the claim's selector. Absent means the claim covers
+	// every object of that resource in the workspace; present means it reaches
+	// only the objects carrying these labels. The Enable dialog shows the
+	// difference, because "this provider may read your Secrets" and "this
+	// provider may read the Secrets it wrote" are not the same consent.
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
 }
 
 type dependencyDTO struct {
@@ -329,6 +330,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 					Resource:     c.Resource,
 					Verbs:        append([]string(nil), c.Verbs...),
 					TenantScoped: c.TenantScoped,
+					MatchLabels:  copyLabels(c.MatchLabels),
 				})
 			}
 			var children []navChildDTO
@@ -423,7 +425,6 @@ func listHandlerFunc(reg *Registry) http.Handler {
 				APIExportName:    p.APIExportName,
 				APIGroups:        p.APIGroups,
 				PermissionClaims: claims,
-				EdgeProxyAccess:  p.EdgeProxyAccess,
 				HubAccess:        p.HubAccess,
 				Builtin:          isBuiltin,
 				Actions:          actions,

@@ -168,3 +168,40 @@ func TestDeletionBlockedMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestClaimSelector pins the translation from a CatalogEntry claim's declared
+// scope to the selector kcp enforces on the tenant's accepted claim.
+//
+// The two cases are not symmetric. An unscoped claim must become matchAll,
+// which is what kcp requires (a selector with neither matchAll nor labels is
+// rejected outright by APIBinding validation). A scoped claim must become a
+// label selector and must NOT also set matchAll, which kcp rejects as
+// "matchLabels cannot be used with matchAll" — and a rejected APIBinding write
+// is an Enable that fails, so this is the difference between a narrowed claim
+// and a provider nobody can turn on.
+func TestClaimSelector(t *testing.T) {
+	unscoped := claimSelector(ProviderClaim{Group: "", Resource: "secrets", Verbs: []string{"get"}})
+	if !unscoped.MatchAll {
+		t.Errorf("an unscoped claim must become matchAll, got %+v", unscoped)
+	}
+	if len(unscoped.MatchLabels) != 0 {
+		t.Errorf("an unscoped claim grew labels: %+v", unscoped)
+	}
+
+	labels := map[string]string{"railgrid.ai/owner": "agents"}
+	scoped := claimSelector(ProviderClaim{Resource: "secrets", Verbs: []string{"get"}, MatchLabels: labels})
+	if scoped.MatchAll {
+		t.Error("a scoped claim must not set matchAll; kcp refuses the pair")
+	}
+	if got := scoped.MatchLabels["railgrid.ai/owner"]; got != "agents" {
+		t.Errorf("matchLabels[railgrid.ai/owner] = %q, want agents", got)
+	}
+
+	// The selector must not alias the caller's map: the registry hands out one
+	// snapshot per Enable and a shared map would let one workspace's binding
+	// mutate another's.
+	scoped.MatchLabels["railgrid.ai/owner"] = "somebody-else"
+	if labels["railgrid.ai/owner"] != "agents" {
+		t.Error("claimSelector aliased the caller's label map")
+	}
+}

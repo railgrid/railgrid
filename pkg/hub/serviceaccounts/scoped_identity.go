@@ -47,9 +47,16 @@ const (
 	// outlives a day is not a scoped identity.
 	ScopedIdentityMaxTokenTTL = 24 * time.Hour
 
-	// ScopedIdentityMinTokenTTL is the floor. Anything shorter spends more
-	// time re-minting than working.
-	ScopedIdentityMinTokenTTL = time.Minute
+	// ScopedIdentityMinTokenTTL is the floor, and it is not a comfort number:
+	// kcp's TokenRequest admission (like upstream Kubernetes) refuses
+	// `spec.expirationSeconds` below ten minutes outright. A floor under that
+	// would let a caller ask for a lifetime the minter can never satisfy, and
+	// the refusal surfaces far from the cause — as a 502 identity_issue_failed
+	// with no hint that the TTL was the problem. Keeping the hub's floor equal
+	// to the API server's means everything this package admits is mintable.
+	// It matches identity.DefaultWorkloadTTL, which is the same ten minutes
+	// for the same reason.
+	ScopedIdentityMinTokenTTL = 10 * time.Minute
 )
 
 // ScopedIdentityShape is everything the minter needs to materialize one
@@ -171,6 +178,16 @@ func DeleteScopedIdentity(ctx context.Context, cs kubernetes.Interface, serviceA
 
 // ClampScopedIdentityTTL bounds a requested token lifetime. Zero or negative
 // means defaultTTL.
+//
+// Both bounds clamp rather than refuse, and the floor clamps UP: a caller
+// asking for five minutes is issued a ten-minute token, not an error and not
+// an unmintable five-minute request. That is deliberate — the alternative,
+// passing a below-floor value through to the TokenRequest, produced a 502 from
+// kcp's admission ("may not specify a duration less than 10 minutes") that
+// named neither the floor nor the caller's TTL. A token that lives longer than
+// asked for is the safe direction here: the ceiling still caps it at
+// ScopedIdentityMaxTokenTTL, and holders refresh on a timer rather than
+// counting on expiry.
 func ClampScopedIdentityTTL(requested, defaultTTL time.Duration) time.Duration {
 	ttl := requested
 	if ttl <= 0 {

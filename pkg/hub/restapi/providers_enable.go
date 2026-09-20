@@ -39,7 +39,6 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
-	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // EnableProviderRequest is the body of POST .../providers/{name}/enable.
@@ -201,20 +200,11 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 			Resource: declared.Resource,
 			Verbs:    declared.Verbs,
 			Accepted: accepted[acceptedKey(declared.Group, declared.Resource)],
+			// The scope travels with the claim: what the tenant accepts is the
+			// narrowed claim the provider declared, not a blanket one the hub
+			// would then have to walk back.
+			MatchLabels: declared.MatchLabels,
 		})
-	}
-
-	// Precondition (checked BEFORE creating anything): a provider that requests
-	// edge-proxy access needs its WorkspaceCluster, which the catalog controller
-	// stamps only after it finishes provisioning the provider's sub-workspace.
-	// If Enable is clicked during that window the value is still empty. Refuse
-	// up front — before EnsureProviderAPIBinding — so a raced Enable is a clean
-	// no-op the client can retry, instead of leaving the APIBinding created but
-	// the edge-proxy grant missing (a partial enable). The "retry shortly"
-	// message is a retryable signal; the portal backs off and re-tries.
-	if prov.EdgeProxyAccess && prov.WorkspaceCluster == "" {
-		writeStatus(w, http.StatusConflict, "Conflict", "provider "+providerName+" requests edge proxy access but its workspace is not provisioned yet — retry shortly")
-		return
 	}
 
 	if err := h.mgr.bootstrapper.EnsureProviderAPIBinding(
@@ -237,19 +227,6 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure APIBinding: "+err.Error())
 		return
-	}
-
-	// Providers that declared spec.edgeProxyAccess additionally get the
-	// "proxy"-on-edges grant in this workspace, bound to the provider SA's
-	// cluster-qualified identity (the Enable dialog surfaced the request —
-	// clicking Enable is the consent). WorkspaceCluster is guaranteed non-empty
-	// by the precheck above.
-	if prov.EdgeProxyAccess {
-		subject := identity.QualifiedServiceAccount(prov.WorkspaceCluster, providers.ProviderSANamespace, providers.ProviderSAName)
-		if err := h.mgr.bootstrapper.EnsureProviderEdgeProxyGrant(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName, subject); err != nil {
-			writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure edge-proxy grant: "+err.Error())
-			return
-		}
 	}
 
 	// Record the hub-access decisions this caller is entitled to make: each
@@ -450,11 +427,9 @@ func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUU
 }
 
 // disableProvider handles POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/disable.
-// Inverse of enableProvider: deletes the provider's APIBinding and, always,
-// the edge-proxy grant pair (also for providers that no longer declare
-// spec.edgeProxyAccess — a leftover grant from an older CatalogEntry version
-// must not survive a Disable). Idempotent: NotFound at every step is
-// success, so the portal can re-issue on retry.
+// Inverse of enableProvider: deletes the provider's APIBinding and the
+// hub-access grant. Idempotent: NotFound at every step is success, so the
+// portal can re-issue on retry.
 //
 // Lives server-side for the same proxy-avoidance reason as enableProvider,
 // plus a new one: the RBAC teardown must happen with kcp-admin credentials
@@ -472,10 +447,6 @@ func (h *Handler) disableProvider(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.mgr.bootstrapper.DeleteProviderAPIBinding(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "delete APIBinding: "+err.Error())
-		return
-	}
-	if err := h.mgr.bootstrapper.RemoveProviderEdgeProxyGrant(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName); err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "remove edge-proxy grant: "+err.Error())
 		return
 	}
 	// The binding is per name, so drop the hub-access grant of whichever copy

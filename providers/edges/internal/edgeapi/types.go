@@ -54,8 +54,8 @@ const ConnectionConditionUpgradeAvailable = "UpgradeAvailable"
 // condition by pinning spec.sshHostKey or clearing status.sshHostKey.
 const ConnectionConditionSSHHostKeyChanged = "SSHHostKeyChanged"
 
-// AnnotationRegenerateJoinToken, set on a connectable resource, instructs the
-// token reconciler to mint a fresh bootstrap join token.
+// AnnotationRegenerateJoinToken is set on a connectable resource to instruct
+// the token reconciler to mint a fresh bootstrap join token.
 const AnnotationRegenerateJoinToken = "edges.railgrid.ai/regenerate-join-token"
 
 // ConnectionStatus is the tunnel/connection state shared by every connectable

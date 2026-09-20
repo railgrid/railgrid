@@ -170,6 +170,14 @@ func TestMain(m *testing.M) {
 		"INFRASTRUCTURE_ADMIN_KUBECONFIG="+adminKubeconfig,
 		"INFRASTRUCTURE_WORKSPACE_PATH="+workspacePath,
 		"INFRASTRUCTURE_KUBECONFIG="+mintedKubeconfig,
+		// The generated APIExport shell (name + permission claims, written by
+		// codegen from manifest.yaml) is what init materializes the export
+		// from — a claim is written in one place, not three. The image bakes
+		// deploy/chart/files at /etc/railgrid/kcp; on a host run there is no
+		// such directory, so point RAILGRID_KCP_DIR at the same files in the
+		// tree. Without it init fails with "reading APIExport file
+		// /etc/railgrid/kcp/apiexport.yaml: no such file or directory".
+		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "infrastructure", "deploy", "chart", "files"),
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog

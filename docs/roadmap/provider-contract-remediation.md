@@ -1,23 +1,37 @@
 # Provider contract remediation — provider by provider
 
-Status: **IN PROGRESS** on branch `provider.contracts` (uncommitted working tree
-on top of `91e6c6ad`, 19 September 2026). Plan written 19 September 2026 from the
-findings in [provider-contract-review.md](../provider-contract-review.md).
+Status: **IMPLEMENTED, UNCOMMITTED** on branch `provider.contracts` (working
+tree on top of `91c16a31`, 20 September 2026). Plan written 19 September 2026
+from the findings in [provider-contract-review.md](../provider-contract-review.md).
 Landed on the branch: §0 in full (§0.1–0.5); §1; §2; §4 in full; §5 in full with
-§6 PR 4; §6 PRs 1, 2, 3, 5; §8 in full; §9 Cuts A, B and C; §10 with declarable
-`spec.dataPlane.verbs` and policy clauses for platform groups, MCPServer `use`
-and named APIBinding `get`. Every provider serves through `provider-sdk/serve`,
-every verb passes `provider-sdk/dataplane` gates, no provider mints identities,
-and `verify-provider-contract` runs with an empty exception registry.
-Not started: §3 and §7 (external repo), §9 Cut D.
+§6 PR 4; §6 in full (kuery on `provider-sdk/sharding`, engagement on every
+replica); §8 in full; §9 Cuts A, B, C and D (D.1 commit action, D.2 session
+status and LISTEN/NOTIFY, D.3 source-tree ledger on `Project.status.workspace`,
+D.4 finalizer teardown); §10 with declarable `spec.dataPlane.verbs` and policy
+clauses for platform groups, MCPServer `use` and named APIBinding `get`. Every
+provider serves through `provider-sdk/serve`, every verb passes
+`provider-sdk/dataplane` gates, no provider mints identities, and
+`verify-provider-contract` runs with an empty exception registry.
+§3 and §7 are applied in the `railgrid/providers` checkout (databricks, planner,
+factory on `serve.New` + `dataplane`; factory heartbeat with `CanSend`) against
+a local `replace github.com/railgrid/provider-sdk => ../../../railgrid/provider-sdk`
+in each `go.mod` that must be repinned to a published SDK before merge; the
+factory typed Go APIs (§7.3) are deferred and written up in that repo's
+`docs/typed-apis.md`.
 Open follow-ups recorded by the implementation:
+- Edge agents adopt a saved credential (`~/.railgrid/agent-<edge>.credential.json`)
+  only when it matches their hub and cluster, and alternate with the join token
+  on a 401 (`docs/edges-agent-credentials.md`); the edges e2e now gives each
+  agent its own HOME. Before this, a credential left by an earlier run against
+  another hub kept every kubernetes-type edge in a 401 loop.
 - A commit is required before `make codegen`, `make codegen-agents-provider` and
   `make codegen-edges-provider` can mint fresh APIResourceSchema names for the
   `Run` schema changes (PR 5) and the edges kind doc-comment fixes; apigen
   derives the name from HEAD and refuses to reuse one for changed content.
-- Code provider: a `repositories/commit` action (or verb) that accepts file
-  contents, so App Studio can create a `RepositoryCommit` directly instead of
-  through the `code__commit_files` MCP tool (§9 Cut C part 4 note).
+- Code provider `repositories/commit/v1` (plus the declared
+  `stage_commit_bundle` verb for payloads over the 1 MiB catalog ceiling)
+  landed; App Studio's reconciler and the assistant's commit tool commit
+  through it (§9 Cut D.1).
 - App Studio composition (§9 Cut C part 4) landed on hub-minted scoped
   identities, not permission claims: first-party claims pin to one export's
   `identityHash` and break org-owned providers (AGENTS.md §5.7). The hub
@@ -31,8 +45,18 @@ Open follow-ups recorded by the implementation:
   live APIExport `spec.resources[].group` (mirrored to
   `CatalogEntry.status.apiGroups`), not from the export name; a provider whose
   export is unreadable fails closed with `APIGroupsUnknown`.
-- Six providers still hold `secrets` claims (X-4); each manifest now names the
-  Secrets it writes, but the claim is still resource-wide.
+- X-4 closed: every remaining `secrets` claim is label-scoped to
+  `railgrid.ai/owner: <provider>` (kcp `defaultSelector`, enforced by kcp's
+  claim labeler and VW admission); kuery and factory claim nothing. Every
+  Secret writer stamps the owner label. `verify-provider-contract` refuses an
+  unscoped core `secrets` claim (`claim-selector`).
+- One-time cleanup for existing installs: the retired Enable-time grant left a
+  dead `railgrid:provider:edges:edges-proxy` ClusterRole and ClusterRoleBinding
+  in every workspace that had edges enabled; delete both by hand (nothing reads
+  them and no code path removes them any more).
+- A tenant APIBinding accepted before a claim was narrowed keeps its `matchAll`
+  selector (immutable) and shows `PermissionClaimsValid=False` as a warning;
+  Disable and re-Enable, or the admin `claims/reaccept` endpoint, refreshes it.
 When a phase merges, replace the branch name with the PR number; when a provider
 is fully conformant, delete its section.
 

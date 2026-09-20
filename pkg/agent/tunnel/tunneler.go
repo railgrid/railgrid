@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -180,6 +181,15 @@ func startTunneler(ctx context.Context, hubURL string, credentials *CredentialSt
 
 	conn, resp, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig, extraHeaders)
 	if err != nil {
+		// A 401 is the provider refusing this bearer outright. When the agent
+		// holds both a saved credential and a join token, try the other one
+		// next: a credential saved by an earlier enrolment is dead once the
+		// hub or the edge behind it was recreated, and the join token the
+		// operator just handed us is the way back in.
+		var he *HandshakeError
+		if errors.As(err, &he) && he.StatusCode == http.StatusUnauthorized && credentials != nil && credentials.Rejected() {
+			logger.Info("the provider refused the agent's bearer; the next attempt presents the other credential (saved credential vs join token)")
+		}
 		return fmt.Errorf("failed to initiate connection: %w", err)
 	}
 
@@ -284,14 +294,27 @@ func initiateConnection(ctx context.Context, wsURL string, token string, tlsConf
 		// credentials — otherwise the only signal is an unattributable
 		// "websocket: bad handshake" in the journal.
 		if resp != nil {
-			return nil, nil, fmt.Errorf("WebSocket dial failed (hub returned HTTP %d %s): %w",
-				resp.StatusCode, http.StatusText(resp.StatusCode), err)
+			return nil, nil, &HandshakeError{StatusCode: resp.StatusCode, Err: err}
 		}
 		return nil, nil, fmt.Errorf("WebSocket dial failed: %w", err)
 	}
 
 	return wsconnadapter.New(wsConn), resp, nil
 }
+
+// HandshakeError is a WebSocket upgrade the hub answered with a non-101 status.
+// It carries the status so the reconnect loop can tell a refused bearer (401)
+// from an intermediary failure (a proxy 403, a 502 with no origin behind it).
+type HandshakeError struct {
+	StatusCode int
+	Err        error
+}
+
+func (e *HandshakeError) Error() string {
+	return fmt.Sprintf("WebSocket dial failed (hub returned HTTP %d %s): %v", e.StatusCode, http.StatusText(e.StatusCode), e.Err)
+}
+
+func (e *HandshakeError) Unwrap() error { return e.Err }
 
 // SplitBaseAndCluster splits a hub URL into the base URL (scheme+host only) and
 // the kcp cluster name embedded in the path.

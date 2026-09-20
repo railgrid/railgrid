@@ -67,8 +67,11 @@ const (
 //	                   and watched so readiness arrives as an event.
 //	repositories       created with autoInit; listed and watched.
 //	repositorycommits  listed and watched only — the CR is created by the Code
-//	                   provider's commit_files tool, because it is a POINTER at
-//	                   a source bundle only that provider can store.
+//	                   provider itself, behind its repositories/commit action,
+//	                   because it is a POINTER at a source bundle only that
+//	                   provider can store. App Studio holds the VERB (a
+//	                   clause-C capability on the project's Repository), not
+//	                   create on the kind.
 var (
 	instanceCollectionVerbs         = []string{"create", "list", "watch"}
 	repositoryCollectionVerbs       = []string{"create", "list", "watch"}
@@ -78,12 +81,24 @@ var (
 // Object verbs, per composed resource, always against named objects.
 //
 //	instances          converged on drift and deleted on the owner's finalizer.
-//	repositories       converged, but NEVER deleted: they hold user code and
-//	                   outlive the project.
+//	repositories       converged, and released on the owner's finalizer — the
+//	                   claim label is cleared so the repository can be imported
+//	                   again. Deletion is also here, and it is the exception
+//	                   rather than the rule: a project's teardown deletes the
+//	                   repository ONLY when that deletion explicitly asked for
+//	                   it (Project annotation ai.railgrid.ai/delete-repository)
+//	                   and only one App Studio created for that exact project
+//	                   incarnation — never an adopted one. It used to be the
+//	                   human's own `delete` through the data-plane verb; the
+//	                   verb is gone (Cut D.4) and the teardown that replaced it
+//	                   runs as the project identity, so the capability moved
+//	                   with it. It stays NAME-SCOPED to the project's own
+//	                   repository, which is what keeps "delete a project" from
+//	                   becoming "delete this workspace's code".
 //	repositorycommits  read while a commit is in flight; nothing writes one.
 var (
 	instanceObjectVerbs         = []string{"get", "update", "delete"}
-	repositoryObjectVerbs       = []string{"get", "update"}
+	repositoryObjectVerbs       = []string{"get", "update", "delete"}
 	repositoryCommitObjectVerbs = []string{"get"}
 )
 

@@ -58,7 +58,7 @@ type catToolInput struct {
 }
 
 // registerCatalogTools installs the MCP tools for a catalog service type.
-func (p *Server) registerCatalogTools(srv *mcp.Server, prefix, cluster, kcpToken string, svc *serviceView, dialer haclient.Dialer) {
+func (p *Server) registerCatalogTools(srv *mcp.Server, prefix, cluster string, svc *serviceView, dialer haclient.Dialer) {
 	def, ok := svccatalog.Get(svc.Spec.Type)
 	if !ok {
 		return
@@ -69,7 +69,7 @@ func (p *Server) registerCatalogTools(srv *mcp.Server, prefix, cluster, kcpToken
 			Name:        prefix + tool.Name,
 			Description: def.DisplayName + " — " + tool.Desc,
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, in catToolInput) (*mcp.CallToolResult, any, error) {
-			return p.callCatalogTool(ctx, cluster, kcpToken, svc, dialer, def, tool, in)
+			return p.callCatalogTool(ctx, cluster, svc, dialer, def, tool, in)
 		})
 	}
 }
@@ -77,8 +77,8 @@ func (p *Server) registerCatalogTools(srv *mcp.Server, prefix, cluster, kcpToken
 // callCatalogTool executes one catalog tool: resolve the token, apply the auth
 // (svccatalog.Apply), build the request (query/form/body), proxy it through the
 // edge, and return the response body verbatim.
-func (p *Server) callCatalogTool(ctx context.Context, cluster, kcpToken string, svc *serviceView, dialer haclient.Dialer, def svccatalog.Definition, tool svccatalog.Tool, in catToolInput) (*mcp.CallToolResult, any, error) {
-	token, err := p.readServiceToken(ctx, cluster, svc, kcpToken)
+func (p *Server) callCatalogTool(ctx context.Context, cluster string, svc *serviceView, dialer haclient.Dialer, def svccatalog.Definition, tool svccatalog.Tool, in catToolInput) (*mcp.CallToolResult, any, error) {
+	token, err := p.readServiceToken(ctx, cluster, svc)
 	if err != nil {
 		return toolErr("service credentials: " + err.Error()), nil, nil
 	}

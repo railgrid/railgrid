@@ -791,6 +791,7 @@ const (
 	ReasonCodingSandboxDisabled = "CodingSandboxDisabled"
 )
 
-// Standard finalizer the Template controller adds. Cleanup on delete:
-// (1) backend.TeardownTemplate, (2) drop finalizer.
+// FinalizerTemplateReconcile is the standard finalizer the Template
+// controller adds. Cleanup on delete: (1) backend.TeardownTemplate,
+// (2) drop finalizer.
 const FinalizerTemplateReconcile = "templates.infrastructure.railgrid.ai/reconcile"

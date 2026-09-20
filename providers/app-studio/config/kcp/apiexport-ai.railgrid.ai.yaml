@@ -20,7 +20,10 @@ metadata:
   name: ai.railgrid.ai
 spec:
   permissionClaims:
-  - resource: secrets
+  - defaultSelector:
+      matchLabels:
+        railgrid.ai/owner: app-studio
+    resource: secrets
     verbs:
     - get
     - list
@@ -31,12 +34,12 @@ spec:
   resources:
   - group: ai.railgrid.ai
     name: projects
-    schema: v260919-91e6c6ad.projects.ai.railgrid.ai
+    schema: v260920-91c16a31.projects.ai.railgrid.ai
     storage:
       crd: {}
   - group: ai.railgrid.ai
     name: sessions
-    schema: v260806-59f3b567.sessions.ai.railgrid.ai
+    schema: v260920-91c16a31.sessions.ai.railgrid.ai
     storage:
       crd: {}
   - group: ai.railgrid.ai

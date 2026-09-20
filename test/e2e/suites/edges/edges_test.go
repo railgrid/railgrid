@@ -90,35 +90,55 @@ func TestACatalogProvisioning(t *testing.T) {
 		}
 	})
 
-	t.Run("APIExport present with the 7 permissionClaims", func(t *testing.T) {
+	t.Run("APIExport claims exactly what the provider still needs", func(t *testing.T) {
 		gvr := schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"}
 		got, err := sub.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), edgesAPIExportName, metav1.GetOptions{})
 		if err != nil {
 			t.Fatalf("get APIExport %s: %v", edgesAPIExportName, err)
 		}
 		claims, _, _ := unstructured.NestedSlice(got.Object, "spec", "permissionClaims")
-		// 5 tenant-resource claims (namespaces, serviceaccounts, secrets,
-		// clusterroles, clusterrolebindings) + 2 delegated-auth review APIs
-		// (tokenreviews, subjectaccessreviews) the provider uses to authorize
-		// data-plane callers against the consumer workspace (kcp#4279/#4280).
-		if len(claims) != 7 {
-			t.Fatalf("expected 7 permissionClaims, got %d", len(claims))
-		}
-		wantReviewClaims := map[string]bool{
-			"authentication.k8s.io/tokenreviews":        false,
-			"authorization.k8s.io/subjectaccessreviews": false,
-		}
+		// Four claims, and which four is the assertion.
+		//
+		// This used to be seven. The provider-contract remediation removed
+		// serviceaccounts, clusterroles and clusterrolebindings: a provider
+		// does not mint identities, it asks the hub's scoped-identity service
+		// (docs/provider-connectivity-contract.md §"Scoped identities", review
+		// finding M7). A claim on those three types IS the ability to mint a
+		// standing credential in every consumer workspace, so their absence is
+		// the invariant worth pinning — see the explicit check below.
+		//
+		// What remains: namespaces + secrets (the objects the provider owns in
+		// a tenant workspace; secrets is narrowed by a defaultSelector) and the
+		// two delegated-auth review APIs the provider uses to authenticate and
+		// authorize data-plane callers against the consumer workspace
+		// (kcp#4279/#4280).
+		byCoordinate := map[string]bool{}
 		for _, c := range claims {
 			m, _ := c.(map[string]any)
 			g, _ := m["group"].(string)
 			res, _ := m["resource"].(string)
-			if _, ok := wantReviewClaims[g+"/"+res]; ok {
-				wantReviewClaims[g+"/"+res] = true
+			byCoordinate[g+"/"+res] = true
+		}
+		for _, forbidden := range []string{"/serviceaccounts", "rbac.authorization.k8s.io/clusterroles", "rbac.authorization.k8s.io/clusterrolebindings"} {
+			if byCoordinate[forbidden] {
+				t.Errorf("APIExport claims %q; a provider does not mint identities — it asks the hub for a scoped identity", forbidden)
 			}
+		}
+		if len(claims) != 4 {
+			t.Fatalf("expected 4 permissionClaims (namespaces, secrets, tokenreviews, subjectaccessreviews), got %d: %v", len(claims), claims)
+		}
+		wantReviewClaims := map[string]bool{
+			"authentication.k8s.io/tokenreviews":        false,
+			"authorization.k8s.io/subjectaccessreviews": false,
+			"/namespaces": false,
+			"/secrets":    false,
+		}
+		for key := range wantReviewClaims {
+			wantReviewClaims[key] = byCoordinate[key]
 		}
 		for key, found := range wantReviewClaims {
 			if !found {
-				t.Errorf("APIExport missing delegated-auth permissionClaim %q", key)
+				t.Errorf("APIExport missing permissionClaim %q", key)
 			}
 		}
 		resources, _, _ := unstructured.NestedSlice(got.Object, "spec", "resources")
@@ -301,9 +321,13 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		"metadata":   map[string]any{"name": "edges"},
 		"spec": map[string]any{
 			"reference": map[string]any{"export": map[string]any{"path": edgesWorkspacePath, "name": edgesAPIExportName}},
+			// Exactly the claims the export still declares. Accepting one it
+			// does not (serviceaccounts, clusterroles, clusterrolebindings —
+			// the identity-minting trio the remediation removed) binds anyway
+			// but stamps PermissionClaimsValid=False on the APIBinding, so the
+			// suite would be asserting "Bound" over a broken binding.
 			"permissionClaims": []any{
-				acceptClaim("", "namespaces"), acceptClaim("", "serviceaccounts"), acceptClaim("", "secrets"),
-				acceptClaim("rbac.authorization.k8s.io", "clusterroles"), acceptClaim("rbac.authorization.k8s.io", "clusterrolebindings"),
+				acceptClaim("", "namespaces"), acceptClaim("", "secrets"),
 				acceptClaim("authentication.k8s.io", "tokenreviews"), acceptClaim("authorization.k8s.io", "subjectaccessreviews"),
 			},
 		},
@@ -321,8 +345,18 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		t.Fatal("edges APIBinding never reached Bound")
 	}
 	// A real edge makes the provider's multicluster manager engage this cluster
-	// (so tenantConfigFor can resolve it). The probe below targets a different,
-	// non-existent edge — authorization still runs before the tunnel lookup.
+	// (so tenantConfigFor can resolve it), and the probe below targets THIS
+	// edge.
+	//
+	// It used to target a deliberately non-existent one, on the premise that
+	// "authorization runs before the tunnel lookup". That is no longer true:
+	// provider-sdk/dataplane's gate reads the addressed object AS THE CALLER
+	// first and only then issues the SSAR, so a name that does not exist is
+	// denied at gate 1 whatever the grant says — the probe would read 404
+	// before and after the grant and prove nothing. Pointing it at a real edge
+	// that no agent has connected is what separates the two states: denied
+	// (404) without the grant, past both gates and failing at the tunnel
+	// lookup (502) with it.
 	if _, err := tenant.Resource(kubernetesClusterGVR).Create(ctxWithTimeout(t, 10*time.Second), &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "edges.railgrid.ai/v1alpha1",
 		"kind":       "KubernetesCluster",
@@ -367,9 +401,10 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		t.Fatal("provider SA token never appeared")
 	}
 
-	// The edge name is irrelevant: authorization runs BEFORE the tunnel lookup.
+	// The edge exists but has no agent, so a request that passes both gates
+	// dies at the tunnel lookup — which is exactly the signal this test reads.
 	proxyURL := hubURL + "/services/providers/edges/dataplane/clusters/" + tenantWS +
-		"/kubernetesclusters/e2e-no-such-edge/k8s/api"
+		"/kubernetesclusters/e2e-engage/k8s/api"
 	probe := func() int {
 		req, _ := http.NewRequest(http.MethodGet, proxyURL, nil)
 		req.Header.Set("Authorization", "Bearer "+saToken)
@@ -382,9 +417,16 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	// 1. No grant → authorization must fail.
-	if code := probe(); code != http.StatusForbidden {
-		t.Fatalf("expected 403 before grant, got %d", code)
+	// 1. No grant → authorization must fail, and the refusal must be 404.
+	//
+	// 404, not 403: provider-sdk/dataplane answers ErrDenied with
+	// StatusNotFound so a denial does not disclose whether the addressed edge
+	// exists (dataplane/errors.go; the quickstart suite pins the same rule for
+	// its greet verb). The edge here DOES exist, which is what makes the
+	// non-disclosure real: an unauthorized caller cannot tell it apart from a
+	// name that was never registered.
+	if code := probe(); code != http.StatusNotFound {
+		t.Fatalf("expected 404 before grant, got %d", code)
 	}
 
 	// 2. Materialize the grant in the tenant workspace exactly as the Enable
@@ -405,11 +447,24 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 			// "access" on "/" satisfies kcp's workspaceContentAuthorizer for
 			// the foreign SA.
 			map[string]any{"nonResourceURLs": []any{"/"}, "verbs": []any{"access"}},
-			// The SAR the provider issues checks "proxy" on the edge kind.
+			// Gate 1 reads the addressed object as the caller, so `get` on the
+			// kind is what lets the request past it at all.
 			map[string]any{
 				"apiGroups": []any{"edges.railgrid.ai"},
 				"resources": []any{"kubernetesclusters", "linuxservers"},
-				"verbs":     []any{"proxy", "get", "list", "watch"},
+				"verbs":     []any{"get", "list", "watch"},
+			},
+			// Gate 2 is a SelfSubjectAccessReview for `create` on the
+			// {resource}/{verb} COORDINATE — kubernetesclusters/k8s, not the
+			// old wildcard `proxy` on the kind. The remediation replaced one
+			// verb that covered k8s, ssh, service proxy and MCP alike with the
+			// declared coordinates in spec.dataPlane.verbs, so a grant of
+			// `proxy` now authorizes nothing and the request is refused at
+			// gate 2 (providers/edges/internal/tunnel/edges_proxy_builder.go).
+			map[string]any{
+				"apiGroups": []any{"edges.railgrid.ai"},
+				"resources": []any{"kubernetesclusters/k8s", "kubernetesclusters/ssh", "linuxservers/k8s", "linuxservers/ssh"},
+				"verbs":     []any{"create"},
 			},
 			// The provider validates+authorizes the caller with its own
 			// credential, so it must be able to create TokenReviews +
@@ -453,13 +508,13 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		t.Fatal("edgeproxy never authorized the provider SA after grant")
 	}
 
-	// 4. Revoke → 403 again.
+	// 4. Revoke → denied again (404, per the non-disclosure rule above).
 	if err := tenantAdmin.Resource(clusterRoleBindingGVR).Delete(ctxWithTimeout(t, 5*time.Second), grantName, metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete ClusterRoleBinding: %v", err)
 	}
 	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
 		code := probe()
-		return code == http.StatusForbidden, fmt.Sprintf("status=%d (want 403)", code)
+		return code == http.StatusNotFound, fmt.Sprintf("status=%d (want 404)", code)
 	}) {
 		t.Fatal("edgeproxy still authorizes the provider SA after revocation")
 	}

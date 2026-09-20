@@ -48,6 +48,12 @@ const (
 	kueryAPIExportName = "kuery.providers.railgrid.ai"
 )
 
+var (
+	engagementGVR     = schema.GroupVersionResource{Group: "kuery.providers.railgrid.ai", Version: "v1alpha1", Resource: "engagements"}
+	savedViewGVR      = schema.GroupVersionResource{Group: "kuery.providers.railgrid.ai", Version: "v1alpha1", Resource: "savedviews"}
+	logicalClusterGVR = schema.GroupVersionResource{Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters"}
+)
+
 // queryStatus mirrors the kuery v1alpha1.QueryStatus wire shape. Declared
 // locally so the suite does not take a dependency on the kuery module just to
 // read a response.
@@ -140,71 +146,96 @@ func TestKueryAggregatesEdgeObjects(t *testing.T) {
 		t.Fatal("deployment never produced a pod on the edge cluster")
 	}
 
-	// 5. Bring kuery up beside the edges provider and enable it for the tenant.
+	// 5. Bring kuery up beside the edges provider and enable it for the tenant
+	// the way the portal does: through the hub's Enable endpoint, accepting
+	// the edges composition kuery declares. That consent is what lets the hub
+	// mint kuery's engagement identity for this workspace (identity policy
+	// clause E); a bare APIBinding would leave kuery refused forever.
 	startKueryProvider(t, workDir)
-	enableKuery(t, tenantAdmin)
+	enableKueryViaHub(t, tenantAdmin, tenantWS)
 
-	// 6. Wait for kuery to engage the edge. Until the engagement controller has
-	// picked up the APIBinding and synced, queries legitimately return nothing,
-	// so this is a wait rather than an assertion.
-	var engaged string
+	// 6. Wait for kuery to engage the edge. The Engagement records in kuery's
+	// provider workspace are the authority on which edges it syncs; until the
+	// engagement controller has minted its identity and dialled the edge,
+	// queries legitimately refuse, so this is a wait rather than an assertion.
+	// Results attribute objects as "{clusterID}/{edge}" — kuery's store name.
+	engaged := tenantWS + "/" + edgeName
+	kueryAdmin := kcpDynamic(t, kueryWorkspacePath, adminToken)
 	if !waitFor(t, 3*time.Minute, func() (bool, string) {
-		status, body := kueryGet(t, "/api/edges", map[string]string{"X-Railgrid-Cluster": tenantWS})
-		if status != http.StatusOK {
-			return false, fmt.Sprintf("/api/edges %d: %s", status, trunc(body))
+		list, err := kueryAdmin.Resource(engagementGVR).List(ctxWithTimeout(t, 10*time.Second), metav1.ListOptions{})
+		if err != nil {
+			return false, err.Error()
 		}
-		var out struct {
-			Edges    []string `json:"edges"`
-			Clusters []string `json:"clusters"`
-		}
-		_ = json.Unmarshal(body, &out)
-		for i, e := range out.Edges {
-			if e == edgeName {
-				if i < len(out.Clusters) {
-					engaged = out.Clusters[i]
-				}
+		var seen []string
+		for _, item := range list.Items {
+			cluster, _, _ := unstructured.NestedString(item.Object, "spec", "cluster")
+			edge, _, _ := unstructured.NestedString(item.Object, "spec", "edge")
+			phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
+			message, _, _ := unstructured.NestedString(item.Object, "status", "message")
+			seen = append(seen, fmt.Sprintf("%s/%s=%s(%s)", cluster, edge, phase, message))
+			if cluster == tenantWS && edge == edgeName && phase == "Engaged" {
 				return true, ""
 			}
 		}
-		return false, "engaged edges: " + strings.Join(out.Edges, ",")
+		return false, "engagements: " + strings.Join(seen, ", ")
 	}) {
+		t.Logf("kuery-provider log tail:\n%s", tailFile(filepath.Join(workDir, "kuery-provider.log"), 40))
 		t.Fatal("kuery never engaged the edge")
 	}
 	t.Logf("kuery engaged edge %q as cluster %q", edgeName, engaged)
 
-	// 7. THE PROOF: query for the Deployment and expand its descendants.
-	spec := map[string]any{
-		"filter": map[string]any{
-			"objects": []any{map[string]any{
-				"groupKind": map[string]any{"apiGroup": "apps", "kind": "Deployment"},
-				"name":      deployName,
-				"namespace": "default",
-			}},
+	// 7. THE PROOF: a SavedView in the tenant workspace that finds the
+	// Deployment and expands its descendants, run through kuery's one tenant
+	// route, POST /dataplane/clusters/{clusterID}/savedviews/{name}/run.
+	const viewName = "kuery-agg-view"
+	view := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "kuery.providers.railgrid.ai/v1alpha1",
+		"kind":       "SavedView",
+		"metadata":   map[string]any{"name": viewName},
+		"spec": map[string]any{
+			"displayName": "edge aggregation e2e",
+			"query": map[string]any{
+				"filter": map[string]any{
+					"objects": []any{map[string]any{
+						"groupKind": map[string]any{"apiGroup": "apps", "kind": "Deployment"},
+						"name":      deployName,
+						"namespace": "default",
+					}},
+				},
+				"objects": map[string]any{
+					"cluster":   true,
+					"relations": map[string]any{"descendants+": map[string]any{}},
+				},
+				"maxDepth": int64(3),
+			},
 		},
-		"objects": map[string]any{
-			"cluster":   true,
-			"relations": map[string]any{"descendants+": map[string]any{}},
-		},
-		"maxDepth": 3,
+	}}
+	if _, err := tenantAdmin.Resource(savedViewGVR).Create(ctxWithTimeout(t, 15*time.Second), view, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create SavedView: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = tenantAdmin.Resource(savedViewGVR).Delete(context.Background(), viewName, metav1.DeleteOptions{})
+	})
 
 	var got objectResult
 	if !waitFor(t, 3*time.Minute, func() (bool, string) {
-		status, body := kueryQuery(t, tenantWS, spec)
+		status, body := runSavedView(t, tenantWS, viewName)
 		if status != http.StatusOK {
-			return false, fmt.Sprintf("/api/query %d: %s", status, trunc(body))
+			return false, fmt.Sprintf("run %d: %s", status, trunc(body))
 		}
-		var qs queryStatus
-		if err := json.Unmarshal(body, &qs); err != nil {
+		var envelope struct {
+			Result queryStatus `json:"result"`
+		}
+		if err := json.Unmarshal(body, &envelope); err != nil {
 			return false, "decode: " + err.Error()
 		}
-		for _, o := range qs.Objects {
+		for _, o := range envelope.Result.Objects {
 			if o.name() == deployName {
 				got = o
 				return true, ""
 			}
 		}
-		return false, fmt.Sprintf("%d objects, none named %s", len(qs.Objects), deployName)
+		return false, fmt.Sprintf("%d objects, none named %s", len(envelope.Result.Objects), deployName)
 	}) {
 		t.Fatal("kuery never returned the Deployment created on the edge")
 	}
@@ -305,7 +336,15 @@ func startKueryProvider(t *testing.T, workDir string) {
 	cmd.Env = append(os.Environ(),
 		"PORT="+kueryPort,
 		"RAILGRID_HUB_URL="+hubURL,
-		"RAILGRID_HUB_TOKEN="+staticToken,
+		// Deliberately NO RAILGRID_HUB_TOKEN. hubclient.ResolveHubToken
+		// prefers that variable over RAILGRID_PROVIDER_KUBECONFIG, so setting
+		// it to a tenant's static token makes every hub call authenticate as
+		// that USER. The heartbeat tolerates it; POST /api/identities does
+		// not, and must not — it attests that the caller is the provider's own
+		// ServiceAccount, so kuery's engagement controller was refused with
+		// `wrong_identity` and no workspace was ever engaged. Leaving it unset
+		// resolves the provider SA bearer out of the runtime kubeconfig, which
+		// is the credential the chart actually mounts.
 		"RAILGRID_HUB_INSECURE=true",
 		"RAILGRID_PROVIDER_NAME=kuery",
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
@@ -437,46 +476,68 @@ users:
 	return os.WriteFile(path, []byte(kc), 0o600)
 }
 
-// enableKuery binds the kuery APIExport into the tenant workspace with the
-// four built-in claims its engagement identity needs, and waits for Bound.
-func enableKuery(t *testing.T, tenant dynamic.Interface) {
+// enableKueryViaHub drives POST .../providers/kuery/enable as the tenant user,
+// which creates the kuery APIBinding AND records the accepted edges
+// composition in the workspace's Grant. The org and workspace UUIDs come from
+// the tenant cluster's own path annotation (root:railgrid:tenants:<org>:<ws>).
+// Idempotent, as the endpoint is.
+func enableKueryViaHub(t *testing.T, tenant dynamic.Interface, tenantWS string) {
 	t.Helper()
-	claim := func(group, resource string) map[string]any {
-		c := map[string]any{
-			"resource": resource,
-			"verbs":    []any{"get", "list", "watch", "create"},
-			"selector": map[string]any{"matchAll": true},
-			"state":    "Accepted",
-		}
-		if group != "" {
-			c["group"] = group
-		}
-		return c
+	lc, err := tenant.Resource(logicalClusterGVR).Get(ctxWithTimeout(t, 10*time.Second), "cluster", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("read tenant LogicalCluster: %v", err)
 	}
-	binding := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "apis.kcp.io/v1alpha2",
-		"kind":       "APIBinding",
-		"metadata":   map[string]any{"name": "kuery"},
-		"spec": map[string]any{
-			"reference": map[string]any{
-				"export": map[string]any{"path": kueryWorkspacePath, "name": kueryAPIExportName},
-			},
-			"permissionClaims": []any{
-				claim("", "serviceaccounts"),
-				claim("", "secrets"),
-				claim("rbac.authorization.k8s.io", "clusterroles"),
-				claim("rbac.authorization.k8s.io", "clusterrolebindings"),
-			},
-		},
-	}}
-	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 15*time.Second), binding, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create kuery APIBinding: %v", err)
+	wsPath := lc.GetAnnotations()["kcp.io/path"]
+	rest, ok := strings.CutPrefix(wsPath, "root:railgrid:tenants:")
+	orgUUID, workspaceUUID, found := strings.Cut(rest, ":")
+	if !ok || !found || orgUUID == "" || workspaceUUID == "" || strings.Contains(workspaceUUID, ":") {
+		t.Fatalf("tenant workspace %s has path %q, want root:railgrid:tenants:<org>:<ws>", tenantWS, wsPath)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"acceptedClaims": []any{},
+		"acceptedCompositions": []map[string]string{{
+			"provider": "edges", "group": "edges.railgrid.ai", "resource": "kubernetesclusters",
+		}},
+	})
+	path := fmt.Sprintf("/api/orgs/%s/workspaces/%s/providers/kuery/enable", orgUUID, workspaceUUID)
+	var status int
+	var raw []byte
+	// The catalog controller registers kuery on its own cadence after the
+	// manifests land, and Enable refuses until it has, so retry.
+	if !waitFor(t, 2*time.Minute, func() (bool, string) {
+		req, err := http.NewRequestWithContext(ctxWithTimeout(t, 60*time.Second), http.MethodPost, hubURL+path, bytes.NewReader(body))
+		if err != nil {
+			return false, err.Error()
+		}
+		req.Header.Set("Authorization", "Bearer "+staticToken)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Railgrid-Org", orgUUID)
+		req.Header.Set("X-Railgrid-Workspace", workspaceUUID)
+		resp, err := insecureClient(60 * time.Second).Do(req)
+		if err != nil {
+			return false, err.Error()
+		}
+		defer func() { _ = resp.Body.Close() }()
+		status = resp.StatusCode
+		raw, _ = io.ReadAll(resp.Body)
+		return status == http.StatusOK || status == http.StatusCreated, fmt.Sprintf("enable %d: %s", status, trunc(raw))
+	}) {
+		t.Fatalf("enable kuery never succeeded: last status %d: %s", status, trunc(raw))
+	}
+	var out struct {
+		BindingName string `json:"bindingName"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	bindingName := out.BindingName
+	if bindingName == "" {
+		bindingName = "kuery"
 	}
 	t.Cleanup(func() {
-		_ = tenant.Resource(apiBindingGVR).Delete(context.Background(), "kuery", metav1.DeleteOptions{})
+		_ = tenant.Resource(apiBindingGVR).Delete(context.Background(), bindingName, metav1.DeleteOptions{})
 	})
 	if !waitFor(t, 90*time.Second, func() (bool, string) {
-		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "kuery", metav1.GetOptions{})
+		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), bindingName, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
@@ -487,45 +548,42 @@ func enableKuery(t *testing.T, tenant dynamic.Interface) {
 	}
 }
 
-// kueryGet issues a GET straight at the kuery provider with the given headers.
-func kueryGet(t *testing.T, path string, headers map[string]string) (int, []byte) {
+// runSavedView POSTs the saved view's run verb straight at the kuery provider,
+// bypassing the hub. The bearer is the kcp admin token because kuery's gates
+// (a real GET of the SavedView, then a SelfSubjectAccessReview for
+// savedviews/run) run as the caller against kcp itself; a hub user token
+// means nothing there. Reaching the pod directly is the point: the gates must
+// hold without the proxy in front.
+func runSavedView(t *testing.T, tenantWS, view string) (int, []byte) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:"+kueryPort+path, nil)
+	path := "/dataplane/clusters/" + tenantWS + "/savedviews/" + view + "/run"
+	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+kueryPort+path, bytes.NewReader([]byte("{}")))
 	if err != nil {
-		t.Fatalf("new request %s: %v", path, err)
+		t.Fatalf("new run request: %v", err)
 	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := insecureClient(30 * time.Second).Do(req)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("X-Railgrid-Cluster", tenantWS)
+	resp, err := insecureClient(60 * time.Second).Do(req)
 	if err != nil {
-		t.Fatalf("GET %s: %v", path, err)
+		t.Fatalf("POST %s: %v", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, body
 }
 
-// kueryQuery POSTs a QuerySpec as the given tenant.
-func kueryQuery(t *testing.T, tenantWS string, spec map[string]any) (int, []byte) {
-	t.Helper()
-	payload, err := json.Marshal(spec)
+// tailFile returns the last n lines of a log file, for failure output.
+func tailFile(path string, n int) string {
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("marshal QuerySpec: %v", err)
+		return "(" + err.Error() + ")"
 	}
-	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+kueryPort+"/api/query", bytes.NewReader(payload))
-	if err != nil {
-		t.Fatalf("new query request: %v", err)
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Railgrid-Cluster", tenantWS)
-	resp, err := insecureClient(60 * time.Second).Do(req)
-	if err != nil {
-		t.Fatalf("POST /api/query: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, body
+	return strings.Join(lines, "\n")
 }
 
 func trunc(b []byte) string {

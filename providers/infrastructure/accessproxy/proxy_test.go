@@ -52,12 +52,11 @@ type fakeHub struct {
 	exchanges []exchangeRequest
 	calls     int
 
-	code      string // accepted one-use code
-	used      bool
-	userID    string
-	ttl       int64
-	fail      error // transport-level failure
-	statusMap map[string]int
+	code   string // accepted one-use code
+	used   bool
+	userID string
+	ttl    int64
+	fail   error // transport-level failure
 }
 
 func newFakeHub(code string) *fakeHub {

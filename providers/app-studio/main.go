@@ -131,7 +131,8 @@ func runMainWith(args []string, initCmd func(context.Context) error, serve func(
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			if err := initCmd(ctx); err != nil {
-				fmt.Fprintln(stderr, "init:", err)
+				// The exit code, not the message, is what the caller acts on.
+				_, _ = fmt.Fprintln(stderr, "init:", err)
 				return 1
 			}
 			return 0
@@ -139,7 +140,8 @@ func runMainWith(args []string, initCmd func(context.Context) error, serve func(
 			serve()
 			return 0
 		default:
-			fmt.Fprintf(stderr, "unknown subcommand: %s\nusage: app-studio [init|serve]\n", args[0])
+			// The exit code, not the message, is what the caller acts on.
+			_, _ = fmt.Fprintf(stderr, "unknown subcommand: %s\nusage: app-studio [init|serve]\n", args[0])
 			return 2
 		}
 	}
@@ -366,12 +368,18 @@ func runServe() {
 			Owns:        apiServer.OwnsProject,
 			OnCommitted: projectCommitNotifier(apiServer.ProjectCommitted),
 			Store:       msgStore,
-			HubBase:     strings.TrimRight(os.Getenv("RAILGRID_HUB_URL"), "/"),
-			HubInsecure: os.Getenv("RAILGRID_HUB_INSECURE") == "true",
+			// Deleting a Project stops its assistant run rather than being
+			// refused by it: the CR is already going (Cut D.4).
+			StopAssistant: apiServer.StopAssistantForDeletedProject,
+			HubBase:       strings.TrimRight(os.Getenv("RAILGRID_HUB_URL"), "/"),
+			HubInsecure:   os.Getenv("RAILGRID_HUB_INSECURE") == "true",
 			// Event-driven reconciles: the API publishes thread/turn and
 			// workspace transitions, the controllers subscribe.
 			SessionSignals: apiServer.SessionSignals(),
 			ProjectSignals: apiServer.ProjectSignals(),
+			// Conversation retention as a per-Session deadline (zero: keep
+			// conversations forever).
+			SessionRetention: parseRetention(os.Getenv("APP_STUDIO_MESSAGE_RETENTION")),
 		}
 		if err := startControllerManager(ctx, kcpConfig, deps, vwState); err != nil {
 			log.Printf("controller manager: NOT started: %v", err)
@@ -436,7 +444,16 @@ func openWorkspaceStore() *workspace.FileStore {
 		root = filepath.Join(os.TempDir(), "railgrid-app-studio-workspaces")
 	}
 	log.Printf("app studio workspace root: %s", root)
-	return workspace.NewFileStore(root)
+	store := workspace.NewFileStore(root)
+	// The volume holds the working TREE and nothing else. The working-copy
+	// ledger — dirty paths, source revision, the commit in flight, the
+	// settlement receipt — is `Project.status.workspace`, reached through a
+	// client attached to each call's context: the caller's on the request path
+	// (api/project_ledger.go), the manager's in the Project reconciler. This
+	// makes a call path that forgot to attach one an error rather than a
+	// silent return to pod-local authority.
+	store.RequireContextLedger()
+	return store
 }
 
 // openMessageStore builds the App Studio message store from env, wraps it with
@@ -477,10 +494,12 @@ func openMessageStore(ctx context.Context) (store.Store, func(), error) {
 		}
 	}
 
-	if retention := parseRetention(os.Getenv("APP_STUDIO_MESSAGE_RETENTION")); retention > 0 {
-		go runRetention(ctx, msgStore, retention)
-	}
-
+	// Conversation retention is NOT swept here any more. It is a per-Session
+	// deadline owned by the Session reconciler (controller/session): it
+	// requeues at status.lastActivityAt + APP_STUDIO_MESSAGE_RETENTION and
+	// deletes that Session, whose finalizer purges the thread. One owner (the
+	// controller leader), one conversation at a time, and an in-flight turn
+	// defers its own expiry — none of which a fleet-wide cutoff could do.
 	return msgStore, closeFn, nil
 }
 
@@ -497,26 +516,16 @@ func parseRetention(raw string) time.Duration {
 	return d
 }
 
-func runRetention(ctx context.Context, msgStore store.Store, retention time.Duration) {
-	interval := retention / 4
-	if interval < time.Minute {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			cutoff := time.Now().Add(-retention)
-			if _, err := msgStore.DeleteMessagesOlderThan(ctx, cutoff); err != nil {
-				log.Printf("App Studio retention cleanup failed (cutoff %s): %v", cutoff, err)
-			}
-		}
-	}
-}
-
+// runAttachmentRetention sweeps expired DRAFT attachments on a cutoff, and
+// deliberately stays a sweep.
+//
+// A draft is an upload that no turn has claimed yet: it is scoped to a project
+// and an actor, carries its own expires_at, and can outlive — or entirely
+// predate — any thread. There is therefore no Session to hang its deadline on,
+// which is why conversation retention moved to the Session reconciler and this
+// one did not. Attachments that a turn DID bind are not swept here at all:
+// they belong to the conversation and go with it when the Session's finalizer
+// purges the thread.
 func runAttachmentRetention(ctx context.Context, attachmentStore store.AttachmentStore, retention time.Duration) {
 	interval := retention / 4
 	if interval < time.Minute {

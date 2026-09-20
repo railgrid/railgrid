@@ -7113,9 +7113,21 @@ async function requestDeleteProject(project: Project) {
     projectDeletion.acknowledge(operation)
     removeWorkbenchPersistence(deletionScope)
     if (!responseIsCurrent()) return
-    // DELETE returns after the server accepts the request, while the resource
-    // may remain in a terminating phase. Remove only the accepted project from
-    // the local list instead of immediately reading that stale projection back.
+    // The API server accepts the delete immediately; the object stays visible,
+    // terminating, until its finalizer has torn down the instances, released
+    // the repository, purged the conversation and revoked the identity. Watch
+    // it disappear rather than reading the terminating projection back — but
+    // do not block the UI on it: the local row goes either way, and a
+    // finalizer that is still working is not an error the user can act on.
+    void api.awaitProjectDeleted(props.ctx, name, target.uid ?? '')
+      .then((gone) => {
+        if (!gone || !responseIsCurrent()) return
+        invalidateProjectListRequests()
+      })
+      .catch(() => {
+        // The project list refresh below is the backstop for a poll that
+        // could not read the object at all.
+      })
     invalidateProjectListRequests()
     removeProjectFromLocalList(target)
     if (!projects.value.some((item) => item.name === name)) removeProjectThumbnail(name)

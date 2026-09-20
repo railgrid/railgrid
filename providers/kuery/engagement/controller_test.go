@@ -10,8 +10,12 @@ package engagement
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -31,6 +35,8 @@ import (
 
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpcore "github.com/kcp-dev/sdk/apis/core"
+
+	"github.com/railgrid/provider-sdk/sharding"
 
 	kuerystore "github.com/railgrid/kuery/pkg/store"
 	kuerysync "github.com/railgrid/kuery/pkg/sync"
@@ -288,10 +294,9 @@ func TestVerifyTenantClusterDropsEngagementOnInvalidBinding(t *testing.T) {
 	}
 
 	clientset := kubefake.NewClientset()
-	claims := testClaims("replica-a", clientset, time.Now)
-	held, err := claims.tryAcquire(ctx, EngagementName(cluster, edgeName))
-	if err != nil || !held {
-		t.Fatalf("acquire edge claim = %v/%v, want held", held, err)
+	claims := testClaims(t, "replica-a", clientset)
+	if held, _ := claims.Claim(ctx, storeName); !held {
+		t.Fatal("the edge claim was not held")
 	}
 
 	cancelled := false
@@ -306,6 +311,7 @@ func TestVerifyTenantClusterDropsEngagementOnInvalidBinding(t *testing.T) {
 			WithStatusSubresource(&kueryv1alpha1.Engagement{}).
 			Build()),
 		edgeWatches: map[string]edgeWatch{},
+		wanted:      map[string]string{},
 		engaged: map[string]engagedEdge{
 			storeName: {
 				cancel:   func() { cancelled = true },
@@ -318,7 +324,7 @@ func TestVerifyTenantClusterDropsEngagementOnInvalidBinding(t *testing.T) {
 	binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
 		"kcp.io/cluster": "someoneelse0000",
 	}}}
-	err = c.verifyTenantCluster(ctx, binding, cluster)
+	err := c.verifyTenantCluster(ctx, binding, cluster)
 	if err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("verifyTenantCluster error = %v, want cluster-mismatch error", err)
 	}
@@ -336,7 +342,7 @@ func TestVerifyTenantClusterDropsEngagementOnInvalidBinding(t *testing.T) {
 	if row.Status != "stale" {
 		t.Fatalf("cluster status = %q, want stale", row.Status)
 	}
-	if _, err := claims.leases.Get(ctx, leaseName(EngagementName(cluster, edgeName)), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+	if _, err := clientset.CoordinationV1().Leases(claimNamespace).Get(ctx, claims.LeaseName(storeName), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("claim lookup error = %v, want not found after cleanup", err)
 	}
 }
@@ -433,80 +439,55 @@ func TestRegistryEnsureIsIdempotent(t *testing.T) {
 	}
 }
 
-func testClaims(identity string, cs *kubefake.Clientset, now func() time.Time) *edgeClaims {
-	return &edgeClaims{
-		leases:   cs.CoordinationV1().Leases(claimNamespace),
-		identity: identity,
-		now:      now,
+// testClaims is the edge claim shard this package runs in production, over a
+// fake API and with a fixed replica identity. The claim mechanics themselves
+// (decline, take over an expired claim, release, shutdown) belong to
+// provider-sdk/sharding and are tested there; what is tested here is kuery's
+// use of them.
+func testClaims(t *testing.T, identity string, cs *kubefake.Clientset) *sharding.Shard {
+	t.Helper()
+	shard, err := sharding.NewForClient(cs, sharding.Options{
+		Namespace: claimNamespace,
+		Prefix:    leasePrefix,
+		Identity:  identity,
+		TTL:       claimTTL,
+		Renew:     renewInterval,
+	})
+	if err != nil {
+		t.Fatalf("edge claim shard: %v", err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shard.Close(ctx)
+	})
+	return shard
 }
 
-// Exactly one replica may hold an edge's claim; a fresh foreign claim is
-// declined, an expired one is taken over.
-func TestEdgeClaimsShardsAndTakesOverExpired(t *testing.T) {
-	ctx := context.Background()
-	cs := kubefake.NewClientset()
-	current := time.Now()
-	clock := func() time.Time { return current }
-	a := testClaims("replica-a", cs, clock)
-	b := testClaims("replica-b", cs, clock)
-	name := EngagementName("1ngen6o0so3jwz2h", "edge-1")
-
-	held, err := a.tryAcquire(ctx, name)
-	if err != nil || !held {
-		t.Fatalf("first acquire = %v/%v, want held", held, err)
-	}
-	held, err = b.tryAcquire(ctx, name)
-	if err != nil || held {
-		t.Fatalf("foreign fresh claim = %v/%v, want declined", held, err)
-	}
-	// The owner renews.
-	held, err = a.tryAcquire(ctx, name)
-	if err != nil || !held {
-		t.Fatalf("owner renew = %v/%v, want held", held, err)
-	}
-	// Owner dies: after the TTL the peer takes over.
-	current = current.Add(claimTTL + time.Second)
-	held, err = b.tryAcquire(ctx, name)
-	if err != nil || !held {
-		t.Fatalf("expired takeover = %v/%v, want held", held, err)
-	}
-	// The old owner comes back and must NOT reclaim a freshly held lease.
-	held, err = a.tryAcquire(ctx, name)
-	if err != nil || held {
-		t.Fatalf("stale owner reclaim = %v/%v, want declined", held, err)
-	}
-}
-
-// Release hands the edge over immediately; a foreign release is a no-op.
-func TestEdgeClaimsReleaseIsOwnerOnly(t *testing.T) {
-	ctx := context.Background()
-	cs := kubefake.NewClientset()
-	clock := time.Now
-	a := testClaims("replica-a", cs, clock)
-	b := testClaims("replica-b", cs, clock)
-	name := EngagementName("1ngen6o0so3jwz2h", "edge-1")
-
-	if held, err := a.tryAcquire(ctx, name); err != nil || !held {
-		t.Fatalf("acquire = %v/%v", held, err)
-	}
-	// Foreign release must not free the claim.
-	b.release(ctx, name)
-	if held, _ := b.tryAcquire(ctx, name); held {
-		t.Fatal("foreign release freed an owned claim")
-	}
-	// Owner release frees it for the peer without waiting out the TTL.
-	a.release(ctx, name)
-	if held, err := b.tryAcquire(ctx, name); err != nil || !held {
-		t.Fatalf("acquire after owner release = %v/%v, want held", held, err)
+// claimLease is a per-edge claim as a peer replica would have written it.
+func claimLease(claims *sharding.Shard, storeName, holder string, renewed time.Time) *coordinationv1.Lease {
+	return &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   claimNamespace,
+			Name:        claims.LeaseName(storeName),
+			Annotations: map[string]string{sharding.KeyAnnotation: storeName},
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       ptr.To(holder),
+			LeaseDurationSeconds: ptr.To(int32(claimTTL.Seconds())),
+			RenewTime:            ptr.To(metav1.NewMicroTime(renewed)),
+		},
 	}
 }
 
 // Engagement names must be valid object names regardless of the characters in
-// an edge name, distinct per edge, stable, and — the property the Lease watch
-// depends on — recoverable from the Lease name.
+// an edge name, distinct per edge, and stable. The claim Lease name is the
+// shard's business, but it must still be a legal object name, and the edge it
+// belongs to must be recoverable from it — that is what lets a Lease event
+// reach its Engagement without an index.
 func TestEngagementAndLeaseNamesRoundTrip(t *testing.T) {
 	const cluster = "1ngen6o0so3jwz2h"
+	claims := testClaims(t, "replica-a", kubefake.NewClientset())
 	a := EngagementName(cluster, "edge-1")
 	b := EngagementName(cluster, "edge-2")
 	if a == b {
@@ -516,8 +497,13 @@ func TestEngagementAndLeaseNamesRoundTrip(t *testing.T) {
 		t.Fatal("engagement name is not stable")
 	}
 	// An edge name that is nothing like an object name must still produce one.
-	weird := EngagementName(cluster, "Edge/With Spaces.and_DOTS")
-	for _, name := range []string{a, b, weird, leaseName(a)} {
+	const oddEdge = "Edge/With Spaces.and_DOTS"
+	weird := EngagementName(cluster, oddEdge)
+	names := []string{a, b, weird}
+	for _, edge := range []string{"edge-1", oddEdge} {
+		names = append(names, claims.LeaseName(StoreName(cluster, edge)))
+	}
+	for _, name := range names {
 		if len(name) > 253 {
 			t.Fatalf("name %q is too long for an object name", name)
 		}
@@ -527,18 +513,24 @@ func TestEngagementAndLeaseNamesRoundTrip(t *testing.T) {
 			}
 		}
 	}
-	got, ok := engagementNameFromLease(leaseName(a))
-	if !ok || got != a {
-		t.Fatalf("engagementNameFromLease(leaseName(%q)) = %q/%v, want the engagement name", a, got, ok)
+
+	storeName := StoreName(cluster, oddEdge)
+	lease := claimLease(claims, storeName, "replica-a", time.Now())
+	got, ok := claims.KeyFor(lease)
+	if !ok || got != storeName {
+		t.Fatalf("KeyFor(claim for %q) = %q/%v, want the store name back", storeName, got, ok)
 	}
-	if _, ok := engagementNameFromLease("kuery-controllers"); ok {
-		t.Fatal("the controller lease must not map to an engagement")
+	if _, ok := claims.KeyFor(&coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{
+		Namespace: claimNamespace, Name: "kuery-controllers",
+	}}); ok {
+		t.Fatal("the controller lease must not map to an edge")
 	}
 }
 
 // engagementFixture is an Engagement reconciler over a fake provider workspace
-// and an in-memory store.
-func engagementFixture(t *testing.T, now time.Time, objects ...client.Object) (*engagementReconciler, kuerystore.Store) {
+// and an in-memory store. It is given the claim shard the reconciler reads
+// ownership through, because the tests seed the very Leases it names.
+func engagementFixture(t *testing.T, now time.Time, claims *sharding.Shard, objects ...client.Object) (*engagementReconciler, kuerystore.Store) {
 	t.Helper()
 	store := testStore(t)
 	builder := ctrlfake.NewClientBuilder().
@@ -549,9 +541,14 @@ func engagementFixture(t *testing.T, now time.Time, objects ...client.Object) (*
 	}
 	cl := builder.Build()
 	return &engagementReconciler{
-		client:     cl,
-		controller: &Controller{cfg: Config{Store: store}, engaged: map[string]engagedEdge{}},
-		now:        func() time.Time { return now },
+		client: cl,
+		controller: &Controller{
+			cfg:     Config{Store: store},
+			claims:  claims,
+			engaged: map[string]engagedEdge{},
+			wanted:  map[string]string{},
+		},
+		now: func() time.Time { return now },
 	}, store
 }
 
@@ -576,7 +573,8 @@ func TestEngagementGoesStaleWhenItsClaimExpires(t *testing.T) {
 		},
 	}
 	// No Lease object at all: exactly what a SIGKILLed replica leaves behind.
-	r, store := engagementFixture(t, now, engaged)
+	claims := testClaims(t, "replica-a", kubefake.NewClientset())
+	r, store := engagementFixture(t, now, claims, engaged)
 	lastSeen := now.Add(-10 * time.Minute)
 	if err := store.UpsertCluster(ctx, &kuerystore.ClusterModel{
 		Name: storeName, Status: "active", LastSeen: lastSeen, TTL: clusterTTLSeconds,
@@ -629,15 +627,9 @@ func TestEngagementWithALiveClaimIsLeftAlone(t *testing.T) {
 			LastSeen: ptr.To(metav1.NewTime(now)),
 		},
 	}
-	lease := &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{Namespace: claimNamespace, Name: leaseName(name)},
-		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity:       ptr.To("replica-a"),
-			LeaseDurationSeconds: ptr.To(int32(claimTTL.Seconds())),
-			RenewTime:            ptr.To(metav1.NewMicroTime(now)),
-		},
-	}
-	r, _ := engagementFixture(t, now, engaged, lease)
+	claims := testClaims(t, "replica-a", kubefake.NewClientset())
+	lease := claimLease(claims, StoreName(cluster, edge), "replica-a", now)
+	r, _ := engagementFixture(t, now, claims, engaged, lease)
 
 	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: name}})
 	if err != nil {
@@ -673,7 +665,8 @@ func TestStaleEngagementIsPurgedAfterItsGrace(t *testing.T) {
 			LastSeen: ptr.To(metav1.NewTime(now.Add(-purgeGrace - time.Minute))),
 		},
 	}
-	r, store := engagementFixture(t, now, stale)
+	claims := testClaims(t, "replica-a", kubefake.NewClientset())
+	r, store := engagementFixture(t, now, claims, stale)
 	for _, seed := range []struct {
 		name   string
 		status string
@@ -742,15 +735,9 @@ func TestStaleEngagementReclaimedByAPeerIsNotPurged(t *testing.T) {
 			LastSeen: ptr.To(metav1.NewTime(now.Add(-purgeGrace - time.Minute))),
 		},
 	}
-	lease := &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{Namespace: claimNamespace, Name: leaseName(name)},
-		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity:       ptr.To("replica-b"),
-			LeaseDurationSeconds: ptr.To(int32(claimTTL.Seconds())),
-			RenewTime:            ptr.To(metav1.NewMicroTime(now)),
-		},
-	}
-	r, store := engagementFixture(t, now, stale, lease)
+	claims := testClaims(t, "replica-b", kubefake.NewClientset())
+	lease := claimLease(claims, storeName, "replica-b", now)
+	r, store := engagementFixture(t, now, claims, stale, lease)
 	if err := store.UpsertCluster(ctx, &kuerystore.ClusterModel{
 		Name: storeName, Status: "active", LastSeen: now, TTL: clusterTTLSeconds,
 		Labels: tenantLabelsJSON(cluster),
@@ -766,21 +753,31 @@ func TestStaleEngagementReclaimedByAPeerIsNotPurged(t *testing.T) {
 	}
 }
 
-// A Lease event must reach its Engagement without an index; anything else in
-// the namespace must map to nothing.
+// A claim Lease event must reach its Engagement without an index; anything
+// else in the namespace — the controller lease, another shard's claim, a Lease
+// somewhere else entirely — must map to nothing.
 func TestLeaseEventsMapToTheirEngagement(t *testing.T) {
-	name := EngagementName("1ngen6o0so3jwz2h", "edge-1")
-	requests := engagementForLease(context.Background(), &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{Namespace: claimNamespace, Name: leaseName(name)},
-	})
+	const cluster, edge = "1ngen6o0so3jwz2h", "edge-1"
+	name := EngagementName(cluster, edge)
+	storeName := StoreName(cluster, edge)
+	claims := testClaims(t, "replica-a", kubefake.NewClientset())
+	mapLease := engagementForLease(claims)
+
+	requests := mapLease(context.Background(), claimLease(claims, storeName, "replica-a", time.Now()))
 	if len(requests) != 1 || requests[0].Name != name {
 		t.Fatalf("lease mapped to %v, want one request for %s", requests, name)
 	}
+
+	elsewhere := claimLease(claims, storeName, "replica-a", time.Now())
+	elsewhere.Namespace = "kube-system"
 	for _, other := range []*coordinationv1.Lease{
 		{ObjectMeta: metav1.ObjectMeta{Namespace: claimNamespace, Name: "kuery-controllers"}},
-		{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: leaseName(name)}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: claimNamespace, Name: "edge-tunnel-0f1e2d3c", Annotations: map[string]string{
+			sharding.KeyAnnotation: "kubernetesclusters/" + cluster + "/" + edge,
+		}}},
+		elsewhere,
 	} {
-		if got := engagementForLease(context.Background(), other); len(got) != 0 {
+		if got := mapLease(context.Background(), other); len(got) != 0 {
 			t.Fatalf("%s/%s mapped to %v, want nothing", other.Namespace, other.Name, got)
 		}
 	}
@@ -809,4 +806,88 @@ func isObjectNameRune(r rune) bool {
 // key, which must stay a bare identifier (see index.TenantLabel).
 func isBareIdentifierRune(r rune) bool {
 	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_'
+}
+
+// Edge engagement must NOT be leader-elected. Sharding is what divides the
+// edges across replicas; starting Run inside the election callback would
+// quietly turn N replicas back into one worker and N-1 standbys, and every
+// claim in this package would go back to being handover insurance. Only
+// RunSingletons — the two loops that want exactly one writer — belongs behind
+// the lease.
+//
+// This is asserted against main.go itself because it is a wiring property: no
+// unit test of this package can see which context Run was handed.
+func TestEngagementIsNotLeaderElected(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join("..", "main.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parsing main.go: %v", err)
+	}
+
+	var insideElection, outsideElection []string
+	var electionCallbacks []*ast.FuncLit
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if selectorName(call.Fun) != "leaderelection.Run" {
+			return true
+		}
+		for _, arg := range call.Args {
+			if lit, ok := arg.(*ast.FuncLit); ok {
+				electionCallbacks = append(electionCallbacks, lit)
+			}
+		}
+		return true
+	})
+	if len(electionCallbacks) != 1 {
+		t.Fatalf("main.go has %d leaderelection.Run callbacks, want exactly 1", len(electionCallbacks))
+	}
+
+	elected := map[ast.Node]bool{}
+	ast.Inspect(electionCallbacks[0], func(node ast.Node) bool {
+		elected[node] = true
+		return true
+	})
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := selectorName(call.Fun)
+		if !strings.HasPrefix(name, "engagementCtl.") {
+			return true
+		}
+		if elected[node] {
+			insideElection = append(insideElection, name)
+		} else {
+			outsideElection = append(outsideElection, name)
+		}
+		return true
+	})
+
+	if slices.Contains(insideElection, "engagementCtl.Run") {
+		t.Fatal("main.go starts edge engagement inside the leader election; it must run on every replica, sharded by claims")
+	}
+	if !slices.Contains(insideElection, "engagementCtl.RunSingletons") {
+		t.Fatalf("the leader election callback calls %v; it must run the single-writer reconcilers", insideElection)
+	}
+	if !slices.Contains(outsideElection, "engagementCtl.Run") {
+		t.Fatalf("main.go never starts edge engagement outside the election (found %v)", outsideElection)
+	}
+}
+
+// selectorName renders "pkg.Fn" or "recv.Method" for a call target, and "" for
+// anything else.
+func selectorName(expr ast.Expr) string {
+	selector, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return receiver.Name + "." + selector.Sel.Name
 }

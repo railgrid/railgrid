@@ -112,7 +112,35 @@ func newKCPTenantResolver(kcpProxy *kcpproxy.KCPProxy, client *railgridclient.Cl
 	if kcpProxy != nil {
 		r.identifyUser = kcpProxy.IdentifyUser
 	}
-	return providers.TenantResolverFunc(r.resolve)
+	// Returned as the concrete type, not as a TenantResolverFunc: the backend
+	// proxy also asks it whether a caller may address the cluster a data-plane
+	// path names (providers.ClusterAuthorizer), and a function value would
+	// drop that method.
+	return r
+}
+
+// Resolve satisfies providers.TenantResolver.
+func (r *kcpTenantResolver) Resolve(req *http.Request) (string, string, error) {
+	return r.resolve(req)
+}
+
+// AuthorizeCluster satisfies providers.ClusterAuthorizer: may user address
+// clusterID? A provider data-plane route names its workspace in its path, and
+// the hub authorizes that cluster before it tells the provider about it.
+//
+// The answer comes from the SAME check the kcp proxy applies to
+// /clusters/{id} (pkg/server/proxy authorizer.go): a workspace-scope
+// Membership for that workspace, or an org-scope one for its org. Asking it
+// twice, in two places, is how "kubectl can reach it but the provider cannot"
+// (and its more dangerous mirror) gets introduced, so there is one
+// implementation and this delegates to it.
+//
+// Failure is closed: no proxy, no name, no cluster — no.
+func (r *kcpTenantResolver) AuthorizeCluster(ctx context.Context, user, clusterID string) bool {
+	if r == nil || r.kcpProxy == nil || user == "" || clusterID == "" {
+		return false
+	}
+	return r.kcpProxy.AuthorizeCluster(ctx, user, clusterID)
 }
 
 // ErrAnonymousProviderCaller is returned by the tenant resolver when

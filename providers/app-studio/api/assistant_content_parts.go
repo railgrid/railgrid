@@ -1081,17 +1081,6 @@ func normalizeProjectAssistantContentParts(
 	return parts, canonicalResources, derived.String(), nil
 }
 
-func projectAssistantContentPartsCanonicalJSON(parts []projectAssistantContentPart) json.RawMessage {
-	if len(parts) == 0 {
-		return nil
-	}
-	raw, err := json.Marshal(parts)
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
 func projectAssistantContentPartsFromRunAudit(run store.AssistantRun) []projectAssistantContentPart {
 	var audit projectAssistantRunAudit
 	if len(run.Audit) == 0 || json.Unmarshal(run.Audit, &audit) != nil {

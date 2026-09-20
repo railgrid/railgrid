@@ -36,11 +36,13 @@ var projectVerbs = []verbRoute{
 	// not a CR read because the join is exactly what no single CR carries —
 	// see the Cut B note in docs/roadmap/provider-contract-remediation.md.
 	{verb: "view", handlers: get(func(s *Server) http.HandlerFunc { return s.getProject })},
-	// Deleting a project is orchestration (instances, repositories, the
-	// workspace tree, the store rows), so for now it is a gated verb rather
-	// than a CR delete. Moving the orchestration into a Project finalizer is
-	// Cut D; the ROUTE does not have to wait for it.
-	{verb: "delete", handlers: post(func(s *Server) http.HandlerFunc { return s.deleteProject })},
+	// There is no `delete` verb. Deleting a project is a DELETE of the
+	// Project CR through the hub's kcp proxy, authorized by the tenant's own
+	// RBAC on the object, and everything it used to orchestrate here —
+	// instances, the repository claim, the conversation rows, the identity,
+	// the workspace tree — runs behind the Project finalizer instead
+	// (controller/project/teardown.go). `kubectl delete project` and the
+	// portal's delete button are now the same operation.
 	{verb: "set-repository", handlers: post(func(s *Server) http.HandlerFunc { return s.putProjectRepository })},
 	{verb: "set-template", handlers: post(func(s *Server) http.HandlerFunc { return s.putProjectTemplate })},
 	{verb: "thumbnail", handlers: get(func(s *Server) http.HandlerFunc { return s.getProjectThumbnail })},

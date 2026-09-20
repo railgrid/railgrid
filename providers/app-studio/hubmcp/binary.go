@@ -26,16 +26,16 @@ import (
 // UTF-8 text without NUL bytes and "base64" (standard, padded) otherwise.
 // Sizes and limits are measured on decoded bytes.
 //
-// Capability gating: base64 is only ever sent to a Code provider whose tool
-// schema advertises it, so an older provider never writes base64 text into a
-// repository. code__commit_files advertises an "encoding" property on its
-// file items; code__checkout_repository advertises a "binaryEncoding" input.
+// Capability gating applies to CHECKOUT only: code__checkout_repository is a
+// tool, and an older Code provider cannot return binary blobs, so the opt-in
+// is sent only when its schema advertises a "binaryEncoding" input. Commit has
+// no gate — it is the repositories/commit/v1 ACTION, whose declared schema
+// carries the encoding for every file, so there is nothing to discover.
 
 const (
 	EncodingUTF8   = "utf-8"
 	EncodingBase64 = "base64"
 
-	ToolCommitFiles        = "code__commit_files"
 	ToolCheckoutRepository = "code__checkout_repository"
 
 	// CommitTextMaxBytes is the Code provider's per-file text bound.
@@ -75,12 +75,6 @@ func DecodeWireContent(content, encoding string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unsupported file encoding %q", encoding)
 	}
-}
-
-// CommitFilesSupportsEncoding reports whether the catalog's
-// code__commit_files accepts base64 file items.
-func CommitFilesSupportsEncoding(tools []Tool) bool {
-	return toolSchemaHas(tools, ToolCommitFiles, "properties", "files", "items", "properties", "encoding")
 }
 
 // CheckoutSupportsBinaryEncoding reports whether the catalog's

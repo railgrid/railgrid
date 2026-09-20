@@ -827,14 +827,10 @@ func devActionsEnv(includeExchange bool) []any {
 	return env
 }
 
-// devHTTPProbe uses the agent's immediate health endpoint. The generous
-// failure threshold keeps a slow image pull or dependency install from
-// removing the pod while the public Service still publishes not-ready
-// addresses so initial synchronization can proceed.
-func devHTTPProbe(port int64, initialDelay int64) map[string]any {
-	return devHTTPProbePath(port, initialDelay, "/healthz")
-}
-
+// devHTTPProbePath builds an HTTP probe against one of the agent's immediate
+// health endpoints. The generous failure threshold keeps a slow image pull or
+// dependency install from removing the pod while the public Service still
+// publishes not-ready addresses so initial synchronization can proceed.
 func devHTTPProbePath(port int64, initialDelay int64, path string) map[string]any {
 	return map[string]any{
 		"httpGet": map[string]any{

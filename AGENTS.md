@@ -671,6 +671,12 @@ Each suite has a dedicated Make target. Most spin up their own hub on fixed port
 | `make e2e-external-kcp` | `external_kcp` | kcp via Helm in kind |
 | `make e2e-provider` | `provider` | Provider provisioning (quickstart) |
 | `make e2e-provider-flags` | `providerflags` | `--providers` flag mechanics (dep validation, filtering) |
+| `make e2e-infra-provider` | `infraprovider` | Infrastructure provider: init/serve split, Template/Instance reconcile, data-plane gates |
+| `make e2e-kuery-provider` | `kueryprovider` | Kuery provider: SavedView, `run` verb gates, engagement via hub identity |
+| `make e2e-identity` | `identity` | Hub scoped-identity service: mint, refuse by clause, refresh, GC on owner deletion, composition consent |
+| `make e2e-edges` | `edges` | Edges provider provisioning, claims, data-plane auth boundary |
+| `make e2e-edges-connectivity` | `edgesconn` | Edges data plane over real tunnels: kubectl, SSH, BYO provider probe, kuery aggregation (needs kind) |
+| `make e2e-cli` | `cli` | `railgrid` CLI against a hub (kind optional) |
 | `make e2e-tilt-cluster` | `tiltcluster` | Against a live `make tilt-cluster` multi-shard stack |
 | `make e2e-install-external` | `installexternal` | Runs `hack/install/` scripts from docs/install-external-kcp.md (two-shard kcp via kcp-operator + Envoy gateway) |
 | `make e2e-install-embedded` | `installembedded` | Runs `hack/install/` scripts from docs/install-embedded-kcp.md (embedded kcp + gateway) |

@@ -51,6 +51,7 @@ import (
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/internal/crossprovider"
+	"github.com/railgrid/provider-sdk/claimscope"
 	"github.com/railgrid/provider-sdk/dataplane"
 )
 
@@ -62,6 +63,13 @@ import (
 func projectRegistryPullSecretName(instanceName string) string {
 	return instanceName + "-registry"
 }
+
+// registryPullSecretOwner is the provider named in the pull Secret's
+// railgrid.ai/owner label. It is "infrastructure", not "app-studio", because
+// the label decides which provider's selector-scoped `secrets` claim can see
+// the object, and the reader is the infrastructure provider mounting it on
+// the production Instance.
+const registryPullSecretOwner = "infrastructure"
 
 // codeRegistryTokenAction is the Code provider action that issues an
 // image-pull credential for a Connection's registry.
@@ -139,7 +147,20 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 		// rather than in a registry's logs.
 		annotations["ai.railgrid.ai/registry-token-expires-at"] = credential.ExpiresAt
 	}
-	metadata := map[string]any{"name": name, "namespace": projectLLMSecretNamespace}
+	// The owner label is the hand-over, not decoration. This Secret is
+	// written here as the caller and then READ by the infrastructure provider,
+	// whose `secrets` claim is selector-scoped to its own name, so it is
+	// stamped railgrid.ai/owner: infrastructure rather than app-studio: an
+	// unlabelled — or app-studio-labelled — pull Secret is invisible to the
+	// provider that has to mount it, and the production Instance would fail to
+	// pull its image (docs/provider-connectivity-contract.md §"Label-scoped
+	// claims"). It is also why this Secret is deliberately outside App Studio's
+	// own claim: nothing here reads it back.
+	metadata := map[string]any{
+		"name":      name,
+		"namespace": projectLLMSecretNamespace,
+		"labels":    map[string]any{claimscope.OwnerLabel: registryPullSecretOwner},
+	}
 	if len(annotations) > 0 {
 		metadata["annotations"] = annotations
 	}

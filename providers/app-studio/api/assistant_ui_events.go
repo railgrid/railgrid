@@ -16,7 +16,6 @@ limitations under the License.
 
 package api
 
-const projectAssistantUIRootComponentID = "root-col"
 const projectAssistantUIDevelopmentPreviewRefreshKey = "development.previewRefreshNeeded"
 
 type projectAssistantUIEvent struct {

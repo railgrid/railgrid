@@ -63,9 +63,11 @@ spec:
   #   repositories       created with autoInit and converged; NEVER deleted —
   #                      they hold user code and outlive the project.
   #   repositorycommits  listed, watched and read only: the CR is created by
-  #                      the Code provider's commit_files tool, because it is a
-  #                      pointer at a source bundle only that provider can
-  #                      store.
+  #                      the Code provider itself, behind its
+  #                      repositories/commit action, because it is a pointer at
+  #                      a source bundle only that provider can store. App
+  #                      Studio holds the VERB (a clause-C capability on the
+  #                      project's Repository), not create on the kind.
   # Keep identical to deploy/chart/templates/catalogentry.yaml, and in step
   # with internal/crossprovider/composition.go.
   dependencies:
@@ -78,7 +80,7 @@ spec:
       composes:
         - group: code.railgrid.ai
           resource: repositories
-          verbs: ["get", "list", "watch", "create", "update"]
+          verbs: ["get", "list", "watch", "create", "update", "delete"]
         - group: code.railgrid.ai
           resource: repositorycommits
           verbs: ["get", "list", "watch"]
@@ -118,21 +120,46 @@ spec:
       # those types is a contract violation rather than a design choice
       # (docs/provider-connectivity-contract.md §"Scoped identities").
       #
-      # Secrets are the credential material this provider writes and reads
-      # itself, all in the tenant workspace's "default" namespace:
-      #   * one per configured LLM model, named by Studio
-      #     spec.llm.models[].secretRef (api/llm_registry.go writes it, the
-      #     Studio reconciler reads it to report `configured`);
-      #   * "{instance}-registry", the dockerconfigjson image-pull credential
-      #     a promotion mints from the Code provider and the production
-      #     Instance references in spec.imagePullSecretRef
-      #     (api/project_promote.go).
-      # No other provider's Secrets are read: the hub mints no rule on the
-      # core group for anyone, and this provider reads no dependency's
-      # credential (cross-provider-simplification §2.1).
+      # Secrets, and ONLY the ones labelled railgrid.ai/owner: app-studio.
+      # Two names, both in the tenant workspace's "default" namespace:
+      #
+      #   railgrid-projects-llm-<modelID>  one per configured LLM model, named
+      #                                    by Studio spec.llm.models[].secretRef.
+      #                                    Written by the tenant through this
+      #                                    provider's portal, AS THE CALLER
+      #                                    (portal/src/llmRegistry.ts), and read
+      #                                    by the Studio reconciler through the
+      #                                    export to report `configured` — so it
+      #                                    stays inside the claim and the portal
+      #                                    stamps the owner label. An unlabelled
+      #                                    one is invisible here and never
+      #                                    becomes `configured`.
+      #   <prod-instance>-registry         the dockerconfigjson image-pull
+      #                                    credential a promotion mints from the
+      #                                    Code provider and the production
+      #                                    Instance references in
+      #                                    spec.imagePullSecretRef
+      #                                    (api/project_promote.go). It is
+      #                                    written as the caller and READ BY THE
+      #                                    INFRASTRUCTURE PROVIDER, so it is
+      #                                    stamped railgrid.ai/owner:
+      #                                    infrastructure — the label IS the
+      #                                    hand-over — and consequently falls
+      #                                    outside this claim by design.
+      #
+      # kcp claims are per resource, not per name, so the label is what stands
+      # in for those names: without the selector this claim is read-write on
+      # EVERY Secret in EVERY workspace that enables this provider, which is the
+      # side-door docs/cross-provider-simplification.md X-4 closes. No other
+      # provider's Secrets are read: the hub mints no rule on the core group for
+      # anyone, and this provider reads no dependency's credential
+      # (cross-provider-simplification §2.1).
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
+        selector:
+          matchLabels:
+            railgrid.ai/owner: app-studio
   # Data-plane verbs this provider serves, declared so the coordinate is
   # machine-readable. Declaring one grants and serves nothing: every call is
   # still authorized by this provider's own caller-scoped GET of the addressed
@@ -148,9 +175,6 @@ spec:
         verb: view
         description: "Read the project's joined view: the CR, live instance status and the commit ledger."
         readOnly: true
-      - resource: projects
-        verb: delete
-        description: "Delete the project and everything provisioned for it."
       - resource: projects
         verb: set-repository
         description: "Bind or rebind the project's source repository."

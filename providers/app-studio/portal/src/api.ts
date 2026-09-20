@@ -47,7 +47,7 @@ import type {
 import type { ProjectCreateReadiness } from './createReadiness'
 import type { PreviewBridgeSession } from './previewBridge'
 import { providerFetch, readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
-import { createKubeClient, type KubeObject, type KubeResourceRef } from './portalkit/kube'
+import { createKubeClient, isKubeNotFound, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 import * as llmRegistry from './llmRegistry'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
 import {
@@ -1317,9 +1317,22 @@ export const api = {
     return api.getProject(ctx, name)
   },
 
-  // deleteRepository opts in to deleting the Git repository App Studio
-  // created for the project (never an adopted one; the server answers 409).
-  // By default the repository survives and only its project claim is released.
+  // deleteProject deletes the Project CR. There is no delete verb any more:
+  // the teardown it used to orchestrate over HTTP — instances, the repository
+  // claim, conversation rows, the hub identity, the workspace tree — is the
+  // Project's finalizer, so `kubectl delete project` and this button are the
+  // same operation (controller/project/teardown.go).
+  //
+  // The UID is a precondition rather than a query parameter: kcp answers 409
+  // when the name has been recycled onto a different object, so a stale row
+  // cannot delete its replacement.
+  //
+  // deleteRepository opts in to deleting the Git repository App Studio created
+  // for the project. It is stamped on the object first, because the finalizer
+  // reads the decision off the object it is finalizing; an adopted repository
+  // is never deleted whatever this says. By default the repository survives
+  // and only its project claim is released — git is the durable copy of the
+  // user's work.
   async deleteProject(
     ctx: RailgridContext | null,
     name: string,
@@ -1328,9 +1341,48 @@ export const api = {
   ): Promise<void> {
     const expectedUID = uid.trim()
     if (!expectedUID) throw new ProjectAPIRequestError('project UID is required before deleting', 400)
-    const query = new URLSearchParams({ uid: expectedUID })
-    if (options.deleteRepository) query.set('deleteRepository', 'true')
-    await request<null>(ctx, 'POST', `${projectURL(ctx, name, 'delete')}?${query}`)
+    const client = projectKubeClient(ctx)
+    if (options.deleteRepository) {
+      await client.patch(projectResource, name, {
+        metadata: { annotations: { 'ai.railgrid.ai/delete-repository': 'true' } },
+      }, { type: 'merge' })
+    }
+    await client.delete(projectResource, name, { preconditions: { uid: expectedUID } })
+  },
+
+  // awaitProjectDeleted polls until the Project is gone, or until it has been
+  // replaced by a different object under the same name. A delete returns as
+  // soon as the API server accepts it; the object stays visible, terminating,
+  // for as long as its finalizer takes, and the list would otherwise read that
+  // back as "still there".
+  //
+  // It is a poll and not a watch because this client speaks plain REST through
+  // the hub's kcp proxy, and one disappearing object does not justify a
+  // streaming connection. Giving up is not an error: the deletion was accepted
+  // and the finalizer is still working, which is what the caller is told.
+  async awaitProjectDeleted(
+    ctx: RailgridContext | null,
+    name: string,
+    uid: string,
+    options: { timeoutMS?: number; intervalMS?: number } = {},
+  ): Promise<boolean> {
+    const expectedUID = uid.trim()
+    const client = projectKubeClient(ctx)
+    const timeoutMS = options.timeoutMS ?? 30_000
+    const intervalMS = options.intervalMS ?? 500
+    const deadline = Date.now() + timeoutMS
+    for (;;) {
+      try {
+        const current = await client.get<KubeObject>(projectResource, name)
+        // A same-name replacement means the one we deleted is gone.
+        if (expectedUID && current.metadata?.uid && current.metadata.uid !== expectedUID) return true
+      } catch (e) {
+        if (isKubeNotFound(e)) return true
+        throw e
+      }
+      if (Date.now() >= deadline) return false
+      await new Promise((resolve) => setTimeout(resolve, intervalMS))
+    }
   },
 
   async syncDevelopment(ctx: RailgridContext | null, name: string): Promise<unknown> {

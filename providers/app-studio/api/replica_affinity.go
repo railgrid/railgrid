@@ -449,7 +449,7 @@ func (s *Server) adoptProject(r *http.Request, id identity, projectName string, 
 	if routing == nil || s.workspaces == nil {
 		return
 	}
-	ctx := r.Context()
+	ctx := s.withProjectLedger(r.Context(), id)
 	logger := klog.Background().WithValues("project", projectName, "previousOwner", prev.OwnerReplica)
 	c, err := s.clientFor(id)
 	if err != nil {
@@ -462,21 +462,23 @@ func (s *Server) adoptProject(r *http.Request, id identity, projectName string, 
 		return
 	}
 	scope := projectWorkspaceScope(id, p)
-	var floor uint64
+	// The claim's recorded revision is no longer the fence — the project's own
+	// status is (§9 Cut D.3) — but a claim that ran AHEAD of a status write
+	// means a revision the development data plane has already seen was lost,
+	// so it is still repaired into the ledger before anything reads it.
 	if claim.Revision > 0 {
-		floor = uint64(claim.Revision)
+		if err := s.workspaces.EnsureSourceRevisionFloor(ctx, scope, uint64(claim.Revision)); err != nil {
+			logger.Error(err, "project adoption: repairing the source-revision floor from the claim")
+		}
 	}
-	// Inspect before raising the floor, or stale/absent source would appear
-	// current merely because adoption wrote fresh revision metadata.
-	retained, err := s.workspaces.RetainsSource(ctx, scope, floor)
+	// Does THIS replica hold the tree the project is at? The comparison is
+	// local-tag versus ledger, so an absent tree, a tree from before another
+	// replica's edits, and a tree whose tag was never written all come back
+	// false and get rebuilt.
+	retained, err := s.workspaces.RetainsSource(ctx, scope)
 	if err != nil {
 		logger.Error(err, "project adoption: inspecting retained source; refusing to overwrite it")
 		return
-	}
-	if claim.Revision > 0 {
-		if err := s.workspaces.EnsureSourceRevisionFloor(ctx, scope, floor); err != nil {
-			logger.Error(err, "project adoption: seeding source-revision floor")
-		}
 	}
 	if retained {
 		return

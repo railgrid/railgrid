@@ -682,7 +682,7 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, req, decision, id.user, out, nil, fmt.Errorf("decode assistant checkpoint: %w", err))
 	}
 	if projectAssistantCheckpointHasStaleRepositoryBinding(state, p) {
-		staleBindingError := "Project repository binding changed after the assistant paused"
+		staleBindingError := "project repository binding changed after the assistant paused"
 		tc := state.ToolCalls[state.CurrentIndex]
 		now := time.Now().UTC()
 		run.Status = store.AssistantRunStatusFailed

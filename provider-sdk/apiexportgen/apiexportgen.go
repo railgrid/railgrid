@@ -93,6 +93,22 @@ type PermissionClaim struct {
 	// the portal) and is deliberately NOT part of the kcp APIExport spec. It is
 	// parsed so a manifest round-trips, and dropped when the export is built.
 	TenantScoped bool `json:"tenantScoped,omitempty"`
+	// Selector narrows the claim to the objects carrying a label set. It is
+	// rendered into the export as kcp's spec.permissionClaims[].defaultSelector.
+	Selector *PermissionClaimSelector `json:"selector,omitempty"`
+}
+
+// PermissionClaimSelector mirrors
+// apis/providers/v1alpha1.ProviderPermissionClaimSelector, and is rendered into
+// the generated APIExport as kcp's PermissionClaimSelector.
+//
+// Only matchLabels is offered. kcp's virtual-workspace admission stamps a
+// claim's matchLabels onto objects the provider writes through the export, but
+// deliberately does not try to synthesize labels for a matchExpressions
+// selector — a provider declaring one could not create the objects it claims.
+type PermissionClaimSelector struct {
+	// MatchLabels is the label set a claimed object must carry, ANDed.
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
 }
 
 // APIExportDecl is a CatalogEntry's spec.apiExport: everything the manifest
@@ -152,13 +168,24 @@ func LoadManifest(path string) (*APIExportDecl, error) {
 }
 
 // ExportClaims renders manifest claims in the kcp apis.kcp.io/v1alpha2 APIExport
-// shape: {group?, resource, verbs}. Three deliberate omissions:
+// shape: {group?, resource, verbs, defaultSelector?}. Three deliberate
+// omissions:
 //
 //   - an empty group is left out entirely (core types), which is what kcp's own
 //     serialization does and what install.ApplyAPIExport wrote before the
 //     export became a file;
 //   - tenantScoped is a CatalogEntry concept with no kcp counterpart;
 //   - identityHash is per-installation and stamped by install at init time.
+//
+// The manifest's `selector` becomes the export claim's `defaultSelector`,
+// kcp's name for the scope an APIExport SUGGESTS. It is advisory on the export
+// — what actually narrows access is the `selector` on the accepted claim in
+// each tenant's APIBinding, which the hub writes from the same manifest field
+// (pkg/hub/kcp/bootstrap.go, EnsureProviderAPIBinding). Publishing it here is
+// what lets kcp flag a binding whose accepted scope has drifted from the one
+// the provider asks for (condition PermissionClaimsValid, reason
+// PermissionClaimsMismatch), and it is the scope kcp uses for WorkspaceType
+// default bindings, which never pass through the hub at all.
 func ExportClaims(claims []PermissionClaim) []any {
 	out := make([]any, 0, len(claims))
 	for _, claim := range claims {
@@ -173,9 +200,25 @@ func ExportClaims(claims []PermissionClaim) []any {
 			}
 			entry["verbs"] = verbs
 		}
+		if selector := exportSelector(claim.Selector); selector != nil {
+			entry["defaultSelector"] = selector
+		}
 		out = append(out, entry)
 	}
 	return out
+}
+
+// exportSelector renders a manifest selector as kcp's PermissionClaimSelector,
+// or nil when the claim carries none (which kcp reads as matchAll).
+func exportSelector(selector *PermissionClaimSelector) map[string]any {
+	if selector == nil || len(selector.MatchLabels) == 0 {
+		return nil
+	}
+	matchLabels := make(map[string]any, len(selector.MatchLabels))
+	for key, value := range selector.MatchLabels {
+		matchLabels[key] = value
+	}
+	return map[string]any{"matchLabels": matchLabels}
 }
 
 // BuildExport assembles the APIExport object. resources is apigen's

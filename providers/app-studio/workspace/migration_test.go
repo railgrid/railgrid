@@ -23,7 +23,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 )
 
@@ -73,8 +72,7 @@ func TestFileStoreMigratesLegacyWorkspaceStateAndSnapshotsOnce(t *testing.T) {
 	if err := os.WriteFile(entryName, entryRaw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stateRaw := []byte(`{"uncommittedPaths":["src/App.tsx"]}`)
-	if err := os.WriteFile(filepath.Join(legacySnapshots, workspaceSourceStateFile), stateRaw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(legacySnapshots, legacyDirectDataFile), []byte("legacy\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -85,10 +83,6 @@ func TestFileStoreMigratesLegacyWorkspaceStateAndSnapshotsOnce(t *testing.T) {
 	if err != nil || read.Content != "legacy source\n" {
 		t.Fatalf("migrated source = %#v, err=%v", read, err)
 	}
-	paths, err := store.UncommittedPaths(ctx, first)
-	if err != nil || !reflect.DeepEqual(paths, []string{"src/App.tsx"}) {
-		t.Fatalf("migrated source state = %v, err=%v", paths, err)
-	}
 	if _, err := store.WriteFile(ctx, first, WriteOptions{Path: "src/App.tsx", Content: "changed source\n"}); err != nil {
 		t.Fatal(err)
 	}
@@ -96,19 +90,14 @@ func TestFileStoreMigratesLegacyWorkspaceStateAndSnapshotsOnce(t *testing.T) {
 	if err != nil || read.Content != "changed source\n" {
 		t.Fatalf("migrated source after live write = %#v, err=%v", read, err)
 	}
-	migratedSnapshot := filepath.Join(root, workspaceSnapshotDirectory, first.OrgUUID, first.WorkspaceUUID, first.ProjectName, first.ProjectUID, "run-legacy", "entry.json")
-	if _, err := os.Stat(migratedSnapshot); err != nil {
-		t.Fatalf("migrated snapshot data was not preserved: %v", err)
+	if !legacySnapshotsMigrated(t, store, first, "run-legacy", "entry.json") {
+		t.Fatal("migrated snapshot data was not preserved")
 	}
 
 	second := legacyScope
 	second.ProjectUID = "project-second"
 	if _, err := store.ReadFile(ctx, second, ReadOptions{Path: "src/App.tsx"}); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("recreated project inherited migrated source: %v", err)
-	}
-	paths, err = store.UncommittedPaths(ctx, second)
-	if err != nil || len(paths) != 0 {
-		t.Fatalf("recreated project inherited source state = %v, err=%v", paths, err)
 	}
 	secondSnapshot := filepath.Join(root, workspaceSnapshotDirectory, second.OrgUUID, second.WorkspaceUUID, second.ProjectName, second.ProjectUID, "run-legacy")
 	if _, err := os.Stat(secondSnapshot); !errors.Is(err, fs.ErrNotExist) {
@@ -134,16 +123,11 @@ func TestFileStoreLegacyMigrationBindsSnapshotsToWorkspaceFirstUID(t *testing.T)
 	if _, err := store.ReadFile(ctx, first, ReadOptions{Path: "src/App.tsx"}); err != nil {
 		t.Fatalf("migrate workspace with first UID: %v", err)
 	}
-	paths, err := store.UncommittedPaths(ctx, second)
-	if err != nil {
-		t.Fatal(err)
+	if legacySnapshotsMigrated(t, store, second, "run-legacy", "entry.json") {
+		t.Fatal("UID2 claimed snapshots after workspace-first migration")
 	}
-	if len(paths) != 0 {
-		t.Fatalf("UID2 claimed snapshots after workspace-first migration: %v", paths)
-	}
-	paths, err = store.UncommittedPaths(ctx, first)
-	if err != nil || !reflect.DeepEqual(paths, []string{"src/App.tsx"}) {
-		t.Fatalf("UID1 snapshots after workspace-first migration = %v, err=%v", paths, err)
+	if !legacySnapshotsMigrated(t, store, first, "run-legacy", "entry.json") {
+		t.Fatal("UID1 did not receive the legacy snapshots after workspace-first migration")
 	}
 }
 
@@ -157,9 +141,8 @@ func TestFileStoreLegacyMigrationBindsWorkspaceToSnapshotsFirstUID(t *testing.T)
 	second.ProjectUID = "project-second"
 	store := NewFileStore(root)
 
-	paths, err := store.UncommittedPaths(ctx, first)
-	if err != nil || !reflect.DeepEqual(paths, []string{"src/App.tsx"}) {
-		t.Fatalf("migrate snapshots with first UID = %v, err=%v", paths, err)
+	if !legacySnapshotsMigrated(t, store, first, "run-legacy", "entry.json") {
+		t.Fatal("legacy snapshots were not migrated to the first UID")
 	}
 	if _, err := store.ReadFile(ctx, second, ReadOptions{Path: "src/App.tsx"}); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("UID2 claimed workspace after snapshots-first migration: %v", err)
@@ -435,7 +418,7 @@ func TestFileStoreGlobalMigrationDispositionPreservesBothHalves(t *testing.T) {
 				// The source half is scoped, so the snapshots half is the clear
 				// direct legacy counterpart for this order pair.
 				preservedSnapshot = writeDirectMigrationSnapshot(t, root, base, "run-legacy", entry)
-				if err := os.WriteFile(filepath.Join(snapshotBase, workspaceSourceStateFile), []byte(`{"uncommittedPaths":["src/App.jsx"]}`), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(snapshotBase, legacyDirectDataFile), []byte("legacy\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -446,7 +429,7 @@ func TestFileStoreGlobalMigrationDispositionPreservesBothHalves(t *testing.T) {
 
 			store := NewFileStore(root)
 			if tc.snapshotsFirst {
-				if _, err := store.UncommittedPaths(ctx, current); err != nil {
+				if _, err := store.snapshotProjectDir(current); err != nil {
 					t.Fatalf("snapshot-first migration: %v", err)
 				}
 				if _, err := store.ReadFile(ctx, current, ReadOptions{Path: sourcePath}); !errors.Is(err, fs.ErrNotExist) {
@@ -456,7 +439,7 @@ func TestFileStoreGlobalMigrationDispositionPreservesBothHalves(t *testing.T) {
 				if _, err := store.ReadFile(ctx, current, ReadOptions{Path: sourcePath}); !errors.Is(err, fs.ErrNotExist) {
 					t.Fatalf("source-first source inherited markerless data: %v", err)
 				}
-				if _, err := store.UncommittedPaths(ctx, current); err != nil {
+				if _, err := store.snapshotProjectDir(current); err != nil {
 					t.Fatalf("source-first migration: %v", err)
 				}
 			}
@@ -606,7 +589,7 @@ func seedLegacyMigrationFixture(t *testing.T, root string) Scope {
 	if err := os.WriteFile(filepath.Join(legacySnapshots, "entry.json"), entryRaw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(legacySnapshots), workspaceSourceStateFile), []byte(`{"uncommittedPaths":["src/App.tsx"]}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(legacySnapshots), legacyDirectDataFile), []byte("legacy\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return legacyScope
@@ -644,4 +627,29 @@ func TestFileStoreUnifiedDeleteOversizedTargetRequiresCurrentVersion(t *testing.
 	if _, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "large.txt", ExpectedVersion: read.Version}); err != nil {
 		t.Fatalf("delete with current version: %v", err)
 	}
+}
+
+// legacyDirectDataFile stands in for whatever a pre-ProjectUID layout left
+// directly in a project's snapshot directory. It used to be the working-copy
+// ledger's own JSON; since §9 Cut D.3 the ledger is on the Project CR, so the
+// migration's job here is simply to move whatever it finds.
+const legacyDirectDataFile = "legacy-direct-data.json"
+
+// legacySnapshotsMigrated triggers the snapshots half of the legacy migration
+// — snapshotProjectDir is what every snapshot read goes through — and reports
+// whether the legacy run snapshot landed under this scope's UID. Before Cut
+// D.3 these tests asked the same question by reading the dirty-path set out of
+// a file in that directory; the set is control-plane state now, so the
+// question is asked of the snapshot data itself.
+func legacySnapshotsMigrated(t *testing.T, store *FileStore, scope Scope, rel ...string) bool {
+	t.Helper()
+	dir, err := store.snapshotProjectDir(scope)
+	if err != nil {
+		t.Fatalf("snapshots-half migration for UID %q: %v", scope.ProjectUID, err)
+	}
+	_, err = os.Stat(filepath.Join(append([]string{dir}, rel...)...))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stat migrated snapshot for UID %q: %v", scope.ProjectUID, err)
+	}
+	return err == nil
 }

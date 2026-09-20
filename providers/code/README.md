@@ -138,10 +138,10 @@ recorded upstream repository ID, and rejects replacement or redirection. Tenant
 callers need no Secret access. Responses use the shared Provider Action
 envelope: `requestID`, provider/action identity, `resourceRef`, and exactly one
 of `result` or `error`. `X-Request-ID` supplies the correlation ID.
-The CatalogEntry advertises the thirteen bounded
+The CatalogEntry advertises the fourteen bounded
 action schemas and their digests.
 
-One of the thirteen is bound to a `Connection` instead of a `Repository`:
+One of the fourteen is bound to a `Connection` instead of a `Repository`:
 `mint_registry_token/v1` issues a short-lived image-pull credential for the
 connection's container registry, so a consumer that has to pull an image built
 from a tenant's repository never reads this provider's `Connection` Secret to
@@ -150,12 +150,34 @@ grant reaches. See
 [docs/code-provider-architecture.md](../../docs/code-provider-architecture.md)
 §"`mint_registry_token`".
 
+`commit/v1` is the one repository action that does not talk to a git host.
+It writes the files it is handed into this provider's own bundle store and
+creates the `RepositoryCommit` that points at them, then returns
+`{"commit": {"name", "uid"}}` — the object to watch, not the landed commit.
+The commit controller applies it; a consumer follows the CR's phase. Input is
+`{repositoryUID, message?, branch?, files[]}` with each file as
+`{path, content, encoding?, delete?}` (`encoding` is `utf-8` or `base64`), or
+`{repositoryUID, message?, branch?, bundleRef, bundleDigest}` for a payload
+staged through `stage_commit_bundle`. The MCP `commit_files` tool is the same
+executor (`commitexec`) behind an MCP projection, so the two paths cannot
+drift.
+
+What `commit/v1` deliberately does NOT take: a per-file mode, a commit author,
+or a base-commit fence. A `RepositoryCommit` carries a repository ref, a
+branch, a message and a bundle pointer and nothing else, so any of those would
+be accepted on the wire and then silently dropped. Adding one starts at
+`apis/v1alpha1/types_repositorycommit.go` and `backend.RepositoryCommitInput`,
+not at the action schema.
+
 Git bundles use a separate bounded upload: `stage_snapshot`, at the same route
 shape and behind the same two gates, with its own `create` grant on
 `repositories/stage_snapshot`. It accepts a snapshot containing `baseCommit`,
 `commit`, `tree`, and a base64 `bundle` (25 MiB decoded maximum) and returns a
 `bundleRef` that `prepare_snapshot` and `publish_snapshot` name instead of an
-inline bundle. It is the provider's one **uncatalogued** verb: a body that
+inline bundle. Source trees use the second: `stage_commit_bundle`, gated on
+`repositories/stage_commit_bundle`, which stores a file list (48 MiB decoded,
+500 files) and returns the `bundleRef`/`bundleDigest` pair `commit` names.
+These two are the provider's only **uncatalogued** verbs: a body that
 large cannot be declared under `CatalogEntry.spec.actions[].limits`, which caps
 `maxInputBytes` at 1 MiB. The exception and the four conditions a verb must
 meet to claim it are in

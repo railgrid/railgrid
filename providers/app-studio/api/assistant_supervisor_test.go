@@ -1918,13 +1918,6 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	}
 }
 
-type blockingStartRouteEngine struct {
-	entered  chan struct{}
-	finished chan struct{}
-}
-
-type replyStartRouteEngine struct{ chunk, reply string }
-
 type planStartRouteEngine struct {
 	plans     []projectAssistantPlanSnapshot
 	published chan struct{}
@@ -1948,10 +1941,6 @@ type reservationObservingStore struct {
 	observedReservation bool
 }
 
-type failingResumeRouteEngine struct {
-	cause error
-}
-
 func (s *reservationObservingStore) ListMessages(ctx context.Context, scope store.Scope, limit int, cursor string) (store.Page, error) {
 	if scope == s.scope {
 		if s.supervisor == nil || !s.supervisor.reserved(scope) {
@@ -1969,13 +1958,6 @@ func (e *initialProjectBootstrapCaptureEngine) StreamProjectAssistant(_ context.
 
 func (*initialProjectBootstrapCaptureEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
 	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-func (e replyStartRouteEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	if e.chunk != "" {
-		req.StreamCallbacks.OnChunk(e.chunk)
-	}
-	return projectAssistantRunResult{Content: e.reply}, nil
 }
 
 func (e *planStartRouteEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
@@ -2010,20 +1992,6 @@ func (e *planResumeRouteEngine) ResumeProjectAssistant(_ context.Context, req pr
 	}, nil
 }
 
-func (failingResumeRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected stream")
-}
-
-func (e failingResumeRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, e.cause
-}
-
-func (replyStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-type failingStartRouteEngine struct{}
-
 type terminalStartRouteEngine struct{ err error }
 
 func (e terminalStartRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
@@ -2031,25 +1999,6 @@ func (e terminalStartRouteEngine) StreamProjectAssistant(context.Context, projec
 }
 
 func (terminalStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-func (failingStartRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("expected failure")
-}
-
-func (failingStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-func (e *blockingStartRouteEngine) StreamProjectAssistant(ctx context.Context, _ projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	close(e.entered)
-	<-ctx.Done()
-	close(e.finished)
-	return projectAssistantRunResult{}, context.Cause(ctx)
-}
-
-func (*blockingStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
 	return projectAssistantRunResult{}, errors.New("unexpected resume")
 }
 

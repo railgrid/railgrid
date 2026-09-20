@@ -5,7 +5,7 @@
 // You may obtain a copy of the License at
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
-//
+
 // Package store is the agents provider's durable persistence boundary. It owns
 // chat transcripts, resumable run checkpoints, long-term memory notes, the
 // scheduler/trigger working sets, the cross-agent approvals inbox, OAuth token

@@ -28,6 +28,11 @@ import (
 // MemoryStore is an in-memory implementation used for tests and explicit
 // local development. It must not be used as a silent production fallback.
 type MemoryStore struct {
+	// threadEventSignals is the single-process stand-in for Postgres
+	// LISTEN/NOTIFY: the memory store only ever has one replica, so an
+	// in-process fan-out is the whole mechanism.
+	threadEventSignals threadEventBroadcaster
+
 	mu                   sync.RWMutex
 	assistantThreads     map[Scope]map[string]AssistantThread
 	assistantTurns       map[Scope]map[string]map[string]AssistantTurn

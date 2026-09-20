@@ -149,12 +149,6 @@ func (c Callbacks) abort(ctx context.Context) error {
 	return c.CheckAbort(ctx)
 }
 
-func (c Callbacks) delta(s string) {
-	if c.OnDelta != nil {
-		c.OnDelta(s)
-	}
-}
-
 func (c Callbacks) assistantMessage(message AssistantMessage) {
 	if c.OnAssistantMessage != nil {
 		c.OnAssistantMessage(message)

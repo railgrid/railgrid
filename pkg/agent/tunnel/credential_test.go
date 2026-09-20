@@ -175,3 +175,48 @@ func TestCredentialStoreKeepsTheCurrentTokenWhenRefreshFails(t *testing.T) {
 		t.Fatalf("a failed refresh changed the bearer to %q", got)
 	}
 }
+
+// A saved credential the provider refuses must not be retried forever when a
+// join token is also in hand: Rejected flips the next bearer to the join token,
+// a second rejection flips it back, and a fresh Adopt settles on the new
+// credential. Without a join token there is nothing to flip to.
+func TestCredentialStoreRejectedFallsBackToTheJoinToken(t *testing.T) {
+	store := &CredentialStore{Fallback: func() string { return "join-token" }}
+	if store.Rejected() {
+		t.Fatal("Rejected() with no credential in hand reports a switch")
+	}
+	if err := store.Adopt(Credential{Token: "stale-1", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	if got := store.Token(); got != "stale-1" {
+		t.Fatalf("Token() = %q, want the saved credential first", got)
+	}
+	if !store.Rejected() {
+		t.Fatal("Rejected() with a join token available did not switch bearers")
+	}
+	if got := store.Token(); got != "join-token" {
+		t.Fatalf("after a rejection Token() = %q, want the join token", got)
+	}
+	if !store.Rejected() {
+		t.Fatal("second Rejected() did not switch back")
+	}
+	if got := store.Token(); got != "stale-1" {
+		t.Fatalf("after two rejections Token() = %q, want the saved credential again", got)
+	}
+	_ = store.Rejected()
+	if err := store.Adopt(Credential{Token: "fresh-2", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	if got := store.Token(); got != "fresh-2" {
+		t.Fatalf("after re-enrolment Token() = %q, want the new credential", got)
+	}
+
+	noFallback := &CredentialStore{}
+	_ = noFallback.Adopt(Credential{Token: "only", ExpiresAt: time.Now().Add(time.Hour)})
+	if noFallback.Rejected() {
+		t.Fatal("Rejected() with no join token reports a switch")
+	}
+	if got := noFallback.Token(); got != "only" {
+		t.Fatalf("Token() = %q, want the only credential there is", got)
+	}
+}

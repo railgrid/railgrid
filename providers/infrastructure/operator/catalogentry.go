@@ -65,9 +65,10 @@ func EnsureCatalogEntry(ctx context.Context, providerCfg *rest.Config, manifest 
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err := f.Write(out); err != nil {
-		f.Close()
+		// Already failing on the write; the close error adds nothing.
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {

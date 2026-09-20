@@ -223,7 +223,7 @@ func codingSandboxEligibility(config CodingSandboxConfig) CodingSandboxEligibili
 
 func (s *Server) codingSandboxConfigSnapshot() (CodingSandboxConfig, error) {
 	if s == nil {
-		return CodingSandboxConfig{}, errors.New("App Studio server is unavailable")
+		return CodingSandboxConfig{}, errors.New("the App Studio server is unavailable")
 	}
 	s.mu.Lock()
 	config, configured := s.runSandboxConfig, s.runSandboxConfigured
@@ -319,14 +319,6 @@ type projectAssistantSandboxInstance struct {
 
 type projectAssistantSandboxCheckpoint struct {
 	Metadata projectAssistantRunSandboxMetadata `json:"metadata"`
-}
-
-func cloneProjectAssistantSandboxCheckpoint(src *projectAssistantSandboxCheckpoint) *projectAssistantSandboxCheckpoint {
-	if src == nil {
-		return nil
-	}
-	out := *src
-	return &out
 }
 
 // projectAssistantRunSandboxEnabled remains a narrow test seam. Runtime

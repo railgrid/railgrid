@@ -47,13 +47,20 @@ spec:
   apiExport:
     name: "agents.railgrid.ai"
     permissionClaims:
-      # Secrets, and ONLY secrets. Three names, all under this provider's own
-      # prefixes in the tenant workspace:
+      # Secrets, and ONLY the ones labelled railgrid.ai/owner: agents. Three
+      # names, all under this provider's own prefixes in the tenant workspace:
       #
-      #   railgrid-agents-model-<name>   the LLM credential. TENANT-WRITTEN (the
-      #                                  portal writes it with a kube client);
-      #                                  the provider only reads it, to call the
-      #                                  model on the tenant's behalf.
+      #   railgrid-agents-model-<name>   the LLM credential. Written by the
+      #                                  tenant (this provider's portal, or its
+      #                                  own settings API, both AS THE CALLER)
+      #                                  and read by the provider, including on
+      #                                  unattended runs where there is no
+      #                                  caller to borrow — so it stays inside
+      #                                  the claim, and every writer stamps the
+      #                                  owner label (portal/src/resources.ts,
+      #                                  api/settings.go). The model-test and
+      #                                  model-discover verbs read it as the
+      #                                  caller and need no claim at all.
       #   railgrid-agents-conn-<name>    one per Connection. PROVIDER-WRITTEN:
       #                                  the OAuth callback stores the access and
       #                                  refresh tokens here (api/oauth.go), and
@@ -63,13 +70,21 @@ spec:
       #                                  verifiable.
       #   railgrid-agents-llm            the legacy single-credential Secret,
       #                                  read for workspaces that predate
-      #                                  per-name credentials.
+      #                                  per-name credentials. A workspace still
+      #                                  on it must label it to keep it visible.
       #
-      # Write access is needed for the second of those and nothing else, but
-      # kcp claims are per resource, not per name.
+      # kcp claims are per resource, not per name, so the label is what stands
+      # in for the name prefixes above: without the selector this claim is
+      # read-write on EVERY Secret in EVERY workspace that enables this
+      # provider, which is the side-door docs/cross-provider-simplification.md
+      # X-4 closes. kcp stamps the label on anything this provider writes
+      # through the export and hides anything that does not carry it.
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
+        selector:
+          matchLabels:
+            railgrid.ai/owner: agents
   # Data-plane verbs this provider serves, declared so the coordinate is
   # machine-readable. Declaring one grants and serves nothing: every call is
   # still authorized by this provider's own caller-scoped SSAR on

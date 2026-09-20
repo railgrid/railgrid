@@ -20,7 +20,10 @@ metadata:
   name: infrastructure.providers.railgrid.ai
 spec:
   permissionClaims:
-  - resource: secrets
+  - defaultSelector:
+      matchLabels:
+        railgrid.ai/owner: infrastructure
+    resource: secrets
     verbs:
     - get
     - list

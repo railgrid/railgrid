@@ -47,16 +47,23 @@ func TestProjectInitialBootstrapPromptDigestDoesNotExposePrompt(t *testing.T) {
 	}
 }
 
-func TestProjectFinalizersForCreateRequireAttachmentStore(t *testing.T) {
+// A Project the API creates carries both finalizers from birth, because a
+// delete is now a plain CR delete and may land before the first reconcile:
+// ai.railgrid.ai/instances carries the teardown chain and the attachment one
+// carries blob cleanup. Without a scope neither can address anything, so
+// neither is installed — an undeletable object would be the worse failure.
+func TestProjectFinalizersForCreateCarryTeardownAndAttachments(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
 	finalizers := server.projectFinalizersForCreate(identity{orgUUID: "org", workspaceUUID: "workspace"})
-	if len(finalizers) != 1 || finalizers[0] != store.AttachmentStorageFinalizer {
-		t.Fatalf("project creation finalizers = %v, want attachment cleanup finalizer", finalizers)
+	if len(finalizers) != 2 || finalizers[0] != aiv1alpha1.ProjectFinalizer || finalizers[1] != store.AttachmentStorageFinalizer {
+		t.Fatalf("project creation finalizers = %v, want the teardown and attachment finalizers", finalizers)
 	}
-	if got := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).projectFinalizersForCreate(identity{orgUUID: "org", workspaceUUID: "workspace"}); len(got) != 0 {
-		t.Fatalf("project creation finalizers without attachment store = %v, want none", got)
+	got := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).
+		projectFinalizersForCreate(identity{orgUUID: "org", workspaceUUID: "workspace"})
+	if len(got) != 1 || got[0] != aiv1alpha1.ProjectFinalizer {
+		t.Fatalf("project creation finalizers without attachment store = %v, want only the teardown finalizer", got)
 	}
 	if got := server.projectFinalizersForCreate(identity{orgUUID: "org"}); len(got) != 0 {
 		t.Fatalf("project creation finalizers without workspace scope = %v, want none", got)

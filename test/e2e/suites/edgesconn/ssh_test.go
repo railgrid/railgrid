@@ -17,6 +17,7 @@ limitations under the License.
 package edgesconn
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -147,21 +148,34 @@ func TestSSHUserMappingInherited(t *testing.T) {
 }
 
 // sshThroughTunnel runs `railgrid ssh <edge> -- echo <marker>` and returns the
-// combined output, retrying briefly (SSH credential/status propagation can lag
+// command's STDOUT, retrying briefly (SSH credential/status propagation can lag
 // the connected flag by a beat).
+//
+// Stdout only, and only on a zero exit. The earlier version searched the
+// COMBINED output for the marker, and the CLI's failure message embeds the URL
+// it dialled — which contains `cmd=echo+<marker>`. Every total failure
+// therefore matched: this suite kept both SSH tests green through a data plane
+// that was answering 400 at the edges gate, and the log line the test printed
+// as its proof was the error message.
 func sshThroughTunnel(t *testing.T, kubeconfig, edgeName, marker string) string {
 	t.Helper()
-	var last string
+	var stdout, attempt string
 	if !waitFor(t, 90*time.Second, func() (bool, string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, railgridBin, "ssh", edgeName, "--", "echo", marker)
 		cmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfig)
-		b, _ := cmd.CombinedOutput()
-		last = string(b)
-		return strings.Contains(last, marker), last
+		var out, errOut bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &errOut
+		runErr := cmd.Run()
+		stdout = out.String()
+		attempt = fmt.Sprintf("exit: %v\nstdout:\n%s\nstderr:\n%s", runErr, stdout, errOut.String())
+		if runErr != nil {
+			return false, attempt
+		}
+		return strings.Contains(stdout, marker), attempt
 	}) {
-		t.Fatalf("railgrid ssh never returned the marker; last output:\n%s", last)
+		t.Fatalf("railgrid ssh never ran the command through the tunnel; last attempt:\n%s", attempt)
 	}
-	return last
+	return stdout
 }

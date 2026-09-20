@@ -72,7 +72,7 @@ func Due(sched *agentsv1alpha1.Schedule, now time.Time) (fire bool, next time.Ti
 		if !now.Before(sched.Spec.RunAt.Time) {
 			return true, time.Time{}, nil
 		}
-		return false, sched.Spec.RunAt.Time.UTC(), nil
+		return false, sched.Spec.RunAt.UTC(), nil
 	default:
 		return false, time.Time{}, fmt.Errorf("unknown schedule type %q", sched.Spec.Type)
 	}

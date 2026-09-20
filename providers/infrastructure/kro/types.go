@@ -304,9 +304,9 @@ const (
 	ManagedByNamespace = "railgrid-tenants"
 )
 
-// RGD is the kro upstream type expressed as a plain GVR. The provider
-// reads RGDs via the dynamic client so we don't take a runtime
-// dependency on the kro Go module.
+// RGDGroupVersionResource is the kro upstream RGD type expressed as a plain
+// GVR. The provider reads RGDs via the dynamic client so we don't take a
+// runtime dependency on the kro Go module.
 var RGDGroupVersionResource = schema.GroupVersionResource{
 	Group:    "kro.run",
 	Version:  "v1alpha1",

@@ -628,14 +628,7 @@ func (l *projectAssistantRunEventLedger) finishToolCall(
 			copy := cloneProjectAssistantPlanSnapshot(*persistPlan)
 			outcome.PlanSnapshot = &copy
 		}
-		payload, err := json.Marshal(projectAssistantRunToolResultPayload{
-			Result:       outcome.Result,
-			Error:        outcome.Error,
-			Failed:       outcome.Failed,
-			Canceled:     outcome.Canceled,
-			Disposition:  outcome.Disposition,
-			PlanSnapshot: outcome.PlanSnapshot,
-		})
+		payload, err := json.Marshal(projectAssistantRunToolResultPayload(outcome))
 		if err != nil {
 			return projectAssistantRunToolCallOutcome{}, fmt.Errorf("encode assistant run tool result event: %w", err)
 		}
@@ -856,14 +849,7 @@ func (l *projectAssistantRunEventLedger) applyEventLocked(event store.AssistantR
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return fmt.Errorf("%w: invalid tool result payload at sequence %d", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)
 		}
-		outcome := projectAssistantRunToolCallOutcome{
-			Result:       payload.Result,
-			Error:        payload.Error,
-			Failed:       payload.Failed,
-			Canceled:     payload.Canceled,
-			Disposition:  payload.Disposition,
-			PlanSnapshot: payload.PlanSnapshot,
-		}
+		outcome := projectAssistantRunToolCallOutcome(payload)
 		if outcome.Canceled {
 			if outcome.PlanSnapshot != nil {
 				return fmt.Errorf("%w: canceled tool result at sequence %d contains a plan snapshot", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)

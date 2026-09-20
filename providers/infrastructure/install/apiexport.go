@@ -297,9 +297,11 @@ func storageEqual(a, b apisv1alpha2.ResourceSchemaStorage) bool {
 
 func schemaPrefix(crd *apiextensionsv1.CustomResourceDefinition) string {
 	h := sha256.New()
-	fmt.Fprintln(h, crd.Spec.Group, crd.Spec.Names.Kind)
+	// Errors are discarded throughout: a sha256 hash.Hash never fails a
+	// write, so there is nothing to report or recover from.
+	_, _ = fmt.Fprintln(h, crd.Spec.Group, crd.Spec.Names.Kind)
 	for _, v := range crd.Spec.Versions {
-		fmt.Fprintln(h, v.Name)
+		_, _ = fmt.Fprintln(h, v.Name)
 		if v.Schema != nil && v.Schema.OpenAPIV3Schema != nil {
 			// Hash a deterministic JSON serialization. NEVER use fmt %v
 			// here: OpenAPIV3Schema is full of pointer fields (Default,
@@ -314,10 +316,10 @@ func schemaPrefix(crd *apiextensionsv1.CustomResourceDefinition) string {
 			if err != nil {
 				// Should never happen for a JSONSchemaProps. Fall back to a
 				// stable, address-free key rather than %v.
-				fmt.Fprintf(h, "marshal-error:%s/%s\n", crd.Name, v.Name)
+				_, _ = fmt.Fprintf(h, "marshal-error:%s/%s\n", crd.Name, v.Name)
 				continue
 			}
-			h.Write(data)
+			_, _ = h.Write(data)
 		}
 	}
 	return "tmpl" + hex.EncodeToString(h.Sum(nil))[:8]

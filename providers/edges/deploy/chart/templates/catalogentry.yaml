@@ -26,9 +26,6 @@ data:
       version: {{ .Chart.AppVersion | quote }}
       category: "Edges"
       iconURL: "/ui/providers/edges/icon.svg"
-      # Grants the provider SA get/list/watch/proxy on the edge kinds in the
-      # tenant workspace on Enable (join-token validation + SSH creds reads).
-      edgeProxyAccess: true
       ui:
         url: "http://{{ include "edges.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
         indexPath: "/"
@@ -66,10 +63,35 @@ data:
             resource: namespaces
             verbs: [get, list, watch, create]
             tenantScoped: true
+          # Secrets, and ONLY the ones labelled railgrid.ai/owner: edges. Four
+          # shapes, each written by a party this provider controls, each of which
+          # stamps the label:
+          #
+          #   railgrid-system/<edge>-ssh-credentials   the host's SSH credential,
+          #     written by this provider when a host agent calls the gated
+          #     ssh-credentials verb (internal/tunnel/edge_status.go) and read back
+          #     to open a session (internal/tunnel/edges_proxy_builder.go).
+          #   railgrid-system/railgrid-edges-svc-<name>  a published Service's
+          #     credential, written by this provider's portal as the caller
+          #     (portal/src/api.ts) and read by the validation reconciler. The
+          #     service-proxy read path already runs as the caller and needs no
+          #     claim.
+          #   default/<addon>-runner-token             published by the edge agent
+          #     itself (pkg/agent/addons/runner.go) for the add-on reconciler.
+          #   whatever spec.sshCredentialsRef names, which is normally the first.
+          #
+          # Without the selector this claim is read-write on EVERY Secret in EVERY
+          # workspace that enables this provider — the side-door
+          # docs/cross-provider-simplification.md X-4 closes. A Secret a tenant
+          # hand-writes and points spec.sshCredentialsRef at must carry the label
+          # too, which is the tenant saying "this one is for edges".
           - group: ""
             resource: secrets
             verbs: [get, list, watch, create, update]
             tenantScoped: true
+            selector:
+              matchLabels:
+                railgrid.ai/owner: edges
           # Delegated authn/authz for the AGENT ingress class (f). The provider
           # terminates agent tunnels OUTSIDE kcp's request path, so a reconnecting
           # agent's token is validated here: TokenReview to authenticate it,

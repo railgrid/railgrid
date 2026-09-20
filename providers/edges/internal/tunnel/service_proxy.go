@@ -165,8 +165,13 @@ func (v *serviceView) setSvcHeaders(h http.Header) {
 // gate 1 read AS THE CALLER, so the spec this proxy acts on is the one the
 // caller could see — the provider never re-reads it on its own authority.
 //
+// It deliberately takes no caller bearer. Everything downstream acts on
+// svcObj, and the Service's auth Secret — the one thing still fetched from kcp
+// on this path — is read with the provider's own tenant credential, because it
+// is a provider-owned object (see readServiceToken).
+//
 // Verbs: "proxy" (HTTP data plane) and "mcp".
-func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token string, req dataplane.Request, svcObj *unstructured.Unstructured) {
+func (p *Server) serveService(w http.ResponseWriter, r *http.Request, req dataplane.Request, svcObj *unstructured.Unstructured) {
 	ctx := r.Context()
 	logger := klog.FromContext(ctx).WithName("edgeservice-proxy")
 
@@ -218,9 +223,9 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token stri
 			}
 			rest = "/"
 		}
-		p.serviceHTTPProxy(ctx, w, r, req.ClusterID, token, svc, dialer, rest)
+		p.serviceHTTPProxy(ctx, w, r, req.ClusterID, svc, dialer, rest)
 	case VerbMCP:
-		p.buildServiceMCPHandler(req.ClusterID, req.Name, token, svc, dialer).ServeHTTP(w, r)
+		p.buildServiceMCPHandler(req.ClusterID, req.Name, svc, dialer).ServeHTTP(w, r)
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
@@ -240,7 +245,7 @@ const (
 // serviceHTTPProxy reverse-proxies an HTTP request to the host-local service
 // through the agent's /svc handler, resolving Authorization per spec.auth
 // (see applyServiceAuth).
-func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r *http.Request, cluster, kcpToken string, svc *serviceView, dialer interface {
+func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r *http.Request, cluster string, svc *serviceView, dialer interface {
 	Dial(context.Context) (net.Conn, error)
 }, rest string) {
 	logger := klog.FromContext(ctx)
@@ -249,7 +254,7 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 	var token string
 	if mode == serviceAuthSecret {
 		var err error
-		token, err = p.readServiceToken(ctx, cluster, svc, kcpToken)
+		token, err = p.readServiceToken(ctx, cluster, svc)
 		if err != nil {
 			logger.Error(err, "reading service auth token")
 			http.Error(w, "service credentials unavailable", http.StatusBadGateway)
@@ -358,11 +363,16 @@ func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter
 // This is deliberate. The provider SA is not granted direct (non-virtual-
 // workspace) RBAC on Service objects in tenant workspaces — only on the
 // connectable kinds — so reading a Service with p.kcpConfig 403s. The caller
-// owns the workspace and can always read their own Services and the Secret they
-// attached, so we read as them. It also avoids a confused-deputy: the provider
-// never reads tenant objects on its own authority here. AnonymousClientConfig
-// keeps the server URL + CA trust but strips the SA credentials before we set
-// the bearer token.
+// owns the workspace and can always read their own Services, so we read as
+// them, and gate 1 is exactly that read: the provider never learns of an
+// object the caller could not see. AnonymousClientConfig keeps the server URL
+// + CA trust but strips the SA credentials before we set the bearer token.
+//
+// It is NOT used for the Service's auth Secret. That Secret is provider-owned
+// (railgrid.ai/owner: edges) and lives behind this provider's label-scoped
+// `secrets` claim; a caller — in particular a hub-minted workload identity,
+// which can never hold core-group `get` — has no path to it. See
+// readServiceToken.
 func (p *Server) userClusterConfig(cluster, token string) *rest.Config {
 	cfg := rest.AnonymousClientConfig(p.kcpConfig)
 	cfg.Host = kcpurl.ClusterURL(p.kcpConfig.Host, cluster)
@@ -401,17 +411,36 @@ func decodeServiceView(name string, obj *unstructured.Unstructured) (*serviceVie
 	return view, nil
 }
 
-// readServiceToken reads the "token" key from the Service's authSecretRef,
-// reading as the caller (see userClusterConfig). token is the caller's kcp
-// bearer token; the returned string is the service's own auth token (e.g. a
-// Home Assistant long-lived access token). Returns "" (no error) when no secret
-// is configured — proxy-only services.
-func (p *Server) readServiceToken(ctx context.Context, cluster string, svc *serviceView, token string) (string, error) {
+// readServiceToken reads the "token" key from the Service's authSecretRef as
+// the PROVIDER, through its APIExport virtual workspace (tenantConfigFor) —
+// never with the caller's credential. The returned string is the service's own
+// auth token (e.g. a Home Assistant long-lived access token). Returns ""
+// (no error) when no secret is configured — proxy-only services.
+//
+// The Secret is an edges-owned object, not a caller-owned one: the portal
+// writes it labelled railgrid.ai/owner: edges (portal/src/api.ts,
+// connectEdgeService) precisely so it falls inside this provider's
+// label-scoped `secrets` permission claim, and the Service validation
+// reconciler already reads it the same way (internal/servicectrl). Reading it
+// as the caller instead needs core-group `get` on secrets in the tenant
+// workspace, which the hub's identity policy will never mint for a workload
+// identity — so every non-human caller (a factory runner dispatch, kuery) 403'd
+// on any Service with a credential attached.
+//
+// This is not a confused deputy. The caller has already passed both gates —
+// gate 1, a GET of the Service with their own bearer, and gate 2, an SSAR for
+// `create` on services/{verb} — and `ref` comes from the spec THAT read
+// returned, never from the request. The provider only ever unwraps the
+// credential attached to a Service the caller was just authorized to use.
+func (p *Server) readServiceToken(ctx context.Context, cluster string, svc *serviceView) (string, error) {
 	ref := svc.Spec.AuthSecretRef
 	if ref == nil {
 		return "", nil
 	}
-	clusterConfig := p.userClusterConfig(cluster, token)
+	clusterConfig, err := p.tenantConfigFor(ctx, cluster)
+	if err != nil {
+		return "", fmt.Errorf("resolving tenant config: %w", err)
+	}
 	k8sClient, err := kubernetes.NewForConfig(clusterConfig)
 	if err != nil {
 		return "", fmt.Errorf("creating cluster-scoped k8s client: %w", err)

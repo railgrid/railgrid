@@ -1017,7 +1017,7 @@ func TestProjectAssistantNativeBrowserReceiptBridgesScreenshotTransiently(t *tes
 	if len(expanded) != 2 || expanded[1].UserInputMultiContent[1].Image == nil {
 		t.Fatalf("native screenshot was not bridged to vision input: %#v", expanded)
 	}
-	if got := expanded[1].UserInputMultiContent[1].Image.MessagePartCommon.Base64Data; got == nil || *got != "aW1hZ2UtcGl4ZWxz" {
+	if got := expanded[1].UserInputMultiContent[1].Image.Base64Data; got == nil || *got != "aW1hZ2UtcGl4ZWxz" {
 		t.Fatalf("vision bridge data = %v", got)
 	}
 	state.RecordToolMessage(chatMessage{Role: "tool", Name: "browser_take_screenshot", ToolCallID: "browser-shot", Content: raw})

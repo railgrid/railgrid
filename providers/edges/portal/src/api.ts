@@ -793,10 +793,20 @@ export async function connectEdgeService(name: string, token: string): Promise<v
     //    The railgrid-system namespace already exists in the tenant workspace —
     //    the edges RBAC reconciler creates it when an edge registers, which
     //    always precedes a Service.
+    //    The railgrid.ai/owner label is what keeps this Secret inside the
+    //    edges provider's `secrets` permission claim, which is scoped to it
+    //    (manifest.yaml, provider-sdk/claimscope). This write goes to the hub
+    //    kcp proxy as the user, not through the provider's virtual workspace,
+    //    so nothing stamps the label for us — and without it the validation
+    //    reconciler cannot see the token it is meant to validate.
     await client.apply(SECRETS, {
       apiVersion: 'v1',
       kind: 'Secret',
-      metadata: { name: secretName, namespace: EDGE_SVC_SECRET_NS },
+      metadata: {
+        name: secretName,
+        namespace: EDGE_SVC_SECRET_NS,
+        labels: { 'railgrid.ai/owner': 'edges' },
+      },
       type: 'Opaque',
       stringData: { token },
     })

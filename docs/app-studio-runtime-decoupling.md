@@ -295,6 +295,36 @@ Minting stays best-effort: a public image needs no pull credential, so a
 failure leaves the reference unset and logs why rather than blocking a
 promotion.
 
+**The Secret carries `railgrid.ai/owner: infrastructure`, and the label is the
+hand-over.** Every provider's `secrets` permission claim is now selector-scoped
+to the objects it owns
+([provider-connectivity-contract.md](./provider-connectivity-contract.md)
+§"Label-scoped claims"), which means kcp hides an object from a provider whose
+selector does not match it — a GET 404s, a LIST omits it. App Studio writes the
+pull Secret as the caller and never reads it back; the *infrastructure*
+provider is what reads it, to mount it on the production Instance. So it is
+stamped with that provider's name, not App Studio's, and falls outside App
+Studio's own claim by design (`api/project_promote.go`).
+
+The same rule applies to any Secret a **tenant** brings themselves and then
+points an infrastructure Instance at — today that is
+`spec.oidcBridgeSecretRef`, and tomorrow anything else an Instance references
+by name. A BYO Secret must carry:
+
+```yaml
+metadata:
+  labels:
+    railgrid.ai/owner: infrastructure
+```
+
+Without it the reference resolves to nothing: the object exists in the
+workspace and is simply not visible through the infrastructure provider's
+APIExport virtual workspace, so the bridge reports the Secret as missing
+rather than as unauthorized. App Studio's own writer
+(`portal/src/llmRegistry.ts`, the per-model LLM credential) stamps
+`railgrid.ai/owner: app-studio` for the mirror-image reason: the Studio
+reconciler reads that one, so an unlabelled key never reports `configured`.
+
 ---
 
 ## Addendum: the surface is verbs now (19 September 2026)
@@ -440,7 +470,9 @@ App Studio declares:
 No `delete` on repositories: they hold user code and outlive the project. No
 `create` on repositorycommits: the CR is a POINTER at a source bundle held in
 the Code provider's own store (`providers/code/commitbundle`), and only that
-provider can put bytes there — see the commit path below.
+provider can put bytes there. App Studio holds the VERB that makes one instead
+— clause C on `repositories/commit` — and the Code provider writes the object
+itself once the verb's two gates pass. See the commit path below.
 
 Each composition becomes **two** rules, because Kubernetes RBAC has two shapes
 and conflating them is how a grant silently authorizes nothing or everything:
@@ -453,9 +485,11 @@ and conflating them is how a grant silently authorizes nothing or everything:
 
 So a project's identity carries, in full:
 
-- clause D — `use` on the workspace's default `MCPServer`, and `get` on the
-  `APIBinding`s named `infrastructure` and `code` (which say WHICH provider
-  serves each dependency here; a `get`, never a `list`);
+- clause D — `use` on the workspace's default `MCPServer` (for the Code MCP
+  tools that are not actions: checkout, build status, rebuild), and `get` on
+  the `APIBinding`s named `infrastructure` and `code` (which say WHICH provider
+  serves each dependency here, and therefore which `/services/providers/{name}/`
+  segment addresses it; a `get`, never a `list`);
 - clause E — unnamed `create`/`list`/`watch` on `instances`, `repositories`
   and `repositorycommits`; named `get`/`update`/`delete` on its bound
   instances, named `get`/`update` on its backing repository, and named `get`
@@ -465,8 +499,9 @@ So a project's identity carries, in full:
   grant shrink);
 - clause B — `get` on the named `Connection` it was created from;
 - clause C — `create` on `instances/{verb}` for the eight infrastructure
-  data-plane verbs this provider calls, and on
-  `connections/mint_registry_token`, all name-scoped.
+  data-plane verbs this provider calls, on `connections/mint_registry_token`,
+  and on `repositories/commit` plus `repositories/stage_commit_bundle` for the
+  project's backing repository, all name-scoped.
 
 A Studio's identity is the instance composition and nothing else: unnamed
 `create`/`list`/`watch`, named `get`/`update`/`delete` on
@@ -489,9 +524,303 @@ commit) or Studio (by its attribution label). Nothing is polled: the unnamed
 
 ### The one place the credentials meet
 
-The commit. App Studio asks for it through the Code provider's `commit_files`
-MCP tool — as the project identity, which the aggregate admits on `use` of the
-workspace's `MCPServer` — because only that provider can store the source
-bundle the `RepositoryCommit` points at. It then follows the CR the tool
-created, by name, over the tenant client, and mirrors the pointer onto the
-Project over the virtual workspace. Two clients, one identity, in one function.
+The commit. App Studio asks for it on the data-plane grammar —
+`POST /services/providers/{code}/actions/clusters/{id}/repositories/{name}/commit/v1`,
+as the project identity, at the coordinate this workspace's own `APIBinding`
+names — because only that provider can store the source bundle the
+`RepositoryCommit` points at. The action returns `{commit: {name, uid}}`; App
+Studio then follows that CR by name over the tenant client and mirrors the
+pointer onto the Project over the virtual workspace. Two clients, one identity,
+in one function.
+
+This replaced an MCP tool call, and the reason is worth keeping. The old path
+invoked `code__commit_files`, which waited up to 75 s for the commit to land
+and, when it did not, failed with the `RepositoryCommit`'s name embedded in
+its prose error — which the reconciler recovered with a regular expression.
+There were therefore two settlement paths (a tool that answered in time, and a
+tool that did not) and the second one's correctness rested on an error string.
+The action has one: every commit is pending when it is made, and the watch
+this package already runs is what settles it. A commit queued behind a GitHub
+rate limit is no longer a special case, just a commit that takes longer.
+
+A payload past the catalogue's 1 MiB input ceiling goes up first through
+`repositories/stage_commit_bundle` — the Code provider's second uncatalogued
+large-upload verb (`docs/provider-actions.md` §"Uncatalogued large-upload
+verbs") — and the commit names the returned handle instead of inline files. A
+generated application is exactly that payload, which is why the project
+identity carries the staging verb as well.
+
+---
+
+## Addendum: deleting a project is deleting the object (20 September 2026)
+
+The last piece of project lifecycle that was not a CR write is gone.
+`projects/{p}/delete` was a data-plane verb whose handler ran the whole
+teardown inline — stop the assistant, delete the coding-sandbox cache, release
+or delete the Code Repository, add a finalizer, delete the CR, purge Postgres,
+purge attachments, purge the thumbnail, delete the workspace snapshots — and a
+caller whose connection dropped half way through left the project in whatever
+state that step had reached.
+
+The portal now deletes the Project CR with the kube client, through the hub's
+kcp proxy, authorized by the tenant's own RBAC on the object, with the UID as a
+`preconditions` so a recycled name cannot delete its replacement. Everything
+the handler orchestrated is the Project's finalizer
+(`providers/app-studio/controller/project/teardown.go`), which means it is
+retried rather than abandoned, ordered by dependency rather than by handler
+convenience, and identical whether the deletion came from the portal or from
+`kubectl delete project`.
+
+Two consequences worth naming:
+
+- **The assistant is stopped, not consulted.** The verb answered 409 while a
+  turn was running. A delete of the object cannot: by the time the finalizer
+  sees it the deletionTimestamp is set. So the finalizer interrupts the run and
+  waits for the project to go idle before purging anything the turn might still
+  be writing to.
+- **The repository-deletion opt-in moved onto the object.** It was a query
+  parameter; it is now the `ai.railgrid.ai/delete-repository` annotation, which
+  whoever deletes the Project stamps in the same breath. Release stays the
+  default — git is the durable copy of the user's work — and an adopted
+  repository is never deleted whatever the annotation says. The project
+  identity's declared composition gained `delete` on `repositories`, name-scoped
+  to the project's own, because the capability moved from the human's request
+  to the teardown that replaced it.
+
+The coding-sandbox cache Instance is deliberately absent from the chain: it
+carries an ownerReference to its Project, so kcp's garbage collector takes it —
+which is also what makes `kubectl delete project` complete.
+
+---
+
+## Addendum: conversations stop depending on process-local timers (20 September 2026)
+
+Remediation §9 Cut D.2. Two things a project's conversation used to rely on
+were in-process clocks rather than durable state, and both are gone.
+
+**Streaming is pushed, not polled.** `GET .../threads/{t}/events` woke on a
+250 ms ticker and re-read the thread event log from its cursor, per open
+stream. That is a fixed database read rate per connected browser tab, it is
+paid whether or not anything happened, and it is the same cost on every replica
+serving a stream. The log now pushes: appending a thread event issues a
+Postgres `NOTIFY` on `app_studio_assistant_thread_events` with the thread's
+key, one `LISTEN` connection per provider process turns that into an in-process
+fan-out (`store/thread_notify.go`), and each stream waits on its own
+subscription. The memory store implements the same interface with the
+broadcaster alone, because it only ever has one process.
+
+Two properties are deliberate. The signal carries no payload: it is a "look
+again" edge, every reader re-reads from its own sequence cursor, so a coalesced
+or duplicated notification costs at most one extra read and can never skip an
+event. And the 15 s keepalive tick is the safety net rather than a separate
+mechanism — it already loops back through the read — so a notification lost to
+a listener reconnect costs latency, never correctness. lib/pq signals a
+reconnect with a nil notification; the listener answers it by waking every
+subscriber, since the notifications raised while the connection was down are
+gone.
+
+The cross-replica consequence is a side effect worth stating: Postgres
+delivers a notification to every listening connection, so a stream served by
+replica A is now woken by an append made on replica B. Streams were already
+"served anywhere" (they are a pure store read), and they stay that way — this
+makes them cheap rather than making them possible.
+
+**Retention is a deadline on an object, not a sweep.** `runRetention` in
+`main.go` was a ticker on every replica deleting every message row older than
+one cutoff. It could not see that a thread was still open, it ran N times over
+for N replicas, and its unit was the message rather than the conversation — so
+a long-lived thread could have its own history trimmed out from under it.
+
+Retention is now the `Session` reconciler's. `SessionStatus` gained
+`turnCount` and `lastActivityAt` (the newest of the thread's own update and its
+turns', read through `store.AssistantThreadActivityReader`), and the reconciler
+requeues at `lastActivityAt + retention` — a computed deadline, which is the
+sanctioned use of `RequeueAfter` — then deletes the Session. The purge itself
+is unchanged: it is the Session finalizer that already existed. So there is one
+code path that removes a conversation, it runs on the controller leader only,
+the whole conversation goes at once, and a Session with an in-flight turn has
+no deadline at all until that turn settles.
+
+`runAttachmentRetention` deliberately stays a cutoff sweep. A draft attachment
+is an upload no turn has claimed: it is scoped to a project and an actor,
+carries its own `expires_at`, and can predate any thread — so there is no
+Session to hang its deadline on. Attachments a turn *did* bind are not swept
+at all; they belong to the conversation and go with it when the Session's
+finalizer purges the thread.
+
+**What this addendum does not cover.** Cut D.3 — moving the source tree's
+durable authority (`SourceRevision`, the uncommitted-path set, the settlement
+receipt in `providers/app-studio/workspace/source_state.go`) onto code-provider
+`RepositoryCheckout`/`RepositoryCommit` objects — has *not* landed. The
+project's working tree and its ledgers are still pod-local, which is why the
+chart's `Recreate` strategy, the `ReadWriteOnce` volume and the
+`replicaCount: 1` default all remain. See
+[`app-studio-replica-awareness.md`](./app-studio-replica-awareness.md)
+§"What still requires affinity".
+
+## Addendum: the working copy stops being a place (20 September 2026)
+
+Cut D.3 of the provider-contract remediation (§9) finishes what D.1, D.2 and
+D.4 started. Those moved the *commit call*, the *conversation clock* and the
+*teardown* off the request path and off each replica's own timers. This one
+moves the last piece of App Studio state that only existed on a disk.
+
+### What was on the disk
+
+Four JSON files next to every project's working tree, on a ReadWriteOnce
+volume:
+
+- `source-revision.json` — the monotonic revision the development data plane
+  hands the component agent as a fence.
+- `source-state.json` — the set of paths that differ from the last commit.
+- `pending-commit.json` — the `RepositoryCommit` in flight and the digest and
+  paths it carried.
+- `commit-settlement.json` — the receipt that clears those paths once the
+  commit lands.
+
+Plus an `initial-repository` receipt making the first-commit seeding
+once-only, and an `ai.railgrid.ai/pending-commit` annotation on the Project
+mirroring the first field of `pending-commit.json`.
+
+The problem was not that these were files. It was that they were **authority**
+that a second replica could not read, and whose absence was indistinguishable
+from a legitimate answer. A replica with no volume read "revision 1, no dirty
+paths" — a clean project at its initial revision — and acted on it. That is how
+an empty file list could reach a dev sandbox, and why the whole data plane had
+to be kept on one pod by routing.
+
+### Where it went, and why not where the plan said
+
+`Project.status.workspace`, on App Studio's own kind:
+
+```yaml
+status:
+  workspace:
+    sourceRevision: 42
+    uncommittedPaths: ["src/App.tsx", "src/theme.css"]
+    pendingCommit:
+      name: commit-7f3a
+      repositoryRef: demo-repo
+      workspaceDigest: "…"
+      paths: ["src/App.tsx"]
+      requestedAt: "2026-09-20T09:41:02Z"
+    settlement:
+      workspaceDigest: "…"
+      paths: ["src/theme.css"]
+      recordedAt: "2026-09-20T09:41:09Z"
+```
+
+The plan named the Code provider's `RepositoryCheckout` as the destination.
+That kind is a one-shot operation object — spec is a repositoryRef plus a ref,
+status is the checkout's own result — with nowhere to put "the revision this
+project's working copy is at". Landing it there would have meant adding fields
+to another provider's CRD, a `repositorycheckouts` entry in
+`spec.dependencies[].composes`, and a clause E in the connectivity contract, in
+order to store state that provider never reads. The working copy is App
+Studio's own concern about a project App Studio owns, so it lives on App
+Studio's own kind: clause A covers it, the composition is unchanged, and the
+Code provider is untouched.
+
+`uncommittedPaths` is bounded by derivation, not by taste. A project tree is
+capped at 500 files, so the biggest transition one project can make is a
+whole-tree replacement — up to 500 writes plus up to 500 deletions — and
+`MaxItems: 1024` clears that with room. Each entry is capped at the same 1024
+bytes the file store already accepts for a path, so nothing the store admits
+can fail to be recorded. Going past the bound is a bug in some other bound, so
+it is reported rather than truncated: a silently dropped path is a file that
+never reaches git.
+
+### The shape of the change
+
+`workspace.Ledger` is an interface with two methods — `Read` and an `Update`
+that takes a mutation function. Everything that used to read or write a JSON
+file now goes through it, and the file store's public surface is unchanged, so
+the ~20 call sites across `api/` and `controller/project/` did not move.
+
+`internal/projectledger` is the only implementation that matters. It merge-
+patches the status subresource with the `resourceVersion` it read in the patch
+body, which makes every update a compare-and-swap: the loser of a race re-reads
+and re-applies rather than overwriting the winner. The retry is the ledger's,
+because `Update` promises callers an atomic read-modify-write.
+
+Which client does the patching is a per-call question — the HTTP layer acts as
+the caller, the reconciler acts as itself over its APIExport virtual workspace
+— so the ledger rides the context, attached in exactly three places:
+
+- `identityFromRequest`, so every handler that resolves a caller gets that
+  caller's ledger without knowing it exists. It is lazy: a health probe or an
+  SSE stream builds no client.
+- `runProjectAssistantWorker`, because a turn outlives the request that started
+  it and runs on the supervisor's context.
+- `Reconcile`, with the manager's client.
+
+`NewFileStore` keeps an in-process ledger for tests and local runs, and
+`main.go` calls `RequireContextLedger()` — so in a deployment a path that
+forgot to attach one is a loud error rather than a quiet return to pod-local
+authority. That is what makes "the ledger is not pod-local" a property you can
+check instead of a claim.
+
+### Two things got smaller
+
+The `ai.railgrid.ai/pending-commit` annotation is gone. It existed because the
+pointer (which commit) and the record (what it carried) lived in different
+places and needed mirroring; the reconciler carried a branch for the case where
+a replaced volume left the pointer without its record. Both are members of
+`status.workspace.pendingCommit` now, the branch is deleted, and the project
+identity's named `get` grant reads the same record the convergence loop follows.
+
+`InitializeRepositorySource` lost its `initial-repository` receipt file. The
+union it performs is idempotent, and what makes it once-only is the Project
+annotation the caller stamps, which the reconciler clears once the paths are in
+the ledger. One durable record instead of two that could disagree across
+replicas.
+
+### One bug the move exposed
+
+The reconciler held the Project object across ledger writes and then `Update`d
+it to set an annotation. With the ledger on the same object's status, that
+`Update` now loses a race with the reconciler's own ledger write, every time.
+Annotation writes are merge patches naming only the key they change
+(`patchProjectAnnotation`), which carry no version and cannot go stale.
+
+### Hydration became a rebuild
+
+A file-at-a-time rebuild would now be one control-plane write per checked-out
+file, so `hydrateWorkspaceFromRepository` does one `ReplaceTree`: one revision,
+one ledger update. It passes a new `Committed` option, which says what a
+rebuild means — these bytes ARE the repository's — so the paths come back
+**clean** rather than queued for a commit that would push git's own content
+back to git.
+
+### What is still on the disk, and what it is for
+
+The tree. It is a cache, and it is finally treated as one.
+
+Detecting a stale cache needed one number back: the ledger's revision is the
+same on every replica now, so a replica holding a tree from five edits ago
+would compare equal to itself. `workspace/tree_revision.go` records what
+revision *this directory's bytes* were written at — a cache tag, never
+authority. Absent, behind, or untagged all read as stale, and a stale tree is
+rebuilt. Losing it costs a rebuild; it can never cost correctness.
+
+What a lost volume still costs is the uncommitted **bytes**. Git cannot return
+what was never committed, and no amount of control-plane state changes that.
+What the ledger buys is that the loss is now legible — the provider knows
+exactly which paths went — instead of silent.
+
+### What this does and does not unlock
+
+Project affinity stays, deliberately, as a cache-locality optimization:
+correctness no longer depends on it, but rebuilding on whichever replica the
+Service picked would mean a git checkout per request under round-robin. One
+intra-cluster hop is the better trade, and it is now a trade.
+
+`replicaCount: 1` and `strategy: Recreate` also stay, for exactly one reason
+that Cut D never reached: the workspace's shared single-session Playwright
+Browser is serialized inside one process while project pinning can place two
+projects of the same workspace on different replicas. `deploy/chart/values.yaml`
+now says that in those words, instead of listing the volume alongside it. The
+`runSandbox.mode=force` + `replicaCount > 1` refusal stays too — those claims
+still have no distributed CAS.
+
+See `app-studio-replica-awareness.md` for the full accounting.

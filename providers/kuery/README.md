@@ -46,7 +46,21 @@ What works today:
   deliberately NOT exported): spec is the cluster ID and the edge name,
   status is the owning replica, its last heartbeat and a phase. That record
   is the authority for "which edges may this caller query"; the SQL index
-  holds only synced objects and is rebuildable from it.
+  holds only synced objects and is rebuildable from it. Where to reach an edge
+  comes from the edge's own published coordinate (`status.URL`, as
+  `edges.railgrid.ai/KubernetesCluster` spells it) — never a path this provider
+  builds. An edge that has none yet (it was just created; the coordinate is
+  stamped by a later reconcile) holds its claim and sits `Pending` with
+  `waiting for the edge to publish status.url`, not an error: the same watch
+  delivers the update that adds the coordinate, and that update is what engages
+  it. Nothing here retries on a timer.
+- **Edge sharding** (`provider-sdk/sharding`): which replica syncs which edge
+  is one `coordination.k8s.io` Lease per edge in kuery's own workspace, keyed
+  by the store name, held by the replica doing the work and renewed on its own
+  clock. A replica only engages edges it wins; losing one to a peer and
+  picking up a departed peer's edges both arrive as events on the shard's own
+  Lease watch, so nothing re-lists and nothing polls. See
+  [Running more than one replica](#running-more-than-one-replica).
 - **The query verb** (`queryapi/`):
   `POST /dataplane/clusters/{clusterID}/savedviews/{name}/run`, the provider's
   ONE tenant route. Two gates run as the caller before the engine is touched
@@ -85,6 +99,41 @@ What works today:
 What lands next (see the design doc): an e2e suite asserting edge-object
 sync end to end with a real connected agent, and the Postgres chart option.
 
+## Running more than one replica
+
+`replicaCount > 1` is a supported configuration **with
+`store.driver=postgres`** (the chart refuses it with the SQLite/RWO-PVC store,
+which no second pod can mount). Every replica does real work — there are no
+standbys:
+
+- **Queries scale with replicas.** Every replica answers queries, MCP and the
+  portal out of the same Postgres and the same `Engagement` records, so no
+  request needs to reach a particular pod.
+- **Edge sync is divided, not duplicated.** `engagement.Run` starts on every
+  replica (`main.go`), and each replica takes a `provider-sdk/sharding` claim
+  on `{clusterID}/{edgeName}` before it dials anything, engaging only the
+  edges it wins. Two replicas reconciling the same workspace at the same time
+  is therefore correct by construction rather than by timing: one wins each
+  edge, the other is told to keep off it. Three replicas sync roughly a third
+  of the fleet each.
+- **Failure costs a share, not the service.** A replica that shuts down
+  cleanly releases its claims, so its edges move to peers in one watch event;
+  one that dies loses them after `claimTTL` (60s), which is also the earliest
+  the `Engagement` reconciler may call those records stale. Either way the
+  other replicas keep syncing everything else throughout.
+- **Readiness is per replica.** `/readyz` and the hub heartbeat report whether
+  *this* replica is really watching tenant workspaces, because no peer is
+  covering for it — a replica that cannot reach the APIExport virtual
+  workspace syncs none of the edges it claimed and must say so.
+
+What is still a singleton, behind the `kuery-controllers` Lease, is the pair
+of loops that want exactly one writer: the **SavedView reconciler** (it stamps
+a tenant object's status, and every replica would compute the same verdict) and
+the **Engagement reconciler** (the garbage collector — it marks index rows
+stale and deletes a purged engagement's rows and record). Neither is on the
+sync path, so a gap between leadership terms delays a status stamp or a purge
+and nothing else.
+
 ## Layout
 
 ```
@@ -94,7 +143,7 @@ controller/savedview/  validates spec.query, stamps Ready
 install/            applies the private Engagement CRD into the provider workspace
 index/              store naming + the tenant label both halves agree on
 core/               embedded kuery wiring (store, engine, sync)
-engagement/         edge watch → Engage/Disengage, Engagements, per-edge Leases
+engagement/         edge watch → Engage/Disengage, Engagements, per-edge sharding claims
 queryapi/           the query verb: gates, engagement scoping, QuerySpec validation
 mcpserver/          kuery_query + kuery_impact, through the same gated executor
 assets.go           //go:embed of portal/dist

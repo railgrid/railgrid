@@ -14,7 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package edge reconciles Edge resources.
+// Package edgectrl holds the reconcilers shared by every connectable edge kind
+// (KubernetesCluster, LinuxServer, MacOSServer). For one kind it mints and
+// rotates the bootstrap join token, keeps the agent's hub-scoped identity and
+// RBAC rules in existence, owns the single writer of the edge's connectivity
+// status — derived from the tunnel registry Leases rather than from local
+// connection state — and compares the agent's reported version against the
+// hub release to maintain the UpgradeAvailable condition. SetupControllers
+// wires the whole set onto a multicluster manager.
 package edgectrl
 
 import "time"

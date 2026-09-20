@@ -202,13 +202,37 @@ type FileStore struct {
 	// path resolution can safely migrate data before a caller takes the
 	// workspace mutation lock.
 	migrationMu sync.Mutex
+	// ledger is the process-wide default working-copy ledger (see ledger.go).
+	// Production leaves it nil and attaches a caller- or reconciler-scoped
+	// ledger to each call's context instead; tests and REST-only local runs
+	// set an in-memory one.
+	ledger Ledger
 }
 
-// NewFileStore returns a filesystem-backed project workspace store.
+// NewFileStore returns a filesystem-backed project workspace store with an
+// IN-PROCESS working-copy ledger.
+//
+// That default is for tests and for a local run with no control plane to talk
+// to. A deployment calls RequireContextLedger immediately afterwards, which
+// removes it: from then on every ledger operation must carry a
+// control-plane-backed ledger on its context (workspace/ledger.go), and a call
+// path that forgot to attach one fails loudly instead of quietly writing
+// authority into this process's memory.
 func NewFileStore(root string) *FileStore {
 	return &FileStore{
-		root: strings.TrimSpace(root),
+		root:   strings.TrimSpace(root),
+		ledger: NewMemoryLedger(),
 	}
+}
+
+// RequireContextLedger drops the in-process default ledger, so the working-copy
+// ledger must come from the call's context. It is what makes "the ledger is not
+// pod-local" checkable rather than merely intended.
+func (s *FileStore) RequireContextLedger() {
+	if s == nil {
+		return
+	}
+	s.ledger = nil
 }
 
 // CleanProjectPath returns the canonical workspace-relative path accepted by
@@ -662,7 +686,7 @@ func cleanProjectPath(raw string) (string, error) {
 	}
 	for _, part := range strings.Split(raw, "/") {
 		if part == ".." {
-			return "", fmt.Errorf("file path %q cannot contain ..", raw)
+			return "", fmt.Errorf("file path %q cannot contain a %q segment", raw, "..")
 		}
 		if isReservedPathSegment(part) {
 			return "", fmt.Errorf("file path %q contains reserved segment %q", raw, part)

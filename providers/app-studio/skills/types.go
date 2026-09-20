@@ -400,7 +400,7 @@ func cleanRelative(raw, label string) (string, error) {
 	parts := strings.Split(raw, "/")
 	for _, part := range parts {
 		if part == ".." {
-			return "", fmt.Errorf("%s cannot contain ..", label)
+			return "", fmt.Errorf("%s cannot contain a %q segment", label, "..")
 		}
 		if part == "" {
 			return "", fmt.Errorf("%s contains an empty segment", label)

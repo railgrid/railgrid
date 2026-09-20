@@ -119,7 +119,8 @@ func (c *Client) post(ctx context.Context, sessionID string, req rpcRequest) (js
 	if err != nil {
 		return nil, "", fmt.Errorf("code mcp %s: %w", req.Method, err)
 	}
-	defer resp.Body.Close()
+	// Close errors on a read-only response body are not actionable.
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil {
 		return nil, "", err

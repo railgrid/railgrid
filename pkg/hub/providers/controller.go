@@ -435,7 +435,6 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		// workspace, so there is no single path the recorder could assume.
 		CatalogEntryCluster: string(req.ClusterName),
 	}
-	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
 	prov.HubAccess = append([]providersv1alpha1.ProviderHubAccess(nil), entry.Spec.HubAccess...)
 
 	// An org-owned provider runs in the tenant's own cluster, so its data plane
@@ -508,12 +507,16 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			prov.APIExportPath = providersParentWorkspace + ":" + entry.Name
 		}
 		for _, c := range entry.Spec.APIExport.PermissionClaims {
-			prov.PermissionClaims = append(prov.PermissionClaims, PermissionClaim{
+			claim := PermissionClaim{
 				Group:        c.Group,
 				Resource:     c.Resource,
 				Verbs:        append([]string(nil), c.Verbs...),
 				TenantScoped: c.TenantScoped,
-			})
+			}
+			if c.Selector != nil {
+				claim.MatchLabels = copyLabels(c.Selector.MatchLabels)
+			}
+			prov.PermissionClaims = append(prov.PermissionClaims, claim)
 		}
 	}
 
@@ -715,7 +718,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// APIExport, SA, or kubeconfig — that moved to admin onboarding
 	// (pkg/hub/admin) plus the provider's own Helm `init` (railgrid-provider-sdk).
 	// We only RESOLVE the provider workspace's logical cluster ID (read-only)
-	// so the Enable endpoint can build the edges-proxy RBAC subject.
+	// so the admin providers API can report where a provider lives.
 	switch {
 	case entry.Spec.APIExport == nil:
 		// No export to bind, so nothing needs the RBAC subject.

@@ -16,8 +16,8 @@ plan unless the section says so.
 remediation it produced,
 [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md),
 carries the authoritative per-section status line; read it before treating any
-finding below as open. As of **2026-09-19**, on branch
-`provider-contract/phase-0`:
+finding below as open. As of **2026-09-20**, on branch
+`provider.contracts`:
 
 **Closed.**
 
@@ -265,24 +265,41 @@ something the code does not do.
 Legend: ✅ conforms · ⚠️ deviates · 📄 documented exception · ❌ deviates
 materially. "SDK" columns are whether the package is imported in non-test Go.
 
+> **The audit text below is as of 2026-09-19 and is deliberately not
+> rewritten** — it is the record of what was found. Remediation is tracked
+> per provider by the **Status 2026-09-20** column in the matrix and the
+> **Status 2026-09-20** note that opens each subsection. Where the two
+> disagree, the status note is the current tree and the prose is history.
+> [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+> remains authoritative for what is planned.
+
 ### 3.1 Matrix
 
-| Provider | Kinds | Tenant state in KRM | apiexport-provider | leader election | vwhealth + CanSend | Backend routes | REST auth | Cross-provider | UI data path |
-|---|---|---|---|---|---|---|---|---|---|
-| quickstart | Greeting (YAML only, unreconciled) | n/a | ❌ none | ❌ | ❌ | `/api/hello`, `/api/stream` ad-hoc | none | – | ❌ REST only, no kube client |
-| code | 8 | ✅ + 📄 transient bundles | ✅ | ✅ | ✅ | actions + mcp + oauth | ✅ two gates (verb `invoke` ⚠️) | – | ✅ kube client |
-| infrastructure | Template, Instance | ✅ | ✅ | ✅ (2 leases) | ⚠️ vwhealth, no CanSend | dataplane + mcp + hub-only | ✅ (SSAR only on exec ⚠️) | 📄 `<instance>-registry` string | ✅ kube client |
-| edges | 7 | ✅ (events in memory ⚠️) | ✅ | ❌ active-active by design | ❌ static healthz | edgeproxy + agent + mcp + `/catalog` | ⚠️ single wildcard verb `proxy`; `?token=` | M7 mints SAs | ✅ kube client |
-| agents | 5 | 📄 runs/transcripts in Postgres | ✅ | ✅ | ✅ | ❌ ~40 `/api/*` CRUD + s2s + webhooks | ✅ caller client | ❌ hardcoded infra path, mints SAs over infra group | ❌ REST only |
-| app-studio | 3 | 📄 conversations in Postgres, ❌ source tree on PVC | ✅ | ❌ | ❌ | ❌ ~95 `/api/projects/*` | ⚠️ actor from `X-Railgrid-User` | ❌ all three §2.1 findings hold | ❌ REST-first |
-| kuery | SavedView (YAML only, dead) | ❌ tenant map in SQL | ✅ | ❌ hand-rolled leases | ❌ static healthz | ❌ `/api/query`, `/api/edges`, `/api/status` | ❌ header-only, no bearer check | ⚠️ hand-composed edgeproxy path | ❌ REST only |
-| databricks | 3 | ✅ | ✅ | ✅ | ⚠️ home-grown + 5s ticker | actions + mcp + ❌ `/api/v1/discovery`, `/api/v1/registrations`, `/api/status` | ✅ two gates (`create`) | – | ✅ kube client; ⚠️ `ctx.token` |
-| planner | 3 + private ActionReceipt | ✅ | ✅ | ✅ | ✅ | actions + mcp + ❌ `/api/onboarding`, `/api/connections/*/projects` | ✅ two gates (verb `invoke` ⚠️) | – | ⚠️ hand-built `/clusters` paths |
-| factory | 5 (YAML + Python-generated) | ✅ + ⚠️ artifacts on PVC | ✅ | ✅ | ❌ no heartbeat; served `/readyz` static | ❌ `/api/line-setup`, `/api/worker-setup` (cluster in body) | ⚠️ caller bearer, no header cross-check | ✅ by binding + planner actions as per-workspace SA | ✅ kube client |
+| Provider | Kinds | Tenant state in KRM | apiexport-provider | leader election | vwhealth + CanSend | Backend routes | REST auth | Cross-provider | UI data path | Status 2026-09-20 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| quickstart | Greeting (YAML only, unreconciled) | n/a | ❌ none | ❌ | ❌ | `/api/hello`, `/api/stream` ad-hoc | none | – | ❌ REST only, no kube client | ✅ **closed** (plan §1): typed kind + reconciler, `greet` verb through `dataplane.Gate`, kube-client portal, `serve.New` |
+| code | 8 | ✅ + 📄 transient bundles | ✅ | ✅ | ✅ | actions + mcp + oauth | ✅ two gates (verb `invoke` ⚠️) | – | ✅ kube client | ✅ **closed** (plan §2): verb is `create`; on `dataplane` + `serve`; `secrets` claim label-scoped to `railgrid.ai/owner: code` (X-4 closed); `repositories/commit/v1` action |
+| infrastructure | Template, Instance | ✅ | ✅ | ✅ (2 leases) | ⚠️ vwhealth, no CanSend | dataplane + mcp + hub-only | ✅ (SSAR only on exec ⚠️) | 📄 `<instance>-registry` string | ✅ kube client | ✅ **closed** (plan §4): no admin-credential serve path, per-verb gate, one CatalogEntry source, `CanSend` wired |
+| edges | 7 | ✅ (events in memory ⚠️) | ✅ | ❌ active-active by design | ❌ static healthz | edgeproxy + agent + mcp + `/catalog` | ⚠️ single wildcard verb `proxy`; `?token=` | M7 mints SAs | ✅ kube client | ✅ **closed** (plan §5): leader-elected reconcilers, per-verb SAR on the shared grammar, no bearer in query strings, hub-minted identities. `spec.edgeProxyAccess` and its Enable-time grant **deleted 2026-09-20** |
+| agents | 5 | 📄 runs/transcripts in Postgres | ✅ | ✅ | ✅ | ❌ ~40 `/api/*` CRUD + s2s + webhooks | ✅ caller client | ❌ hardcoded infra path, mints SAs over infra group | ❌ REST only | ✅ **closed** (plan §8): the `/api/*` surface is gone (`adhoc-rest` has no exception), identities come from the hub service; `secrets` claim label-scoped (X-4 closed) |
+| app-studio | 3 | 📄 conversations in Postgres, ❌ source tree on PVC | ✅ | ❌ | ❌ | ❌ ~95 `/api/projects/*` | ⚠️ actor from `X-Railgrid-User` | ❌ all three §2.1 findings hold | ❌ REST-first | ✅ **closed** (plan §9): Cuts A–D landed — composition is hub-minted scoped identities under tenant-consented `dependencies[].composes`; commits go through the code provider's `commit/v1` action; Session status carries turn count and activity; the source-tree ledger lives on `Project.status.workspace` and the PVC is a rebuildable cache; `secrets` claim label-scoped (X-4 closed) |
+| kuery | SavedView (YAML only, dead) | ❌ tenant map in SQL | ✅ | ❌ hand-rolled leases | ❌ static healthz | ❌ `/api/query`, `/api/edges`, `/api/status` | ❌ header-only, no bearer check | ⚠️ hand-composed edgeproxy path | ❌ REST only | ✅ **closed** (plan §6): on `serve` + `dataplane` with real bearer checks; the edge-watch identity is hub-minted (owner: the tenant's kuery APIBinding, clause E composition accepted at Enable) and the export carries no claims; engagement runs on every replica sharded by `provider-sdk/sharding` Leases; `edgeProxyAccess` dropped |
+| databricks | 3 | ✅ | ✅ | ✅ | ⚠️ home-grown + 5s ticker | actions + mcp + ❌ `/api/v1/discovery`, `/api/v1/registrations`, `/api/status` | ✅ two gates (`create`) | – | ✅ kube client; ⚠️ `ctx.token` | ✅ **applied in the `railgrid/providers` checkout** (plan §3.2): on `serve.New` + `dataplane`, ad-hoc `/api/v1/*` and `/api/status` gone, `CanSend` heartbeat; **pending** a published `provider-sdk` pin (the checkout carries a local `replace`) |
+| planner | 3 + private ActionReceipt | ✅ | ✅ | ✅ | ✅ | actions + mcp + ❌ `/api/onboarding`, `/api/connections/*/projects` | ✅ two gates (verb `invoke` ⚠️) | – | ⚠️ hand-built `/clusters` paths | ✅ **applied in the `railgrid/providers` checkout** (plan §3.1): verb is `create`, ad-hoc `/api/*` gone, `serve.New` + `dataplane`; **pending** a published `provider-sdk` pin |
+| factory | 5 (YAML + Python-generated) | ✅ + ⚠️ artifacts on PVC | ✅ | ✅ | ❌ no heartbeat; served `/readyz` static | ❌ `/api/line-setup`, `/api/worker-setup` (cluster in body) | ⚠️ caller bearer, no header cross-check | ✅ by binding + planner actions as per-workspace SA | ✅ kube client | ⚠️ **mostly applied in the `railgrid/providers` checkout** (plan §7): heartbeat with `CanSend`, `/api/line-setup` and `/api/worker-setup` moved onto the grammar behind two gates, `serve.New`; **open**: typed Go APIs (§7.3, deferred to that repo's `docs/typed-apis.md`) and a published `provider-sdk` pin |
 
 ### 3.2 quickstart — the reference provider teaches the wrong thing
 
 Paths under `providers/quickstart/`.
+
+> **Status 2026-09-20 — closed** (plan §1). Every finding below is
+> remediated: `apis/v1alpha1` carries a typed `Greeting` with a reconciler
+> under `leaderelection.Run` stamping `status.observedAt`; `/api/hello` and
+> `/api/stream` are replaced by `POST /dataplane/clusters/{id}/greetings/{name}/greet`
+> behind `dataplane.Gate` + `dataplane.Serve`; the portal reads the CR with
+> `createKubeClient`; `/readyz` comes from `vwhealth` and heartbeat `CanSend`
+> from the same readiness; the server is `serve.New`.
+> `hack/verify-provider-contract.mjs` passes it with no exception entry.
 
 - **Pillar 1 hollow.** Exports `Greeting` from a YAML schema
   (`deploy/chart/files/schemas/greetings...yaml`) with no Go types, no
@@ -305,6 +322,13 @@ Paths under `providers/quickstart/`.
 ### 3.3 code — the reference for controllers and actions, with one real bug
 
 Paths under `providers/code/`.
+
+> **Status 2026-09-20 — closed** (plan §2). The verb is `create` on
+> `repositories/{action}`; the hand-written path parse and gates are replaced
+> by `dataplane.Gate` + `dataplane.Serve` (UID/spec pinning kept); the server
+> is `serve.New`. **Still open:** the `secrets` permission claim is
+> resource-wide (review X-4) — `hack/verify-provider-contract.mjs` reports it
+> as a `claim-selector` violation.
 
 - **Conforms** on all three pillars: eight kinds, `apiexportprovider` +
   `leaderelection` + `vwhealth` + `CanSend` (`controller_manager.go:398-468`,
@@ -331,6 +355,13 @@ Paths under `providers/code/`.
 ### 3.4 infrastructure — the data-plane reference
 
 Paths under `providers/infrastructure/`.
+
+> **Status 2026-09-20 — closed** (plan §4). `serve` no longer has an
+> admin-credential branch and fails fast without the minted SA kubeconfig;
+> the operator and Template/Instance controllers are reconcilers rather than
+> tickers; every verb runs `dataplane.Gate` with SSAR `create` on
+> `instances/{verb}`; the chart renders its CatalogEntry from the embedded
+> `manifest.yaml`; heartbeat `CanSend` comes from `vwhealth`.
 
 - **Conforms** on the data plane: grammar at `dataplane/handler.go:521-576`,
   resource resolved as the caller with the provider credential stripped
@@ -369,6 +400,21 @@ Paths under `providers/infrastructure/`.
 
 Paths under `providers/edges/`.
 
+> **Status 2026-09-20 — closed** (plan §5). Reconcilers are leader-elected
+> and the tunnel is replicated; the edge proxy is on the shared grammar with
+> a per-verb SAR (`create` on `{resource}/{verb}`), so the wildcard `proxy`
+> verb is gone; bearers no longer travel in query strings; agent credentials
+> are TTL'd and minted by the hub identity service, closing M7.
+>
+> Additionally, on **2026-09-20** `CatalogEntry.spec.edgeProxyAccess` and the
+> Enable-time `railgrid:provider:<name>:edges-proxy` ClusterRole/ClusterRoleBinding
+> it requested were **deleted outright**. The data plane gates as the caller
+> (`internal/tunnel/grammar.go`, `gateAsCaller` on a credential-dropping
+> config) and every other tenant read goes through the APIExport virtual
+> workspace, so the grant — which authorized the *provider's* ServiceAccount
+> in the tenant workspace — had no remaining reader. The `secrets` claim is
+> now narrowed by `selector.matchLabels[railgrid.ai/owner]=edges`.
+
 - **Pillar 1 conforms:** seven kinds; tunnel liveness as Leases in the
   provider workspace with a single status writer, fully watch-driven
   (`internal/edgectrl/lifecycle_reconciler.go:132-158`); per-edge credentials
@@ -401,6 +447,14 @@ Paths under `providers/edges/`.
 ### 3.6 agents — good plumbing, wrong surface
 
 Paths under `providers/agents/`.
+
+> **Status 2026-09-20 — closed** (plan §8). The ~40-route `/api/*` CRUD
+> surface is gone — `adhoc-rest` has no exception entry for agents — and the
+> provider serves through `serve.New` with its tunnel and webhook routes
+> declared as class (f) and (g). It no longer mints ServiceAccounts or RBAC
+> over the infrastructure group: identities come from the hub identity
+> service under the policy's clause for tenant-consented composition.
+> **Still open:** the `secrets` claim is resource-wide (X-4).
 
 - **Pillar 1:** five kinds, `apiexportprovider` + `leaderelection` +
   `vwhealth` + `ready.Attach` (`controller_manager.go:95-153`, `main.go:110-146`).
@@ -437,6 +491,19 @@ Paths under `providers/agents/`.
 ### 3.7 app-studio — the largest deviation
 
 Paths under `providers/app-studio/`.
+
+> **Status 2026-09-20 — partly closed** (plan §9, Cuts A, B and C). The
+> `/api/projects/*` surface and the `X-Railgrid-User` actor are gone; the provider
+> serves through `serve.New` and authorizes as the caller. Composition landed
+> on **hub-minted scoped identities**, not permission claims: first-party
+> claims pin to one export's `identityHash` and break org-owned providers, so
+> what app-studio composes is declared as `dependencies[].composes` on the
+> CatalogEntry, accepted at Enable as a `compose:<group>/<resource>` Grant,
+> and minted per object. Its only remaining claim is `secrets`.
+>
+> **Cut D has not started:** conversations still live in Postgres and the
+> project source tree still lives on a PVC, so the Pillar 1 finding below
+> stands as written. The `secrets` claim is still resource-wide (X-4).
 
 - **Pillar 1:** Project, Session, Studio on `ai.railgrid.ai`;
   `apiexportprovider` present (`controller_manager.go:286-294`). ❌ No
@@ -476,6 +543,22 @@ Paths under `providers/app-studio/`.
 
 Paths under `providers/kuery/`.
 
+> **Status 2026-09-20 — partly closed** (plan §6, PRs 1, 2, 3 and 5). It now
+> serves through `serve.New`; `/api/query`, `/api/edges` and `/api/status` are
+> replaced by data-plane routes that check the bearer and run both gates
+> rather than trusting `X-Railgrid-Cluster`; `/readyz` comes from `vwhealth` and the
+> hand-rolled per-edge Leases are gone.
+>
+> The cross-provider finding is closed in a way this audit did not anticipate:
+> kuery's edge-watch identity is **hub-minted**, owned by the tenant's own
+> kuery APIBinding, and its export carries no permission claims at all. It
+> therefore dropped `edgeProxyAccess` — which, as the audit notes below, asked
+> for a grant on the provider SA that the code never used. The field itself
+> was deleted platform-wide on 2026-09-20.
+>
+> **PR 4 is open:** kuery still mints some workspace identities of its own and
+> still holds `serviceaccounts`/`clusterroles`/`clusterrolebindings` claims.
+
 - **❌ Pillar 1:** the sole exported kind `SavedView` has no Go types, no
   reconciler, no reader anywhere (zero non-test references). The real tenant
   surface is SQLite/Postgres, and the `clusters` rows' tenant label and
@@ -510,6 +593,10 @@ Paths under `providers/kuery/`.
 
 Paths under `railgrid/providers/providers/databricks/`. Pins `provider-sdk` v0.2.0.
 
+> **Status 2026-09-20 — not started** (plan §3.2). Lives in the external
+> `railgrid/providers` repo and still pins `provider-sdk` v0.2.x, so it has
+> none of the shared `dataplane`/`serve` work. Every finding below stands.
+
 - **Conforms:** three kinds, `apiexportprovider` + `leaderelection`
   (`controller_manager.go:71,280-299`); `query_table/v1` on the actions
   grammar with gate 1 SSAR `get tables/{n}` and gate 2 SSAR **`create`**
@@ -538,6 +625,10 @@ Paths under `railgrid/providers/providers/databricks/`. Pins `provider-sdk` v0.2
 ### 3.10 planner — the reconciler reference, with the `invoke` bug
 
 Paths under `railgrid/providers/providers/planner/`. Pins `provider-sdk` v0.2.0.
+
+> **Status 2026-09-20 — not started** (plan §3.1). External repo, still on
+> `provider-sdk` v0.2.x. Every finding below stands, including the `invoke`
+> verb, which the in-tree providers have all replaced with `create`.
 
 - **Conforms:** Connection, Board, Issue exported; private `ActionReceipt`
   CRD in the provider workspace for durable write receipts
@@ -568,6 +659,9 @@ Paths under `railgrid/providers/providers/planner/`. Pins `provider-sdk` v0.2.0.
 ### 3.11 factory — cleanest cross-provider story, no heartbeat
 
 Paths under `railgrid/providers/providers/factory/`. Pins `provider-sdk` v0.2.2.
+
+> **Status 2026-09-20 — not started** (plan §7). External repo. Every finding
+> below stands.
 
 - **Layout deviates** from the checklist: entry at
   `cmd/provider-factory/main.go`, bootstrap in `internal/bootstrap/`, kinds

@@ -85,6 +85,25 @@ the new join token.
 This is a real operational consequence and it is the intended trade: the
 alternative is the credential that never expires, which is what this replaced.
 
+## Restarting with both a join token and a saved credential
+
+The agent persists each issued credential at
+`~/.railgrid/agent-<edge>.credential.json` so a restart does not need a new
+join token. On start it adopts that file only when it is for **this** target:
+the hub base URL matches `--hub-url`, the cluster ID matches `--cluster` when
+one was given, and the credential has not expired. Anything else is logged and
+ignored, and the agent enrols with the join token it was started with. This is
+what an agent of the same name pointed at a rebuilt hub, or at an edge that was
+deleted and recreated, would otherwise trip over: it would present the dead
+credential forever.
+
+If the provider still answers a connect with **401** while the agent holds both
+a saved credential and a join token, the next attempt presents the other one,
+and they alternate until one is accepted. A successful enrolment overwrites the
+saved file. A valid saved credential loses nothing from this: the join token is
+cleared on the first successful join, so it is refused and the credential is
+tried again on the following attempt.
+
 ## SSH credentials
 
 A LinuxServer agent no longer writes the tenant Secret. It POSTs to the declared,

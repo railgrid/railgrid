@@ -19,8 +19,6 @@ package workspace
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -131,92 +129,6 @@ func (s *FileStore) readMutationTargetLimited(ctx context.Context, scope Scope, 
 		return nil, true, &workspaceFileTooLargeError{path: clean, size: int64(len(content)), limit: limit}
 	}
 	return content, true, nil
-}
-
-func (s *FileStore) prepareSnapshotFile(
-	ctx context.Context,
-	scope Scope,
-	snapshotID string,
-	clean string,
-	content []byte,
-	existed bool,
-	after []byte,
-	afterExisted bool,
-) error {
-	return s.prepareSnapshotFileWithModes(ctx, scope, snapshotID, clean, content, existed, 0, after, afterExisted, 0)
-}
-
-func (s *FileStore) prepareSnapshotFileWithModes(
-	ctx context.Context,
-	scope Scope,
-	snapshotID string,
-	clean string,
-	content []byte,
-	existed bool,
-	mode fs.FileMode,
-	after []byte,
-	afterExisted bool,
-	afterMode fs.FileMode,
-) error {
-	snapshotID = strings.TrimSpace(snapshotID)
-	if snapshotID == "" {
-		return nil
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	dir, err := s.snapshotDir(scope, snapshotID)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create workspace snapshot %q: %w", snapshotID, err)
-	}
-	sum := sha256.Sum256([]byte(clean))
-	entryPath := filepath.Join(dir, hex.EncodeToString(sum[:])+".json")
-	raw, err := os.ReadFile(entryPath)
-	var entry workspaceSnapshotEntry
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			return fmt.Errorf("decode workspace snapshot entry: %w", err)
-		}
-	case errors.Is(err, fs.ErrNotExist):
-		if existed && mode == 0 {
-			mode = s.currentMutationTargetMode(scope, clean)
-		}
-		entry = workspaceSnapshotEntry{
-			Path:    clean,
-			Existed: existed,
-			Content: append([]byte(nil), content...),
-			Mode:    uint32(mode.Perm()),
-		}
-	default:
-		return fmt.Errorf("read workspace snapshot entry: %w", err)
-	}
-	if entry.Existed && entry.Mode == 0 {
-		if mode == 0 {
-			mode = s.currentMutationTargetMode(scope, clean)
-		}
-		entry.Mode = uint32(mode.Perm())
-	}
-	if afterExisted && afterMode == 0 {
-		afterMode = mode
-		if afterMode == 0 {
-			afterMode = 0o644
-		}
-	}
-	entry.AfterExisted = afterExisted
-	entry.After = append([]byte(nil), after...)
-	entry.AfterMode = uint32(afterMode.Perm())
-	encoded, err := json.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("encode workspace snapshot entry: %w", err)
-	}
-	if err := writeFileAtomically(dir, entryPath, encoded, 0o600, false); err != nil {
-		return fmt.Errorf("persist workspace snapshot entry: %w", err)
-	}
-	return nil
 }
 
 func (s *FileStore) currentMutationTargetMode(scope Scope, clean string) fs.FileMode {
@@ -330,6 +242,37 @@ func (s *FileStore) RestoreSnapshot(ctx context.Context, scope Scope, snapshotID
 	return result, nil
 }
 
+// DeleteProject removes everything this replica holds for one project
+// incarnation: the working tree AND the run snapshots, dirty-path ledger,
+// pending commit and settlement receipt that sit beside it.
+//
+// It is what the Project finalizer calls (controller/project/teardown.go). The
+// delete VERB it replaced only ever removed the snapshots, which left the
+// working tree on the volume for a ProjectUID that no longer existed — a
+// replica adopting that UID later would have found source for a project that
+// had been deleted.
+//
+// It is pod-local and therefore best-effort across replicas until the source
+// authority moves onto the code provider's objects (remediation §9 Cut D.3).
+func (s *FileStore) DeleteProject(ctx context.Context, scope Scope) error {
+	if err := s.DeleteSnapshots(ctx, scope); err != nil {
+		return err
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	dir, err := s.scopeDir(scope)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("delete workspace tree: %w", err)
+	}
+	return nil
+}
+
 // DeleteSnapshots removes every assistant-run snapshot for one project.
 func (s *FileStore) DeleteSnapshots(ctx context.Context, scope Scope) error {
 	s.mutationMu.Lock()
@@ -346,10 +289,6 @@ func (s *FileStore) DeleteSnapshots(ctx context.Context, scope Scope) error {
 		return fmt.Errorf("delete workspace snapshots: %w", err)
 	}
 	return nil
-}
-
-func (s *FileStore) restoreFileState(ctx context.Context, scope Scope, clean string, content []byte, existed bool) error {
-	return s.restoreFileStateWithMode(ctx, scope, clean, content, existed, 0)
 }
 
 func (s *FileStore) restoreFileStateWithMode(ctx context.Context, scope Scope, clean string, content []byte, existed bool, mode fs.FileMode) error {

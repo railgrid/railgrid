@@ -345,6 +345,11 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 		EndpointURL: p.externalURL + apiurl.MCPServerPath(p.cluster, p.name),
 	})
 
+	// Declared capabilities come from the registry, not from the providers'
+	// live answers: a provider that is Ready but whose /mcp endpoint is slow
+	// or absent still has its declared contract published here.
+	registerCapabilitiesResource(srv, capabilitiesFor(p.cluster, p.name, targets))
+
 	registerProviderTools(srv, p.log, found)
 	return srv
 }

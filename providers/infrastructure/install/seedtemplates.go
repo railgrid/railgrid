@@ -156,7 +156,7 @@ func applyTemplate(ctx context.Context, dyn dynamic.Interface, raw []byte) error
 	}
 	name, _, _ := unstructured.NestedString(obj, "metadata", "name")
 	if name == "" {
-		return fmt.Errorf("Template missing metadata.name")
+		return fmt.Errorf("template missing metadata.name")
 	}
 
 	// Round-trip through JSON so any numeric / bool YAML scalars land

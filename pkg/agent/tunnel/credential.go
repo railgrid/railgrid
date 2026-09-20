@@ -131,12 +131,17 @@ type CredentialStore struct {
 	credential Credential
 	refreshAt  time.Time
 	haveIt     bool
+	// useFallback is set by Rejected: the provider refused the credential in
+	// hand, so the next attempt presents the join token instead. Adopt clears
+	// it; a second rejection flips it back so the two are tried in turn.
+	useFallback bool
 }
 
 // Adopt records a credential the provider just issued.
 func (s *CredentialStore) Adopt(credential Credential) error {
 	s.mu.Lock()
 	s.credential, s.refreshAt, s.haveIt = credential, credential.refreshDue(), true
+	s.useFallback = false
 	persist := s.Persist
 	s.mu.Unlock()
 	if persist != nil {
@@ -156,15 +161,38 @@ func (s *CredentialStore) Current() (Credential, bool) {
 // agent has enrolled, the scoped identity afterwards.
 func (s *CredentialStore) Token() string {
 	s.mu.Lock()
-	credential, haveIt := s.credential, s.haveIt
+	credential, haveIt, useFallback := s.credential, s.haveIt, s.useFallback
 	s.mu.Unlock()
-	if haveIt && strings.TrimSpace(credential.Token) != "" {
+	fallback := ""
+	if s.Fallback != nil {
+		fallback = s.Fallback()
+	}
+	if haveIt && strings.TrimSpace(credential.Token) != "" && (!useFallback || fallback == "") {
 		return credential.Token
 	}
+	return fallback
+}
+
+// Rejected records that the provider answered the last connect with 401 while
+// the store presented the credential in hand. When a join token is also
+// available the next Token() returns it, so an agent restarted with a fresh
+// join token but a stale saved credential (a hub that was rebuilt, an edge
+// deleted and recreated under the same name) re-enrols instead of retrying the
+// dead credential forever. Without a join token there is nothing to fall back
+// to and the call is a no-op. Returns whether the next attempt will use a
+// different bearer than the last one.
+func (s *CredentialStore) Rejected() bool {
+	fallback := ""
 	if s.Fallback != nil {
-		return s.Fallback()
+		fallback = s.Fallback()
 	}
-	return ""
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.haveIt || strings.TrimSpace(s.credential.Token) == "" || fallback == "" || fallback == s.credential.Token {
+		return false
+	}
+	s.useFallback = !s.useFallback
+	return true
 }
 
 // EnsureFresh re-mints when the credential is past 80% of its life. It is

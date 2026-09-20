@@ -161,14 +161,6 @@ type WorkspaceOps interface {
 	ListProviderAPIBindingsForExport(ctx context.Context, exportPath, exportName string) ([]kcp.ProviderBindingRef, error)
 	ReacceptProviderAPIBindingClaims(ctx context.Context, ref kcp.ProviderBindingRef, exportPath, exportName string, claims []kcp.ProviderClaim) (bool, error)
 
-	// EnsureProviderEdgeProxyGrant / RemoveProviderEdgeProxyGrant manage
-	// the ClusterRole/ClusterRoleBinding pair that lets a provider's SA
-	// (under its cluster-qualified identity) use the "proxy" verb on
-	// edges in the tenant workspace. Applied on Enable when the provider
-	// declares spec.edgeProxyAccess; removed on Disable.
-	EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error
-	RemoveProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName string) error
-
 	// ListAppAccessGrants / RemoveAppAccessGrant surface the published-app
 	// invitations (labeled ClusterRoleBindings, plain workspace RBAC) so
 	// tenant settings can show and revoke them. See app_access.go.

@@ -121,7 +121,9 @@ func (s *PostgresStore) ListAssistantConversationItems(ctx context.Context, scop
 	if err != nil {
 		return nil, fmt.Errorf("list assistant conversation items: %w", err)
 	}
-	defer rows.Close()
+	// Discarded: rows.Err() below reports any iteration failure, and a
+	// second report from Close would only duplicate it.
+	defer func() { _ = rows.Close() }()
 	items := make([]AssistantConversationItem, 0, limit)
 	for rows.Next() {
 		var item AssistantConversationItem

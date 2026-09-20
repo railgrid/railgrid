@@ -126,17 +126,6 @@ type CatalogEntrySpec struct {
 	// +optional
 	SelfHosting *ProviderSelfHosting `json:"selfHosting,omitempty"`
 
-	// EdgeProxyAccess requests that, when a tenant enables this provider,
-	// the hub grants the provider's ServiceAccount the "proxy" verb on
-	// edges.railgrid.ai in the tenant's workspace. This lets the
-	// provider open background connections to the tenant's edge clusters
-	// through the hub's edges-proxy (e.g. the kuery provider's informer
-	// sync). The grant is materialized as a ClusterRole/ClusterRoleBinding
-	// in the tenant workspace on Enable and removed on Disable; like
-	// permission claims, it is surfaced in the portal's Enable dialog.
-	// +optional
-	EdgeProxyAccess bool `json:"edgeProxyAccess,omitempty"`
-
 	// HubAccess requests hub REST capabilities the provider may exercise with
 	// the delegated user token the hub hands it in place of the caller's
 	// bearer. Each entry names a capability from a closed set the hub owns;
@@ -782,6 +771,43 @@ type ProviderPermissionClaim struct {
 	// CatalogEntry.
 	// +optional
 	TenantScoped bool `json:"tenantScoped,omitempty"`
+
+	// Selector narrows the claim from "every object of this resource in the
+	// tenant's workspace" to "the objects carrying these labels". It is the
+	// difference between a provider that can read every Secret a tenant holds
+	// and one that can only reach the Secrets it owns
+	// (docs/cross-provider-simplification.md X-4).
+	//
+	// kcp enforces it on both sides of the APIExport virtual workspace:
+	// the permission-claim labeler only stamps the internal
+	// `claimed.internal.apis.kcp.io/<export>` label on objects the selector
+	// matches, and the virtual workspace filters LIST/WATCH and 404s GET on
+	// anything without that label. Writes through the virtual workspace are
+	// mutated to carry the matchLabels (and refused if they carry a
+	// conflicting value), so a provider cannot create an object outside its
+	// own selector.
+	//
+	// A claim on the CORE group's `secrets` MUST carry one; see
+	// hack/verify-provider-contract.mjs (`claim-selector`).
+	// +optional
+	Selector *ProviderPermissionClaimSelector `json:"selector,omitempty"`
+}
+
+// ProviderPermissionClaimSelector scopes a permission claim to the objects
+// carrying a set of labels.
+//
+// Deliberately narrower than kcp's PermissionClaimSelector, which also offers
+// matchExpressions and matchAll: kcp's virtual-workspace admission stamps
+// matchLabels onto objects a provider writes but cannot do the same for a
+// matchExpressions selector, so a provider declaring one would be unable to
+// create the very objects it claims. matchAll is the absence of a selector and
+// is what the hub writes when this field is unset.
+type ProviderPermissionClaimSelector struct {
+	// MatchLabels is the label set a claimed object must carry, ANDed.
+	// The conventional key is `railgrid.ai/owner`, whose value is the
+	// provider's own name.
+	// +kubebuilder:validation:MinProperties=1
+	MatchLabels map[string]string `json:"matchLabels"`
 }
 
 // ProviderSelfHosting describes how an organization runs its own copy of this

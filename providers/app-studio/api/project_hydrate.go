@@ -50,6 +50,11 @@ type projectHydrateResponse struct {
 	Ref           string   `json:"ref,omitempty"`
 	CommitSHA     string   `json:"commitSHA,omitempty"`
 	Written       []string `json:"written,omitempty"`
+	// SourceRevision is the working-copy revision the rebuilt tree is at. It
+	// comes from the project's ledger, so it is the same number on every
+	// replica — which is what makes a rebuilt tree comparable to the one the
+	// previous owner had.
+	SourceRevision uint64 `json:"sourceRevision,omitempty"`
 	// Skipped lists repository paths that did not land in the workspace —
 	// binary/oversized files the checkout left out, plus files the workspace
 	// store refused (its own bounds).
@@ -109,18 +114,36 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 		CommitSHA:     checkout.CommitSHA,
 		Skipped:       checkout.Skipped,
 	}
+	files := make([]workspace.File, 0, len(checkout.Files))
 	for _, f := range checkout.Files {
 		data, err := f.bytes()
 		if err != nil {
 			resp.Skipped = append(resp.Skipped, fmt.Sprintf("%s (checkout: %v)", f.Path, err))
 			continue
 		}
-		if _, err := s.workspaces.PutFile(ctx, scope, workspace.PutOptions{Path: f.Path, Data: data}); err != nil {
-			resp.Skipped = append(resp.Skipped, fmt.Sprintf("%s (workspace: %v)", f.Path, err))
-			continue
-		}
-		resp.Written = append(resp.Written, f.Path)
+		files = append(files, workspace.File{Path: f.Path, Content: string(data)})
 	}
+	// One tree replacement, not a PutFile per file. Since §9 Cut D.3 each
+	// mutation advances the working-copy ledger on the Project's status, so a
+	// file-at-a-time rebuild would be a control-plane write per checked-out
+	// file. ReplaceTree makes the whole rebuild one revision and one ledger
+	// update — and `Committed` says what a rebuild means: these bytes ARE the
+	// repository's, so the paths come back CLEAN rather than queued for a
+	// commit that would only push git's own content back to git.
+	//
+	// PreserveOmitted keeps workspace-only files (node_modules is outside the
+	// managed tree anyway, but a skipped binary or an uncommitted file the
+	// checkout never had must not be deleted by a hydrate).
+	result, err := s.workspaces.ReplaceTree(ctx, scope, workspace.ReplaceTreeOptions{
+		Files:           files,
+		PreserveOmitted: true,
+		Committed:       true,
+	})
+	if err != nil {
+		return projectHydrateResponse{}, fmt.Errorf("rebuild workspace tree: %w", err)
+	}
+	resp.Written = result.Written
+	resp.SourceRevision = result.SourceRevision
 
 	// Push the hydrated tree through the same per-project ordered queue used by
 	// assistant mutations so a later verification cannot overtake this sync.

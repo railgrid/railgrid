@@ -43,10 +43,6 @@ export interface ProviderDTO {
   // an org-owned provider: its bundle URL and pin come from the grant the
   // portal requests at load time (providers/providerBundle.ts).
   mainJSIntegrity?: string
-  // True when the provider requests background access to the workspace's
-  // edge clusters (verb "proxy" on edges) on Enable. Rendered in the
-  // Enable confirmation dialog alongside permission claims.
-  edgeProxyAccess?: boolean
   // When set, the portal renders this Vue Router route name in-tree
   // instead of loading /main.js. First-party providers (mcp, kubernetes-
   // edges, server-edges) use this to surface their existing SPA pages

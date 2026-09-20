@@ -174,13 +174,17 @@ carries its reference and digest, provided it is consumed-and-deleted or swept
 on a fixed TTL and **nothing is lost if it is gone**. Neither store is ever the
 authority: the CR is.
 
-**Commit bundles** (`commitbundle/store.go`, `CODE_COMMIT_BUNDLE_DIR`). The MCP
-`commit_files` tool writes the files it was handed into a content-addressed
-bundle, then creates a `RepositoryCommit` whose `spec.source.bundleRef` carries
-only the bundle's name and digest — the bytes never enter an API object. The
-store is scoped by the tenant's kcp logical-cluster ID (`X-Railgrid-Cluster` on
-the MCP request, `req.ClusterName` in the reconciler: the same key on both
-sides). The RepositoryCommit controller reads the bundle, commits it, and
+**Commit bundles** (`commitbundle/store.go`, `CODE_COMMIT_BUNDLE_DIR`). One
+executor (`commitexec.Create`) writes the files it was handed into a
+content-addressed bundle, then creates a `RepositoryCommit` whose
+`spec.source.bundleRef` carries only the bundle's name and digest — the bytes
+never enter an API object. Two surfaces call it and neither owns it: the
+`repositories/commit/v1` action, which is the contract surface and is
+authorized by the two gates, and the MCP `commit_files` tool, which is a
+projection of the same executor for interactive clients. The store is scoped by
+the tenant's kcp logical-cluster ID (`X-Railgrid-Cluster` on the MCP request,
+the path cluster on an action, `req.ClusterName` in the reconciler: the same
+key on all three sides). The RepositoryCommit controller reads the bundle, commits it, and
 deletes it; a commit that fails deletes it too. A `Put` announces the arrival
 in-process (`commitbundle.Notifier`), which is what wakes a controller that
 reached its RepositoryCommit before the bundle landed — the 30-second arrival
@@ -200,14 +204,69 @@ swept lazily on the next upload, and are bounded per tenant (16 artifacts,
 256 MiB). `prepare_snapshot` and `publish_snapshot` take the handle, never an
 inline bundle, and re-verify its digest before use.
 
-`stage_snapshot` is the provider's one **uncatalogued** verb: a 25 MiB body
-cannot be declared under `CatalogEntry.spec.actions[].limits.maxInputBytes`,
-which the CatalogEntry API caps at 1 MiB. It is served on the same
-`/actions/clusters/{id}/repositories/{name}/{verb}/v1` route and runs the same
+**Staged commit bundles** (`actions/commit.go`). `commit/v1` is catalogued and
+therefore bounded at the CatalogEntry's 1 MiB input ceiling, which is smaller
+than a generated application. A caller with more than that uploads the file
+list through `stage_commit_bundle`, which writes it into the commit-bundle
+store above under the request's cluster scope and returns the
+`bundleRef`/`bundleDigest` pair; `commit` then names the handle instead of
+inline `files`, re-reads it digest-verified, and creates the same
+`RepositoryCommit`. A staged bundle nobody commits is reclaimed by the same
+one-hour sweeper as any other orphan.
+
+`stage_snapshot` and `stage_commit_bundle` are the provider's only
+**uncatalogued** verbs: a 25 MiB or 48 MiB body cannot be declared under
+`CatalogEntry.spec.actions[].limits.maxInputBytes`, which the CatalogEntry API
+caps at 1 MiB. Both are served on the same
+`/actions/clusters/{id}/repositories/{name}/{verb}/v1` route and run the same
 two gates as every catalogued action. The exception, and the four conditions a
 verb has to meet to claim it, are written down in
 [provider-actions.md](./provider-actions.md) §"Uncatalogued large-upload
 verbs".
+
+---
+
+## `commit` — writing files without a git host round-trip
+
+Added 20 September 2026
+([provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§9 Cut D.1; it closes the "code provider: a `repositories/commit` action"
+follow-up recorded on that plan).
+
+```
+POST /actions/clusters/{id}/repositories/{name}/commit/v1
+POST /actions/clusters/{id}/repositories/{name}/stage_commit_bundle/v1   (uncatalogued)
+```
+
+**Why it exists.** A consumer that generates code — App Studio, above all —
+needs to put file contents somewhere only this provider can write, and then
+have a `RepositoryCommit` point at them. Until now the only way to do that was
+the `commit_files` MCP tool, which meant a background reconciler had to reach
+the tenant's MCP aggregate, hold `use` on an `MCPServer`, and parse a tool's
+prose error to learn the name of the object it had just created. None of that
+is the data-plane contract; all of it was load-bearing.
+
+**Shape.** Input is `{repositoryUID, message?, branch?, files[]}` or
+`{repositoryUID, message?, branch?, bundleRef, bundleDigest}`; output is
+`{commit: {name, uid}}`. `repositoryUID` pins what gate 1 returned against this
+provider's own read through its APIExport, exactly as every other repository
+action does — there is simply no Connection and no credential to resolve,
+because the verb never reaches a git host.
+
+**Who writes the CR.** The provider, through its own export client, after the
+two gates have passed. The caller proves it may commit (`get` on the
+Repository, `create` on `repositories/commit`) and does not additionally need
+`create` on `repositorycommits` in its own workspace — which is the point: a
+consumer composes this provider's behaviour through a declared verb, not
+through RBAC on a foreign kind. App Studio's project identity therefore gained
+one clause-C rule and kept its read-only composition on `repositorycommits`.
+
+**What it is not.** It is not synchronous in effect: it is declared
+`executionMode: async` because the commit lands when the controller applies it,
+and the result names the object to watch rather than a SHA. A consumer that
+needs the outcome watches the `RepositoryCommit`; App Studio's project
+reconciler already did exactly that for the rate-limited case, and now does it
+for every commit.
 
 ---
 

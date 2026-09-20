@@ -24,6 +24,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+
 	kuerysync "github.com/railgrid/kuery/pkg/sync"
 
 	kueryv1alpha1 "github.com/railgrid/provider-kuery/apis/v1alpha1"
@@ -38,8 +40,11 @@ func edgeObject(name string, connected bool) *unstructured.Unstructured {
 			"connected":     connected,
 			"lastHeartbeat": time.Now().Format(time.RFC3339),
 			// The coordinate the edges provider publishes for this edge; the
-			// consumer reads it rather than building one of its own.
-			"url": "/services/providers/edges/dataplane/clusters/cluster/kubernetesclusters/" + name + "/k8s",
+			// consumer reads it rather than building one of its own. The key is
+			// spelled exactly as the served CRD has it — ConnectionStatus.URL
+			// carries the JSON tag "URL" — because reading the wrong spelling
+			// is precisely how every edge came out unengageable.
+			"URL": "/services/providers/edges/dataplane/clusters/cluster/kubernetesclusters/" + name + "/k8s",
 		},
 	}}
 }
@@ -61,14 +66,15 @@ func watchFixture(t *testing.T) (*Controller, *dynamicfake.FakeDynamicClient, *a
 		// An empty hub base makes the edgeproxy URL relative, so engage fails
 		// fast in-process instead of dialling anything.
 		hubBase: "",
-		claims:  testClaims("replica-a", kubefake.NewClientset(), time.Now),
+		claims:  testClaims(t, "replica-a", kubefake.NewClientset()),
 		registry: NewRegistryWithClient(ctrlfake.NewClientBuilder().
 			WithScheme(NewScheme()).
 			WithStatusSubresource(&kueryv1alpha1.Engagement{}).
 			Build()),
 		engaged:     map[string]engagedEdge{},
+		wanted:      map[string]string{},
 		edgeWatches: map[string]edgeWatch{},
-		termCtx:     ctx,
+		runCtx:      ctx,
 		identities:  map[string]*workspaceIdentity{},
 		tenantDynamicFor: func(string, credential) (dynamic.Interface, error) {
 			dials.Add(1)
@@ -229,4 +235,314 @@ func TestEnsureEdgeWatchAfterTheTermIsANoop(t *testing.T) {
 	if dialled || len(c.edgeWatches) != 0 {
 		t.Fatalf("watch started outside a term: dialled=%t watches=%d", dialled, len(c.edgeWatches))
 	}
+}
+
+// An edge a peer already holds is not synced here — that is the sharding — but
+// it IS remembered, so when the peer lets go the claim shard's own watch is
+// what hands the edge over. Nothing re-lists, and nothing waits for the next
+// heartbeat pass.
+func TestPeerHeldEdgeIsRememberedAndTakenOver(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const (
+		cluster   = "1ngen6o0so3jwz2h"
+		edge      = "edge-1"
+		statusURL = "/services/providers/edges/dataplane/clusters/" + cluster +
+			"/kubernetesclusters/" + edge + "/k8s"
+	)
+	storeName := StoreName(cluster, edge)
+
+	cs := kubefake.NewClientset()
+	store := testStore(t)
+	c := &Controller{
+		cfg: Config{
+			Store:          store,
+			Sync:           kuerysync.NewSyncController(kuerysync.Config{Store: store}),
+			ProviderConfig: &rest.Config{},
+		},
+		claims: testClaims(t, "replica-a", cs),
+		registry: NewRegistryWithClient(ctrlfake.NewClientBuilder().
+			WithScheme(NewScheme()).
+			WithStatusSubresource(&kueryv1alpha1.Engagement{}).
+			Build()),
+		identityCache: newIdentityCache(nil),
+		engaged:       map[string]engagedEdge{},
+		wanted:        map[string]string{},
+		edgeWatches:   map[string]edgeWatch{},
+		identities:    map[string]*workspaceIdentity{},
+		runCtx:        ctx,
+	}
+	identity := c.identityFor(&apiskcpv1alpha2.APIBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "kuery", UID: "b-1"},
+	}, cluster)
+
+	// The edge exists and has a record, as the workspace's edge watch would
+	// have left it; only the claim is somebody else's.
+	if _, err := c.registry.Ensure(ctx, cluster, edge); err != nil {
+		t.Fatalf("recording the engagement: %v", err)
+	}
+
+	// A peer replica owns the edge.
+	peer := testClaims(t, "replica-b", cs)
+	if held, _ := peer.Claim(ctx, storeName); !held {
+		t.Fatal("the peer could not claim the edge")
+	}
+
+	c.claimAndEngage(ctx, cluster, identity, edge, statusURL)
+	if c.claims.Held(storeName) {
+		t.Fatal("an edge a peer holds was claimed here")
+	}
+	if len(c.engaged) != 0 {
+		t.Fatalf("engaged = %v, want nothing synced for a peer's edge", c.engaged)
+	}
+	c.mu.Lock()
+	remembered := c.wanted[storeName]
+	c.mu.Unlock()
+	if remembered != statusURL {
+		t.Fatalf("wanted[%q] = %q, want the published coordinate so the edge can be taken over", storeName, remembered)
+	}
+
+	// The shard's watch is what turns the peer's release into a takeover.
+	if err := c.claims.Start(ctx); err != nil {
+		t.Fatalf("starting the claim shard: %v", err)
+	}
+	go c.followClaims(ctx)
+	waitForWatch(t, cs)
+
+	peer.Release(ctx, storeName)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !c.claims.Held(storeName) {
+		if time.Now().After(deadline) {
+			t.Fatal("the edge was never taken over after the peer released it")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The engage itself has no edgeproxy to dial in this fixture; what is being
+	// asserted is that the ownership event drove a real engage attempt.
+	engagementPhase(t, c, cluster, edge, kueryv1alpha1.EngagementPhasePending, "peer released the edge")
+}
+
+// waitForWatch blocks until the claim shard has actually opened its Lease
+// watch, so a test never races the goroutine meant to observe its writes.
+func waitForWatch(t *testing.T, cs *kubefake.Clientset) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, action := range cs.Actions() {
+			if action.GetVerb() == "watch" && action.GetResource().Resource == "leases" {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the claim shard never opened its Lease watch")
+}
+
+// edgeObjectWithURL is edgeObject with an explicit coordinate. An empty one
+// leaves status.url unset, which is exactly how an edge first appears: the
+// edges provider creates the object and stamps the URL it serves it on a
+// moment later, from a different reconcile.
+func edgeObjectWithURL(name string, connected bool, statusURL string) *unstructured.Unstructured {
+	object := edgeObject(name, connected)
+	status, _ := object.Object["status"].(map[string]any)
+	if statusURL == "" {
+		delete(status, "URL")
+		return object
+	}
+	status["URL"] = statusURL
+	return object
+}
+
+// The coordinate is read under the key the edges provider actually publishes.
+// edges.railgrid.ai/KubernetesCluster embeds the shared ConnectionStatus, whose
+// URL field is tagged "URL", so a consumer reading "url" finds nothing on every
+// edge there has ever been. The lower-case spelling still resolves, because
+// sibling kinds in the group publish it that way.
+func TestEdgeStatusURLReadsThePublishedKey(t *testing.T) {
+	const published = "/services/providers/edges/dataplane/clusters/c/kubernetesclusters/e/k8s"
+	for name, status := range map[string]map[string]any{
+		"as the CRD spells it":      {"URL": published},
+		"lower-case sibling naming": {"url": published},
+		"blank":                     {"URL": "   "},
+		"absent":                    {"connected": true},
+	} {
+		object := &unstructured.Unstructured{Object: map[string]any{"status": status}}
+		got := edgeStatusURL(object)
+		want := published
+		if name == "blank" || name == "absent" {
+			want = ""
+		}
+		if got != want {
+			t.Errorf("%s: edgeStatusURL = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// awaitEngagement polls one edge's record until it satisfies want, so a test
+// asserts on the watch goroutine's effect without a sleep.
+func awaitEngagement(
+	t *testing.T,
+	c *Controller,
+	cluster, edge, why string,
+	want func(kueryv1alpha1.EngagementStatus) bool,
+) {
+	t.Helper()
+	name := EngagementName(cluster, edge)
+	deadline := time.Now().Add(5 * time.Second)
+	var last kueryv1alpha1.EngagementStatus
+	for time.Now().Before(deadline) {
+		var got kueryv1alpha1.Engagement
+		if err := c.registry.client.Get(context.Background(), client.ObjectKey{Name: name}, &got); err == nil {
+			last = got.Status
+			if want(last) {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s: engagement for %s/%s is phase=%q message=%q, which is not what was wanted",
+		why, cluster, edge, last.Phase, last.Message)
+}
+
+// waitForEdgeWatch blocks until the workspace's edge watch has actually been
+// opened against the fake, so a test never races its own tracker writes against
+// the goroutine meant to observe them.
+func waitForEdgeWatch(t *testing.T, dyn *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, action := range dyn.Actions() {
+			if action.GetVerb() == "watch" && action.GetResource().Resource == edgeGVR.Resource {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the edge watch was never opened")
+}
+
+// An edge that exists before the edges provider has published its status.url is
+// WANTED, not failed: nothing is dialled, no claim is taken, and no error is
+// surfaced as terminal. The update that adds the coordinate arrives on the same
+// watch and is what engages it — exactly once.
+//
+// This is the whole bug: that update does not change status.connected, so a
+// dedup keyed on the connected flag alone swallowed it, and the one engage
+// attempt made at first sight — against an empty URL — was the only one the
+// edge ever got.
+func TestEdgeWithoutStatusURLIsWantedUntilTheURLArrives(t *testing.T) {
+	c, dyn, _ := watchFixture(t)
+	const (
+		cluster   = "1ngen6o0so3jwz2h"
+		edge      = "edge-1"
+		statusURL = "/services/providers/edges/dataplane/clusters/" + cluster +
+			"/kubernetesclusters/" + edge + "/k8s"
+	)
+	storeName := StoreName(cluster, edge)
+
+	identity := &staticCredential{token: "token-1"}
+	if err := c.ensureEdgeWatch(cluster, identity); err != nil {
+		t.Fatalf("ensureEdgeWatch: %v", err)
+	}
+	waitForEdgeWatch(t, dyn)
+
+	// The edge is up, but the provider has not said where to reach it yet.
+	if err := dyn.Tracker().Add(edgeObjectWithURL(edge, true, "")); err != nil {
+		t.Fatal(err)
+	}
+	awaitEngagement(t, c, cluster, edge, "an edge with no published status.url",
+		func(status kueryv1alpha1.EngagementStatus) bool {
+			return status.Phase == kueryv1alpha1.EngagementPhasePending &&
+				status.Message == noStatusURLMessage
+		})
+	if got := identity.observations(edge); got != 0 {
+		t.Fatalf("the identity was handed the edge %d times, want 0: an edge with no coordinate is never dialled", got)
+	}
+	if !c.claims.Held(storeName) {
+		t.Fatal("the replica waiting for the coordinate must hold the claim, or the record is reaped as an orphan")
+	}
+	c.mu.Lock()
+	remembered, isWanted := c.wanted[storeName]
+	c.mu.Unlock()
+	if !isWanted || remembered != "" {
+		t.Fatalf("wanted[%q] = (%q, %t), want the edge remembered with no coordinate yet", storeName, remembered, isWanted)
+	}
+
+	// The edges provider stamps the coordinate. status.connected is unchanged
+	// across this update, so only a watch that compares status.url acts on it.
+	if err := dyn.Tracker().Update(edgeGVR, edgeObjectWithURL(edge, true, statusURL), ""); err != nil {
+		t.Fatal(err)
+	}
+	// The fixture has no edgeproxy to dial, so the attempt itself cannot
+	// succeed; what is asserted is that the update drove a real engage at all.
+	awaitEngagement(t, c, cluster, edge, "status.url published",
+		func(status kueryv1alpha1.EngagementStatus) bool {
+			return status.Phase == kueryv1alpha1.EngagementPhasePending &&
+				status.Message == "engage failed; retrying"
+		})
+	if got := identity.observations(edge); got != 1 {
+		t.Fatalf("the identity was handed the edge %d times, want exactly 1", got)
+	}
+	if !c.claims.Held(storeName) {
+		t.Fatal("the replica that engages an edge must hold its claim")
+	}
+	c.mu.Lock()
+	_, stillWanted := c.wanted[storeName]
+	c.mu.Unlock()
+	if stillWanted {
+		t.Fatalf("wanted still holds %q after the edge was taken on here", storeName)
+	}
+
+	// A heartbeat that changes neither the flag nor the coordinate is still not
+	// a second attempt — the dedup got wider, not weaker.
+	if err := dyn.Tracker().Update(edgeGVR, edgeObjectWithURL(edge, true, statusURL), ""); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := identity.observations(edge); got != 1 {
+		t.Fatalf("a heartbeat-only update re-attempted the engage: the identity was handed the edge %d times, want 1", got)
+	}
+}
+
+// A shard event on an edge that is wanted but not yet engageable re-evaluates
+// it rather than failing: the Available handover runs the same path the watch
+// does, finds no coordinate, and leaves the edge wanted for the status.url
+// update to pick up.
+func TestTakeOverOfAnEdgeWithNoCoordinateStaysWanted(t *testing.T) {
+	ctx := context.Background()
+	c, _, _ := watchFixture(t)
+	const (
+		cluster = "1ngen6o0so3jwz2h"
+		edge    = "edge-1"
+	)
+	storeName := StoreName(cluster, edge)
+
+	identity := &staticCredential{token: "token-1"}
+	c.mu.Lock()
+	c.wanted[storeName] = ""
+	c.mu.Unlock()
+	if _, err := c.registry.Ensure(ctx, cluster, edge); err != nil {
+		t.Fatalf("recording the engagement: %v", err)
+	}
+
+	c.claimAndEngage(ctx, cluster, identity, edge, "")
+
+	if !c.claims.Held(storeName) {
+		t.Fatal("a takeover of an edge with no coordinate must still hold it, ready for the update that adds one")
+	}
+	if len(c.engaged) != 0 {
+		t.Fatalf("engaged = %v, want nothing synced for an edge with no coordinate", c.engaged)
+	}
+	c.mu.Lock()
+	_, stillWanted := c.wanted[storeName]
+	c.mu.Unlock()
+	if !stillWanted {
+		t.Fatalf("wanted lost %q, so the status.url update would have nothing to take over", storeName)
+	}
+	awaitEngagement(t, c, cluster, edge, "takeover without a coordinate",
+		func(status kueryv1alpha1.EngagementStatus) bool {
+			return status.Phase == kueryv1alpha1.EngagementPhasePending &&
+				status.Message == noStatusURLMessage
+		})
 }

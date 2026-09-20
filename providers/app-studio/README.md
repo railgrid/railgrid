@@ -446,6 +446,15 @@ upsert/delete commit to the Code provider's `code__commit_files` tool. A
 workspace move is persisted as an upsert of the destination and deletion of the
 source in the same repository commit.
 
+The background convergence loop takes a different route to the same place: the
+Project reconciler (`controller/project/commit.go`) invokes the Code provider's
+`repositories/commit/v1` **action** as the project identity, staging oversized
+payloads through `repositories/stage_commit_bundle`, and follows the
+`RepositoryCommit` the action names over the watch it already runs. The two
+surfaces share the workspace settlement ledger, so neither double-commits what
+the other settled; moving the assistant's tool onto the same action is open
+work.
+
 The reverse direction is `hydrate_workspace`: it reads the repository tree
 through the Code provider's `code__checkout_repository` tool and writes it into
 the workspace (tracked files are overwritten, workspace-only files stay), then

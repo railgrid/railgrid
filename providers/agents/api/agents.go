@@ -586,7 +586,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		seq++
 		b, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, event, b)
+		// A write error here only means the client went away, which
+		// clientGone() already covers on the next call; nothing to report.
+		_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, event, b)
 		flusher.Flush()
 	}
 

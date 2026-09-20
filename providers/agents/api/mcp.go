@@ -490,11 +490,10 @@ func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, scheduleSummary{}, err
 		}
-		req := createScheduleRequest{
-			Name: in.Name, AgentRef: in.AgentRef, Type: in.Type,
-			Schedule: in.Schedule, TimeZone: in.TimeZone, RunAt: in.RunAt,
-			Task: in.Task, Checklist: in.Checklist, Suspend: in.Suspend, ChannelRef: in.ChannelRef,
-		}
+		// createScheduleInput mirrors createScheduleRequest field for field
+		// (only the jsonschema tags differ), so a conversion keeps the two in
+		// lockstep: adding a field to one and not the other stops compiling.
+		req := createScheduleRequest(in)
 		sch, err := applyScheduleCreate(ctx, c, &req)
 		if err != nil {
 			return nil, scheduleSummary{}, err
