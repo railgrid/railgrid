@@ -16,13 +16,19 @@ package kcp
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/rest"
 
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
@@ -203,5 +209,47 @@ func TestClaimSelector(t *testing.T) {
 	scoped.MatchLabels["railgrid.ai/owner"] = "somebody-else"
 	if labels["railgrid.ai/owner"] != "agents" {
 		t.Error("claimSelector aliased the caller's label map")
+	}
+}
+
+func TestWaitForTenancyDiscovery_FreshBinding(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, "API not served yet", http.StatusNotFound)
+			return
+		}
+		resources := []metav1.APIResource{{Name: "users", Kind: "User"}}
+		if calls >= 3 {
+			resources = append(resources, metav1.APIResource{Name: "organizations", Kind: "Organization"}, metav1.APIResource{Name: "usermembershipindices", Kind: "UserMembershipIndex"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(metav1.APIResourceList{GroupVersion: "tenants.railgrid.ai/v1alpha1", APIResources: resources})
+	}))
+	defer server.Close()
+	client, err := discovery.NewDiscoveryClientForConfig(&rest.Config{Host: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := waitForTenancyDiscovery(ctx, client); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("returned before complete discovery: %d requests", calls)
+	}
+}
+
+func TestWaitForTenancyDiscovery_PropagatesForbidden(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "denied", http.StatusForbidden) }))
+	defer server.Close()
+	client, err := discovery.NewDiscoveryClientForConfig(&rest.Config{Host: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForTenancyDiscovery(context.Background(), client); err == nil {
+		t.Fatal("expected discovery authorization error")
 	}
 }

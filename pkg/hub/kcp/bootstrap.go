@@ -327,7 +327,37 @@ func (b *Bootstrapper) ensureTenancyObjectsBinding(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating system:tenants client: %w", err)
 	}
-	return ensureExportBinding(ctx, tenancyDynamic, kcppaths.SystemControllers, "tenants.railgrid.ai")
+	if err := ensureExportBinding(ctx, tenancyDynamic, kcppaths.SystemControllers, "tenants.railgrid.ai"); err != nil {
+		return err
+	}
+	if err := waitForAPIBindingBound(ctx, tenancyDynamic, "tenants.railgrid.ai"); err != nil {
+		return fmt.Errorf("waiting for tenancy binding: %w", err)
+	}
+	client, err := discovery.NewDiscoveryClientForConfig(b.UsersConfig())
+	if err != nil {
+		return err
+	}
+	return waitForTenancyDiscovery(ctx, client)
+}
+
+// Controller field indexes resolve kinds during setup, before their informers
+// start. A created (or even Bound) APIBinding alone does not guarantee discovery
+// has caught up, so fresh installations must wait before constructing managers.
+func waitForTenancyDiscovery(ctx context.Context, client discovery.DiscoveryInterface) error {
+	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, time.Minute, true, func(ctx context.Context) (bool, error) {
+		resources, err := client.ServerResourcesForGroupVersion("tenants.railgrid.ai/v1alpha1")
+		if err != nil {
+			if errors.IsNotFound(err) || errors.IsServiceUnavailable(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		found := map[string]bool{}
+		for _, resource := range resources.APIResources {
+			found[resource.Name] = true
+		}
+		return found["users"] && found["organizations"] && found["usermembershipindices"], nil
+	})
 }
 
 // UsersConfig returns a rest.Config targeting root:railgrid:system:tenants, where
