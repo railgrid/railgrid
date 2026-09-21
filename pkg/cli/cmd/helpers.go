@@ -40,10 +40,11 @@ var (
 	globalInsecureTLS bool
 )
 
-// normalizeHubURL ensures the URL has a scheme. If no scheme is present,
-// https:// is prepended. This allows users to type just "hub.railgrid.ai" instead
-// of "https://hub.railgrid.ai".
+// normalizeHubURL removes trailing slashes and ensures the URL has a scheme.
+// If no scheme is present, https:// is prepended. This allows users to type
+// just "hub.railgrid.ai" instead of "https://hub.railgrid.ai".
 func normalizeHubURL(u string) string {
+	u = strings.TrimRight(u, "/")
 	if u == "" {
 		return u
 	}
