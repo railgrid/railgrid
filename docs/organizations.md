@@ -389,18 +389,28 @@ POST /api/orgs
 2. The same create persists `spec.initialWorkspace: {name: <workspace UUID>,
    user: <creator User name>}`. This is a durable bootstrap request, not
    a workspace selected by the browser.
-3. The REST handler ensures the kcp organization workspace at
+3. The controller ensures the kcp organization workspace at
    `root:railgrid:tenants:{uuid}`, the caller's org-admin Membership, and
-   their organization entry in `UserMembershipIndex`, then returns 201.
+   their organization entry in `UserMembershipIndex`. The REST handler
+   waits for durable org access readiness, then returns 201; it performs
+   no competing membership writes.
 4. The `organization-initial-workspace` controller provisions a workspace
    named **default**, using the same bootstrap routine as personal orgs:
    child workspace, display name, core APIBinding, creator admin RBAC,
    default MCPServer, and workspace membership-index entry. Provisioning is
    asynchronous; organization conditions report progress and failures.
 5. Retries and hub restarts reuse the persisted workspace UUID. The controller
-   records `InitialWorkspaceInitialized=True` only after all steps succeed,
-   then stops: renaming/deleting this workspace or changing memberships does
-   not recreate it or restore the creator's permissions. Additional orgs do
+   records `InitialWorkspaceAccessInitialized=True` after initial membership,
+   workspace-admin access and index setup succeed, and permanently stops those
+   access writes. Creator membership changes return a retryable conflict until
+   this handoff; afterward they remain authoritative even if MCP setup retries.
+   Organization controllers are leader-elected so concurrent replicas cannot
+   replay old access setup after handoff.
+6. `InitialWorkspaceInitialized=True` records full bootstrap completion. Until
+   then, list and detail responses withhold the initial workspace's cluster
+   target so the portal continues showing provisioning. After completion the
+   controller stops: renaming/deleting this workspace or changing memberships
+   does not recreate it or restore the creator's permissions. Additional orgs do
    not overwrite the user's personal-org/default-workspace/default-cluster
    fields. Existing orgs without the bootstrap request are left unchanged.
 

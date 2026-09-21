@@ -88,6 +88,10 @@ const (
 	// and membership changes must not restart that bootstrap.
 	OrganizationConditionInitialWorkspaceInitialized = "InitialWorkspaceInitialized"
 
+	// OrganizationConditionInitialWorkspaceAccessInitialized hands bootstrap
+	// access ownership to membership management, independently of MCP readiness.
+	OrganizationConditionInitialWorkspaceAccessInitialized = "InitialWorkspaceAccessInitialized"
+
 	// ReasonAwaitingWorkspaceType marks an Organization whose kcp workspace
 	// has not been created yet because the organization WorkspaceType is
 	// not yet registered (lands in a follow-up PR).

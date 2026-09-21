@@ -28,6 +28,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -119,6 +120,7 @@ type WorkspaceProvisioner interface {
 // Organization status. See package doc for scope.
 type Reconciler struct {
 	client      client.Client
+	apiReader   client.Reader
 	provisioner WorkspaceProvisioner
 }
 
@@ -136,6 +138,7 @@ type Reconciler struct {
 func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) error {
 	r := &Reconciler{
 		client:      mgr.GetClient(),
+		apiReader:   mgr.GetAPIReader(),
 		provisioner: provisioner,
 	}
 	klog.Info("Registering organization bootstrap controller")
@@ -171,6 +174,11 @@ func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) err
 func NewManager(cfg *rest.Config, scheme *runtime.Scheme) (manager.Manager, error) {
 	return manager.New(cfg, manager.Options{
 		Scheme: scheme,
+		// Serialize access initialization across hub replicas. A stale in-flight
+		// writer must not replay grants after another replica hands access off.
+		LeaderElection:          true,
+		LeaderElectionID:        "railgrid-organization-bootstrap",
+		LeaderElectionNamespace: "default",
 		Metrics: server.Options{
 			// Hub serves its own /metrics; disable controller-runtime's.
 			BindAddress: "0",
@@ -385,6 +393,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 // Only a personal org may update the user-wide default cluster or backfill RBAC.
 func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alpha1.User, org *tenancyv1alpha1.Organization, wsUUID string) error {
 	logger := klog.FromContext(ctx).WithValues("organization", org.Name)
+	accessInitialized := !org.Spec.Personal && (apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized) || apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized))
 	desiredPath := orgWorkspaceParent + ":" + org.Name
 
 	// Step A: status.workspacePath.
@@ -404,6 +413,9 @@ func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alph
 	var memCond metav1.Condition
 	membershipOK := false
 	switch {
+	case accessInitialized:
+		membershipOK = true
+		memCond = metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionMembershipReady, Status: metav1.ConditionTrue, Reason: reasonMembershipReady, Message: "Initial membership established; subsequent changes are managed through membership operations."}
 	case !workspaceOK:
 		memCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionMembershipReady,
@@ -439,6 +451,25 @@ func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alph
 	}
 	if setCondition(&org.Status.Conditions, memCond, org.Generation) {
 		changed = true
+	}
+
+	// Publish org access before slow child provisioning. The create endpoint
+	// waits for this durable checkpoint, while membership mutations remain
+	// gated until the separate access handoff below.
+	if !org.Spec.Personal && !accessInitialized && membershipOK &&
+		!apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced) {
+		if err := r.syncUserMembershipIndex(ctx, user, org, ""); err != nil {
+			return err
+		}
+		setCondition(&org.Status.Conditions, metav1.Condition{
+			Type:   tenancyv1alpha1.OrganizationConditionIndexSynced,
+			Status: metav1.ConditionTrue, Reason: reasonIndexSynced,
+			Message: "Initial organization membership index established; workspace provisioning is pending.",
+		}, org.Generation)
+		if err := r.client.Status().Update(ctx, org); err != nil {
+			return fmt.Errorf("publishing initial organization access: %w", err)
+		}
+		changed = false
 	}
 
 	// Step E: default child Workspace (only attempt after B succeeded
@@ -556,6 +587,9 @@ func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alph
 	var adminCond metav1.Condition
 	workspaceAdminOK := false
 	switch {
+	case accessInitialized:
+		workspaceAdminOK = true
+		adminCond = metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady, Status: metav1.ConditionTrue, Reason: reasonWorkspaceAdminReady, Message: "Initial workspace access established; subsequent changes are managed through membership operations."}
 	case !railgridBindOK:
 		adminCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
@@ -674,6 +708,8 @@ func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alph
 	// workspace WorkspaceType).
 	var indexCond metav1.Condition
 	switch {
+	case accessInitialized:
+		indexCond = metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionIndexSynced, Status: metav1.ConditionTrue, Reason: reasonIndexSynced, Message: "Initial membership index established; subsequent changes are managed through membership operations."}
 	case !membershipOK:
 		indexCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
@@ -708,6 +744,14 @@ func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alph
 	}
 	if setCondition(&org.Status.Conditions, indexCond, org.Generation) {
 		changed = true
+	}
+
+	// Hand access ownership to membership operations even if MCP setup fails.
+	// REST rejects creator membership mutations until this durable status write.
+	if !org.Spec.Personal && membershipOK && workspaceAdminOK && indexCond.Status == metav1.ConditionTrue {
+		if setCondition(&org.Status.Conditions, metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized, Status: metav1.ConditionTrue, Reason: reasonAllStepsReady, Message: "Initial access setup completed."}, org.Generation) {
+			changed = true
+		}
 	}
 
 	// Aggregate Ready = all seven business steps green

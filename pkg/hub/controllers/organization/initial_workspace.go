@@ -51,7 +51,13 @@ func initialWorkspaceUser(obj client.Object) []string {
 
 func (r *initialWorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var org tenancyv1alpha1.Organization
-	if err := r.client.Get(ctx, req.NamespacedName, &org); err != nil {
+	// Access handoff must be read directly: a stale cache entry could replay
+	// grants after a successful membership revocation.
+	reader := r.apiReader
+	if reader == nil {
+		reader = r.client
+	}
+	if err := reader.Get(ctx, req.NamespacedName, &org); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !needsInitialWorkspace(&org) {

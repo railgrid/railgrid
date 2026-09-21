@@ -25,7 +25,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
@@ -179,5 +181,170 @@ func TestInitialWorkspace_UserChangesEnqueueOnlyPendingOwnedOrganizations(t *tes
 	requests := r.mapUserToInitialOrganizations(context.Background(), newUser("alice", "Alice"))
 	if len(requests) != 1 || requests[0].Name != "pending" {
 		t.Fatalf("unexpected requests: %#v", requests)
+	}
+}
+
+// Membership mutations are permitted after access handoff even if resource
+// provisioning is still failing. Neither role changes nor removal may be undone.
+func TestInitialWorkspace_PreservesMembershipChangesDuringMCPRetry(t *testing.T) {
+	for _, change := range []string{"demote", "remove"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			user := newUser("alice", "Alice")
+			org := newSharedOrg("org-one", "workspace-one", user.Name)
+			c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).
+				WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).Build()
+			prov := &fakeProvisioner{mcpErr: errors.New("MCP provisioning unavailable")}
+			r := &initialWorkspaceReconciler{&Reconciler{client: c, provisioner: prov}}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
+			if _, err := r.Reconcile(ctx, req); err == nil {
+				t.Fatal("expected pending bootstrap")
+			}
+			if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+				t.Fatal(err)
+			}
+			if !apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized) {
+				t.Fatal("access must be handed off independently of MCP readiness")
+			}
+			var idx tenancyv1alpha1.UserMembershipIndex
+			if err := c.Get(ctx, types.NamespacedName{Name: user.Name}, &idx); err != nil {
+				t.Fatal(err)
+			}
+			if change == "remove" {
+				idx.Spec.Entries = nil
+			} else {
+				for i := range idx.Spec.Entries {
+					idx.Spec.Entries[i].Role = "member"
+				}
+			}
+			if err := c.Update(ctx, &idx); err != nil {
+				t.Fatal(err)
+			}
+			memCalls, adminCalls := len(prov.memCalls), len(prov.adminCalls)
+			if _, err := r.Reconcile(ctx, req); err == nil {
+				t.Fatal("expected pending bootstrap")
+			}
+			prov.mcpErr = nil
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if len(prov.memCalls) != memCalls || len(prov.adminCalls) != adminCalls {
+				t.Fatal("bootstrap replayed access grants after handoff")
+			}
+			if err := c.Get(ctx, types.NamespacedName{Name: user.Name}, &idx); err != nil {
+				t.Fatal(err)
+			}
+			if change == "remove" && len(idx.Spec.Entries) != 0 {
+				t.Fatalf("removed memberships restored: %#v", idx.Spec.Entries)
+			}
+			for _, e := range idx.Spec.Entries {
+				if e.Role != "member" {
+					t.Fatalf("demotion overwritten: %#v", e)
+				}
+			}
+		})
+	}
+}
+
+func TestInitialWorkspace_ReadsAccessHandoffOutsideCache(t *testing.T) {
+	ctx := context.Background()
+	user := newUser("alice", "Alice")
+	stale := newSharedOrg("org-one", "workspace-one", user.Name)
+	live := stale.DeepCopy()
+	live.Status.Conditions = []metav1.Condition{{Type: tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized, Status: metav1.ConditionTrue}}
+	cached := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, stale).WithStatusSubresource(&tenancyv1alpha1.Organization{}).Build()
+	authoritative := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(live).Build()
+	prov := &fakeProvisioner{}
+	r := &initialWorkspaceReconciler{&Reconciler{client: cached, apiReader: authoritative, provisioner: prov}}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: live.Name}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(prov.memCalls) != 0 || len(prov.adminCalls) != 0 {
+		t.Fatal("stale cached status replayed access initialization")
+	}
+}
+
+func TestInitialWorkspace_FailedStatusWriteDoesNotHandOffAccess(t *testing.T) {
+	ctx := context.Background()
+	user := newUser("alice", "Alice")
+	org := newSharedOrg("org-one", "workspace-one", user.Name)
+	failStatus := true
+	c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).
+		WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if _, ok := obj.(*tenancyv1alpha1.Organization); ok && failStatus {
+				return errors.New("status write unavailable")
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		}}).Build()
+	prov := &fakeProvisioner{mcpErr: errors.New("MCP unavailable")}
+	r := &initialWorkspaceReconciler{&Reconciler{client: c, apiReader: c, provisioner: prov}}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
+	if _, err := r.Reconcile(ctx, req); err == nil {
+		t.Fatal("expected status failure")
+	}
+	if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+		t.Fatal(err)
+	}
+	if apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized) {
+		t.Fatal("failed status write published handoff")
+	}
+	failStatus = false
+	if _, err := r.Reconcile(ctx, req); err == nil {
+		t.Fatal("MCP must still be pending")
+	}
+	if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+		t.Fatal(err)
+	}
+	if !apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized) {
+		t.Fatal("retry did not persist access handoff")
+	}
+}
+
+// Inspect persistence at the instant child provisioning starts, before any
+// slow kcp operation can hold the REST create response open.
+type checkpointProvisioner struct {
+	*fakeProvisioner
+	beforeChild func()
+}
+
+func (p *checkpointProvisioner) EnsureChildWorkspace(ctx context.Context, org, ws string) error {
+	p.beforeChild()
+	return p.fakeProvisioner.EnsureChildWorkspace(ctx, org, ws)
+}
+func TestInitialWorkspace_PublishesOrgAccessBeforeChildProvisioning(t *testing.T) {
+	ctx := context.Background()
+	user := newUser("alice", "Alice")
+	org := newSharedOrg("org-one", "workspace-one", user.Name)
+	c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).Build()
+	checked := false
+	prov := &checkpointProvisioner{fakeProvisioner: &fakeProvisioner{childErr: errors.New("child provisioning pending")}, beforeChild: func() {
+		checked = true
+		var stored tenancyv1alpha1.Organization
+		if err := c.Get(ctx, types.NamespacedName{Name: org.Name}, &stored); err != nil {
+			t.Fatal(err)
+		}
+		for _, condition := range []string{tenancyv1alpha1.OrganizationConditionMembershipReady, tenancyv1alpha1.OrganizationConditionIndexSynced} {
+			if !apimeta.IsStatusConditionTrue(stored.Status.Conditions, condition) {
+				t.Fatalf("org access checkpoint missing %s before child provisioning", condition)
+			}
+		}
+		if apimeta.IsStatusConditionTrue(stored.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized) {
+			t.Fatal("workspace access handed off too early")
+		}
+		var idx tenancyv1alpha1.UserMembershipIndex
+		if err := c.Get(ctx, types.NamespacedName{Name: user.Name}, &idx); err != nil {
+			t.Fatal(err)
+		}
+		if len(idx.Spec.Entries) != 1 || idx.Spec.Entries[0].WorkspaceUUID != "" {
+			t.Fatalf("expected org-only index before child: %#v", idx.Spec.Entries)
+		}
+	}}
+	r := &initialWorkspaceReconciler{&Reconciler{client: c, provisioner: prov}}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}); err == nil {
+		t.Fatal("child failure must retry")
+	}
+	if !checked {
+		t.Fatal("child checkpoint not exercised")
 	}
 }
