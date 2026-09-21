@@ -693,8 +693,11 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Spec.InitialWorkspace == nil || created.Spec.InitialWorkspace.User != "alice" || created.Spec.InitialWorkspace.Name == "" {
-		t.Fatalf("missing durable initial workspace request: %#v", created.Spec.InitialWorkspace)
+	if created.Labels[tenancyv1alpha1.OrganizationCreatorLabel] != "alice" || created.Annotations[tenancyv1alpha1.OrganizationBootstrapAnnotation] != tenancyv1alpha1.OrganizationBootstrapVersion {
+		t.Fatalf("missing common bootstrap metadata: %#v", created.ObjectMeta)
+	}
+	if created.Status.DefaultWorkspace != "" {
+		t.Fatal("REST must leave workspace allocation to the controller")
 	}
 	if reads < 2 {
 		t.Fatal("creation returned before controller access readiness")
@@ -1560,13 +1563,14 @@ func TestInitialWorkspace_OperatingTargetWaitsForBootstrap(t *testing.T) {
 		{name: "allocated but not initialized", initial: "ws-1"},
 		{name: "initialized", initial: "ws-1", initialized: true, wantReady: true},
 		{name: "legacy organization", wantReady: true},
-		{name: "personal organization", initial: "ws-1", personal: true, wantReady: true},
+		{name: "pending personal organization", initial: "ws-1", personal: true},
+		{name: "initialized personal organization", initial: "ws-1", personal: true, initialized: true, wantReady: true},
 		{name: "another workspace", initial: "ws-other", wantReady: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}, Spec: tenancyv1alpha1.OrganizationSpec{Personal: test.personal}}
 			if test.initial != "" {
-				org.Spec.InitialWorkspace = &tenancyv1alpha1.InitialWorkspaceSpec{Name: test.initial, User: "alice"}
+				org.Status.DefaultWorkspace = test.initial
 			}
 			if test.initialized {
 				org.Status.Conditions = []metav1.Condition{{Type: tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized, Status: metav1.ConditionTrue}}

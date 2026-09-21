@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
@@ -37,6 +38,13 @@ import (
 func InstallCRDs(ctx context.Context, config *rest.Config) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Installing railgrid CRDs")
+	dyn, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("creating migration client: %w", err)
+	}
+	if err := PreserveInitialWorkspaceRequests(ctx, dyn); err != nil {
+		return err
+	}
 
 	client, err := apiextensionsclient.NewForConfig(config)
 	if err != nil {

@@ -386,16 +386,18 @@ POST /api/orgs
 1. Hub generates a UUID, creates an `Organization` CR with
    `metadata.name = <uuid>` and `spec.displayName = "ACME Corp"`. No
    "slug" or `name` field is taken from the request.
-2. The same create persists `spec.initialWorkspace: {name: <workspace UUID>,
-   user: <creator User name>}`. This is a durable bootstrap request, not
-   a workspace selected by the browser.
+2. Both this handler and personal-org onboarding record the creator in
+   `metadata.labels["tenants.railgrid.ai/created-by"]` and request the common
+   lifecycle with `metadata.annotations["tenants.railgrid.ai/bootstrap"] = "v1"`.
+   The Organization controller allocates and persists `status.defaultWorkspace`
+   before provisioning. No workspace bootstrap configuration is exposed in spec.
 3. The controller ensures the kcp organization workspace at
    `root:railgrid:tenants:{uuid}`, the caller's org-admin Membership, and
    their organization entry in `UserMembershipIndex`. The REST handler
    waits for durable org access readiness, then returns 201; it performs
    no competing membership writes.
-4. The `organization-initial-workspace` controller provisions a workspace
-   named **default**, using the same bootstrap routine as personal orgs:
+4. The same Organization controller provisions a workspace named **default**
+   for personal and non-personal organizations:
    child workspace, display name, core APIBinding, creator admin RBAC,
    default MCPServer, and workspace membership-index entry. Provisioning is
    asynchronous; organization conditions report progress and failures.
@@ -412,7 +414,11 @@ POST /api/orgs
    controller stops: renaming/deleting this workspace or changing memberships
    does not recreate it or restore the creator's permissions. Additional orgs do
    not overwrite the user's personal-org/default-workspace/default-cluster
-   fields. Existing orgs without the bootstrap request are left unchanged.
+   fields. Existing shared orgs without the bootstrap marker are left unchanged.
+   Existing Ready personal orgs adopt their User's workspace reference and mark
+   completion without recreating resources or granting access. The upgrade
+   migrates the earlier branch's `spec.initialWorkspace` records before changing
+   schemas, retaining pending UUIDs and completion conditions.
 
 ### Create a Workspace inside an Org
 
@@ -703,7 +709,13 @@ through ClusterRoles in the workspace).
 Bootstrap creates one Organization per User at User creation, with
 `spec.personal: true` and `spec.displayName` defaulting to
 `"{username}'s personal"` (editable). The user is the sole admin. The
-User CR gains:
+User reconciler requests the personal Organization and mirrors its workspace
+reference and cluster target onto the User. Provisioning, access handoff, and
+completion belong to the same Organization controller used for every new org.
+Identity-related RBAC repair is separate from bootstrap and follows current
+memberships when a User gains an RBAC identity.
+
+The User CR gains:
 
 ```go
 type UserSpec struct {

@@ -34,8 +34,17 @@ func (h *Handler) requireInitialAccessHandoff(w http.ResponseWriter, r *http.Req
 		writeError(w, err)
 		return false
 	}
-	initial := org.Spec.InitialWorkspace
-	if org.Spec.Personal || initial == nil || initial.User != user || (workspaceID != "" && workspaceID != initial.Name) {
+	creator := org.Labels[tenancyv1alpha1.OrganizationCreatorLabel]
+	if creator == "" && org.Spec.Personal {
+		creator = org.Labels["tenants.railgrid.ai/personal-owner"]
+	}
+	managed := org.Annotations[tenancyv1alpha1.OrganizationBootstrapAnnotation] == tenancyv1alpha1.OrganizationBootstrapVersion || org.Spec.Personal
+	if !managed || creator != user || (workspaceID != "" && workspaceID != org.Status.DefaultWorkspace) {
+		return true
+	}
+	// Ready personal organizations predating the common lifecycle already handed
+	// access to users; adoption must not temporarily freeze their memberships.
+	if org.Spec.Personal && org.Annotations[tenancyv1alpha1.OrganizationBootstrapAnnotation] == "" && apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady) {
 		return true
 	}
 	if apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized) || apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized) {

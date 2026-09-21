@@ -20,8 +20,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,78 +33,113 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
-// initialWorkspaceReconciler runs the personal-org bootstrap steps for newly
-// created shared organizations. The desired workspace UUID is persisted in the
-// Organization before any provisioning, and completion is a durable condition.
-// It does not regrant access or recreate a workspace after initialization.
-type initialWorkspaceReconciler struct {
-	*Reconciler
+// organizationReconciler owns the same persisted lifecycle for personal and
+// shared organizations. User reconciliation only requests an org and mirrors
+// references; all provisioning and access writes happen here.
+type organizationReconciler struct{ *Reconciler }
+
+const organizationCreatorIndex = "organization.creator"
+
+func creatorName(org *tenancyv1alpha1.Organization) string {
+	if org.Spec.Personal && org.Labels[labelPersonalOwner] != "" {
+		return org.Labels[labelPersonalOwner]
+	}
+	return org.Labels[tenancyv1alpha1.OrganizationCreatorLabel]
 }
-
-const initialWorkspaceUserIndex = "spec.initialWorkspace.user"
-
-func initialWorkspaceUser(obj client.Object) []string {
-	org := obj.(*tenancyv1alpha1.Organization)
-	if org.Spec.InitialWorkspace == nil {
+func organizationCreator(obj client.Object) []string {
+	name := creatorName(obj.(*tenancyv1alpha1.Organization))
+	if name == "" {
 		return nil
 	}
-	return []string{org.Spec.InitialWorkspace.User}
+	return []string{name}
+}
+func (r *Reconciler) reader() client.Reader {
+	if r.apiReader != nil {
+		return r.apiReader
+	}
+	return r.client
 }
 
-func (r *initialWorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *organizationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var org tenancyv1alpha1.Organization
-	// Access handoff must be read directly: a stale cache entry could replay
-	// grants after a successful membership revocation.
-	reader := r.apiReader
-	if reader == nil {
-		reader = r.client
-	}
-	if err := reader.Get(ctx, req.NamespacedName, &org); err != nil {
+	// Never use cached access-handoff state to decide whether to write grants.
+	if err := r.reader().Get(ctx, req.NamespacedName, &org); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !needsInitialWorkspace(&org) {
+	// The pre-schema migration retains already assigned shared workspace IDs
+	// in metadata until the new status field can be persisted. Adopt completed
+	// organizations too, without restarting their provisioning lifecycle.
+	if org.Status.DefaultWorkspace == "" && org.Annotations["tenants.railgrid.ai/initial-workspace"] != "" && org.Status.DeletionRequestedAt == nil && org.DeletionTimestamp.IsZero() {
+		org.Status.DefaultWorkspace = org.Annotations["tenants.railgrid.ai/initial-workspace"]
+		if err := r.client.Status().Update(ctx, &org); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	if !needsOrganizationBootstrap(&org) {
 		return ctrl.Result{}, nil
 	}
-	initial := org.Spec.InitialWorkspace
 	var user tenancyv1alpha1.User
-	if err := r.client.Get(ctx, types.NamespacedName{Name: initial.User}, &user); err != nil {
+	if err := r.reader().Get(ctx, types.NamespacedName{Name: creatorName(&org)}, &user); err != nil {
 		if apierrors.IsNotFound(err) {
-			// A later User create/update re-enqueues this organization.
 			return ctrl.Result{}, nil
-		}
+		} // User watch resumes pending orgs.
 		return ctrl.Result{}, err
 	}
-	if user.Status.DeletionRequestedAt != nil {
+	if user.Status.DeletionRequestedAt != nil || !user.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
-	if err := r.reconcileBootstrap(ctx, &user, &org, initial.Name); err != nil {
+
+	// Upgrade personal orgs without changing an already assigned child identity.
+	// A Ready legacy org is adopted as completed, without repairing permissions
+	// or recreating a workspace the owner may have intentionally removed.
+	legacyReady := org.Spec.Personal && org.Annotations[tenancyv1alpha1.OrganizationBootstrapAnnotation] != tenancyv1alpha1.OrganizationBootstrapVersion && apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady)
+	changed := false
+	if org.Status.DefaultWorkspace == "" {
+		if org.Spec.Personal && user.Status.DefaultWorkspace != "" {
+			org.Status.DefaultWorkspace = user.Status.DefaultWorkspace
+		} else if !legacyReady {
+			org.Status.DefaultWorkspace = uuid.NewString()
+		}
+		changed = org.Status.DefaultWorkspace != ""
+	}
+	if legacyReady {
+		for _, condition := range []string{tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized} {
+			if setCondition(&org.Status.Conditions, metav1.Condition{Type: condition, Status: metav1.ConditionTrue, Reason: reasonAllStepsReady, Message: "Existing personal organization bootstrap adopted without reprovisioning."}, org.Generation) {
+				changed = true
+			}
+		}
+	}
+	if changed {
+		// A failed/conflicting write cannot create any workspace under a new UUID.
+		if err := r.client.Status().Update(ctx, &org); err != nil {
+			return ctrl.Result{}, fmt.Errorf("persisting organization bootstrap identity: %w", err)
+		}
+	}
+	if legacyReady {
+		return ctrl.Result{}, nil
+	}
+	if err := r.reconcileBootstrap(ctx, &user, &org, org.Status.DefaultWorkspace); err != nil {
 		return ctrl.Result{}, err
 	}
 	if !apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized) {
-		// Failed kcp operations use controller-runtime's error backoff. A
-		// repeated error must retry even when its status condition is unchanged.
-		return ctrl.Result{}, fmt.Errorf("initial workspace bootstrap for organization %s is incomplete; see status conditions", org.Name)
+		return ctrl.Result{}, fmt.Errorf("organization %s bootstrap is incomplete; see status conditions", org.Name)
 	}
 	return ctrl.Result{}, nil
 }
 
-func needsInitialWorkspace(org *tenancyv1alpha1.Organization) bool {
-	return !org.Spec.Personal && org.Spec.InitialWorkspace != nil &&
-		org.Status.DeletionRequestedAt == nil && org.DeletionTimestamp.IsZero() &&
-		!apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized)
+func needsOrganizationBootstrap(org *tenancyv1alpha1.Organization) bool {
+	return (org.Spec.Personal || org.Annotations[tenancyv1alpha1.OrganizationBootstrapAnnotation] == tenancyv1alpha1.OrganizationBootstrapVersion) && creatorName(org) != "" && org.Status.DeletionRequestedAt == nil && org.DeletionTimestamp.IsZero() && !apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized)
 }
-
-func (r *Reconciler) mapUserToInitialOrganizations(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *Reconciler) mapUserToOrganizations(ctx context.Context, obj client.Object) []reconcile.Request {
 	var orgs tenancyv1alpha1.OrganizationList
-	if err := r.client.List(ctx, &orgs, client.MatchingFields{initialWorkspaceUserIndex: obj.GetName()}); err != nil {
-		klog.FromContext(ctx).Error(err, "Listing pending organizations for User change failed", "user", obj.GetName())
+	if err := r.client.List(ctx, &orgs, client.MatchingFields{organizationCreatorIndex: obj.GetName()}); err != nil {
+		klog.FromContext(ctx).Error(err, "Listing pending organizations for creator", "user", obj.GetName())
 		return nil
 	}
 	var requests []reconcile.Request
 	for i := range orgs.Items {
-		org := &orgs.Items[i]
-		if needsInitialWorkspace(org) && org.Spec.InitialWorkspace.User == obj.GetName() {
-			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: org.Name}})
+		if needsOrganizationBootstrap(&orgs.Items[i]) {
+			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: orgs.Items[i].Name}})
 		}
 	}
 	return requests

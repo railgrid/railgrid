@@ -390,8 +390,7 @@ func (h *Handler) workspaceView(r *http.Request, orgUUID, wsUUID string) (Worksp
 	// pending until that durable completion is visible. Fail closed if the org
 	// cannot be read; legacy orgs and separately-created workspaces are unchanged.
 	org, orgErr := h.mgr.client.Organizations().Get(r.Context(), orgUUID, metav1.GetOptions{})
-	bootstrapReady := orgErr == nil && (org.Spec.Personal || org.Spec.InitialWorkspace == nil ||
-		org.Spec.InitialWorkspace.Name != wsUUID ||
+	bootstrapReady := orgErr == nil && (org.Status.DefaultWorkspace != wsUUID ||
 		apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized))
 	if cluster, err := h.mgr.bootstrapper.GetChildWorkspaceClusterName(r.Context(), orgUUID, wsUUID); bootstrapReady && err == nil && cluster != "" {
 		view.ClusterName = cluster

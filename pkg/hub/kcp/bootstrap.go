@@ -42,6 +42,7 @@ import (
 
 	"github.com/railgrid/railgrid/config/kcp"
 	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/bootstrap"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 	"github.com/railgrid/railgrid/pkg/util/confighelpers"
@@ -187,6 +188,16 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	}
 	b.workspaceIdentityHash = identityHash
 	logger.Info("Got tenancy.kcp.io identity hash", "hash", identityHash)
+
+	// Preserve legacy initial-workspace requests while the old tenant API
+	// schema still exposes them. Updating the export below prunes that field.
+	tenantMigrationClient, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.SystemTenants))
+	if err != nil {
+		return fmt.Errorf("creating tenant migration client: %w", err)
+	}
+	if err := bootstrap.PreserveInitialWorkspaceRequests(ctx, tenantMigrationClient); err != nil {
+		return err
+	}
 
 	// 5. Bootstrap ALL platform APIResourceSchemas + APIExports in
 	//    root:railgrid:system:controllers — the single home for platform exports.

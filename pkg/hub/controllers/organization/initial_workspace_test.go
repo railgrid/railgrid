@@ -19,6 +19,8 @@ package organization
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -34,11 +36,9 @@ import (
 
 func newSharedOrg(name, workspace, user string) *tenancyv1alpha1.Organization {
 	return &tenancyv1alpha1.Organization{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: tenancyv1alpha1.OrganizationSpec{
-			DisplayName:      "Shared team",
-			InitialWorkspace: &tenancyv1alpha1.InitialWorkspaceSpec{Name: workspace, User: user},
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: map[string]string{tenancyv1alpha1.OrganizationBootstrapAnnotation: tenancyv1alpha1.OrganizationBootstrapVersion}, Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: user}},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "Team"},
+		Status:     tenancyv1alpha1.OrganizationStatus{DefaultWorkspace: workspace},
 	}
 }
 
@@ -53,7 +53,7 @@ func TestInitialWorkspace_ReusesBootstrapForEveryNewOrganization(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, first, second).
 		WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.User{}, &tenancyv1alpha1.UserMembershipIndex{}).Build()
 	prov := &fakeProvisioner{}
-	r := &initialWorkspaceReconciler{&Reconciler{client: c, provisioner: prov}}
+	r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
 	for _, org := range []*tenancyv1alpha1.Organization{first, second} {
 		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}); err != nil {
 			t.Fatal(err)
@@ -106,7 +106,7 @@ func TestInitialWorkspace_RetriesAcrossRestartsAndStopsAfterCompletion(t *testin
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
 	for range 2 {
 		// New reconciler instance represents process restart; no in-memory ownership.
-		r := &initialWorkspaceReconciler{&Reconciler{client: c, provisioner: prov}}
+		r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
 		if _, err := r.Reconcile(ctx, req); err == nil {
 			t.Fatal("incomplete bootstrap must request error backoff even with unchanged conditions")
 		}
@@ -118,7 +118,7 @@ func TestInitialWorkspace_RetriesAcrossRestartsAndStopsAfterCompletion(t *testin
 		t.Fatal("failed bootstrap reported Ready")
 	}
 	prov.mcpErr = nil
-	r := &initialWorkspaceReconciler{&Reconciler{client: c, provisioner: prov}}
+	r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
@@ -140,8 +140,8 @@ func TestInitialWorkspace_RetriesAcrossRestartsAndStopsAfterCompletion(t *testin
 	}
 }
 
-func TestInitialWorkspace_SkipsLegacyPersonalAndDeletingOrganizations(t *testing.T) {
-	for _, kind := range []string{"legacy", "personal", "deleting", "deleted-user"} {
+func TestInitialWorkspace_SkipsLegacySharedAndDeletingOrganizations(t *testing.T) {
+	for _, kind := range []string{"legacy", "deleting", "deleted-user"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			user := newUser("alice", "Alice")
@@ -149,9 +149,7 @@ func TestInitialWorkspace_SkipsLegacyPersonalAndDeletingOrganizations(t *testing
 			now := metav1.Now()
 			switch kind {
 			case "legacy":
-				org.Spec.InitialWorkspace = nil
-			case "personal":
-				org.Spec.Personal = true
+				org.Annotations = nil
 			case "deleting":
 				org.Status.DeletionRequestedAt = &now
 			case "deleted-user":
@@ -159,7 +157,7 @@ func TestInitialWorkspace_SkipsLegacyPersonalAndDeletingOrganizations(t *testing
 			}
 			c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).Build()
 			prov := &fakeProvisioner{}
-			r := &initialWorkspaceReconciler{&Reconciler{client: c, provisioner: prov}}
+			r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
 			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}); err != nil {
 				t.Fatal(err)
 			}
@@ -176,9 +174,9 @@ func TestInitialWorkspace_UserChangesEnqueueOnlyPendingOwnedOrganizations(t *tes
 	done := newSharedOrg("done", "workspace-three", "alice")
 	done.Status.Conditions = []metav1.Condition{{Type: tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized, Status: metav1.ConditionTrue}}
 	c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(pending, other, done).
-		WithIndex(&tenancyv1alpha1.Organization{}, initialWorkspaceUserIndex, initialWorkspaceUser).Build()
+		WithIndex(&tenancyv1alpha1.Organization{}, organizationCreatorIndex, organizationCreator).Build()
 	r := &Reconciler{client: c}
-	requests := r.mapUserToInitialOrganizations(context.Background(), newUser("alice", "Alice"))
+	requests := r.mapUserToOrganizations(context.Background(), newUser("alice", "Alice"))
 	if len(requests) != 1 || requests[0].Name != "pending" {
 		t.Fatalf("unexpected requests: %#v", requests)
 	}
@@ -187,15 +185,19 @@ func TestInitialWorkspace_UserChangesEnqueueOnlyPendingOwnedOrganizations(t *tes
 // Membership mutations are permitted after access handoff even if resource
 // provisioning is still failing. Neither role changes nor removal may be undone.
 func TestInitialWorkspace_PreservesMembershipChangesDuringMCPRetry(t *testing.T) {
-	for _, change := range []string{"demote", "remove"} {
+	for _, change := range []string{"demote", "remove", "personal-demote", "personal-remove"} {
 		t.Run(change, func(t *testing.T) {
 			ctx := context.Background()
 			user := newUser("alice", "Alice")
 			org := newSharedOrg("org-one", "workspace-one", user.Name)
+			if strings.HasPrefix(change, "personal-") {
+				org.Spec.Personal = true
+				org.Labels[labelPersonalOwner] = user.Name
+			}
 			c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).
 				WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).Build()
 			prov := &fakeProvisioner{mcpErr: errors.New("MCP provisioning unavailable")}
-			r := &initialWorkspaceReconciler{&Reconciler{client: c, provisioner: prov}}
+			r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
 			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
 			if _, err := r.Reconcile(ctx, req); err == nil {
 				t.Fatal("expected pending bootstrap")
@@ -210,7 +212,7 @@ func TestInitialWorkspace_PreservesMembershipChangesDuringMCPRetry(t *testing.T)
 			if err := c.Get(ctx, types.NamespacedName{Name: user.Name}, &idx); err != nil {
 				t.Fatal(err)
 			}
-			if change == "remove" {
+			if strings.HasSuffix(change, "remove") {
 				idx.Spec.Entries = nil
 			} else {
 				for i := range idx.Spec.Entries {
@@ -234,7 +236,7 @@ func TestInitialWorkspace_PreservesMembershipChangesDuringMCPRetry(t *testing.T)
 			if err := c.Get(ctx, types.NamespacedName{Name: user.Name}, &idx); err != nil {
 				t.Fatal(err)
 			}
-			if change == "remove" && len(idx.Spec.Entries) != 0 {
+			if strings.HasSuffix(change, "remove") && len(idx.Spec.Entries) != 0 {
 				t.Fatalf("removed memberships restored: %#v", idx.Spec.Entries)
 			}
 			for _, e := range idx.Spec.Entries {
@@ -255,7 +257,7 @@ func TestInitialWorkspace_ReadsAccessHandoffOutsideCache(t *testing.T) {
 	cached := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, stale).WithStatusSubresource(&tenancyv1alpha1.Organization{}).Build()
 	authoritative := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(live).Build()
 	prov := &fakeProvisioner{}
-	r := &initialWorkspaceReconciler{&Reconciler{client: cached, apiReader: authoritative, provisioner: prov}}
+	r := &organizationReconciler{&Reconciler{client: cached, apiReader: authoritative, provisioner: prov}}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: live.Name}}); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +280,7 @@ func TestInitialWorkspace_FailedStatusWriteDoesNotHandOffAccess(t *testing.T) {
 			return c.SubResource(sub).Update(ctx, obj, opts...)
 		}}).Build()
 	prov := &fakeProvisioner{mcpErr: errors.New("MCP unavailable")}
-	r := &initialWorkspaceReconciler{&Reconciler{client: c, apiReader: c, provisioner: prov}}
+	r := &organizationReconciler{&Reconciler{client: c, apiReader: c, provisioner: prov}}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
 	if _, err := r.Reconcile(ctx, req); err == nil {
 		t.Fatal("expected status failure")
@@ -340,11 +342,167 @@ func TestInitialWorkspace_PublishesOrgAccessBeforeChildProvisioning(t *testing.T
 			t.Fatalf("expected org-only index before child: %#v", idx.Spec.Entries)
 		}
 	}}
-	r := &initialWorkspaceReconciler{&Reconciler{client: c, provisioner: prov}}
+	r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}); err == nil {
 		t.Fatal("child failure must retry")
 	}
 	if !checked {
 		t.Fatal("child checkpoint not exercised")
+	}
+}
+
+func TestOrganizationLifecycle_LegacyPersonalPreservesWorkspaceIdentity(t *testing.T) {
+	for _, ready := range []bool{false, true} {
+		t.Run(fmt.Sprint(ready), func(t *testing.T) {
+			ctx := context.Background()
+			user := newUser("alice", "Alice")
+			user.Status.PersonalOrg = "org-one"
+			user.Status.DefaultWorkspace = "existing-workspace"
+			org := newSharedOrg("org-one", "", user.Name)
+			org.Spec.Personal = true
+			org.Annotations = nil
+			org.Labels = map[string]string{labelPersonalOwner: user.Name}
+			if ready {
+				org.Status.Conditions = []metav1.Condition{{Type: tenancyv1alpha1.OrganizationConditionReady, Status: metav1.ConditionTrue}}
+			}
+			c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).Build()
+			prov := &fakeProvisioner{}
+			r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+				t.Fatal(err)
+			}
+			if org.Status.DefaultWorkspace != "existing-workspace" {
+				t.Fatalf("legacy identity changed: %s", org.Status.DefaultWorkspace)
+			}
+			if !apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized) {
+				t.Fatal("legacy org not completed")
+			}
+			if ready && (len(prov.wsCalls) != 0 || len(prov.adminCalls) != 0) {
+				t.Fatal("ready legacy org reprovisioned or regranted")
+			}
+			if !ready && (len(prov.childCalls) != 1 || prov.childCalls[0].WSUUID != "existing-workspace") {
+				t.Fatal("pending legacy personal org did not finish its original workspace")
+			}
+			calls := len(prov.childCalls)
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if len(prov.childCalls) != calls {
+				t.Fatal("completed personal org reprovisioned")
+			}
+		})
+	}
+}
+
+func TestOrganizationLifecycle_PreservesMigratedSharedIdentity(t *testing.T) {
+	for _, completed := range []bool{false, true} {
+		t.Run(fmt.Sprint(completed), func(t *testing.T) {
+			ctx := context.Background()
+			user := newUser("alice", "Alice")
+			org := newSharedOrg("org-one", "", user.Name)
+			org.Annotations["tenants.railgrid.ai/initial-workspace"] = "previously-assigned"
+			if completed {
+				org.Status.Conditions = []metav1.Condition{{Type: tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized, Status: metav1.ConditionTrue}}
+			}
+			c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).Build()
+			prov := &fakeProvisioner{}
+			r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+				t.Fatal(err)
+			}
+			if org.Status.DefaultWorkspace != "previously-assigned" {
+				t.Fatal("migrated identity changed")
+			}
+			if completed && len(prov.wsCalls) != 0 {
+				t.Fatal("completed migrated org reprovisioned")
+			}
+		})
+	}
+}
+
+func TestOrganizationLifecycle_FailuresRetryForBothOrganizationKinds(t *testing.T) {
+	for _, personal := range []bool{false, true} {
+		for _, step := range []string{"org", "membership", "child", "display-name", "binding", "admin", "mcp"} {
+			t.Run(fmt.Sprintf("personal=%t/%s", personal, step), func(t *testing.T) {
+				ctx := context.Background()
+				user := newUser("alice", "Alice")
+				org := newSharedOrg("org-one", "", user.Name)
+				org.Spec.Personal = personal
+				c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).Build()
+				prov := &fakeProvisioner{}
+				failure := errors.New("temporary failure")
+				switch step {
+				case "org":
+					prov.wsErr = failure
+				case "membership":
+					prov.memErr = failure
+				case "child":
+					prov.childErr = failure
+				case "display-name":
+					prov.nameErr = failure
+				case "binding":
+					prov.railgridBindErr = failure
+				case "admin":
+					prov.adminErr = failure
+				case "mcp":
+					prov.mcpErr = failure
+				}
+				r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
+				req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
+				if _, err := r.Reconcile(ctx, req); err == nil {
+					t.Fatal("incomplete provisioning must retry")
+				}
+				if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+					t.Fatal(err)
+				}
+				original := org.Status.DefaultWorkspace
+				if original == "" {
+					t.Fatal("workspace identity not persisted before failure")
+				}
+				if apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady) {
+					t.Fatal("failed provisioning was ready")
+				}
+				healed := &fakeProvisioner{}
+				restarted := &organizationReconciler{&Reconciler{client: c, provisioner: healed}}
+				if _, err := restarted.Reconcile(ctx, req); err != nil {
+					t.Fatal(err)
+				}
+				if len(healed.childCalls) != 1 || healed.childCalls[0].WSUUID != original {
+					t.Fatal("restart did not retain workspace identity")
+				}
+				if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+					t.Fatal(err)
+				}
+				if !apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized) {
+					t.Fatal("retry did not complete")
+				}
+			})
+		}
+	}
+}
+
+func TestOrganizationLifecycle_PersistsIdentityBeforeAnyProvisioning(t *testing.T) {
+	ctx := context.Background()
+	user := newUser("alice", "Alice")
+	org := newSharedOrg("org-one", "", user.Name)
+	c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).WithStatusSubresource(&tenancyv1alpha1.Organization{}).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+			return errors.New("identity status conflict")
+		}}).Build()
+	prov := &fakeProvisioner{}
+	r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}); err == nil {
+		t.Fatal("failed identity write must retry")
+	}
+	if len(prov.wsCalls) != 0 || len(prov.memCalls) != 0 || len(prov.childCalls) != 0 {
+		t.Fatal("provisioning began before workspace identity persisted")
 	}
 }

@@ -522,7 +522,7 @@ test:
 
 .PHONY: test-organization-bootstrap
 test-organization-bootstrap: ## Verify personal and shared organization initialization and REST creation
-	go test -count=1 ./pkg/hub/controllers/organization ./pkg/hub/restapi
+	go test -count=1 ./pkg/hub/controllers/organization ./pkg/hub/restapi ./pkg/hub/kcp ./pkg/hub/bootstrap
 
 .PHONY: test-tilt-sandbox-default
 test-tilt-sandbox-default: ## Verify universal sandbox is opt-in in Tilt
