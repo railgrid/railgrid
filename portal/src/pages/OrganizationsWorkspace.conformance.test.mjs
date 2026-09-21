@@ -796,7 +796,7 @@ test('choosing the current organization continues to the requested destination',
   const currentOrgEnd = chooser.indexOf('\n  }\n\n  switchingOrg.value', currentOrgStart)
   assert.ok(currentOrgStart >= 0 && currentOrgEnd > currentOrgStart)
   const currentOrg = chooser.slice(currentOrgStart, currentOrgEnd)
-  assert.match(currentOrg, /await router\.replace\(backPath\.value\)/)
+  assert.match(currentOrg, /await router\.replace\(backPath\.value === '\/' \? `\/\$\{org\.uuid\}\/settings\/workspaces` : backPath\.value\)/)
   assert.match(currentOrg, /localError\.value = null/)
   assert.doesNotMatch(currentOrg, /selectOrganization|fetchWorkspaces/)
   assert.match(organizationsPage, /const backPath = computed\(\(\) => validatedInternalPath\(route\.query\.from\)\)/)

@@ -14,38 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package organization implements the bootstrap controller that gives every
-// User a personal Organization on creation (per docs/organizations.md §Personal
-// Org). It reconciles two kinds in root:railgrid:users:
-//
-//   - User: when a User has no status.personalOrg, the controller creates a
-//     personal Organization for them and patches status.personalOrg with the
-//     new UUID. Idempotent: re-running on the same User is a no-op once
-//     status.personalOrg is set.
-//
-//   - Organization: ensures status.workspacePath is set to the canonical
-//     `root:railgrid:orgs:{metadata.name}` once and only once. The actual kcp
-//     Workspace at that path is NOT created by this PR — that lands in PR #2
-//     when the `organization` WorkspaceType is registered. Until then the
-//     controller leaves a WorkspaceReady=False condition with reason
-//     AwaitingWorkspaceType so observers know the Organization is half-baked
-//     by design.
-//
-// Scope as of PR #4:
-//   - User → Organization bootstrap (PR #1).
-//   - kcp Workspace creation at root:railgrid:orgs:{uuid} of type
-//     `organization`, idempotent + self-healing per O-11 (PR #2).
-//   - Admin Membership write inside the Org workspace + UserMembershipIndex
-//     entry sync (PR #4). The reconciler is now a four-step state
-//     machine: WorkspaceReady → MembershipReady → IndexSynced → Ready.
-//
-// NOT yet:
-//   - Full multi-cluster Membership controller that watches user-added
-//     Memberships and reflects them in the index. PR #4 handles the
-//     personal-Org bootstrap path inline; manual Org / Workspace
-//     membership management lands with the portal REST surface.
-//   - User-facing RBAC inside the Org workspace (Org workspaces are
-//     hub-mediated only per O-10; no per-User kubeconfig is ever issued).
+// Package organization bootstraps personal organizations from User resources
+// and additional organizations from their persisted initialWorkspace requests.
+// Both controllers share the provisioning steps for the org, default workspace,
+// API binding, administrator access, MCP server, and membership index. Additional
+// organizations stop reconciling once their initial workspace is initialized.
 package organization
 
 import (
@@ -83,7 +56,7 @@ const (
 
 // WorkspaceProvisioner is the slice of the kcp Bootstrapper that this
 // controller needs to materialize Organization workspaces, the default
-// child Workspace inside each personal Org, and the two scope-flavored
+// child Workspace inside each new Org, and the two scope-flavored
 // Memberships inside them. Pulled out as an interface so unit tests
 // can use a fake (see controller_test.go) without standing up an
 // embedded kcp.
@@ -166,19 +139,29 @@ func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) err
 		provisioner: provisioner,
 	}
 	klog.Info("Registering organization bootstrap controller")
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &tenancyv1alpha1.Organization{}, initialWorkspaceUserIndex, initialWorkspaceUser); err != nil {
+		return fmt.Errorf("indexing initial workspace creators: %w", err)
+	}
 	// One-time backfill for the catalogEntryCreation default flip; see
 	// catalog_entry_creation_migration.go.
 	if err := mgr.Add(catalogEntryCreationBackfill(mgr)); err != nil {
 		return fmt.Errorf("registering catalogEntryCreation backfill: %w", err)
 	}
-	return builder.ControllerManagedBy(mgr).
+	if err := builder.ControllerManagedBy(mgr).
 		Named(controllerName).
 		For(&tenancyv1alpha1.User{}).
 		Watches(
 			&tenancyv1alpha1.Organization{},
 			handler.EnqueueRequestsFromMapFunc(r.mapOrganizationToUser),
 		).
-		Complete(r)
+		Complete(r); err != nil {
+		return err
+	}
+	return builder.ControllerManagedBy(mgr).
+		Named("organization-initial-workspace").
+		For(&tenancyv1alpha1.Organization{}).
+		Watches(&tenancyv1alpha1.User{}, handler.EnqueueRequestsFromMapFunc(r.mapUserToInitialOrganizations)).
+		Complete(&initialWorkspaceReconciler{Reconciler: r})
 }
 
 // NewManager constructs a controller-runtime manager bound to a single
@@ -374,7 +357,6 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 // workspace exists; no index sync before both Memberships are written.
 func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tenancyv1alpha1.User) error {
 	orgName := user.Status.PersonalOrg
-	logger := klog.FromContext(ctx).WithValues("organization", orgName)
 
 	var org tenancyv1alpha1.Organization
 	if err := r.client.Get(ctx, types.NamespacedName{Name: orgName}, &org); err != nil {
@@ -396,6 +378,13 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		return nil
 	}
 
+	return r.reconcileBootstrap(ctx, user, &org, user.Status.DefaultWorkspace)
+}
+
+// reconcileBootstrap is shared by personal and additional organization creation.
+// Only a personal org may update the user-wide default cluster or backfill RBAC.
+func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alpha1.User, org *tenancyv1alpha1.Organization, wsUUID string) error {
+	logger := klog.FromContext(ctx).WithValues("organization", org.Name)
 	desiredPath := orgWorkspaceParent + ":" + org.Name
 
 	// Step A: status.workspacePath.
@@ -406,7 +395,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	}
 
 	// Step B: kcp Workspace.
-	wsCond, workspaceOK := r.reconcileWorkspace(ctx, &org, desiredPath, logger)
+	wsCond, workspaceOK := r.reconcileWorkspace(ctx, org, desiredPath, logger)
 	if setCondition(&org.Status.Conditions, wsCond, org.Generation) {
 		changed = true
 	}
@@ -454,7 +443,6 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 
 	// Step E: default child Workspace (only attempt after B succeeded
 	// and user.Status.DefaultWorkspace has a stable UUID).
-	wsUUID := user.Status.DefaultWorkspace
 	var childCond metav1.Condition
 	defaultWorkspaceOK := false
 	switch {
@@ -618,7 +606,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	// grants RBAC inline, but this reconciler step self-heals legacy
 	// state and survives any future drift. Best-effort: per-workspace
 	// failures log + continue rather than fail the whole reconcile.
-	if workspaceAdminOK && user.Spec.RBACIdentity != "" {
+	if org.Spec.Personal && workspaceAdminOK && user.Spec.RBACIdentity != "" {
 		if err := r.backfillWorkspaceAdmins(ctx, user, org.Name, wsUUID, logger); err != nil {
 			logger.Error(err, "UMI workspace-admin backfill failed; will retry on next reconcile")
 		}
@@ -665,7 +653,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	// root:railgrid:orgs:{org}:{ws} path works but makes for ugly
 	// kubeconfig server URLs. Only runs after Step E succeeds; the
 	// lookup uses Workspace.spec.cluster which kcp populates on Ready.
-	if defaultWorkspaceOK {
+	if org.Spec.Personal && defaultWorkspaceOK {
 		clusterName, lookupErr := r.provisioner.GetChildWorkspaceClusterName(ctx, org.Name, wsUUID)
 		switch {
 		case lookupErr != nil:
@@ -701,7 +689,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		if defaultWorkspaceOK {
 			wsForIndex = wsUUID
 		}
-		if err := r.syncUserMembershipIndex(ctx, user, &org, wsForIndex); err != nil {
+		if err := r.syncUserMembershipIndex(ctx, user, org, wsForIndex); err != nil {
 			logger.Error(err, "UserMembershipIndex sync failed; will retry")
 			indexCond = metav1.Condition{
 				Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
@@ -729,15 +717,19 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	if setCondition(&org.Status.Conditions, readyCond, org.Generation) {
 		changed = true
 	}
+	if !org.Spec.Personal && readyCond.Status == metav1.ConditionTrue {
+		if setCondition(&org.Status.Conditions, metav1.Condition{
+			Type:   tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized,
+			Status: metav1.ConditionTrue, Reason: reasonAllStepsReady,
+			Message: "Initial workspace bootstrap completed.",
+		}, org.Generation) {
+			changed = true
+		}
+	}
 	if !changed {
 		return nil
 	}
-	if err := r.client.Status().Update(ctx, &org); err != nil {
-		if apierrors.IsConflict(err) {
-			// Caller (Reconcile) returns ctrl.Result{} and controller-runtime
-			// will pick up the new resourceVersion on the next watch event.
-			return nil
-		}
+	if err := r.client.Status().Update(ctx, org); err != nil {
 		return fmt.Errorf("updating Organization status: %w", err)
 	}
 	return nil
@@ -1002,17 +994,10 @@ func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv
 
 	if index.ResourceVersion == "" {
 		if err := r.client.Create(ctx, &index); err != nil {
-			if apierrors.IsAlreadyExists(err) {
-				// Lost the race; the next reconcile picks it up.
-				return nil
-			}
 			return fmt.Errorf("creating UserMembershipIndex %q: %w", user.Name, err)
 		}
 	} else if mutated {
 		if err := r.client.Update(ctx, &index); err != nil {
-			if apierrors.IsConflict(err) {
-				return nil
-			}
 			return fmt.Errorf("updating UserMembershipIndex %q: %w", user.Name, err)
 		}
 	}

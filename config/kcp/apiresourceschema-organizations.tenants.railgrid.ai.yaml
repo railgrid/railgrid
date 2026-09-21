@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260904-9ab06b67.organizations.tenants.railgrid.ai
+  name: v260921-7691b50fc.organizations.tenants.railgrid.ai
 spec:
   group: tenants.railgrid.ai
   names:
@@ -85,6 +85,30 @@ spec:
               maxLength: 128
               minLength: 1
               type: string
+            initialWorkspace:
+              description: |-
+                InitialWorkspace requests a one-time initial workspace for a shared
+                organization. The hub sets it when creating an org through the API.
+                Persisting its identity with the org makes bootstrap retryable across
+                restarts. Unset on legacy orgs; they are not retroactively populated.
+                Personal organizations use User.status.defaultWorkspace instead.
+              properties:
+                name:
+                  description: Name is the stable, server-assigned workspace UUID.
+                  format: uuid
+                  type: string
+                user:
+                  description: User is the creating User CR's name, not a bearer or
+                    RBAC identity.
+                  minLength: 1
+                  type: string
+              required:
+              - name
+              - user
+              type: object
+              x-kubernetes-validations:
+              - message: initialWorkspace is immutable
+                rule: self == oldSelf
             personal:
               description: |-
                 Personal marks the Organization auto-created for a single User at

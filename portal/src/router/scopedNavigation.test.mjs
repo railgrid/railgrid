@@ -22,6 +22,7 @@ const vite = await createServer({
 const { routes } = await vite.ssrLoadModule('/src/router/routes.ts')
 const { registerProviderRoutes } = await vite.ssrLoadModule('/src/router/providers.ts')
 const { installContextGuard } = await vite.ssrLoadModule('/src/router/contextGuard.ts')
+const { readLandingScope } = await vite.ssrLoadModule('/src/router/landingPreference.ts')
 const { useTenantStore } = await vite.ssrLoadModule('/src/stores/tenant.ts')
 const { useRouteContextStore } = await vite.ssrLoadModule('/src/stores/routeContext.ts')
 const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
@@ -84,6 +85,150 @@ test('canonical routes resolve exact IDs and preserve provider suffix, query and
   assert.equal(calls[1].headers.get('Authorization'), 'Bearer test-token')
   assert.equal(portalRoutePath(router.currentRoute.value.path), '/providers/infrastructure/instances/shared')
   assert.equal(scopedPath('/settings/workspaces', tenant), `/${O}/settings/workspaces`)
+})
+
+test('unscoped entry asks multi-org users when the remembered organization is missing or deleting', async () => {
+  for (const remembered of [null, '44444444-4444-4444-8444-444444444444', B]) {
+    const { router, tenant, calls, auth } = setup()
+    tenant.orgUUID = remembered
+    const real = globalThis.fetch
+    globalThis.fetch = (path, init) => path === '/api/orgs'
+      ? Promise.resolve(response({ items: [{ uuid: O, personal: true }, { uuid: B, deletionRequestedAt: '2026-09-21' }, { uuid: W }] }))
+      : real(path, init)
+    await router.push('/')
+    assert.equal(router.currentRoute.value.name, 'organizations')
+    assert.equal(auth.clusterName, null)
+    assert.equal(calls.some(call => call.path.includes('/workspaces')), false)
+  }
+})
+
+test('unscoped entry resumes the remembered organization and workspace before personal defaults', async () => {
+  for (const workspace of [W, null]) {
+    const { router, tenant } = setup()
+    tenant.orgUUID = O
+    tenant.workspaceUUID = workspace
+    const real = globalThis.fetch
+    globalThis.fetch = (path, init) => path === '/api/orgs'
+      ? Promise.resolve(response({ items: [{ uuid: B, personal: true }, { uuid: O }] }))
+      : real(path, init)
+    await router.push('/')
+    assert.equal(router.currentRoute.value.path, workspace ? `/${O}/${W}` : `/${O}/settings/workspaces`)
+  }
+})
+
+test('last visited scope survives sign-out for the same account without leaking to a different account', async () => {
+  const { router, auth, tenant } = setup()
+  const real = globalThis.fetch
+  globalThis.fetch = (path, init) => path === '/api/orgs'
+    ? Promise.resolve(response({ items: [{ uuid: B, personal: true }, { uuid: O }] }))
+    : real(path, init)
+  await router.push(resource)
+  auth.logout()
+  await nextTick()
+  assert.equal(tenant.orgUUID, null)
+  await router.push('/login')
+  const login = (userId) => auth.loginFromOIDCResponse({
+    idToken: 'test-token', expiresAt: 9999999999, email: `${userId}@example.test`, userId, clusterName: '',
+  })
+  login('different-account')
+  await router.replace('/')
+  assert.equal(router.currentRoute.value.name, 'organizations')
+  auth.logout()
+  await nextTick()
+  await router.push('/login')
+  login('teammate')
+  await router.replace('/')
+  assert.equal(router.currentRoute.value.path, `/${O}/${W}`)
+})
+
+test('an unavailable remembered workspace opens workspace management without selecting another', async () => {
+  const { router, tenant } = setup()
+  tenant.orgUUID = O
+  tenant.workspaceUUID = B
+  await router.push('/')
+  assert.equal(router.currentRoute.value.path, `/${O}/settings/workspaces`)
+  assert.equal(tenant.workspaceUUID, null)
+})
+
+test('failed destinations do not replace the last successfully visited scope', async () => {
+  const { router, auth } = setup()
+  await router.push(resource)
+  const real = globalThis.fetch
+  globalThis.fetch = (path, init) => path === `/api/orgs/${O}/workspaces/${B}`
+    ? Promise.resolve(response({}, 403)) : real(path, init)
+  await router.push(`/${O}/${B}`)
+  assert.deepEqual(readLandingScope(auth.user), { orgUUID: O, workspaceUUID: W })
+})
+
+test('single-org entry remains direct and excludes deleting organizations from the choice', async () => {
+  const { router } = setup()
+  const real = globalThis.fetch
+  globalThis.fetch = (path, init) => path === '/api/orgs'
+    ? Promise.resolve(response({ items: [{ uuid: O }, { uuid: B, deletionRequestedAt: '2026-09-21' }] }))
+    : real(path, init)
+  await router.push('/')
+  assert.equal(router.currentRoute.value.path, `/${O}/${W}`)
+})
+
+test('empty or failed organization reads reach the chooser without selecting stale context', async () => {
+  for (const status of [200, 503]) {
+    const { router } = setup()
+    globalThis.fetch = async () => response({ items: [] }, status)
+    await router.push('/')
+    assert.equal(router.currentRoute.value.name, 'organizations')
+  }
+})
+
+test('multi-org sign-in resumes an explicit workspace destination without the chooser', async () => {
+  const { router, auth, calls } = setup({ authenticated: false })
+  await router.push(resource)
+  const destination = consumePortalNext()
+  auth.token = 'test-token'
+  const real = globalThis.fetch
+  globalThis.fetch = (path, init) => path === '/api/orgs'
+    ? Promise.resolve(response({ items: [{ uuid: O }, { uuid: B }] }))
+    : real(path, init)
+  await router.replace(destination)
+  assert.equal(router.currentRoute.value.fullPath, resource)
+  assert.equal(calls.some(call => call.path === '/api/orgs'), false)
+})
+
+test('login stays behind the loading gate until the organization chooser commits', async () => {
+  const { router, auth, context, tenant } = setup({ authenticated: false })
+  tenant.orgUUID = null
+  await router.push('/login')
+  auth.token = 'test-token'
+  globalThis.fetch = async () => response({ items: [{ uuid: O }, { uuid: B }] })
+  const remountedLogin = []
+  const stop = watch(() => context.state, (state) => {
+    if (state === 'idle' && router.currentRoute.value.name === 'login') remountedLogin.push(state)
+  })
+  await router.replace('/')
+  await nextTick()
+  stop()
+  assert.deepEqual(remountedLogin, [])
+  assert.equal(router.currentRoute.value.name, 'organizations')
+  assert.equal(context.state, 'idle')
+})
+
+test('choosing a remembered org after sign-in exits the chooser; explicit returns still work', async () => {
+  const source = readFileSync(new URL('../pages/OrganizationsPage.vue', import.meta.url), 'utf8')
+  const start = source.indexOf('async function chooseOrganization(')
+  const end = source.indexOf('\nasync function retryFailedSwitch', start)
+  const code = ts.transpileModule(source.slice(start, end), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText
+  for (const back of ['/', resource]) {
+    const { router, tenant } = setup()
+    tenant.orgUUID = O
+    await router.push('/organizations')
+    const choose = runInNewContext(`${code}\nchooseOrganization`, {
+      router, tenant, backPath: { value: back }, switchingOrg: { value: null },
+      failedSwitchOrg: { value: null }, localError: { value: null },
+    })
+    await choose({ uuid: O })
+    assert.equal(router.currentRoute.value.fullPath, back === '/' ? `/${O}/settings/workspaces` : resource)
+  }
 })
 
 test('all old scoped entry points are not-found; global routes cannot be parsed as IDs', () => {

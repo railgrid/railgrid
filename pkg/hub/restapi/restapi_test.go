@@ -666,6 +666,13 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 	if view.DisplayName != "acme" || view.UUID == "" {
 		t.Errorf("view: %#v", view)
 	}
+	created, err := mgr.client.Organizations().Get(context.Background(), view.UUID, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Spec.InitialWorkspace == nil || created.Spec.InitialWorkspace.User != "alice" || created.Spec.InitialWorkspace.Name == "" {
+		t.Fatalf("missing durable initial workspace request: %#v", created.Spec.InitialWorkspace)
+	}
 	if !ops.orgWorkspaces[view.UUID] {
 		t.Error("EnsureOrgWorkspace not called")
 	}

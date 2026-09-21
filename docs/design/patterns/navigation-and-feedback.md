@@ -56,7 +56,18 @@ address bar is sufficient to share an existing resource with an authorized
 teammate; query parameters and fragments remain part of the destination.
 
 The host resolves explicit context before mounting scoped content and preserves
-it through sign-in. A workspace switch navigates to its dashboard; organization
+it through sign-in. Unscoped entry (including ordinary sign-in) resumes the
+last visited organization and workspace after checking current access. The
+browser remembers IDs per account across sign-out; explicit links take priority.
+With multiple available organizations and no valid remembered organization,
+show the chooser instead of selecting the personal or first organization. A
+sole available organization keeps direct entry. If the remembered workspace is
+unavailable, open that organization's workspace management instead of silently
+substituting another workspace. No available organizations or a failed org list
+read opens the chooser's empty or recovery state. Choosing the remembered
+organization without a return destination enters its workspace management
+directly; the chooser hides Back when it would return to the chooser itself.
+A workspace switch navigates to its dashboard; organization
 switching opens workspace management. Back/Forward restores the context encoded
 in each history entry. A failed destination retains its URL and offers Retry,
 Switch account, and Choose organization without substituting another workspace.

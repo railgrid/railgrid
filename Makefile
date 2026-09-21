@@ -520,6 +520,10 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
 
+.PHONY: test-organization-bootstrap
+test-organization-bootstrap: ## Verify personal and shared organization initialization and REST creation
+	go test -count=1 ./pkg/hub/controllers/organization ./pkg/hub/restapi
+
 .PHONY: test-tilt-sandbox-default
 test-tilt-sandbox-default: ## Verify universal sandbox is opt-in in Tilt
 	python3 hack/scripts/verify-tilt-sandbox-default.test.py

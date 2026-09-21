@@ -124,6 +124,7 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	org := &tenancyv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{Name: orgUUID},
 		Spec: tenancyv1alpha1.OrganizationSpec{
+			InitialWorkspace:     &tenancyv1alpha1.InitialWorkspaceSpec{Name: uuid.NewString(), User: user},
 			DisplayName:          req.DisplayName,
 			Personal:             false,
 			WorkspaceCreation:    wc,

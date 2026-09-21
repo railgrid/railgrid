@@ -83,6 +83,11 @@ const (
 	// level so observers can see when it lands.
 	OrganizationConditionDefaultWorkspaceMCPServerReady = "DefaultWorkspaceMCPServerReady"
 
+	// OrganizationConditionInitialWorkspaceInitialized records completion of
+	// a shared org's one-time bootstrap. Later workspace deletion, renaming,
+	// and membership changes must not restart that bootstrap.
+	OrganizationConditionInitialWorkspaceInitialized = "InitialWorkspaceInitialized"
+
 	// ReasonAwaitingWorkspaceType marks an Organization whose kcp workspace
 	// has not been created yet because the organization WorkspaceType is
 	// not yet registered (lands in a follow-up PR).
@@ -132,6 +137,15 @@ type OrganizationList struct {
 
 // OrganizationSpec defines the desired state of an Organization.
 type OrganizationSpec struct {
+	// InitialWorkspace requests a one-time initial workspace for a shared
+	// organization. The hub sets it when creating an org through the API.
+	// Persisting its identity with the org makes bootstrap retryable across
+	// restarts. Unset on legacy orgs; they are not retroactively populated.
+	// Personal organizations use User.status.defaultWorkspace instead.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="initialWorkspace is immutable"
+	InitialWorkspace *InitialWorkspaceSpec `json:"initialWorkspace,omitempty"`
+
 	// DisplayName is the human-facing label rendered in the portal switcher
 	// and CLI output. Not unique — two Organizations may share a displayName;
 	// the UUID in metadata.name disambiguates them. Editable after creation.
@@ -184,6 +198,16 @@ type OrganizationSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	WorkspaceQuota int32 `json:"workspaceQuota,omitempty"`
+}
+
+// InitialWorkspaceSpec identifies the workspace and its initial administrator.
+type InitialWorkspaceSpec struct {
+	// Name is the stable, server-assigned workspace UUID.
+	// +kubebuilder:validation:Format=uuid
+	Name string `json:"name"`
+	// User is the creating User CR's name, not a bearer or RBAC identity.
+	// +kubebuilder:validation:MinLength=1
+	User string `json:"user"`
 }
 
 // OrganizationStatus defines the observed state of an Organization.

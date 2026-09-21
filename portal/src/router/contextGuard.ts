@@ -5,6 +5,7 @@ import { useTenantStore } from '@/stores/tenant'
 import { useRouteContextStore } from '@/stores/routeContext'
 import { parsePortalScope, scopedPath } from '@/portalkit/navigation'
 import { rememberPortalNext } from '@/auth/portalNext'
+import { readLandingScope, rememberLandingScope } from './landingPreference'
 
 export function installContextGuard(router: Router): void {
   let navigation = 0
@@ -30,6 +31,17 @@ export function installContextGuard(router: Router): void {
   // Vue Router skips guards when the user returns to the already-current URL
   // while another navigation is pending. Cancel that pending authority read too.
   router.afterEach((to, _from, failure) => {
+    const committedScope = parsePortalScope(to.path)
+    if (!failure && committedScope && useRouteContextStore().state === 'ready') {
+      rememberLandingScope(useAuthStore().user, committedScope)
+    }
+    // Unscoped destinations have no context resolver to hold the loading
+    // gate. Release it only after the route commits, so an outgoing login
+    // page cannot remount and redirect back to landing in the meantime.
+    if (!failure && !committedScope) {
+      useRouteContextStore().invalidate()
+      return
+    }
     if (isNavigationFailure(failure, NavigationFailureType.aborted) && attempts.get(to) === navigation) {
       restoreCommittedContext()
       return
@@ -88,16 +100,24 @@ export function installContextGuard(router: Router): void {
       try {
         await tenant.fetchOrgs()
         if (!current()) return false
-        const org = tenant.orgs.find((item) => item.uuid === tenant.orgUUID && !item.deletionRequestedAt)
-          ?? tenant.orgs.find((item) => item.personal && !item.deletionRequestedAt)
-          ?? tenant.orgs.find((item) => !item.deletionRequestedAt)
-        if (!org || tenant.orgLoadState !== 'ready') return { name: 'organizations' }
-        if (tenant.workspaceMode === 'organization') return `/${org.uuid}/settings/workspaces`
+        const availableOrgs = tenant.orgs.filter((item) => !item.deletionRequestedAt)
+        if (tenant.orgLoadState !== 'ready') return { name: 'organizations' }
+        // Resume the last visited scope only after rechecking membership.
+        // Active state supports existing sessions; the per-account preference
+        // also survives the identity reset on sign-out and subsequent sign-in.
+        const remembered = tenant.orgUUID
+          ? { orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }
+          : readLandingScope(auth.user)
+        const rememberedOrg = availableOrgs.find((item) => item.uuid === remembered?.orgUUID)
+        const org = rememberedOrg ?? (availableOrgs.length === 1 ? availableOrgs[0] : null)
+        if (!org) return { name: 'organizations' }
+        if (rememberedOrg && !remembered?.workspaceUUID) return `/${org.uuid}/settings/workspaces`
         await tenant.fetchWorkspaces(org.uuid, { selectDefault: false })
         if (!current()) return false
         const list = tenant.workspaceLoadStateByOrg[org.uuid] === 'ready' ? tenant.workspacesByOrg[org.uuid] ?? [] : []
-        const workspace = list.find((item) => item.uuid === tenant.workspaceUUID && item.clusterName && !item.deletionRequestedAt)
-          ?? list.find((item) => item.clusterName && !item.deletionRequestedAt)
+        const workspace = rememberedOrg
+          ? list.find((item) => item.uuid === remembered?.workspaceUUID && item.clusterName && !item.deletionRequestedAt)
+          : list.find((item) => item.clusterName && !item.deletionRequestedAt)
         return scopedPath(workspace ? '/' : '/settings/workspaces', { orgUUID: org.uuid, workspaceUUID: workspace?.uuid ?? null })
       } catch {
         if (!current()) return false
@@ -105,6 +125,6 @@ export function installContextGuard(router: Router): void {
       }
     }
     if (scope && !to.meta.public) return await context.resolve(scope) && current() ? undefined : false
-    context.invalidate()
+    // Unscoped destinations release their loading gate in afterEach.
   })
 }

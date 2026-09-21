@@ -386,13 +386,23 @@ POST /api/orgs
 1. Hub generates a UUID, creates an `Organization` CR with
    `metadata.name = <uuid>` and `spec.displayName = "ACME Corp"`. No
    "slug" or `name` field is taken from the request.
-2. Org controller creates kcp `Workspace` `root:railgrid:orgs:{uuid}` of
-   type `organization`. The initializer adds the caller as
-   `Membership{scope: org, role: admin}`.
-3. Index controller appends a `MembershipIndexEntry` to the caller's
-   `UserMembershipIndex`.
-4. Returns 201 with `{ "uuid": "...", "displayName": "...",
-   "workspacePath": "root:railgrid:orgs:..." }`.
+2. The same create persists `spec.initialWorkspace: {name: <workspace UUID>,
+   user: <creator User name>}`. This is a durable bootstrap request, not
+   a workspace selected by the browser.
+3. The REST handler ensures the kcp organization workspace at
+   `root:railgrid:tenants:{uuid}`, the caller's org-admin Membership, and
+   their organization entry in `UserMembershipIndex`, then returns 201.
+4. The `organization-initial-workspace` controller provisions a workspace
+   named **default**, using the same bootstrap routine as personal orgs:
+   child workspace, display name, core APIBinding, creator admin RBAC,
+   default MCPServer, and workspace membership-index entry. Provisioning is
+   asynchronous; organization conditions report progress and failures.
+5. Retries and hub restarts reuse the persisted workspace UUID. The controller
+   records `InitialWorkspaceInitialized=True` only after all steps succeed,
+   then stops: renaming/deleting this workspace or changing memberships does
+   not recreate it or restore the creator's permissions. Additional orgs do
+   not overwrite the user's personal-org/default-workspace/default-cluster
+   fields. Existing orgs without the bootstrap request are left unchanged.
 
 ### Create a Workspace inside an Org
 

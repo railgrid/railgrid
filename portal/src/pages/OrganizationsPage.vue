@@ -117,7 +117,9 @@ async function chooseOrganization(org: OrgRow) {
     localError.value = null
     failedSwitchOrg.value = null
     try {
-      await router.replace(backPath.value)
+      // Without an explicit return destination, enter the chosen org directly
+      // instead of resolving landing preferences again.
+      await router.replace(backPath.value === '/' ? `/${org.uuid}/settings/workspaces` : backPath.value)
     } catch (error: unknown) {
       localError.value = error instanceof Error ? error.message : 'Failed to continue.'
     }
@@ -171,7 +173,7 @@ onMounted(() => { void loadOrganizations() })
     <div class="contour-grid contour-grid-fade pointer-events-none absolute inset-x-0 top-0 h-72" aria-hidden="true" />
 
     <header class="relative z-10 mx-auto flex w-full max-w-4xl items-center justify-between px-5 py-5 sm:px-8">
-      <router-link :to="backPath" class="k-btn k-back-action text-[13px]">
+      <router-link :to="backPath" v-if="backPath !== '/'" class="k-btn k-back-action text-[13px]">
         <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
         <span>Back</span>
       </router-link>
