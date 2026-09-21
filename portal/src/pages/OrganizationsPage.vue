@@ -119,7 +119,7 @@ async function chooseOrganization(org: OrgRow) {
     try {
       // Without an explicit return destination, enter the chosen org directly
       // instead of resolving landing preferences again.
-      await router.replace(backPath.value === '/' ? `/${org.uuid}/settings/workspaces` : backPath.value)
+      await router.replace(backPath.value === '/' ? `/${org.uuid}/workspaces` : backPath.value)
     } catch (error: unknown) {
       localError.value = error instanceof Error ? error.message : 'Failed to continue.'
     }
@@ -130,7 +130,7 @@ async function chooseOrganization(org: OrgRow) {
   localError.value = null
   try {
     failedSwitchOrg.value = null
-    await router.push(`/${org.uuid}/settings/workspaces`)
+    await router.push(`/${org.uuid}/workspaces`)
   } catch (error: unknown) {
     failedSwitchOrg.value = org.uuid
     localError.value = error instanceof Error ? error.message : 'Failed to switch organization.'
@@ -152,7 +152,7 @@ async function retryFailedSwitch() {
       return
     }
     failedSwitchOrg.value = null
-    await router.push(`/${orgUUID}/settings/workspaces`)
+    await router.push(`/${orgUUID}/workspaces`)
   } catch (error: unknown) {
     localError.value = error instanceof Error ? error.message : 'Failed to load workspaces.'
   } finally {

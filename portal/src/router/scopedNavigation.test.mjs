@@ -22,7 +22,7 @@ const vite = await createServer({
 const { routes } = await vite.ssrLoadModule('/src/router/routes.ts')
 const { registerProviderRoutes } = await vite.ssrLoadModule('/src/router/providers.ts')
 const { installContextGuard } = await vite.ssrLoadModule('/src/router/contextGuard.ts')
-const { readLandingScope } = await vite.ssrLoadModule('/src/router/landingPreference.ts')
+const { readLandingScope, readOrganizationWorkspace, rememberLandingScope } = await vite.ssrLoadModule('/src/router/landingPreference.ts')
 const { useTenantStore } = await vite.ssrLoadModule('/src/stores/tenant.ts')
 const { useRouteContextStore } = await vite.ssrLoadModule('/src/stores/routeContext.ts')
 const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
@@ -112,7 +112,7 @@ test('unscoped entry resumes the remembered organization and workspace before pe
       ? Promise.resolve(response({ items: [{ uuid: B, personal: true }, { uuid: O }] }))
       : real(path, init)
     await router.push('/')
-    assert.equal(router.currentRoute.value.path, workspace ? `/${O}/${W}` : `/${O}/settings/workspaces`)
+    assert.equal(router.currentRoute.value.path, `/${O}/${W}`)
   }
 })
 
@@ -141,13 +141,13 @@ test('last visited scope survives sign-out for the same account without leaking 
   assert.equal(router.currentRoute.value.path, `/${O}/${W}`)
 })
 
-test('an unavailable remembered workspace opens workspace management without selecting another', async () => {
+test('an unavailable remembered workspace falls back to the sole available workspace', async () => {
   const { router, tenant } = setup()
   tenant.orgUUID = O
   tenant.workspaceUUID = B
   await router.push('/')
-  assert.equal(router.currentRoute.value.path, `/${O}/settings/workspaces`)
-  assert.equal(tenant.workspaceUUID, null)
+  assert.equal(router.currentRoute.value.path, `/${O}/${W}`)
+  assert.equal(tenant.workspaceUUID, W)
 })
 
 test('failed destinations do not replace the last successfully visited scope', async () => {
@@ -227,7 +227,7 @@ test('choosing a remembered org after sign-in exits the chooser; explicit return
       failedSwitchOrg: { value: null }, localError: { value: null },
     })
     await choose({ uuid: O })
-    assert.equal(router.currentRoute.value.fullPath, back === '/' ? `/${O}/settings/workspaces` : resource)
+    assert.equal(router.currentRoute.value.fullPath, back === '/' ? `/${O}/workspaces` : resource)
   }
 })
 
@@ -605,4 +605,26 @@ test('shell provider loading ignores same-scope navigation but follows authority
   } finally {
     stop()
   }
+})
+
+const { preferredWorkspace } = await vite.ssrLoadModule('/src/router/workspaceEntry.ts')
+test('workspace entry resumes valid preferences, never guesses among multiple workspaces, and waits for provisioning', () => {
+  const ready = { uuid: W, orgUUID: O, clusterName: 'cluster' }
+  const other = { uuid: B, orgUUID: O, clusterName: 'other' }
+  assert.equal(preferredWorkspace([ready], null), ready)
+  assert.equal(preferredWorkspace([ready, other], null), null)
+  assert.equal(preferredWorkspace([ready, other], B), other)
+  assert.equal(preferredWorkspace([ready, { ...other, clusterName: undefined }], B), null)
+  assert.equal(preferredWorkspace([{ ...ready, deletionRequestedAt: 'today' }], W), null)
+  assert.equal(preferredWorkspace([{ ...ready, clusterName: undefined }], W), null)
+  assert.equal(preferredWorkspace([], W), null)
+})
+test('last workspace is remembered per organization and account, including visits to org settings', () => {
+  const { auth } = setup()
+  rememberLandingScope(auth.user, { orgUUID: O, workspaceUUID: W })
+  rememberLandingScope(auth.user, { orgUUID: B, workspaceUUID: B })
+  rememberLandingScope(auth.user, { orgUUID: O, workspaceUUID: null })
+  assert.equal(readOrganizationWorkspace(auth.user, O), W)
+  assert.equal(readOrganizationWorkspace(auth.user, B), B)
+  assert.equal(readOrganizationWorkspace({ userId: 'someone-else' }, O), null)
 })

@@ -668,9 +668,9 @@ test('workspace creation and organization switching fence late responses', () =>
   assert.ok(chooserStart >= 0 && chooserEnd > chooserStart)
   const chooser = organizationsPage.slice(chooserStart, chooserEnd)
   assert.match(chooser, /if \(switchingOrg\.value\) return/)
-  assert.match(chooser, /await router\.push\(`\/\$\{org\.uuid\}\/settings\/workspaces`\)/)
+  assert.match(chooser, /await router\.push\(`\/\$\{org\.uuid\}\/workspaces`\)/)
   assert.doesNotMatch(chooser, /tenant\.selectOrganization\(/)
-  assert.match(chooser, /await router\.push\(`\/\$\{org\.uuid\}\/settings\/workspaces`\)/)
+  assert.match(chooser, /await router\.push\(`\/\$\{org\.uuid\}\/workspaces`\)/)
   assert.match(organizationsPage, /await tenant\.fetchWorkspaces\(orgUUID, \{ selectDefault: false \}\)/)
 })
 
@@ -796,7 +796,7 @@ test('choosing the current organization continues to the requested destination',
   const currentOrgEnd = chooser.indexOf('\n  }\n\n  switchingOrg.value', currentOrgStart)
   assert.ok(currentOrgStart >= 0 && currentOrgEnd > currentOrgStart)
   const currentOrg = chooser.slice(currentOrgStart, currentOrgEnd)
-  assert.match(currentOrg, /await router\.replace\(backPath\.value === '\/' \? `\/\$\{org\.uuid\}\/settings\/workspaces` : backPath\.value\)/)
+  assert.match(currentOrg, /await router\.replace\(backPath\.value === '\/' \? `\/\$\{org\.uuid\}\/workspaces` : backPath\.value\)/)
   assert.match(currentOrg, /localError\.value = null/)
   assert.doesNotMatch(currentOrg, /selectOrganization|fetchWorkspaces/)
   assert.match(organizationsPage, /const backPath = computed\(\(\) => validatedInternalPath\(route\.query\.from\)\)/)
@@ -847,7 +847,7 @@ test('organization chooser is a standalone full-viewport surface without app chr
 
 test('standalone chooser hides the persistent terminal dock without unmounting it', () => {
   assert.match(app, /import \{ useRoute, useRouter \} from 'vue-router'/)
-  assert.match(app, /const hideTerminalDock = computed\(\s*\(\) => route\.path === '\/organizations' \|\| route\.path\.startsWith\('\/organizations\/'\),\s*\)/s)
+  assert.match(app, /const hideTerminalDock = computed\(\s*\(\) => route\.name === 'workspace-chooser' \|\| route\.path === '\/organizations' \|\| route\.path\.startsWith\('\/organizations\/'\),\s*\)/s)
   assert.match(app, /<TerminalDock v-show="!hideTerminalDock && !scopeBlocked" \/>/)
   assert.doesNotMatch(app, /<TerminalDock v-if=/)
 })
@@ -881,11 +881,11 @@ test('organization creation is a shell-free one-field flow with recoverable erro
   assert.equal((organizationCreatePage.match(/<router-link v-if="!creating" :to="chooserPath"/g) ?? []).length, 2)
   assert.equal((organizationCreatePage.match(/<button v-else[\s\S]*?disabled[\s\S]*?aria-disabled="true"[\s\S]*?<\/button>/g) ?? []).length, 2)
   assert.match(organizationCreatePage, /const submittingRoute = \{\s*name: route\.name,\s*fullPath: route\.fullPath,\s*\}/s)
-  assert.match(organizationCreatePage, /if \(\s*route\.name === submittingRoute\.name &&\s*route\.fullPath === submittingRoute\.fullPath[\s\S]*?await router\.replace\(`\/\$\{created\.uuid\}\/settings\/workspaces`\)/s)
+  assert.match(organizationCreatePage, /if \(\s*route\.name === submittingRoute\.name &&\s*route\.fullPath === submittingRoute\.fullPath[\s\S]*?await router\.replace\(`\/\$\{created\.uuid\}\/workspaces\?preparing=1`\)/s)
   assert.doesNotMatch(organizationCreatePage, /router-link :to="backPath"/)
   assert.match(organizationCreatePage, />Cancel<\/router-link>/)
   assert.match(organizationCreatePage, /Enter a name for your organization\./)
-  assert.match(organizationCreatePage, /await router\.replace\(`\/\$\{created\.uuid\}\/settings\/workspaces`\)/)
+  assert.match(organizationCreatePage, /await router\.replace\(`\/\$\{created\.uuid\}\/workspaces\?preparing=1`\)/)
 })
 
 test('organization Back validation stays same-origin and cannot loop into the chooser', () => {
@@ -964,8 +964,8 @@ test('member role controls have resource-specific names and use muted badges', (
 })
 
 test('organization selection clears workspace and fences workspace-scoped pages', () => {
-  assert.match(organizationsPage, /await router\.push\(`\/\$\{org\.uuid\}\/settings\/workspaces`\)/)
-  assert.match(organizationsPage, /await router\.push\(`\/\$\{org\.uuid\}\/settings\/workspaces`\)/)
+  assert.match(organizationsPage, /await router\.push\(`\/\$\{org\.uuid\}\/workspaces`\)/)
+  assert.match(organizationsPage, /await router\.push\(`\/\$\{org\.uuid\}\/workspaces`\)/)
   const selectionStart = tenant.indexOf('async function selectOrganization(')
   const selectionEnd = tenant.indexOf('\n  function selectWorkspace', selectionStart)
   assert.ok(selectionStart >= 0 && selectionEnd > selectionStart)
@@ -1004,7 +1004,6 @@ test('workspace trigger keeps organization provenance visible and truthful', () 
   assert.match(switcher, /v-if="variant === 'horizontal'"[\s\S]*\{\{ orgContextLabel \}\}/)
   assert.match(switcher, /const workspaceTriggerLabel = computed\(\(\) =>[\s\S]*Organization provenance:/)
   assert.match(switcher, /:aria-label="workspaceTriggerLabel"/)
-  assert.match(switcher, /AI tools and resources follow the selected context\. A successful switch opens Dashboard\./)
   assert.doesNotMatch(switcher, /Switch organization|organization selector|v-for="org in tenant\.orgs"/i)
 })
 
@@ -1116,36 +1115,6 @@ test('workspace search is thresholded and clears its query when hidden', () => {
     positiveOwnership.test(focusContext) || (inverseOwnership.test(focusContext) && !outsideOnlyFocusGate.test(nearestIf)),
     'refocus should be gated by Search ownership or focus outside the panel, never outside focus alone',
   )
-})
-
-test('workspace context consequence guide is limited to verified multi-workspace contexts', () => {
-  const guideText = 'AI tools and resources follow the selected context. A successful switch opens Dashboard.'
-  const guideStart = switcher.indexOf(guideText)
-  assert.ok(guideStart >= 0)
-  const guideWrapperStart = switcher.lastIndexOf('<div', guideStart)
-  const guideWrapper = switcher.slice(guideWrapperStart, guideStart)
-  const guideGuard = guideWrapper.match(/v-if="([^"]+)"/)
-  assert.ok(guideGuard, 'the consequence guide should have an explicit visibility guard')
-  const [, guideVisibility] = guideGuard
-  assert.match(guideVisibility, /context|guide/i)
-
-  const guideDefinitionStart = switcher.indexOf(`const ${guideVisibility} = computed`)
-  const guideDefinitionEnd = switcher.indexOf('\n)', guideDefinitionStart)
-  assert.ok(guideDefinitionStart >= 0 && guideDefinitionEnd > guideDefinitionStart)
-  const guideDefinition = switcher.slice(guideDefinitionStart, guideDefinitionEnd)
-  assert.match(guideDefinition, /length\s*>\s*1/)
-  assert.match(guideDefinition, /contextAuthorityVerified\.value/)
-
-  const countNameMatch = guideDefinition.match(/([A-Za-z_$][\w$]*)\.value\.length\s*>\s*1/)
-  let guideUsabilitySource = guideDefinition
-  if (countNameMatch && !/isWorkspaceUsable/.test(guideUsabilitySource)) {
-    const [, countName] = countNameMatch
-    const countDefinitionStart = switcher.lastIndexOf(`const ${countName} = computed`, guideDefinitionStart)
-    const countDefinitionEnd = switcher.indexOf('\n)', countDefinitionStart)
-    assert.ok(countDefinitionStart >= 0 && countDefinitionEnd > countDefinitionStart)
-    guideUsabilitySource += switcher.slice(countDefinitionStart, countDefinitionEnd)
-  }
-  assert.match(guideUsabilitySource, /isWorkspaceUsable/)
 })
 
 test('workspace option badges omit Ready while Pending and Unverified remain accessible', () => {

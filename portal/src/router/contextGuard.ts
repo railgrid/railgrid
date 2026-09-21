@@ -4,8 +4,9 @@ import { useAdminStore } from '@/stores/admin'
 import { useTenantStore } from '@/stores/tenant'
 import { useRouteContextStore } from '@/stores/routeContext'
 import { parsePortalScope, scopedPath } from '@/portalkit/navigation'
+import { preferredWorkspace } from './workspaceEntry'
 import { rememberPortalNext } from '@/auth/portalNext'
-import { readLandingScope, rememberLandingScope } from './landingPreference'
+import { readLandingScope, rememberLandingScope, readOrganizationWorkspace } from './landingPreference'
 
 export function installContextGuard(router: Router): void {
   let navigation = 0
@@ -111,14 +112,11 @@ export function installContextGuard(router: Router): void {
         const rememberedOrg = availableOrgs.find((item) => item.uuid === remembered?.orgUUID)
         const org = rememberedOrg ?? (availableOrgs.length === 1 ? availableOrgs[0] : null)
         if (!org) return { name: 'organizations' }
-        if (rememberedOrg && !remembered?.workspaceUUID) return `/${org.uuid}/settings/workspaces`
         await tenant.fetchWorkspaces(org.uuid, { selectDefault: false })
         if (!current()) return false
         const list = tenant.workspaceLoadStateByOrg[org.uuid] === 'ready' ? tenant.workspacesByOrg[org.uuid] ?? [] : []
-        const workspace = rememberedOrg
-          ? list.find((item) => item.uuid === remembered?.workspaceUUID && item.clusterName && !item.deletionRequestedAt)
-          : list.find((item) => item.clusterName && !item.deletionRequestedAt)
-        return scopedPath(workspace ? '/' : '/settings/workspaces', { orgUUID: org.uuid, workspaceUUID: workspace?.uuid ?? null })
+        const workspace = preferredWorkspace(list, readOrganizationWorkspace(auth.user, org.uuid) ?? (rememberedOrg ? remembered?.workspaceUUID ?? null : null))
+        return workspace ? scopedPath('/', { orgUUID: org.uuid, workspaceUUID: workspace.uuid }) : `/${org.uuid}/workspaces`
       } catch {
         if (!current()) return false
         return { name: 'organizations' }
