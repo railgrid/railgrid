@@ -330,9 +330,9 @@ func (b *Bootstrapper) ensureTenancyObjectsBinding(ctx context.Context) error {
 	if err := ensureExportBinding(ctx, tenancyDynamic, kcppaths.SystemControllers, "tenants.railgrid.ai"); err != nil {
 		return err
 	}
-	if err := waitForAPIBindingBound(ctx, tenancyDynamic, "tenants.railgrid.ai"); err != nil {
-		return fmt.Errorf("waiting for tenancy binding: %w", err)
-	}
+	// Discovery is the readiness contract for the controllers below. The
+	// matching binding may have a custom name: ensureExportBinding deliberately
+	// accepts existing bindings by export reference rather than metadata.name.
 	client, err := discovery.NewDiscoveryClientForConfig(b.UsersConfig())
 	if err != nil {
 		return err

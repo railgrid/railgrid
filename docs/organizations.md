@@ -404,13 +404,19 @@ POST /api/orgs
 5. Retries and hub restarts reuse the persisted workspace UUID. The controller
    records `InitialWorkspaceAccessInitialized=True` after initial membership,
    workspace-admin access and index setup succeed, and permanently stops those
-   access writes. Creator membership changes return a retryable conflict until
-   this handoff; afterward they remain authoritative even if MCP setup retries.
+   access writes. Initial workspace RBAC includes all current organization admins,
+   including admins added while child creation was retrying. Membership changes and removals return a retryable conflict until
+   this handoff; new non-creator members may still be added. Afterward membership
+   changes remain authoritative even if MCP setup retries.
+   Once access is handed off, shared-org provisioning can finish even if the
+   original creator leaves and deletes their account.
    Organization controllers are leader-elected so concurrent replicas cannot
    replay old access setup after handoff.
 6. `InitialWorkspaceInitialized=True` records full bootstrap completion. Until
    then, list and detail responses withhold the initial workspace's cluster
-   target so the portal continues showing provisioning. After completion the
+   target so the portal continues showing provisioning. Organization REST views
+   also expose `initialWorkspacePending`, allowing the chooser to keep checking
+   while the initial child has not appeared, regardless of its entry URL. After completion the
    controller stops: renaming/deleting this workspace or changing memberships
    does not recreate it or restore the creator's permissions. Additional orgs do
    not overwrite the user's personal-org/default-workspace/default-cluster

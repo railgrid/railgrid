@@ -79,14 +79,20 @@ func (r *organizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 	var user tenancyv1alpha1.User
-	if err := r.reader().Get(ctx, types.NamespacedName{Name: creatorName(&org)}, &user); err != nil {
-		if apierrors.IsNotFound(err) {
+	accessInitialized := apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized)
+	// Once a shared org's access has been handed off, the remaining resource
+	// work belongs to the organization. Its creator may have left and deleted
+	// their account; no subsequent bootstrap step needs that user's identity.
+	if org.Spec.Personal || !accessInitialized {
+		if err := r.reader().Get(ctx, types.NamespacedName{Name: creatorName(&org)}, &user); err != nil {
+			if apierrors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			} // User watch resumes pending orgs.
+			return ctrl.Result{}, err
+		}
+		if user.Status.DeletionRequestedAt != nil || !user.DeletionTimestamp.IsZero() {
 			return ctrl.Result{}, nil
-		} // User watch resumes pending orgs.
-		return ctrl.Result{}, err
-	}
-	if user.Status.DeletionRequestedAt != nil || !user.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		}
 	}
 
 	// Upgrade personal orgs without changing an already assigned child identity.

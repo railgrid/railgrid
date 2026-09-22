@@ -506,3 +506,135 @@ func TestOrganizationLifecycle_PersistsIdentityBeforeAnyProvisioning(t *testing.
 		t.Fatal("provisioning began before workspace identity persisted")
 	}
 }
+
+func TestOrganizationLifecycle_FinishesSharedResourcesAfterCreatorDeletion(t *testing.T) {
+	for _, deletion := range []string{"soft", "hard"} {
+		t.Run(deletion, func(t *testing.T) {
+			ctx := context.Background()
+			creator := newUser("alice", "Alice")
+			org := newSharedOrg("org-one", "workspace-one", creator.Name)
+			c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(creator, org).WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}, &tenancyv1alpha1.User{}).Build()
+			prov := &fakeProvisioner{mcpErr: errors.New("MCP unavailable")}
+			r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
+			if _, err := r.Reconcile(ctx, req); err == nil {
+				t.Fatal("expected pending MCP provisioning")
+			}
+			if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+				t.Fatal(err)
+			}
+			if !apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized) {
+				t.Fatal("expected access handoff before creator removal")
+			}
+			if deletion == "hard" {
+				if err := c.Delete(ctx, creator); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				now := metav1.Now()
+				creator.Status.DeletionRequestedAt = &now
+				if err := c.Status().Update(ctx, creator); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Creator membership was removed after handoff. It must stay removed.
+			var index tenancyv1alpha1.UserMembershipIndex
+			if err := c.Get(ctx, types.NamespacedName{Name: creator.Name}, &index); err != nil {
+				t.Fatal(err)
+			}
+			index.Spec.Entries = nil
+			if err := c.Update(ctx, &index); err != nil {
+				t.Fatal(err)
+			}
+			accessCalls := len(prov.adminCalls)
+			membershipCalls := len(prov.memCalls)
+			prov.mcpErr = nil
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+				t.Fatal(err)
+			}
+			if !apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized) {
+				t.Fatal("shared organization remained dependent on deleted creator")
+			}
+			if len(prov.adminCalls) != accessCalls || len(prov.memCalls) != membershipCalls {
+				t.Fatal("resource completion replayed creator grants")
+			}
+			if err := c.Get(ctx, types.NamespacedName{Name: creator.Name}, &index); err != nil {
+				t.Fatal(err)
+			}
+			if len(index.Spec.Entries) != 0 {
+				t.Fatal("resource completion restored creator membership")
+			}
+		})
+	}
+}
+
+func TestOrganizationLifecycle_GrantsAdminsAddedBeforeInitialWorkspaceExists(t *testing.T) {
+	for _, personal := range []bool{false, true} {
+		t.Run(fmt.Sprint(personal), func(t *testing.T) {
+			ctx := context.Background()
+			alice := newUser("alice", "Alice")
+			bob := newUser("bob", "Bob")
+			charlie := newUser("charlie", "Charlie")
+			org := newSharedOrg("org-one", "workspace-one", alice.Name)
+			org.Spec.Personal = personal
+			c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(alice, bob, charlie, org).WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).Build()
+			prov := &fakeProvisioner{childErr: errors.New("child creation unavailable")}
+			r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
+			if _, err := r.Reconcile(ctx, req); err == nil {
+				t.Fatal("expected pending child creation")
+			}
+			// REST has exposed org access; Bob is added before there are any child
+			// workspaces for the membership endpoint to grant. Charlie remains a member.
+			prov.orgMembershipRoles = map[string]map[string]string{org.Name: {"alice": "admin", "bob": "admin", "charlie": "member"}}
+			prov.childErr = nil
+			prov.mcpErr = errors.New("MCP unavailable")
+			if _, err := r.Reconcile(ctx, req); err == nil {
+				t.Fatal("MCP should remain pending")
+			}
+			got := map[string]bool{}
+			for _, call := range prov.adminCalls {
+				got[call.RBACIdentity] = true
+			}
+			if !got[alice.Spec.RBACIdentity] || !got[bob.Spec.RBACIdentity] || got[charlie.Spec.RBACIdentity] {
+				t.Fatalf("initial grants don't match current org admins: %#v", got)
+			}
+			count := len(prov.adminCalls)
+			// Bob's later demotion must not be undone while MCP retries.
+			prov.orgMembershipRoles[org.Name]["bob"] = "member"
+			prov.mcpErr = nil
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if len(prov.adminCalls) != count {
+				t.Fatal("MCP recovery replayed access after handoff")
+			}
+		})
+	}
+}
+
+func TestOrganizationLifecycle_AdminInventoryFailureDefersAccessHandoff(t *testing.T) {
+	ctx := context.Background()
+	user := newUser("alice", "Alice")
+	org := newSharedOrg("org-one", "workspace-one", user.Name)
+	c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org).WithStatusSubresource(&tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).Build()
+	prov := &fakeProvisioner{membershipListErr: errors.New("membership inventory unavailable")}
+	r := &organizationReconciler{&Reconciler{client: c, provisioner: prov}}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: org.Name}}
+	if _, err := r.Reconcile(ctx, req); err == nil {
+		t.Fatal("unverified admins must retry")
+	}
+	if err := c.Get(ctx, req.NamespacedName, org); err != nil {
+		t.Fatal(err)
+	}
+	if apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized) {
+		t.Fatal("access handoff skipped unknown administrators")
+	}
+	prov.membershipListErr = nil
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+}

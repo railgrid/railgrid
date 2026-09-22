@@ -26,7 +26,7 @@ import (
 )
 
 // requireInitialAccessHandoff prevents membership operations from racing the
-// initial creator grants. The typed client reads live status; once access is
+// initial administrator grants. The typed client reads live status; once access is
 // handed off, bootstrap never writes these grants or index rows again.
 func (h *Handler) requireInitialAccessHandoff(w http.ResponseWriter, r *http.Request, orgID, workspaceID, user string) bool {
 	org, err := h.mgr.client.Organizations().Get(r.Context(), orgID, metav1.GetOptions{})
@@ -39,7 +39,10 @@ func (h *Handler) requireInitialAccessHandoff(w http.ResponseWriter, r *http.Req
 		creator = org.Labels["tenants.railgrid.ai/personal-owner"]
 	}
 	managed := org.Annotations[tenancyv1alpha1.OrganizationBootstrapAnnotation] == tenancyv1alpha1.OrganizationBootstrapVersion || org.Spec.Personal
-	if !managed || creator != user || (workspaceID != "" && workspaceID != org.Status.DefaultWorkspace) {
+	// Additions cannot revoke a grant from the bootstrap snapshot. Allow new
+	// members while provisioning; changes/removals must wait for all-admin
+	// grants to finish so a stale snapshot cannot restore revoked access.
+	if !managed || (r.Method == http.MethodPost && creator != user) || (workspaceID != "" && workspaceID != org.Status.DefaultWorkspace) {
 		return true
 	}
 	// Ready personal organizations predating the common lifecycle already handed

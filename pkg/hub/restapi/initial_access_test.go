@@ -29,29 +29,34 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
-func TestInitialAccessHandoff_GuardsCreatorMembershipMutations(t *testing.T) {
+func TestInitialAccessHandoff_GuardsAdministratorMembershipMutations(t *testing.T) {
 	for _, personal := range []bool{false, true} {
 		kind := "shared"
 		if personal {
 			kind = "personal"
 		}
-		for _, name := range []string{"patch-org", "delete-org", "leave-org", "patch-workspace", "delete-workspace", "leave-workspace", "add-org", "add-workspace"} {
-			t.Run(kind+"/"+name, func(t *testing.T) {
-				org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"}, Annotations: map[string]string{tenancyv1alpha1.OrganizationBootstrapAnnotation: tenancyv1alpha1.OrganizationBootstrapVersion}}, Status: tenancyv1alpha1.OrganizationStatus{DefaultWorkspace: "ws-a"}}
-				org.Spec.Personal = personal
-				user := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}
-				mgr, _, _ := newTestManager(t, org, user)
-				h := NewHandler(mgr)
-				handlers := map[string]http.HandlerFunc{"patch-org": h.patchOrgMembership, "delete-org": h.deleteOrgMembership, "leave-org": h.selfLeaveOrg, "patch-workspace": h.patchWorkspaceMembership, "delete-workspace": h.deleteWorkspaceMembership, "leave-workspace": h.selfLeaveWorkspace, "add-org": h.addOrgMembership, "add-workspace": h.addWorkspaceMembership}
-				req := httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"role":"member","user":"alice"}`))
-				req = mux.SetURLVars(req, map[string]string{"org": "org-a", "ws": "ws-a", "user": "alice"})
-				req = req.WithContext(tenant.WithContext(req.Context(), tenant.TenantContext{User: "alice", OrgUUID: "org-a", WorkspaceUUID: "ws-a", Role: "admin", OrgRole: "admin"}))
-				w := httptest.NewRecorder()
-				handlers[name](w, req)
-				if w.Code != http.StatusConflict {
-					t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		for _, target := range []string{"alice", "bob"} {
+			for _, name := range []string{"patch-org", "delete-org", "leave-org", "patch-workspace", "delete-workspace", "leave-workspace", "add-org", "add-workspace"} {
+				if target == "bob" && strings.HasPrefix(name, "add-") {
+					continue
 				}
-			})
+				t.Run(kind+"/"+target+"/"+name, func(t *testing.T) {
+					org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"}, Annotations: map[string]string{tenancyv1alpha1.OrganizationBootstrapAnnotation: tenancyv1alpha1.OrganizationBootstrapVersion}}, Status: tenancyv1alpha1.OrganizationStatus{DefaultWorkspace: "ws-a"}}
+					org.Spec.Personal = personal
+					user := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: target}}
+					mgr, _, _ := newTestManager(t, org, user)
+					h := NewHandler(mgr)
+					handlers := map[string]http.HandlerFunc{"patch-org": h.patchOrgMembership, "delete-org": h.deleteOrgMembership, "leave-org": h.selfLeaveOrg, "patch-workspace": h.patchWorkspaceMembership, "delete-workspace": h.deleteWorkspaceMembership, "leave-workspace": h.selfLeaveWorkspace, "add-org": h.addOrgMembership, "add-workspace": h.addWorkspaceMembership}
+					req := httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"role":"member","user":"`+target+`"}`))
+					req = mux.SetURLVars(req, map[string]string{"org": "org-a", "ws": "ws-a", "user": target})
+					req = req.WithContext(tenant.WithContext(req.Context(), tenant.TenantContext{User: target, OrgUUID: "org-a", WorkspaceUUID: "ws-a", Role: "admin", OrgRole: "admin"}))
+					w := httptest.NewRecorder()
+					handlers[name](w, req)
+					if w.Code != http.StatusConflict {
+						t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+					}
+				})
+			}
 		}
 	}
 }
@@ -98,7 +103,7 @@ func TestInitialAccessHandoff_LifecycleBoundaries(t *testing.T) {
 		{name: "legacy pending personal owner", personal: true, owner: "alice", targetUser: "alice"},
 		{name: "legacy ready personal owner", personal: true, owner: "alice", targetUser: "alice", condition: tenancyv1alpha1.OrganizationConditionReady, conditionStatus: metav1.ConditionTrue, wantAllowed: true},
 		{name: "managed personal Ready alone does not hand off", personal: true, marker: true, creator: "alice", targetUser: "alice", condition: tenancyv1alpha1.OrganizationConditionReady, conditionStatus: metav1.ConditionTrue},
-		{name: "another member", marker: true, creator: "alice", targetUser: "bob", wantAllowed: true},
+		{name: "another member before handoff", marker: true, creator: "alice", targetUser: "bob"},
 		{name: "another workspace", marker: true, creator: "alice", targetUser: "alice", workspace: "ws-b", wantAllowed: true},
 		{name: "initial workspace before handoff", marker: true, creator: "alice", targetUser: "alice", workspace: "ws-a"},
 		{name: "false handoff condition", marker: true, creator: "alice", targetUser: "alice", condition: tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized, conditionStatus: metav1.ConditionFalse},
@@ -127,5 +132,15 @@ func TestInitialAccessHandoff_LifecycleBoundaries(t *testing.T) {
 				t.Fatalf("status=%d want=409", w.Code)
 			}
 		})
+	}
+}
+
+func TestInitialAccessHandoff_AllowsNewAdministratorsBeforeHandoff(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"}, Annotations: map[string]string{tenancyv1alpha1.OrganizationBootstrapAnnotation: tenancyv1alpha1.OrganizationBootstrapVersion}}}
+	mgr, _, _ := newTestManager(t, org)
+	h := NewHandler(mgr)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	if !h.requireInitialAccessHandoff(httptest.NewRecorder(), req, "org-a", "", "bob") {
+		t.Fatal("new administrator addition should remain allowed")
 	}
 }

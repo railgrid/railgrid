@@ -1618,3 +1618,40 @@ func TestInitialWorkspace_OperatingTargetWaitsForBootstrap(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectOrg_InitialWorkspacePending(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                  string
+		personal, managed, ready, initialized, deleting, want bool
+	}{
+		{name: "legacy shared"},
+		{name: "new shared", managed: true, want: true},
+		{name: "new personal", personal: true, managed: true, want: true},
+		{name: "pending legacy personal", personal: true, want: true},
+		{name: "ready legacy personal", personal: true, ready: true},
+		{name: "ready without handoff", managed: true, ready: true, want: true},
+		{name: "completed shared", managed: true, initialized: true},
+		{name: "completed personal", personal: true, managed: true, initialized: true},
+		{name: "deleting", managed: true, deleting: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			org := &tenancyv1alpha1.Organization{Spec: tenancyv1alpha1.OrganizationSpec{Personal: tc.personal}}
+			if tc.managed {
+				org.Annotations = map[string]string{tenancyv1alpha1.OrganizationBootstrapAnnotation: tenancyv1alpha1.OrganizationBootstrapVersion}
+			}
+			if tc.ready {
+				org.Status.Conditions = append(org.Status.Conditions, metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionReady, Status: metav1.ConditionTrue})
+			}
+			if tc.initialized {
+				org.Status.Conditions = append(org.Status.Conditions, metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized, Status: metav1.ConditionTrue})
+			}
+			if tc.deleting {
+				now := metav1.Now()
+				org.Status.DeletionRequestedAt = &now
+			}
+			if got := projectOrg(org).InitialWorkspacePending; got != tc.want {
+				t.Fatalf("pending=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}

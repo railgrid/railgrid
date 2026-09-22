@@ -36,23 +36,25 @@ import (
 // each method succeeds and records its call; tests can override the
 // matching err field to simulate failure paths.
 type fakeProvisioner struct {
-	mu                sync.Mutex
-	wsCalls           []string
-	memCalls          []membershipCall
-	childCalls        []childWorkspaceCall
-	nameCalls         []displayNameCall
-	railgridBindCalls []childWorkspaceCall
-	adminCalls        []workspaceAdminCall
-	mcpCalls          []childWorkspaceCall
-	clusterCalls      []childWorkspaceCall
-	wsErr             error
-	memErr            error
-	childErr          error
-	nameErr           error
-	railgridBindErr   error
-	adminErr          error
-	mcpErr            error
-	clusterErr        error
+	orgMembershipRoles map[string]map[string]string
+	membershipListErr  error
+	mu                 sync.Mutex
+	wsCalls            []string
+	memCalls           []membershipCall
+	childCalls         []childWorkspaceCall
+	nameCalls          []displayNameCall
+	railgridBindCalls  []childWorkspaceCall
+	adminCalls         []workspaceAdminCall
+	mcpCalls           []childWorkspaceCall
+	clusterCalls       []childWorkspaceCall
+	wsErr              error
+	memErr             error
+	childErr           error
+	nameErr            error
+	railgridBindErr    error
+	adminErr           error
+	mcpErr             error
+	clusterErr         error
 	// clusterHash is the value returned by GetChildWorkspaceClusterName.
 	// Defaults to a fixed test hash; tests can override.
 	clusterHash string
@@ -101,6 +103,24 @@ func (f *fakeProvisioner) EnsureOrgMembership(_ context.Context, orgUUID, userNa
 	defer f.mu.Unlock()
 	f.memCalls = append(f.memCalls, membershipCall{OrgUUID: orgUUID, UserName: userName, Role: role})
 	return f.memErr
+}
+
+func (f *fakeProvisioner) ListOrgMembershipRoles(_ context.Context, orgID string) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.membershipListErr != nil {
+		return nil, f.membershipListErr
+	}
+	if roles, ok := f.orgMembershipRoles[orgID]; ok {
+		return roles, nil
+	}
+	roles := map[string]string{}
+	for _, call := range f.memCalls {
+		if call.OrgUUID == orgID && f.memErr == nil {
+			roles[call.UserName] = call.Role
+		}
+	}
+	return roles, nil
 }
 
 func (f *fakeProvisioner) EnsureChildWorkspace(_ context.Context, orgUUID, wsUUID string) error {

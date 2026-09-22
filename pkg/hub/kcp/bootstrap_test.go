@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 func TestEnsureBuiltinCatalogEntries_DoesNotTouchChartOwnedEntry(t *testing.T) {
@@ -251,5 +253,48 @@ func TestWaitForTenancyDiscovery_PropagatesForbidden(t *testing.T) {
 	}
 	if err := waitForTenancyDiscovery(context.Background(), client); err == nil {
 		t.Fatal("expected discovery authorization error")
+	}
+}
+
+func TestEnsureTenancyObjectsBinding_ExistingCustomName(t *testing.T) {
+	listed, discovered := false, false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/apis/apis.kcp.io/v1alpha2/apibindings"):
+			listed = true
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBindingList",
+				"items": []any{map[string]any{
+					"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding",
+					"metadata": map[string]any{"name": "custom-tenancy"},
+					"spec": map[string]any{"reference": map[string]any{"export": map[string]any{
+						"path": kcppaths.SystemControllers, "name": "tenants.railgrid.ai",
+					}}},
+					"status": map[string]any{"phase": "Bound"},
+				}},
+			})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/apis/tenants.railgrid.ai/v1alpha1"):
+			discovered = true
+			_ = json.NewEncoder(w).Encode(metav1.APIResourceList{
+				GroupVersion: "tenants.railgrid.ai/v1alpha1",
+				APIResources: []metav1.APIResource{{Name: "users"}, {Name: "organizations"}, {Name: "usermembershipindices"}},
+			})
+		default:
+			// There is intentionally no canonical-name binding. Bootstrap must
+			// neither create a duplicate nor wait for that nonexistent resource.
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	b := NewBootstrapper(&rest.Config{Host: server.URL})
+	if err := b.ensureTenancyObjectsBinding(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !listed || !discovered {
+		t.Fatalf("bootstrap did not check the existing binding and discovery: listed=%v discovered=%v", listed, discovered)
 	}
 }

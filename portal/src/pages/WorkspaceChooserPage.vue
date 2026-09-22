@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowRight, FolderTree, Loader2, RefreshCw } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
-import { isWorkspaceAvailable, isWorkspaceUsable, useTenantStore, type WorkspaceRow } from '@/stores/tenant'
+import { authFetch } from '@/auth/session'
+import { isWorkspaceAvailable, isWorkspaceUsable, useTenantStore, type OrgRow, type WorkspaceRow } from '@/stores/tenant'
 import { readOrganizationWorkspace } from '@/router/landingPreference'
 import { preferredWorkspace } from '@/router/workspaceEntry'
 
@@ -12,7 +13,8 @@ const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const orgID = computed(() => String(route.params.orgID))
-const org = computed(() => tenant.activeOrg)
+const loadedOrg = ref<OrgRow | null>(null)
+const org = computed(() => loadedOrg.value ?? tenant.activeOrg)
 const rows = computed(() => (tenant.workspacesByOrg[orgID.value] ?? []).filter(isWorkspaceAvailable))
 const search = ref('')
 const visible = computed(() => rows.value.filter(row => `${row.displayName ?? ''} ${row.uuid}`.toLowerCase().includes(search.value.toLowerCase())))
@@ -38,7 +40,25 @@ async function load(revision = generation) {
   const target = orgID.value
   loading.value = true
   error.value = ''
-  await tenant.fetchWorkspaces(target, { selectDefault: false })
+  try {
+    // Read lifecycle first: a completed response must precede the workspace
+    // list, otherwise a concurrent pre-creation list could look permanently empty.
+    const response = await authFetch(`/api/orgs/${encodeURIComponent(target)}`, { headers: { 'X-Railgrid-Org': target } })
+    if (revision !== generation) return
+    if (!response.ok) throw new Error('Unable to check organization readiness. Try again.')
+    const latest = await response.json() as OrgRow
+    if (revision !== generation) return
+    if (latest.uuid !== target || latest.deletionRequestedAt) throw new Error('This organization is unavailable.')
+    await tenant.fetchWorkspaces(target, { selectDefault: false })
+    if (revision !== generation) return
+    loadedOrg.value = latest
+  } catch (e) {
+    if (revision !== generation) return
+    loading.value = false
+    waiting.value = false
+    error.value = e instanceof Error ? e.message : 'Unable to check organization readiness. Try again.'
+    return
+  }
   if (revision !== generation) return
   loading.value = false
   if (tenant.workspaceLoadStateByOrg[target] !== 'ready') {
@@ -51,7 +71,7 @@ async function load(revision = generation) {
     await enter(workspace)
     return
   }
-  waiting.value = rows.value.some(row => !isWorkspaceUsable(row)) || (route.query.preparing === '1' && rows.value.length === 0)
+  waiting.value = rows.value.some(row => !isWorkspaceUsable(row)) || org.value?.initialWorkspacePending === true
   // Poll only while provisioning, and stop after a minute or leaving this page.
   timedOut.value = waiting.value && Date.now() - started >= 60_000
   if (waiting.value && !timedOut.value) timer = setTimeout(() => { void load(revision) }, 2500)
@@ -60,7 +80,7 @@ function retry() {
   clearTimeout(timer)
   timedOut.value = false
   started = Date.now()
-  void load(++generation)
+  return load(++generation)
 }
 async function create() {
   if (!name.value.trim() || !canCreate.value || creating.value) return
@@ -73,7 +93,8 @@ async function create() {
     if (revision !== generation) return
     if (!created) throw new Error('Unable to create the workspace. Try again.')
     name.value = ''
-    retry()
+    creating.value = false
+    await retry()
   } catch (e) {
     if (revision === generation) error.value = e instanceof Error ? e.message : 'Unable to create workspace.'
   } finally { if (revision === generation) creating.value = false }
@@ -81,6 +102,7 @@ async function create() {
 watch(orgID, () => {
   clearTimeout(timer)
   search.value = ''
+  loadedOrg.value = null
   creating.value = false
   waiting.value = false
   retry()

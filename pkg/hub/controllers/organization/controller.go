@@ -73,6 +73,10 @@ type WorkspaceProvisioner interface {
 	// Idempotent.
 	EnsureOrgMembership(ctx context.Context, orgUUID, userName, role string) error
 
+	// ListOrgMembershipRoles reads current organization membership authority.
+	// Initial workspace access includes every current org administrator.
+	ListOrgMembershipRoles(ctx context.Context, orgUUID string) (map[string]string, error)
+
 	// EnsureChildWorkspace materializes the kcp Workspace at
 	// root:railgrid:tenants:{orgUUID}:{wsUUID} of type `workspace`. Used to
 	// create the initial team Workspace inside either organization kind.
@@ -516,7 +520,7 @@ func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alph
 		changed = true
 	}
 
-	// Step H: cluster-admin RBAC for the user in the default Workspace
+	// Step H: cluster-admin RBAC for every current org admin in the default Workspace
 	// (only attempt after G succeeded — the rbacIdentity needs the
 	// railgrid APIBinding's claim acceptance to write the ClusterRoleBinding).
 	var adminCond metav1.Condition
@@ -543,7 +547,7 @@ func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alph
 			Message: "User.spec.RBACIdentity is empty; admin grant deferred.",
 		}
 	default:
-		if err := r.provisioner.EnsureChildWorkspaceAdmin(ctx, org.Name, wsUUID, user.Spec.RBACIdentity); err != nil {
+		if err := r.initializeWorkspaceAdminAccess(ctx, org.Name, wsUUID); err != nil {
 			logger.Error(err, "Granting workspace-admin failed; will retry")
 			adminCond = metav1.Condition{
 				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
@@ -556,7 +560,7 @@ func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alph
 				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
 				Status:  metav1.ConditionTrue,
 				Reason:  reasonWorkspaceAdminReady,
-				Message: "Cluster-admin granted to " + user.Spec.RBACIdentity + " in " + desiredPath + ":" + wsUUID + ".",
+				Message: "Current organization administrators granted access in " + desiredPath + ":" + wsUUID + ".",
 			}
 			workspaceAdminOK = true
 		}
