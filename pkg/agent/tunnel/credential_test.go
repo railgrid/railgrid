@@ -20,11 +20,71 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
+
+func TestTunnelSignalsEnrollmentOnAuthenticatedReconnect(t *testing.T) {
+	for _, tc := range []struct {
+		name                                 string
+		fallback, issue, reject, persistFail bool
+		want                                 string
+	}{
+		{name: "saved credential", want: "saved"},
+		{name: "rejected saved credential", reject: true},
+		{name: "bootstrap without bundle", fallback: true},
+		{name: "bootstrap with bundle", fallback: true, issue: true, want: "new"},
+		{name: "bundle survives persistence error", fallback: true, issue: true, persistFail: true, want: "new"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &CredentialStore{Fallback: func() string { return "join" }}
+			if err := store.Adopt(Credential{Token: "saved", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.fallback {
+				store.Rejected()
+			}
+			if tc.persistFail {
+				store.Persist = func(Credential) error { return errors.New("disk unavailable") }
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.reject {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				headers := http.Header{}
+				if tc.issue {
+					data, err := json.Marshal(Credential{Token: "new", ExpiresAt: time.Now().Add(time.Hour)})
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					headers.Set(CredentialHeader, base64.StdEncoding.EncodeToString(data))
+				}
+				upgrader := websocket.Upgrader{}
+				conn, err := upgrader.Upgrade(w, r, headers)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_ = conn.Close()
+			}))
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			got := ""
+			_ = startTunneler(ctx, srv.URL, store, "mac-mini", "macos", nil, nil, nil, 0, SvcProxyOptions{}, "tenant", func(c Credential) { got = c.Token }, nil)
+			if got != tc.want {
+				t.Fatalf("enrollment credential = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 // The bundle crosses a process boundary between the edges provider and this
 // agent, so the encoding is pinned from the agent's side too: the provider
@@ -218,5 +278,45 @@ func TestCredentialStoreRejectedFallsBackToTheJoinToken(t *testing.T) {
 	}
 	if got := noFallback.Token(); got != "only" {
 		t.Fatalf("Token() = %q, want the only credential there is", got)
+	}
+}
+
+func TestAddonCredentialsDiscoversRouteFromRefresh(t *testing.T) {
+	calls := []string{}
+	var hub string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		switch r.URL.Path {
+		case "/refresh":
+			if r.Header.Get("Authorization") != "Bearer saved" {
+				t.Error("refresh used wrong identity")
+			}
+			_ = json.NewEncoder(w).Encode(Credential{Token: "renewed", ExpiresAt: time.Now().Add(time.Hour), HubURL: hub, RefreshPath: "/refresh", AddonCredentialsPath: "/declared-addon-route"})
+		case "/declared-addon-route":
+			if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer renewed" {
+				t.Error("exchange did not use renewed identity")
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["addon"] != "runner" {
+				t.Error("incorrect add-on request")
+			}
+			_, _ = w.Write([]byte(`{"result":"ok"}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	hub = srv.URL
+	store := &CredentialStore{}
+	if err := store.Adopt(Credential{Token: "saved", ExpiresAt: time.Now().Add(time.Hour), HubURL: hub, RefreshPath: "/refresh"}); err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]string
+	if err := store.AddonCredentials(context.Background(), map[string]string{"addon": "runner"}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || result["result"] != "ok" {
+		t.Fatalf("calls=%v result=%v", calls, result)
 	}
 }

@@ -72,8 +72,9 @@ type Credential struct {
 	Resource  string `json:"resource"`
 	Name      string `json:"name"`
 
-	RefreshPath        string `json:"refreshPath"`
-	SSHCredentialsPath string `json:"sshCredentialsPath,omitempty"`
+	RefreshPath          string `json:"refreshPath"`
+	SSHCredentialsPath   string `json:"sshCredentialsPath,omitempty"`
+	AddonCredentialsPath string `json:"addonCredentialsPath,omitempty"`
 }
 
 // DecodeCredential parses the base64(JSON) bundle from the upgrade response.
@@ -316,4 +317,51 @@ func (s *CredentialStore) client() *http.Client {
 		transport.TLSClientConfig = s.TLSConfig
 	}
 	return &http.Client{Timeout: 30 * time.Second, Transport: transport}
+}
+
+// AddonCredentials calls the provider-owned credential exchange. Refreshing an
+// older bundle discovers newly introduced routes without hardcoding a URL.
+func (s *CredentialStore) AddonCredentials(ctx context.Context, body any, result any) error {
+	if err := s.EnsureFresh(ctx); err != nil {
+		return err
+	}
+	credential, ok := s.Current()
+	if !ok {
+		return errors.New("no agent credential yet")
+	}
+	if credential.AddonCredentialsPath == "" {
+		updated, err := s.refresh(ctx, credential)
+		if err != nil {
+			return err
+		}
+		if err := s.Adopt(updated); err != nil {
+			return err
+		}
+		credential = updated
+	}
+	if credential.AddonCredentialsPath == "" {
+		return errors.New("provider does not support add-on credentials")
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(credential.HubURL, "/")+credential.AddonCredentialsPath, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+credential.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("add-on credential exchange: HTTP %d", resp.StatusCode)
+	}
+	if result != nil {
+		return json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(result)
+	}
+	return nil
 }

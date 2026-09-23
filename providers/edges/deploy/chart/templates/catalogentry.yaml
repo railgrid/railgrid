@@ -63,7 +63,7 @@ data:
             resource: namespaces
             verbs: [get, list, watch, create]
             tenantScoped: true
-          # Secrets, and ONLY the ones labelled railgrid.ai/owner: edges. Four
+          # Secrets, and ONLY the ones labelled railgrid.ai/owner: edges. Five
           # shapes, each written by a party this provider controls, each of which
           # stamps the label:
           #
@@ -76,8 +76,9 @@ data:
           #     (portal/src/api.ts) and read by the validation reconciler. The
           #     service-proxy read path already runs as the caller and needs no
           #     claim.
-          #   default/<addon>-runner-token             published by the edge agent
-          #     itself (pkg/agent/addons/runner.go) for the add-on reconciler.
+          #   default/<addon>-runner-token             published by this provider
+          #     through addon-credentials for the add-on reconciler.
+          #   add-on harness auth references, explicitly labelled by the tenant.
           #   whatever spec.sshCredentialsRef names, which is normally the first.
           #
           # Without the selector this claim is read-write on EVERY Secret in EVERY
@@ -153,12 +154,18 @@ data:
             description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
             readOnly: true
           - resource: linuxservers
+            verb: addon-credentials
+            description: Read runner auth and publish its token for an add-on assigned to this edge
+          - resource: linuxservers
             verb: agent-token
             description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
             readOnly: true
           - resource: linuxservers
             verb: ssh-credentials
             description: "Hand the host's SSH credentials to the provider, which records them against this edge. Replaces the agent holding core-group Secrets access, which the hub's identity policy refuses to mint."
+          - resource: macosservers
+            verb: addon-credentials
+            description: Read runner auth and publish its token for an add-on assigned to this edge
           - resource: macosservers
             verb: agent-token
             description: "Re-mint the calling agent's own TTL'd credential. MacOSServer serves no consumer verb, but its agent still has a credential to rotate."

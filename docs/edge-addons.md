@@ -56,6 +56,22 @@ $ kubectl get linuxserver build-01 -o jsonpath='{.status.allowedAddons}'
 An empty list means the machine accepts no add-on. The list is republished on
 every heartbeat, so dropping `--allow-addon` and restarting the agent clears it.
 
+### Credential exchange
+
+Scoped edge identities have no core Secret or Namespace permissions. The agent
+uses the provider-declared `addon-credentials` verb on its own LinuxServer or
+MacOSServer. The provider checks both ordinary data-plane gates, verifies the
+Addon belongs to that edge, reads only its configured harness auth reference,
+and publishes only `default/<addon>-runner-token`, pinned to the Addon's UID.
+The auth Secret must carry `railgrid.ai/owner: edges`, explicitly placing it
+within the provider's existing label-scoped permission claim. Only the active
+harness's credential keys are returned. A token Secret with another owner is
+never overwritten.
+
+Older saved enrollment bundles discover the new route by refreshing through
+`agent-token`. Upgrade the provider and agent together; older agents still
+attempt direct Secret access and receive a Forbidden error.
+
 ### RBAC: who may create an Addon
 
 Creating an `Addon` is **not** granted implicitly anywhere.

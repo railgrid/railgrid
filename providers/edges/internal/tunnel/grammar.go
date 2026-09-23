@@ -80,12 +80,14 @@ const (
 	// replaces the agent holding core-group Secrets and Namespaces access,
 	// which the hub's identity policy refuses to mint for anyone.
 	VerbSSHCredentials = "ssh-credentials"
+	// VerbAddonCredentials exchanges credentials for a runner bound to this edge.
+	VerbAddonCredentials = "addon-credentials"
 )
 
 // dataPlaneVerbs is the closed {resource} × {verb} matrix. A pair that is not
 // in it is a 404 before any gate runs, so an un-served verb can never reach a
 // handler and can never be probed for the existence of an object.
-// MacOSServer carries agent-token and nothing else: it is a Service-only host
+// MacOSServer carries agent-token and addon-credentials: it is a Service-only host
 // edge with no Kubernetes API and no SSH data plane, so it serves no CONSUMER
 // verb — but its agent still has a credential to rotate, and an edge whose
 // agent cannot refresh would lock itself out at TTL. Its host-local services
@@ -96,8 +98,8 @@ const (
 // KubernetesCluster agent reaches its host through the Kubernetes API.
 var dataPlaneVerbs = map[string]map[string]bool{
 	kubernetesClusterResource: {VerbK8s: true, VerbSSH: true, VerbMCP: true, VerbTicket: true, VerbAgentToken: true},
-	linuxServerResource:       {VerbK8s: true, VerbSSH: true, VerbTicket: true, VerbAgentToken: true, VerbSSHCredentials: true},
-	macOSServerResource:       {VerbAgentToken: true},
+	linuxServerResource:       {VerbK8s: true, VerbSSH: true, VerbTicket: true, VerbAgentToken: true, VerbSSHCredentials: true, VerbAddonCredentials: true},
+	macOSServerResource:       {VerbAgentToken: true, VerbAddonCredentials: true},
 	serviceResource:           {VerbProxy: true, VerbMCP: true, VerbTicket: true},
 }
 

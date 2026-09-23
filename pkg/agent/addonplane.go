@@ -26,8 +26,8 @@ import (
 	"sort"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/pkg/agent/addons"
@@ -138,11 +138,6 @@ func (a *Agent) startAddonManager(ctx context.Context, logger klog.Logger) []str
 		logger.Error(err, "add-on plane disabled: cannot build a hub dynamic client")
 		return nil
 	}
-	hubKube, err := kubernetes.NewForConfig(a.hubConfig)
-	if err != nil {
-		logger.Error(err, "add-on plane disabled: cannot build a hub clientset")
-		return nil
-	}
 
 	manager, err := addons.NewManager(hubDynamic, addons.Options{
 		EdgeKind: railgridclient.EdgeKindForType(string(a.agentType)),
@@ -158,7 +153,14 @@ func (a *Agent) startAddonManager(ctx context.Context, logger klog.Logger) []str
 		EdgeName:   a.opts.EdgeName,
 		Executable: executable,
 		Account:    account,
-		Kube:       hubKube,
+		ReadAuth: func(ctx context.Context, name string, ref *addons.SecretRef) (*corev1.Secret, error) {
+			var secret corev1.Secret
+			err := a.credentials.AddonCredentials(ctx, map[string]any{"addon": name, "authSecretRef": ref}, &secret)
+			return &secret, err
+		},
+		PublishToken: func(ctx context.Context, spec addons.Spec, token string) error {
+			return a.credentials.AddonCredentials(ctx, map[string]any{"addon": spec.Name, "uid": spec.UID, "token": token}, nil)
+		},
 	})
 	if err != nil {
 		logger.Error(err, "add-on plane disabled: cannot build the runner add-on")
