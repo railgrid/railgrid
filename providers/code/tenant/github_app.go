@@ -39,22 +39,33 @@ type CredentialResolver struct {
 	OAuth *OAuthRefresher
 }
 
-// ResolveStored resolves the credential held in data, first renewing an
-// expiring OAuth token and persisting it through store. secretKey identifies
-// the Secret (cluster/namespace/name) so concurrent refreshes serialize.
-func (r CredentialResolver) ResolveStored(ctx context.Context, conn *api.Connection, secretKey string, data map[string][]byte, store SecretStore) (backend.Credential, error) {
-	if r.OAuth.refreshable(conn) {
-		key := conn.Spec.SecretRef.Key
-		if key == "" {
-			key = DefaultTokenKey
-		}
-		fresh, err := r.OAuth.Fresh(ctx, secretKey, key, data, store)
-		if err != nil {
-			return backend.Credential{}, err
-		}
-		data = fresh
+// CredentialTokenKey names the Secret data key holding the Connection's
+// token, falling back to the convention when secretRef.Key is empty.
+func CredentialTokenKey(conn *api.Connection) string {
+	if key := conn.Spec.SecretRef.Key; key != "" {
+		return key
 	}
-	return r.Resolve(ctx, conn, data)
+	return DefaultTokenKey
+}
+
+// refreshed returns data with a usable token in it, renewing an expiring OAuth
+// token and persisting it through store first. secretKey identifies the Secret
+// (cluster/namespace/name) so concurrent refreshes serialize.
+func (r CredentialResolver) refreshed(ctx context.Context, conn *api.Connection, secretKey string, data map[string][]byte, store SecretStore) (map[string][]byte, error) {
+	if !r.OAuth.refreshable(conn) {
+		return data, nil
+	}
+	return r.OAuth.Fresh(ctx, secretKey, CredentialTokenKey(conn), data, store)
+}
+
+// ResolveStored resolves the credential held in data, first renewing an
+// expiring OAuth token and persisting it through store.
+func (r CredentialResolver) ResolveStored(ctx context.Context, conn *api.Connection, secretKey string, data map[string][]byte, store SecretStore) (backend.Credential, error) {
+	fresh, err := r.refreshed(ctx, conn, secretKey, data, store)
+	if err != nil {
+		return backend.Credential{}, err
+	}
+	return r.Resolve(ctx, conn, fresh)
 }
 
 func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, data map[string][]byte) (backend.Credential, error) {
@@ -62,10 +73,7 @@ func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, d
 		if conn.Spec.Type != api.CredentialTypePAT && conn.Spec.Type != api.CredentialTypeOAuth && conn.Spec.Type != "" {
 			return backend.Credential{}, errors.New("unsupported Code credential type")
 		}
-		key := conn.Spec.SecretRef.Key
-		if key == "" {
-			key = DefaultTokenKey
-		}
+		key := CredentialTokenKey(conn)
 		// Trim: a Secret created from a file or `cmd | kubectl create secret
 		// --from-file` keeps the trailing newline, which net/http rejects as an
 		// invalid Authorization header value before GitHub is ever called.
@@ -88,9 +96,10 @@ func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, d
 // permissions, when non-empty, asks GitHub to issue the token with LESS than
 // the installation holds — the documented way to get a narrow, short-lived
 // credential out of an App. It is how mint_registry_token hands out a
-// packages:read token instead of the credential that can also push code: a
+// packages:read token instead of the credential that can also push code — a
 // pull secret sits on a runtime cluster for as long as the workload does, so
-// it must not be able to do anything but pull.
+// it must not be able to do anything but pull — and how mint_clone_token hands
+// out a contents:read token that can fetch one repository and nothing more.
 func (r CredentialResolver) installationToken(ctx context.Context, conn *api.Connection, data map[string][]byte, permissions map[string]string) (string, time.Time, error) {
 	appID, err := strconv.ParseInt(strings.TrimSpace(string(data["appID"])), 10, 64)
 	if err != nil || appID <= 0 {

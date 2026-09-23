@@ -149,6 +149,12 @@ func (a *Agent) startAddonManager(ctx context.Context, logger klog.Logger) []str
 		return nil
 	}
 
+	// The add-on's two Secret paths run through the agent's own credential
+	// store, not a tenant clientset: an agent holds no core-group `secrets`
+	// rule (the hub's identity policy mints none for anyone), so the harness
+	// credential is fetched and the runner token handed over through the
+	// gated runner-auth / runner-token verbs on this edge. See
+	// docs/edges-agent-credentials.md.
 	runnerFactory, err := addons.NewRunnerFactory(addons.RunnerOptions{
 		EdgeName:   a.opts.EdgeName,
 		Executable: executable,

@@ -36,7 +36,8 @@ upgrade response: base64 of
   "provider": "edges", "clusterID": "2hx82dl9ncmepp5l",
   "resource": "linuxservers", "name": "edge-1",
   "refreshPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/agent-token",
-  "sshCredentialsPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/ssh-credentials"
+  "sshCredentialsPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/ssh-credentials",
+  "addonCredentialsPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/addon-credentials"
 }
 ```
 
@@ -124,6 +125,65 @@ That is why the agent holds no core-group access at all any more, and why the
 provider keeps its `secrets`/`namespaces` claims: the write did not disappear,
 it moved to the side of the boundary that can be held accountable for it.
 
+## A managed runner's credential
+
+The same rule, and the same solution, in both directions.
+
+An `Addon` of type `runner` needs two Secrets in the tenant workspace. The
+tenant supplies one — the harness credential, a Codex `auth.json` or a Claude
+Code token — and points `spec.runner.{codex,claude}.authSecretRef` at it. The
+agent generates the other: the runner's own bearer, which the edges `Service`
+derived from the Addon presents on every call.
+
+The agent used to read the first and write the second **itself**, with the core
+`secrets` grant it no longer has. After the scoped-identity migration a managed
+runner therefore failed in exactly the way the design says it should:
+
+```
+ClaudeAuthMissing: reading auth Secret default/dev-edge-server-1-runner-claude-auth:
+  secrets "…" is forbidden: User "system:serviceaccount:default:railgrid-si-…" cannot get
+  resource "secrets" in API group ""
+Published through Edges: waiting for the agent to publish Secret default/…-runner-token
+```
+
+Both halves are one declared, gated verb on the edge kinds that can host an
+add-on (`linuxservers`, `macosservers`):
+
+| Direction | Body | Answer |
+| --- | --- | --- |
+| read the harness credential | `{"addon": "<name>", "authSecretRef": {"name", "namespace"}}` | a `Secret` carrying only the keys that harness can use |
+| publish the runner token | `{"addon": "<name>", "uid": "<addon uid>", "token": "<bearer>"}` | `204`, the token Secret written |
+
+The verb is `{resource}/addon-credentials`, and which half runs is decided by
+which member the body carries. It runs the ordinary two gates as the agent, and
+then **one more check that is the point of the design**: the named `Addon` must
+have a `spec.edgeRef` pointing back at the edge in the path. The agent names an
+add-on and nothing else — not a namespace, not a key; the auth reference it
+sends must match the one the Addon's own spec records, or the call is refused.
+Everything the provider touches it derives from that Addon's own spec:
+
+- the read half reads the Secret `spec.runner.<harness>.authSecretRef` names and
+  returns **only** the keys that harness can use (`auth.json` for Codex,
+  `oauthToken`/`apiKey` for Claude Code), so a Secret that also carries
+  unrelated material never hands that material to a code-execution host. An
+  add-on that is not on this edge gets the same `404` as one that does not
+  exist, so the verb cannot be used to enumerate the workspace.
+- the publish half writes `default/<addon>-runner-token` (key `token`) with
+  `railgrid.ai/owner: edges` — without which the provider could not read back
+  its own write, because kcp filters the label-scoped `secrets` claim out of
+  LIST/WATCH and answers a GET with `404` — and the `ownerReference` to the
+  `Addon` that makes deleting the add-on delete its credential.
+
+The tenant's own Secret needs that label too, and for the same reason: the
+consumer is **edges**, not whoever wrote it. Factory's managed-runner form
+stamps it (`providers/factory/portal/src/workers/enrollment.ts`); a
+hand-written Secret must carry it as well, which is the tenant saying "this one
+is for edges".
+
+The agent re-reads through `addon-credentials` on **every** reconcile and caches
+nothing, so a rotated credential takes effect on the next resync — the
+credential's digest, never the credential, feeds the child's restart hash.
+
 ## Revocation
 
 - **On delete** — the RBAC reconciler holds the finalizer
@@ -142,7 +202,7 @@ exports, so the hub admits the request whole:
 | Rule | Scope |
 |---|---|
 | `get` on `{resource}` | this edge only (gate 1) |
-| `create` on `{resource}/{agent-token,k8s,mcp,proxy,ssh,ssh-credentials}` | this edge only (gate 2) |
+| `create` on `{resource}/{addon-credentials,agent-token,k8s,mcp,proxy,ssh,ssh-credentials}` | this edge only (gate 2) |
 | `get,update,patch` on `{resource}/status` | this edge only |
 | `list,watch` on `{resource}` | kind-wide — RBAC cannot name-scope a collection request |
 | `get,list,watch,update,patch` on `placements(/status)` | workload plane |

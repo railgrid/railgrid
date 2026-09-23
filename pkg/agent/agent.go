@@ -737,13 +737,20 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	// the tunnel to deliver a SA kubeconfig via token-exchange, then rebuild
 	// hubClient from it so the reporters/reconcilers below have working
 	// credentials on the first run (instead of needing a manual restart).
+	// An agent that already holds a saved credential has nothing to wait for:
+	// it reconnects with that credential, so the provider sends no enrolment
+	// bundle and the wait below would never end — taking the add-on plane, the
+	// status reporter and everything after them with it, on every restart. The
+	// hub client is still rebuilt from whichever credential the store holds.
 	if a.opts.Token != "" && !IsInCluster() {
-		logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
-		select {
-		case <-ctx.Done():
-			logger.Info("Agent shutting down before enrolment completed")
-			return nil
-		case <-agentEnrolled:
+		if _, held := a.credentials.Current(); !held {
+			logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
+			select {
+			case <-ctx.Done():
+				logger.Info("Agent shutting down before enrolment completed")
+				return nil
+			case <-agentEnrolled:
+			}
 		}
 		refreshed, err := a.refreshHubClientFromCredential()
 		if err != nil {
@@ -851,6 +858,8 @@ func (a *Agent) newCredentialStore() *tunnel.CredentialStore {
 				"edgeName", edgeName, "reason", reason)
 		} else {
 			_ = store.Adopt(credential)
+			klog.Background().Info("using the saved agent credential; the join token is only a fallback",
+				"edgeName", edgeName, "expiresAt", credential.ExpiresAt.Format(time.RFC3339))
 		}
 	}
 	return store
@@ -978,13 +987,20 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// Out-of-cluster join-token mode: wait for the SA kubeconfig before
 	// starting the edge_reporter, otherwise its patch calls would all return
 	// Unauthorized until a restart.
+	// An agent that already holds a saved credential has nothing to wait for:
+	// it reconnects with that credential, so the provider sends no enrolment
+	// bundle and the wait below would never end — taking the add-on plane, the
+	// status reporter and everything after them with it, on every restart. The
+	// hub client is still rebuilt from whichever credential the store holds.
 	if a.opts.Token != "" && !IsInCluster() {
-		logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
-		select {
-		case <-ctx.Done():
-			logger.Info("Agent shutting down before enrolment completed")
-			return nil
-		case <-serverAgentEnrolled:
+		if _, held := a.credentials.Current(); !held {
+			logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
+			select {
+			case <-ctx.Done():
+				logger.Info("Agent shutting down before enrolment completed")
+				return nil
+			case <-serverAgentEnrolled:
+			}
 		}
 		refreshed, err := a.refreshHubClientFromCredential()
 		if err != nil {

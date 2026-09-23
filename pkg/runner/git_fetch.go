@@ -18,6 +18,7 @@ package runner
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -197,7 +198,47 @@ func fetchRemoteKindOf(remote string) fetchRemoteKind {
 // fetchGitEnvironment is intentionally separate from sanitizedGitEnvironment.
 // SSH_AUTH_SOCK is allowed only for the one explicitly configured SSH fetch;
 // it remains absent from all source-only Git operations and the harness.
-func fetchGitEnvironment(remote string) []string {
+// gitCredential is a short-lived HTTPS credential for one fetch. It is held
+// in memory for the length of that subprocess and nothing else: it is never
+// written to the repository's Git configuration, never put on the command
+// line, where every user on the host could read it out of the process table,
+// and never logged.
+type gitCredential struct {
+	Username string
+	Token    string
+}
+
+// environ renders the credential as Git configuration passed through the
+// environment. A basic-auth header is what both GitHub's installation tokens
+// and ordinary personal access tokens expect.
+func (c *gitCredential) environ(remote string) []string {
+	if c == nil || strings.TrimSpace(c.Token) == "" || fetchRemoteKindOf(remote) != fetchRemoteHTTPS {
+		return nil
+	}
+	prefix := credentialURLPrefix(remote)
+	if prefix == "" {
+		return nil
+	}
+	header := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(c.Username+":"+c.Token))
+	return []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http." + prefix + ".extraheader",
+		"GIT_CONFIG_VALUE_0=" + header,
+	}
+}
+
+// credentialURLPrefix is the scheme-and-host form Git matches an
+// http.<url>.* setting against, so the header is only ever sent to the host
+// the credential was minted for.
+func credentialURLPrefix(remote string) string {
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	return "https://" + parsed.Host + "/"
+}
+
+func fetchGitEnvironment(remote string, credential *gitCredential) []string {
 	env := make([]string, 0, len(os.Environ())+7)
 	for _, value := range os.Environ() {
 		key, _, ok := strings.Cut(value, "=")
@@ -222,10 +263,26 @@ func fetchGitEnvironment(remote string) []string {
 			env = append(env, "SSH_AUTH_SOCK="+socket)
 		}
 	}
-	return env
+	return append(env, credential.environ(remote)...)
 }
 
-func fetchExactCommit(ctx context.Context, workdir, remote, commit string) error {
+func fetchExactCommit(ctx context.Context, workdir, remote, commit string, credential *gitCredential) error {
+	if !commitPattern.MatchString(commit) {
+		return errors.New("fetch commit is not a full 40-character commit")
+	}
+	return runGitFetch(ctx, workdir, remote, credential, strings.ToLower(commit))
+}
+
+// fetchRefspec fetches one refspec into a repository the runner owns, so the
+// objects it brings down stay referenced and survive garbage collection.
+func fetchRefspec(ctx context.Context, dir, remote string, credential *gitCredential, refspec string) error {
+	if strings.TrimSpace(refspec) == "" || strings.HasPrefix(refspec, "-") {
+		return errors.New("fetch refspec is invalid")
+	}
+	return runGitFetch(ctx, dir, remote, credential, refspec)
+}
+
+func runGitFetch(ctx context.Context, workdir, remote string, credential *gitCredential, target string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -233,10 +290,7 @@ func fetchExactCommit(ctx context.Context, workdir, remote, commit string) error
 	if err != nil {
 		return fmt.Errorf("fetch remote URL is not allowed: %w", err)
 	}
-	if !commitPattern.MatchString(commit) {
-		return errors.New("fetch commit is not a full 40-character commit")
-	}
-	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	args := []string{
 		"-c", "core.hooksPath=/dev/null",
@@ -251,10 +305,10 @@ func fetchExactCommit(ctx context.Context, workdir, remote, commit string) error
 		// when a ref reaches it — the refreshed checkout's remote-tracking ref.
 		args = append(args, "-c", "uploadpack.allowReachableSHA1InWant=true")
 	}
-	args = append(args, "fetch", "--no-tags", "--no-prune", "--no-write-fetch-head", remote, strings.ToLower(commit))
+	args = append(args, "fetch", "--no-tags", "--no-prune", "--no-write-fetch-head", remote, target)
 	cmd := exec.CommandContext(cmdCtx, "git", args...)
 	cmd.Dir = workdir
-	cmd.Env = fetchGitEnvironment(remote)
+	cmd.Env = fetchGitEnvironment(remote, credential)
 	var stderr boundedGitBuffer
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &stderr
@@ -262,7 +316,7 @@ func fetchExactCommit(ctx context.Context, workdir, remote, commit string) error
 		// The protocol error stays generic (it is relayed to the coordinator);
 		// git's own words go to the runner log, where the operator of this
 		// host — the only one who can fix a remote's access — reads them.
-		log.Printf("git fetch of %s from %s failed: %s", strings.ToLower(commit), remote, logLine(stderr.String()))
+		log.Printf("git fetch of %s from %s failed: %s", target, remote, logLine(stderr.String()))
 		return boundedGitFetchError(remote, stderr.String(), runErr, cmdCtx.Err())
 	}
 	return nil

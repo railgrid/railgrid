@@ -113,7 +113,7 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 			return
 		}
 
-		// Three verbs answer here, before any tunnel lookup, because they act
+		// These verbs answer here, before any tunnel lookup, because they act
 		// on the OBJECT rather than through the tunnel — and an edge that is
 		// momentarily disconnected (or, for agent-token, an agent whose tunnel
 		// is exactly what it is trying to re-establish) must still be served.

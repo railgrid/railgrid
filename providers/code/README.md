@@ -138,10 +138,10 @@ recorded upstream repository ID, and rejects replacement or redirection. Tenant
 callers need no Secret access. Responses use the shared Provider Action
 envelope: `requestID`, provider/action identity, `resourceRef`, and exactly one
 of `result` or `error`. `X-Request-ID` supplies the correlation ID.
-The CatalogEntry advertises the fourteen bounded
+The CatalogEntry advertises the fifteen bounded
 action schemas and their digests.
 
-One of the fourteen is bound to a `Connection` instead of a `Repository`:
+One of the fifteen is bound to a `Connection` instead of a `Repository`:
 `mint_registry_token/v1` issues a short-lived image-pull credential for the
 connection's container registry, so a consumer that has to pull an image built
 from a tenant's repository never reads this provider's `Connection` Secret to
@@ -149,6 +149,19 @@ get one. It is gated on `connections/mint_registry_token`, which no repository
 grant reaches. See
 [docs/code-provider-architecture.md](../../docs/code-provider-architecture.md)
 §"`mint_registry_token`".
+
+`mint_clone_token/v1` is its repository-bound sibling: it returns
+`{remoteURL, username, token, expiresAt?, scoped}` — a short-lived, read-only
+git clone credential for ONE repository, so a managed runner can clone the
+tenant's repository itself instead of relying on a checkout that happens to
+exist on the edge host, and never holds the connection's push-capable
+credential. For a GitHub App connection the token is a fresh installation token
+issued with `contents:read` alone (`scoped: true`, about an hour); a PAT or
+OAuth connection cannot be narrowed by any GitHub API, so the stored token is
+returned with `scoped: false`. `remoteURL` never carries the credential inline,
+and a connection holding no token still reports the remote with an empty
+`token` so a public repository clones anonymously. It is gated on
+`repositories/mint_clone_token`, per repository.
 
 `commit/v1` is the one repository action that does not talk to a git host.
 It writes the files it is handed into this provider's own bundle store and

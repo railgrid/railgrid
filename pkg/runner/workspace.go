@@ -32,11 +32,18 @@ import (
 
 var commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
-func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest) (string, error) {
-	repo, ok := cfg.Repositories[request.RepositoryID]
-	if !ok {
-		return "", fmt.Errorf("repository %q is not enrolled", request.RepositoryID)
-	}
+// prepareWorkspace produces the private worktree an attempt runs in. There
+// are two ways the runner can reach the approved commit, and it does not need
+// the operator to have staged anything for the second:
+//
+//   - an enrolled local checkout, which the runner treats as read-only and
+//     refreshes from its own origin when the approved base has moved past it;
+//   - a clone the runner owns, kept under its state directory and filled from
+//     the remote the coordinator names with the attempt.
+//
+// Either way the task worktree is a fresh clone at the approved commit.
+func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest, dispatched *RepositorySource) (string, error) {
+	repo := cfg.Repositories[request.RepositoryID]
 	baseCommit := strings.TrimSpace(request.BaseCommit)
 	if !commitPattern.MatchString(baseCommit) {
 		return "", errors.New("baseCommit must be a full 40-character commit")
@@ -45,41 +52,25 @@ func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest) (st
 	if repo.BaseCommit != "" && strings.ToLower(strings.TrimSpace(repo.BaseCommit)) != baseCommit {
 		return "", errors.New("base commit is not the exact commit enrolled for this repository")
 	}
-	fetchRemote := strings.TrimSpace(repo.FetchRemoteURL)
-	if fetchRemote != "" {
-		var err error
-		fetchRemote, err = validateFetchRemoteURL(fetchRemote)
-		if err != nil {
-			return "", fmt.Errorf("repository fetch remote URL is not allowed: %w", err)
-		}
-	}
-	source, err := filepath.Abs(repo.Source)
+	remote, credential, err := repositoryRemote(repo, dispatched)
 	if err != nil {
-		return "", fmt.Errorf("resolve repository source: %w", err)
+		return "", err
 	}
-	if info, err := os.Stat(source); err != nil || !info.IsDir() {
-		if err == nil {
-			err = errors.New("source is not a directory")
-		}
-		return "", fmt.Errorf("repository source unavailable: %w", err)
+
+	var source string
+	var sourceHasCommit bool
+	if strings.TrimSpace(repo.Source) != "" {
+		source, sourceHasCommit, err = enrolledCheckout(ctx, repo, baseCommit)
+	} else {
+		source, sourceHasCommit, err = managedClone(ctx, cfg, request.RepositoryID, remote, credential, baseCommit)
 	}
-	sourceHasCommit := sourceHas(ctx, source, baseCommit)
-	if !sourceHasCommit {
-		// The approved base moved past the enrolled checkout — a merged pull
-		// request, most often. The checkout is the operator's own clone, so it
-		// is brought current from its own origin exactly as the operator would,
-		// with the operator's Git configuration and credentials for it. Only
-		// the runner runs this, never the harness, and only remote-tracking
-		// refs move: the checkout's branch and working tree are left alone.
-		if err := refreshEnrolledSource(ctx, source); err != nil {
-			log.Printf("enrolled source %s could not be refreshed from its origin: %v", source, err)
-		} else {
-			sourceHasCommit = sourceHas(ctx, source, baseCommit)
-		}
+	if err != nil {
+		return "", err
 	}
-	if !sourceHasCommit && fetchRemote == "" {
+	if !sourceHasCommit && remote == "" {
 		return "", errors.New("base commit is not available in the enrolled source")
 	}
+
 	workdir := filepath.Join(cfg.StateDir, "worktrees", request.TaskID, request.AttemptID)
 	if info, err := os.Lstat(workdir); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -112,25 +103,24 @@ func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest) (st
 		_ = os.RemoveAll(workdir)
 		return "", fmt.Errorf("clone task worktree: %w", err)
 	}
-	cloneHasCommit := sourceHas(ctx, workdir, baseCommit)
-	if !cloneHasCommit {
+	if !sourceHas(ctx, workdir, baseCommit) {
 		// A clone copies branches and tags, not the remote-tracking refs a
 		// refreshed checkout holds the base under, so the commit is fetched
-		// from the checkout over local transport first; the opted-in remote
-		// remains the fallback for a commit the checkout only has unreachably.
+		// from the source over local transport first; the remote remains the
+		// fallback for a commit the source only has unreachably.
 		var err error
 		if sourceHasCommit {
-			err = fetchExactCommit(ctx, workdir, source, baseCommit)
+			err = fetchExactCommit(ctx, workdir, source, baseCommit, nil)
 		}
 		if !sourceHasCommit || err != nil {
-			if fetchRemote == "" {
+			if remote == "" {
 				_ = os.RemoveAll(workdir)
 				if err != nil {
 					return "", err
 				}
 				return "", errors.New("base commit is not available in the cloned source")
 			}
-			err = fetchExactCommit(ctx, workdir, fetchRemote, baseCommit)
+			err = fetchExactCommit(ctx, workdir, remote, baseCommit, credential)
 		}
 		if err != nil {
 			_ = os.RemoveAll(workdir)
@@ -151,6 +141,138 @@ func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest) (st
 		return "", fmt.Errorf("checkout approved base commit: %w", err)
 	}
 	return workdir, nil
+}
+
+// enrolledCheckout resolves a repository enrolled as a directory on this host
+// and reports whether it already holds the approved base commit.
+func enrolledCheckout(ctx context.Context, repo RepositoryConfig, baseCommit string) (string, bool, error) {
+	source, err := filepath.Abs(repo.Source)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve repository source: %w", err)
+	}
+	if info, err := os.Stat(source); err != nil || !info.IsDir() {
+		if err == nil {
+			err = errors.New("source is not a directory")
+		}
+		return "", false, fmt.Errorf("repository source unavailable: %w", err)
+	}
+	if sourceHas(ctx, source, baseCommit) {
+		return source, true, nil
+	}
+	// The approved base moved past the enrolled checkout — a merged pull
+	// request, most often. The checkout is the operator's own clone, so it
+	// is brought current from its own origin exactly as the operator would,
+	// with the operator's Git configuration and credentials for it. Only
+	// the runner runs this, never the harness, and only remote-tracking
+	// refs move: the checkout's branch and working tree are left alone.
+	if err := refreshEnrolledSource(ctx, source); err != nil {
+		log.Printf("enrolled source %s could not be refreshed from its origin: %v", source, err)
+		return source, false, nil
+	}
+	return source, sourceHas(ctx, source, baseCommit), nil
+}
+
+// managedClone is the repository copy the runner owns. Nothing is expected to
+// exist on the host: the directory is created on first use and filled from the
+// remote, and it is reused by every later attempt on the same repository.
+func managedClone(ctx context.Context, cfg Config, repositoryID, remote string, credential *gitCredential, baseCommit string) (string, bool, error) {
+	if remote == "" {
+		return "", false, fmt.Errorf("repository %q has no checkout on this host and the attempt named no clone source", repositoryID)
+	}
+	if !identifierPattern.MatchString(repositoryID) {
+		return "", false, fmt.Errorf("repository ID %q is invalid", repositoryID)
+	}
+	dir := filepath.Join(cfg.StateDir, "repositories", repositoryID+".git")
+	info, err := os.Lstat(dir)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", false, errors.New("repository cache path is not a private directory")
+		}
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+			return "", false, fmt.Errorf("create repository cache parent: %w", err)
+		}
+		if _, err := gitOutput(ctx, "", "init", "--bare", "--quiet", dir); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", false, fmt.Errorf("create repository cache: %w", err)
+		}
+	default:
+		return "", false, fmt.Errorf("inspect repository cache: %w", err)
+	}
+	if sourceHas(ctx, dir, baseCommit) {
+		return dir, true, nil
+	}
+	// Asking for the commit by ID is what reaches a pull-request head, which
+	// no branch points at. A remote that refuses it still serves the branches,
+	// which is where an approved base normally lives.
+	pinned := "refs/railgrid/commits/" + baseCommit
+	err = fetchRefspec(ctx, dir, remote, credential, "+"+baseCommit+":"+pinned)
+	if err != nil || !sourceHas(ctx, dir, baseCommit) {
+		if branchErr := fetchRefspec(ctx, dir, remote, credential, "+refs/heads/*:refs/heads/*"); branchErr != nil {
+			if err == nil {
+				err = branchErr
+			}
+			return "", false, err
+		}
+	}
+	if !sourceHas(ctx, dir, baseCommit) {
+		return "", false, errors.New("base commit is not available from the repository remote")
+	}
+	return dir, true, nil
+}
+
+// repositoryRemote decides where a repository is fetched from. A clone source
+// dispatched with the attempt wins over an enrolled remote: it is the one that
+// carries a credential, and it is minted for this attempt.
+func repositoryRemote(repo RepositoryConfig, dispatched *RepositorySource) (string, *gitCredential, error) {
+	if dispatched != nil && strings.TrimSpace(dispatched.RemoteURL) != "" {
+		remote, err := validateCloneSource(*dispatched)
+		if err != nil {
+			return "", nil, err
+		}
+		return remote, credentialFor(*dispatched), nil
+	}
+	enrolled := strings.TrimSpace(repo.FetchRemoteURL)
+	if enrolled == "" {
+		return "", nil, nil
+	}
+	remote, err := validateFetchRemoteURL(enrolled)
+	if err != nil {
+		return "", nil, fmt.Errorf("repository fetch remote URL is not allowed: %w", err)
+	}
+	return remote, nil, nil
+}
+
+// validateCloneSource applies the same URL rules to a dispatched source as to
+// an enrolled one. The coordinator is authenticated, but it is still not
+// allowed to point the runner at an arbitrary transport or to smuggle
+// credentials through the URL.
+func validateCloneSource(source RepositorySource) (string, error) {
+	remote, err := validateFetchRemoteURL(strings.TrimSpace(source.RemoteURL))
+	if err != nil {
+		return "", fmt.Errorf("clone source URL is not allowed: %w", err)
+	}
+	if source.Token != "" && fetchRemoteKindOf(remote) != fetchRemoteHTTPS {
+		return "", errors.New("a clone credential is only used with an HTTPS remote")
+	}
+	if strings.ContainsAny(source.Username, ":\r\n") || hasControlCharacter(source.Token) {
+		return "", errors.New("clone credential contains an invalid character")
+	}
+	return remote, nil
+}
+
+func credentialFor(source RepositorySource) *gitCredential {
+	if strings.TrimSpace(source.Token) == "" {
+		return nil
+	}
+	username := strings.TrimSpace(source.Username)
+	if username == "" {
+		// What GitHub expects beside a token; every other HTTPS host that
+		// takes basic auth ignores the username.
+		username = "x-access-token"
+	}
+	return &gitCredential{Username: username, Token: source.Token}
 }
 
 func verifyWorkspace(ctx context.Context, cfg Config, request StartRequest, workdir string) error {
@@ -175,10 +297,10 @@ func verifyWorkspace(ctx context.Context, cfg Config, request StartRequest, work
 	if strings.TrimSpace(head) != baseCommit {
 		return errors.New("task worktree no longer matches the approved base commit")
 	}
-	repo, ok := cfg.Repositories[request.RepositoryID]
-	if !ok || repo.Source == "" {
-		return errors.New("repository is no longer enrolled")
-	}
+	// A repository the runner clones for itself has no enrollment to check
+	// against; the worktree on disk, verified above, is the whole claim. An
+	// enrollment that does exist still constrains what may be resumed.
+	repo := cfg.Repositories[request.RepositoryID]
 	if repo.BaseCommit != "" && strings.ToLower(strings.TrimSpace(repo.BaseCommit)) != baseCommit {
 		return errors.New("repository enrollment no longer permits the approved base commit")
 	}
