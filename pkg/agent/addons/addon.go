@@ -99,9 +99,11 @@ type EdgeRef struct {
 	Name string `json:"name"`
 }
 
-// Repository mirrors AddonRepository.
+// Repository mirrors AddonRepository. Both fields are optional individually —
+// an entry may name a local checkout, a remote the runner clones from, or both
+// — but an entry naming neither is a configuration mistake and is refused.
 type Repository struct {
-	Source         string `json:"source"`
+	Source         string `json:"source,omitempty"`
 	FetchRemoteURL string `json:"fetchRemoteURL,omitempty"`
 }
 

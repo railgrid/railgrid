@@ -107,6 +107,14 @@ func TestFakeClaudeProcess(t *testing.T) {
 		emit(`{"type":"system","subtype":"init","session_id":%q}`, session)
 		emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":%q}`,
 			session, clarificationOpen+"\nWhich database should the migration target?\n"+clarificationClose)
+	case "clarification-after-prose":
+		// The shape seen in a live run: the model explains why it is stuck and
+		// only then asks. The question must survive, without the explanation.
+		emit(`{"type":"system","subtype":"init","session_id":%q}`, session)
+		emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":%q}`,
+			session, "I could not find the schema this refers to.\n\n"+
+				"This looks like scope that's ambiguous/unsupported by my tools rather than a real engineering task.\n\n"+
+				clarificationOpen+"\nWhich database should the migration target?\n"+clarificationClose)
 	case "prose-marker":
 		// The marker mentioned inside ordinary prose must NOT be a question.
 		emit(`{"type":"system","subtype":"init","session_id":%q}`, session)
@@ -407,11 +415,12 @@ func TestRunMapsTerminalRecords(t *testing.T) {
 		scenario string
 		phase    string
 	}{
-		"error":         {"error", "failed"},
-		"turn limit":    {"max-turns", "needs_input"},
-		"no result":     {"no-result", "failed"},
-		"prose marker":  {"prose-marker", "completed"},
-		"clarification": {"clarification", "needs_input"},
+		"error":                     {"error", "failed"},
+		"turn limit":                {"max-turns", "needs_input"},
+		"no result":                 {"no-result", "failed"},
+		"prose marker":              {"prose-marker", "completed"},
+		"clarification":             {"clarification", "needs_input"},
+		"clarification after prose": {"clarification-after-prose", "needs_input"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			binary, _ := fakeClaude(t, expect.scenario)
@@ -427,6 +436,13 @@ func TestRunMapsTerminalRecords(t *testing.T) {
 				t.Error("no session id was returned; the conversation could not be resumed")
 			}
 			switch expect.scenario {
+			case "clarification-after-prose":
+				if result.Clarification == nil {
+					t.Fatal("a question that followed an explanation was dropped")
+				}
+				if result.Clarification.Text != "Which database should the migration target?" {
+					t.Fatalf("the question carried prose or markers: %q", result.Clarification.Text)
+				}
 			case "clarification":
 				if result.Clarification == nil || !strings.Contains(result.Clarification.Text, "Which database") {
 					t.Fatalf("clarification = %+v", result.Clarification)

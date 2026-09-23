@@ -20,6 +20,7 @@ package addons
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -115,9 +116,9 @@ func runnerSpec() Spec {
 			MaximumCapacity:          1,
 			Toolchains:               []string{"go1.26"},
 			VerificationCapabilities: []string{"unit"},
-			Repositories: map[string]Repository{
-				"app": {Source: "/srv/repos/app"},
-			},
+			// No repositories: the normal configuration. The runner clones what
+			// the control plane hands it with each attempt, so nothing has to be
+			// enrolled and nothing has to exist on the machine first.
 			Codex: &Codex{
 				Binary:        "codex",
 				AuthSecretRef: &SecretRef{Name: "codex-auth", Namespace: "default"},
@@ -329,8 +330,11 @@ func TestRenderedConfigRoundTripsThroughLoadConfig(t *testing.T) {
 	if cfg.MaximumCapacity != 1 {
 		t.Errorf("maximumCapacity = %d, want 1", cfg.MaximumCapacity)
 	}
-	if repo, ok := cfg.Repositories["app"]; !ok || repo.Source != "/srv/repos/app" {
-		t.Errorf("repositories = %+v", cfg.Repositories)
+	// An Addon that enrols nothing renders a runner with no repositories. That
+	// is the ordinary configuration, not a degenerate one: the runner is told
+	// what to clone per attempt.
+	if len(cfg.Repositories) != 0 {
+		t.Errorf("repositories = %+v, want none", cfg.Repositories)
 	}
 	// The token never travels in the configuration file; it is read from
 	// tokenFile so it cannot leak through a config backup.
@@ -356,10 +360,56 @@ func TestRenderConfigRejectsUnsafeEnrollment(t *testing.T) {
 		t.Error("an invalid repository ID was accepted")
 	}
 
+	// Naming neither a checkout nor a remote is the one shape with no meaning:
+	// the runner would have nothing to check out and nowhere to fetch from.
+	empty := runnerSpec()
+	empty.Runner.Repositories = map[string]Repository{"app": {}}
+	if _, err := addon.renderConfig(empty.Runner); err == nil {
+		t.Error("a repository naming neither a source nor a fetchRemoteURL was accepted")
+	}
+
 	capacity := runnerSpec()
 	capacity.Runner.MaximumCapacity = 4
 	if _, err := addon.renderConfig(capacity.Runner); err == nil {
 		t.Error("maximumCapacity 4 was accepted by the single-execution runner")
+	}
+}
+
+// TestRenderConfigEnrolsRemoteOnlyRepositories: a repository the runner clones
+// for itself. `source` used to be mandatory, which meant a managed runner could
+// only work on a checkout someone had already put on the machine by hand. An
+// entry carrying only a remote is now legal, and the rendered configuration
+// carries the remote with no source for the runner to clone under its own
+// state directory.
+func TestRenderConfigEnrolsRemoteOnlyRepositories(t *testing.T) {
+	addon := newRunnerAddon(t, kubefake.NewSimpleClientset(), tempHome(t))
+
+	spec := runnerSpec()
+	spec.Runner.Repositories = map[string]Repository{
+		"app":   {FetchRemoteURL: "https://github.com/railgrid/railgrid.git"},
+		"local": {Source: "/srv/repos/local/", FetchRemoteURL: "git@github.com:o/local.git"},
+	}
+	data, err := addon.renderConfig(spec.Runner)
+	if err != nil {
+		t.Fatalf("renderConfig: %v", err)
+	}
+	var cfg runner.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal runner.json: %v", err)
+	}
+	app, ok := cfg.Repositories["app"]
+	if !ok {
+		t.Fatalf("repositories = %+v, want an \"app\" entry", cfg.Repositories)
+	}
+	if app.Source != "" {
+		t.Errorf("app source = %q, want none: the runner clones it itself", app.Source)
+	}
+	if app.FetchRemoteURL != "https://github.com/railgrid/railgrid.git" {
+		t.Errorf("app fetchRemoteURL = %q", app.FetchRemoteURL)
+	}
+	// A source that IS given is still cleaned and still has to be absolute.
+	if local := cfg.Repositories["local"]; local.Source != "/srv/repos/local" {
+		t.Errorf("local source = %q, want the cleaned absolute path", local.Source)
 	}
 }
 

@@ -748,13 +748,31 @@ func platformLeases(rule rbacv1.PolicyRule, refuse refuseFunc) (rbacv1.PolicyRul
 	if len(rule.Resources) != 1 || rule.Resources[0] != "leases" {
 		return refuse(CodePlatformNotAllowed, "only leases is minted in API group \"coordination.k8s.io\"")
 	}
-	if len(rule.ResourceNames) == 0 {
-		return refuse(CodeUnnamedForeign, "a leases rule must name the exact Leases it covers")
-	}
 	for _, verb := range rule.Verbs {
 		if !platformLeaseVerbs[verb] {
 			return refuse(CodePlatformNotAllowed, fmt.Sprintf("verb %q is not minted on leases (get, create, update, patch and delete are)", verb))
 		}
+	}
+	if len(rule.ResourceNames) == 0 {
+		// `create` is the one verb a name cannot bound: Kubernetes RBAC does
+		// not apply resourceNames to a create request, so a named create
+		// authorizes nothing at all — an identity holding one could never
+		// create the occupancy Lease it was granted. It is therefore minted
+		// unnamed, and alone: what it buys is a Lease in this workspace that
+		// the identity then owns, while reading or changing anyone else's
+		// still requires naming it.
+		for _, verb := range rule.Verbs {
+			if verb != "create" {
+				return refuse(CodeUnnamedForeign, "a leases rule must name the exact Leases it covers; only create is minted unnamed, because RBAC ignores resourceNames on a create request")
+			}
+		}
+		if len(rule.Verbs) == 0 {
+			return refuse(CodeUnnamedForeign, "a leases rule must name the exact Leases it covers")
+		}
+		return rbacv1.PolicyRule{
+			APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"},
+			Verbs: []string{"create"},
+		}, nil
 	}
 	return rbacv1.PolicyRule{
 		APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"},

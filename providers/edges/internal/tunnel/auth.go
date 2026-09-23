@@ -34,35 +34,58 @@ import (
 	"github.com/railgrid/provider-edges/internal/kcpurl"
 )
 
-// saTokenClaims holds the claims extracted from a kcp ServiceAccount JWT.
+// saTokenClaims holds the claims extracted from a ServiceAccount JWT, in
+// either shape a caller can present:
+//
+//   - kcp's legacy static token: iss "kubernetes/serviceaccount" plus the
+//     workspace in kubernetes.io/serviceaccount/clusterName. A token like this
+//     comes from another workspace, so it is TokenReview'd where it was minted.
+//   - a bound (TokenRequest) token, which is what the hub's identity service
+//     mints for an edge agent: the issuer is the API server's own URL and the
+//     account is under the "kubernetes.io" claim, with no workspace in it.
+//     Those live in the workspace the request addresses, so they authenticate
+//     there.
 type saTokenClaims struct {
 	Issuer      string `json:"iss"`
+	Subject     string `json:"sub"`
 	ClusterName string `json:"kubernetes.io/serviceaccount/clusterName"`
 	Kubernetes  struct {
-		ClusterName string `json:"clusterName"`
+		ClusterName    string `json:"clusterName"`
+		Namespace      string `json:"namespace"`
+		ServiceAccount struct {
+			Name string `json:"name"`
+		} `json:"serviceaccount"`
 	} `json:"kubernetes.io"`
+}
+
+// decodeJWTClaims reads a JWT's payload without verifying its signature. kcp
+// verifies the real signature when the request is forwarded; nothing here is
+// trusted beyond deciding which code path a credential takes.
+func decodeJWTClaims(token string) (saTokenClaims, bool) {
+	if token == "" {
+		return saTokenClaims{}, false
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return saTokenClaims{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return saTokenClaims{}, false
+	}
+	var claims saTokenClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return saTokenClaims{}, false
+	}
+	return claims, true
 }
 
 // parseServiceAccountToken decodes a JWT without signature verification and
 // checks whether it is a kcp ServiceAccount token. kcp verifies the actual
 // signature when the request is forwarded.
 func parseServiceAccountToken(token string) (saTokenClaims, bool) {
-	if token == "" {
-		return saTokenClaims{}, false
-	}
-
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return saTokenClaims{}, false
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return saTokenClaims{}, false
-	}
-
-	var claims saTokenClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
+	claims, ok := decodeJWTClaims(token)
+	if !ok {
 		return saTokenClaims{}, false
 	}
 
@@ -78,6 +101,26 @@ func parseServiceAccountToken(token string) (saTokenClaims, bool) {
 	}
 
 	return claims, true
+}
+
+// isServiceAccountJWT reports whether token is a ServiceAccount credential of
+// either shape: kcp's legacy secret-backed token or a bound TokenRequest one.
+//
+// The tunnel needs this distinction, not the foreign-workspace one: an agent
+// presents either its bootstrap join token (opaque random bytes) or the scoped
+// identity the provider issued it (a bound token). Asking
+// parseServiceAccountToken instead classed every reissued credential as a join
+// token, and once an edge has joined its join token is cleared — so a restarted
+// agent was refused with "has no join token set" and could never reconnect.
+func isServiceAccountJWT(token string) bool {
+	claims, ok := decodeJWTClaims(token)
+	if !ok {
+		return false
+	}
+	if claims.Issuer == "kubernetes/serviceaccount" && claims.ClusterName != "" {
+		return true
+	}
+	return claims.Kubernetes.ServiceAccount.Name != "" || strings.HasPrefix(claims.Subject, "system:serviceaccount:")
 }
 
 // extractBearerToken extracts the bearer token from the Authorization header

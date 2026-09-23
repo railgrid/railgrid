@@ -81,8 +81,11 @@ type dataPlaneGrant struct {
 var dataPlaneGrants = map[string][]dataPlaneGrant{
 	// providers/edges/internal/tunnel/grammar.go dataPlaneVerbs. The tunnel
 	// serves kubectl (including delete and exec), an SSH shell and MCP under
-	// these verbs, so none of them survives readOnly. ticket, agent-token and
-	// ssh-credentials are for browsers and the edge agent, never an MCP token.
+	// these verbs, so none of them survives readOnly. ticket is for browsers,
+	// and agent-token, ssh-credentials, runner-auth and runner-token are the
+	// EDGE AGENT's own credential plane — each one hands over or hands back a
+	// credential for the machine the caller has proved it is. An MCP token has
+	// proved nothing of the sort, so none of them is ever granted here.
 	"edges.railgrid.ai": {
 		{resources: []string{"kubernetesclusters"}, subresources: []string{"k8s", "ssh", "mcp"}},
 		{resources: []string{"linuxservers"}, subresources: []string{"k8s", "ssh"}},

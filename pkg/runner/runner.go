@@ -155,9 +155,10 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	verificationCapabilities = appendUnique(verificationCapabilities, gitResultCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, clarificationCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, "cancel-unseen-v1")
-	if hasFetchRemote(cfg.Repositories) {
-		verificationCapabilities = appendUnique(verificationCapabilities, gitFetchCapability)
-	}
+	// The runner fetches for itself now: it either refreshes the enrolled
+	// checkout or maintains its own clone of a remote it is given, so the
+	// capability no longer depends on an enrollment naming a remote.
+	verificationCapabilities = appendUnique(verificationCapabilities, gitFetchCapability)
 	capabilities.Verification = verificationCapabilities
 	harnessReasons := append([]string(nil), info.Reasons...)
 	if probeErr != nil {
@@ -306,6 +307,12 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 	if err := validateStartRequest(request); err != nil {
 		return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
 	}
+	// The clone source is dispatch data and is deliberately removed here,
+	// before anything durable is derived from the request: it holds a
+	// short-lived credential, and a retry that mints a fresh one must remain
+	// the same request rather than an idempotency conflict.
+	dispatched := request.Repository
+	request.Repository = nil
 	fingerprint := fingerprintOf(request)
 	opKey := operationKey("start", request.TaskID, request.AttemptID, request.AttemptEpoch, request.RequestID)
 	r.mu.Lock()
@@ -340,7 +347,7 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 	if err := r.reserveResourcesLocked(request.AttemptID, request.Resources); err != nil {
 		return Receipt{}, err
 	}
-	workdir, err := prepareWorkspace(ctx, r.cfg, request)
+	workdir, err := prepareWorkspace(ctx, r.cfg, request, dispatched)
 	if err != nil {
 		r.releaseResourcesLocked(request.AttemptID, request.Resources)
 		return Receipt{}, protocolError(ErrorUnavailable, true, err.Error(), nil)
@@ -1221,6 +1228,14 @@ func validateStartRequest(request StartRequest) error {
 	}
 	if strings.TrimSpace(request.RepositoryID) == "" || strings.TrimSpace(request.BaseCommit) == "" {
 		return errors.New("repositoryID and baseCommit are required")
+	}
+	if !identifierPattern.MatchString(strings.TrimSpace(request.RepositoryID)) {
+		return errors.New("repositoryID is not a valid identifier")
+	}
+	if request.Repository != nil {
+		if _, err := validateCloneSource(*request.Repository); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(request.Instructions) == "" {
 		return errors.New("instructions are required")

@@ -92,6 +92,9 @@ func New(cfg Config) harness.Adapter {
 	if strings.TrimSpace(cfg.Binary) == "" {
 		cfg.Binary = defaultBinary
 	}
+	// See harness.ResolveBinary: the runner account's PATH is not the
+	// operator's interactive PATH.
+	cfg.Binary = harness.ResolveBinary(cfg.Binary)
 	if strings.TrimSpace(cfg.ExpectedVersion) == "" {
 		cfg.ExpectedVersion = defaultExpectedVersion
 	}

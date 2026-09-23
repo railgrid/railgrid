@@ -34,16 +34,25 @@ import (
 // So the convention is a marker, and it is a CONVENTION rather than a protocol:
 // the adapter prepends promptPreamble to every turn's instructions, telling the
 // model that if — and only if — it cannot proceed without a product decision,
-// its final message must be exactly one delimited block:
+// its final message must END with one delimited block:
 //
 //	<<<RAILGRID_CLARIFICATION>>>
 //	the question
 //	<<<END_RAILGRID_CLARIFICATION>>>
 //
-// The block is recognized only in the FINAL message of a turn, only when it is
-// the whole message, and only once. Ordinary prose that happens to discuss a
-// question is never a clarification; a model that emits the marker mid-answer
-// and then keeps working is ignored, because the turn completed.
+// The block is recognized only in the FINAL message of a turn, only once, and
+// only when it CLOSES that message — nothing but whitespace may follow the
+// closer. Prose BEFORE the block is allowed and ignored: models routinely
+// explain why they are stuck and only then ask, and dropping those questions
+// left the human with neither an answer nor a question. Only the text between
+// the delimiters is the question; the explanation is not part of it, and
+// harness.Clarification has nowhere to carry it.
+//
+// Everything else is still refused. Ordinary prose that happens to discuss a
+// question is never a clarification; a second opener or closer anywhere in the
+// message means the model wrote about the marker rather than emitting it; and
+// a block in the MIDDLE of a message is ignored, because the turn continued
+// past it and therefore did not stop to ask.
 const (
 	clarificationOpen  = "<<<RAILGRID_CLARIFICATION>>>"
 	clarificationClose = "<<<END_RAILGRID_CLARIFICATION>>>"
@@ -56,27 +65,38 @@ const (
 // compacted the original — and is deliberately short: it competes for context
 // with the actual task.
 const promptPreamble = "Runner protocol: if you cannot proceed without a decision only a human can make, " +
-	"end your turn with exactly one block, nothing before or after it:\n" +
+	"end your turn with exactly one block, as the very last thing in your message:\n" +
 	clarificationOpen + "\n<your question>\n" + clarificationClose + "\n" +
+	"You may explain the situation before the block, but write nothing after it, use the block only once, " +
+	"and put the whole question inside it — only that text reaches the human.\n" +
 	"Do not use that block for anything else, and do not use it to report progress or ask for permission.\n\n" +
 	"Task:\n"
 
-// parseClarification recognizes the marker in a turn's final message. It
-// returns nil for anything that is not exactly one well-formed, bounded block,
-// which is the safe direction: a missed clarification completes the attempt,
-// while a false one would park work forever on a question nobody asked.
+// parseClarification recognizes the marker at the end of a turn's final
+// message. It returns nil for anything that is not exactly one well-formed,
+// bounded block closing that message, which is the safe direction: a false
+// clarification would park work forever on a question nobody asked.
 func parseClarification(sessionID, final string) *harness.Clarification {
 	text := strings.TrimSpace(final)
-	if !strings.HasPrefix(text, clarificationOpen) || !strings.HasSuffix(text, clarificationClose) {
+	// Exactly one block: a second opener or closer anywhere means the model
+	// emitted prose containing the marker rather than the marker itself.
+	if strings.Count(text, clarificationOpen) != 1 || strings.Count(text, clarificationClose) != 1 {
 		return nil
 	}
-	body := strings.TrimSuffix(strings.TrimPrefix(text, clarificationOpen), clarificationClose)
-	// Exactly one block: a second opener means the model emitted prose
-	// containing the marker rather than the marker itself.
-	if strings.Contains(body, clarificationOpen) || strings.Contains(body, clarificationClose) {
+	open := strings.Index(text, clarificationOpen)
+	bodyStart := open + len(clarificationOpen)
+	closer := strings.Index(text, clarificationClose)
+	if closer < bodyStart {
 		return nil
 	}
-	question := strings.TrimSpace(body)
+	// The block must END the turn. A block followed by more work means the
+	// model kept going, so it was not waiting on an answer.
+	if strings.TrimSpace(text[closer+len(clarificationClose):]) != "" {
+		return nil
+	}
+	// The question is what is between the delimiters. Whatever the model wrote
+	// before the opener is explanation, not the question.
+	question := strings.TrimSpace(text[bodyStart:closer])
 	if question == "" || len(question) > maxClarificationText || !utf8.ValidString(question) {
 		return nil
 	}

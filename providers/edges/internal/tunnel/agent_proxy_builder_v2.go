@@ -125,7 +125,7 @@ func (p *Server) agentTunnelHandler(upgrader websocket.Upgrader) http.Handler {
 		// as its durable credential (token-exchange flow).
 		authenticatedByJoinToken := false
 		if !isStaticToken {
-			if _, ok := parseServiceAccountToken(token); !ok {
+			if !isServiceAccountJWT(token) {
 				// Not a SA token — check if it's a valid bootstrap join token for this edge.
 				if p.kcpConfig == nil {
 					p.logger.Info("Rejected edge agent tunnel: invalid or missing SA token (no kcp configured)",

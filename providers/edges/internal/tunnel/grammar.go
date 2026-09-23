@@ -96,6 +96,12 @@ const (
 // ssh-credentials is on linuxservers alone for the same reason in reverse:
 // MacOSServer has no SSH data plane to hold credentials for, and a
 // KubernetesCluster agent reaches its host through the Kubernetes API.
+//
+// runner-auth and runner-token are on the two HOST kinds, and only those: an
+// Addon may only name a LinuxServer or a MacOSServer (the API's own CEL rule
+// refuses KubernetesCluster, and internal/addonctrl refuses it again), so
+// declaring them on kubernetesclusters would mint a capability for a
+// coordinate no Addon can ever address.
 var dataPlaneVerbs = map[string]map[string]bool{
 	kubernetesClusterResource: {VerbK8s: true, VerbSSH: true, VerbMCP: true, VerbTicket: true, VerbAgentToken: true},
 	linuxServerResource:       {VerbK8s: true, VerbSSH: true, VerbTicket: true, VerbAgentToken: true, VerbSSHCredentials: true, VerbAddonCredentials: true},

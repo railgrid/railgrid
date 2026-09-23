@@ -267,36 +267,7 @@ func (s *CredentialStore) refresh(ctx context.Context, credential Credential) (C
 // for anyone. Now the agent proves which edge it is (the two gates) and the
 // provider does the write; nothing in this body names a destination.
 func (s *CredentialStore) PostSSHCredentials(ctx context.Context, body SSHCredentials) error {
-	credential, haveIt := s.Current()
-	if !haveIt {
-		return errors.New("no agent credential yet")
-	}
-	if credential.SSHCredentialsPath == "" {
-		return errors.New("this edge kind has no ssh-credentials route")
-	}
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("encoding the SSH credentials: %w", err)
-	}
-	target := strings.TrimRight(credential.HubURL, "/") + credential.SSHCredentialsPath
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(encoded))
-	if err != nil {
-		return fmt.Errorf("building the SSH credentials request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+credential.Token)
-	request.Header.Set("Content-Type", "application/json")
-
-	response, err := s.client().Do(request)
-	if err != nil {
-		return fmt.Errorf("posting the SSH credentials: %w", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
-		return fmt.Errorf("posting the SSH credentials: HTTP %d: %s",
-			response.StatusCode, strings.TrimSpace(string(payload)))
-	}
-	return nil
+	return s.postVerb(ctx, "ssh-credentials", func(c Credential) string { return c.SSHCredentialsPath }, body, nil)
 }
 
 // SSHCredentials is the ssh-credentials request body. It mirrors the
@@ -308,13 +279,106 @@ type SSHCredentials struct {
 	HostKey    string `json:"hostKey,omitempty"`
 }
 
+// The managed add-on credential plane, and the same trade as PostSSHCredentials.
+//
+// A runner add-on needs two Secrets in the tenant workspace: the harness
+// credential the tenant supplied, and the bearer the agent generated. The
+// agent used to read and write both itself, which is why it held
+// get/create/update on core Secrets — the one rule the hub's identity policy
+// mints for nobody (clause X-4). After the scoped-identity migration that
+// grant is gone, and with it the direct path: a managed runner sat at
+// ClaudeAuthMissing forever.
+//
+// So both moved behind declared, gated verbs. The agent names one of its OWN
+// add-ons and nothing else; the provider resolves that Addon, refuses one that
+// is not hosted on this edge, and derives every Secret coordinate from the
+// Addon's own spec.
+
+// RunnerAuthRequest names the add-on whose harness credential is wanted.
+type RunnerAuthRequest struct {
+	Addon string `json:"addon"`
+}
+
+// RunnerAuth is the runner-auth response: the harness the Addon selects and
+// the credential keys the runner can use, and nothing else the Secret happens
+// to carry. It mirrors the provider's runnerAuthResponse.
+// postVerb POSTs body to a route the PROVIDER rendered onto the credential in
+// hand, authenticated with that credential, and decodes the response into
+// `into` when it is non-nil.
+//
+// route is a selector rather than a string so no caller can assemble a path:
+// every route an agent calls comes from the enrolment bundle, which is what
+// lets a provider move without agents being rebuilt (contract 3, rule 5).
+// Error messages carry the verb and the HTTP status, never a request or
+// response body that could hold credential material.
+func (s *CredentialStore) postVerb(ctx context.Context, verb string, route func(Credential) string, body, into any) error {
+	credential, haveIt := s.Current()
+	if !haveIt {
+		return errors.New("no agent credential yet")
+	}
+	path := route(credential)
+	if path == "" {
+		return fmt.Errorf("this edge kind has no %s route", verb)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encoding the %s request: %w", verb, err)
+	}
+	target := strings.TrimRight(credential.HubURL, "/") + path
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(encoded))
+	if err != nil {
+		return fmt.Errorf("building the %s request: %w", verb, err)
+	}
+	request.Header.Set("Authorization", "Bearer "+credential.Token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+
+	response, err := s.client().Do(request)
+	if err != nil {
+		return fmt.Errorf("calling %s: %w", verb, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		// The provider's refusals are derived from the tenant's own Addon spec
+		// (a missing Secret, an add-on that is not ours) and never quote
+		// credential material, so they are safe to surface — they end up on
+		// the Addon's Configured condition, which is where a human can act.
+		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+		if message := strings.TrimSpace(string(payload)); message != "" {
+			return fmt.Errorf("%s: HTTP %d: %s", verb, response.StatusCode, message)
+		}
+		return fmt.Errorf("%s: HTTP %d", verb, response.StatusCode)
+	}
+	if into == nil {
+		return nil
+	}
+	payload, err := io.ReadAll(io.LimitReader(response.Body, maxVerbResponse))
+	if err != nil {
+		return fmt.Errorf("reading the %s response: %w", verb, err)
+	}
+	if err := json.Unmarshal(payload, into); err != nil {
+		return fmt.Errorf("parsing the %s response: %w", verb, err)
+	}
+	return nil
+}
+
+// maxVerbResponse bounds a verb response body. The largest thing that comes
+// back is a Codex session file, a few kilobytes; the provider caps each
+// credential value at 256 KiB.
+const maxVerbResponse = 4 << 20
+
 func (s *CredentialStore) client() *http.Client {
 	if s.HTTPClient != nil {
 		return s.HTTPClient
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if s.TLSConfig != nil {
-		transport.TLSClientConfig = s.TLSConfig
+		// Clone: net/http enables HTTP/2 by appending "h2" to NextProtos of the
+		// config it is handed, and the tunnel hands the SAME config to the
+		// WebSocket dialer, which then refuses to dial ("protocol \"h2\" was
+		// given but is not supported"). One mutation here took the agent's
+		// tunnel down until a restart.
+		transport.TLSClientConfig = s.TLSConfig.Clone()
 	}
 	return &http.Client{Timeout: 30 * time.Second, Transport: transport}
 }

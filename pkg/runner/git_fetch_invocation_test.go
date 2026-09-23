@@ -51,7 +51,7 @@ func TestFetchExactCommitUsesNonInteractiveSSHAndHidesRemoteDiagnostics(t *testi
 	t.Setenv("GITHUB_TOKEN", "github-secret")
 
 	commit := strings.Repeat("a", 40)
-	err := fetchExactCommit(context.Background(), tmp, "ssh://git@example.com/repo.git", commit)
+	err := fetchExactCommit(context.Background(), tmp, "ssh://git@example.com/repo.git", commit, nil)
 	if err == nil || err.Error() != "git fetch failed" {
 		t.Fatalf("fetchExactCommit error = %v, want fixed fetch error", err)
 	}

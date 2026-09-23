@@ -85,7 +85,7 @@ func TestPrepareWorkspaceFetchesExactMissingCommitWithoutMutatingSource(t *testi
 		Repositories: map[string]RepositoryConfig{
 			"repo": {Source: source, FetchRemoteURL: remote},
 		},
-	}, StartRequest{TaskID: "task-fetch", AttemptID: "attempt-fetch", RepositoryID: "repo", BaseCommit: targetCommit})
+	}, StartRequest{TaskID: "task-fetch", AttemptID: "attempt-fetch", RepositoryID: "repo", BaseCommit: targetCommit}, nil)
 	if err != nil {
 		t.Fatalf("prepareWorkspace: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestPrepareWorkspaceRefetchesSourceObjectOmittedByClone(t *testing.T) {
 		Repositories: map[string]RepositoryConfig{
 			"repo": {Source: source, FetchRemoteURL: remote},
 		},
-	}, StartRequest{TaskID: "task-unreachable", AttemptID: "attempt-unreachable", RepositoryID: "repo", BaseCommit: targetCommit})
+	}, StartRequest{TaskID: "task-unreachable", AttemptID: "attempt-unreachable", RepositoryID: "repo", BaseCommit: targetCommit}, nil)
 	if err != nil {
 		t.Fatalf("prepareWorkspace: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestPrepareWorkspaceRefreshesEnrolledSourceFromItsOrigin(t *testing.T) {
 	workdir, err := prepareWorkspace(context.Background(), Config{
 		StateDir:     t.TempDir(),
 		Repositories: map[string]RepositoryConfig{"repo": {Source: source}},
-	}, StartRequest{TaskID: "task-refresh", AttemptID: "attempt-refresh", RepositoryID: "repo", BaseCommit: targetCommit})
+	}, StartRequest{TaskID: "task-refresh", AttemptID: "attempt-refresh", RepositoryID: "repo", BaseCommit: targetCommit}, nil)
 	if err != nil {
 		t.Fatalf("prepareWorkspace: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestPrepareWorkspaceDoesNotFetchWhenDisabledOrBaseCommitIsNotEnrolled(t *te
 		Repositories: map[string]RepositoryConfig{
 			"repo": {Source: source, BaseCommit: sourceCommit},
 		},
-	}, StartRequest{TaskID: "task-disabled", AttemptID: "attempt-disabled", RepositoryID: "repo", BaseCommit: missingCommit})
+	}, StartRequest{TaskID: "task-disabled", AttemptID: "attempt-disabled", RepositoryID: "repo", BaseCommit: missingCommit}, nil)
 	if err == nil || !strings.Contains(err.Error(), "exact commit enrolled") {
 		t.Fatalf("disabled or unenrolled commit error = %v", err)
 	}
@@ -215,7 +215,7 @@ func TestPrepareWorkspaceRejectsMissingCommitWithoutFetchRemote(t *testing.T) {
 		Repositories: map[string]RepositoryConfig{
 			"repo": {Source: source, BaseCommit: ""},
 		},
-	}, StartRequest{TaskID: "task-no-fetch", AttemptID: "attempt-no-fetch", RepositoryID: "repo", BaseCommit: missingCommit})
+	}, StartRequest{TaskID: "task-no-fetch", AttemptID: "attempt-no-fetch", RepositoryID: "repo", BaseCommit: missingCommit}, nil)
 	if err == nil || !strings.Contains(err.Error(), "not available in the enrolled source") {
 		t.Fatalf("missing commit error = %v", err)
 	}
@@ -234,34 +234,33 @@ func TestPrepareWorkspaceMissingFetchedCommitReturnsFixedError(t *testing.T) {
 		Repositories: map[string]RepositoryConfig{
 			"repo": {Source: source, FetchRemoteURL: remote},
 		},
-	}, StartRequest{TaskID: "task-fetch-missing", AttemptID: "attempt-fetch-missing", RepositoryID: "repo", BaseCommit: missingCommit})
+	}, StartRequest{TaskID: "task-fetch-missing", AttemptID: "attempt-fetch-missing", RepositoryID: "repo", BaseCommit: missingCommit}, nil)
 	if err == nil || err.Error() != "git fetch failed" {
 		t.Fatalf("missing fetched commit error = %v, want fixed fetch error", err)
 	}
 }
 
-func TestFetchCapabilityRequiresOptedInRepository(t *testing.T) {
+func TestFetchCapabilityIsAlwaysAdvertised(t *testing.T) {
 	source, commit := testGitSource(t)
-	without, err := New(Config{RunnerID: "without-fetch", StateDir: t.TempDir(), Token: "token", Listen: "127.0.0.1:0", Repositories: map[string]RepositoryConfig{
-		"repo": {Source: source, BaseCommit: commit},
-	}}, &fakeAdapter{})
-	if err != nil {
-		t.Fatalf("New without fetch: %v", err)
-	}
-	defer func() { _ = without.Close() }()
-	if contains(without.Capabilities().Verification, gitFetchCapability) {
-		t.Fatal("git-fetch capability advertised without an opted-in repository")
-	}
-
-	with, err := New(Config{RunnerID: "with-fetch", StateDir: t.TempDir(), Token: "token", Listen: "127.0.0.1:0", Repositories: map[string]RepositoryConfig{
-		"repo": {Source: source, BaseCommit: commit, FetchRemoteURL: source},
-	}}, &fakeAdapter{})
-	if err != nil {
-		t.Fatalf("New with fetch: %v", err)
-	}
-	defer func() { _ = with.Close() }()
-	if !contains(with.Capabilities().Verification, gitFetchCapability) {
-		t.Fatal("git-fetch capability omitted for an opted-in repository")
+	// A runner fetches for itself now — it refreshes an enrolled checkout and
+	// clones whatever an attempt names — so the capability no longer depends
+	// on an enrollment opting in, and a runner with no enrollment at all still
+	// advertises it.
+	for name, repositories := range map[string]map[string]RepositoryConfig{
+		"enrolled without a remote": {"repo": {Source: source, BaseCommit: commit}},
+		"enrolled with a remote":    {"repo": {Source: source, BaseCommit: commit, FetchRemoteURL: source}},
+		"nothing enrolled":          nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, err := New(Config{RunnerID: "fetch-capability", StateDir: t.TempDir(), Token: "token", Listen: "127.0.0.1:0", Repositories: repositories}, &fakeAdapter{})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = r.Close() }()
+			if !contains(r.Capabilities().Verification, gitFetchCapability) {
+				t.Fatal("git-fetch capability omitted")
+			}
+		})
 	}
 }
 
@@ -272,7 +271,7 @@ func TestFetchGitEnvironmentScopesCredentialsToSSHFetch(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "/tmp/runner-agent.sock")
 	t.Setenv("SSH_ASKPASS", "/tmp/interactive-askpass")
 	t.Setenv("SSH_ASKPASS_REQUIRE", "force")
-	sshEnv := environmentMap(fetchGitEnvironment("ssh://git@example.com/repo.git"))
+	sshEnv := environmentMap(fetchGitEnvironment("ssh://git@example.com/repo.git", nil))
 	if sshEnv["SSH_AUTH_SOCK"] != "/tmp/runner-agent.sock" {
 		t.Fatalf("SSH fetch environment omitted local agent: %q", sshEnv["SSH_AUTH_SOCK"])
 	}
@@ -290,7 +289,7 @@ func TestFetchGitEnvironmentScopesCredentialsToSSHFetch(t *testing.T) {
 		}
 	}
 
-	httpsEnv := environmentMap(fetchGitEnvironment("https://example.com/repo.git"))
+	httpsEnv := environmentMap(fetchGitEnvironment("https://example.com/repo.git", nil))
 	if httpsEnv["SSH_AUTH_SOCK"] != "" {
 		t.Fatal("HTTPS fetch environment forwarded SSH agent")
 	}

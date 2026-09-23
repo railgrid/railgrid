@@ -18,6 +18,7 @@ package tunnel
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -318,5 +319,27 @@ func TestAddonCredentialsDiscoversRouteFromRefresh(t *testing.T) {
 	}
 	if len(calls) != 2 || result["result"] != "ok" {
 		t.Fatalf("calls=%v result=%v", calls, result)
+	}
+}
+
+// The agent hands ONE tls.Config to its HTTPS clients and to the WebSocket
+// dialer. net/http enables HTTP/2 by appending "h2" to the NextProtos of the
+// config it is given, and gorilla/websocket then refuses to dial with
+// `protocol "h2" was given but is not supported`. Every consumer must clone.
+func TestCredentialClientDoesNotMutateTheSharedTLSConfig(t *testing.T) {
+	shared := &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test config
+	store := &CredentialStore{TLSConfig: shared}
+
+	transport, ok := store.client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport is %T, want *http.Transport", store.client().Transport)
+	}
+	if transport.TLSClientConfig == shared {
+		t.Fatal("the HTTP client shares the tunnel's tls.Config; net/http will append \"h2\" to it and the WebSocket dial then fails")
+	}
+	// Whatever net/http does to its own copy must not reach the original.
+	transport.TLSClientConfig.NextProtos = append(transport.TLSClientConfig.NextProtos, "h2")
+	if len(shared.NextProtos) != 0 {
+		t.Fatalf("shared config gained NextProtos %v", shared.NextProtos)
 	}
 }

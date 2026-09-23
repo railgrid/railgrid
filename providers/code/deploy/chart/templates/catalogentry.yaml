@@ -100,7 +100,7 @@ data:
             description: "Stage a source tree and return the bundleRef/bundleDigest pair the catalogued commit names instead of inline files. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
             stream: false
             readOnly: false
-      # Fourteen catalogued actions: thirteen bound to a Repository and one
+      # Fifteen catalogued actions: fourteen bound to a Repository and one
       # (mint_registry_token) to a Connection. The provider also serves two
       # deliberately uncatalogued verbs on the same route, stage_snapshot and
       # stage_commit_bundle: their bodies (a 25 MiB git bundle, a 48 MiB source
@@ -802,6 +802,70 @@ data:
         executionMode: sync
         # readOnly: it mints a credential but changes nothing about the
         # Connection, the repository or the registry.
+        readOnly: true
+        risk: medium
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: mint_clone_token/v1
+        displayName: Mint a repository clone token
+        description: Issue a short-lived, read-only git clone credential for this repository.
+          For a GitHub App connection the token is issued with contents:read alone; the
+          connection's own push-capable credential is never returned.
+        boundResource:
+          apiVersion: code.railgrid.ai/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          properties:
+            repositoryUID:
+              type: string
+              minLength: 1
+              maxLength: 253
+            connectionUID:
+              type: string
+              minLength: 1
+              maxLength: 253
+          additionalProperties: false
+        outputSchema:
+          type: object
+          required:
+          - remoteURL
+          - username
+          - token
+          - scoped
+          properties:
+            remoteURL:
+              type: string
+              minLength: 1
+              maxLength: 2048
+            username:
+              type: string
+              minLength: 1
+              maxLength: 253
+            token:
+              type: string
+              maxLength: 8192
+            expiresAt:
+              type: string
+              minLength: 20
+              maxLength: 40
+            scoped:
+              type: boolean
+          additionalProperties: false
+        schemaDigest: sha256:f9ec0b094856e193b2f3fc96aa84b162f3b8dde33aa76c3cd073492dd0689b18
+        executionMode: sync
+        # readOnly: it mints a credential but changes nothing about the Repository,
+        # the Connection or the git host.
         readOnly: true
         risk: medium
         idempotency: inherent

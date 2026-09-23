@@ -97,6 +97,14 @@ var served = map[string]dataplane.Limits{
 		MaxInputBytes:  MaxInputBytes,
 		MaxOutputBytes: MaxOutputBytes,
 	},
+	// mint_clone_token is bound to a Repository, so it is served here rather
+	// than in connectionActions: the grant to clone one repository must not
+	// follow from a grant on the Connection every repository shares.
+	MintCloneToken: {
+		Timeout:        actionTimeout,
+		MaxInputBytes:  64 << 10,
+		MaxOutputBytes: MaxOutputBytes,
+	},
 }
 
 func jsonAction(items int64) dataplane.Limits {
@@ -146,6 +154,7 @@ var statusFor = map[string]int{
 	"invalid_snapshot":             http.StatusUnprocessableEntity,
 	"snapshot_unavailable":         http.StatusUnprocessableEntity,
 	"bundle_unavailable":           http.StatusUnprocessableEntity,
+	"clone_token_unavailable":      http.StatusBadGateway,
 	"commit_not_created":           http.StatusBadGateway,
 	"upstream_outcome_unconfirmed": http.StatusBadGateway,
 }
@@ -293,6 +302,11 @@ func (s *Server) run(ctx context.Context, r *http.Request, req dataplane.Request
 		return s.commit(ctx, req, visible, raw)
 	case StageCommitBundle:
 		return s.stageCommitBundle(ctx, req, visible, raw)
+	case MintCloneToken:
+		// A clone credential is minted from the Connection's own credential
+		// material, not fetched from a git host, so this verb takes its own
+		// input and never reaches the backend registry either.
+		return s.mintCloneToken(ctx, req, visible, raw)
 	}
 	in, err := decodeInput(raw)
 	if err != nil {
@@ -389,10 +403,48 @@ func decodeInput(raw json.RawMessage) (Input, error) {
 // caller never reads a Secret; a replaced object, a changed spec or a
 // mismatched identity fails closed.
 func (s *Server) resolve(ctx context.Context, cluster, name string, visible *unstructured.Unstructured, input Input) (*api.Connection, *api.Repository, backend.Credential, error) {
-	fail := func() (*api.Connection, *api.Repository, backend.Credential, error) {
+	// Every action taking this input names the repository it means as
+	// owner/name; an input that omits it is refused here rather than reaching
+	// the binding with nothing to check.
+	if input.Repository == "" {
 		return nil, nil, backend.Credential{}, errors.New("repository action denied")
 	}
-	if s.Authority == nil || input.RepositoryUID == "" || input.ConnectionUID == "" || string(visible.GetUID()) != input.RepositoryUID {
+	binding, err := s.pinRepositoryBinding(ctx, cluster, name, visible, input.RepositoryUID, input.ConnectionUID, input.Repository)
+	if err != nil {
+		return nil, nil, backend.Credential{}, err
+	}
+	credential, err := s.Credentials.ResolveStored(ctx, binding.conn, binding.secretKey, binding.data, binding.store)
+	if err != nil {
+		return nil, nil, backend.Credential{}, errors.New("repository action denied")
+	}
+	return binding.conn, binding.repo, credential, nil
+}
+
+// repositoryBinding is one pinned Repository, its Connection and the credential
+// Secret's contents — everything an action needs to act on that repository as
+// the tenant, and nothing about where the Secret lives.
+type repositoryBinding struct {
+	conn      *api.Connection
+	repo      *api.Repository
+	secretKey string
+	data      map[string][]byte
+	store     tenant.SecretStore
+}
+
+// pinRepositoryBinding is resolve() stopping one step short of a resolved
+// credential: it proves the binding and opens the Secret, leaving what to mint
+// from it to the caller. An action that issues its own narrowed token
+// (mint_clone_token) must reach the GitHub App key itself, and must not mint
+// the Connection's full credential on the way past.
+//
+// repository, when non-empty, is the owner/name the caller claims; it is
+// checked before the Secret is ever read, so a caller that names the wrong
+// repository never reaches a credential lookup.
+func (s *Server) pinRepositoryBinding(ctx context.Context, cluster, name string, visible *unstructured.Unstructured, repositoryUID, connectionUID, repository string) (repositoryBinding, error) {
+	fail := func() (repositoryBinding, error) {
+		return repositoryBinding{}, errors.New("repository action denied")
+	}
+	if s.Authority == nil || repositoryUID == "" || connectionUID == "" || string(visible.GetUID()) != repositoryUID {
 		return fail()
 	}
 	provider, err := s.Authority(ctx, cluster, repositories, name)
@@ -408,7 +460,7 @@ func (s *Server) resolve(ctx context.Context, cluster, name string, visible *uns
 		return fail()
 	}
 	connection, err := provider.Resource(connections).Get(ctx, repo.Spec.ConnectionRef, metav1.GetOptions{})
-	if err != nil || string(connection.GetUID()) != input.ConnectionUID || connection.GetDeletionTimestamp() != nil {
+	if err != nil || string(connection.GetUID()) != connectionUID || connection.GetDeletionTimestamp() != nil {
 		return fail()
 	}
 	var conn api.Connection
@@ -419,7 +471,7 @@ func (s *Server) resolve(ctx context.Context, cluster, name string, visible *uns
 	if owner == "" {
 		owner = conn.Spec.Owner
 	}
-	if !strings.EqualFold(input.Repository, owner+"/"+repo.Spec.Name) {
+	if repository != "" && !strings.EqualFold(repository, owner+"/"+repo.Spec.Name) {
 		return fail()
 	}
 	ns := conn.Spec.SecretRef.Namespace
@@ -431,9 +483,5 @@ func (s *Server) resolve(ctx context.Context, cluster, name string, visible *uns
 	if err != nil {
 		return fail()
 	}
-	credential, err := s.Credentials.ResolveStored(ctx, &conn, tenant.CredentialSecretID(&conn, ns), data, store)
-	if err != nil {
-		return fail()
-	}
-	return &conn, &repo, credential, nil
+	return repositoryBinding{conn: &conn, repo: &repo, secretKey: tenant.CredentialSecretID(&conn, ns), data: data, store: store}, nil
 }

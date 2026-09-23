@@ -650,7 +650,7 @@ func TestGitEnvironmentDropsInteractiveConfiguration(t *testing.T) {
 		Repositories: map[string]RepositoryConfig{
 			"repo": {Source: source, BaseCommit: commit},
 		},
-	}, StartRequest{TaskID: "task-env", AttemptID: "attempt-env", RepositoryID: "repo", BaseCommit: commit})
+	}, StartRequest{TaskID: "task-env", AttemptID: "attempt-env", RepositoryID: "repo", BaseCommit: commit}, nil)
 	if err != nil {
 		t.Fatalf("prepareWorkspace with hostile global config: %v", err)
 	}

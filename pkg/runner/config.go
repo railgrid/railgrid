@@ -42,10 +42,13 @@ const (
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
-// RepositoryConfig enrolls one local Git source. The source is read-only from
-// the runner's point of view; attempts are cloned into task-owned worktrees.
-// FetchRemoteURL is operator-only enrollment data; it is never accepted from
-// a start request or exposed as a runner protocol field.
+// RepositoryConfig pins what the runner may do with one repository. Every
+// field is optional, and the whole map usually is: a runner clones what the
+// coordinator names with an attempt into a copy it owns, so nothing has to be
+// staged on the host. An enrollment is for the two cases where the host has
+// something to say — Source names an existing checkout to work from instead,
+// FetchRemoteURL a remote to use when no attempt supplies one, and BaseCommit
+// pins the single commit this runner will accept.
 type RepositoryConfig struct {
 	Source         string `json:"source"`
 	BaseCommit     string `json:"baseCommit,omitempty"`
@@ -169,13 +172,12 @@ func (c *Config) applyDefaults() error {
 		if !identifierPattern.MatchString(id) {
 			return fmt.Errorf("repository ID %q is invalid", id)
 		}
-		if strings.TrimSpace(repo.Source) == "" {
-			return fmt.Errorf("repository %q has an empty source", id)
-		}
-		if abs, err := filepath.Abs(repo.Source); err == nil {
+		if strings.TrimSpace(repo.Source) != "" {
+			abs, err := filepath.Abs(repo.Source)
+			if err != nil {
+				return fmt.Errorf("resolve repository %q source: %w", id, err)
+			}
 			repo.Source = abs
-		} else {
-			return fmt.Errorf("resolve repository %q source: %w", id, err)
 		}
 		if strings.TrimSpace(repo.FetchRemoteURL) != "" {
 			remote, err := validateFetchRemoteURL(repo.FetchRemoteURL)
@@ -199,15 +201,6 @@ func (c *Config) applyDefaults() error {
 		}
 	}
 	return nil
-}
-
-func hasFetchRemote(repositories map[string]RepositoryConfig) bool {
-	for _, repository := range repositories {
-		if strings.TrimSpace(repository.FetchRemoteURL) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func isLoopbackListenAddress(address string) bool {

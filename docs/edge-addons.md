@@ -150,7 +150,8 @@ runs as root (the systemd unit has no `User=`). The add-on child never does:
 **What the child can reach.**
 
 - Everything the add-on account can reach on the filesystem, including the
-  enrolled repository sources. The add-on's own state directory is `0700` and its
+  runner's own clones and any enrolled checkout. The add-on's own state
+  directory is `0700` and its
   files `0600`, and every write is symlink-hardened (`pkg/util/safeio`) so the
   add-on account cannot redirect a root-side write by pointing `~/.railgrid`
   somewhere else.
@@ -239,10 +240,33 @@ Under `<addon-user home>/.railgrid/addons/runner/<addon-name>/` (mode `0700`):
 | `state/` | `0700` | The runner's own state journal and task worktrees. |
 | `runner.log` | `0600` | The child's stdout and stderr, truncated at 8 MiB. |
 
-The token is then published as Secret `<addon-name>-runner-token` (key `token`)
-in namespace `default` of the tenant workspace, with an `ownerReference` to the
-`Addon`, using the agent's existing core/secrets permission. Deleting the
-`Addon` garbage-collects it.
+### How the two credentials cross the boundary
+
+Neither Secret is touched by the agent. An edge agent's scoped identity holds
+**no core group at all** — the hub's identity policy mints no `secrets` rule
+for anyone — so both directions run through declared, gated data-plane verbs on
+the agent's own edge, and the **provider** performs the read and the write. See
+[edges-agent-credentials.md](./edges-agent-credentials.md) §"A managed runner's
+credential".
+
+- **The harness credential** (`spec.runner.{codex,claude}.authSecretRef`): the
+  agent POSTs `{"addon": "<name>", "authSecretRef": {…}}` to `{resource}/addon-credentials` on every
+  reconcile, never caching. The provider confirms the Addon is hosted on the
+  calling edge, reads the Secret **the Addon's own spec references**, and
+  returns only the keys that harness can use. The agent never names a Secret.
+- **The runner's bearer**: the agent POSTs
+  `{"addon": "<name>", "uid": "<addon uid>", "token": "…"}` to the same
+  `{resource}/addon-credentials` verb. The provider writes Secret
+  `<addon-name>-runner-token` (key `token`) in namespace `default` of the
+  tenant workspace, labelled `railgrid.ai/owner: edges` and carrying an
+  `ownerReference` to the `Addon`, so deleting the `Addon` garbage-collects it.
+
+Both Secrets must carry `railgrid.ai/owner: edges`, including the one a tenant
+(or a portal) hand-writes for the harness credential: the edges provider's
+`secrets` permission claim is scoped to that label, and an unlabelled Secret is
+not merely unreadable — kcp's APIExport virtual workspace filters it out of
+LIST/WATCH and answers a GET with `404`, so it does not exist as far as the
+provider is concerned.
 
 Health is a real probe, not "a process exists": the agent GETs
 `http://127.0.0.1:<port>/runner/v1/capabilities` with the bearer token and sets
@@ -358,14 +382,11 @@ spec:
     maximumCapacity: 1
     toolchains: ["go1.26", "node22"]
     verificationCapabilities: ["unit", "lint"]
-    repositories:
-      app:
-        source: /srv/repos/app
-        # A commit the local source lacks is first fetched into the source
-        # from its own origin, with the account's Git credentials. Optional:
-        # where the source has no usable origin, fetch the commit from here
-        # instead, into the isolated task clone only.
-        fetchRemoteURL: ssh://git@github.com/acme/app.git
+    # No `repositories`. This is the normal shape: the control plane hands the
+    # runner a clone URL and a short-lived credential with each attempt, and
+    # the runner keeps its own clone under its state directory. Nothing has to
+    # exist on the machine first. See "Enrolling a repository" below for the
+    # exceptions.
     codex:
       binary: codex
       versionPin: "0.147.0"
@@ -408,9 +429,6 @@ spec:
     port: 8787
     maximumCapacity: 1
     toolchains: ["go1.26", "node22"]
-    repositories:
-      app:
-        source: /srv/repos/app
     claude:
       binary: claude
       model: sonnet
@@ -430,6 +448,41 @@ $ kubectl get addon code -o jsonpath='{.status.harness}'
 {"name":"claude-code","version":"2.1.273","ready":true}
 ```
 
+### Enrolling a repository
+
+Usually you do not. `spec.runner.repositories` is empty in both examples above
+and that is the intended configuration: the control plane hands the runner a
+clone URL and a short-lived credential with each attempt, and the runner keeps
+its own clone under its state directory. A managed runner is never blocked on
+a checkout somebody has to put on the machine first, and creating one asks for
+no repository and no path.
+
+Enrol an entry only for the two exceptions:
+
+- **A checkout the machine owner already maintains.** Set `source` to its
+  absolute path. The runner treats it as read-only — attempts are served from
+  task-owned clones, and its branch and working tree never move.
+- **A fixed remote the runner may fetch from without being told per attempt.**
+  Set `fetchRemoteURL` and leave `source` out; the runner clones it itself.
+
+Either half is enough, and both together are allowed — `source` as the local
+checkout, `fetchRemoteURL` as the origin to fetch a missing approved commit
+from. An entry that names neither is rejected by admission, and again by the
+agent before it writes `runner.json`: it would give the runner nothing to check
+out and nowhere to fetch from.
+
+```yaml
+  runner:
+    repositories:
+      # Cloned and fetched by the runner itself; nothing on the host.
+      app:
+        fetchRemoteURL: ssh://git@github.com/acme/app.git
+      # A checkout the machine owner maintains, with an origin to top it up.
+      vendored:
+        source: /srv/repos/vendored
+        fetchRemoteURL: ssh://git@github.com/acme/vendored.git
+```
+
 ### Field reference
 
 | Field | Default | Notes |
@@ -442,8 +495,9 @@ $ kubectl get addon code -o jsonpath='{.status.harness}'
 | `spec.runner.maximumCapacity` | `1` | Must be `1`; the runner is single-execution. |
 | `spec.runner.toolchains` | — | Advertised names. Declaring one does not install it. |
 | `spec.runner.verificationCapabilities` | — | Advertised names. |
-| `spec.runner.repositories[id].source` | — | Absolute path on the edge host. A missing approved commit is fetched into it from its own `origin` with the add-on account's Git credentials; its branch and working tree never move. |
-| `spec.runner.repositories[id].fetchRemoteURL` | — | Absolute path, `file://`, `https://`, `ssh://`, or `user@host:path`. Used when the source has no usable origin. Operator-only; a start request cannot supply it. |
+| `spec.runner.repositories` | — | Normally absent. The runner clones what it is sent per attempt; enrol an entry only for the exceptions below. |
+| `spec.runner.repositories[id].source` | — | Optional. Absolute path to a checkout that already exists on the edge host. A missing approved commit is fetched into it from its own `origin` with the add-on account's Git credentials; its branch and working tree never move. Omit it and the runner clones the repository itself, under its own state directory. |
+| `spec.runner.repositories[id].fetchRemoteURL` | — | Absolute path, `file://`, `https://`, `ssh://`, or `user@host:path`. Where the runner's own clone comes from when there is no `source`, and where a missing commit is fetched from when a `source` has no usable origin. Operator-only; a start request cannot supply it. An entry must carry a `source`, a `fetchRemoteURL`, or both. |
 | `spec.runner.harness` | `codex` | `codex` or `claude`. The other harness's block is rejected. |
 | `spec.runner.codex.binary` | `codex` | Looked up on the child's `PATH`. |
 | `spec.runner.codex.versionPin` | `0.147.0` | Probed at startup. |
@@ -556,8 +610,8 @@ state-format change over an existing add-on state directory. The token,
 `runner.json` and Codex home survive both directions; only the executable moves.
 
 Deleting or pausing an `Addon` stops the child and keeps the state directory —
-including the token, so unpausing resumes the same identity — and **never**
-touches the enrolled repositories.
+including the token and the runner's own clones, so unpausing resumes the same
+identity — and **never** touches an enrolled checkout.
 
 ## Not done (follow-ups)
 

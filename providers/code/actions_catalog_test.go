@@ -56,7 +56,7 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 		t.Fatal("rendered Code catalog missing")
 	}
 	actions, ok := expected.([]any)
-	if !ok || len(actions) != 14 {
+	if !ok || len(actions) != 15 {
 		t.Fatalf("unexpected Code actions: %#v", expected)
 	}
 	for _, raw := range actions {
