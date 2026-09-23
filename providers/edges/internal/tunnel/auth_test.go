@@ -279,6 +279,25 @@ func TestParseServiceAccountTokenShapes(t *testing.T) {
 		}
 	})
 
+	// The tunnel asks a different question than parseServiceAccountToken: not
+	// "was this minted elsewhere" but "is this a ServiceAccount credential at
+	// all". An agent presents either its opaque join token or the bound token
+	// the provider issued it; classing the latter as a join token refused
+	// every reconnect once the edge's join token had been cleared.
+	t.Run("a bound credential is a ServiceAccount JWT, an opaque join token is not", func(t *testing.T) {
+		if !isServiceAccountJWT(delegatedSAToken(t, cluster, "railgrid-si-abc")) {
+			t.Error("a bound agent credential was not recognized as a ServiceAccount token; a restarted agent would be refused")
+		}
+		if !isServiceAccountJWT(legacySAToken(t, cluster, "provider-edges")) {
+			t.Error("a legacy SA token was not recognized")
+		}
+		for _, token := range []string{"", "r3ocF231hXJHRs7_-Zm6N16y8jFcdpYxoTljlkFMdQI=", "a.b", "not.base64!.sig"} {
+			if isServiceAccountJWT(token) {
+				t.Errorf("isServiceAccountJWT(%q) = true, want false: a join token must take the bootstrap branch", token)
+			}
+		}
+	})
+
 	t.Run("non-JWT credentials are not SA tokens", func(t *testing.T) {
 		for _, token := range []string{"", "opaque-static-token", "a.b", "not.base64!.sig"} {
 			if _, ok := parseServiceAccountToken(token); ok {

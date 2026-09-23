@@ -31,10 +31,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -82,11 +86,74 @@ type ValidationReconciler struct {
 // re-validated immediately rather than on the next resync.
 func SetupValidationWithManager(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string) error {
 	r := newValidationReconciler(mgr, connManager, edgeProxyPublicPath)
-	return mcbuilder.ControllerManagedBy(mgr).
+	builder := mcbuilder.ControllerManagedBy(mgr).
 		Named("service-validation").
 		For(&edgesv1alpha1.Service{}).
-		Watches(&corev1.Secret{}, mchandler.EnqueueRequestsFromMapFunc(r.mapSecretToServices)).
-		Complete(r)
+		Watches(&corev1.Secret{}, mchandler.EnqueueRequestsFromMapFunc(r.mapSecretToServices))
+	// A Service is only probed while its edge has a live tunnel, and a failed
+	// probe backs off up to validationResyncInterval. Without this, an agent
+	// that reconnected left every service on that edge reported Unreachable
+	// until the backoff expired — minutes in which the workspace's own objects
+	// said the runner was down while it was answering. The tunnel registry is
+	// process-local, so this is a channel source, exactly like the lifecycle
+	// reconciler's (internal/edgectrl).
+	if notifier, ok := connManager.(interface{ OnChange(func(string)) }); ok {
+		events := make(chan event.TypedGenericEvent[string], tunnelEventBuffer)
+		notifier.OnChange(func(key string) {
+			select {
+			case events <- event.TypedGenericEvent[string]{Object: key}:
+			default:
+				klog.Background().V(2).Info("dropping tunnel change notification for services (buffer full); the resync will deliver it", "key", key)
+			}
+		})
+		builder = builder.WatchesRawSource(source.TypedChannel[string, mcreconcile.Request](events, handler.TypedFuncs[string, mcreconcile.Request]{
+			GenericFunc: func(ctx context.Context, e event.TypedGenericEvent[string], q workqueue.TypedRateLimitingInterface[mcreconcile.Request]) {
+				for _, req := range r.servicesOnEdge(ctx, e.Object) {
+					q.Add(req)
+				}
+			},
+		}))
+	}
+	return builder.Complete(r)
+}
+
+// tunnelEventBuffer bounds the queue of tunnel notifications. A dropped one
+// costs a resync interval, never correctness.
+const tunnelEventBuffer = 64
+
+// servicesOnEdge turns a tunnel registry key ("{resource}/{cluster}/{edge}")
+// into a reconcile request per Service registered on that edge.
+func (r *ValidationReconciler) servicesOnEdge(ctx context.Context, key string) []mcreconcile.Request {
+	resource, rest, ok := strings.Cut(key, "/")
+	if !ok {
+		return nil
+	}
+	cluster, edge, ok := strings.Cut(rest, "/")
+	if !ok || cluster == "" || edge == "" {
+		return nil
+	}
+	clusterName := multicluster.ClusterName(cluster)
+	cl, err := r.mgr.GetCluster(ctx, clusterName)
+	if err != nil {
+		klog.V(2).InfoS("servicesOnEdge: GetCluster failed", "cluster", cluster, "err", err)
+		return nil
+	}
+	var svcList edgesv1alpha1.ServiceList
+	if err := cl.GetClient().List(ctx, &svcList); err != nil {
+		return nil
+	}
+	var requests []mcreconcile.Request
+	for i := range svcList.Items {
+		svc := &svcList.Items[i]
+		if svc.Spec.EdgeRef.Name != edge || connResource(svc) != resource {
+			continue
+		}
+		requests = append(requests, mcreconcile.Request{
+			ClusterName: clusterName,
+			Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: svc.Namespace, Name: svc.Name}},
+		})
+	}
+	return requests
 }
 
 func newValidationReconciler(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string) *ValidationReconciler {

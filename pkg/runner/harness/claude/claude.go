@@ -238,6 +238,9 @@ func New(cfg Config) harness.Adapter {
 	if strings.TrimSpace(cfg.Binary) == "" {
 		cfg.Binary = defaultBinary
 	}
+	// A managed runner's PATH is the service account's, not a login shell's;
+	// resolve the usual install locations so a normal install just works.
+	cfg.Binary = harness.ResolveBinary(cfg.Binary)
 	return &Adapter{cfg: cfg}
 }
 

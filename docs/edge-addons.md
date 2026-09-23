@@ -239,10 +239,32 @@ Under `<addon-user home>/.railgrid/addons/runner/<addon-name>/` (mode `0700`):
 | `state/` | `0700` | The runner's own state journal and task worktrees. |
 | `runner.log` | `0600` | The child's stdout and stderr, truncated at 8 MiB. |
 
-The token is then published as Secret `<addon-name>-runner-token` (key `token`)
-in namespace `default` of the tenant workspace, with an `ownerReference` to the
-`Addon`, using the agent's existing core/secrets permission. Deleting the
-`Addon` garbage-collects it.
+### How the two credentials cross the boundary
+
+Neither Secret is touched by the agent. An edge agent's scoped identity holds
+**no core group at all** — the hub's identity policy mints no `secrets` rule
+for anyone — so both directions run through declared, gated data-plane verbs on
+the agent's own edge, and the **provider** performs the read and the write. See
+[edges-agent-credentials.md](./edges-agent-credentials.md) §"A managed runner's
+credential".
+
+- **The harness credential** (`spec.runner.{codex,claude}.authSecretRef`): the
+  agent POSTs `{"addon": "<name>"}` to `{resource}/runner-auth` on every
+  reconcile, never caching. The provider confirms the Addon is hosted on the
+  calling edge, reads the Secret **the Addon's own spec references**, and
+  returns only the keys that harness can use. The agent never names a Secret.
+- **The runner's bearer**: the agent POSTs `{"addon": "<name>", "token": "…"}`
+  to `{resource}/runner-token`. The provider writes Secret
+  `<addon-name>-runner-token` (key `token`) in namespace `default` of the
+  tenant workspace, labelled `railgrid.ai/owner: edges` and carrying an
+  `ownerReference` to the `Addon`, so deleting the `Addon` garbage-collects it.
+
+Both Secrets must carry `railgrid.ai/owner: edges`, including the one a tenant
+(or a portal) hand-writes for the harness credential: the edges provider's
+`secrets` permission claim is scoped to that label, and an unlabelled Secret is
+not merely unreadable — kcp's APIExport virtual workspace filters it out of
+LIST/WATCH and answers a GET with `404`, so it does not exist as far as the
+provider is concerned.
 
 Health is a real probe, not "a process exists": the agent GETs
 `http://127.0.0.1:<port>/runner/v1/capabilities` with the bearer token and sets

@@ -264,6 +264,17 @@ func startTunneler(ctx context.Context, hubURL string, credentials *CredentialSt
 // initiateConnection dials the hub via WebSocket and returns the underlying
 // net.Conn together with the HTTP upgrade response. The response headers may
 // contain hub-provided metadata such as X-Railgrid-Agent-Token (token-exchange).
+// cloneTLS copies a TLS config for a WebSocket dial. The agent shares one
+// config between its HTTPS clients and its tunnel; net/http mutates the one it
+// is given (NextProtos gains "h2"), and gorilla/websocket rejects a config
+// that advertises a protocol it does not speak.
+func cloneTLS(config *tls.Config) *tls.Config {
+	if config == nil {
+		return nil
+	}
+	return config.Clone()
+}
+
 func initiateConnection(ctx context.Context, wsURL string, token string, tlsConfig *tls.Config, extraHeaders http.Header) (net.Conn, *http.Response, error) {
 	u, err := url.Parse(wsURL)
 	if err != nil {
@@ -278,8 +289,11 @@ func initiateConnection(ctx context.Context, wsURL string, token string, tlsConf
 		u.Scheme = "ws"
 	}
 
+	// Clone before dialling: anything that hands this config to net/http gets
+	// "h2" appended to NextProtos, and gorilla refuses a config advertising a
+	// protocol it cannot speak.
 	dialer := websocket.Dialer{
-		TLSClientConfig:  tlsConfig,
+		TLSClientConfig:  cloneTLS(tlsConfig),
 		HandshakeTimeout: 30 * time.Second,
 	}
 
@@ -398,7 +412,7 @@ func revdialFunc(baseURL string, getToken func() string, tlsConfig *tls.Config) 
 		u.RawQuery = pathURL.RawQuery
 
 		dialer := websocket.Dialer{
-			TLSClientConfig:  tlsConfig,
+			TLSClientConfig:  cloneTLS(tlsConfig),
 			HandshakeTimeout: 30 * time.Second,
 		}
 

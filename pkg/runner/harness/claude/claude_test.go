@@ -221,8 +221,12 @@ func TestNewDefaultsTheBinaryAndLeavesTheVersionUnpinned(t *testing.T) {
 	if !ok {
 		t.Fatal("New did not return the Claude adapter")
 	}
-	if adapter.cfg.Binary != "claude" {
-		t.Errorf("binary = %q", adapter.cfg.Binary)
+	// The default is the bare name, resolved through the usual install
+	// locations (harness.ResolveBinary) so a runner started by the Edge agent
+	// finds a per-user install its PATH does not list. On a host without
+	// Claude Code installed it stays the bare name.
+	if filepath.Base(adapter.cfg.Binary) != "claude" {
+		t.Errorf("binary = %q, want a path ending in claude", adapter.cfg.Binary)
 	}
 	// Unlike Codex there is no built-in pin: Claude Code self-updates fast
 	// enough that a constant here would make every runner unready by default.

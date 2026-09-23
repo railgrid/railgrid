@@ -72,9 +72,24 @@ const TokenTTL = 24 * 60 * 60 // seconds; converted where the request is built
 //   - proxy            the agent presents it on every reconnect (class (f))
 //   - agent-token      the agent refreshes its own credential with it
 //   - ssh-credentials  a LinuxServer agent hands its SSH credentials over
+//   - runner-auth      a host agent asks for one of its add-ons' harness
+//     credentials; the provider reads the Secret the Addon references
+//   - runner-token     the same in reverse: the agent hands over the bearer it
+//     generated for an add-on and the provider writes the token Secret
 //   - k8s, ssh, mcp    the verbs carried OVER the tunnel; a grant that
 //     authorizes the tunnel but not its traffic fails on the first request
-var DataPlaneVerbs = []string{"agent-token", "k8s", "mcp", "proxy", "ssh", "ssh-credentials"}
+//
+// The three credential verbs exist for one reason: identity policy X-4 mints
+// no core `secrets` rule for anyone, so every tenant-workspace Secret an agent
+// used to read or write is now a gated verb the PROVIDER performs after the
+// agent has proved which edge it is.
+//
+// The list is per-agent, not per-kind: a grant for a verb this edge's kind
+// does not serve is harmless (the coordinate 404s before any gate), while a
+// missing one is a hard failure on the first call.
+var DataPlaneVerbs = []string{
+	"agent-token", "k8s", "mcp", "proxy", "runner-auth", "runner-token", "ssh", "ssh-credentials",
+}
 
 // Rules is the complete rule set an edge agent's identity
 // carries. Every rule is clause A — a verb on a resource of edges.railgrid.ai,

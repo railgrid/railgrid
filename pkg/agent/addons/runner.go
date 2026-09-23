@@ -615,15 +615,24 @@ func (r *runnerAddon) renderConfig(spec *RunnerSpec) ([]byte, error) {
 			return nil, fmt.Errorf("repository ID %q is invalid", id)
 		}
 		source := strings.TrimSpace(repo.Source)
-		if source == "" {
-			return nil, fmt.Errorf("repository %q has an empty source", id)
+		remote := strings.TrimSpace(repo.FetchRemoteURL)
+		// An empty map is the normal case: the runner keeps its own clone of
+		// whatever the coordinator names with an attempt, so nothing has to be
+		// staged on this host. An entry is for a host that has something of its
+		// own to say. Naming neither a checkout nor a remote is the one shape
+		// that cannot mean anything.
+		if source == "" && remote == "" {
+			return nil, fmt.Errorf("repository %q names neither a source nor a fetchRemoteURL", id)
 		}
-		if !filepath.IsAbs(source) {
-			return nil, fmt.Errorf("repository %q source %q must be an absolute path on the edge host", id, source)
+		if source != "" {
+			if !filepath.IsAbs(source) {
+				return nil, fmt.Errorf("repository %q source %q must be an absolute path on the edge host", id, source)
+			}
+			source = filepath.Clean(source)
 		}
 		repositories[id] = runner.RepositoryConfig{
-			Source:         filepath.Clean(source),
-			FetchRemoteURL: strings.TrimSpace(repo.FetchRemoteURL),
+			Source:         source,
+			FetchRemoteURL: remote,
 		}
 	}
 	cfg := runner.Config{
