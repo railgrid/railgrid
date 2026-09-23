@@ -250,12 +250,13 @@ the agent's own edge, and the **provider** performs the read and the write. See
 credential".
 
 - **The harness credential** (`spec.runner.{codex,claude}.authSecretRef`): the
-  agent POSTs `{"addon": "<name>"}` to `{resource}/runner-auth` on every
+  agent POSTs `{"addon": "<name>", "authSecretRef": {…}}` to `{resource}/addon-credentials` on every
   reconcile, never caching. The provider confirms the Addon is hosted on the
   calling edge, reads the Secret **the Addon's own spec references**, and
   returns only the keys that harness can use. The agent never names a Secret.
-- **The runner's bearer**: the agent POSTs `{"addon": "<name>", "token": "…"}`
-  to `{resource}/runner-token`. The provider writes Secret
+- **The runner's bearer**: the agent POSTs
+  `{"addon": "<name>", "uid": "<addon uid>", "token": "…"}` to the same
+  `{resource}/addon-credentials` verb. The provider writes Secret
   `<addon-name>-runner-token` (key `token`) in namespace `default` of the
   tenant workspace, labelled `railgrid.ai/owner: edges` and carrying an
   `ownerReference` to the `Addon`, so deleting the `Addon` garbage-collects it.

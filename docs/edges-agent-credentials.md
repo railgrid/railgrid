@@ -37,8 +37,7 @@ upgrade response: base64 of
   "resource": "linuxservers", "name": "edge-1",
   "refreshPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/agent-token",
   "sshCredentialsPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/ssh-credentials",
-  "runnerAuthPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/runner-auth",
-  "runnerTokenPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/runner-token"
+  "addonCredentialsPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/addon-credentials"
 }
 ```
 
@@ -147,27 +146,29 @@ ClaudeAuthMissing: reading auth Secret default/dev-edge-server-1-runner-claude-a
 Published through Edges: waiting for the agent to publish Secret default/…-runner-token
 ```
 
-Both halves are now declared, gated verbs on the edge kinds that can host an
+Both halves are one declared, gated verb on the edge kinds that can host an
 add-on (`linuxservers`, `macosservers`):
 
-| Verb | Direction | Body | Answer |
-| --- | --- | --- | --- |
-| `{resource}/runner-auth` | agent → provider | `{"addon": "<name>"}` | `{"addon", "harness", "secretName", "secretNamespace", "data": {<key>: <base64>}}` |
-| `{resource}/runner-token` | agent → provider | `{"addon": "<name>", "token": "<bearer>"}` | `{"secretName", "secretNamespace"}` |
+| Direction | Body | Answer |
+| --- | --- | --- |
+| read the harness credential | `{"addon": "<name>", "authSecretRef": {"name", "namespace"}}` | a `Secret` carrying only the keys that harness can use |
+| publish the runner token | `{"addon": "<name>", "uid": "<addon uid>", "token": "<bearer>"}` | `204`, the token Secret written |
 
-Both run the ordinary two gates as the agent, and then **one more check that is
-the point of the design**: the named `Addon` must have a `spec.edgeRef` pointing
-back at the edge in the path. The agent names an add-on and nothing else — not
-a Secret, not a namespace, not a key. Everything the provider touches it
-derives from that Addon's own spec:
+The verb is `{resource}/addon-credentials`, and which half runs is decided by
+which member the body carries. It runs the ordinary two gates as the agent, and
+then **one more check that is the point of the design**: the named `Addon` must
+have a `spec.edgeRef` pointing back at the edge in the path. The agent names an
+add-on and nothing else — not a namespace, not a key; the auth reference it
+sends must match the one the Addon's own spec records, or the call is refused.
+Everything the provider touches it derives from that Addon's own spec:
 
-- `runner-auth` reads the Secret `spec.runner.<harness>.authSecretRef` names and
+- the read half reads the Secret `spec.runner.<harness>.authSecretRef` names and
   returns **only** the keys that harness can use (`auth.json` for Codex,
   `oauthToken`/`apiKey` for Claude Code), so a Secret that also carries
   unrelated material never hands that material to a code-execution host. An
   add-on that is not on this edge gets the same `404` as one that does not
   exist, so the verb cannot be used to enumerate the workspace.
-- `runner-token` writes `default/<addon>-runner-token` (key `token`) with
+- the publish half writes `default/<addon>-runner-token` (key `token`) with
   `railgrid.ai/owner: edges` — without which the provider could not read back
   its own write, because kcp filters the label-scoped `secrets` claim out of
   LIST/WATCH and answers a GET with `404` — and the `ownerReference` to the
@@ -179,7 +180,7 @@ stamps it (`providers/factory/portal/src/workers/enrollment.ts`); a
 hand-written Secret must carry it as well, which is the tenant saying "this one
 is for edges".
 
-The agent re-reads through `runner-auth` on **every** reconcile and caches
+The agent re-reads through `addon-credentials` on **every** reconcile and caches
 nothing, so a rotated credential takes effect on the next resync — the
 credential's digest, never the credential, feeds the child's restart hash.
 
@@ -201,7 +202,7 @@ exports, so the hub admits the request whole:
 | Rule | Scope |
 |---|---|
 | `get` on `{resource}` | this edge only (gate 1) |
-| `create` on `{resource}/{agent-token,k8s,mcp,proxy,runner-auth,runner-token,ssh,ssh-credentials}` | this edge only (gate 2) |
+| `create` on `{resource}/{addon-credentials,agent-token,k8s,mcp,proxy,ssh,ssh-credentials}` | this edge only (gate 2) |
 | `get,update,patch` on `{resource}/status` | this edge only |
 | `list,watch` on `{resource}` | kind-wide — RBAC cannot name-scope a collection request |
 | `get,list,watch,update,patch` on `placements(/status)` | workload plane |
