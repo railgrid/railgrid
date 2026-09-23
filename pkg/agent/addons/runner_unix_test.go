@@ -26,6 +26,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
@@ -70,10 +71,24 @@ func codexSecret(name, namespace string, data map[string][]byte) *corev1.Secret 
 func newRunnerAddon(t *testing.T, kube kubernetes.Interface, home string) *runnerAddon {
 	t.Helper()
 	factory, err := NewRunnerFactory(RunnerOptions{
-		EdgeName:       "build-01",
-		Executable:     stubExecutable(t),
-		Account:        RunAsAccount{Home: home, UID: InheritUID, GID: InheritUID},
-		Kube:           kube,
+		EdgeName:   "build-01",
+		Executable: stubExecutable(t),
+		Account:    RunAsAccount{Home: home, UID: InheritUID, GID: InheritUID},
+		ReadAuth: func(ctx context.Context, _ string, ref *SecretRef) (*corev1.Secret, error) {
+			namespace := ref.Namespace
+			if namespace == "" {
+				namespace = "default"
+			}
+			return kube.CoreV1().Secrets(namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+		},
+		PublishToken: func(ctx context.Context, spec Spec, token string) error {
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: spec.Name + TokenSecretSuffix, Namespace: "default", OwnerReferences: []metav1.OwnerReference{{Kind: AddonKind, Name: spec.Name, UID: spec.UID}}}, Data: map[string][]byte{TokenSecretKey: []byte(token)}}
+			_, err := kube.CoreV1().Secrets("default").Create(ctx, secret, metav1.CreateOptions{})
+			if apierrors.IsAlreadyExists(err) {
+				_, err = kube.CoreV1().Secrets("default").Update(ctx, secret, metav1.UpdateOptions{})
+			}
+			return err
+		},
 		ProbeDeadline:  50 * time.Millisecond,
 		ProbeTimeout:   50 * time.Millisecond,
 		InitialBackoff: 50 * time.Millisecond,
