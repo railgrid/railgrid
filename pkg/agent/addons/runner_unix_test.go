@@ -116,9 +116,9 @@ func runnerSpec() Spec {
 			MaximumCapacity:          1,
 			Toolchains:               []string{"go1.26"},
 			VerificationCapabilities: []string{"unit"},
-			Repositories: map[string]Repository{
-				"app": {Source: "/srv/repos/app"},
-			},
+			// No repositories: the normal configuration. The runner clones what
+			// the control plane hands it with each attempt, so nothing has to be
+			// enrolled and nothing has to exist on the machine first.
 			Codex: &Codex{
 				Binary:        "codex",
 				AuthSecretRef: &SecretRef{Name: "codex-auth", Namespace: "default"},
@@ -330,8 +330,11 @@ func TestRenderedConfigRoundTripsThroughLoadConfig(t *testing.T) {
 	if cfg.MaximumCapacity != 1 {
 		t.Errorf("maximumCapacity = %d, want 1", cfg.MaximumCapacity)
 	}
-	if repo, ok := cfg.Repositories["app"]; !ok || repo.Source != "/srv/repos/app" {
-		t.Errorf("repositories = %+v", cfg.Repositories)
+	// An Addon that enrols nothing renders a runner with no repositories. That
+	// is the ordinary configuration, not a degenerate one: the runner is told
+	// what to clone per attempt.
+	if len(cfg.Repositories) != 0 {
+		t.Errorf("repositories = %+v, want none", cfg.Repositories)
 	}
 	// The token never travels in the configuration file; it is read from
 	// tokenFile so it cannot leak through a config backup.
@@ -357,20 +360,19 @@ func TestRenderConfigRejectsUnsafeEnrollment(t *testing.T) {
 		t.Error("an invalid repository ID was accepted")
 	}
 
+	// Naming neither a checkout nor a remote is the one shape with no meaning:
+	// the runner would have nothing to check out and nowhere to fetch from.
+	empty := runnerSpec()
+	empty.Runner.Repositories = map[string]Repository{"app": {}}
+	if _, err := addon.renderConfig(empty.Runner); err == nil {
+		t.Error("a repository naming neither a source nor a fetchRemoteURL was accepted")
+	}
+
 	capacity := runnerSpec()
 	capacity.Runner.MaximumCapacity = 4
 	if _, err := addon.renderConfig(capacity.Runner); err == nil {
 		t.Error("maximumCapacity 4 was accepted by the single-execution runner")
 	}
-}
-
-func conditionByType(status Status, condType string) *Condition {
-	for i := range status.Conditions {
-		if status.Conditions[i].Type == condType {
-			return &status.Conditions[i]
-		}
-	}
-	return nil
 }
 
 // TestRenderConfigEnrolsRemoteOnlyRepositories: a repository the runner clones
@@ -409,4 +411,13 @@ func TestRenderConfigEnrolsRemoteOnlyRepositories(t *testing.T) {
 	if local := cfg.Repositories["local"]; local.Source != "/srv/repos/local" {
 		t.Errorf("local source = %q, want the cleaned absolute path", local.Source)
 	}
+}
+
+func conditionByType(status Status, condType string) *Condition {
+	for i := range status.Conditions {
+		if status.Conditions[i].Type == condType {
+			return &status.Conditions[i]
+		}
+	}
+	return nil
 }

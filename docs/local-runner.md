@@ -133,17 +133,23 @@ tunnel, not the runner.
 
 ## Enroll configuration
 
-Use an absolute, private state directory and an absolute token-file path. A
-configuration can enroll several named local Git sources, but each source must
-be explicitly allowlisted. `baseCommit`, when set, further restricts that
-source to one commit. When an approved commit is missing from a source (its
-base branch moved on after a merge), the runner first refreshes the source
-from its own `origin` — with the operator's Git configuration and
-credentials for that checkout, hooks disabled and prompts off; only
-remote-tracking refs move — and serves the task clone from it. An optional
-operator-only `fetchRemoteURL` is the alternative for a source without a
-usable origin: the runner fetches the missing commit from it, anonymously
-over HTTPS or with the SSH agent, into the isolated task clone only.
+Use an absolute, private state directory and an absolute token-file path.
+
+`repositories` is optional, and for a managed runner it is normally absent.
+The coordinator names the repository's remote with each attempt, and the
+runner keeps its own clone of it below `stateDir/repositories`; nothing has to
+be checked out on the host beforehand. See [Repositories the runner clones for
+itself](#repositories-the-runner-clones-for-itself).
+
+Enroll a repository when the host has something of its own to say. `source`
+names an existing checkout to work from instead of cloning, `fetchRemoteURL` a
+remote to fetch from when an attempt supplies none, and `baseCommit` pins the
+single commit this runner will accept for that repository. An enrolled
+checkout is read-only to the runner: when an approved commit is missing from
+it (its base branch moved on after a merge), the runner refreshes it from its
+own `origin` — with the operator's Git configuration and credentials for that
+checkout, hooks disabled and prompts off; only remote-tracking refs move — and
+serves the task clone from it.
 
 ```json
 {
@@ -158,6 +164,7 @@ over HTTPS or with the SSH agent, into the isolated task clone only.
   "repositories": {
     "<repository-id>": {
       "source": "<absolute-local-git-source>",
+      "fetchRemoteURL": "<git-url>",
       "baseCommit": "<40-character-commit>"
     }
   },
@@ -173,11 +180,11 @@ over HTTPS or with the SSH agent, into the isolated task clone only.
 `runnerID` and map keys use the identifier form accepted by the protocol. The
 runner defaults `runnerID` to a platform-qualified value, `stateDir` to the
 user configuration directory followed by `railgrid-runner`, and `maximumCapacity`
-to one. It rejects a capacity greater than one. The source path is resolved at
-startup and the source directory must exist. Without `fetchRemoteURL`, the
-requested full commit must already exist in that source. With it, the runner
-keeps the source as the enrolled local checkout and may fetch the exact
-requested commit only into the task-owned clone; it never updates the source.
+to one. It rejects a capacity greater than one. A `source`, when given, is
+resolved at startup and the directory must exist. The requested full commit
+must then already exist in that checkout, or be reachable from its `origin` or
+from `fetchRemoteURL`; either way the fetch lands in the task-owned clone and
+the enrolled checkout is never updated.
 
 The runner stores durable state as a protected file below `stateDir`, takes a
 single-process lock for that directory, and places task workspaces below
@@ -218,11 +225,45 @@ fetch operation only. The coding harness does not receive the SSH agent,
 GitHub tokens, API keys, or other Git credentials, and its execution remains
 network-disabled.
 
-The runner advertises `git-fetch-v1` in `verificationCapabilities` when any
-enrolled repository has a `fetchRemoteURL`. The capability is an availability
-signal; the per-repository opt-in and remote validation still apply. Git fetch
-command failures return fixed bounded messages (`git fetch failed`, `git fetch
-timed out`, or `git fetch canceled`) instead of remote command output.
+The runner always advertises `git-fetch-v1` in `verificationCapabilities`,
+because it fetches for itself in either mode. Remote validation still applies.
+Git fetch command failures return fixed bounded messages (`git fetch failed`,
+`git fetch timed out`, or `git fetch canceled`) instead of remote command
+output.
+
+### Repositories the runner clones for itself
+
+When a repository is not enrolled with a `source`, the start request carries
+where to get it:
+
+```json
+{
+  "repository": {
+    "remoteURL": "https://github.example/acme/app.git",
+    "username": "x-access-token",
+    "token": "<short-lived read-only credential>"
+  }
+}
+```
+
+The runner keeps a bare clone per repository at
+`stateDir/repositories/<repository-id>.git`, creating it on first use. It
+fetches the approved commit by ID — which is what reaches a pull-request head
+no branch points at — and falls back to fetching the remote's branches. Later
+attempts on a commit it already has never go back to the remote.
+
+`remoteURL` obeys the same rules as an enrolled `fetchRemoteURL`: HTTPS or an
+ordinary SSH URL, no embedded credentials, no query or fragment options. A
+`token` is only accepted with an HTTPS remote and is sent as a basic
+authorization header scoped to that remote's host, passed to Git through the
+environment so it never appears in the process table or in the repository's
+Git configuration.
+
+The credential is dispatch data, not approved attempt input. The runner strips
+it before the request is fingerprinted or persisted, so it never reaches
+durable state and a retry that carries a freshly minted credential is still
+the same request rather than an idempotency conflict. The coding harness never
+receives it.
 
 ## Start the runner
 
@@ -393,7 +434,7 @@ runs as — exactly as stated at the end of "Start the runner" above.
 Headless Claude Code has no structured "ask the user" channel, and with
 `--permission-prompts none` nothing can prompt. The adapter therefore uses a
 convention: it prepends a short preamble telling the model that if it cannot
-proceed without a human decision, its final message must be exactly one block:
+proceed without a human decision, its final message must end with one block:
 
 ```text
 <<<RAILGRID_CLARIFICATION>>>
@@ -401,10 +442,13 @@ the question
 <<<END_RAILGRID_CLARIFICATION>>>
 ```
 
-Only a final message that is exactly one such block becomes a
-`needs_input` receipt with a `clarification`. Prose that merely mentions the
-marker is ignored, because a false clarification would park work forever on a
-question nobody asked.
+The block becomes a `needs_input` receipt with a `clarification` only when it
+appears exactly once and closes the final message; the question is the text
+between the delimiters. The model may explain itself before the block, and that
+explanation is not carried into the question. Anything else is ignored — a
+second marker, a block followed by more work, or prose that merely mentions the
+marker — because a false clarification would park work forever on a question
+nobody asked.
 
 ## Run an operation
 
@@ -424,16 +468,16 @@ attempt epoch is stale and cannot mutate the newer attempt.
 | Resume | `POST /runner/v1/attempts/<attempt-id>/resume` |
 | Artifact | `GET /runner/v1/attempts/<attempt-id>/artifacts/<artifact-id>` |
 
-A start request must include the enrolled `repositoryID`, the full 40-character
+A start request must include a `repositoryID`, the full 40-character
 `baseCommit`, non-empty instructions, and a non-empty JSON `approvedInput`
-object containing `provenance`, `manualAuthorization`, or `authorization`.
-The approved commit must resolve exactly in the enrolled source or, when that
-repository has opted in with `fetchRemoteURL`, be fetched exactly into the
-isolated task clone. The runner clones the local source with fixed,
-non-interactive Git settings into the task-owned worktree, performs that
-operator-configured fetch only if the clone lacks the approved commit, and
-checks out the commit detached. It does not use `git worktree add` and does
-not modify the enrolled source checkout.
+object containing `provenance`, `manualAuthorization`, or `authorization`. It
+carries `repository` as well unless the repository is enrolled with a local
+`source`. The approved commit must resolve exactly in the source the runner
+works from, whether that is an enrolled checkout or the clone it keeps itself.
+The runner clones that source with fixed, non-interactive Git settings into the
+task-owned worktree, fetches the approved commit if the clone lacks it, and
+checks out the commit detached. It does not use `git worktree add` and does not
+modify an enrolled source checkout.
 
 The request may additionally require configured capabilities, toolchains,
 environment entries, a named ready harness, verification names or commands,

@@ -71,10 +71,13 @@ func TestRedact(t *testing.T) {
 	}
 }
 
-// TestParseClarificationOnlyAcceptsAWholeBlock: a missed clarification just
-// completes the attempt, while a false one parks work forever on a question
-// nobody asked — so the parser is deliberately strict.
-func TestParseClarificationOnlyAcceptsAWholeBlock(t *testing.T) {
+// TestParseClarificationAcceptsABlockThatEndsTheMessage: the parser once
+// required the block to be the WHOLE final message, and a live run lost a real
+// question because the model explained itself first. Prose before the block is
+// now allowed; everything else stays strict, because a missed clarification
+// merely completes the attempt while a false one parks work forever on a
+// question nobody asked.
+func TestParseClarificationAcceptsABlockThatEndsTheMessage(t *testing.T) {
 	good := clarificationOpen + "\nWhich API version?\n" + clarificationClose
 	c := parseClarification("session-1", good)
 	if c == nil || c.Text != "Which API version?" {
@@ -91,19 +94,56 @@ func TestParseClarificationOnlyAcceptsAWholeBlock(t *testing.T) {
 		t.Error("the id does not distinguish sessions")
 	}
 
+	// The shape actually observed in production: two paragraphs of reasoning,
+	// then the block. The question is the block body only — the explanation is
+	// not part of it, and the ID must match the bare block's.
+	observed := "I looked at the repository and there is no service that matches the description, " +
+		"and nothing in the issue points at one.\n\n" +
+		"This looks like scope that's ambiguous/unsupported by my tools rather than a real engineering task.\n\n" +
+		good
+	withProse := parseClarification("session-1", observed)
+	if withProse == nil {
+		t.Fatal("a block that ends a message of prose was dropped")
+	}
+	if withProse.Text != "Which API version?" {
+		t.Errorf("the question carried the prose before it: %q", withProse.Text)
+	}
+	if withProse.ID != c.ID {
+		t.Error("prose before the block changed the derived id")
+	}
+
 	for name, text := range map[string]string{
+		// The block must CLOSE the turn: anything after it means the model
+		// kept working and was not waiting on an answer.
 		"prose around the block": "I think " + good + " is what I would ask.",
-		"opener only":            clarificationOpen + "\nWhich API version?",
-		"closer only":            "Which API version?\n" + clarificationClose,
-		"empty question":         clarificationOpen + "\n   \n" + clarificationClose,
-		"two blocks":             good + "\n" + good,
-		"plain prose":            "Which API version should I target?",
-		"empty":                  "",
-		"oversized":              clarificationOpen + "\n" + strings.Repeat("q", maxClarificationText+1) + "\n" + clarificationClose,
+		"trailing prose":         good + "\n\nI will go ahead with v1 in the meantime.",
+		"block then more work":   good + "\n\nMeanwhile I updated the manifest and ran the tests.",
+		"block in the middle":    "First: " + good + "\n\nThen I finished the refactor.",
+		// Exactly one block, wherever the extra delimiter sits.
+		"two blocks":              good + "\n" + good,
+		"two blocks after prose":  "Some context.\n\n" + good + "\n" + good,
+		"second opener in prose":  "I considered " + clarificationOpen + " earlier.\n\n" + good,
+		"second closer in prose":  "I considered " + clarificationClose + " earlier.\n\n" + good,
+		"opener only":             clarificationOpen + "\nWhich API version?",
+		"closer only":             "Which API version?\n" + clarificationClose,
+		"closer before opener":    clarificationClose + "\nWhich API version?\n" + clarificationOpen,
+		"empty question":          clarificationOpen + "\n   \n" + clarificationClose,
+		"empty question, prose":   "Context first.\n\n" + clarificationOpen + "\n   \n" + clarificationClose,
+		"plain prose":             "Which API version should I target?",
+		"empty":                   "",
+		"oversized":               clarificationOpen + "\n" + strings.Repeat("q", maxClarificationText+1) + "\n" + clarificationClose,
+		"oversized after prose":   "Context first.\n\n" + clarificationOpen + "\n" + strings.Repeat("q", maxClarificationText+1) + "\n" + clarificationClose,
+		"invalid utf-8":           clarificationOpen + "\nWhich \xff version?\n" + clarificationClose,
+		"invalid utf-8 via prose": "Context first.\n\n" + clarificationOpen + "\nWhich \xff version?\n" + clarificationClose,
 	} {
 		if got := parseClarification("session-1", text); got != nil {
 			t.Errorf("%s was accepted as a clarification: %+v", name, got)
 		}
+	}
+
+	// Trailing whitespace after the closer is not "more work".
+	if got := parseClarification("session-1", "Context first.\n\n"+good+"\n\n  \n"); got == nil || got.Text != "Which API version?" {
+		t.Errorf("trailing whitespace after the closer broke the block: %+v", got)
 	}
 }
 
@@ -115,6 +155,20 @@ func TestPromptPreambleTeachesTheMarker(t *testing.T) {
 	}
 	if !strings.HasSuffix(promptPreamble, "Task:\n") {
 		t.Error("the preamble must end by handing over to the caller's instructions")
+	}
+	// What the preamble asks for must be what parseClarification accepts: the
+	// parser allows prose before the block, so the preamble must not forbid it,
+	// and it must still rule out anything after the closer.
+	if strings.Contains(promptPreamble, "nothing before or after it") {
+		t.Error("the preamble still forbids the prose the parser now accepts")
+	}
+	if !strings.Contains(promptPreamble, "write nothing after it") {
+		t.Error("the preamble does not tell the model the block must end the turn")
+	}
+	// The preamble itself is a message ending in the marker only by accident of
+	// quoting; it must not parse as a question.
+	if got := parseClarification("session-1", promptPreamble); got != nil {
+		t.Errorf("the preamble parsed as a clarification: %+v", got)
 	}
 }
 

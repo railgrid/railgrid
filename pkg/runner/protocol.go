@@ -137,6 +137,26 @@ type ArtifactSpec struct {
 	Digest    string `json:"digest,omitempty"`
 }
 
+// RepositorySource tells the runner where to get a repository it does not
+// keep a local checkout of. The coordinator sends it with each start; the
+// runner clones into a cache it owns under its state directory.
+//
+// It is dispatch data, not approved attempt input: Start strips it before the
+// request is fingerprinted or persisted, so the credential never reaches the
+// runner's durable state and a retry carrying a freshly minted one is still
+// the same request.
+type RepositorySource struct {
+	// RemoteURL is the Git URL to clone from. HTTPS and SSH are accepted;
+	// the URL itself must never carry embedded credentials.
+	RemoteURL string `json:"remoteURL"`
+	// Username accompanies Token for HTTPS remotes. Empty means the usual
+	// token-bearing placeholder.
+	Username string `json:"username,omitempty"`
+	// Token is a short-lived read-only credential. It is used for one fetch
+	// and is never written to disk, logged, or passed on the command line.
+	Token string `json:"token,omitempty"`
+}
+
 // StartRequest is the approved execution envelope accepted by Start.
 type StartRequest struct {
 	ProtocolVersion        string                   `json:"protocolVersion,omitempty"`
@@ -159,6 +179,7 @@ type StartRequest struct {
 	Verification           VerificationRequirements `json:"verification,omitempty"`
 	Resources              []ResourceRequest        `json:"resources,omitempty"`
 	Artifacts              []ArtifactSpec           `json:"artifacts,omitempty"`
+	Repository             *RepositorySource        `json:"repository,omitempty"`
 }
 
 // CancelRequest requests cancellation of an active attempt.

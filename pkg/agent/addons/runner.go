@@ -355,8 +355,8 @@ func (r *runnerAddon) Reconcile(ctx context.Context, spec Spec) (Status, error) 
 }
 
 // Stop tears down the child. The state directory, the token, the Codex session
-// and — most importantly — the enrolled repositories are left untouched, so a
-// pause or a delete never destroys work on the host.
+// and — most importantly — the runner's own clones and any enrolled checkout
+// are left untouched, so a pause or a delete never destroys work on the host.
 func (r *runnerAddon) Stop(ctx context.Context) error {
 	r.mu.Lock()
 	sup := r.sup
@@ -609,6 +609,11 @@ func (r *runnerAddon) renderConfig(spec *RunnerSpec) ([]byte, error) {
 	if capacity != 1 {
 		return nil, fmt.Errorf("spec.runner.maximumCapacity must be 1 for the single-execution runner, got %d", capacity)
 	}
+	// spec.runner.repositories is normally EMPTY. The control plane hands the
+	// runner a clone URL and a short-lived credential with each attempt, and the
+	// runner keeps its own clone under its state directory. An entry here is the
+	// exception: a local checkout the machine owner enrolled by hand, or a remote
+	// the runner may fetch from without being told per attempt.
 	repositories := make(map[string]runner.RepositoryConfig, len(spec.Repositories))
 	for id, repo := range spec.Repositories {
 		if !identifierPattern.MatchString(id) {

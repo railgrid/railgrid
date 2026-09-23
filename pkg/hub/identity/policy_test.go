@@ -142,6 +142,47 @@ func rule(group string, resources, verbs, names []string) rbacv1.PolicyRule {
 	return rbacv1.PolicyRule{APIGroups: []string{group}, Resources: resources, Verbs: verbs, ResourceNames: names}
 }
 
+// RBAC ignores resourceNames on a create request, so a named create grants
+// nothing: an identity holding one could never create the occupancy Lease the
+// scheduler needs. create is therefore minted unnamed and alone, while every
+// other verb on leases still has to name what it covers.
+func TestLeasesMintCreateUnnamedAndRefuseOtherUnnamedVerbs(t *testing.T) {
+	policy := testPolicy()
+
+	minted, err := policy.Authorize("factory", "cluster-1", []rbacv1.PolicyRule{{
+		APIGroups: []string{"coordination.k8s.io"},
+		Resources: []string{"leases"},
+		Verbs:     []string{"create"},
+	}})
+	if err != nil {
+		t.Fatalf("unnamed create on leases was refused: %v", err)
+	}
+	if len(minted) != 1 || len(minted[0].ResourceNames) != 0 || len(minted[0].Verbs) != 1 || minted[0].Verbs[0] != "create" {
+		t.Fatalf("minted = %+v, want one unnamed create rule", minted)
+	}
+
+	if _, err := policy.Authorize("factory", "cluster-1", []rbacv1.PolicyRule{{
+		APIGroups: []string{"coordination.k8s.io"},
+		Resources: []string{"leases"},
+		Verbs:     []string{"create", "get"},
+	}}); err == nil {
+		t.Fatal("an unnamed rule carrying get was admitted; only create is minted unnamed")
+	}
+
+	named, err := policy.Authorize("factory", "cluster-1", []rbacv1.PolicyRule{{
+		APIGroups:     []string{"coordination.k8s.io"},
+		Resources:     []string{"leases"},
+		ResourceNames: []string{"factory-worker-x"},
+		Verbs:         []string{"get", "update", "patch", "delete"},
+	}})
+	if err != nil {
+		t.Fatalf("named lease verbs were refused: %v", err)
+	}
+	if len(named) != 1 || len(named[0].ResourceNames) != 1 {
+		t.Fatalf("minted = %+v, want the named rule kept", named)
+	}
+}
+
 func TestPolicyTable(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
