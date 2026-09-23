@@ -124,6 +124,9 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 		case VerbAgentToken:
 			p.serveAgentToken(w, r, req, obj)
 			return
+		case VerbAddonCredentials:
+			p.serveAddonCredentials(w, r, req)
+			return
 		case VerbSSHCredentials:
 			p.serveSSHCredentials(w, r, req)
 			return

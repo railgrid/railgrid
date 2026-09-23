@@ -35,11 +35,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/ptr"
 
 	"github.com/railgrid/railgrid/pkg/agent/addons/supervisor"
 	"github.com/railgrid/railgrid/pkg/runner"
@@ -59,7 +56,7 @@ const (
 	// CodexAuthKey is the Secret key holding the Codex login session file.
 	CodexAuthKey = "auth.json"
 	// TokenSecretNamespace is where the token Secret is published. The agent's
-	// ClusterRole grants core secrets get/create/update, and `default` is the
+	// provider publishes it; `default` is the
 	// namespace every tenant workspace has.
 	TokenSecretNamespace = "default"
 	// LabelAddon ties a published object back to its Addon.
@@ -68,15 +65,6 @@ const (
 	LabelEdge = edgesGroup + "/edge"
 	// AddonKind is the owner kind stamped on published objects.
 	AddonKind = "Addon"
-	// edgesOwnerLabel / edgesOwnerValue mark a published Secret as belonging
-	// to the edges provider, which is what keeps it inside that provider's
-	// label-scoped `secrets` permission claim
-	// (providers/edges/manifest.yaml, provider-sdk/claimscope.OwnerLabel).
-	// They are spelled out rather than imported because the agent lives in
-	// this module and the provider SDK is another one — the same reason
-	// TokenSecretSuffix is duplicated here.
-	edgesOwnerLabel = "railgrid.ai/owner"
-	edgesOwnerValue = "edges"
 )
 
 // tokenBytes is the size of the generated runner bearer token. 32 bytes of
@@ -127,9 +115,10 @@ type RunnerOptions struct {
 	Executable string
 	// Account is the non-root account the runner runs as.
 	Account RunAsAccount
-	// Kube is a clientset scoped to the tenant workspace, used to read the
-	// Codex auth Secret and to publish the runner's token Secret.
-	Kube kubernetes.Interface
+	// ReadAuth and PublishToken use the provider's edge-scoped credential
+	// exchange. The agent has no core Secret permissions.
+	ReadAuth     func(context.Context, string, *SecretRef) (*corev1.Secret, error)
+	PublishToken func(context.Context, Spec, string) error
 	// ProbeDeadline bounds how long a reconcile waits for a freshly started
 	// runner to answer its capabilities probe before reporting Installing.
 	ProbeDeadline time.Duration
@@ -160,8 +149,8 @@ func NewRunnerFactory(opts RunnerOptions) (Factory, error) {
 	if !opts.Account.Inherited() && (opts.Account.UID == 0 || opts.Account.GID == 0) {
 		return nil, fmt.Errorf("runner add-on: refusing to run the runner as uid 0")
 	}
-	if opts.Kube == nil {
-		return nil, fmt.Errorf("runner add-on: a tenant-workspace clientset is required")
+	if opts.ReadAuth == nil || opts.PublishToken == nil {
+		return nil, fmt.Errorf("runner add-on: provider credential callbacks are required")
 	}
 	if opts.ProbeDeadline <= 0 {
 		opts.ProbeDeadline = defaultProbeDeadline
@@ -589,93 +578,13 @@ func (r *runnerAddon) ensureToken(uid, gid int) (string, error) {
 	return token, nil
 }
 
-// readSecret fetches a referenced credential Secret from the tenant workspace
-// with the agent's own credential. It is called on every reconcile — never
-// cached — so a rotated credential is picked up by the next resync. It never
-// logs the contents.
+// readSecret obtains only the auth reference the provider verifies on this Addon.
 func (r *runnerAddon) readSecret(ctx context.Context, ref *SecretRef) (*corev1.Secret, error) {
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = TokenSecretNamespace
-	}
-	secret, err := r.opts.Kube.CoreV1().Secrets(namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("auth Secret %s/%s does not exist", namespace, ref.Name)
-		}
-		return nil, fmt.Errorf("reading auth Secret %s/%s: %w", namespace, ref.Name, err)
-	}
-	// Namespace is defaulted above, so stamp it back for the messages that
-	// quote it.
-	secret.Namespace = namespace
-	return secret, nil
+	return r.opts.ReadAuth(ctx, r.name, ref)
 }
 
-// publishToken creates or updates the Secret the provider's add-on controller
-// waits for. The ownerReference makes deletion of the Addon delete the
-// credential; BlockOwnerDeletion is deliberately NOT set, because the agent has
-// no update access to the Addon's finalizers.
 func (r *runnerAddon) publishToken(ctx context.Context, spec Spec, token string) error {
-	if err := r.ensureNamespace(ctx, TokenSecretNamespace); err != nil {
-		return err
-	}
-	name := r.name + TokenSecretSuffix
-	desired := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: TokenSecretNamespace,
-			Labels: map[string]string{
-				LabelEdge:  r.opts.EdgeName,
-				LabelAddon: r.name,
-				// The edges provider's `secrets` permission claim is scoped to
-				// this label, so a token published without it is one the
-				// add-on reconciler never sees — kcp's APIExport virtual
-				// workspace filters the claim's LIST/WATCH by it. The agent
-				// writes with its own credential, not through that virtual
-				// workspace, so nothing stamps it here.
-				edgesOwnerLabel: edgesOwnerValue,
-			},
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: edgesGroup + "/" + edgesVersion,
-				Kind:       AddonKind,
-				Name:       spec.Name,
-				UID:        spec.UID,
-				Controller: ptr.To(true),
-			}},
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{TokenSecretKey: []byte(token)},
-	}
-	existing, err := r.opts.Kube.CoreV1().Secrets(TokenSecretNamespace).Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = r.opts.Kube.CoreV1().Secrets(TokenSecretNamespace).Create(ctx, desired, metav1.CreateOptions{})
-		return err
-	} else if err != nil {
-		return err
-	}
-	existing.Labels = desired.Labels
-	existing.OwnerReferences = desired.OwnerReferences
-	existing.Type = corev1.SecretTypeOpaque
-	existing.Data = desired.Data
-	_, err = r.opts.Kube.CoreV1().Secrets(TokenSecretNamespace).Update(ctx, existing, metav1.UpdateOptions{})
-	return err
-}
-
-func (r *runnerAddon) ensureNamespace(ctx context.Context, name string) error {
-	_, err := r.opts.Kube.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
-	if err == nil {
-		return nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("checking namespace %s: %w", name, err)
-	}
-	_, err = r.opts.Kube.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	}, metav1.CreateOptions{})
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating namespace %s: %w", name, err)
-	}
-	return nil
+	return r.opts.PublishToken(ctx, spec, token)
 }
 
 func runnerPort(spec *RunnerSpec) int32 {

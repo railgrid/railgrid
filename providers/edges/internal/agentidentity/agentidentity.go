@@ -93,7 +93,10 @@ var DataPlaneVerbs = []string{"agent-token", "k8s", "mcp", "proxy", "ssh", "ssh-
 //   - No wildcard and no unnamed write. The per-edge verbs are name-scoped to
 //     this edge alone, so one edge's agent cannot act on another's.
 func Rules(gvr schema.GroupVersionResource, edgeName string) []rbacv1.PolicyRule {
-	subresources := make([]string, 0, len(DataPlaneVerbs))
+	subresources := make([]string, 0, len(DataPlaneVerbs)+1)
+	if gvr.Resource == "linuxservers" || gvr.Resource == "macosservers" {
+		subresources = append(subresources, gvr.Resource+"/addon-credentials")
+	}
 	for _, verb := range DataPlaneVerbs {
 		subresources = append(subresources, gvr.Resource+"/"+verb)
 	}

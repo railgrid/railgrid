@@ -725,8 +725,10 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		// bootstrap join token, which is not a kcp credential at all, and
 		// everything it needs to become one is in the bundle (hub URL, CA,
 		// logical cluster).
-		a.hubConfig = hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
-		deliverOnce.Do(func() { close(agentEnrolled) })
+		deliverOnce.Do(func() {
+			a.hubConfig = hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
+			close(agentEnrolled)
+		})
 	}
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.credentials, a.opts.EdgeName, string(a.agentType), a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.svcProxy, clusterName, onEnrolled, nil)
 
@@ -962,8 +964,10 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		// bootstrap join token, which is not a kcp credential at all, and
 		// everything it needs to become one is in the bundle (hub URL, CA,
 		// logical cluster).
-		a.hubConfig = hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
-		serverDeliverOnce.Do(func() { close(serverAgentEnrolled) })
+		serverDeliverOnce.Do(func() {
+			a.hubConfig = hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
+			close(serverAgentEnrolled)
+		})
 	}
 
 	sshHeaders := a.serverTunnelHeaders()

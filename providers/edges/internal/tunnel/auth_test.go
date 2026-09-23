@@ -78,6 +78,27 @@ func encodeJWT(t *testing.T, claims map[string]any) string {
 	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }
 
+// Enrollment now issues TokenRequest credentials. The tunnel must recognize
+// them on reconnect instead of comparing them with the consumed join token.
+func TestParseServiceAccountTokenFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name, token, cluster string
+	}{
+		{"bound", delegatedSAToken(t, "tenant-cluster", "edge-agent"), "tenant-cluster"},
+		{"legacy", legacySAToken(t, "tenant-cluster", "edge-agent"), "tenant-cluster"},
+		{"join", "bootstrap-token", ""},
+		{"user", encodeJWT(t, map[string]any{"iss": "https://dex.example", "sub": "user"}), ""},
+		{"malformed", "a.b.c", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims, ok := parseServiceAccountToken(tc.token)
+			if ok != (tc.cluster != "") || claims.ClusterName != tc.cluster {
+				t.Fatalf("parsed cluster %q, ok=%v; want %q", claims.ClusterName, ok, tc.cluster)
+			}
+		})
+	}
+}
+
 // authRecorder is a fake kcp endpoint that answers TokenReview and
 // SubjectAccessReview, recording what it was asked. authorize() builds its own
 // clients from *rest.Config, so the only seam is the Host.
@@ -236,9 +257,8 @@ func TestAuthorizeRefusesAnUnauthenticatedToken(t *testing.T) {
 // parseServiceAccountToken decides which workspace a token is reviewed in, so
 // the shapes it recognizes are load-bearing. A bound token — the shape
 // TokenRequest mints, and the shape every delegated token has — carries its
-// cluster in a nested claim under a different issuer, so it is deliberately NOT
-// treated as a foreign SA: it authenticates in the workspace being addressed,
-// which is where it was minted.
+// cluster in a nested claim under a different issuer. authorize compares that
+// cluster with the request's cluster to distinguish local and foreign SAs.
 func TestParseServiceAccountTokenShapes(t *testing.T) {
 	const cluster = "260dym853j73uupr"
 
@@ -252,9 +272,10 @@ func TestParseServiceAccountTokenShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("bound delegated token is not a foreign SA", func(t *testing.T) {
-		if _, ok := parseServiceAccountToken(delegatedSAToken(t, cluster, "railgrid-du-abc")); ok {
-			t.Error("a bound delegated token was classed as a foreign SA; it would be reviewed in the wrong workspace")
+	t.Run("bound delegated token is recognized with its issuing cluster", func(t *testing.T) {
+		claims, ok := parseServiceAccountToken(delegatedSAToken(t, cluster, "railgrid-du-abc"))
+		if !ok || claims.ClusterName != cluster {
+			t.Fatalf("bound SA cluster = %q, ok=%v; want %q", claims.ClusterName, ok, cluster)
 		}
 	})
 
@@ -371,5 +392,38 @@ func TestMacOSAgentIngressRejectsAServiceAccountForAnotherEdge(t *testing.T) {
 	}
 	if len(rec.sarAttributes) != 1 || rec.sarAttributes[0] != want {
 		t.Fatalf("SAR attributes = %+v, want %+v", rec.sarAttributes, want)
+	}
+}
+
+func TestMacOSAgentIngressBoundCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		authenticated, allowed bool
+		wantStatus, wantSARs   int
+	}{
+		{"valid reaches upgrade", true, true, http.StatusBadRequest, 1},
+		{"invalid token denied", false, true, http.StatusUnauthorized, 0},
+		{"wrong edge denied", true, false, http.StatusUnauthorized, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &authRecorder{
+				username:      "system:serviceaccount:default:mac-agent",
+				authenticated: tc.authenticated, allowed: tc.allowed,
+			}
+			cfg := rec.start(t)
+			s := testServer("/services/providers/edges/dataplane")
+			s.kcpConfig = cfg
+			s.tenantConfig = func(context.Context, string) (*rest.Config, error) { return cfg, nil }
+			s.logger = klog.Background()
+			req := httptest.NewRequest(http.MethodGet, "/agent/clusters/tenant/macosservers/mac-mini/proxy", nil)
+			req.Header.Set("Authorization", "Bearer "+delegatedSAToken(t, "tenant", "mac-agent"))
+			rr := httptest.NewRecorder()
+			s.AgentIngressHandler().ServeHTTP(rr, req)
+			// Without WebSocket upgrade headers, an authorized request reaches
+			// the upgrader and gets 400; rejected credentials must get 401.
+			if rr.Code != tc.wantStatus || len(rec.tokenReviewPaths) != 1 || len(rec.sarPaths) != tc.wantSARs {
+				t.Fatalf("status=%d, reviews=%d, SARs=%d; want %d, 1, %d", rr.Code, len(rec.tokenReviewPaths), len(rec.sarPaths), tc.wantStatus, tc.wantSARs)
+			}
+		})
 	}
 }

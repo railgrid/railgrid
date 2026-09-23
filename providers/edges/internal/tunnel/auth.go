@@ -38,6 +38,9 @@ import (
 type saTokenClaims struct {
 	Issuer      string `json:"iss"`
 	ClusterName string `json:"kubernetes.io/serviceaccount/clusterName"`
+	Kubernetes  struct {
+		ClusterName string `json:"clusterName"`
+	} `json:"kubernetes.io"`
 }
 
 // parseServiceAccountToken decodes a JWT without signature verification and
@@ -63,7 +66,14 @@ func parseServiceAccountToken(token string) (saTokenClaims, bool) {
 		return saTokenClaims{}, false
 	}
 
-	if claims.Issuer != "kubernetes/serviceaccount" || claims.ClusterName == "" {
+	// TokenRequest credentials use a nested cluster claim and the API server's
+	// issuer. Legacy Secret tokens carry the flat claim. This only selects the
+	// authentication route: TokenReview still verifies the bearer, then SAR
+	// checks its permission on the named edge.
+	if claims.Kubernetes.ClusterName != "" {
+		claims.ClusterName = claims.Kubernetes.ClusterName
+	}
+	if claims.ClusterName == "" {
 		return saTokenClaims{}, false
 	}
 

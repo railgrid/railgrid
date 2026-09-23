@@ -200,19 +200,28 @@ func startTunneler(ctx context.Context, hubURL string, credentials *CredentialSt
 	//
 	// This replaces X-Railgrid-Agent-Kubeconfig, which carried a permanent
 	// ServiceAccount token the agent wrote to disk and into a Secret.
+	credentialIssued := false
 	if resp != nil && credentials != nil {
 		if encoded := resp.Header.Get(CredentialHeader); encoded != "" {
 			credential, cerr := DecodeCredential(encoded)
 			if cerr != nil {
 				logger.Error(cerr, "the provider returned an unusable agent credential")
-			} else if aerr := credentials.Adopt(credential); aerr != nil {
-				logger.Error(aerr, "could not persist the agent credential; it is held in memory only")
 			} else {
-				logger.Info("agent credential issued", "expiresAt", credential.ExpiresAt)
-				if onEnrolled != nil {
-					onEnrolled(credential)
+				if aerr := credentials.Adopt(credential); aerr != nil {
+					logger.Error(aerr, "could not persist the agent credential; it is held in memory only")
 				}
+				credentialIssued = true
+				logger.Info("agent credential issued", "expiresAt", credential.ExpiresAt)
 			}
+		}
+	}
+	// A restarted agent already has its identity: the provider sends no new
+	// enrollment header when that bearer reconnects. Release startup after
+	// the successful handshake so reporters and add-ons can start. A join-token
+	// connection without a new bundle must not release a stale saved identity.
+	if credentials != nil && onEnrolled != nil {
+		if credential, ok := credentials.Current(); ok && (credentialIssued || credential.Token == token) {
+			onEnrolled(credential)
 		}
 	}
 
