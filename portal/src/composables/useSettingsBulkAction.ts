@@ -1,4 +1,4 @@
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { TableSelectionKey } from '@/portalkit/table'
 
 export interface SettingsBulkItem {
@@ -26,8 +26,17 @@ export interface SettingsBulkActionOptions<TItem extends SettingsBulkItem, TCont
   clearError: () => void
   readError: () => string | null
   onSuccess: (context: TContext, item: TItem) => void
+  /** Called only after mutate was issued and returned a failure in the current context. */
+  onAttemptedFailure?: (context: TContext, item: TItem, error: string) => void
   refresh: (context: TContext) => Promise<void>
   fallbackError: string
+}
+
+export interface SettingsBulkExplicitRunOptions<TItem extends SettingsBulkItem, TContext> {
+  /** Resolve retained targets again after confirmation and before each mutation. */
+  resolveItems?: (context: TContext, keys: string[]) => TItem[]
+  ineligibleReason?: (context: TContext, item: TItem) => string | null
+  confirm?: (context: TContext, items: TItem[]) => Promise<boolean>
 }
 
 function normalizedKeys(keys: readonly TableSelectionKey[]): string[] {
@@ -48,9 +57,10 @@ export function useSettingsBulkAction<TItem extends SettingsBulkItem, TContext>(
 ) {
   const selectedKeys = ref<TableSelectionKey[]>([])
   const busy = ref(false)
+  const pendingConfirmation = ref(false)
+  const locked = computed(() => busy.value || pendingConfirmation.value)
   const outcomes = ref<SettingsBulkOutcome[]>([])
   let selectionRevision = 0
-  let pendingConfirmation = false
 
   watch(selectedKeys, () => { selectionRevision++ }, { deep: true, flush: 'sync' })
 
@@ -59,35 +69,30 @@ export function useSettingsBulkAction<TItem extends SettingsBulkItem, TContext>(
     outcomes.value = []
   }
 
-  async function run(keys: readonly TableSelectionKey[] = selectedKeys.value): Promise<void> {
-    if (busy.value || pendingConfirmation) return
-    const requestedKeys = normalizedKeys(keys)
-    const selectionAtStart = normalizedKeys(selectedKeys.value)
-    if (!requestedKeys.length || !sameKeys(requestedKeys, selectionAtStart)) return
-
-    const context = options.captureContext()
-    if (!context || !options.isContextCurrent(context)) return
-
-    const initialItems = options.resolveItems(context, requestedKeys)
-    if (initialItems.length !== requestedKeys.length ||
-      initialItems.some((item, index) => item.key !== requestedKeys[index]) ||
-      initialItems.some((item) => options.ineligibleReason(context, item))) return
-
+  async function execute(
+    context: TContext,
+    initialItems: TItem[],
+    resolveItems: (context: TContext, keys: string[]) => TItem[],
+    ineligibleReason: (context: TContext, item: TItem) => string | null,
+    confirmItems: (context: TContext, items: TItem[]) => Promise<boolean>,
+    selectionGuard?: { selectionAtStart: string[]; revisionAtPrompt: number },
+  ): Promise<void> {
+    const requestedKeys = initialItems.map((item) => item.key)
     const snapshots = new Map(initialItems.map((item) => [item.key, options.snapshotItem(item)]))
-    const revisionAtPrompt = selectionRevision
-    pendingConfirmation = true
+    pendingConfirmation.value = true
     try {
-      const confirmed = await options.confirm(context, initialItems)
+      const confirmed = await confirmItems(context, initialItems)
       if (!confirmed) return
       // Let ConfirmDialog restore focus to the still-enabled selection action
       // before the worker lock disables it for the network mutations.
       await nextTick()
       await nextTick()
-      if (!options.isContextCurrent(context) ||
-        selectionRevision !== revisionAtPrompt ||
-        !sameKeys(normalizedKeys(selectedKeys.value), selectionAtStart)) return
+      if (!options.isContextCurrent(context) || (selectionGuard && (
+        selectionRevision !== selectionGuard.revisionAtPrompt ||
+        !sameKeys(normalizedKeys(selectedKeys.value), selectionGuard.selectionAtStart)
+      ))) return
 
-      const refreshedItems = options.resolveItems(context, requestedKeys)
+      const refreshedItems = resolveItems(context, requestedKeys)
       const refreshedByKey = new Map(refreshedItems.map((item) => [item.key, item]))
       const invalidOutcomes: SettingsBulkOutcome[] = []
       for (const original of initialItems) {
@@ -96,7 +101,7 @@ export function useSettingsBulkAction<TItem extends SettingsBulkItem, TContext>(
           ? 'This item is no longer in the current list. Refresh and review the selection.'
           : snapshots.get(original.key) !== options.snapshotItem(current)
             ? 'This item changed while confirmation was open. Review it and try again.'
-            : options.ineligibleReason(context, current)
+            : ineligibleReason(context, current)
         if (reason) invalidOutcomes.push({ key: original.key, name: original.name, succeeded: false, error: reason })
       }
       if (!options.isContextCurrent(context)) return
@@ -114,21 +119,21 @@ export function useSettingsBulkAction<TItem extends SettingsBulkItem, TContext>(
 
       busy.value = true
       const resultByKey = new Map<string, SettingsBulkOutcome>()
-      let remainingKeys = [...selectionAtStart]
-      let expectedSelectionRevision = selectionRevision
+      let remainingKeys = selectionGuard ? [...selectionGuard.selectionAtStart] : []
+      let expectedSelectionRevision = selectionGuard?.revisionAtPrompt ?? selectionRevision
       let succeededAny = false
 
       for (const confirmedItem of refreshedItems) {
         if (!options.isContextCurrent(context)) break
-        if (selectionRevision !== expectedSelectionRevision ||
-          !sameKeys(normalizedKeys(selectedKeys.value), remainingKeys)) break
+        if (selectionGuard && (selectionRevision !== expectedSelectionRevision ||
+          !sameKeys(normalizedKeys(selectedKeys.value), remainingKeys))) break
 
-        const current = options.resolveItems(context, [confirmedItem.key])[0]
+        const current = resolveItems(context, [confirmedItem.key])[0]
         const reason = !current
           ? 'This item is no longer in the current list. Refresh and review the selection.'
           : snapshots.get(confirmedItem.key) !== options.snapshotItem(current)
             ? 'This item changed during the operation. Review it and try again.'
-            : options.ineligibleReason(context, current)
+            : ineligibleReason(context, current)
         if (reason) {
           resultByKey.set(confirmedItem.key, {
             key: confirmedItem.key,
@@ -153,22 +158,28 @@ export function useSettingsBulkAction<TItem extends SettingsBulkItem, TContext>(
         // if the request just completed successfully. Its page state has been
         // cleared by the synchronous scope watcher.
         if (!options.isContextCurrent(context)) break
-        const selectionChanged = selectionRevision !== expectedSelectionRevision ||
+        const selectionChanged = !!selectionGuard && (
+          selectionRevision !== expectedSelectionRevision ||
           !sameKeys(normalizedKeys(selectedKeys.value), remainingKeys)
+        )
 
         if (succeeded) {
           succeededAny = true
           options.onSuccess(context, current)
           resultByKey.set(current.key, { key: current.key, name: current.name, succeeded: true })
-          remainingKeys = remainingKeys.filter((key) => key !== current.key)
-          selectedKeys.value = selectedKeys.value.filter((key) => String(key) !== current.key)
-          expectedSelectionRevision = selectionRevision
+          if (selectionGuard) {
+            remainingKeys = remainingKeys.filter((key) => key !== current.key)
+            selectedKeys.value = selectedKeys.value.filter((key) => String(key) !== current.key)
+            expectedSelectionRevision = selectionRevision
+          }
         } else {
+          const failure = errorMessage || options.fallbackError
+          options.onAttemptedFailure?.(context, current, failure)
           resultByKey.set(current.key, {
             key: current.key,
             name: current.name,
             succeeded: false,
-            error: errorMessage || options.fallbackError,
+            error: failure,
           })
         }
         // A UI selection change is normally impossible while busy, but keep
@@ -191,18 +202,61 @@ export function useSettingsBulkAction<TItem extends SettingsBulkItem, TContext>(
         }
       }
     } finally {
-      pendingConfirmation = false
+      pendingConfirmation.value = false
       busy.value = false
     }
+  }
+
+  async function run(keys: readonly TableSelectionKey[] = selectedKeys.value): Promise<void> {
+    if (locked.value) return
+    const requestedKeys = normalizedKeys(keys)
+    const selectionAtStart = normalizedKeys(selectedKeys.value)
+    if (!requestedKeys.length || !sameKeys(requestedKeys, selectionAtStart)) return
+
+    const context = options.captureContext()
+    if (!context || !options.isContextCurrent(context)) return
+
+    const initialItems = options.resolveItems(context, requestedKeys)
+    if (initialItems.length !== requestedKeys.length ||
+      initialItems.some((item, index) => item.key !== requestedKeys[index]) ||
+      initialItems.some((item) => options.ineligibleReason(context, item))) return
+
+    const revisionAtPrompt = selectionRevision
+    await execute(context, initialItems, options.resolveItems, options.ineligibleReason,
+      options.confirm, { selectionAtStart, revisionAtPrompt })
+  }
+
+  /** Run a confirmed set of retained targets independently of table selection. */
+  async function runItems(
+    items: readonly TItem[],
+    explicitOptions: SettingsBulkExplicitRunOptions<TItem, TContext>,
+  ): Promise<void> {
+    if (locked.value || !items.length) return
+    const keys = items.map((item) => item.key)
+    if (keys.some((key) => !key) || new Set(keys).size !== keys.length) return
+    const context = options.captureContext()
+    if (!context || !options.isContextCurrent(context)) return
+    const initialItems = [...items]
+    const isEligible = explicitOptions.ineligibleReason ?? options.ineligibleReason
+    if (initialItems.some((item) => isEligible(context, item))) return
+    await execute(
+      context,
+      initialItems,
+      explicitOptions.resolveItems ?? options.resolveItems,
+      isEligible,
+      explicitOptions.confirm ?? options.confirm,
+    )
   }
 
   return {
     selectedKeys,
     busy,
+    locked,
     outcomes,
     resolveItems: options.resolveItems,
     ineligibleReason: options.ineligibleReason,
     resetSelection,
     run,
+    runItems,
   }
 }

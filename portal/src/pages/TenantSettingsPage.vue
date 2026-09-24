@@ -154,14 +154,14 @@ const orgBusy = ref(false)
 
 function startEditOrgName(): void {
   const org = organizationSettingsOrg.value
-  if (!org || !canEditOrg.value || orgMemberBulkBusy.value) return
+  if (!org || !canEditOrg.value || orgMemberBulkLocked.value) return
   orgNameDraft.value = org.displayName
   editingOrgName.value = true
 }
 
 async function saveOrgName(): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canEditOrg.value || !orgNameDraft.value.trim() || orgMemberBulkBusy.value) return
+  if (!target || !canEditOrg.value || !orgNameDraft.value.trim() || orgMemberBulkLocked.value) return
   orgBusy.value = true
   try {
     const ok = await tenant.patchOrgDisplayName(target, orgNameDraft.value.trim())
@@ -176,7 +176,7 @@ async function saveOrgName(): Promise<void> {
 
 async function onDeleteOrg(): Promise<void> {
   const org = organizationSettingsOrg.value
-  if (!org || !canEditOrg.value || orgMemberBulkBusy.value) return
+  if (!org || !canEditOrg.value || orgMemberBulkLocked.value) return
   if (org.personal) {
     toast('error', 'Personal organizations cannot be deleted.')
     return
@@ -189,7 +189,7 @@ async function onDeleteOrg(): Promise<void> {
     confirmLabel: 'Delete',
   }))) return
 
-  if (route.fullPath !== requestRoute || organizationTargetUUID.value !== org.uuid || !canEditOrg.value || orgMemberBulkBusy.value) return
+  if (route.fullPath !== requestRoute || organizationTargetUUID.value !== org.uuid || !canEditOrg.value || orgMemberBulkLocked.value) return
   const target = org.uuid
   // Capture the pre-refresh identity and a local timestamp before calling the
   // store. The store's delete action refreshes /api/orgs and the target is
@@ -217,7 +217,7 @@ async function onDeleteOrg(): Promise<void> {
 
 async function onUndeleteOrg(): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrg.value || orgMemberBulkBusy.value) return
+  if (!target || !canManageOrg.value || orgMemberBulkLocked.value) return
   orgBusy.value = true
   try {
     const ok = await tenant.undeleteOrg(target)
@@ -239,6 +239,7 @@ const orgMembersError = ref<string | null>(null)
 const orgMembersHasSnapshot = ref(false)
 const orgMembersReadDenied = ref(false)
 const orgMemberBusy = ref<Record<string, boolean>>({})
+const failedOrgMemberRemovals = ref<OrgMemberRetryTarget[]>([])
 let orgMembersRequest = 0
 let orgMemberContextGeneration = 0
 
@@ -312,7 +313,7 @@ async function reloadOrgMembers(targetOrgUUID = organizationTargetUUID.value): P
 
 async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<boolean> {
   const target = organizationTargetUUID.value
-  if (!target || !canAddOrgMembers.value || orgMemberBulkBusy.value || orgBusy.value) return false
+  if (!target || !canAddOrgMembers.value || orgMemberBulkLocked.value || orgBusy.value) return false
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
   const feedbackGeneration = creationFeedbackGeneration
   orgMemberBusy.value = { ...orgMemberBusy.value, __new__: true }
@@ -342,7 +343,7 @@ async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<b
 
 async function onChangeOrgMemberRole(user: string, role: 'admin' | 'member'): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrgMembers.value || orgMemberBulkBusy.value || orgBusy.value) return
+  if (!target || !canManageOrgMembers.value || orgMemberBulkLocked.value || orgBusy.value) return
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
   orgMemberBusy.value = { ...orgMemberBusy.value, [user]: true }
   try {
@@ -363,7 +364,7 @@ async function onChangeOrgMemberRole(user: string, role: 'admin' | 'member'): Pr
 
 async function onRemoveOrgMember(user: string): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrgMembers.value || orgMemberBulkBusy.value || orgBusy.value) return
+  if (!target || !canManageOrgMembers.value || orgMemberBulkLocked.value || orgBusy.value) return
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
   if (!(await confirmDialog({
     title: `Remove ${user} from this organization?`,
@@ -371,12 +372,13 @@ async function onRemoveOrgMember(user: string): Promise<void> {
     danger: true,
     confirmLabel: 'Remove',
   }))) return
-  if (!currentOrgMemberContext(context) || orgMemberBulkBusy.value || orgBusy.value) return
+  if (!currentOrgMemberContext(context) || orgMemberBulkLocked.value || orgBusy.value) return
   orgMemberBusy.value = { ...orgMemberBusy.value, [user]: true }
   try {
     const ok = await tenant.removeOrgMember(target, user, true)
     if (!currentOrgMemberContext(context)) return
     if (ok) {
+      clearFailedOrgMemberRemoval(target, user)
       toast('ok', `Removed ${user} from the organization.`)
       await reloadOrgMembers(target)
     }
@@ -415,6 +417,7 @@ watch(
     editingOrgName.value = false
     orgNameDraft.value = ''
     orgMemberBusy.value = {}
+    failedOrgMemberRemovals.value = []
   },
 )
 
@@ -1392,6 +1395,7 @@ onBeforeUnmount(() => {
   // this page's requests so late mutations cannot publish feedback or reload.
   orgMembersRequest++
   orgMemberContextGeneration++
+  failedOrgMemberRemovals.value = []
   workspaceListRequest++
   invalidateWsMembersRequests()
   invalidateAppAccessRequests()
@@ -1630,6 +1634,7 @@ type OrgMemberBulkContext = {
 type ServiceAccountBulkItem = SettingsBulkItem & Pick<SARow, 'uuid' | 'displayName'>
 type WorkspaceMemberBulkItem = SettingsBulkItem & Pick<MemberRow, 'user' | 'role' | 'email' | 'userDisplayName'>
 type OrgMemberBulkItem = SettingsBulkItem & Pick<MemberRow, 'user' | 'role' | 'email' | 'userDisplayName'>
+type OrgMemberRetryTarget = OrgMemberBulkItem & { organizationUUID: string }
 type AppAccessBulkItem = SettingsBulkItem & Pick<AppAccessGrantRow, 'binding' | 'app' | 'user'>
 
 const settingsBulkScopeGeneration = ref(0)
@@ -1682,6 +1687,31 @@ function workspaceScopeDescription(context: SettingsBulkContext): string {
 
 function serializeBulkItem(item: object): string {
   return JSON.stringify(item) ?? ''
+}
+
+function orgMemberBulkSnapshot(item: OrgMemberBulkItem): string {
+  return serializeBulkItem({
+    key: item.key,
+    name: item.name,
+    user: item.user,
+    role: item.role,
+    email: item.email ?? '',
+    userDisplayName: item.userDisplayName ?? '',
+  })
+}
+
+function clearFailedOrgMemberRemoval(targetOrgUUID: string, user: string): void {
+  failedOrgMemberRemovals.value = failedOrgMemberRemovals.value.filter((item) =>
+    item.organizationUUID !== targetOrgUUID || item.user !== user)
+}
+
+function rememberFailedOrgMemberRemoval(context: OrgMemberBulkContext, item: OrgMemberBulkItem): void {
+  const retained = failedOrgMemberRemovals.value.find((target) =>
+    target.organizationUUID === context.target && target.user === item.user)
+  if (retained && orgMemberBulkSnapshot(retained) === orgMemberBulkSnapshot(item)) return
+  const next = failedOrgMemberRemovals.value.filter((target) =>
+    target.organizationUUID !== context.target || target.user !== item.user)
+  failedOrgMemberRemovals.value = [...next, { ...item, organizationUUID: context.target }]
 }
 
 const saBulk = useSettingsBulkAction<ServiceAccountBulkItem, SettingsBulkContext>({
@@ -1776,14 +1806,7 @@ const orgMemberBulk = useSettingsBulkAction<OrgMemberBulkItem, OrgMemberBulkCont
       userDisplayName: row.userDisplayName,
     }] : []
   }),
-  snapshotItem: (item) => serializeBulkItem({
-    key: item.key,
-    name: item.name,
-    user: item.user,
-    role: item.role,
-    email: item.email ?? '',
-    userDisplayName: item.userDisplayName ?? '',
-  }),
+  snapshotItem: orgMemberBulkSnapshot,
   ineligibleReason: (_context, item) => {
     if (!orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value || orgMembersReadDenied.value) return 'Verify the current organization member list before removing members.'
     if (!auth.self?.user) return 'Your identity is still loading. Wait before selecting organization members.'
@@ -1804,13 +1827,92 @@ const orgMemberBulk = useSettingsBulkAction<OrgMemberBulkItem, OrgMemberBulkCont
   readError: () => tenant.error,
   onSuccess: (_context, item) => {
     orgMembers.value = orgMembers.value.filter((row) => row.user !== item.user)
+    clearFailedOrgMemberRemoval(_context.target, item.user)
     const next = { ...orgMemberBusy.value }
     delete next[item.user]
     orgMemberBusy.value = next
   },
+  onAttemptedFailure: (context, item) => rememberFailedOrgMemberRemoval(context, item),
   refresh: async (context) => { await reloadOrgMembers(context.target) },
   fallbackError: 'The member could not be removed. Retry after checking the current organization member list.',
 })
+
+function orgMemberRetryIneligibleReason(context: OrgMemberBulkContext, item: OrgMemberBulkItem): string | null {
+  if (!orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value || orgMembersReadDenied.value) {
+    return 'Verify the current organization member list before retrying cleanup.'
+  }
+  if (!auth.self?.user) return 'Your identity is still loading. Wait before retrying organization member cleanup.'
+  if (item.user === auth.self.user) return 'You cannot remove yourself with a bulk action. Use the individual remove action.'
+  if (!canManageOrgMembers.value) return 'Organization admin access is required.'
+  if (orgBusy.value) return 'Wait for the current organization action to finish.'
+  if (orgMemberSingleMutationBusy.value) return 'Wait for the current organization member action to finish.'
+  const current = orgMembers.value.find((row) => row.user === item.user)
+  if (current) {
+    const currentItem: OrgMemberBulkItem = {
+      key: current.user,
+      name: memberBulkName(current),
+      user: current.user,
+      role: current.role,
+      email: current.email,
+      userDisplayName: current.userDisplayName,
+    }
+    if (orgMemberBulkSnapshot(currentItem) !== orgMemberBulkSnapshot(item)) {
+      return 'This member changed after the failed removal. Review the current member before removing them.'
+    }
+  }
+  return context.target === organizationTargetUUID.value ? null : 'The organization scope changed. Review the current organization.'
+}
+
+const orgMemberRetryActionDisabled = computed(() => {
+  const context = captureOrgMemberBulkContext()
+  const targets = failedOrgMemberRemovals.value.filter((item) => item.organizationUUID === context?.target)
+  return orgMemberBulkBusy.value || orgMemberSingleMutationBusy.value || orgBusy.value || !context ||
+    !orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value ||
+    orgMembersReadDenied.value || !auth.self?.user ||
+    !targets.some((item) => !orgMemberRetryIneligibleReason(context, item))
+})
+
+const changedOrgMemberRetryTargets = computed(() => {
+  const context = captureOrgMemberBulkContext()
+  if (!context) return []
+  return failedOrgMemberRemovals.value.filter((item) =>
+    item.organizationUUID === context.target &&
+    orgMemberRetryIneligibleReason(context, item) === 'This member changed after the failed removal. Review the current member before removing them.'
+  )
+})
+
+async function onRetryFailedOrgMemberRemovals(): Promise<void> {
+  if (orgMemberBulkLocked.value || orgMemberSingleMutationBusy.value || orgBusy.value || !auth.self?.user) return
+  const context = captureOrgMemberBulkContext()
+  if (!context) return
+  const targets = failedOrgMemberRemovals.value
+    .filter((item) => item.organizationUUID === context.target && !orgMemberRetryIneligibleReason(context, item))
+    .map(({ organizationUUID: _organizationUUID, ...item }) => item)
+  if (!targets.length) return
+
+  const retainedResolver = (currentContext: OrgMemberBulkContext, keys: string[]): OrgMemberBulkItem[] => {
+    if (currentContext.target !== context.target) return []
+    const byUser = new Map(failedOrgMemberRemovals.value
+      .filter((item) => item.organizationUUID === context.target)
+      .map((item) => [item.user, item]))
+    return keys.flatMap((key) => {
+      const item = byUser.get(key)
+      if (!item) return []
+      const { organizationUUID: _organizationUUID, ...retained } = item
+      return [retained]
+    })
+  }
+  await orgMemberBulk.runItems(targets, {
+    resolveItems: retainedResolver,
+    ineligibleReason: orgMemberRetryIneligibleReason,
+    confirm: async (retryContext, items) => confirmDialog({
+      title: `Retry cleanup for ${items.length} failed member removal${items.length === 1 ? '' : 's'}?`,
+      message: `Retry organization membership and child-workspace access cleanup in organization "${retryContext.organizationName}" (UUID ${retryContext.target}) for these original removal targets?\n\n${items.map((item) => item.name).join('\n')}`,
+      confirmLabel: `Retry ${items.length} cleanup${items.length === 1 ? '' : 's'}`,
+      danger: true,
+    }),
+  })
+}
 
 const appAccessBulk = useSettingsBulkAction<AppAccessBulkItem, SettingsBulkContext>({
   captureContext: captureSettingsBulkContext,
@@ -1852,6 +1954,7 @@ const wsMemberBulkBusy = wsMemberBulk.busy
 const wsMemberBulkOutcomes = wsMemberBulk.outcomes
 const selectedOrgMemberKeys = orgMemberBulk.selectedKeys
 const orgMemberBulkBusy = orgMemberBulk.busy
+const orgMemberBulkLocked = orgMemberBulk.locked
 const orgMemberBulkOutcomes = orgMemberBulk.outcomes
 const selectedAppAccessKeys = appAccessBulk.selectedKeys
 const appAccessBulkBusy = appAccessBulk.busy
@@ -1999,6 +2102,13 @@ watch(
   { flush: 'sync' },
 )
 
+watch(
+  [() => route.fullPath, () => tenant.orgUUID, () => tenant.workspaceMode, organizationTargetUUID, activeSection,
+    canManageOrgMembers, orgMembersReadDenied, () => auth.token, () => auth.self?.user],
+  () => { failedOrgMemberRemovals.value = [] },
+  { flush: 'sync' },
+)
+
 const copiedToken = ref(false)
 const tokenCopyError = ref<string | null>(null)
 async function copyToken() {
@@ -2134,7 +2244,7 @@ function dismissCreationDialogs() {
 
 function openMemberDialog(scope: 'workspace' | 'organization') {
   if (scope === 'workspace' && anySettingsAccessMutationBusy.value) return
-  if (scope === 'organization' && (orgMemberBulkBusy.value || orgBusy.value)) return
+  if (scope === 'organization' && (orgMemberBulkLocked.value || orgBusy.value)) return
   tenant.clearError()
   memberDialog.value = scope
 }
@@ -2981,6 +3091,32 @@ function fmtDate(s?: string | null): string {
                   </button>
                 </template>
               </MemberList>
+              <div v-if="failedOrgMemberRemovals.some((item) => item.organizationUUID === organizationTargetUUID)" class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start">
+                <InlineNotification
+                  class="min-w-0 flex-1"
+                  tone="warning"
+                  title="Organization access removal incomplete"
+                  message="Some removals are incomplete. Retry to finish removing organization and workspace access."
+                  announce="polite"
+                />
+                <button
+                  type="button"
+                  class="k-btn k-btn--danger inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                  :disabled="orgMemberRetryActionDisabled"
+                  :aria-busy="orgMemberBulkBusy || undefined"
+                  @click="onRetryFailedOrgMemberRemovals"
+                >
+                  <RotateCcw class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                  {{ orgMemberBulkBusy ? 'Retrying removals…' : 'Retry failed removals' }}
+                </button>
+              </div>
+              <InlineNotification
+                v-if="changedOrgMemberRetryTargets.length"
+                class="mt-2"
+                tone="warning"
+                :message="`${changedOrgMemberRetryTargets.length} member${changedOrgMemberRetryTargets.length === 1 ? '' : 's'} changed after the failed removal and will be skipped. Review ${changedOrgMemberRetryTargets.length === 1 ? 'that member' : 'those members'} in the list before trying again.`"
+                announce="polite"
+              />
               <div v-if="orgMemberBulkOutcomes.length" class="mt-3 space-y-2">
                 <InlineNotification
                   :tone="orgMemberBulkOutcomes.some((item) => !item.succeeded) ? 'warning' : 'success'"
@@ -2998,7 +3134,7 @@ function fmtDate(s?: string | null): string {
                   </li>
                 </ul>
                 <p v-if="orgMemberBulkOutcomes.some((item) => !item.succeeded)" class="text-[11px] text-text-muted">
-                  Failed members remain selected so you can retry them.
+                  You can retry incomplete removals above.
                 </p>
               </div>
             </template>

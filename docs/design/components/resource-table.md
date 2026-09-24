@@ -108,7 +108,11 @@ an individual action.
 
 Organization member tables use the same bulk-removal flow. Their confirmation
 also explains that removal revokes membership in every child workspace. Keep
-self-removal separate from the bulk action.
+self-removal separate from the bulk action. A failed cascade can leave workspace
+access cleanup unfinished after the member disappears from the roster. Keep
+these failed removal targets available through an explicit retry action,
+independent of table selection, until cleanup succeeds or the scope changes.
+Retry must confirm the targets again and revalidate the current authority.
 
 A successfully loaded empty inventory with no selection omits column headers,
 the selection column, and any otherwise empty toolbar space. Its message wraps

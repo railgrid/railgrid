@@ -22,6 +22,7 @@ const vite = await createServer({
   server: { middlewareMode: true, hmr: false, ws: false },
 })
 const { useSettingsBulkAction } = await vite.ssrLoadModule('/src/composables/useSettingsBulkAction.ts')
+const { pruneClientSelectionKeys } = await vite.ssrLoadModule('/src/portalkit/table.ts')
 test.after(() => vite.close())
 
 function deferred() {
@@ -63,6 +64,15 @@ function orgMemberScopeWatcherText() {
   return statement.getText(parsed)
 }
 
+function failedOrgMemberScopeWatcherText() {
+  const statement = parsed.statements.find((node) => ts.isExpressionStatement(node) &&
+    ts.isCallExpression(node.expression) && node.expression.expression.getText(parsed) === 'watch' &&
+    node.getText(parsed).includes('failedOrgMemberRemovals.value = []') &&
+    node.getText(parsed).includes('() => route.fullPath'))
+  assert.ok(statement, 'the production failed-member retry scope watcher exists in the page')
+  return statement.getText(parsed)
+}
+
 const pageFunctionNames = [
   'captureSettingsBulkContext',
   'isCurrentSettingsBulkContext',
@@ -71,6 +81,10 @@ const pageFunctionNames = [
   'currentOrgMemberContext',
   'workspaceScopeDescription',
   'serializeBulkItem',
+  'orgMemberBulkSnapshot',
+  'clearFailedOrgMemberRemoval',
+  'rememberFailedOrgMemberRemoval',
+  'orgMemberRetryIneligibleReason',
   'memberBulkName',
   'wsMemberRowSelectable',
   'wsMemberRowSelectionDisabledReason',
@@ -83,9 +97,10 @@ const pageFunctionNames = [
   'onDeleteSelectedSAs',
   'onRemoveSelectedWsMembers',
   'onRemoveSelectedOrgMembers',
+  'onRetryFailedOrgMemberRemovals',
   'onRevokeSelectedAppAccess',
 ]
-const pageBulkVariableNames = ['saBulk', 'wsMemberBulk', 'orgMemberSingleMutationBusy', 'orgMemberBulk', 'orgMemberBulkBusy', 'appAccessBulk']
+const pageBulkVariableNames = ['saBulk', 'wsMemberBulk', 'orgMemberSingleMutationBusy', 'orgMemberBulk', 'orgMemberBulkLocked', 'failedOrgMemberRemovals', 'appAccessBulk']
 const extractedPageCode = ts.transpileModule([
   ...pageFunctionNames.map(functionText),
   ...pageBulkVariableNames.map(variableText),
@@ -103,6 +118,7 @@ const extractedPageCode = ts.transpileModule([
 function fixture() {
   const scope = { org: 'org-a', workspace: 'ws-a' }
   const readStatus = reactive({ appAccessDenied: false })
+  let api
   const state = {
     confirmations: [],
     mutations: [],
@@ -110,6 +126,8 @@ function fixture() {
     orgSingleMutations: [],
     refreshes: [],
     failures: new Map(),
+    orgMembersOnReload: null,
+    removeOrgMembershipBeforeFailure: new Set(),
     mutation: null,
     confirm: null,
     error: null,
@@ -143,6 +161,11 @@ function fixture() {
     if (state.mutation) return state.mutation(method, org, workspace, key)
     const failure = state.failures.get(`${method}:${key}`)
     if (failure) {
+      // A cascading DELETE can remove the membership CR before a later
+      // organization-index or child-workspace cleanup step fails.
+      if (method === 'removeOrgMember' && state.removeOrgMembershipBeforeFailure.has(key) && state.orgMembersOnReload) {
+        state.orgMembersOnReload = state.orgMembersOnReload.filter((row) => row.user !== key)
+      }
       tenant.error = failure
       state.error = failure
       return false
@@ -214,7 +237,11 @@ function fixture() {
     },
     reloadSAs: async () => state.refreshes.push({ kind: 'service accounts', org: scope.org, ws: scope.workspace }),
     reloadWsMembers: async () => state.refreshes.push({ kind: 'workspace members', org: scope.org, ws: scope.workspace }),
-    reloadOrgMembers: async (org = scope.org) => state.refreshes.push({ kind: 'organization members', org }),
+    reloadOrgMembers: async (org = scope.org) => {
+      state.refreshes.push({ kind: 'organization members', org })
+      if (!state.orgMembersOnReload) return
+      context.orgMembers.value = state.orgMembersOnReload.map((row) => ({ ...row }))
+    },
     reloadAppAccessGrants: async () => state.refreshes.push({ kind: 'app access', org: scope.org, ws: scope.workspace }),
     endSAOperation(uuid) {
       const next = { ...context.saBusy.value }
@@ -226,7 +253,7 @@ function fixture() {
   context.organizationTargetUUID = computed(() => context.organizationSettingsOrg.value?.uuid ?? null)
   context.canManageOrgMembers = computed(() => context.organizationSettingsOrg.value?.role === 'admin' && !context.organizationSettingsOrg.value?.deletionRequestedAt)
   context.canAddOrgMembers = computed(() => context.canManageOrgMembers.value && !context.orgMembersReadDenied.value)
-  const api = runInNewContext(`${extractedPageCode}\n({ saBulk, wsMemberBulk, orgMemberBulk, appAccessBulk, onDeleteSelectedSAs, onRemoveSelectedWsMembers, onRemoveSelectedOrgMembers, onRevokeSelectedAppAccess, wsMemberRowSelectable, wsMemberRowSelectionDisabledReason, orgMemberRowSelectable, orgMemberRowSelectionDisabledReason, orgMemberSelectionLabel, onAddOrgMember, onChangeOrgMemberRole, onRemoveOrgMember })`, context)
+  api = runInNewContext(`${extractedPageCode}\n({ saBulk, wsMemberBulk, orgMemberBulk, failedOrgMemberRemovals, appAccessBulk, onDeleteSelectedSAs, onRemoveSelectedWsMembers, onRemoveSelectedOrgMembers, onRetryFailedOrgMemberRemovals, onRevokeSelectedAppAccess, wsMemberRowSelectable, wsMemberRowSelectionDisabledReason, orgMemberRowSelectable, orgMemberRowSelectionDisabledReason, orgMemberSelectionLabel, onAddOrgMember, onChangeOrgMemberRole, onRemoveOrgMember })`, context)
 
   function moveToWorkspace(org, workspace) {
     scope.org = org
@@ -281,7 +308,7 @@ function mountProductionScopeWatcher(h) {
 
 function mountProductionOrgMemberScopeWatcher(h) {
   const watcherScope = effectScope()
-  watcherScope.run(() => runInNewContext(orgMemberScopeWatcherText(), {
+  watcherScope.run(() => runInNewContext(`${orgMemberScopeWatcherText()}\n${failedOrgMemberScopeWatcherText()}`, {
     watch,
     route: h.context.route,
     tenant: h.context.tenant,
@@ -293,8 +320,29 @@ function mountProductionOrgMemberScopeWatcher(h) {
     auth: h.context.auth,
     orgMemberBulkScopeGeneration: h.context.orgMemberBulkScopeGeneration,
     orgMemberBulk: h.api.orgMemberBulk,
+    failedOrgMemberRemovals: h.api.failedOrgMemberRemovals,
   }))
   return watcherScope
+}
+
+function pruneOrgMemberSelectionToCurrentRows(h) {
+  h.api.orgMemberBulk.selectedKeys.value = pruneClientSelectionKeys(
+    h.api.orgMemberBulk.selectedKeys.value,
+    h.context.orgMembers.value.map((row) => ({ key: row.user, selectable: true })),
+  )
+}
+
+async function startFailedBobRemoval({ membershipRemoved = true } = {}) {
+  const h = fixture()
+  h.enterOrganization()
+  h.state.failures.set('removeOrgMember:bob', 'HTTP 500: organization cleanup failed')
+  h.state.orgMembersOnReload = h.context.orgMembers.value.filter((row) =>
+    row.user !== 'alice' && (row.user !== 'bob' || !membershipRemoved))
+  if (membershipRemoved) h.state.removeOrgMembershipBeforeFailure.add('bob')
+  h.api.orgMemberBulk.selectedKeys.value = ['alice', 'bob']
+  await h.api.onRemoveSelectedOrgMembers(['alice', 'bob'])
+  if (membershipRemoved) pruneOrgMemberSelectionToCurrentRows(h)
+  return h
 }
 
 const operationFamilies = [
@@ -393,13 +441,8 @@ test('workspace bulk removal excludes self and stays disabled until the stable U
   assert.deepEqual(h.state.confirmations, [])
 })
 
-test('organization bulk removal cascades, reports partial failures, and retries only the failed member', async () => {
-  const h = fixture()
-  h.enterOrganization()
-  h.state.failures.set('removeOrgMember:bob', 'Permission denied: HTTP 403')
-  h.api.orgMemberBulk.selectedKeys.value = ['alice', 'bob']
-
-  await h.api.onRemoveSelectedOrgMembers(['alice', 'bob'])
+test('organization bulk removal retries a failed cascade after its membership row and table selection disappear', async () => {
+  const h = await startFailedBobRemoval()
 
   assert.deepEqual(h.state.orgRemovals, [
     ['org-a', 'alice', true],
@@ -410,27 +453,114 @@ test('organization bulk removal cascades, reports partial failures, and retries 
   assert.match(h.state.confirmations[0].message, /lose organization-level access and membership in every child workspace in this organization/i)
   assert.match(h.state.confirmations[0].message, /Alice \(alice@example\.com\) · alice/)
   assert.match(h.state.confirmations[0].message, /Bob \(bob@example\.com\) · bob/)
-  assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, ['bob'])
+  assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, [], 'the table drops selection for the membership CR that disappeared on the failed request')
+  assert.equal(h.context.orgMembers.value.some((row) => row.user === 'bob'), false, 'the refreshed roster no longer contains the failed member')
   assert.deepEqual(h.api.orgMemberBulk.outcomes.value.map(({ key, succeeded }) => ({ key, succeeded })), [
     { key: 'alice', succeeded: true },
     { key: 'bob', succeeded: false },
   ])
   assert.equal(h.context.orgMembers.value.some((row) => row.user === 'alice'), false)
-  assert.equal(h.context.orgMembers.value.some((row) => row.user === 'bob'), true)
   assert.deepEqual(h.state.refreshes, [{ kind: 'organization members', org: 'org-a' }])
+  assert.deepEqual(Array.from(h.api.failedOrgMemberRemovals.value, ({ user }) => user), ['bob'],
+    'the failed attempt remains available independently of roster rows and selected keys')
 
-  h.state.failures.delete('removeOrgMember:bob')
-  await h.api.onRemoveSelectedOrgMembers(['bob'])
+  await h.api.onRetryFailedOrgMemberRemovals()
 
   assert.deepEqual(h.state.orgRemovals, [
     ['org-a', 'alice', true],
     ['org-a', 'bob', true],
     ['org-a', 'bob', true],
+  ], 'the separate retry uses the original member identity and keeps the cascade enabled')
+  assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, [], 'retry does not reconstruct table selection')
+  assert.deepEqual(Array.from(h.api.failedOrgMemberRemovals.value, ({ user }) => user), ['bob'],
+    'a repeat cleanup failure remains retryable')
+  assert.equal(h.state.confirmations.length, 2, 'each retry attempt gets its own confirmation')
+  assert.match(h.state.confirmations[1].title, /retry/i)
+  assert.match(h.state.confirmations[1].message, /bob/i)
+
+  h.state.failures.delete('removeOrgMember:bob')
+  await h.api.onRetryFailedOrgMemberRemovals()
+
+  assert.equal(h.state.orgRemovals.length, 4)
+  assert.deepEqual(h.state.orgRemovals.slice(2), [
+    ['org-a', 'bob', true],
+    ['org-a', 'bob', true],
   ])
   assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, [])
+  assert.deepEqual(Array.from(h.api.failedOrgMemberRemovals.value), [], 'successful cleanup removes the retry record')
   assert.equal(h.context.orgMembers.value.some((row) => row.user === 'bob'), false)
-  assert.equal(h.state.refreshes.length, 2)
 })
+
+test('organization retry refuses a member who has become the current user', async () => {
+  const h = await startFailedBobRemoval()
+  const mutationsBeforeRetry = h.state.orgRemovals.length
+  const confirmationsBeforeRetry = h.state.confirmations.length
+  h.context.auth.self = { user: 'bob' }
+
+  await h.api.onRetryFailedOrgMemberRemovals()
+
+  assert.equal(h.state.orgRemovals.length, mutationsBeforeRetry)
+  assert.equal(h.state.confirmations.length, confirmationsBeforeRetry)
+  assert.deepEqual(Array.from(h.api.failedOrgMemberRemovals.value, ({ user }) => user), ['bob'],
+    'the self guard does not discard the unresolved cleanup attempt')
+})
+
+test('organization retry revalidates a still-present member against the failed-attempt snapshot', async () => {
+  const h = await startFailedBobRemoval({ membershipRemoved: false })
+  h.api.orgMemberBulk.selectedKeys.value = []
+  const confirmation = deferred()
+  h.state.confirm = () => confirmation.promise
+  const mutationsBeforeRetry = h.state.orgRemovals.length
+
+  const pending = h.api.onRetryFailedOrgMemberRemovals()
+  await flushMicrotasks()
+  assert.equal(h.state.confirmations.length, 2, 'the retry prompts for the retained attempted member')
+  h.context.orgMembers.value = h.context.orgMembers.value.map((row) => row.user === 'bob'
+    ? { ...row, email: 'changed@example.com' }
+    : row)
+  confirmation.resolve(true)
+  await pending
+
+  assert.equal(h.state.orgRemovals.length, mutationsBeforeRetry, 'a changed live member is not removed using the stale confirmation')
+  assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, [])
+  assert.deepEqual(Array.from(h.api.failedOrgMemberRemovals.value, ({ user }) => user), ['bob'], 'the stale failed attempt remains visible for review')
+})
+
+for (const [changeName, changeScope] of [
+  ['organization scope', (h) => {
+    h.moveToOrganization('org-b')
+    h.moveToOrganization('org-a')
+  }],
+  ['admin authority', (h) => {
+    h.context.activeOrg.value = { ...h.context.activeOrg.value, role: 'member' }
+    h.context.activeOrg.value = { ...h.context.activeOrg.value, role: 'admin' }
+  }],
+]) {
+  test(`a pending organization retry is retired after ${changeName} changes`, async () => {
+    const h = await startFailedBobRemoval()
+    const confirmation = deferred()
+    h.state.confirm = () => confirmation.promise
+    const watcherScope = mountProductionOrgMemberScopeWatcher(h)
+    try {
+      const generationBeforeRetry = h.context.orgMemberBulkScopeGeneration.value
+      const mutationsBeforeRetry = h.state.orgRemovals.length
+      const pending = h.api.onRetryFailedOrgMemberRemovals()
+      await flushMicrotasks()
+      assert.equal(h.state.confirmations.length, 2, 'the retry has reached its confirmation prompt')
+
+      changeScope(h)
+      assert.ok(h.context.orgMemberBulkScopeGeneration.value > generationBeforeRetry, 'the production org scope watcher observes the transition')
+      assert.deepEqual(Array.from(h.api.failedOrgMemberRemovals.value), [], 'the production watcher clears attempts as soon as the scope changes')
+      confirmation.resolve(true)
+      await pending
+
+      assert.equal(h.state.orgRemovals.length, mutationsBeforeRetry, 'a stale retry cannot dispatch after its scope or authority changed')
+      assert.deepEqual(Array.from(h.api.failedOrgMemberRemovals.value), [], 'retiring the context clears the old organization retry record')
+    } finally {
+      watcherScope.stop()
+    }
+  })
+}
 
 test('organization bulk selection excludes self and requires a verified readable roster', async () => {
   const h = fixture()

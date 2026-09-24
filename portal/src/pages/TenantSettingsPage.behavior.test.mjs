@@ -123,7 +123,7 @@ function organizationFixture({ personal = false, bulkBusy = false } = {}) {
     managedOrgSnapshot: { value: null },
     expectedOrgLifecycleRefresh: { value: null },
     orgBusy: { value: false },
-    orgMemberBulkBusy: { value: bulkBusy },
+    orgMemberBulkLocked: { value: bulkBusy },
     clearManagedOrgSnapshot: () => {},
     toast: (...args) => toasts.push(args),
   }
