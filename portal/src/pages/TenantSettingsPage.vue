@@ -1597,6 +1597,13 @@ function fmtDate(s?: string | null): string {
                       Manage who can open <span class="font-mono text-text-secondary">{{ selWs.displayName || selWs.uuid }}</span>.
                       Only workspace admins can add, remove, or change members.
                     </p>
+                    <p v-if="canEditWs" class="mt-2 text-[12px] leading-relaxed text-text-secondary">
+                      Adding someone here grants access to this workspace only.
+                      To add them to the organization, add them in
+                      <router-link :to="scopePath('/settings/organizations')" class="text-accent underline underline-offset-2 hover:text-accent-hover">Organization settings</router-link>
+                      first.
+                      <span v-if="!canManageOrg">Only organization admins can add organization members.</span>
+                    </p>
                   </div>
                   <div v-if="selWs.deletionRequestedAt" class="rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2 text-[12px] text-text-muted">
                     Workspace access management is unavailable while deletion is pending.
