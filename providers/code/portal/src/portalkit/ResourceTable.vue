@@ -483,10 +483,12 @@ function clearSelection() {
 function checkboxIsVisibleInScrollRegion(checkbox: HTMLInputElement, region: HTMLElement): boolean {
   const checkboxRect = checkbox.getBoundingClientRect()
   const regionRect = region.getBoundingClientRect()
-  const visibleLeft = regionRect.left + region.clientLeft
-  const visibleTop = regionRect.top + region.clientTop
-  const visibleRight = visibleLeft + region.clientWidth
-  const visibleBottom = visibleTop + region.clientHeight
+  const regionLeft = regionRect.left + region.clientLeft
+  const regionTop = regionRect.top + region.clientTop
+  const visibleLeft = Math.max(0, regionLeft)
+  const visibleTop = Math.max(0, regionTop)
+  const visibleRight = Math.min(window.innerWidth, regionLeft + region.clientWidth)
+  const visibleBottom = Math.min(window.innerHeight, regionTop + region.clientHeight)
 
   return checkboxRect.width > 0
     && checkboxRect.height > 0
@@ -502,10 +504,20 @@ async function clearSelectionFromToolbar() {
   if (selectedCount.value === 0) {
     const checkbox = headerSelectionCheckbox.value
     const region = tableScrollRegion.value
-    const target = checkbox && !checkbox.disabled && region && checkboxIsVisibleInScrollRegion(checkbox, region)
-      ? checkbox
-      : region
-    target?.focus({ preventScroll: true })
+    if (checkbox && !checkbox.disabled && region && checkboxIsVisibleInScrollRegion(checkbox, region)) {
+      checkbox.focus({ preventScroll: true })
+      return
+    }
+    const regionRect = region?.getBoundingClientRect()
+    if (region && regionRect && regionRect.top < window.innerHeight && regionRect.bottom > 0
+      && regionRect.left < window.innerWidth && regionRect.right > 0) {
+      region.focus({ preventScroll: true })
+      return
+    }
+    // If the whole table is outside the viewport, allow native focus scrolling
+    // to reveal the header or the region instead of leaving focus offscreen.
+    const target = checkbox && !checkbox.disabled ? checkbox : region
+    target?.focus()
   }
 }
 

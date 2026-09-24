@@ -151,9 +151,13 @@ selection button stay together in a grid track, so changing the count does not
 wrap the button or change the reserved row height. On narrow layouts, selection
 actions use their own row. The inactive toolbar remains hidden and inert while
 the row keeps the taller panel's space, including when mobile filters wrap.
+At the narrowest widths, the count and Clear selection also use separate rows
+for every selection count, preserving space for the button and its focus ring.
 After Clear selection, focus returns to the header checkbox when it is fully
-visible in the table scroll area. If it is clipped or disabled, focus moves to
-the scroll area's visible focus outline without scrolling the page or table.
+visible in both the table scroll area and the viewport. If it is clipped or
+disabled, focus moves to the scroll area's visible focus outline. When the
+whole table is outside the viewport, native focus scrolling reveals the header
+checkbox, or the table region when the checkbox is disabled.
 
 ## Code and evidence
 
