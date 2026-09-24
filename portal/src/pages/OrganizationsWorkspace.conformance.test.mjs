@@ -2,11 +2,14 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 
 const root = path.resolve(new URL('../../../', import.meta.url).pathname)
 const portalSrc = path.join(root, 'portal', 'src')
 const tenantSettingsPage = fs.readFileSync(path.join(portalSrc, 'pages/TenantSettingsPage.vue'), 'utf8')
 const memberList = fs.readFileSync(path.join(portalSrc, 'components/MemberList.vue'), 'utf8')
+const addMemberDialog = fs.readFileSync(path.join(portalSrc, 'components/AddMemberDialog.vue'), 'utf8')
+const createServiceAccountDialog = fs.readFileSync(path.join(portalSrc, 'components/CreateServiceAccountDialog.vue'), 'utf8')
 const organizationsPage = fs.readFileSync(path.join(portalSrc, 'pages/OrganizationsPage.vue'), 'utf8')
 const organizationCreatePage = fs.readFileSync(path.join(portalSrc, 'pages/OrganizationCreatePage.vue'), 'utf8')
 const accountMenu = fs.readFileSync(path.join(portalSrc, 'components/AccountAccessMenu.vue'), 'utf8')
@@ -106,7 +109,7 @@ test('organization settings use the org MemberList contract and lifecycle action
   assert.match(orgSection, /:stale="orgMembersHasSnapshot && !!orgMembersError"/)
   assert.match(orgSection, /:busy="orgMemberBusy"/)
   assert.match(orgSection, /scope-label="this organization"/)
-  assert.match(orgSection, /:add="onAddOrgMember"/)
+  assert.match(tenantSettingsPage, /<AddMemberDialog\b[\s\S]*?:add="onAddOrgMember"/)
   assert.match(orgSection, /@change-role="onChangeOrgMemberRole"/)
   assert.match(orgSection, /@remove="onRemoveOrgMember"/)
   assert.match(tenantSettingsPage, /tenant\.listOrgMembers\(targetOrgUUID\)/)
@@ -454,6 +457,64 @@ function assertQueryableResourceTable(source, { columns, rows, rowKey, loading, 
   assert.doesNotMatch(source, /<table\b|<ul\b|\bk-table\b/)
 }
 
+test('settings teardown retires requests and mutation contexts even when tenant IDs stay unchanged', () => {
+  // Execute the actual teardown, invalidators, and context predicates. Only
+  // their TypeScript signatures and Vue/browser dependencies are stubbed.
+  function functionSource(name, parameters = '') {
+    const start = tenantSettingsPage.indexOf(`function ${name}(`)
+    const body = tenantSettingsPage.indexOf('{', start)
+    const end = tenantSettingsPage.indexOf('\n}', body)
+    assert.ok(start >= 0 && body > start && end > body, `missing ${name}`)
+    return `function ${name}(${parameters}) ${tenantSettingsPage.slice(body, end + 2)}`
+  }
+  const cleanupStart = tenantSettingsPage.indexOf('onBeforeUnmount(() => {')
+  const cleanupEnd = tenantSettingsPage.indexOf('\n})', cleanupStart)
+  assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart)
+  const source = [
+    ...['invalidateWsMembersRequests', 'invalidateAppAccessRequests', 'invalidateServiceAccountRequests'].map(name => functionSource(name)),
+    ...['isCurrentWsMembersContext', 'isCurrentAppAccessContext', 'isCurrentServiceAccountContext', 'currentOrgMemberContext'].map(name => functionSource(name, 'context')),
+    tenantSettingsPage.slice(cleanupStart, cleanupEnd + 3),
+  ].join('\n')
+  let teardown
+  const generations = [
+    'orgMembersRequest', 'orgMemberContextGeneration', 'workspaceListRequest',
+    'wsMembersRequestGeneration', 'wsMembersContextGeneration',
+    'appAccessRequestGeneration', 'appAccessContextGeneration',
+    'serviceAccountRequestGeneration', 'serviceAccountContextGeneration',
+  ]
+  const state = {
+    ...Object.fromEntries(generations.map(name => [name, 7])),
+    activeSection: { value: 'workspaces' },
+    selWs: { value: { uuid: 'workspace-a' } },
+    canEditWs: { value: true },
+    organizationTargetUUID: { value: 'org-a' },
+    tenant: { orgUUID: 'org-a', clearError() {} },
+    isCurrentTarget: target => target.org === 'org-a' && target.workspace === 'workspace-a',
+    wsMembersLoading: { value: true },
+    appAccessLoading: { value: true },
+    sasLoading: { value: true },
+    deletionCountdownTimer: null,
+    onTokenDialogKeydown() {},
+    window: { removeEventListener() {}, clearInterval() {} },
+    onBeforeUnmount(callback) { teardown = callback },
+  }
+  runInNewContext(source, state)
+  const pendingWorkspaceMutation = { generation: 7, target: { org: 'org-a', workspace: 'workspace-a' } }
+  const pendingOrgMutation = { generation: 7, target: 'org-a' }
+  const workspacePredicates = ['isCurrentWsMembersContext', 'isCurrentAppAccessContext', 'isCurrentServiceAccountContext']
+  for (const predicate of workspacePredicates) assert.equal(state[predicate](pendingWorkspaceMutation), true)
+  state.activeSection.value = 'organizations'
+  assert.equal(state.currentOrgMemberContext(pendingOrgMutation), true)
+
+  teardown()
+
+  for (const generation of generations) assert.ok(state[generation] > 7, `${generation} must retire outstanding work`)
+  assert.equal(state.currentOrgMemberContext(pendingOrgMutation), false)
+  state.activeSection.value = 'workspaces'
+  for (const predicate of workspacePredicates) assert.equal(state[predicate](pendingWorkspaceMutation), false)
+  for (const loading of ['wsMembersLoading', 'appAccessLoading', 'sasLoading']) assert.equal(state[loading].value, false)
+})
+
 test('settings access lists use the canonical queryable ResourceTable contract', () => {
   assert.match(memberList, /import ResourceTable from ['"]@\/portalkit\/ResourceTable\.vue['"]$/m)
   assert.match(memberList, /import ResourceTableDeleteButton from ['"]@\/portalkit\/ResourceTableDeleteButton\.vue['"]$/m)
@@ -505,17 +566,13 @@ test('settings access lists use the canonical queryable ResourceTable contract',
   assert.match(tenantSettingsPage, /const serviceAccountRows = computed<Record<string, unknown>\[\]>\(\(\) =>\s*sas\.value\.map\(/)
   assert.match(serviceAccounts, /:filters="serviceAccountFilters"/)
   assert.match(tenantSettingsPage, /const serviceAccountFilters[\s\S]*?key: 'role',[\s\S]*?label: 'Role'/)
-  assert.match(tenantSettingsPage, /import ResourceTableActionButton from ['"]@\/portalkit\/ResourceTableActionButton\.vue['"]$/m)
-  const actionButtons = [...serviceAccounts.matchAll(/<ResourceTableActionButton\b[\s\S]*?\/>/g)].map(match => match[0])
-  assert.equal(actionButtons.length, 2)
-  assert.ok(actionButtons.some(action => /:icon="KeyRound"/.test(action) && /tone="accent"/.test(action)))
-  assert.ok(actionButtons.some(action => /:icon="Ban"/.test(action) && /tone="warning"/.test(action)))
-  assert.match(actionButtons.join('\n'), /:label="`Issue token for \$\{String\(row\.displayName\)\}`"/)
-  assert.match(actionButtons.join('\n'), /:label="`Revoke tokens for \$\{String\(row\.displayName\)\}`"/)
-  assert.match(actionButtons.join('\n'), /:busy-label="`Issuing token for \$\{String\(row\.displayName\)\}…`"/)
-  assert.match(actionButtons.join('\n'), /:busy-label="`Revoking tokens for \$\{String\(row\.displayName\)\}…`"/)
-  assert.doesNotMatch(serviceAccounts, /<button\b[\s\S]*?(?:Issue token|Revoke tokens)[\s\S]*?<\/button>/)
-  assert.equal((serviceAccounts.match(/<ResourceTableDeleteButton\b/g) ?? []).length, 1)
+  assert.match(tenantSettingsPage, /import ActionMenu, \{ type ActionMenuItem \} from ['"]@\/portalkit\/ActionMenu\.vue['"]$/m)
+  assert.equal((serviceAccounts.match(/<ActionMenu\b/g) ?? []).length, 1)
+  assert.match(serviceAccounts, /:label="`Actions for \$\{String\(row\.displayName\)\}`"/)
+  assert.match(serviceAccounts, /:items="serviceAccountActions\(String\(row\.uuid\)\)"/)
+  assert.match(serviceAccounts, /:disabled="isSABusy\(String\(row\.uuid\)\)"/)
+  assert.match(serviceAccounts, /@select="onServiceAccountAction\(\$event, row\)"/)
+  assert.doesNotMatch(serviceAccounts, /<ResourceTableActionButton\b|<ResourceTableDeleteButton\b|<button\b/)
   assert.match(tenantSettingsPage, /type ServiceAccountOperation = 'issue' \| 'revoke' \| 'delete'/)
   assert.match(tenantSettingsPage, /const saBusy = ref<Record<string, ServiceAccountOperation>>\(\{\}\)/)
   assert.match(tenantSettingsPage, /function saOperation\(uuid: string\): ServiceAccountOperation \| undefined/)
@@ -523,21 +580,31 @@ test('settings access lists use the canonical queryable ResourceTable contract',
   assert.match(tenantSettingsPage, /beginSAOperation\(uuid, 'issue'\)/)
   assert.match(tenantSettingsPage, /beginSAOperation\(uuid, 'revoke'\)/)
   assert.match(tenantSettingsPage, /beginSAOperation\(uuid, 'delete'\)/)
-  assert.match(serviceAccounts, /Revoke tokens/)
-  assert.match(serviceAccounts, /Revoking tokens for/)
-  assert.equal((serviceAccounts.match(/:disabled="isSABusy\(String\(row\.uuid\)\)"/g) ?? []).length, 3)
-  assert.match(serviceAccounts, /saOperation\(String\(row\.uuid\)\) === 'issue'/)
-  assert.match(serviceAccounts, /saOperation\(String\(row\.uuid\)\) === 'revoke'/)
-  assert.match(serviceAccounts, /saOperation\(String\(row\.uuid\)\) === 'delete'/)
-  assert.match(serviceAccounts, /:disabled="isSABusy\(String\(row\.uuid\)\)"[\s\S]*?:busy="saOperation\(String\(row\.uuid\)\) === 'delete'"/)
+  const menuActionsStart = tenantSettingsPage.indexOf('function serviceAccountActions(')
+  const menuActionsEnd = tenantSettingsPage.indexOf('\nfunction beginSAOperation', menuActionsStart)
+  assert.ok(menuActionsStart >= 0 && menuActionsEnd > menuActionsStart)
+  const menuActions = tenantSettingsPage.slice(menuActionsStart, menuActionsEnd)
+  assert.match(menuActions, /id: 'issue', label: 'Issue token', busy: saOperation\(uuid\) === 'issue'/)
+  assert.match(menuActions, /id: 'revoke', label: 'Revoke tokens', tone: 'warning', busy: saOperation\(uuid\) === 'revoke'/)
+  assert.match(menuActions, /id: 'delete', label: 'Delete service account', tone: 'danger', busy: saOperation\(uuid\) === 'delete'/)
+  assert.match(menuActions, /await nextTick\(\)[\s\S]*if \(!target \|\| !isCurrentTarget\(target\) \|\| activeSection\.value !== 'workspaces' \|\| isSABusy\(uuid\)\) return[\s\S]*action === 'issue'/)
+  assert.match(menuActions, /action === 'issue'\) void onIssueToken\(uuid, name\)/)
+  assert.match(menuActions, /action === 'revoke'\) void onRevokeTokens\(uuid, name\)/)
+  assert.match(menuActions, /action === 'delete'\) void onDeleteSA\(uuid, name\)/)
   assert.doesNotMatch(serviceAccounts, /v-if="sasLoading"|v-else-if="sas\.length|<li\b/)
 })
 
 test('settings table reads delegate initial, stale, and retry states without duplicate banners', () => {
   // A denied read clears the snapshot before cached admin roles update.
   // Keep recovery visible without leaving the add/create form available.
-  assert.match(memberList, /v-if="!readonly && \(loaded !== false \|\| !error\)"/)
-  assert.match(tenantSettingsPage, /v-if="canEditWs && \(sasHasSnapshot \|\| !sasError\)"/)
+  for (const [guard, permission, snapshot, error] of [
+    ['canAddWsMembers', 'canEditWs', 'wsMembersHasSnapshot', 'wsMembersError'],
+    ['canAddOrgMembers', 'canManageOrgMembers', 'orgMembersHasSnapshot', 'orgMembersError'],
+    ['canCreateSA', 'canEditWs', 'sasHasSnapshot', 'sasError'],
+  ]) {
+    assert.ok(tenantSettingsPage.includes(`const ${guard} = computed(() => ${permission}.value && (${snapshot}.value || !${error}.value))`))
+    assert.ok(tenantSettingsPage.includes(`<button v-if="${guard}"`))
+  }
   for (const [rows, loading, loaded, error, key] of [
     ['wsMembers', 'wsMembersLoading', 'wsMembersHasSnapshot', 'wsMembersError', ':key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"'],
     ['orgMembers', 'orgMembersLoading', 'orgMembersHasSnapshot', 'orgMembersError', ':key="organizationTargetUUID ?? \'\'"'],
@@ -560,7 +627,7 @@ test('settings table reads delegate initial, stale, and retry states without dup
     .filter(source => /:rows="(?:appAccessRows|serviceAccountRows)"/.test(source))
   assert.equal(accessTables.length, 2)
   for (const table of accessTables) {
-    assert.ok(table.includes(':key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"'))
+    assert.match(table, /:key="`\$\{tenant\.orgUUID\}\/\$\{selectedWorkspaceUUID\}(?:\/\$\{saTableRevision\})?`"/)
     assert.doesNotMatch(table, /v-if="(?:appAccess|sas)HasSnapshot/)
   }
   assert.doesNotMatch(tenantSettingsPage, /<div v-if="(?:orgMembers|wsMembers|appAccess|sas)(?:Error|Loading)/)
@@ -908,14 +975,12 @@ test('account developer access gates unverified Workspace context without anothe
 })
 
 test('member role controls have resource-specific names and use muted badges', () => {
-  assert.match(memberList, /placeholder="email or member ID"[\s\S]*aria-label="Member email or member ID"/)
   // Typing an email suggests matching people from the rate-limited search,
   // as an accessible combobox; existing members are not suggested again.
-  assert.match(memberList, /useUserSuggestions\(newUser\)/)
-  assert.match(memberList, /role="combobox"[\s\S]*:aria-expanded="showSuggestions"[\s\S]*:aria-controls="listboxId"/)
-  assert.match(memberList, /role="listbox"[\s\S]*role="option"[\s\S]*:aria-selected="i === activeSuggestion"/)
-  assert.match(memberList, /!existing\.has\(s\.user\)/)
-  assert.match(memberList, /v-model="newRole"[\s\S]*aria-label="Role for new member"/)
+  assert.match(addMemberDialog, /useUserSuggestions\(newUser\)/)
+  assert.match(addMemberDialog, /role="combobox"[\s\S]*:aria-expanded="showSuggestions"[\s\S]*:aria-controls="listboxId"/)
+  assert.match(addMemberDialog, /role="listbox"[\s\S]*role="option"[\s\S]*:aria-selected="index === activeSuggestion"/)
+  assert.match(addMemberDialog, /!existing\.has\(person\.user\)/)
 
   const roleStart = memberList.indexOf('<template #role="{ row }">')
   const roleEnd = memberList.indexOf('</template>', roleStart)
@@ -928,6 +993,25 @@ test('member role controls have resource-specific names and use muted badges', (
   assert.ok(roleSelectStart >= 0)
   const roleSelect = role.slice(roleSelectStart)
   assert.match(roleSelect, /:aria-label="`Role for \$\{memberUser\(row\)\} in \$\{scopeLabel\}`"/)
+})
+
+test('compact settings creation is separated from collection search and token issuance', () => {
+  assert.doesNotMatch(memberList, /<form\b|newUser|newRole|useUserSuggestions/)
+  assert.doesNotMatch(tenantSettingsPage, /newSAName|newSARole/)
+  assert.match(tenantSettingsPage, /<CreateServiceAccountDialog\b[\s\S]*?:create="onCreateSA"/)
+
+  for (const dialog of [addMemberDialog, createServiceAccountDialog]) {
+    assert.match(dialog, /<dialog\b[\s\S]*:aria-labelledby=[\s\S]*@cancel\.prevent="close"/)
+    assert.match(dialog, /\.showModal\(\)/)
+    assert.match(dialog, /<form @submit\.prevent="submit">/)
+    assert.match(dialog, /<label\b/)
+    assert.match(dialog, /ref<'admin' \| 'member'>\('member'\)/)
+    assert.match(dialog, /v-if="error"[\s\S]*role="alert"/)
+    assert.doesNotMatch(dialog, /tenant\.issueSAToken|newUser\.value = ''|name\.value = ''/)
+  }
+  assert.match(addMemberDialog, /Adding someone here grants access to this workspace only/)
+  assert.match(addMemberDialog, /Organization settings/)
+  assert.match(createServiceAccountDialog, /Issue token/)
 })
 
 test('organization selection clears workspace and fences workspace-scoped pages', () => {

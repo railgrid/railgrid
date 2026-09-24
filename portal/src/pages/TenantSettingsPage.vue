@@ -28,10 +28,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import MemberList from '@/components/MemberList.vue'
+import AddMemberDialog from '@/components/AddMemberDialog.vue'
+import CreateServiceAccountDialog from '@/components/CreateServiceAccountDialog.vue'
 import WorkspaceControlHeader from '@/components/WorkspaceControlHeader.vue'
 import { useTenantStore, type AppAccessGrantRow, type MemberRow, type OrgRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
 import { confirmDialog } from '@/portalkit/confirm'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
+import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 import ResourceTableActionButton from '@/portalkit/ResourceTableActionButton.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
@@ -41,7 +44,6 @@ import { toast } from '@/portalkit/toast'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import Tabs from '@/portalkit/Tabs.vue'
 import {
-  Ban,
   AlertCircle,
   Building2,
   Check,
@@ -303,10 +305,14 @@ async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<b
   try {
     const ok = await tenant.addOrgMember(target, user, role)
     // A request may succeed after the user has switched organizations. Return
-    // false in that case so MemberList keeps the newly active form intact.
+    // false in that case so the obsolete dialog cannot complete in a new scope.
     if (!currentOrgMemberContext(context)) return false
     if (ok) {
-      toast('ok', `Added ${user} to the organization as ${role}.`)
+      toast('ok', `Added ${user} to the organization as ${role}.`, {
+        action: { label: 'Show in list', run: () => {
+          if (currentOrgMemberContext(context)) orgMemberList.value?.reveal(user)
+        } },
+      })
       await reloadOrgMembers(target)
       return currentOrgMemberContext(context)
     }
@@ -818,7 +824,11 @@ async function onAddWsMember(user: string, role: 'admin' | 'member'): Promise<bo
     const ok = await tenant.addWorkspaceMember(target.org, target.ws, user, role)
     if (!isCurrentWsMembersContext(context)) return false
     if (ok) {
-      toast('ok', `Added ${user} to the workspace as ${role}.`)
+      toast('ok', `Added ${user} to the workspace as ${role}.`, {
+        action: { label: 'Show in list', run: () => {
+          if (isCurrentWsMembersContext(context)) wsMemberList.value?.reveal(user)
+        } },
+      })
       await reloadWsMembers()
       return isCurrentWsMembersContext(context)
     }
@@ -1001,8 +1011,8 @@ const sas = ref<SARow[]>([])
 const sasLoading = ref(false)
 const sasError = ref<string | null>(null)
 const sasHasSnapshot = ref(false)
-const newSAName = ref('')
-const newSARole = ref<'admin' | 'member'>('member')
+const saTableQuery = ref('')
+const saTableRevision = ref(0)
 type ServiceAccountOperation = 'issue' | 'revoke' | 'delete'
 const saBusy = ref<Record<string, ServiceAccountOperation>>({})
 const saCreateBusy = ref(false)
@@ -1068,6 +1078,14 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  // A same-workspace navigation can leave the target IDs unchanged. Retire
+  // this page's requests so late mutations cannot publish feedback or reload.
+  orgMembersRequest++
+  orgMemberContextGeneration++
+  workspaceListRequest++
+  invalidateWsMembersRequests()
+  invalidateAppAccessRequests()
+  invalidateServiceAccountRequests()
   window.removeEventListener('keydown', onTokenDialogKeydown)
   tenant.clearError()
   if (deletionCountdownTimer !== null) {
@@ -1082,6 +1100,26 @@ function saOperation(uuid: string): ServiceAccountOperation | undefined {
 
 function isSABusy(uuid: string): boolean {
   return saOperation(uuid) !== undefined
+}
+
+function serviceAccountActions(uuid: string): ActionMenuItem[] {
+  return [
+    { id: 'issue', label: 'Issue token', busy: saOperation(uuid) === 'issue' },
+    { id: 'revoke', label: 'Revoke tokens', tone: 'warning', busy: saOperation(uuid) === 'revoke' },
+    { id: 'delete', label: 'Delete service account', tone: 'danger', busy: saOperation(uuid) === 'delete' },
+  ]
+}
+
+async function onServiceAccountAction(action: string, row: Record<string, unknown>) {
+  const uuid = String(row.uuid)
+  const name = String(row.displayName)
+  const target = selectedTarget()
+  // Let the menu restore its trigger before a confirmation captures focus.
+  await nextTick()
+  if (!target || !isCurrentTarget(target) || activeSection.value !== 'workspaces' || isSABusy(uuid)) return
+  if (action === 'issue') void onIssueToken(uuid, name)
+  else if (action === 'revoke') void onRevokeTokens(uuid, name)
+  else if (action === 'delete') void onDeleteSA(uuid, name)
 }
 
 function beginSAOperation(uuid: string, operation: ServiceAccountOperation): void {
@@ -1147,23 +1185,29 @@ async function reloadSAs() {
   }
 }
 
-async function onCreateSA() {
-  const name = newSAName.value.trim()
+async function onCreateSA(name: string, role: 'admin' | 'member'): Promise<boolean> {
+  name = name.trim()
   const target = selectedTarget()
-  if (!name || !target || !canEditWs.value) return
+  if (!name || !target || !canEditWs.value || saCreateBusy.value) return false
   invalidateServiceAccountRequests()
   const context: WorkspaceAccessContext = { target, generation: serviceAccountContextGeneration }
-  const role = newSARole.value
   saCreateBusy.value = true
   try {
     const created = await tenant.createServiceAccount(target.org, target.ws, name, role)
-    if (!isCurrentServiceAccountContext(context)) return
+    if (!isCurrentServiceAccountContext(context)) return false
     if (created) {
-      toast('ok', `Created service account "${created.displayName}".`)
-      newSAName.value = ''
-      newSARole.value = 'member'
+      toast('ok', `Created service account "${created.displayName}".`, {
+        action: { label: 'Show in list', run: () => {
+          if (!isCurrentServiceAccountContext(context)) return
+          saTableQuery.value = created.uuid
+          saTableRevision.value++
+          document.getElementById('workspace-service-accounts-title')?.scrollIntoView({ block: 'start' })
+        } },
+      })
       await reloadSAs()
+      return isCurrentServiceAccountContext(context)
     }
+    return false
   } finally {
     if (isCurrentServiceAccountContext(context)) saCreateBusy.value = false
   }
@@ -1288,8 +1332,8 @@ function clearServiceAccountState(): void {
   sasError.value = null
   saBusy.value = {}
   saCreateBusy.value = false
-  newSAName.value = ''
-  newSARole.value = 'member'
+  saTableQuery.value = ''
+  saTableRevision.value = 0
   dismissToken()
 }
 
@@ -1348,6 +1392,37 @@ watch(
   },
 )
 
+const memberDialog = ref<'workspace' | 'organization' | null>(null)
+const createSADialogOpen = ref(false)
+const wsMemberList = ref<InstanceType<typeof MemberList> | null>(null)
+const orgMemberList = ref<InstanceType<typeof MemberList> | null>(null)
+const canAddWsMembers = computed(() => canEditWs.value && (wsMembersHasSnapshot.value || !wsMembersError.value))
+const canAddOrgMembers = computed(() => canManageOrgMembers.value && (orgMembersHasSnapshot.value || !orgMembersError.value))
+const canCreateSA = computed(() => canEditWs.value && (sasHasSnapshot.value || !sasError.value))
+
+function dismissCreationDialogs() {
+  memberDialog.value = null
+  createSADialogOpen.value = false
+  tenant.clearError()
+}
+
+function openMemberDialog(scope: 'workspace' | 'organization') {
+  tenant.clearError()
+  memberDialog.value = scope
+}
+
+function openServiceAccountDialog() {
+  tenant.clearError()
+  createSADialogOpen.value = true
+}
+
+watch(() => route.fullPath, dismissCreationDialogs)
+watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organization, serviceAccount]) => {
+  if (memberDialog.value === 'workspace' && !workspace) memberDialog.value = null
+  if (memberDialog.value === 'organization' && !organization) memberDialog.value = null
+  if (!serviceAccount) createSADialogOpen.value = false
+})
+
 function fmtDate(s?: string | null): string {
   if (!s) return '—'
   try {
@@ -1388,7 +1463,7 @@ function fmtDate(s?: string | null): string {
 
       <div class="mt-4">
         <InlineNotification
-          v-if="tenant.error && tenant.error !== workspaceListError && organizationSettingsOrg"
+          v-if="tenant.error && tenant.error !== workspaceListError && organizationSettingsOrg && !memberDialog && !createSADialogOpen"
           class="mb-4"
           tone="error"
           :title="activeSection === 'organizations' ? 'Organization operation failed' : 'Workspace operation failed'"
@@ -1569,19 +1644,17 @@ function fmtDate(s?: string | null): string {
 
             <!-- Access -->
             <section class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 sm:p-5" aria-labelledby="workspace-members-title" :aria-busy="wsMembersLoading">
-                  <div class="mb-4">
-                    <h2 id="workspace-members-title" class="text-lg font-semibold text-text-primary">Workspace members</h2>
-                    <p class="mt-1 text-[12px] text-text-muted">
-                      Manage who can open <span class="font-mono text-text-secondary">{{ selWs.displayName || selWs.uuid }}</span>.
-                      Only workspace admins can add, remove, or change members.
-                    </p>
-                    <p v-if="canEditWs" class="mt-2 text-[12px] leading-relaxed text-text-secondary">
-                      Adding someone here grants access to this workspace only.
-                      To add them to the organization, add them in
-                      <router-link :to="scopePath('/settings/organizations')" class="text-accent underline underline-offset-2 hover:text-accent-hover">Organization settings</router-link>
-                      first.
-                      <span v-if="!canManageOrg">Only organization admins can add organization members.</span>
-                    </p>
+                  <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div class="min-w-0 flex-1">
+                      <h2 id="workspace-members-title" class="text-lg font-semibold text-text-primary">Workspace members</h2>
+                      <p class="mt-1 text-[12px] text-text-muted">
+                        Manage who can open {{ selWs.displayName || selWs.uuid }}.
+                        Only workspace admins can add, remove, or change members.
+                      </p>
+                    </div>
+                    <button v-if="canAddWsMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" @click="openMemberDialog('workspace')">
+                      <Plus class="h-4 w-4" aria-hidden="true" /> Add member
+                    </button>
                   </div>
                   <div v-if="selWs.deletionRequestedAt" class="rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2 text-[12px] text-text-muted">
                     Workspace access management is unavailable while deletion is pending.
@@ -1599,7 +1672,7 @@ function fmtDate(s?: string | null): string {
                       :busy="wsMemberBusy"
                       scope-label="this workspace"
                       table-label="Workspace members"
-                      :add="onAddWsMember"
+                      ref="wsMemberList"
                       :readonly="!canEditWs"
                       @change-role="onChangeWsMemberRole"
                       @remove="onRemoveWsMember"
@@ -1654,15 +1727,17 @@ function fmtDate(s?: string | null): string {
 
             <!-- Service accounts -->
             <section class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 sm:p-5" aria-labelledby="workspace-service-accounts-title">
-                <div class="mb-4">
-                  <h2 id="workspace-service-accounts-title" class="flex items-center gap-2 text-lg font-semibold text-text-primary">
-                    <KeyRound class="h-4 w-4 text-accent" :stroke-width="1.75" />
-                    Service accounts
-                  </h2>
-                  <p class="mt-1 text-[12px] text-text-muted">
-                    Machine identities for CI and automation in <span class="font-mono text-text-secondary">{{ selWs.displayName || selWs.uuid }}</span>.
-                    Issued bearer tokens are short-lived and shown only once.
-                  </p>
+                <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div class="min-w-0 flex-1">
+                    <h2 id="workspace-service-accounts-title" class="text-lg font-semibold text-text-primary">Service accounts</h2>
+                    <p class="mt-1 text-[12px] text-text-muted">
+                      Machine identities for CI and automation in {{ selWs.displayName || selWs.uuid }}.
+                      Issued bearer tokens are short-lived and shown only once.
+                    </p>
+                  </div>
+                  <button v-if="canCreateSA" type="button" class="k-btn k-btn--primary self-start shrink-0" @click="openServiceAccountDialog">
+                    <Plus class="h-4 w-4" aria-hidden="true" /> Create service account
+                  </button>
                 </div>
 
                 <div v-if="selWs.deletionRequestedAt || !canManageWs" class="rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2 text-[12px] text-text-muted">
@@ -1670,36 +1745,13 @@ function fmtDate(s?: string | null): string {
                   <span v-else>Only workspace admins can view and manage service accounts.</span>
                 </div>
 
-                <div v-if="canEditWs && (sasHasSnapshot || !sasError)" class="mb-4 flex flex-wrap items-center gap-2">
-                  <input
-                    v-model="newSAName"
-                    class="k-input min-w-[200px] w-auto flex-1 text-sm"
-                    placeholder="Service account name"
-                    aria-label="Service account name"
-                    @keyup.enter="onCreateSA"
-                  />
-                  <select v-model="newSARole" class="k-input w-auto text-sm" aria-label="Service account role">
-                    <option value="member">member</option>
-                    <option value="admin">admin</option>
-                  </select>
-                  <button
-                    type="button"
-                    class="k-btn k-btn--primary px-3 py-1.5 text-[12px] disabled:opacity-60"
-                    :disabled="saCreateBusy || !newSAName.trim()"
-                    @click="onCreateSA"
-                  >
-                    <Loader2 v-if="saCreateBusy" class="h-3 w-3 animate-spin" :stroke-width="2" />
-                    <Plus v-else class="h-3 w-3" :stroke-width="2" />
-                    Create
-                  </button>
-                </div>
-
                 <ResourceTable
                   v-if="canEditWs"
                   :columns="serviceAccountColumns"
                   :rows="serviceAccountRows"
                   aria-label="Workspace service accounts"
-                  :key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"
+                  :key="`${tenant.orgUUID}/${selectedWorkspaceUUID}/${saTableRevision}`"
+                  v-model:query="saTableQuery"
                   row-key="uuid"
                   :interactive="false"
                   :loaded="sasHasSnapshot"
@@ -1728,33 +1780,12 @@ function fmtDate(s?: string | null): string {
                     {{ row.lastTokenIssuedAt ? fmtDate(String(row.lastTokenIssuedAt)) : '—' }}
                   </template>
                   <template #actions="{ row }">
-                    <div class="flex flex-wrap items-center justify-end gap-1">
-                      <ResourceTableActionButton
-                        :icon="KeyRound"
-                        :label="`Issue token for ${String(row.displayName)}`"
-                        :busy-label="`Issuing token for ${String(row.displayName)}…`"
-                        tone="accent"
-                        :busy="saOperation(String(row.uuid)) === 'issue'"
-                        :disabled="isSABusy(String(row.uuid))"
-                        @click="onIssueToken(String(row.uuid), String(row.displayName))"
-                      />
-                      <ResourceTableActionButton
-                        :icon="Ban"
-                        :label="`Revoke tokens for ${String(row.displayName)}`"
-                        :busy-label="`Revoking tokens for ${String(row.displayName)}…`"
-                        tone="warning"
-                        :busy="saOperation(String(row.uuid)) === 'revoke'"
-                        :disabled="isSABusy(String(row.uuid))"
-                        @click="onRevokeTokens(String(row.uuid), String(row.displayName))"
-                      />
-                      <ResourceTableDeleteButton
-                        :label="`Delete service account ${String(row.displayName)}`"
-                        :busy-label="`Deleting service account ${String(row.displayName)}…`"
-                        :busy="saOperation(String(row.uuid)) === 'delete'"
-                        :disabled="isSABusy(String(row.uuid))"
-                        @click="onDeleteSA(String(row.uuid), String(row.displayName))"
-                      />
-                    </div>
+                    <ActionMenu
+                      :label="`Actions for ${String(row.displayName)}`"
+                      :items="serviceAccountActions(String(row.uuid))"
+                      :disabled="isSABusy(String(row.uuid))"
+                      @select="onServiceAccountAction($event, row)"
+                    />
                   </template>
                 </ResourceTable>
             </section>
@@ -1965,12 +1996,16 @@ function fmtDate(s?: string | null): string {
           </section>
 
           <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-members-title" :aria-busy="orgMembersLoading">
-            <div class="mb-4">
-              <p class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Access</p>
-              <h2 id="organization-members-title" class="mt-1 text-lg font-semibold text-text-primary">Organization members</h2>
-              <p class="mt-1 text-[12px] text-text-muted">
-                Members can use this organization and its workspaces. Only organization admins can add, remove, or change roles.
-              </p>
+            <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div class="min-w-0 flex-1">
+                <h2 id="organization-members-title" class="text-lg font-semibold text-text-primary">Organization members</h2>
+                <p class="mt-1 text-[12px] text-text-muted">
+                  Members can use this organization and its workspaces. Only organization admins can add, remove, or change roles.
+                </p>
+              </div>
+              <button v-if="canAddOrgMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" @click="openMemberDialog('organization')">
+                <Plus class="h-4 w-4" aria-hidden="true" /> Add member
+              </button>
             </div>
             <div v-if="organizationSettingsOrg.deletionRequestedAt" class="rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2 text-[12px] text-text-muted" role="status">
               Organization membership is unavailable while deletion is pending.
@@ -1988,7 +2023,7 @@ function fmtDate(s?: string | null): string {
                 :busy="orgMemberBusy"
                 scope-label="this organization"
                 table-label="Organization members"
-                :add="onAddOrgMember"
+                ref="orgMemberList"
                 :readonly="!canManageOrgMembers"
                 @change-role="onChangeOrgMemberRole"
                 @remove="onRemoveOrgMember"
@@ -2001,6 +2036,40 @@ function fmtDate(s?: string | null): string {
         </template>
       </div>
     </div>
+
+    <AddMemberDialog
+      v-if="memberDialog === 'workspace' && selWs && canAddWsMembers"
+      :key="`workspace/${tenant.orgUUID}/${selectedWorkspaceUUID}`"
+      scope="workspace"
+      :scope-name="selWs.displayName || selWs.uuid"
+      :organization-name="organizationSettingsOrg?.displayName || ''"
+      :organization-settings-path="scopePath('/settings/organizations')"
+      :can-manage-organization="canManageOrg"
+      :members="wsMembers"
+      :add="onAddWsMember"
+      :error-message="tenant.error"
+      @close="dismissCreationDialogs"
+    />
+    <AddMemberDialog
+      v-if="memberDialog === 'organization' && organizationSettingsOrg && canAddOrgMembers"
+      :key="`organization/${organizationTargetUUID}`"
+      scope="organization"
+      :scope-name="organizationSettingsOrg.displayName"
+      :organization-name="organizationSettingsOrg.displayName"
+      :members="orgMembers"
+      :add="onAddOrgMember"
+      :error-message="tenant.error"
+      @close="dismissCreationDialogs"
+    />
+    <CreateServiceAccountDialog
+      v-if="createSADialogOpen && selWs && canCreateSA"
+      :key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"
+      :workspace-name="selWs.displayName || selWs.uuid"
+      :organization-name="organizationSettingsOrg?.displayName || ''"
+      :create="onCreateSA"
+      :error-message="tenant.error"
+      @close="dismissCreationDialogs"
+    />
 
     <!-- Issued-token modal. Only shown once — the token isn't retrievable
          later (we don't store the plaintext) so the user must copy it now. -->
