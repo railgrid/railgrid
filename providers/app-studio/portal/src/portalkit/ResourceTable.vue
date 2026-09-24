@@ -160,6 +160,7 @@ const currentFilters = computed<TableFilterState>(() => {
 const normalizedSelectedKeys = computed(() => uniqueSelectionKeys(props.selectedKeys))
 const selectedKeySet = computed(() => new Set(normalizedSelectedKeys.value))
 const selectedCount = computed(() => normalizedSelectedKeys.value.length)
+const selectionToolbarActive = computed(() => props.selectable && selectedCount.value > 0)
 const duplicateRowKeys = computed(() => {
   const counts = new Map<TableSelectionKey, number>()
   props.rows.forEach(row => {
@@ -190,7 +191,8 @@ const primaryTooltip = ref<{
   positioned: boolean
 } | null>(null)
 const primaryTooltipElement = ref<HTMLElement | null>(null)
-let activePrimaryContent: HTMLElement | null = null
+const headerSelectionCheckbox = ref<HTMLInputElement | null>(null)
+let activeTooltipAnchor: HTMLElement | null = null
 let primaryTooltipRequest = 0
 
 const explicitReadState = computed(() => props.loaded !== null)
@@ -468,6 +470,12 @@ function clearSelection() {
   if (normalizedSelectedKeys.value.length > 0) emit('update:selectedKeys', [])
 }
 
+async function clearSelectionFromToolbar() {
+  clearSelection()
+  await nextTick()
+  if (selectedCount.value === 0) headerSelectionCheckbox.value?.focus()
+}
+
 function isSelectionKey(value: unknown): value is TableSelectionKey {
   return (typeof value === 'string' && value.trim().length > 0)
     || (typeof value === 'number' && Number.isFinite(value))
@@ -590,26 +598,20 @@ function updatePrimaryOverflow(container: HTMLElement | null) {
   return overflows
 }
 
-function hidePrimaryTooltip() {
+function hideTooltip() {
   primaryTooltipRequest += 1
-  activePrimaryContent = null
+  activeTooltipAnchor = null
   primaryTooltip.value = null
 }
 
-async function showPrimaryTooltip(container: HTMLElement | null) {
-  if (!container || !updatePrimaryOverflow(container)) {
-    hidePrimaryTooltip()
-    return
-  }
-
-  const value = container.dataset.fullValue?.trim()
-  if (!value) {
-    hidePrimaryTooltip()
+async function showTooltip(anchor: HTMLElement | null, value: string) {
+  if (!anchor || !value.trim()) {
+    hideTooltip()
     return
   }
 
   const request = ++primaryTooltipRequest
-  activePrimaryContent = container
+  activeTooltipAnchor = anchor
   primaryTooltip.value = {
     value,
     left: PRIMARY_TOOLTIP_VIEWPORT_MARGIN,
@@ -618,12 +620,12 @@ async function showPrimaryTooltip(container: HTMLElement | null) {
   }
 
   await nextTick()
-  if (request !== primaryTooltipRequest || activePrimaryContent !== container) return
+  if (request !== primaryTooltipRequest || activeTooltipAnchor !== anchor) return
 
   const tooltip = primaryTooltipElement.value
   if (!tooltip) return
 
-  const anchorRect = container.getBoundingClientRect()
+  const anchorRect = anchor.getBoundingClientRect()
   const tooltipRect = tooltip.getBoundingClientRect()
   const maxLeft = Math.max(
     PRIMARY_TOOLTIP_VIEWPORT_MARGIN,
@@ -646,6 +648,29 @@ async function showPrimaryTooltip(container: HTMLElement | null) {
   }
 }
 
+async function showPrimaryTooltip(container: HTMLElement | null) {
+  if (!container || !updatePrimaryOverflow(container)) {
+    hideTooltip()
+    return
+  }
+
+  const value = container.dataset.fullValue?.trim()
+  if (!value) {
+    hideTooltip()
+    return
+  }
+
+  await showTooltip(container, value)
+}
+
+function showSelectionReasonTooltip(event: Event, reason: string) {
+  void showTooltip(event.currentTarget as HTMLElement | null, reason)
+}
+
+function leaveSelectionReasonTooltip(event: MouseEvent) {
+  if (document.activeElement !== event.currentTarget) hideTooltip()
+}
+
 function syncPrimaryOverflow(event: MouseEvent) {
   void showPrimaryTooltip(event.currentTarget as HTMLElement | null)
 }
@@ -654,21 +679,22 @@ function syncRowPrimaryOverflow(event: FocusEvent) {
   const row = event.currentTarget as HTMLElement | null
   const container = row?.querySelector<HTMLElement>('.k-table__primary-content') ?? null
   const target = event.target as Node | null
+  if (target instanceof Element && target.closest('.k-table__selection-help')) return
   if (!row || !container || (target !== row && !container.contains(target))) {
-    hidePrimaryTooltip()
+    hideTooltip()
     return
   }
   void showPrimaryTooltip(container)
 }
 
 onMounted(() => {
-  window.addEventListener('resize', hidePrimaryTooltip)
-  window.addEventListener('scroll', hidePrimaryTooltip, true)
+  window.addEventListener('resize', hideTooltip)
+  window.addEventListener('scroll', hideTooltip, true)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', hidePrimaryTooltip)
-  window.removeEventListener('scroll', hidePrimaryTooltip, true)
+  window.removeEventListener('resize', hideTooltip)
+  window.removeEventListener('scroll', hideTooltip, true)
 })
 
 function clearFilters() {
@@ -737,7 +763,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
 <template>
   <div
     class="k-table k-table--resource"
-    :class="`k-table--${variant}`"
+    :class="[`k-table--${variant}`, { 'k-table--selecting': selectable && selectedCount > 0 }]"
     :aria-busy="ariaBusy"
   >
     <!-- Keep the live region outside layout so background reads cannot move the table. -->
@@ -805,38 +831,55 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         <button v-if="retryable" class="k-table__retry" type="button" @click="emit('retry')">Retry</button>
       </div>
 
-      <div v-if="showControls" class="k-table__controls" role="search" :aria-label="`Filter ${tableAriaLabel.toLocaleLowerCase()}`">
-        <label v-if="searchable" class="k-table__search">
-          <span class="sr-only" style="position:absolute;block-size:1px;inline-size:1px;overflow:hidden;clip:rect(0 0 0 0)">Search {{ tableAriaLabel }}</span>
-          <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
-          <input :value="currentQuery" class="k-table__search-input" type="search" :aria-label="`Search ${tableAriaLabel}`" :placeholder="searchPlaceholder" autocomplete="off" @input="setQuery(($event.target as HTMLInputElement).value)">
-          <button v-if="currentQuery" class="k-table__search-clear" type="button" aria-label="Clear search" @click="setQuery('')"><X :stroke-width="1.75" aria-hidden="true" /></button>
-        </label>
-        <ResourceTableFilter
-          v-for="filter in filters"
-          :key="filter.key"
-          :definition="filter"
-          :options="filterOptions[filter.key]"
-          :model-value="currentFilters[filter.key] || ''"
-          @update:model-value="setFilter(filter.key, $event)"
-        />
-        <button v-if="hasFacetFilters" class="k-table__clear-filters" type="button" @click="clearFilters">{{ clearActionLabel }}</button>
+      <div v-if="showControls || selectable" class="k-table__toolbar-stack">
+        <div
+          v-if="showControls"
+          class="k-table__controls"
+          role="search"
+          :aria-label="`Filter ${tableAriaLabel.toLocaleLowerCase()}`"
+          :class="['k-table__toolbar-panel', { 'k-table__toolbar-panel--inactive': selectionToolbarActive }]"
+          :aria-hidden="selectionToolbarActive ? 'true' : undefined"
+          :inert="selectionToolbarActive"
+        >
+          <label v-if="searchable" class="k-table__search">
+            <span class="sr-only" style="position:absolute;block-size:1px;inline-size:1px;overflow:hidden;clip:rect(0 0 0 0)">Search {{ tableAriaLabel }}</span>
+            <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
+            <input :value="currentQuery" class="k-table__search-input" type="search" :aria-label="`Search ${tableAriaLabel}`" :placeholder="searchPlaceholder" autocomplete="off" @input="setQuery(($event.target as HTMLInputElement).value)">
+            <button v-if="currentQuery" class="k-table__search-clear" type="button" aria-label="Clear search" @click="setQuery('')"><X :stroke-width="1.75" aria-hidden="true" /></button>
+          </label>
+          <ResourceTableFilter
+            v-for="filter in filters"
+            :key="filter.key"
+            :definition="filter"
+            :options="filterOptions[filter.key]"
+            :model-value="currentFilters[filter.key] || ''"
+            @update:model-value="setFilter(filter.key, $event)"
+          />
+          <button v-if="hasFacetFilters" class="k-table__clear-filters" type="button" @click="clearFilters">{{ clearActionLabel }}</button>
+        </div>
+
+        <div
+          v-if="selectable"
+          class="k-table__selection-bar"
+          :class="['k-table__toolbar-panel', { 'k-table__toolbar-panel--inactive': !selectionToolbarActive }]"
+          :aria-hidden="!selectionToolbarActive ? 'true' : undefined"
+          :inert="!selectionToolbarActive"
+        >
+          <p class="k-table__selection-count">
+            {{ selectedCount }} {{ selectedCount === 1 ? 'resource' : 'resources' }} selected
+          </p>
+          <button class="k-table__clear-selection" type="button" :disabled="selectionDisabled" @click="clearSelectionFromToolbar">
+            Clear selection
+          </button>
+          <div class="k-table__selection-actions">
+            <slot name="selection-actions" :selectedKeys="normalizedSelectedKeys" :keys="normalizedSelectedKeys" :count="selectedCount" />
+          </div>
+        </div>
       </div>
 
       <span v-if="selectable" class="k-table__selection-live" role="status" aria-live="polite" aria-atomic="true">
         {{ selectionAnnouncement }}
       </span>
-      <div v-if="selectable && selectedCount > 0" class="k-table__selection-bar">
-        <p class="k-table__selection-count">
-          {{ selectedCount }} {{ selectedCount === 1 ? 'resource' : 'resources' }} selected
-        </p>
-        <button class="k-table__clear-selection" type="button" :disabled="selectionDisabled" @click="clearSelection">
-          Clear selection
-        </button>
-        <div class="k-table__selection-actions">
-          <slot name="selection-actions" :selectedKeys="normalizedSelectedKeys" :keys="normalizedSelectedKeys" :count="selectedCount" />
-        </div>
-      </div>
 
       <div class="k-table__scroll" role="region" :aria-label="`${tableAriaLabel} scroll area`" tabindex="0">
         <table class="k-table__table" :aria-label="tableAriaLabel">
@@ -844,6 +887,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
             <th v-if="selectable" class="k-table__heading k-table__selection-heading" scope="col">
               <label class="k-table__checkbox-target">
                 <input
+                  ref="headerSelectionCheckbox"
                   class="k-table__checkbox"
                   type="checkbox"
                   :checked="selectionOnPage.allSelected"
@@ -870,7 +914,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                 :style="{ animationDelay: `${i * 35}ms` }"
                 @click="onRowClick(row, $event)"
                 @focusin="syncRowPrimaryOverflow"
-                @focusout="hidePrimaryTooltip"
+                @focusout="hideTooltip"
                 @keydown="onRowKeydown(row, $event)"
               >
                 <td v-if="selectable" class="k-table__cell k-table__selection-cell">
@@ -895,17 +939,21 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                     v-if="rowSelectionState(row).reason"
                     class="k-table__selection-help"
                     type="button"
-                    :data-k-tip="rowSelectionState(row).reason"
                     :aria-label="selectionHelpLabel(row, i)"
                     :aria-describedby="selectionReasonID(i)"
-                    @click.stop
+                    @mouseenter="showSelectionReasonTooltip($event, rowSelectionState(row).reason)"
+                    @mouseleave="leaveSelectionReasonTooltip"
+                    @focusin.stop="showSelectionReasonTooltip($event, rowSelectionState(row).reason)"
+                    @focusout.stop="hideTooltip"
+                    @click.stop="showSelectionReasonTooltip($event, rowSelectionState(row).reason)"
+                    @keydown.esc.stop="hideTooltip"
                   >
                     <Info :stroke-width="1.75" aria-hidden="true" />
                   </button>
                 </td>
                 <td v-for="col in visibleColumns" :key="col.key" class="k-table__cell" :class="[`k-table__cell--${col.align ?? 'start'}`, { 'k-table__cell--primary': col.key === primaryColumnKey }]">
                   <div v-if="col.key === primaryColumnKey && actionsColumn" class="k-table__primary">
-                    <div class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hidePrimaryTooltip">
+                    <div class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
                       <span class="k-table__primary-value">
                         <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                       </span>
@@ -914,7 +962,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                       <slot :name="actionsColumn.key" :value="row[actionsColumn.key]" :row="row">{{ row[actionsColumn.key] }}</slot>
                     </div>
                   </div>
-                  <div v-else-if="col.key === primaryColumnKey" class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hidePrimaryTooltip">
+                  <div v-else-if="col.key === primaryColumnKey" class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
                     <span class="k-table__primary-value">
                       <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                     </span>

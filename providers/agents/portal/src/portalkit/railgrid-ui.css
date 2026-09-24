@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 23;
+  --railgrid-ui-core-version: 24;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1837,6 +1837,9 @@ html.light [data-k-tip]::after {
   gap: 8px;
   padding: 10px 12px;
 }
+.k-table__toolbar-stack { display: grid; min-width: 0; }
+.k-table__toolbar-panel { grid-area: 1 / 1; min-width: 0; }
+.k-table__toolbar-panel--inactive { visibility: hidden; }
 .k-table__loading-control {
   border-radius: 4px;
   height: 32px;
@@ -2124,6 +2127,7 @@ railgrid-resource-table-filter { display: contents; }
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   margin: 0;
+  white-space: nowrap;
 }
 .k-table__clear-selection {
   background: transparent;
@@ -2483,6 +2487,21 @@ railgrid-resource-table-filter { display: contents; }
   .k-table__range { flex-basis: 100%; }
   .k-table__page-size { margin-inline-start: 0; }
   .k-table__page-actions { margin-inline-start: auto; }
+}
+
+/* Keep idle desktop rows quiet without removing controls from the keyboard
+ * order or changing column geometry. The header checkbox stays discoverable. */
+@media (hover: hover) and (pointer: fine) {
+  .k-table--resource:not(.k-table--selecting) .k-table__row:not(:hover):not(:focus-within) .k-table__selection-cell {
+    opacity: 0;
+  }
+}
+
+/* A hybrid device may have a mouse as its primary pointer and still use touch. */
+@media (any-pointer: coarse) {
+  .k-table--resource:not(.k-table--selecting) .k-table__row:not(:hover):not(:focus-within) .k-table__selection-cell {
+    opacity: 1;
+  }
 }
 
 @media (hover: none) {

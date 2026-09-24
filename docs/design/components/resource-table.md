@@ -127,11 +127,25 @@ behavior, nested-control isolation, and row-action accessibility are identical
 between Queryable and Simple. See the [accessible interaction policy](../accessibility/interaction.md).
 
 When enabled, selection keeps a native checkbox column before the primary
-column. Header state uses the input's checked and indeterminate properties,
+column. On mouse-driven desktops, row checkboxes and their help controls appear
+on row hover or keyboard focus. Once any resource is selected, every row's
+selection controls stay visible, including across pages. The header checkbox
+is always visible; touch and hybrid devices keep row controls visible as well.
+Hidden idle controls retain their space and keyboard focusability.
+Header state uses the input's checked and indeterminate properties,
 and every row checkbox has a resource-specific accessible name. The live count
 remains mounted while selectable so clearing the selection is announced.
 Disabled row explanations are available from a focusable help button and its
-tooltip; global selection disablement applies to all selection controls.
+tooltip. These explanations use the body-teleported, viewport-clamped table
+tooltip so the scroll container cannot clip them. Global selection disablement
+applies to all selection controls.
+
+For selectable tables, the search/filter toolbar and selection actions share a
+reserved toolbar row. Selecting resources replaces the visible search and
+filter controls with the selection count and actions; clearing the selection
+restores the prior search and filter controls. The inactive toolbar remains
+hidden and inert while the row keeps the taller panel's space, including when
+mobile filters wrap. Clear selection returns focus to the header checkbox.
 
 ## Code and evidence
 

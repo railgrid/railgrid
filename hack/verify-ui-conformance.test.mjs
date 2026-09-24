@@ -387,7 +387,7 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
   assert.match(table, /--k-table-loading-columns/)
   assert.match(table, /variant\?: 'queryable' \| 'simple'/)
   assert.match(table, /variant: 'queryable'/)
-  assert.match(table, /:class="`k-table--\$\{variant\}`"/)
+  assert.match(table, /:class="\[`k-table--\$\{variant\}`,/)
   assert.match(css, /\.k-table__scroll:focus-visible\s*\{[^}]*box-shadow:\s*inset/s)
   assert.match(css, /\.k-table__pending-cell\s*\{[^}]*text-align:\s*center;/s)
   assert.match(css, /\.k-table__page-size\s*\{[^}]*margin-inline-start:\s*auto;/s)
