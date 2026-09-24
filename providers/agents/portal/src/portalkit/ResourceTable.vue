@@ -192,6 +192,7 @@ const primaryTooltip = ref<{
 } | null>(null)
 const primaryTooltipElement = ref<HTMLElement | null>(null)
 const headerSelectionCheckbox = ref<HTMLInputElement | null>(null)
+const tableScrollRegion = ref<HTMLElement | null>(null)
 let activeTooltipAnchor: HTMLElement | null = null
 let primaryTooltipRequest = 0
 
@@ -473,7 +474,11 @@ function clearSelection() {
 async function clearSelectionFromToolbar() {
   clearSelection()
   await nextTick()
-  if (selectedCount.value === 0) headerSelectionCheckbox.value?.focus()
+  if (selectedCount.value === 0) {
+    const checkbox = headerSelectionCheckbox.value
+    const target = checkbox && !checkbox.disabled ? checkbox : tableScrollRegion.value
+    target?.focus({ preventScroll: true })
+  }
 }
 
 function isSelectionKey(value: unknown): value is TableSelectionKey {
@@ -881,7 +886,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         {{ selectionAnnouncement }}
       </span>
 
-      <div class="k-table__scroll" role="region" :aria-label="`${tableAriaLabel} scroll area`" tabindex="0">
+      <div ref="tableScrollRegion" class="k-table__scroll" role="region" :aria-label="`${tableAriaLabel} scroll area`" tabindex="0">
         <table class="k-table__table" :aria-label="tableAriaLabel">
           <thead><tr class="k-table__head-row">
             <th v-if="selectable" class="k-table__heading k-table__selection-heading" scope="col">

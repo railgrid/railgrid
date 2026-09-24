@@ -65,7 +65,7 @@ test('ResourceTable selection is controlled, page-scoped, accessible, and opt-in
   assert.match(component, /k-table__toolbar-stack/)
   assert.match(component, /:inert="selectionToolbarActive"/)
   assert.match(component, /:inert="!selectionToolbarActive"/)
-  assert.match(component, /headerSelectionCheckbox\.value\?\.focus\(\)/)
+  assert.match(component, /checkbox && !checkbox\.disabled \? checkbox : tableScrollRegion\.value/)
   assert.match(component, /class="k-table__selection-live" role="status" aria-live="polite"/)
   assert.match(component, /selectionAnnouncement\.value = count > 0[\s\S]*?'Selection cleared\.'/)
   assert.match(component, /watch\(\[currentQuery, filterSignature\], \(\) => clearSelection\(\), \{ flush: 'sync' \}\)/)
