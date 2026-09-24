@@ -1609,7 +1609,7 @@ function fmtDate(s?: string | null): string {
 
             <section v-if="showAppAccess && !selWs.deletionRequestedAt" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 sm:p-5" aria-labelledby="workspace-app-access-title">
                   <h2 id="workspace-app-access-title" class="mb-1 text-lg font-semibold text-text-primary">App access</h2>
-                  <p class="mb-3 text-[12px] text-text-muted">
+                  <p class="mb-4 text-[12px] text-text-muted">
                     App-specific grants let people open private published apps without becoming Workspace members.
                     Create grants from the app's Share dialog; revoke them here. Workspace members need no grant.
                   </p>

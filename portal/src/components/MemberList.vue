@@ -173,7 +173,7 @@ async function submit() {
 
 <template>
   <div>
-    <div v-if="!readonly && (loaded !== false || !error)" class="flex flex-wrap items-center gap-2">
+    <div v-if="!readonly && (loaded !== false || !error)" class="mb-4 flex flex-wrap items-center gap-2">
       <div class="relative min-w-[200px] flex-1">
         <input
           v-model="newUser"
@@ -239,7 +239,6 @@ async function submit() {
     </div>
 
     <ResourceTable
-      class="mt-3"
       :columns="memberColumns"
       :rows="memberRows"
       :aria-label="tableLabel"
