@@ -32,6 +32,8 @@ import AddMemberDialog from '@/components/AddMemberDialog.vue'
 import CreateServiceAccountDialog from '@/components/CreateServiceAccountDialog.vue'
 import WorkspaceControlHeader from '@/components/WorkspaceControlHeader.vue'
 import { useTenantStore, type AppAccessGrantRow, type MemberRow, type OrgRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
+import { useAuthStore } from '@/stores/auth'
+import { useSettingsBulkAction, type SettingsBulkItem } from '@/composables/useSettingsBulkAction'
 import { confirmDialog } from '@/portalkit/confirm'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
@@ -63,6 +65,7 @@ import {
 const { scopePath, routePath } = useScopedNavigation()
 
 const tenant = useTenantStore()
+const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -904,6 +907,10 @@ function isCurrentTarget(target: WorkspaceTarget): boolean {
 const canManageWs = computed(() => selWs.value?.role === 'admin')
 const canEditWs = computed(() => canManageWs.value && !selWs.value?.deletionRequestedAt)
 
+// Self-removal is excluded from workspace bulk removal by the stable User CR
+// name returned from /api/users/me. Never guess from the cached login email.
+watch(() => auth.token, () => { void auth.fetchSelf() }, { immediate: true })
+
 const kubeconfigDisabledReason = computed<string | null>(() => {
   const workspace = selWs.value
   if (!workspace) return 'Select a workspace before downloading a kubeconfig.'
@@ -1099,6 +1106,7 @@ async function reloadWsMembers() {
 }
 
 async function onAddWsMember(user: string, role: 'admin' | 'member'): Promise<boolean> {
+  if (anySettingsAccessMutationBusy.value) return false
   const target = selectedTarget()
   if (!target || !canAddWsMembers.value) return false
   invalidateWsMembersRequests()
@@ -1128,6 +1136,7 @@ async function onAddWsMember(user: string, role: 'admin' | 'member'): Promise<bo
 }
 
 async function onChangeWsMemberRole(user: string, role: 'admin' | 'member') {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   invalidateWsMembersRequests()
@@ -1150,10 +1159,11 @@ async function onChangeWsMemberRole(user: string, role: 'admin' | 'member') {
 }
 
 async function onRemoveWsMember(user: string) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   if (!(await confirmDialog({ title: `Remove ${user} from this workspace?`, danger: true, confirmLabel: 'Remove' }))) return
-  if (!isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
+  if (anySettingsAccessMutationBusy.value || !isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
   invalidateWsMembersRequests()
   const context: WorkspaceAccessContext = { target, generation: wsMembersContextGeneration }
   wsMemberBusy.value = { ...wsMemberBusy.value, [user]: true }
@@ -1261,6 +1271,7 @@ async function reloadAppAccessGrants() {
 }
 
 async function onRevokeAppAccess(grant: AppAccessGrantRow) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   const confirmed = await confirmDialog({
@@ -1270,7 +1281,7 @@ async function onRevokeAppAccess(grant: AppAccessGrantRow) {
     danger: true,
   })
   if (!confirmed) return
-  if (!isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
+  if (anySettingsAccessMutationBusy.value || !isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
   invalidateAppAccessRequests()
   const context: WorkspaceAccessContext = { target, generation: appAccessContextGeneration }
   appAccessBusy.value = { ...appAccessBusy.value, [grant.binding]: true }
@@ -1371,6 +1382,10 @@ onBeforeUnmount(() => {
   workspaceDeleteProgress.value = null
   workspaceDeleteSummary.value = null
   workspaceDeleteBatchBusy.value = false
+  settingsBulkScopeGeneration.value++
+  saBulk.resetSelection()
+  wsMemberBulk.resetSelection()
+  appAccessBulk.resetSelection()
   // A same-workspace navigation can leave the target IDs unchanged. Retire
   // this page's requests so late mutations cannot publish feedback or reload.
   orgMembersRequest++
@@ -1417,7 +1432,7 @@ async function onServiceAccountAction(action: string, row: Record<string, unknow
   const target = selectedTarget()
   // Let the menu restore its trigger before a confirmation captures focus.
   await nextTick()
-  if (!target || !isCurrentTarget(target) || activeSection.value !== 'workspaces' || isSABusy(uuid)) return
+  if (anySettingsAccessMutationBusy.value || !target || !isCurrentTarget(target) || activeSection.value !== 'workspaces' || isSABusy(uuid)) return
   if (action === 'issue') void onIssueToken(uuid, name)
   else if (action === 'revoke') void onRevokeTokens(uuid, name)
   else if (action === 'delete') void onDeleteSA(uuid, name)
@@ -1491,7 +1506,7 @@ async function reloadSAs() {
 async function onCreateSA(name: string, role: 'admin' | 'member'): Promise<boolean> {
   name = name.trim()
   const target = selectedTarget()
-  if (!name || !target || !canCreateSA.value || saCreateBusy.value) return false
+  if (anySettingsAccessMutationBusy.value || !name || !target || !canCreateSA.value || saCreateBusy.value) return false
   invalidateServiceAccountRequests()
   const context: WorkspaceAccessContext = { target, generation: serviceAccountContextGeneration }
   const feedbackGeneration = creationFeedbackGeneration
@@ -1518,10 +1533,11 @@ async function onCreateSA(name: string, role: 'admin' | 'member'): Promise<boole
 }
 
 async function onDeleteSA(uuid: string, name: string) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   if (!(await confirmDialog({ title: `Delete service account "${name}"?`, message: 'Active tokens will stop working.', danger: true, confirmLabel: 'Delete' }))) return
-  if (!isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
+  if (anySettingsAccessMutationBusy.value || !isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
   invalidateServiceAccountRequests()
   const context: WorkspaceAccessContext = { target, generation: serviceAccountContextGeneration }
   beginSAOperation(uuid, 'delete')
@@ -1538,6 +1554,7 @@ async function onDeleteSA(uuid: string, name: string) {
 }
 
 async function onIssueToken(uuid: string, name: string) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   const tokenRequestRoute = route.fullPath
   const tokenRequestIsAdmin = canEditWs.value
@@ -1572,10 +1589,11 @@ async function onIssueToken(uuid: string, name: string) {
 }
 
 async function onRevokeTokens(uuid: string, name: string) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   if (!(await confirmDialog({ title: `Revoke all tokens for "${name}"?`, message: 'Existing token holders will be locked out.', danger: true, confirmLabel: 'Revoke' }))) return
-  if (!isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
+  if (anySettingsAccessMutationBusy.value || !isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
   invalidateServiceAccountRequests()
   const context: WorkspaceAccessContext = { target, generation: serviceAccountContextGeneration }
   beginSAOperation(uuid, 'revoke')
@@ -1590,6 +1608,261 @@ async function onRevokeTokens(uuid: string, name: string) {
     if (isCurrentServiceAccountContext(context)) endSAOperation(uuid)
   }
 }
+
+// ===== Workspace bulk access actions ======================================
+
+type SettingsBulkContext = {
+  target: WorkspaceTarget
+  routePath: string
+  generation: number
+  workspaceName: string
+  organizationName: string
+}
+
+type ServiceAccountBulkItem = SettingsBulkItem & Pick<SARow, 'uuid' | 'displayName'>
+type WorkspaceMemberBulkItem = SettingsBulkItem & Pick<MemberRow, 'user' | 'role' | 'email' | 'userDisplayName'>
+type AppAccessBulkItem = SettingsBulkItem & Pick<AppAccessGrantRow, 'binding' | 'app' | 'user'>
+
+const settingsBulkScopeGeneration = ref(0)
+const anySettingsSingleMutationBusy = computed(() => saCreateBusy.value ||
+  Object.keys(saBusy.value).length > 0 || Object.keys(wsMemberBusy.value).length > 0 || Object.keys(appAccessBusy.value).length > 0)
+
+function captureSettingsBulkContext(): SettingsBulkContext | null {
+  const target = selectedTarget()
+  if (!target || activeSection.value !== 'workspaces' || !canEditWs.value) return null
+  return {
+    target,
+    routePath: route.fullPath,
+    generation: settingsBulkScopeGeneration.value,
+    workspaceName: selWs.value?.displayName || target.ws,
+    organizationName: activeOrg.value?.displayName || target.org,
+  }
+}
+
+function isCurrentSettingsBulkContext(context: SettingsBulkContext): boolean {
+  return !pageDisposed && context.generation === settingsBulkScopeGeneration.value &&
+    context.routePath === route.fullPath && activeSection.value === 'workspaces' &&
+    isCurrentTarget(context.target) && canEditWs.value && !selWs.value?.deletionRequestedAt
+}
+
+function workspaceScopeDescription(context: SettingsBulkContext): string {
+  return `Workspace "${context.workspaceName}" (UUID ${context.target.ws}) in organization "${context.organizationName}" (UUID ${context.target.org})`
+}
+
+function serializeBulkItem(item: object): string {
+  return JSON.stringify(item) ?? ''
+}
+
+const saBulk = useSettingsBulkAction<ServiceAccountBulkItem, SettingsBulkContext>({
+  captureContext: captureSettingsBulkContext,
+  isContextCurrent: isCurrentSettingsBulkContext,
+  resolveItems: (_context, keys) => keys.flatMap((key) => {
+    const row = sas.value.find((candidate) => candidate.uuid === key)
+    return row ? [{ key: row.uuid, name: row.displayName, uuid: row.uuid, displayName: row.displayName }] : []
+  }),
+  snapshotItem: (item) => serializeBulkItem({ key: item.key, name: item.name, uuid: item.uuid }),
+  ineligibleReason: (_context, item) => {
+    if (!sasHasSnapshot.value || sasLoading.value || !!sasError.value || sasReadDenied.value) return 'Verify the current service account list before deleting accounts.'
+    if (!canEditWs.value) return 'Workspace admin access is required.'
+    if (anySettingsSingleMutationBusy.value) return 'Wait for the current access action to finish.'
+    return sas.value.some((row) => row.uuid === item.uuid) ? null : 'This service account is no longer in the current list.'
+  },
+  confirm: async (context, items) => confirmDialog({
+    title: `Delete ${items.length} selected service account${items.length === 1 ? '' : 's'}?`,
+    message: `${workspaceScopeDescription(context)}. Deleting these accounts will stop their active tokens from working.\n\nSelected service accounts:\n${items.map((item) => `${item.name} (UUID ${item.uuid})`).join('\n')}`,
+    confirmLabel: `Delete ${items.length} account${items.length === 1 ? '' : 's'}`,
+    danger: true,
+  }),
+  mutate: (context, item) => tenant.deleteServiceAccount(context.target.org, context.target.ws, item.uuid),
+  clearError: () => tenant.clearError(),
+  readError: () => tenant.error,
+  onSuccess: (_context, item) => {
+    sas.value = sas.value.filter((row) => row.uuid !== item.uuid)
+  },
+  refresh: async () => { await reloadSAs() },
+  fallbackError: 'The service account could not be deleted. Retry after checking the current list.',
+})
+
+const wsMemberBulk = useSettingsBulkAction<WorkspaceMemberBulkItem, SettingsBulkContext>({
+  captureContext: captureSettingsBulkContext,
+  isContextCurrent: isCurrentSettingsBulkContext,
+  resolveItems: (_context, keys) => keys.flatMap((key) => {
+    const row = wsMembers.value.find((candidate) => candidate.user === key)
+    return row ? [{
+      key: row.user,
+      name: memberBulkName(row),
+      user: row.user,
+      role: row.role,
+      email: row.email,
+      userDisplayName: row.userDisplayName,
+    }] : []
+  }),
+  snapshotItem: (item) => serializeBulkItem({
+    key: item.key,
+    name: item.name,
+    user: item.user,
+    role: item.role,
+    email: item.email ?? '',
+    userDisplayName: item.userDisplayName ?? '',
+  }),
+  ineligibleReason: (_context, item) => {
+    if (!wsMembersHasSnapshot.value || wsMembersLoading.value || !!wsMembersError.value || wsMembersReadDenied.value) return 'Verify the current workspace member list before removing members.'
+    if (!auth.self?.user) return 'Your identity is still loading. Wait before selecting workspace members.'
+    if (item.user === auth.self?.user) return 'You cannot remove yourself with a bulk action. Use the individual remove action.'
+    if (anySettingsSingleMutationBusy.value) return 'Wait for the current access action to finish.'
+    return wsMembers.value.some((row) => row.user === item.user) ? null : 'This member is no longer in the current list.'
+  },
+  confirm: async (context, items) => confirmDialog({
+    title: `Remove ${items.length} selected member${items.length === 1 ? '' : 's'}?`,
+    message: `Remove these people from ${workspaceScopeDescription(context)}? They will lose workspace access.\n\nSelected members:\n${items.map((item) => item.name).join('\n')}`,
+    confirmLabel: `Remove ${items.length} member${items.length === 1 ? '' : 's'}`,
+    danger: true,
+  }),
+  mutate: (context, item) => tenant.removeWorkspaceMember(context.target.org, context.target.ws, item.user),
+  clearError: () => tenant.clearError(),
+  readError: () => tenant.error,
+  onSuccess: (_context, item) => {
+    wsMembers.value = wsMembers.value.filter((row) => row.user !== item.user)
+    const next = { ...wsMemberBusy.value }
+    delete next[item.user]
+    wsMemberBusy.value = next
+  },
+  refresh: async () => { await reloadWsMembers() },
+  fallbackError: 'The member could not be removed. Retry after checking the current list.',
+})
+
+const appAccessBulk = useSettingsBulkAction<AppAccessBulkItem, SettingsBulkContext>({
+  captureContext: captureSettingsBulkContext,
+  isContextCurrent: isCurrentSettingsBulkContext,
+  resolveItems: (_context, keys) => keys.flatMap((key) => {
+    const row = appAccessGrants.value.find((candidate) => candidate.binding === key)
+    return row ? [{ key: row.binding, name: `${row.app} — ${row.user}`, binding: row.binding, app: row.app, user: row.user }] : []
+  }),
+  snapshotItem: (item) => serializeBulkItem({ key: item.key, name: item.name, binding: item.binding, app: item.app, user: item.user }),
+  ineligibleReason: (_context, item) => {
+    if (!appAccessHasSnapshot.value || appAccessLoading.value || !!appAccessError.value) return 'Verify the current app access list before revoking grants.'
+    if (anySettingsSingleMutationBusy.value) return 'Wait for the current access action to finish.'
+    return appAccessGrants.value.some((grant) => grant.binding === item.binding) ? null : 'This app access grant is no longer in the current list.'
+  },
+  confirm: async (context, items) => confirmDialog({
+    title: `Revoke ${items.length} selected app access grant${items.length === 1 ? '' : 's'}?`,
+    message: `Remove these invitations from ${workspaceScopeDescription(context)}? The listed people will lose access to these private apps and can be invited again from each app's Share dialog.\n\nSelected grants:\n${items.map((item) => `${item.app} — ${item.user} (binding ${item.binding})`).join('\n')}`,
+    confirmLabel: `Revoke ${items.length} grant${items.length === 1 ? '' : 's'}`,
+    danger: true,
+  }),
+  mutate: (context, item) => tenant.revokeAppAccessGrant(context.target.org, context.target.ws, item.binding),
+  clearError: () => tenant.clearError(),
+  readError: () => tenant.error,
+  onSuccess: (_context, item) => {
+    appAccessGrants.value = appAccessGrants.value.filter((grant) => grant.binding !== item.binding)
+    const next = { ...appAccessBusy.value }
+    delete next[item.binding]
+    appAccessBusy.value = next
+  },
+  refresh: async () => { await reloadAppAccessGrants() },
+  fallbackError: 'The app access grant could not be revoked. Retry after checking the current list.',
+})
+
+const selectedSAKeys = saBulk.selectedKeys
+const saBulkBusy = saBulk.busy
+const saBulkOutcomes = saBulk.outcomes
+const selectedWsMemberKeys = wsMemberBulk.selectedKeys
+const wsMemberBulkBusy = wsMemberBulk.busy
+const wsMemberBulkOutcomes = wsMemberBulk.outcomes
+const selectedAppAccessKeys = appAccessBulk.selectedKeys
+const appAccessBulkBusy = appAccessBulk.busy
+const appAccessBulkOutcomes = appAccessBulk.outcomes
+const anySettingsBulkBusy = computed(() => saBulkBusy.value || wsMemberBulkBusy.value || appAccessBulkBusy.value)
+const anySettingsAccessMutationBusy = computed(() => anySettingsBulkBusy.value || anySettingsSingleMutationBusy.value)
+
+function memberBulkName(member: MemberRow): string {
+  const profile = member.email && member.userDisplayName
+    ? `${member.userDisplayName} (${member.email})`
+    : member.email || member.userDisplayName
+  return profile ? `${profile} · ${member.user}` : member.user
+}
+
+const saBulkActionDisabled = computed(() => {
+  const context = captureSettingsBulkContext()
+  const keys = normalizedSettingsSelection(selectedSAKeys.value)
+  return anySettingsAccessMutationBusy.value || !context || !sasHasSnapshot.value || sasLoading.value || !!sasError.value ||
+    !keys.length || saBulk.resolveItems(context, keys).length !== keys.length ||
+    saBulk.resolveItems(context, keys).some((item) => saBulk.ineligibleReason(context, item))
+})
+
+const wsMemberBulkActionDisabled = computed(() => {
+  const context = captureSettingsBulkContext()
+  const keys = normalizedSettingsSelection(selectedWsMemberKeys.value)
+  return anySettingsAccessMutationBusy.value || !context || !wsMembersHasSnapshot.value || wsMembersLoading.value || !!wsMembersError.value ||
+    !auth.self?.user || !keys.length || wsMemberBulk.resolveItems(context, keys).length !== keys.length ||
+    wsMemberBulk.resolveItems(context, keys).some((item) => wsMemberBulk.ineligibleReason(context, item))
+})
+
+const appAccessBulkActionDisabled = computed(() => {
+  const context = captureSettingsBulkContext()
+  const keys = normalizedSettingsSelection(selectedAppAccessKeys.value)
+  return anySettingsAccessMutationBusy.value || !context || !appAccessHasSnapshot.value || appAccessLoading.value || !!appAccessError.value ||
+    !keys.length || appAccessBulk.resolveItems(context, keys).length !== keys.length ||
+    appAccessBulk.resolveItems(context, keys).some((item) => appAccessBulk.ineligibleReason(context, item))
+})
+
+function normalizedSettingsSelection(keys: readonly (string | number)[]): string[] {
+  return [...new Set(keys.map(String).filter(Boolean))]
+}
+
+function wsMemberRowSelectable(row: Record<string, unknown>): boolean {
+  const context = captureSettingsBulkContext()
+  if (!context) return false
+  const item = wsMemberBulk.resolveItems(context, [String(row.user ?? '')])[0]
+  return !!item && !wsMemberBulk.ineligibleReason(context, item)
+}
+
+function wsMemberRowSelectionDisabledReason(row: Record<string, unknown>): string {
+  const user = String(row.user ?? '')
+  const member = wsMembers.value.find((candidate) => candidate.user === user)
+  if (!member) return 'Member details are not available in the current list.'
+  if (!auth.self?.user) return 'Your identity is still loading.'
+  if (member.user === auth.self?.user) return 'Use the individual remove action to remove yourself.'
+  if (!wsMembersHasSnapshot.value || wsMembersLoading.value || !!wsMembersError.value) return 'Verify the current workspace member list before selecting members.'
+  if (Object.keys(wsMemberBusy.value).length > 0) return 'Wait for the current member action to finish.'
+  return ''
+}
+
+function memberSelectionLabel(row: Record<string, unknown>): string {
+  const user = String(row.user ?? 'Member')
+  const member = wsMembers.value.find((candidate) => candidate.user === user)
+  return member ? `Select ${memberBulkName(member)} in ${selWs.value?.displayName || 'this workspace'}` : `Select ${user} in this workspace`
+}
+
+async function onDeleteSelectedSAs(keys: Array<string | number>): Promise<void> {
+  if (anySettingsAccessMutationBusy.value) return
+  await saBulk.run(keys)
+}
+
+async function onRemoveSelectedWsMembers(keys: Array<string | number>): Promise<void> {
+  if (anySettingsAccessMutationBusy.value || !auth.self?.user) return
+  await wsMemberBulk.run(keys)
+}
+
+async function onRevokeSelectedAppAccess(keys: Array<string | number>): Promise<void> {
+  if (anySettingsAccessMutationBusy.value) return
+  await appAccessBulk.run(keys)
+}
+
+watch(
+  [() => route.fullPath, () => tenant.orgUUID, () => activeOrg.value?.uuid, selectedWorkspaceUUID,
+    () => tenant.workspaceMode, () => tenant.workspaceUUID, activeSection, canEditWs,
+    wsMembersReadDenied, sasReadDenied,
+    () => tenant.listReadDenied('app-access', activeOrg.value?.uuid ?? '', selectedWorkspaceUUID.value ?? ''),
+    () => auth.token, () => auth.self?.user],
+  () => {
+    settingsBulkScopeGeneration.value++
+    saBulk.resetSelection()
+    wsMemberBulk.resetSelection()
+    appAccessBulk.resetSelection()
+  },
+  { flush: 'sync' },
+)
 
 const copiedToken = ref(false)
 const tokenCopyError = ref<string | null>(null)
@@ -1725,11 +1998,13 @@ function dismissCreationDialogs() {
 }
 
 function openMemberDialog(scope: 'workspace' | 'organization') {
+  if (scope === 'workspace' && anySettingsAccessMutationBusy.value) return
   tenant.clearError()
   memberDialog.value = scope
 }
 
 function openServiceAccountDialog() {
+  if (anySettingsAccessMutationBusy.value) return
   tenant.clearError()
   createSADialogOpen.value = true
 }
@@ -1970,7 +2245,7 @@ function fmtDate(s?: string | null): string {
                         Only workspace admins can add, remove, or change members.
                       </p>
                     </div>
-                    <button v-if="canAddWsMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" @click="openMemberDialog('workspace')">
+                    <button v-if="canAddWsMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" :disabled="anySettingsAccessMutationBusy" @click="openMemberDialog('workspace')">
                       <Plus class="h-4 w-4" aria-hidden="true" /> Add member
                     </button>
                   </div>
@@ -1992,9 +2267,50 @@ function fmtDate(s?: string | null): string {
                       table-label="Workspace members"
                       ref="wsMemberList"
                       :readonly="!canEditWs"
+                      :selectable="canEditWs"
+                      v-model:selected-keys="selectedWsMemberKeys"
+                      :selection-disabled="!auth.self?.user || anySettingsAccessMutationBusy || !wsMembersHasSnapshot || wsMembersLoading || !!wsMembersError"
+                      :row-selectable="wsMemberRowSelectable"
+                      :row-selection-disabled-reason="wsMemberRowSelectionDisabledReason"
+                      :selection-label="memberSelectionLabel"
+                      :bulk-busy="anySettingsAccessMutationBusy"
                       @change-role="onChangeWsMemberRole"
                       @remove="onRemoveWsMember"
-                    />
+                    >
+                      <template #selection-actions="{ keys, count }">
+                        <button
+                          type="button"
+                          class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                          :disabled="anySettingsAccessMutationBusy || wsMemberBulkActionDisabled"
+                          :aria-busy="wsMemberBulkBusy || undefined"
+                          :aria-label="`Remove ${count} selected workspace member${count === 1 ? '' : 's'}`"
+                          @click="onRemoveSelectedWsMembers(keys)"
+                        >
+                          <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                          {{ wsMemberBulkBusy ? 'Removing…' : 'Remove selected' }}
+                        </button>
+                      </template>
+                    </MemberList>
+                    <div v-if="wsMemberBulkOutcomes.length" class="mt-3 space-y-2">
+                      <InlineNotification
+                        :tone="wsMemberBulkOutcomes.some((item) => !item.succeeded) ? 'warning' : 'success'"
+                        title="Workspace member removal results"
+                        :message="`${wsMemberBulkOutcomes.filter((item) => item.succeeded).length} removed, ${wsMemberBulkOutcomes.filter((item) => !item.succeeded).length} failed.`"
+                        announce="polite"
+                        dismissible
+                        dismiss-label="Dismiss workspace member removal results"
+                        @dismiss="wsMemberBulkOutcomes.splice(0)"
+                      />
+                      <ul class="max-h-36 space-y-1 overflow-y-auto text-[11px]" aria-label="Workspace member removal result details">
+                        <li v-for="item in wsMemberBulkOutcomes" :key="item.key" class="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
+                          <span class="min-w-0 break-words text-text-primary">{{ item.name }}</span>
+                          <span :class="item.succeeded ? 'shrink-0 text-success' : 'min-w-0 break-words text-danger'">{{ item.succeeded ? 'Removed' : item.error || 'Could not remove' }}</span>
+                        </li>
+                      </ul>
+                      <p v-if="wsMemberBulkOutcomes.some((item) => !item.succeeded)" class="text-[11px] text-text-muted">
+                        Failed members remain selected so you can retry them.
+                      </p>
+                    </div>
                   </template>
             </section>
 
@@ -2012,6 +2328,10 @@ function fmtDate(s?: string | null): string {
                     aria-label="Published app access grants"
                     row-key="binding"
                     :interactive="false"
+                    :selectable="canEditWs"
+                    v-model:selected-keys="selectedAppAccessKeys"
+                    :selection-disabled="!canEditWs || anySettingsAccessMutationBusy || !appAccessHasSnapshot || appAccessLoading || !!appAccessError"
+                    :selection-label="(row) => `Select app access for ${String(row.user)} to ${String(row.app)}`"
                     :loaded="appAccessHasSnapshot"
                     :loading="appAccessLoading"
                     :error="appAccessError"
@@ -2024,6 +2344,19 @@ function fmtDate(s?: string | null): string {
                     @retry="reloadAppAccessGrants"
                     empty-text="No app access grants. Public apps need none; private apps grant access per person."
                   >
+                    <template #selection-actions="{ keys, count }">
+                      <button
+                        type="button"
+                        class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                        :disabled="anySettingsAccessMutationBusy || appAccessBulkActionDisabled"
+                        :aria-busy="appAccessBulkBusy || undefined"
+                        :aria-label="`Revoke ${count} selected app access grant${count === 1 ? '' : 's'}`"
+                        @click="onRevokeSelectedAppAccess(keys)"
+                      >
+                        <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                        {{ appAccessBulkBusy ? 'Revoking…' : 'Revoke selected' }}
+                      </button>
+                    </template>
                     <template #app="{ row }">
                       <span class="k-cell-mono">{{ row.app }}</span>
                     </template>
@@ -2036,11 +2369,32 @@ function fmtDate(s?: string | null): string {
                           :label="`Revoke ${String(row.user)}'s access to ${String(row.app)}`"
                           :busy-label="`Revoking ${String(row.user)}'s access…`"
                           :busy="!!appAccessBusy[String(row.binding)]"
+                          :disabled="anySettingsAccessMutationBusy"
                           @click="onRevokeAppAccess(row as unknown as AppAccessGrantRow)"
                         />
                       </div>
                     </template>
                   </ResourceTable>
+                  <div v-if="appAccessBulkOutcomes.length" class="mt-3 space-y-2">
+                    <InlineNotification
+                      :tone="appAccessBulkOutcomes.some((item) => !item.succeeded) ? 'warning' : 'success'"
+                      title="App access revocation results"
+                      :message="`${appAccessBulkOutcomes.filter((item) => item.succeeded).length} revoked, ${appAccessBulkOutcomes.filter((item) => !item.succeeded).length} failed.`"
+                      announce="polite"
+                      dismissible
+                      dismiss-label="Dismiss app access revocation results"
+                      @dismiss="appAccessBulkOutcomes.splice(0)"
+                    />
+                    <ul class="max-h-36 space-y-1 overflow-y-auto text-[11px]" aria-label="App access revocation result details">
+                      <li v-for="item in appAccessBulkOutcomes" :key="item.key" class="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
+                        <span class="min-w-0 break-words text-text-primary">{{ item.name }}</span>
+                        <span :class="item.succeeded ? 'shrink-0 text-success' : 'min-w-0 break-words text-danger'">{{ item.succeeded ? 'Revoked' : item.error || 'Could not revoke' }}</span>
+                      </li>
+                    </ul>
+                    <p v-if="appAccessBulkOutcomes.some((item) => !item.succeeded)" class="text-[11px] text-text-muted">
+                      Failed grants remain selected so you can retry them.
+                    </p>
+                  </div>
             </section>
 
             <!-- Service accounts -->
@@ -2053,7 +2407,7 @@ function fmtDate(s?: string | null): string {
                       Issued bearer tokens are short-lived and shown only once.
                     </p>
                   </div>
-                  <button v-if="canCreateSA" type="button" class="k-btn k-btn--primary self-start shrink-0" @click="openServiceAccountDialog">
+                  <button v-if="canCreateSA" type="button" class="k-btn k-btn--primary self-start shrink-0" :disabled="anySettingsAccessMutationBusy" @click="openServiceAccountDialog">
                     <Plus class="h-4 w-4" aria-hidden="true" /> Create service account
                   </button>
                 </div>
@@ -2072,6 +2426,10 @@ function fmtDate(s?: string | null): string {
                   v-model:query="saTableQuery"
                   row-key="uuid"
                   :interactive="false"
+                  selectable
+                  v-model:selected-keys="selectedSAKeys"
+                  :selection-disabled="anySettingsAccessMutationBusy || !!selWs.deletionRequestedAt || !sasHasSnapshot || sasLoading || !!sasError"
+                  :selection-label="(row) => `Select service account ${String(row.displayName)} for deletion`"
                   :loaded="sasHasSnapshot"
                   :loading="sasLoading"
                   :error="sasError"
@@ -2085,6 +2443,19 @@ function fmtDate(s?: string | null): string {
                   @retry="reloadSAs"
                   empty-text="No service accounts in this workspace."
                 >
+                  <template #selection-actions="{ keys, count }">
+                    <button
+                      type="button"
+                      class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                      :disabled="anySettingsAccessMutationBusy || saBulkActionDisabled"
+                      :aria-busy="saBulkBusy || undefined"
+                      :aria-label="`Delete ${count} selected service account${count === 1 ? '' : 's'}`"
+                      @click="onDeleteSelectedSAs(keys)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                      {{ saBulkBusy ? 'Deleting…' : 'Delete selected' }}
+                    </button>
+                  </template>
                   <template #uuid="{ row }">
                     <span class="k-cell-mono">{{ row.uuid }}</span>
                   </template>
@@ -2103,11 +2474,31 @@ function fmtDate(s?: string | null): string {
                       :items="serviceAccountActions(String(row.uuid))"
                       :busy="isSABusy(String(row.uuid))"
                       :busy-label="serviceAccountProgress(row)"
-                      :disabled="isSABusy(String(row.uuid))"
+                      :disabled="isSABusy(String(row.uuid)) || anySettingsAccessMutationBusy"
                       @select="onServiceAccountAction($event, row)"
                     />
                   </template>
                 </ResourceTable>
+                <div v-if="saBulkOutcomes.length" class="mt-3 space-y-2">
+                  <InlineNotification
+                    :tone="saBulkOutcomes.some((item) => !item.succeeded) ? 'warning' : 'success'"
+                    title="Service account deletion results"
+                    :message="`${saBulkOutcomes.filter((item) => item.succeeded).length} deleted, ${saBulkOutcomes.filter((item) => !item.succeeded).length} failed.`"
+                    announce="polite"
+                    dismissible
+                    dismiss-label="Dismiss service account deletion results"
+                    @dismiss="saBulkOutcomes.splice(0)"
+                  />
+                  <ul class="max-h-36 space-y-1 overflow-y-auto text-[11px]" aria-label="Service account deletion result details">
+                    <li v-for="item in saBulkOutcomes" :key="item.key" class="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
+                      <span class="min-w-0 break-words text-text-primary">{{ item.name }}</span>
+                      <span :class="item.succeeded ? 'shrink-0 text-success' : 'min-w-0 break-words text-danger'">{{ item.succeeded ? 'Deleted' : item.error || 'Could not delete' }}</span>
+                    </li>
+                  </ul>
+                  <p v-if="saBulkOutcomes.some((item) => !item.succeeded)" class="text-[11px] text-text-muted">
+                    Failed accounts remain selected so you can retry them.
+                  </p>
+                </div>
             </section>
 
           </template>

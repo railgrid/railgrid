@@ -97,6 +97,15 @@ resource scope changes, and revalidate targets before sending requests. In serve
 mode, consumers also reconcile off-page selections against authoritative data;
 the table cannot infer deletion from absence on the current page.
 
+Workspace settings use this same selection contract for service-account
+deletion, workspace-member removal, and app-access grant revocation. Confirm
+the selected resources and workspace before dispatching. Disable conflicting
+row actions during a batch, keep failed resources selected for retry, and
+refresh the affected inventory after completion. Navigation or lost authority
+must stop further requests and discard feedback from the previous context.
+Bulk member removal excludes the signed-in user; leaving a workspace remains
+an individual action.
+
 ## Content
 
 Search and compact labeled facets sit above the table. Categorical filters use

@@ -454,7 +454,11 @@ function assertQueryableResourceTable(source, { columns, rows, rowKey, loading, 
   assert.match(source, /\bretryable\b/)
   assert.match(source, /@retry=/)
   assert.match(source, emptyText)
-  assert.doesNotMatch(source, /<table\b|<ul\b|\bk-table\b/)
+  const bulkOutcomeDetails = source.replace(
+    /<ul\b(?=[^>]*\baria-label="(?:Workspace member removal|App access revocation|Service account deletion) result details")[^>]*>[\s\S]*?<\/ul>/g,
+    '',
+  )
+  assert.doesNotMatch(bulkOutcomeDetails, /<table\b|<ul\b|\bk-table\b/)
 }
 
 test('settings teardown retires requests and mutation contexts even when tenant IDs stay unchanged', () => {
@@ -485,6 +489,10 @@ test('settings teardown retires requests and mutation contexts even when tenant 
   const state = {
     ...Object.fromEntries(generations.map(name => [name, 7])),
     creationFeedbackGeneration: 0, pageDisposed: false, workspaceDeleteScopeGeneration: 0,
+    settingsBulkScopeGeneration: { value: 0 },
+    saBulk: { resetSelection() {} },
+    wsMemberBulk: { resetSelection() {} },
+    appAccessBulk: { resetSelection() {} },
     selectedWorkspaceKeys: { value: [] },
     workspaceDeleteProgress: { value: null },
     workspaceDeleteSummary: { value: null },
@@ -514,6 +522,7 @@ test('settings teardown retires requests and mutation contexts even when tenant 
   teardown()
 
   for (const generation of generations) assert.ok(state[generation] > 7, `${generation} must retire outstanding work`)
+  assert.ok(state.settingsBulkScopeGeneration.value > 0, 'settings bulk operations are retired at teardown')
   assert.equal(state.currentOrgMemberContext(pendingOrgMutation), false)
   state.activeSection.value = 'workspaces'
   for (const predicate of workspacePredicates) assert.equal(state[predicate](pendingWorkspaceMutation), false)
@@ -575,9 +584,12 @@ test('settings access lists use the canonical queryable ResourceTable contract',
   assert.equal((serviceAccounts.match(/<ActionMenu\b/g) ?? []).length, 1)
   assert.match(serviceAccounts, /:label="`Actions for \$\{String\(row\.displayName\)\}`"/)
   assert.match(serviceAccounts, /:items="serviceAccountActions\(String\(row\.uuid\)\)"/)
-  assert.match(serviceAccounts, /:disabled="isSABusy\(String\(row\.uuid\)\)"/)
+  assert.match(serviceAccounts, /:disabled="isSABusy\(String\(row\.uuid\)\) \|\| anySettingsAccessMutationBusy"/)
+  assert.match(serviceAccounts, /<template #selection-actions=/)
+  const serviceAccountRowActions = serviceAccounts.slice(serviceAccounts.indexOf('<template #actions="{ row }">'))
+  assert.ok(serviceAccountRowActions.startsWith('<template #actions="{ row }">'))
   assert.match(serviceAccounts, /@select="onServiceAccountAction\(\$event, row\)"/)
-  assert.doesNotMatch(serviceAccounts, /<ResourceTableActionButton\b|<ResourceTableDeleteButton\b|<button\b/)
+  assert.doesNotMatch(serviceAccountRowActions, /<ResourceTableActionButton\b|<ResourceTableDeleteButton\b|<button\b/)
   assert.match(tenantSettingsPage, /type ServiceAccountOperation = 'issue' \| 'revoke' \| 'delete'/)
   assert.match(tenantSettingsPage, /const saBusy = ref<Record<string, ServiceAccountOperation>>\(\{\}\)/)
   assert.match(tenantSettingsPage, /function saOperation\(uuid: string\): ServiceAccountOperation \| undefined/)
@@ -592,7 +604,7 @@ test('settings access lists use the canonical queryable ResourceTable contract',
   assert.match(menuActions, /id: 'issue', label: 'Issue token', busy: saOperation\(uuid\) === 'issue'/)
   assert.match(menuActions, /id: 'revoke', label: 'Revoke tokens', tone: 'warning', busy: saOperation\(uuid\) === 'revoke'/)
   assert.match(menuActions, /id: 'delete', label: 'Delete service account', tone: 'danger', busy: saOperation\(uuid\) === 'delete'/)
-  assert.match(menuActions, /await nextTick\(\)[\s\S]*if \(!target \|\| !isCurrentTarget\(target\) \|\| activeSection\.value !== 'workspaces' \|\| isSABusy\(uuid\)\) return[\s\S]*action === 'issue'/)
+  assert.match(menuActions, /await nextTick\(\)[\s\S]*if \(anySettingsAccessMutationBusy\.value \|\| !target \|\| !isCurrentTarget\(target\) \|\| activeSection\.value !== 'workspaces' \|\| isSABusy\(uuid\)\) return[\s\S]*action === 'issue'/)
   assert.match(menuActions, /action === 'issue'\) void onIssueToken\(uuid, name\)/)
   assert.match(menuActions, /action === 'revoke'\) void onRevokeTokens\(uuid, name\)/)
   assert.match(menuActions, /action === 'delete'\) void onDeleteSA\(uuid, name\)/)
