@@ -124,8 +124,10 @@ The table retains native `<table>` and `<tr>` semantics. Interactive rows use
 `tabindex="0"` and Enter/Space emits `rowClick`; nested links, buttons, inputs,
 selects, summaries, and other explicit controls remain independent. Resource
 names disclose full values in a viewport overlay only when actually truncated,
-using `fullValue(row)` when a slot label differs. Icon-only actions use
-`data-k-tip` on hover and focus, never a duplicate native title. Empty/error
+using `fullValue(row)` when a slot label differs. Shared icon-only action buttons
+use `ResourceTableActionTooltip` on hover and focus: a body-teleported,
+viewport-clamped visual tooltip, with the button's full accessible label retained.
+They never add a duplicate native title or clipped `data-k-tip`. Empty/error
 behavior, nested-control isolation, and row-action accessibility are identical
 between Queryable and Simple. See the [accessible interaction policy](../accessibility/interaction.md).
 

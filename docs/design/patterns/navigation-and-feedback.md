@@ -45,8 +45,8 @@ Progress uses a 2px (`rounded-xs`) `surface-overlay` track with semantic fill,
 never a pill. Skeletons use `.shimmer` in the exact geometry of loaded state.
 Motion uses `.stagger-item` (`stagger-in`) for entry, `.live-dot` (`live-pulse`)
 for live state, component-owned feedback entry, and 120–200ms hover/focus or
-control-state eases. The `.k-progress__bar` width transition is a sanctioned
-300ms progress update; respect reduced-motion preferences.
+control-state eases. The `.k-progress__bar` uses a 300ms transform transition
+for progress updates, with immediate updates under reduced motion.
 
 ## Scoped destinations
 

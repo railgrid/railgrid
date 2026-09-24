@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 26;
+  --railgrid-ui-core-version: 27;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1166,9 +1166,13 @@ html.light [data-k-tip]::after {
 }
 .k-progress__bar {
   height: 100%;
+  width: 100%;
   background: var(--color-success, #2fd6a0);
-  transition: width 0.3s ease;
+  transform: scaleX(clamp(0, var(--k-progress-value, 1), 1));
+  transform-origin: left center;
+  transition: transform 0.3s ease;
 }
+.k-progress__bar:dir(rtl) { transform-origin: right center; }
 .k-progress__bar--accent { background: var(--color-accent, #8b6bff); }
 .k-progress__bar--warning { background: var(--color-warning, #f0a63a); }
 .k-progress__bar--danger { background: var(--color-danger, #ff5d5d); }
@@ -2315,6 +2319,9 @@ railgrid-resource-table-filter { display: contents; }
   z-index: 1100;
 }
 .k-table__primary-tooltip--positioned { visibility: visible; }
+.k-table-action-tooltip {
+  font-family: var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
+}
 .k-table.k-table--resource .k-table__heading--start,
 .k-table.k-table--resource .k-table__cell--start { text-align: start; }
 .k-table.k-table--resource .k-table__heading--center,
@@ -3054,6 +3061,7 @@ railgrid-resource-table-filter { display: contents; }
 
 @media (prefers-reduced-motion: reduce) {
   .live-dot { animation: none; }
+  .k-progress__bar { transition: none; }
   .k-spin { animation: none; }
   .k-resource-technical__chevron { transition: none; }
   .k-action-menu__busy { animation: none; }
