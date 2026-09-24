@@ -55,19 +55,37 @@ function scopeWatcherText() {
   return statement.getText(parsed)
 }
 
+function orgMemberScopeWatcherText() {
+  const statement = parsed.statements.find((node) => ts.isExpressionStatement(node) &&
+    ts.isCallExpression(node.expression) && node.expression.expression.getText(parsed) === 'watch' &&
+    node.getText(parsed).includes('orgMemberBulkScopeGeneration.value++'))
+  assert.ok(statement, 'the production organization member bulk scope watcher exists in the page')
+  return statement.getText(parsed)
+}
+
 const pageFunctionNames = [
   'captureSettingsBulkContext',
   'isCurrentSettingsBulkContext',
+  'captureOrgMemberBulkContext',
+  'isCurrentOrgMemberBulkContext',
+  'currentOrgMemberContext',
   'workspaceScopeDescription',
   'serializeBulkItem',
   'memberBulkName',
   'wsMemberRowSelectable',
   'wsMemberRowSelectionDisabledReason',
+  'orgMemberRowSelectable',
+  'orgMemberRowSelectionDisabledReason',
+  'orgMemberSelectionLabel',
+  'onAddOrgMember',
+  'onChangeOrgMemberRole',
+  'onRemoveOrgMember',
   'onDeleteSelectedSAs',
   'onRemoveSelectedWsMembers',
+  'onRemoveSelectedOrgMembers',
   'onRevokeSelectedAppAccess',
 ]
-const pageBulkVariableNames = ['saBulk', 'wsMemberBulk', 'appAccessBulk']
+const pageBulkVariableNames = ['saBulk', 'wsMemberBulk', 'orgMemberSingleMutationBusy', 'orgMemberBulk', 'orgMemberBulkBusy', 'appAccessBulk']
 const extractedPageCode = ts.transpileModule([
   ...pageFunctionNames.map(functionText),
   ...pageBulkVariableNames.map(variableText),
@@ -76,6 +94,7 @@ const extractedPageCode = ts.transpileModule([
   'const anySettingsAccessMutationBusy = computed(() => anySettingsBulkBusy.value || anySettingsSingleMutationBusy.value)',
   'const selectedSAKeys = saBulk.selectedKeys',
   'const selectedWsMemberKeys = wsMemberBulk.selectedKeys',
+  'const selectedOrgMemberKeys = orgMemberBulk.selectedKeys',
   'const selectedAppAccessKeys = appAccessBulk.selectedKeys',
 ].join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
@@ -87,6 +106,8 @@ function fixture() {
   const state = {
     confirmations: [],
     mutations: [],
+    orgRemovals: [],
+    orgSingleMutations: [],
     refreshes: [],
     failures: new Map(),
     mutation: null,
@@ -102,6 +123,18 @@ function fixture() {
     listReadDenied(kind) { return kind === 'app-access' && readStatus.appAccessDenied },
     deleteServiceAccount(org, workspace, key) { return mutate('deleteServiceAccount', org, workspace, key) },
     removeWorkspaceMember(org, workspace, key) { return mutate('removeWorkspaceMember', org, workspace, key) },
+    removeOrgMember(org, user, cascade) {
+      state.orgRemovals.push([org, user, cascade])
+      return mutate('removeOrgMember', org, null, user)
+    },
+    addOrgMember(org, user, role) {
+      state.orgSingleMutations.push(['addOrgMember', org, user, role])
+      return mutate('addOrgMember', org, null, user)
+    },
+    patchOrgMemberRole(org, user, role) {
+      state.orgSingleMutations.push(['patchOrgMemberRole', org, user, role])
+      return mutate('patchOrgMemberRole', org, null, user)
+    },
     revokeAppAccessGrant(org, workspace, key) { return mutate('revokeAppAccessGrant', org, workspace, key) },
   })
 
@@ -126,7 +159,7 @@ function fixture() {
     auth: reactive({ token: 'test-token', self: { user: 'workspace-admin' } }),
     route: reactive({ fullPath: '/org-a/ws-a/settings/workspaces' }),
     activeSection: ref('workspaces'),
-    activeOrg: ref({ uuid: scope.org, displayName: 'Team A' }),
+    activeOrg: ref({ uuid: scope.org, displayName: 'Team A', role: 'admin', personal: false }),
     selectedWorkspaceUUID: ref(scope.workspace),
     selWs: ref({ uuid: scope.workspace, displayName: 'Production', role: 'admin' }),
     canEditWs: ref(true),
@@ -154,6 +187,19 @@ function fixture() {
     wsMembersError: ref(null),
     wsMembersReadDenied: ref(false),
     wsMemberBusy: ref({}),
+    orgMembers: ref([
+      { user: 'alice', role: 'member', email: 'alice@example.com', userDisplayName: 'Alice' },
+      { user: 'bob', role: 'member', email: 'bob@example.com', userDisplayName: 'Bob' },
+      { user: 'workspace-admin', role: 'admin', email: 'admin@example.com', userDisplayName: 'Admin' },
+    ]),
+    orgMembersHasSnapshot: ref(true),
+    orgMembersLoading: ref(false),
+    orgMembersError: ref(null),
+    orgMembersReadDenied: ref(false),
+    orgMemberBusy: ref({}),
+    orgMemberContextGeneration: 1,
+    orgMemberBulkScopeGeneration: ref(1),
+    orgBusy: ref(false),
     appAccessGrants: ref([
       { binding: 'grant-a', app: 'Nightly', user: 'alice' },
       { binding: 'grant-b', app: 'Preview', user: 'bob' },
@@ -168,6 +214,7 @@ function fixture() {
     },
     reloadSAs: async () => state.refreshes.push({ kind: 'service accounts', org: scope.org, ws: scope.workspace }),
     reloadWsMembers: async () => state.refreshes.push({ kind: 'workspace members', org: scope.org, ws: scope.workspace }),
+    reloadOrgMembers: async (org = scope.org) => state.refreshes.push({ kind: 'organization members', org }),
     reloadAppAccessGrants: async () => state.refreshes.push({ kind: 'app access', org: scope.org, ws: scope.workspace }),
     endSAOperation(uuid) {
       const next = { ...context.saBusy.value }
@@ -175,14 +222,18 @@ function fixture() {
       context.saBusy.value = next
     },
   }
-  const api = runInNewContext(`${extractedPageCode}\n({ saBulk, wsMemberBulk, appAccessBulk, onDeleteSelectedSAs, onRemoveSelectedWsMembers, onRevokeSelectedAppAccess, wsMemberRowSelectable, wsMemberRowSelectionDisabledReason })`, context)
+  context.organizationSettingsOrg = computed(() => context.activeOrg.value)
+  context.organizationTargetUUID = computed(() => context.organizationSettingsOrg.value?.uuid ?? null)
+  context.canManageOrgMembers = computed(() => context.organizationSettingsOrg.value?.role === 'admin' && !context.organizationSettingsOrg.value?.deletionRequestedAt)
+  context.canAddOrgMembers = computed(() => context.canManageOrgMembers.value && !context.orgMembersReadDenied.value)
+  const api = runInNewContext(`${extractedPageCode}\n({ saBulk, wsMemberBulk, orgMemberBulk, appAccessBulk, onDeleteSelectedSAs, onRemoveSelectedWsMembers, onRemoveSelectedOrgMembers, onRevokeSelectedAppAccess, wsMemberRowSelectable, wsMemberRowSelectionDisabledReason, orgMemberRowSelectable, orgMemberRowSelectionDisabledReason, orgMemberSelectionLabel, onAddOrgMember, onChangeOrgMemberRole, onRemoveOrgMember })`, context)
 
   function moveToWorkspace(org, workspace) {
     scope.org = org
     scope.workspace = workspace
     tenant.orgUUID = org
     tenant.workspaceUUID = workspace
-    context.activeOrg.value = { uuid: org, displayName: org === 'org-a' ? 'Team A' : 'Team B' }
+    context.activeOrg.value = { uuid: org, displayName: org === 'org-a' ? 'Team A' : 'Team B', role: 'admin', personal: false }
     context.selectedWorkspaceUUID.value = workspace
     context.selWs.value = { uuid: workspace, displayName: workspace === 'ws-a' ? 'Production' : 'Staging', role: 'admin' }
     context.route.fullPath = `/${org}/${workspace}/settings/workspaces`
@@ -192,7 +243,19 @@ function fixture() {
     api.appAccessBulk.resetSelection()
   }
 
-  return { api, context, scope, state, readStatus, moveToWorkspace }
+  function enterOrganization() {
+    context.activeSection.value = 'organizations'
+    context.route.fullPath = `/${scope.org}/${scope.workspace}/settings/organizations`
+  }
+
+  function moveToOrganization(org) {
+    scope.org = org
+    tenant.orgUUID = org
+    context.activeOrg.value = { uuid: org, displayName: org === 'org-a' ? 'Team A' : 'Team B', role: 'admin', personal: false }
+    context.route.fullPath = `/${org}/settings/organizations`
+  }
+
+  return { api, context, scope, state, readStatus, moveToWorkspace, enterOrganization, moveToOrganization }
 }
 
 function mountProductionScopeWatcher(h) {
@@ -212,6 +275,24 @@ function mountProductionScopeWatcher(h) {
     saBulk: h.api.saBulk,
     wsMemberBulk: h.api.wsMemberBulk,
     appAccessBulk: h.api.appAccessBulk,
+  }))
+  return watcherScope
+}
+
+function mountProductionOrgMemberScopeWatcher(h) {
+  const watcherScope = effectScope()
+  watcherScope.run(() => runInNewContext(orgMemberScopeWatcherText(), {
+    watch,
+    route: h.context.route,
+    tenant: h.context.tenant,
+    organizationTargetUUID: h.context.organizationTargetUUID,
+    activeSection: h.context.activeSection,
+    canManageOrgMembers: h.context.canManageOrgMembers,
+    orgMembersReadDenied: h.context.orgMembersReadDenied,
+    orgBusy: h.context.orgBusy,
+    auth: h.context.auth,
+    orgMemberBulkScopeGeneration: h.context.orgMemberBulkScopeGeneration,
+    orgMemberBulk: h.api.orgMemberBulk,
   }))
   return watcherScope
 }
@@ -310,6 +391,203 @@ test('workspace bulk removal excludes self and stays disabled until the stable U
   await h.api.onRemoveSelectedWsMembers(['alice'])
   assert.deepEqual(h.state.mutations, [])
   assert.deepEqual(h.state.confirmations, [])
+})
+
+test('organization bulk removal cascades, reports partial failures, and retries only the failed member', async () => {
+  const h = fixture()
+  h.enterOrganization()
+  h.state.failures.set('removeOrgMember:bob', 'Permission denied: HTTP 403')
+  h.api.orgMemberBulk.selectedKeys.value = ['alice', 'bob']
+
+  await h.api.onRemoveSelectedOrgMembers(['alice', 'bob'])
+
+  assert.deepEqual(h.state.orgRemovals, [
+    ['org-a', 'alice', true],
+    ['org-a', 'bob', true],
+  ], 'every bulk removal uses the store’s child-workspace cascade')
+  assert.match(h.state.confirmations[0].title, /Remove 2 selected members/)
+  assert.match(h.state.confirmations[0].message, /organization "Team A" \(UUID org-a\)/)
+  assert.match(h.state.confirmations[0].message, /lose organization-level access and membership in every child workspace in this organization/i)
+  assert.match(h.state.confirmations[0].message, /Alice \(alice@example\.com\) · alice/)
+  assert.match(h.state.confirmations[0].message, /Bob \(bob@example\.com\) · bob/)
+  assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, ['bob'])
+  assert.deepEqual(h.api.orgMemberBulk.outcomes.value.map(({ key, succeeded }) => ({ key, succeeded })), [
+    { key: 'alice', succeeded: true },
+    { key: 'bob', succeeded: false },
+  ])
+  assert.equal(h.context.orgMembers.value.some((row) => row.user === 'alice'), false)
+  assert.equal(h.context.orgMembers.value.some((row) => row.user === 'bob'), true)
+  assert.deepEqual(h.state.refreshes, [{ kind: 'organization members', org: 'org-a' }])
+
+  h.state.failures.delete('removeOrgMember:bob')
+  await h.api.onRemoveSelectedOrgMembers(['bob'])
+
+  assert.deepEqual(h.state.orgRemovals, [
+    ['org-a', 'alice', true],
+    ['org-a', 'bob', true],
+    ['org-a', 'bob', true],
+  ])
+  assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, [])
+  assert.equal(h.context.orgMembers.value.some((row) => row.user === 'bob'), false)
+  assert.equal(h.state.refreshes.length, 2)
+})
+
+test('organization bulk selection excludes self and requires a verified readable roster', async () => {
+  const h = fixture()
+  h.enterOrganization()
+  assert.equal(h.api.orgMemberRowSelectable({ user: 'workspace-admin' }), false)
+  assert.match(h.api.orgMemberRowSelectionDisabledReason({ user: 'workspace-admin' }), /individual remove action/)
+  assert.equal(h.api.orgMemberRowSelectable({ user: 'alice' }), true)
+  h.context.activeOrg.value = { ...h.context.activeOrg.value, personal: true }
+  assert.equal(h.api.orgMemberRowSelectable({ user: 'alice' }), true, 'personal organizations keep the same admin member-management authority')
+  h.context.activeOrg.value = { ...h.context.activeOrg.value, personal: false }
+  assert.match(h.api.orgMemberSelectionLabel({ user: 'alice' }), /Alice \(alice@example\.com\).*Team A/)
+
+  h.context.auth.self = null
+  assert.equal(h.api.orgMemberRowSelectable({ user: 'alice' }), false)
+  assert.match(h.api.orgMemberRowSelectionDisabledReason({ user: 'alice' }), /identity is still loading/)
+  h.api.orgMemberBulk.selectedKeys.value = ['alice']
+  await h.api.onRemoveSelectedOrgMembers(['alice'])
+  assert.deepEqual(h.state.confirmations, [])
+  assert.deepEqual(h.state.orgRemovals, [])
+
+  h.context.auth.self = { user: 'workspace-admin' }
+  h.context.orgMembersHasSnapshot.value = false
+  assert.equal(h.api.orgMemberRowSelectable({ user: 'alice' }), false)
+  assert.match(h.api.orgMemberRowSelectionDisabledReason({ user: 'alice' }), /verify the current organization member list/i)
+  await h.api.onRemoveSelectedOrgMembers(['alice'])
+  assert.deepEqual(h.state.confirmations, [])
+
+  h.context.orgMembersHasSnapshot.value = true
+  h.context.orgMembersError.value = 'Organization members could not be refreshed.'
+  assert.equal(h.api.orgMemberRowSelectable({ user: 'alice' }), false, 'stale rows cannot be selected for destructive work')
+  await h.api.onRemoveSelectedOrgMembers(['alice'])
+  assert.deepEqual(h.state.orgRemovals, [])
+
+  h.context.orgMembersError.value = null
+  h.api.orgMemberBulk.selectedKeys.value = ['alice']
+  const watcherScope = mountProductionOrgMemberScopeWatcher(h)
+  try {
+    const generation = h.context.orgMemberBulkScopeGeneration.value
+    h.context.orgMembersReadDenied.value = true
+    assert.equal(h.context.orgMemberBulkScopeGeneration.value, generation + 1)
+    assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, [], 'a denied roster clears existing selection immediately')
+    await h.api.onRemoveSelectedOrgMembers([])
+    assert.deepEqual(h.state.confirmations, [])
+    assert.deepEqual(h.state.orgRemovals, [])
+  } finally {
+    watcherScope.stop()
+  }
+})
+
+test('organization route A-to-B-to-A during confirmation retires the captured scope', async () => {
+  const h = fixture()
+  h.enterOrganization()
+  const confirmation = deferred()
+  h.state.confirm = () => confirmation.promise
+  const watcherScope = mountProductionOrgMemberScopeWatcher(h)
+  try {
+    const initialRoute = h.context.route.fullPath
+    h.api.orgMemberBulk.selectedKeys.value = ['alice']
+    const pending = h.api.onRemoveSelectedOrgMembers(['alice'])
+    await flushMicrotasks()
+
+    h.context.route.fullPath = '/org-a/settings/organizations?view=members'
+    h.context.route.fullPath = initialRoute
+    confirmation.resolve(true)
+    await pending
+
+    assert.deepEqual(h.state.orgRemovals, [])
+    assert.deepEqual(h.state.refreshes, [])
+    assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, [])
+    assert.deepEqual(h.api.orgMemberBulk.outcomes.value, [])
+  } finally {
+    watcherScope.stop()
+  }
+})
+
+test('organization A-to-B-to-A while a removal is in flight retires queued work and local updates', async () => {
+  const h = fixture()
+  h.enterOrganization()
+  const firstMutation = deferred()
+  h.state.mutation = async (_method, _org, _workspace, key) => key === 'alice' ? firstMutation.promise : true
+  const watcherScope = mountProductionOrgMemberScopeWatcher(h)
+  try {
+    h.api.orgMemberBulk.selectedKeys.value = ['alice', 'bob']
+    const pending = h.api.onRemoveSelectedOrgMembers(['alice', 'bob'])
+    for (let attempt = 0; attempt < 8 && h.state.orgRemovals.length === 0; attempt++) await Promise.resolve()
+    assert.deepEqual(h.state.orgRemovals, [['org-a', 'alice', true]])
+
+    h.moveToOrganization('org-b')
+    h.moveToOrganization('org-a')
+    firstMutation.resolve(true)
+    await pending
+
+    assert.deepEqual(h.state.orgRemovals, [['org-a', 'alice', true]], 'the retired run sends no queued request')
+    assert.deepEqual(h.state.refreshes, [])
+    assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, [])
+    assert.deepEqual(h.api.orgMemberBulk.outcomes.value, [])
+    assert.equal(h.context.orgMembers.value.some((row) => row.user === 'alice'), true,
+      'a stale completion cannot remove a row from the current organization snapshot')
+  } finally {
+    watcherScope.stop()
+  }
+})
+
+test('permission loss and restoration during confirmation still retires organization removal', async () => {
+  const h = fixture()
+  h.enterOrganization()
+  const confirmation = deferred()
+  h.state.confirm = () => confirmation.promise
+  const watcherScope = mountProductionOrgMemberScopeWatcher(h)
+  try {
+    h.api.orgMemberBulk.selectedKeys.value = ['alice']
+    const pending = h.api.onRemoveSelectedOrgMembers(['alice'])
+    await flushMicrotasks()
+
+    h.context.activeOrg.value = { ...h.context.activeOrg.value, role: 'member' }
+    h.context.activeOrg.value = { ...h.context.activeOrg.value, role: 'admin' }
+    confirmation.resolve(true)
+    await pending
+
+    assert.deepEqual(h.state.orgRemovals, [])
+    assert.deepEqual(h.api.orgMemberBulk.selectedKeys.value, [])
+    assert.deepEqual(h.api.orgMemberBulk.outcomes.value, [])
+  } finally {
+    watcherScope.stop()
+  }
+})
+
+test('organization single-row and bulk member mutations cannot overlap', async () => {
+  const h = fixture()
+  h.enterOrganization()
+  h.context.orgMemberBusy.value = { bob: true }
+  h.api.orgMemberBulk.selectedKeys.value = ['alice']
+  await h.api.onRemoveSelectedOrgMembers(['alice'])
+  assert.deepEqual(h.state.confirmations, [], 'an active row mutation blocks the bulk confirmation')
+  assert.deepEqual(h.state.orgRemovals, [])
+
+  h.context.orgMemberBusy.value = {}
+  const confirmation = deferred()
+  const mutation = deferred()
+  h.state.confirm = () => confirmation.promise
+  h.state.mutation = () => mutation.promise
+  h.api.orgMemberBulk.selectedKeys.value = ['alice']
+  const pending = h.api.onRemoveSelectedOrgMembers(['alice'])
+  await flushMicrotasks()
+  confirmation.resolve(true)
+  await flushMicrotasks()
+  assert.equal(h.api.orgMemberBulk.busy.value, true)
+
+  await h.api.onRemoveOrgMember('bob')
+  await h.api.onChangeOrgMemberRole('bob', 'admin')
+  assert.equal(await h.api.onAddOrgMember('carol', 'member'), false)
+  assert.equal(h.state.confirmations.length, 1, 'a row removal cannot open a competing confirmation')
+  assert.deepEqual(h.state.orgSingleMutations, [], 'add and role changes cannot dispatch during bulk removal')
+
+  mutation.resolve(true)
+  await pending
+  assert.deepEqual(h.state.orgRemovals, [['org-a', 'alice', true]])
 })
 
 test('scope change A-to-B-to-A during confirmation blocks dispatch and keeps the old result out of the new page', async () => {

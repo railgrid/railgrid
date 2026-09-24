@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 import ts from '../../portal/node_modules/typescript/lib/typescript.js'
 
 const component = readFileSync(new URL('./ResourceTable.vue', import.meta.url), 'utf8')
@@ -77,5 +78,57 @@ test('ResourceTable selection is controlled, page-scoped, accessible, and opt-in
   assert.match(component, /duplicateRowKeys/)
   assert.match(component, /'a, button, input, label, select, textarea, summary/)
   assert.match(component, /k-table__selection-help[\s\S]*?:aria-describedby="selectionReasonID\(i\)"/)
-  assert.match(component, /'k-table__row--selected': selectable && isRowSelected\(row\)/)
+  assert.match(component, /'k-table__row--selected': selectionSurfaceVisible && isRowSelected\(row\)/)
+})
+
+test('empty inventory visibility preserves filtered and off-page selection controls', () => {
+  const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const parsed = ts.createSourceFile('ResourceTable.ts', script, ts.ScriptTarget.Latest, true)
+  const names = ['confirmedEmptyInventory', 'selectionSurfaceVisible', 'renderedColumnCount', 'showControls']
+  const declarations = names.map(name => {
+    const statement = parsed.statements.find(node => ts.isVariableStatement(node) &&
+      node.declarationList.declarations.some(declaration => declaration.name.getText(parsed) === name))
+    assert.ok(statement, `${name} exists in production`)
+    return statement.getText(parsed)
+  })
+  const context = {
+    computed: getter => ({ get value() { return getter() } }),
+    props: { loaded: true, rows: [], selectable: true, loading: false },
+    activeFilters: { value: false }, isServerPagination: { value: false },
+    serverTotal: { value: null }, serverHasNext: { value: false },
+    selectedCount: { value: 0 }, visibleColumns: { value: [{ key: 'app' }, { key: 'user' }] },
+    hasConfiguredControls: { value: true },
+  }
+  const code = ts.transpileModule(declarations.join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  const state = runInNewContext(`${code}\n({ selectionSurfaceVisible, renderedColumnCount, showControls })`, context)
+  assert.equal(state.selectionSurfaceVisible.value, false, 'empty inventory has no selection gutter')
+  assert.equal(state.renderedColumnCount.value, 2, 'empty content spans only visible data columns')
+  assert.equal(state.showControls.value, false, 'empty client inventory has no blank search toolbar')
+
+  context.props.rows = [{ app: 'Reports' }]
+  assert.equal(state.selectionSurfaceVisible.value, true)
+  assert.equal(state.renderedColumnCount.value, 3)
+  assert.equal(state.showControls.value, true)
+
+  context.props.rows = []
+  context.activeFilters.value = true
+  assert.equal(state.showControls.value, true, 'a zero-match query can be cleared')
+  assert.equal(state.selectionSurfaceVisible.value, true, 'filtering does not change the selection column layout')
+
+  context.activeFilters.value = false
+  context.isServerPagination.value = true
+  context.serverTotal.value = 0
+  assert.equal(state.selectionSurfaceVisible.value, false, 'known empty server inventory omits selection')
+  context.selectedCount.value = 1
+  assert.equal(state.selectionSurfaceVisible.value, true, 'off-page selection retains Clear and actions')
+  context.selectedCount.value = 0
+  context.serverTotal.value = null
+  assert.equal(state.selectionSurfaceVisible.value, true, 'an empty page does not prove the server inventory is empty')
+
+  assert.match(component, /v-if="showControls \|\| selectionSurfaceVisible" class="k-table__toolbar-stack"/)
+  assert.match(component, /<thead v-if="!confirmedEmptyInventory \|\| selectedCount > 0"/)
+  assert.match(component, /<th v-if="selectionSurfaceVisible" class="k-table__heading k-table__selection-heading"/)
+  assert.match(component, /<span v-if="selectable" class="k-table__selection-live"/)
 })

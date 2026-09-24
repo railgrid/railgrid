@@ -267,6 +267,13 @@ const visibleRange = computed(() => isServerPagination.value
 const hasQuery = computed(() => !!currentQuery.value.trim())
 const hasFacetFilters = computed(() => Object.values(currentFilters.value).some(Boolean))
 const activeFilters = computed(() => hasQuery.value || hasFacetFilters.value)
+const confirmedEmptyInventory = computed(() => props.loaded === true
+  && props.rows.length === 0
+  && !activeFilters.value
+  && (!isServerPagination.value || (serverTotal.value === 0 && !serverHasNext.value)))
+const selectionSurfaceVisible = computed(() =>
+  props.selectable && (!confirmedEmptyInventory.value || selectedCount.value > 0),
+)
 const clearActionLabel = computed(() => hasQuery.value && hasFacetFilters.value ? 'Clear all' : 'Clear filters')
 const noMatchText = computed(() => {
   if (hasQuery.value && hasFacetFilters.value) return props.combinedFilterEmptyText
@@ -287,7 +294,7 @@ const primaryColumnKey = computed(() => {
     ?? columns[0]?.key
     ?? null
 })
-const renderedColumnCount = computed(() => Math.max(visibleColumns.value.length + (props.selectable ? 1 : 0), 1))
+const renderedColumnCount = computed(() => Math.max(visibleColumns.value.length + (selectionSurfaceVisible.value ? 1 : 0), 1))
 const staleMessageRole = computed(() => props.refreshMode === 'background' ? 'status' : 'alert')
 const staleMessageLive = computed(() => props.refreshMode === 'background' ? 'polite' : 'assertive')
 const showPendingBody = computed(() =>
@@ -845,7 +852,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
 <template>
   <div
     class="k-table k-table--resource"
-    :class="[`k-table--${variant}`, { 'k-table--selecting': selectable && selectedCount > 0 }]"
+    :class="[`k-table--${variant}`, { 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
     :aria-busy="ariaBusy"
   >
     <!-- Keep the live region outside layout so background reads cannot move the table. -->
@@ -913,7 +920,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         <button v-if="retryable" class="k-table__retry" type="button" @click="emit('retry')">Retry</button>
       </div>
 
-      <div v-if="showControls || selectable" class="k-table__toolbar-stack">
+      <div v-if="showControls || selectionSurfaceVisible" class="k-table__toolbar-stack">
         <div
           v-if="showControls"
           class="k-table__controls"
@@ -941,7 +948,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         </div>
 
         <div
-          v-if="selectable"
+          v-if="selectionSurfaceVisible"
           class="k-table__selection-bar"
           :class="['k-table__toolbar-panel', { 'k-table__toolbar-panel--inactive': !selectionToolbarActive }]"
           :aria-hidden="!selectionToolbarActive ? 'true' : undefined"
@@ -965,8 +972,8 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
 
       <div ref="tableScrollRegion" class="k-table__scroll" role="region" :aria-label="`${tableAriaLabel} scroll area`" tabindex="0">
         <table class="k-table__table" :aria-label="tableAriaLabel">
-          <thead><tr class="k-table__head-row">
-            <th v-if="selectable" class="k-table__heading k-table__selection-heading" scope="col">
+          <thead v-if="!confirmedEmptyInventory || selectedCount > 0"><tr class="k-table__head-row">
+            <th v-if="selectionSurfaceVisible" class="k-table__heading k-table__selection-heading" scope="col">
               <label class="k-table__checkbox-target">
                 <input
                   ref="headerSelectionCheckbox"
@@ -989,7 +996,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                 class="stagger-item k-table__row"
                 :class="{
                   'k-table__row--interactive': interactive,
-                  'k-table__row--selected': selectable && isRowSelected(row) && rowSelectionState(row).selectable,
+                  'k-table__row--selected': selectionSurfaceVisible && isRowSelected(row) && rowSelectionState(row).selectable,
                 }"
                 :tabindex="interactive ? 0 : undefined"
                 :aria-label="interactive ? rowAriaLabel(row, i) : undefined"
@@ -999,7 +1006,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                 @focusout="hideTooltip"
                 @keydown="onRowKeydown(row, $event)"
               >
-                <td v-if="selectable" class="k-table__cell k-table__selection-cell">
+                <td v-if="selectionSurfaceVisible" class="k-table__cell k-table__selection-cell">
                   <label
                     class="k-table__checkbox-target"
                     :class="{ 'k-table__checkbox-target--explained': !!rowSelectionState(row).reason }"

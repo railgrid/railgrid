@@ -106,6 +106,17 @@ must stop further requests and discard feedback from the previous context.
 Bulk member removal excludes the signed-in user; leaving a workspace remains
 an individual action.
 
+Organization member tables use the same bulk-removal flow. Their confirmation
+also explains that removal revokes membership in every child workspace. Keep
+self-removal separate from the bulk action.
+
+A successfully loaded empty inventory with no selection omits column headers,
+the selection column, and any otherwise empty toolbar space. Its message wraps
+within the available width. Keep search and filter controls
+when they are needed to recover from zero matching results. An empty server
+page must retain the selection toolbar when resources on another page remain
+selected.
+
 ## Content
 
 Search and compact labeled facets sit above the table. Categorical filters use

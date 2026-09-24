@@ -45,6 +45,7 @@ function setup(kind) {
     organizationTargetUUID: ref('org-a'), selectedWorkspaceUUID: ref('ws-a'),
     selWs: ref({ uuid: 'ws-a' }), canEditWs: ref(true), canManageOrgMembers: ref(true),
     saCreateBusy: ref(false), saTableQuery: ref(''), saTableRevision: ref(0),
+    orgMemberBulkBusy: ref(false), orgBusy: ref(false),
     anySettingsAccessMutationBusy: ref(false),
     creationFeedbackGeneration: 0, pageDisposed: false,
     orgMembersRequest: 0, orgMemberContextGeneration: 0,

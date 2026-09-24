@@ -154,14 +154,14 @@ const orgBusy = ref(false)
 
 function startEditOrgName(): void {
   const org = organizationSettingsOrg.value
-  if (!org || !canEditOrg.value) return
+  if (!org || !canEditOrg.value || orgMemberBulkBusy.value) return
   orgNameDraft.value = org.displayName
   editingOrgName.value = true
 }
 
 async function saveOrgName(): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canEditOrg.value || !orgNameDraft.value.trim()) return
+  if (!target || !canEditOrg.value || !orgNameDraft.value.trim() || orgMemberBulkBusy.value) return
   orgBusy.value = true
   try {
     const ok = await tenant.patchOrgDisplayName(target, orgNameDraft.value.trim())
@@ -176,7 +176,7 @@ async function saveOrgName(): Promise<void> {
 
 async function onDeleteOrg(): Promise<void> {
   const org = organizationSettingsOrg.value
-  if (!org || !canEditOrg.value) return
+  if (!org || !canEditOrg.value || orgMemberBulkBusy.value) return
   if (org.personal) {
     toast('error', 'Personal organizations cannot be deleted.')
     return
@@ -189,7 +189,7 @@ async function onDeleteOrg(): Promise<void> {
     confirmLabel: 'Delete',
   }))) return
 
-  if (route.fullPath !== requestRoute || organizationTargetUUID.value !== org.uuid || !canEditOrg.value) return
+  if (route.fullPath !== requestRoute || organizationTargetUUID.value !== org.uuid || !canEditOrg.value || orgMemberBulkBusy.value) return
   const target = org.uuid
   // Capture the pre-refresh identity and a local timestamp before calling the
   // store. The store's delete action refreshes /api/orgs and the target is
@@ -217,7 +217,7 @@ async function onDeleteOrg(): Promise<void> {
 
 async function onUndeleteOrg(): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrg.value) return
+  if (!target || !canManageOrg.value || orgMemberBulkBusy.value) return
   orgBusy.value = true
   try {
     const ok = await tenant.undeleteOrg(target)
@@ -312,7 +312,7 @@ async function reloadOrgMembers(targetOrgUUID = organizationTargetUUID.value): P
 
 async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<boolean> {
   const target = organizationTargetUUID.value
-  if (!target || !canAddOrgMembers.value) return false
+  if (!target || !canAddOrgMembers.value || orgMemberBulkBusy.value || orgBusy.value) return false
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
   const feedbackGeneration = creationFeedbackGeneration
   orgMemberBusy.value = { ...orgMemberBusy.value, __new__: true }
@@ -342,7 +342,7 @@ async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<b
 
 async function onChangeOrgMemberRole(user: string, role: 'admin' | 'member'): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrgMembers.value) return
+  if (!target || !canManageOrgMembers.value || orgMemberBulkBusy.value || orgBusy.value) return
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
   orgMemberBusy.value = { ...orgMemberBusy.value, [user]: true }
   try {
@@ -363,7 +363,7 @@ async function onChangeOrgMemberRole(user: string, role: 'admin' | 'member'): Pr
 
 async function onRemoveOrgMember(user: string): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrgMembers.value) return
+  if (!target || !canManageOrgMembers.value || orgMemberBulkBusy.value || orgBusy.value) return
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
   if (!(await confirmDialog({
     title: `Remove ${user} from this organization?`,
@@ -371,7 +371,7 @@ async function onRemoveOrgMember(user: string): Promise<void> {
     danger: true,
     confirmLabel: 'Remove',
   }))) return
-  if (!currentOrgMemberContext(context)) return
+  if (!currentOrgMemberContext(context) || orgMemberBulkBusy.value || orgBusy.value) return
   orgMemberBusy.value = { ...orgMemberBusy.value, [user]: true }
   try {
     const ok = await tenant.removeOrgMember(target, user, true)
@@ -1377,6 +1377,8 @@ watch(
 onBeforeUnmount(() => {
   pageDisposed = true
   creationFeedbackGeneration++
+  orgMemberBulkScopeGeneration.value++
+  orgMemberBulk.resetSelection()
   workspaceDeleteScopeGeneration++
   selectedWorkspaceKeys.value = []
   workspaceDeleteProgress.value = null
@@ -1618,14 +1620,43 @@ type SettingsBulkContext = {
   workspaceName: string
   organizationName: string
 }
+type OrgMemberBulkContext = {
+  target: string
+  routePath: string
+  generation: number
+  organizationName: string
+}
 
 type ServiceAccountBulkItem = SettingsBulkItem & Pick<SARow, 'uuid' | 'displayName'>
 type WorkspaceMemberBulkItem = SettingsBulkItem & Pick<MemberRow, 'user' | 'role' | 'email' | 'userDisplayName'>
+type OrgMemberBulkItem = SettingsBulkItem & Pick<MemberRow, 'user' | 'role' | 'email' | 'userDisplayName'>
 type AppAccessBulkItem = SettingsBulkItem & Pick<AppAccessGrantRow, 'binding' | 'app' | 'user'>
 
 const settingsBulkScopeGeneration = ref(0)
+const orgMemberBulkScopeGeneration = ref(0)
 const anySettingsSingleMutationBusy = computed(() => saCreateBusy.value ||
   Object.keys(saBusy.value).length > 0 || Object.keys(wsMemberBusy.value).length > 0 || Object.keys(appAccessBusy.value).length > 0)
+const orgMemberSingleMutationBusy = computed(() => Object.keys(orgMemberBusy.value).length > 0)
+
+function captureOrgMemberBulkContext(): OrgMemberBulkContext | null {
+  const target = organizationTargetUUID.value
+  if (!target || activeSection.value !== 'organizations' || tenant.orgUUID !== target ||
+    !canManageOrgMembers.value || orgMembersReadDenied.value || orgBusy.value) return null
+  return {
+    target,
+    routePath: route.fullPath,
+    generation: orgMemberBulkScopeGeneration.value,
+    organizationName: organizationSettingsOrg.value?.displayName || target,
+  }
+}
+
+function isCurrentOrgMemberBulkContext(context: OrgMemberBulkContext): boolean {
+  return !pageDisposed && context.generation === orgMemberBulkScopeGeneration.value &&
+    context.routePath === route.fullPath && activeSection.value === 'organizations' &&
+    tenant.orgUUID === context.target && organizationTargetUUID.value === context.target &&
+    organizationSettingsOrg.value?.uuid === context.target && canManageOrgMembers.value &&
+    !orgMembersReadDenied.value && !orgBusy.value
+}
 
 function captureSettingsBulkContext(): SettingsBulkContext | null {
   const target = selectedTarget()
@@ -1731,6 +1762,56 @@ const wsMemberBulk = useSettingsBulkAction<WorkspaceMemberBulkItem, SettingsBulk
   fallbackError: 'The member could not be removed. Retry after checking the current list.',
 })
 
+const orgMemberBulk = useSettingsBulkAction<OrgMemberBulkItem, OrgMemberBulkContext>({
+  captureContext: captureOrgMemberBulkContext,
+  isContextCurrent: isCurrentOrgMemberBulkContext,
+  resolveItems: (_context, keys) => keys.flatMap((key) => {
+    const row = orgMembers.value.find((candidate) => candidate.user === key)
+    return row ? [{
+      key: row.user,
+      name: memberBulkName(row),
+      user: row.user,
+      role: row.role,
+      email: row.email,
+      userDisplayName: row.userDisplayName,
+    }] : []
+  }),
+  snapshotItem: (item) => serializeBulkItem({
+    key: item.key,
+    name: item.name,
+    user: item.user,
+    role: item.role,
+    email: item.email ?? '',
+    userDisplayName: item.userDisplayName ?? '',
+  }),
+  ineligibleReason: (_context, item) => {
+    if (!orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value || orgMembersReadDenied.value) return 'Verify the current organization member list before removing members.'
+    if (!auth.self?.user) return 'Your identity is still loading. Wait before selecting organization members.'
+    if (item.user === auth.self.user) return 'You cannot remove yourself with a bulk action. Use the individual remove action.'
+    if (!canManageOrgMembers.value) return 'Organization admin access is required.'
+    if (orgBusy.value) return 'Wait for the current organization action to finish.'
+    if (orgMemberSingleMutationBusy.value) return 'Wait for the current organization member action to finish.'
+    return orgMembers.value.some((row) => row.user === item.user) ? null : 'This member is no longer in the current list.'
+  },
+  confirm: async (context, items) => confirmDialog({
+    title: `Remove ${items.length} selected member${items.length === 1 ? '' : 's'}?`,
+    message: `Remove these people from organization "${context.organizationName}" (UUID ${context.target})? They will lose organization-level access and membership in every child workspace in this organization.\n\nSelected members:\n${items.map((item) => item.name).join('\n')}`,
+    confirmLabel: `Remove ${items.length} member${items.length === 1 ? '' : 's'}`,
+    danger: true,
+  }),
+  mutate: (context, item) => tenant.removeOrgMember(context.target, item.user, true),
+  clearError: () => tenant.clearError(),
+  readError: () => tenant.error,
+  onSuccess: (_context, item) => {
+    orgMembers.value = orgMembers.value.filter((row) => row.user !== item.user)
+    const next = { ...orgMemberBusy.value }
+    delete next[item.user]
+    orgMemberBusy.value = next
+  },
+  refresh: async (context) => { await reloadOrgMembers(context.target) },
+  fallbackError: 'The member could not be removed. Retry after checking the current organization member list.',
+})
+
 const appAccessBulk = useSettingsBulkAction<AppAccessBulkItem, SettingsBulkContext>({
   captureContext: captureSettingsBulkContext,
   isContextCurrent: isCurrentSettingsBulkContext,
@@ -1769,6 +1850,9 @@ const saBulkOutcomes = saBulk.outcomes
 const selectedWsMemberKeys = wsMemberBulk.selectedKeys
 const wsMemberBulkBusy = wsMemberBulk.busy
 const wsMemberBulkOutcomes = wsMemberBulk.outcomes
+const selectedOrgMemberKeys = orgMemberBulk.selectedKeys
+const orgMemberBulkBusy = orgMemberBulk.busy
+const orgMemberBulkOutcomes = orgMemberBulk.outcomes
 const selectedAppAccessKeys = appAccessBulk.selectedKeys
 const appAccessBulkBusy = appAccessBulk.busy
 const appAccessBulkOutcomes = appAccessBulk.outcomes
@@ -1798,6 +1882,16 @@ const wsMemberBulkActionDisabled = computed(() => {
     wsMemberBulk.resolveItems(context, keys).some((item) => wsMemberBulk.ineligibleReason(context, item))
 })
 
+const orgMemberBulkActionDisabled = computed(() => {
+  const context = captureOrgMemberBulkContext()
+  const keys = normalizedSettingsSelection(selectedOrgMemberKeys.value)
+  return orgMemberBulkBusy.value || orgMemberSingleMutationBusy.value || !context ||
+    !orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value ||
+    orgMembersReadDenied.value || !auth.self?.user || !keys.length ||
+    orgMemberBulk.resolveItems(context, keys).length !== keys.length ||
+    orgMemberBulk.resolveItems(context, keys).some((item) => orgMemberBulk.ineligibleReason(context, item))
+})
+
 const appAccessBulkActionDisabled = computed(() => {
   const context = captureSettingsBulkContext()
   const keys = normalizedSettingsSelection(selectedAppAccessKeys.value)
@@ -1815,6 +1909,32 @@ function wsMemberRowSelectable(row: Record<string, unknown>): boolean {
   if (!context) return false
   const item = wsMemberBulk.resolveItems(context, [String(row.user ?? '')])[0]
   return !!item && !wsMemberBulk.ineligibleReason(context, item)
+}
+
+function orgMemberRowSelectable(row: Record<string, unknown>): boolean {
+  const context = captureOrgMemberBulkContext()
+  if (!context) return false
+  const item = orgMemberBulk.resolveItems(context, [String(row.user ?? '')])[0]
+  return !!item && !orgMemberBulk.ineligibleReason(context, item)
+}
+
+function orgMemberRowSelectionDisabledReason(row: Record<string, unknown>): string {
+  const user = String(row.user ?? '')
+  const member = orgMembers.value.find((candidate) => candidate.user === user)
+  if (!member) return 'Member details are not available in the current list.'
+  if (!auth.self?.user) return 'Your identity is still loading.'
+  if (member.user === auth.self.user) return 'Use the individual remove action to remove yourself.'
+  if (!orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value || orgMembersReadDenied.value) return 'Verify the current organization member list before selecting members.'
+  if (!canManageOrgMembers.value) return 'Organization admin access is required.'
+  if (orgBusy.value) return 'Wait for the current organization action to finish.'
+  if (orgMemberSingleMutationBusy.value) return 'Wait for the current organization member action to finish.'
+  return ''
+}
+
+function orgMemberSelectionLabel(row: Record<string, unknown>): string {
+  const user = String(row.user ?? 'Member')
+  const member = orgMembers.value.find((candidate) => candidate.user === user)
+  return member ? `Select ${memberBulkName(member)} in ${organizationSettingsOrg.value?.displayName || 'this organization'}` : `Select ${user} in this organization`
 }
 
 function wsMemberRowSelectionDisabledReason(row: Record<string, unknown>): string {
@@ -1844,6 +1964,11 @@ async function onRemoveSelectedWsMembers(keys: Array<string | number>): Promise<
   await wsMemberBulk.run(keys)
 }
 
+async function onRemoveSelectedOrgMembers(keys: Array<string | number>): Promise<void> {
+  if (orgMemberSingleMutationBusy.value || orgBusy.value || !auth.self?.user || !canManageOrgMembers.value) return
+  await orgMemberBulk.run(keys)
+}
+
 async function onRevokeSelectedAppAccess(keys: Array<string | number>): Promise<void> {
   if (anySettingsAccessMutationBusy.value) return
   await appAccessBulk.run(keys)
@@ -1860,6 +1985,16 @@ watch(
     saBulk.resetSelection()
     wsMemberBulk.resetSelection()
     appAccessBulk.resetSelection()
+  },
+  { flush: 'sync' },
+)
+
+watch(
+  [() => route.fullPath, () => tenant.orgUUID, () => tenant.workspaceMode, organizationTargetUUID, activeSection,
+    canManageOrgMembers, orgMembersReadDenied, () => auth.token, () => auth.self?.user, orgBusy],
+  () => {
+    orgMemberBulkScopeGeneration.value++
+    orgMemberBulk.resetSelection()
   },
   { flush: 'sync' },
 )
@@ -1999,6 +2134,7 @@ function dismissCreationDialogs() {
 
 function openMemberDialog(scope: 'workspace' | 'organization') {
   if (scope === 'workspace' && anySettingsAccessMutationBusy.value) return
+  if (scope === 'organization' && (orgMemberBulkBusy.value || orgBusy.value)) return
   tenant.clearError()
   memberDialog.value = scope
 }
@@ -2573,7 +2709,7 @@ function fmtDate(s?: string | null): string {
                   v-if="canEditOrg"
                   type="button"
                   class="k-btn k-btn--ghost px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-50"
-                  :disabled="!!organizationSettingsOrg.deletionRequestedAt"
+                  :disabled="!!organizationSettingsOrg.deletionRequestedAt || orgMemberBulkBusy"
                   @click="startEditOrgName"
                 >
                   <Pencil class="inline h-3 w-3" :stroke-width="2" /> Rename
@@ -2590,7 +2726,7 @@ function fmtDate(s?: string | null): string {
                 <button
                   type="button"
                   class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-success transition-colors hover:border-success/40 hover:bg-success-subtle disabled:opacity-60"
-                  :disabled="orgBusy || !orgNameDraft.trim()"
+                  :disabled="orgBusy || orgMemberBulkBusy || !orgNameDraft.trim()"
                   @click="saveOrgName"
                 >
                   <Loader2 v-if="orgBusy" class="inline h-3 w-3 animate-spin" :stroke-width="2" />
@@ -2624,7 +2760,7 @@ function fmtDate(s?: string | null): string {
                     v-if="!organizationSettingsOrg.deletionRequestedAt && canDeleteOrg"
                     type="button"
                     class="k-btn k-btn--danger inline-flex items-center gap-1 px-2.5 py-1 text-[11px] disabled:opacity-50"
-                    :disabled="orgBusy"
+                    :disabled="orgBusy || orgMemberBulkBusy"
                     title="Soft-delete with a recoverable 30-day grace window"
                     @click="onDeleteOrg"
                   >
@@ -2640,7 +2776,7 @@ function fmtDate(s?: string | null): string {
                     v-else-if="organizationSettingsOrg.deletionRequestedAt"
                     type="button"
                     class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] text-accent transition-colors hover:bg-accent-subtle disabled:opacity-50"
-                    :disabled="orgBusy"
+                    :disabled="orgBusy || orgMemberBulkBusy"
                     @click="onUndeleteOrg"
                   >
                     <RotateCcw class="h-3 w-3" :stroke-width="2" /> Restore organization
@@ -2798,7 +2934,7 @@ function fmtDate(s?: string | null): string {
                   Members can use this organization and its workspaces. Only organization admins can add, remove, or change roles.
                 </p>
               </div>
-              <button v-if="canAddOrgMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" @click="openMemberDialog('organization')">
+              <button v-if="canAddOrgMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" :disabled="orgMemberBulkBusy || orgBusy" @click="openMemberDialog('organization')">
                 <Plus class="h-4 w-4" aria-hidden="true" /> Add member
               </button>
             </div>
@@ -2820,9 +2956,51 @@ function fmtDate(s?: string | null): string {
                 table-label="Organization members"
                 ref="orgMemberList"
                 :readonly="!canManageOrgMembers"
+                :selectable="canManageOrgMembers"
+                v-model:selected-keys="selectedOrgMemberKeys"
+                :selection-disabled="orgMemberBulkBusy || orgMemberSingleMutationBusy || orgBusy || !auth.self?.user || !orgMembersHasSnapshot || orgMembersLoading || !!orgMembersError || orgMembersReadDenied"
+                :selection-clear-disabled="orgMemberBulkBusy || orgMemberSingleMutationBusy || orgBusy"
+                :row-selectable="orgMemberRowSelectable"
+                :row-selection-disabled-reason="orgMemberRowSelectionDisabledReason"
+                :selection-label="orgMemberSelectionLabel"
+                :bulk-busy="orgMemberBulkBusy"
                 @change-role="onChangeOrgMemberRole"
                 @remove="onRemoveOrgMember"
-              />
+              >
+                <template #selection-actions="{ keys, count }">
+                  <button
+                    type="button"
+                    class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                    :disabled="orgMemberBulkActionDisabled"
+                    :aria-busy="orgMemberBulkBusy || undefined"
+                    :aria-label="`Remove ${count} selected organization member${count === 1 ? '' : 's'}`"
+                    @click="onRemoveSelectedOrgMembers(keys)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                    {{ orgMemberBulkBusy ? 'Removing…' : 'Remove selected' }}
+                  </button>
+                </template>
+              </MemberList>
+              <div v-if="orgMemberBulkOutcomes.length" class="mt-3 space-y-2">
+                <InlineNotification
+                  :tone="orgMemberBulkOutcomes.some((item) => !item.succeeded) ? 'warning' : 'success'"
+                  title="Organization member removal results"
+                  :message="`${orgMemberBulkOutcomes.filter((item) => item.succeeded).length} removed, ${orgMemberBulkOutcomes.filter((item) => !item.succeeded).length} failed.`"
+                  announce="polite"
+                  dismissible
+                  dismiss-label="Dismiss organization member removal results"
+                  @dismiss="orgMemberBulkOutcomes.splice(0)"
+                />
+                <ul class="max-h-36 space-y-1 overflow-y-auto text-[11px]" aria-label="Organization member removal result details">
+                  <li v-for="item in orgMemberBulkOutcomes" :key="item.key" class="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
+                    <span class="min-w-0 break-words text-text-primary">{{ item.name }}</span>
+                    <span :class="item.succeeded ? 'shrink-0 text-success' : 'min-w-0 break-words text-danger'">{{ item.succeeded ? 'Removed' : item.error || 'Could not remove' }}</span>
+                  </li>
+                </ul>
+                <p v-if="orgMemberBulkOutcomes.some((item) => !item.succeeded)" class="text-[11px] text-text-muted">
+                  Failed members remain selected so you can retry them.
+                </p>
+              </div>
             </template>
           </section>
         </div>

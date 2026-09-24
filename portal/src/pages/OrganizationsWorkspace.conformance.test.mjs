@@ -75,11 +75,11 @@ test('organization settings are scoped to the selected org and gate governance w
   assert.match(tenantSettingsPage, /const canEditOrg = computed\(\(\) => canManageOrg\.value && !organizationSettingsOrg\.value\?\.deletionRequestedAt\)/)
   assert.match(tenantSettingsPage, /const canManageOrgMembers = computed\(\(\) => canManageOrg\.value && !organizationSettingsOrg\.value\?\.deletionRequestedAt\)/)
   assert.match(tenantSettingsPage, /const canDeleteOrg = computed\(\(\) => canEditOrg\.value && !organizationSettingsOrg\.value\?\.personal\)/)
-  assert.match(tenantSettingsPage, /startEditOrgName\(\): void[\s\S]*?if \(!org \|\| !canEditOrg\.value\) return/)
+  assert.match(tenantSettingsPage, /startEditOrgName\(\): void[\s\S]*?if \(!org \|\| !canEditOrg\.value \|\| orgMemberBulkBusy\.value\) return/)
   assert.match(tenantSettingsPage, /saveOrgName\(\): Promise<void>[\s\S]*?if \(!target \|\| !canEditOrg\.value /)
-  assert.match(tenantSettingsPage, /onAddOrgMember\(user: string[\s\S]*?if \(!target \|\| !canAddOrgMembers\.value\) return false/)
-  assert.match(tenantSettingsPage, /onChangeOrgMemberRole\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return/)
-  assert.match(tenantSettingsPage, /onRemoveOrgMember\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return/)
+  assert.match(tenantSettingsPage, /onAddOrgMember\(user: string[\s\S]*?if \(!target \|\| !canAddOrgMembers\.value \|\| orgMemberBulkBusy\.value \|\| orgBusy\.value\) return false/)
+  assert.match(tenantSettingsPage, /onChangeOrgMemberRole\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value \|\| orgMemberBulkBusy\.value \|\| orgBusy\.value\) return/)
+  assert.match(tenantSettingsPage, /onRemoveOrgMember\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value \|\| orgMemberBulkBusy\.value \|\| orgBusy\.value\) return/)
   assert.match(orgSection, /:readonly="!canManageOrgMembers"/)
   assert.match(orgSection, /v-if="canEditOrg"/)
   assert.match(orgSection, /v-if="canManageOrg"/)
@@ -108,6 +108,17 @@ test('organization settings use the org MemberList contract and lifecycle action
   assert.match(orgSection, /:error="orgMembersError"/)
   assert.match(orgSection, /:stale="orgMembersHasSnapshot && !!orgMembersError"/)
   assert.match(orgSection, /:busy="orgMemberBusy"/)
+  assert.match(orgSection, /:selectable="canManageOrgMembers"/)
+  assert.match(orgSection, /v-model:selected-keys="selectedOrgMemberKeys"/)
+  assert.match(orgSection, /:row-selectable="orgMemberRowSelectable"/)
+  assert.match(orgSection, /:row-selection-disabled-reason="orgMemberRowSelectionDisabledReason"/)
+  assert.match(orgSection, /:selection-label="orgMemberSelectionLabel"/)
+  assert.match(orgSection, /:selection-disabled="orgMemberBulkBusy \|\| orgMemberSingleMutationBusy \|\| orgBusy/)
+  assert.match(orgSection, /@change-role="onChangeOrgMemberRole"/)
+  assert.match(orgSection, /@remove="onRemoveOrgMember"/)
+  assert.match(orgSection, /onRemoveSelectedOrgMembers\(keys\)/)
+  assert.match(tenantSettingsPage, /membership in every child workspace in this organization/)
+  assert.match(orgSection, /Failed members remain selected so you can retry them\./)
   assert.match(orgSection, /scope-label="this organization"/)
   assert.match(tenantSettingsPage, /<AddMemberDialog\b[\s\S]*?:add="onAddOrgMember"/)
   assert.match(orgSection, /@change-role="onChangeOrgMemberRole"/)
@@ -116,6 +127,8 @@ test('organization settings use the org MemberList contract and lifecycle action
   assert.match(tenantSettingsPage, /tenant\.addOrgMember\(target, user, role\)/)
   assert.match(tenantSettingsPage, /tenant\.patchOrgMemberRole\(target, user, role\)/)
   assert.match(tenantSettingsPage, /tenant\.removeOrgMember\(target, user, true\)/)
+  assert.match(tenantSettingsPage, /mutate: \(context, item\) => tenant\.removeOrgMember\(context\.target, item\.user, true\)/)
+  assert.match(tenantSettingsPage, /orgMemberBulkScopeGeneration\.value\+\+/)
   assert.match(tenantSettingsPage, /confirmDialog\(\{[\s\S]*Remove \$\{user\} from this organization/)
   assert.match(tenantSettingsPage, /message: 'They will lose organization-level access and membership in all child workspaces in this organization\.'/)
   assert.match(tenantSettingsPage, /tenant\.patchOrgDisplayName\(target, orgNameDraft\.value\.trim\(\)\)/)
@@ -490,8 +503,10 @@ test('settings teardown retires requests and mutation contexts even when tenant 
     ...Object.fromEntries(generations.map(name => [name, 7])),
     creationFeedbackGeneration: 0, pageDisposed: false, workspaceDeleteScopeGeneration: 0,
     settingsBulkScopeGeneration: { value: 0 },
+    orgMemberBulkScopeGeneration: { value: 0 },
     saBulk: { resetSelection() {} },
     wsMemberBulk: { resetSelection() {} },
+    orgMemberBulk: { resetSelection() {} },
     appAccessBulk: { resetSelection() {} },
     selectedWorkspaceKeys: { value: [] },
     workspaceDeleteProgress: { value: null },
@@ -523,6 +538,7 @@ test('settings teardown retires requests and mutation contexts even when tenant 
 
   for (const generation of generations) assert.ok(state[generation] > 7, `${generation} must retire outstanding work`)
   assert.ok(state.settingsBulkScopeGeneration.value > 0, 'settings bulk operations are retired at teardown')
+  assert.ok(state.orgMemberBulkScopeGeneration.value > 0, 'organization member bulk operations are retired at teardown')
   assert.equal(state.currentOrgMemberContext(pendingOrgMutation), false)
   state.activeSection.value = 'workspaces'
   for (const predicate of workspacePredicates) assert.equal(state[predicate](pendingWorkspaceMutation), false)

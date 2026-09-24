@@ -107,24 +107,27 @@ test('failed workspace deletion leaves settings available to retry', async () =>
   assert.equal(fixture.context.wsBusy.value, false)
 })
 
-function organizationFixture() {
+function organizationFixture({ personal = false, bulkBusy = false } = {}) {
   const confirmation = deferred()
   const calls = []
+  const confirmations = []
+  const toasts = []
   const context = {
-    organizationSettingsOrg: { value: { uuid: 'org-a', displayName: 'Team A', personal: false } },
+    organizationSettingsOrg: { value: { uuid: 'org-a', displayName: 'Team A', personal } },
     organizationTargetUUID: { value: 'org-a' },
     canEditOrg: { value: true },
     route: { fullPath: '/org-a/workspace-a/settings/organizations' },
-    confirmDialog: () => confirmation.promise,
+    confirmDialog: (options) => { confirmations.push(options); return confirmation.promise },
     tenant: { deleteOrg: async (target) => { calls.push(target); return true } },
     managedOrgTargetUUID: { value: null },
     managedOrgSnapshot: { value: null },
     expectedOrgLifecycleRefresh: { value: null },
     orgBusy: { value: false },
+    orgMemberBulkBusy: { value: bulkBusy },
     clearManagedOrgSnapshot: () => {},
-    toast: () => {},
+    toast: (...args) => toasts.push(args),
   }
-  return { context, calls, confirmation, remove: loadFunction('onDeleteOrg', context) }
+  return { context, calls, confirmations, toasts, confirmation, remove: loadFunction('onDeleteOrg', context) }
 }
 
 for (const [name, change] of [
@@ -153,6 +156,24 @@ test('confirmed current organization deletion preserves its recovery snapshot', 
   assert.ok(fixture.context.managedOrgSnapshot.value.deletionRequestedAt)
   assert.equal(fixture.context.expectedOrgLifecycleRefresh.value, null)
   assert.equal(fixture.context.orgBusy.value, false)
+})
+
+test('organization deletion cannot overlap a bulk member removal', async () => {
+  const fixture = organizationFixture({ bulkBusy: true })
+  await fixture.remove()
+  assert.deepEqual(fixture.calls, [])
+  assert.deepEqual(fixture.confirmations, [])
+  assert.equal(fixture.context.managedOrgSnapshot.value, null)
+  assert.equal(fixture.context.orgBusy.value, false)
+})
+
+test('personal organizations stay protected from deletion', async () => {
+  const fixture = organizationFixture({ personal: true })
+  await fixture.remove()
+  assert.deepEqual(fixture.calls, [])
+  assert.deepEqual(fixture.confirmations, [])
+  assert.deepEqual(fixture.toasts, [['error', 'Personal organizations cannot be deleted.']])
+  assert.equal(fixture.context.managedOrgSnapshot.value, null)
 })
 
 function workspaceBulkDeleteFixture() {
