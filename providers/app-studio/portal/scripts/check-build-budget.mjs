@@ -79,11 +79,11 @@ const allArtifacts = await Promise.all(artifactNames.map(artifact))
 // lazy chunk, and keep a total budget to prevent duplication across routes.
 enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipBytes: 5_000 })
 enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipBytes: 100_000 })
-// Shared AgentKit presentation, lazy model settings, and Code tab uploads,
-// previews, and attachments: current page path measures 1,189,801 raw /
-// 330,182 gzip; total assets measure 1,265,435 raw / 355,511 gzip. The busy
-// action progress state adds 487 raw bytes over origin/main's 1,264,948-byte
-// total. The total raw cap allows this measured feature while keeping route
-// and gzip limits unchanged.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_190_000, gzipBytes: 335_000 })
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_270_000, gzipBytes: 358_000 })
+// PR #775 adds shared resource-table selection, bulk-action progress, and
+// action tooltips to the settings flows. Compared with budget baseline
+// 17773b870 (1,189,801 raw / 330,182 gzip page path; 1,265,435 raw /
+// 355,511 gzip total), the current build measures 1,204,081 / 333,618 for
+// the page path and 1,279,715 / 358,943 across all assets. Keep the route
+// budgets separate and allow only modest headroom over the measured feature.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_210_000, gzipBytes: 335_000 })
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_285_000, gzipBytes: 360_000 })

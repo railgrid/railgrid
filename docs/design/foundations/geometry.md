@@ -27,7 +27,7 @@ App Studio and Agents, which may use 12–14px because speech is not chrome.
 Motion is similarly constrained to named, state-bearing recipes: `.stagger-item`
 applies the `stagger-in` entry animation, `.live-dot` applies `live-pulse` to
 live status, and existing controls use short 120–200ms hover/focus/state
-eases. The `.k-progress__bar` width transition (300ms) is a sanctioned progress
-update; modal, toast, and loading feedback retain their component-owned entry
-recipes. Add no decorative motion, and make every new animation respect
+eases. The `.k-progress__bar` transform transition (300ms) communicates progress
+without animating layout; modal, toast, and loading feedback retain their
+component-owned entry recipes. Add no decorative motion, and make every new animation respect
 `prefers-reduced-motion`.

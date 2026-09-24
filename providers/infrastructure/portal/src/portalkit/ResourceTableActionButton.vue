@@ -5,13 +5,15 @@
      Compact, accessible icon action for ResourceTable action cells. The
      caller owns the action's confirmation and mutation behavior. -->
 <script setup lang="ts">
-import { computed, type Component } from 'vue'
+import { computed, ref, type Component } from 'vue'
 import { Loader2 } from 'lucide-vue-next'
+import ResourceTableActionTooltip from './ResourceTableActionTooltip.vue'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 // Standalone provider portals load the exact canonical recipe through the
 // shared helper; the host portal already imports the same railgrid-ui.css file.
 ensureRailgridUIStyles()
+const button = ref<HTMLButtonElement | null>(null)
 
 type ResourceTableActionTone = 'neutral' | 'accent' | 'warning' | 'danger'
 
@@ -42,10 +44,10 @@ const emit = defineEmits<{
 
 <template>
   <button
+    ref="button"
     class="k-table-action"
     :class="[`k-table-action--${tone}`, { 'k-table-action--busy': busy }]"
     type="button"
-    :data-k-tip="accessibleLabel"
     :aria-label="accessibleLabel"
     :aria-busy="busy || undefined"
     :disabled="disabled || busy"
@@ -59,5 +61,6 @@ const emit = defineEmits<{
       :stroke-width="1.75"
       aria-hidden="true"
     />
+    <ResourceTableActionTooltip :anchor="button" :label="accessibleLabel" />
   </button>
 </template>

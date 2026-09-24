@@ -107,24 +107,27 @@ test('failed workspace deletion leaves settings available to retry', async () =>
   assert.equal(fixture.context.wsBusy.value, false)
 })
 
-function organizationFixture() {
+function organizationFixture({ personal = false, bulkBusy = false } = {}) {
   const confirmation = deferred()
   const calls = []
+  const confirmations = []
+  const toasts = []
   const context = {
-    organizationSettingsOrg: { value: { uuid: 'org-a', displayName: 'Team A', personal: false } },
+    organizationSettingsOrg: { value: { uuid: 'org-a', displayName: 'Team A', personal } },
     organizationTargetUUID: { value: 'org-a' },
     canEditOrg: { value: true },
     route: { fullPath: '/org-a/workspace-a/settings/organizations' },
-    confirmDialog: () => confirmation.promise,
+    confirmDialog: (options) => { confirmations.push(options); return confirmation.promise },
     tenant: { deleteOrg: async (target) => { calls.push(target); return true } },
     managedOrgTargetUUID: { value: null },
     managedOrgSnapshot: { value: null },
     expectedOrgLifecycleRefresh: { value: null },
     orgBusy: { value: false },
+    orgMemberBulkLocked: { value: bulkBusy },
     clearManagedOrgSnapshot: () => {},
-    toast: () => {},
+    toast: (...args) => toasts.push(args),
   }
-  return { context, calls, confirmation, remove: loadFunction('onDeleteOrg', context) }
+  return { context, calls, confirmations, toasts, confirmation, remove: loadFunction('onDeleteOrg', context) }
 }
 
 for (const [name, change] of [
@@ -153,4 +156,178 @@ test('confirmed current organization deletion preserves its recovery snapshot', 
   assert.ok(fixture.context.managedOrgSnapshot.value.deletionRequestedAt)
   assert.equal(fixture.context.expectedOrgLifecycleRefresh.value, null)
   assert.equal(fixture.context.orgBusy.value, false)
+})
+
+test('organization deletion cannot overlap a bulk member removal', async () => {
+  const fixture = organizationFixture({ bulkBusy: true })
+  await fixture.remove()
+  assert.deepEqual(fixture.calls, [])
+  assert.deepEqual(fixture.confirmations, [])
+  assert.equal(fixture.context.managedOrgSnapshot.value, null)
+  assert.equal(fixture.context.orgBusy.value, false)
+})
+
+test('personal organizations stay protected from deletion', async () => {
+  const fixture = organizationFixture({ personal: true })
+  await fixture.remove()
+  assert.deepEqual(fixture.calls, [])
+  assert.deepEqual(fixture.confirmations, [])
+  assert.deepEqual(fixture.toasts, [['error', 'Personal organizations cannot be deleted.']])
+  assert.equal(fixture.context.managedOrgSnapshot.value, null)
+})
+
+function workspaceBulkDeleteFixture() {
+  const confirmations = []
+  const deletePlans = []
+  const calls = { deletes: [], reloads: [] }
+  const organization = { uuid: 'org-a', displayName: 'Team A', deletionRequestedAt: null }
+  const rows = [
+    { uuid: 'workspace-a', orgUUID: 'org-a', displayName: 'Production', role: 'admin', deletionRequestedAt: null },
+    { uuid: 'workspace-b', orgUUID: 'org-a', displayName: 'Staging', role: 'admin', deletionRequestedAt: null },
+  ]
+  const context = {
+    selectedWorkspaceKeys: { value: ['workspace-a', 'workspace-b'] },
+    workspaceDeleteBatchBusy: { value: false },
+    workspaceDeleteProgress: { value: null },
+    workspaceDeleteSummary: { value: null },
+    workspaceDeleteScopeGeneration: 1,
+    workspaceSelectionRevision: 0,
+    workspaceDeleteRunSequence: 0,
+    activeWorkspaceDeleteRun: 0,
+    workspaceInventoryVerified: { value: true },
+    workspaceListLoading: { value: false },
+    restoringWorkspaceUUID: { value: null },
+    activeSection: { value: 'organizations' },
+    organizationTargetUUID: { value: 'org-a' },
+    organizationSettingsOrg: { value: organization },
+    activeOrg: { value: organization },
+    workspaces: { value: rows },
+    pageDisposed: false,
+    route: { fullPath: '/org-a/settings/organizations' },
+    tenant: {
+      orgUUID: 'org-a',
+      workspaceMode: 'organization',
+      workspaceUUID: null,
+      deleteWorkspaces: async (orgUUID, ids, options) => {
+        calls.deletes.push({ orgUUID, ids: [...ids] })
+        const outcomes = deletePlans.shift() ?? []
+        outcomes.forEach((outcome, index) => options.onProgress(outcome, index + 1, ids.length))
+        return outcomes
+      },
+    },
+    confirmDialog: (options) => {
+      const decision = deferred()
+      confirmations.push({ ...decision, options })
+      return decision.promise
+    },
+    reloadScopedWorkspaces: async (orgUUID) => { calls.reloads.push(orgUUID) },
+    retryableWorkspaceDeleteIDs: { value: [] },
+  }
+
+  for (const name of [
+    'workspaceBulkDeleteDisabledReason',
+    'workspaceDeleteContextIsCurrent',
+    'workspaceDeleteDispatchIsAllowed',
+    'workspaceDeleteTargetIsEligible',
+    'sameWorkspaceIDs',
+    'recordWorkspaceDeleteOutcomes',
+    'requestWorkspaceDeletions',
+    'onRetryFailedWorkspaceDeletions',
+  ]) context[name] = loadFunction(name, context)
+
+  return { context, calls, confirmations, deletePlans }
+}
+
+test('bulk delete confirmation includes names and IDs and cancels queued work after leaving and returning', async () => {
+  const fixture = workspaceBulkDeleteFixture()
+  const pending = fixture.context.requestWorkspaceDeletions(['workspace-a', 'workspace-b'], false)
+  assert.equal(fixture.confirmations.length, 1)
+  assert.equal(fixture.confirmations[0].options.title, 'Delete 2 workspaces?')
+  assert.match(fixture.confirmations[0].options.message, /recoverable 30-day grace period/)
+  assert.match(fixture.confirmations[0].options.message, /Production \(UUID workspace-a\)/)
+  assert.match(fixture.confirmations[0].options.message, /Staging \(UUID workspace-b\)/)
+
+  fixture.context.route.fullPath = '/org-a/settings/workspaces'
+  fixture.context.workspaceDeleteScopeGeneration++
+  fixture.context.route.fullPath = '/org-a/settings/organizations'
+  fixture.context.workspaceDeleteScopeGeneration++
+  fixture.confirmations[0].resolve(true)
+  await pending
+
+  assert.equal(fixture.calls.deletes.length, 0)
+  assert.equal(fixture.context.workspaceDeleteBatchBusy.value, false)
+})
+
+test('bulk delete keeps partial failures selected and a confirmed retry clears them', async () => {
+  const fixture = workspaceBulkDeleteFixture()
+  fixture.deletePlans.push(
+    [
+      { uuid: 'workspace-a', ok: true },
+      { uuid: 'workspace-b', ok: false, error: 'failed to delete workspace: 503' },
+    ],
+    [{ uuid: 'workspace-b', ok: true }],
+  )
+
+  const first = fixture.context.requestWorkspaceDeletions(['workspace-a', 'workspace-b'], false)
+  fixture.confirmations[0].resolve(true)
+  await first
+  assert.deepEqual(fixture.context.selectedWorkspaceKeys.value, ['workspace-b'])
+  assert.equal(fixture.context.workspaceDeleteSummary.value.items.find((item) => item.uuid === 'workspace-b').status, 'failed')
+  assert.equal(fixture.context.workspaceDeleteSummary.value.items.find((item) => item.uuid === 'workspace-b').error, 'failed to delete workspace: 503')
+
+  fixture.context.retryableWorkspaceDeleteIDs.value = ['workspace-b']
+  const retry = fixture.context.onRetryFailedWorkspaceDeletions()
+  assert.equal(fixture.confirmations.length, 2)
+  fixture.confirmations[1].resolve(true)
+  await retry
+
+  assert.equal(fixture.calls.deletes.length, 2)
+  assert.deepEqual(fixture.calls.deletes[1], { orgUUID: 'org-a', ids: ['workspace-b'] })
+  assert.deepEqual(fixture.context.selectedWorkspaceKeys.value, [])
+  const retried = fixture.context.workspaceDeleteSummary.value.items.find((item) => item.uuid === 'workspace-b')
+  assert.equal(retried.status, 'requested')
+  assert.equal(retried.attempts, 2)
+  assert.equal(fixture.context.workspaceDeleteBatchBusy.value, false)
+  assert.deepEqual(fixture.calls.reloads, ['org-a', 'org-a'])
+})
+
+test('bulk delete confirmation aborts when query-driven selection changes before submit', async () => {
+  const fixture = workspaceBulkDeleteFixture()
+  const pending = fixture.context.requestWorkspaceDeletions(['workspace-a', 'workspace-b'], false)
+  fixture.context.selectedWorkspaceKeys.value = []
+  fixture.context.workspaceSelectionRevision++
+  fixture.confirmations[0].resolve(true)
+  await pending
+
+  assert.equal(fixture.calls.deletes.length, 0)
+  assert.deepEqual(fixture.context.selectedWorkspaceKeys.value, [])
+})
+
+test('bulk delete settles through an inventory failure without reviving cleared selection or awaiting refresh', async () => {
+  const fixture = workspaceBulkDeleteFixture()
+  const mutation = deferred()
+  const refresh = deferred()
+  fixture.context.tenant.deleteWorkspaces = () => mutation.promise
+  fixture.context.reloadScopedWorkspaces = () => refresh.promise
+  const pending = fixture.context.requestWorkspaceDeletions(['workspace-a', 'workspace-b'], false)
+  fixture.confirmations[0].resolve(true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(fixture.context.workspaceDeleteBatchBusy.value, true)
+
+  // A failed concurrent list read is not a scope change. A query change can
+  // still clear the selection while already-confirmed requests settle.
+  fixture.context.workspaceInventoryVerified.value = false
+  fixture.context.selectedWorkspaceKeys.value = []
+  fixture.context.workspaceSelectionRevision++
+  mutation.resolve([
+    { uuid: 'workspace-a', ok: true },
+    { uuid: 'workspace-b', ok: false, error: 'Permission denied' },
+  ])
+  await pending
+  assert.equal(fixture.context.workspaceDeleteBatchBusy.value, false)
+  assert.equal(fixture.context.workspaceDeleteProgress.value, null)
+  assert.deepEqual(fixture.context.selectedWorkspaceKeys.value, [])
+  assert.equal(fixture.context.workspaceDeleteSummary.value.items.length, 2)
+  assert.equal(fixture.context.workspaceDeleteSummary.value.items[1].error, 'Permission denied')
+  refresh.resolve()
 })

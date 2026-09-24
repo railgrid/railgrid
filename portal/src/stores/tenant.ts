@@ -27,6 +27,7 @@ limitations under the License.
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { authFetch } from '@/auth/session'
+import { authSessionRevision } from '@/auth/token'
 
 const STORAGE_KEY = 'railgrid:portal:tenant'
 
@@ -148,6 +149,21 @@ export interface CreateWorkspaceOptions {
   selectCreated?: boolean
 }
 
+export interface WorkspaceDeleteResult {
+  uuid: string
+  ok: boolean
+  error?: string
+}
+
+export interface DeleteWorkspacesOptions {
+  // Lets the settings page stop queued sends when its route or scope changes.
+  // The store also checks its own tenant, identity, and auth revisions.
+  shouldContinue?: () => boolean
+  // Called once for every unique requested workspace after it reaches a
+  // terminal result, including validation failures and unsent cancellations.
+  onProgress?: (result: WorkspaceDeleteResult, completed: number, total: number) => void
+}
+
 function loadPersisted(): PersistedTenant {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -220,6 +236,15 @@ export const useTenantStore = defineStore('tenant', () => {
   // reads for the same org still use latest-result-wins semantics.
   const workspacePendingByOrg = ref<Record<string, number>>({})
   const workspaceRequestEpochByOrg = new Map<string, number>()
+  // Successful workspace deletes update cached rows immediately. Keep this overlay
+  // until a list confirms the deletion, an explicit undelete succeeds, or the
+  // identity resets, so a lagging list cannot make the workspace usable again.
+  const locallyDeletingWorkspacesByOrg = new Map<string, Map<string, string>>()
+  // A restore that succeeds after a DELETE was sent supersedes that DELETE's
+  // eventual cache write, even when its HTTP response arrives later. Keep the
+  // sequence monotonic across identity resets to prevent an ABA match.
+  const workspaceRestoreRevisionByKey = new Map<string, number>()
+  let workspaceRestoreRevisionSequence = 0
   const loading = ref(false)
   const error = ref<string | null>(null)
   let orgRequestEpoch = 0
@@ -237,6 +262,42 @@ export const useTenantStore = defineStore('tenant', () => {
     const workspacePending = Object.values(workspacePendingByOrg.value)
       .some((pending) => pending > 0)
     loading.value = orgPending > 0 || workspacePending
+  }
+
+  function workspaceRestoreKey(targetOrgUUID: string, wsUUID: string): string {
+    return `${targetOrgUUID}\u0000${wsUUID}`
+  }
+
+  function workspaceRestoreRevision(targetOrgUUID: string, wsUUID: string): number {
+    return workspaceRestoreRevisionByKey.get(workspaceRestoreKey(targetOrgUUID, wsUUID)) ?? 0
+  }
+
+  function recordSuccessfulWorkspaceRestore(targetOrgUUID: string, wsUUID: string): void {
+    workspaceRestoreRevisionSequence++
+    workspaceRestoreRevisionByKey.set(
+      workspaceRestoreKey(targetOrgUUID, wsUUID),
+      workspaceRestoreRevisionSequence,
+    )
+  }
+
+  function markLocallyDeletingWorkspace(targetOrgUUID: string, wsUUID: string): void {
+    const requestedAt = new Date().toISOString()
+    const overrides = locallyDeletingWorkspacesByOrg.get(targetOrgUUID) ?? new Map<string, string>()
+    overrides.set(wsUUID, requestedAt)
+    locallyDeletingWorkspacesByOrg.set(targetOrgUUID, overrides)
+    const cached = workspacesByOrg.value[targetOrgUUID] ?? []
+    workspacesByOrg.value = {
+      ...workspacesByOrg.value,
+      [targetOrgUUID]: cached.map((workspace) => workspace.uuid === wsUUID
+        ? { ...workspace, deletionRequestedAt: workspace.deletionRequestedAt || requestedAt }
+        : workspace),
+    }
+  }
+
+  function clearLocalWorkspaceDeletion(targetOrgUUID: string, wsUUID: string): void {
+    const overrides = locallyDeletingWorkspacesByOrg.get(targetOrgUUID)
+    overrides?.delete(wsUUID)
+    if (overrides?.size === 0) locallyDeletingWorkspacesByOrg.delete(targetOrgUUID)
   }
 
   function beginWorkspaceRequest(targetOrgUUID: string): { epoch: number; selectionRevisionAtStart: number } {
@@ -496,6 +557,8 @@ export const useTenantStore = defineStore('tenant', () => {
     // Keep epochs monotonic so a new read cannot reuse an old request's ID.
     for (const [org, epoch] of workspaceRequestEpochByOrg) workspaceRequestEpochByOrg.set(org, epoch + 1)
     orgRequestsBySelectionRevision.clear()
+    locallyDeletingWorkspacesByOrg.clear()
+    workspaceRestoreRevisionByKey.clear()
     listReadSequences.clear()
     listReadContexts.clear()
     orgPending = 0
@@ -658,7 +721,16 @@ export const useTenantStore = defineStore('tenant', () => {
       }
       const data = (await resp.json()) as { items: WorkspaceRow[] }
       if (epoch !== workspaceRequestEpochByOrg.get(targetOrgUUID)) return
-      const list = data.items ?? []
+      const deletionOverrides = locallyDeletingWorkspacesByOrg.get(targetOrgUUID)
+      const list = (data.items ?? []).map((workspace) => {
+        const requestedAt = deletionOverrides?.get(workspace.uuid)
+        if (workspace.deletionRequestedAt) {
+          deletionOverrides?.delete(workspace.uuid)
+          return workspace
+        }
+        return requestedAt ? { ...workspace, deletionRequestedAt: requestedAt } : workspace
+      })
+      if (deletionOverrides?.size === 0) locallyDeletingWorkspacesByOrg.delete(targetOrgUUID)
       workspacesByOrg.value = { ...workspacesByOrg.value, [targetOrgUUID]: list }
       workspaceListLoadedByOrg.value = { ...workspaceListLoadedByOrg.value, [targetOrgUUID]: true }
       workspaceLoadStateByOrg.value = {
@@ -985,6 +1057,9 @@ export const useTenantStore = defineStore('tenant', () => {
 
   async function deleteWorkspace(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
     const selectionRevisionAtStart = selectionRevision
+    const identityRevisionAtStart = identityRevision
+    const authRevisionAtStart = authSessionRevision()
+    const restoreRevisionAtSend = workspaceRestoreRevision(targetOrgUUID, wsUUID)
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
       method: 'DELETE',
       headers: {
@@ -996,11 +1071,181 @@ export const useTenantStore = defineStore('tenant', () => {
       publishTargetError(targetOrgUUID, `failed to delete workspace: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
+    // The list reload remains this single-delete API's existing behavior. The
+    // response may be late relative to a successful restore, so only keep the
+    // local deleting hint while its restore revision is still current.
+    if (
+      workspaceRestoreRevision(targetOrgUUID, wsUUID) === restoreRevisionAtSend &&
+      identityRevision === identityRevisionAtStart &&
+      authSessionRevision() === authRevisionAtStart &&
+      orgUUID.value === targetOrgUUID &&
+      selectionRevision === selectionRevisionAtStart
+    ) {
+      markLocallyDeletingWorkspace(targetOrgUUID, wsUUID)
+    }
     await fetchWorkspaces(targetOrgUUID, { selectDefault: false })
     return true
   }
 
+  /**
+   * Soft-delete multiple workspaces with bounded concurrency and per-item
+   * outcomes. This intentionally does not reload the workspace list; callers
+   * should perform one final `fetchWorkspaces(targetOrgUUID, { selectDefault:
+   * false })` after the batch settles.
+   */
+  async function deleteWorkspaces(
+    targetOrgUUID: string,
+    workspaceUUIDs: string[],
+    options: DeleteWorkspacesOptions = {},
+  ): Promise<WorkspaceDeleteResult[]> {
+    const uuids = [...new Set(workspaceUUIDs)]
+    if (uuids.length === 0) return []
+
+    const selectionRevisionAtStart = selectionRevision
+    const identityRevisionAtStart = identityRevision
+    const authRevisionAtStart = authSessionRevision()
+    const total = uuids.length
+    const results: WorkspaceDeleteResult[] = new Array(total)
+    let completed = 0
+
+    const report = (index: number, result: WorkspaceDeleteResult): void => {
+      results[index] = result
+      completed++
+      try {
+        options.onProgress?.(result, completed, total)
+      } catch {
+        // A progress display must not interrupt requests already in progress.
+      }
+    }
+
+    const contextStopReason = (): string | null => {
+      if (authSessionRevision() !== authRevisionAtStart) {
+        return 'Not sent: the authentication context changed before this request was sent.'
+      }
+      if (identityRevision !== identityRevisionAtStart) {
+        return 'Not sent: the tenant identity changed before this request was sent.'
+      }
+      if (
+        selectionRevision !== selectionRevisionAtStart ||
+        orgUUID.value !== targetOrgUUID
+      ) {
+        return 'Not sent: the tenant selection changed before this request was sent.'
+      }
+      if (options.shouldContinue) {
+        try {
+          if (!options.shouldContinue()) {
+            return 'Not sent: the batch was canceled before this request was sent.'
+          }
+        } catch {
+          return 'Not sent: the batch was canceled before this request was sent.'
+        }
+      }
+      return null
+    }
+
+    const workspaceForDelete = (uuid: string): { workspace?: WorkspaceRow; error?: string } => {
+      const workspace = (workspacesByOrg.value[targetOrgUUID] ?? [])
+        .find((row) => row.uuid === uuid)
+      if (!workspace) {
+        const foreign = Object.values(workspacesByOrg.value)
+          .flat()
+          .find((row) => row.uuid === uuid)
+        return foreign
+          ? { error: 'Workspace belongs to another organization.' }
+          : { error: 'Workspace is not present in the selected organization.' }
+      }
+      if (workspace.orgUUID !== targetOrgUUID) {
+        return { error: 'Workspace belongs to another organization.' }
+      }
+      if (workspace.role !== 'admin') {
+        return { error: 'Workspace administration is required.' }
+      }
+      if (orgUUID.value === targetOrgUUID && workspaceUUID.value === uuid) {
+        return { error: 'Cannot delete the current workspace.' }
+      }
+      if (workspace.deletionRequestedAt) {
+        return { error: 'Workspace deletion is already in progress.' }
+      }
+      return { workspace }
+    }
+
+    const queuedIndexes: number[] = []
+    for (let index = 0; index < uuids.length; index++) {
+      const validation = workspaceForDelete(uuids[index])
+      if (validation.error) {
+        report(index, { uuid: uuids[index], ok: false, error: validation.error })
+      } else {
+        queuedIndexes.push(index)
+      }
+    }
+
+    let nextQueuedIndex = 0
+    const worker = async (): Promise<void> => {
+      while (nextQueuedIndex < queuedIndexes.length) {
+        const index = queuedIndexes[nextQueuedIndex++]
+        const uuid = uuids[index]
+        const stopReason = contextStopReason()
+        if (stopReason) {
+          report(index, { uuid, ok: false, error: stopReason })
+          continue
+        }
+
+        // Re-read the cached row immediately before every send. The page may
+        // have refreshed it while earlier requests were still in flight.
+        const validation = workspaceForDelete(uuid)
+        if (validation.error) {
+          report(index, { uuid, ok: false, error: validation.error })
+          continue
+        }
+
+        const restoreRevisionAtSend = workspaceRestoreRevision(targetOrgUUID, uuid)
+        try {
+          const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${uuid}`, {
+            method: 'DELETE',
+            headers: {
+              'X-Railgrid-Org': targetOrgUUID,
+              'X-Railgrid-Workspace': uuid,
+            },
+          })
+          if (!resp.ok) {
+            const detail = await statusMessage(resp)
+            report(index, {
+              uuid,
+              ok: false,
+              error: detail || `Failed to delete workspace (HTTP ${resp.status}).`,
+            })
+            continue
+          }
+
+          // Record accepted deletion locally only while the initiating scope
+          // still owns this cache. The result itself remains truthful even if
+          // the user changed account, route, or tenant during the request.
+          if (
+            identityRevision === identityRevisionAtStart &&
+            authSessionRevision() === authRevisionAtStart &&
+            selectionRevision === selectionRevisionAtStart &&
+            orgUUID.value === targetOrgUUID &&
+            workspaceRestoreRevision(targetOrgUUID, uuid) === restoreRevisionAtSend
+          ) {
+            markLocallyDeletingWorkspace(targetOrgUUID, uuid)
+          }
+          report(index, { uuid, ok: true })
+        } catch (errorValue: unknown) {
+          const error = authSessionRevision() !== authRevisionAtStart
+            ? 'Request outcome unavailable: the authentication context changed while this request was in flight.'
+            : readException('Failed to delete workspace', errorValue)
+          report(index, { uuid, ok: false, error })
+        }
+      }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(3, queuedIndexes.length) }, () => worker()))
+    return results
+  }
+
   async function undeleteWorkspace(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
+    const identityRevisionAtStart = identityRevision
+    const authRevisionAtStart = authSessionRevision()
     const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/undelete`, {
       method: 'POST',
@@ -1012,6 +1257,17 @@ export const useTenantStore = defineStore('tenant', () => {
     if (!resp.ok) {
       publishTargetError(targetOrgUUID, `failed to undelete workspace: ${resp.status}`, selectionRevisionAtStart)
       return false
+    }
+    // A stale restore completion must not clear or advance the cache authority
+    // belonging to a different account that has since replaced this identity.
+    if (
+      identityRevision === identityRevisionAtStart &&
+      authSessionRevision() === authRevisionAtStart
+    ) {
+      recordSuccessfulWorkspaceRestore(targetOrgUUID, wsUUID)
+      clearLocalWorkspaceDeletion(targetOrgUUID, wsUUID)
+    } else {
+      return true
     }
     await fetchWorkspaces(targetOrgUUID, { selectDefault: false })
     return true
@@ -1431,6 +1687,7 @@ export const useTenantStore = defineStore('tenant', () => {
     createWorkspace,
     patchWorkspaceDisplayName,
     deleteWorkspace,
+    deleteWorkspaces,
     undeleteWorkspace,
     // actions: membership
     listOrgMembers,
