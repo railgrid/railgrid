@@ -63,7 +63,7 @@ test('root publishes and cleans up the teleported toast clearance', () => {
 })
 
 test('settings renders selected-context tenant failures and clears navigation residue', () => {
-  assert.match(settings, /<InlineNotification\s+v-if="tenant\.error && organizationSettingsOrg"/)
+  assert.match(settings, /<InlineNotification\s+v-if="tenant\.error && tenant\.error !== workspaceListError && organizationSettingsOrg"/)
   assert.match(settings, /:title="activeSection === 'organizations' \? 'Organization operation failed' : 'Workspace operation failed'"/)
   assert.match(settings, /:message="tenant\.error"/)
   assert.match(settings, /announce="auto"/)

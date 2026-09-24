@@ -100,9 +100,10 @@ test('organization settings use the org MemberList contract and lifecycle action
   const orgSection = tenantSettingsPage.slice(orgSectionStart, orgSectionEnd)
   assert.match(orgSection, /<MemberList/)
   assert.match(orgSection, /:members="orgMembers"/)
-  assert.match(orgSection, /:loading="orgMembersLoading && !orgMembersHasSnapshot"/)
-  assert.match(orgSection, /orgMembersLoading && orgMembersHasSnapshot/)
-  assert.match(orgSection, /Showing the last successful result\./)
+  assert.match(orgSection, /:loading="orgMembersLoading"/)
+  assert.match(orgSection, /:loaded="orgMembersHasSnapshot"/)
+  assert.match(orgSection, /:error="orgMembersError"/)
+  assert.match(orgSection, /:stale="orgMembersHasSnapshot && !!orgMembersError"/)
   assert.match(orgSection, /:busy="orgMemberBusy"/)
   assert.match(orgSection, /scope-label="this organization"/)
   assert.match(orgSection, /:add="onAddOrgMember"/)
@@ -268,30 +269,47 @@ test('one-time token copy exposes manual recovery instead of swallowing failure'
   assert.match(tenantSettingsPage, /Close without copying/)
 })
 
-test('organization inventory keeps lifecycle rows visible at every width', () => {
+test('organization inventory uses the canonical queryable resource table', () => {
   const orgStart = tenantSettingsPage.indexOf('<template v-else-if="activeSection === \'organizations\'">')
   const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
-  assert.ok(inventoryStart > orgStart)
-  assert.match(tenantSettingsPage, /const WORKSPACE_SEARCH_THRESHOLD = 5/)
-  assert.match(tenantSettingsPage, /id="organization-workspaces-search"/)
-  assert.match(tenantSettingsPage, /aria-label="Organization workspaces"/)
-  assert.match(tenantSettingsPage, /<li v-for="workspace in filteredWorkspaces"/)
-  assert.doesNotMatch(tenantSettingsPage, /workspace-inspection-select|hidden max-h-96/)
-  assert.match(tenantSettingsPage, /All workspaces you can access in this organization, including those pending deletion/)
-  assert.match(tenantSettingsPage, /:disabled="!workspaceInventoryVerified \|\| !!restoringWorkspaceUUID"/)
+  const inventoryEnd = tenantSettingsPage.indexOf('</section>', inventoryStart)
+  assert.ok(inventoryStart > orgStart && inventoryEnd > inventoryStart)
+  const inventory = tenantSettingsPage.slice(inventoryStart, inventoryEnd)
+  assert.match(inventory, /<ResourceTable/)
+  assert.match(inventory, /:key="organizationSettingsOrg\.uuid"/)
+  assert.match(inventory, /:columns="workspaceColumns"/)
+  assert.match(inventory, /:rows="workspaceRows"/)
+  assert.match(inventory, /aria-label="Organization workspaces"/)
+  assert.match(inventory, /row-key="uuid"/)
+  assert.match(inventory, /:interactive="false"/)
+  assert.match(inventory, /searchable/)
+  assert.match(inventory, /:search-keys="\['name', 'uuid'\]"/)
+  assert.match(inventory, /:filters="workspaceFilters"/)
+  assert.match(inventory, /paginated/)
+  assert.match(inventory, /:loaded="workspaceListLoaded"/)
+  assert.match(inventory, /:loading="workspaceListLoading"/)
+  assert.match(inventory, /:error="workspaceListError"/)
+  assert.match(inventory, /:stale="workspaceListLoaded && !!workspaceListError"/)
+  assert.match(inventory, /retryable/)
+  assert.match(inventory, /@retry="reloadScopedWorkspaces\(tenant\.orgUUID\)"/)
+  assert.match(inventory, /All workspaces you can access in this organization, including those pending deletion/)
+  assert.match(inventory, /Current workspace/)
+  assert.doesNotMatch(inventory, /<ul|<li|<ResourceTableFilter|@row-click|Open workspace/)
+  assert.doesNotMatch(tenantSettingsPage, /WORKSPACE_SEARCH_THRESHOLD|workspaceSearch|filteredWorkspaces|workspaceLifecycleFilter|workspaceFilterResultAnnouncement/)
 })
 
-test('organization inventory includes deleting rows by default and filtering never changes context', () => {
-  assert.match(tenantSettingsPage, /const workspaceLifecycleFilter = ref<WorkspaceLifecycleFilter>\(''\)/)
+test('organization inventory filters the complete set without changing context and keeps guarded restore', () => {
+  assert.match(tenantSettingsPage, /const workspaceRows = computed\(\(\) => workspaces\.value\.map\(/)
+  assert.match(tenantSettingsPage, /name: workspace\.displayName \|\| workspace\.uuid/)
+  assert.match(tenantSettingsPage, /status: workspaceStatus\(workspace\)/)
   assert.match(tenantSettingsPage, /allLabel: 'All workspaces'/)
-  assert.match(tenantSettingsPage, /if \(filter === 'deleting'\) return !!workspace\.deletionRequestedAt/)
-  assert.match(tenantSettingsPage, /if \(filter === 'not-deleting'\) return !workspace\.deletionRequestedAt/)
-  assert.match(tenantSettingsPage, /<ResourceTableFilter[^>]*@update:model-value="setWorkspaceLifecycleFilter"/)
-  const start = tenantSettingsPage.indexOf('function setWorkspaceLifecycleFilter(value: string): void')
-  const end = tenantSettingsPage.indexOf('\n}\n\nfunction clearWorkspaceFilters', start)
-  const setter = tenantSettingsPage.slice(start, end)
-  assert.match(setter, /workspaceLifecycleFilter\.value = value/)
-  assert.doesNotMatch(setter, /router|selectWorkspace|selectedWorkspaceUUID/)
+  for (const status of ['Ready', 'Provisioning', 'Deleting']) {
+    assert.match(tenantSettingsPage, new RegExp(`value: '${status}', label: '${status}'`))
+  }
+  assert.match(tenantSettingsPage, /<ResourceTableActionButton\s+v-if="row\.deletionRequestedAt && row\.role === 'admin'"/)
+  assert.match(tenantSettingsPage, /:label="`Restore workspace \$\{String\(row\.name\)\}`"/)
+  assert.match(tenantSettingsPage, /:busy="restoringWorkspaceUUID === row\.uuid"/)
+  assert.match(tenantSettingsPage, /:disabled="!workspaceInventoryVerified \|\| !!restoringWorkspaceUUID"/)
   assert.match(tenantSettingsPage, /workspace\.role !== 'admin' \|\| !workspace\.deletionRequestedAt/)
   assert.match(tenantSettingsPage, /tenant\.undeleteWorkspace\(org, workspace\.uuid\)/)
 })
@@ -397,13 +415,14 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
   assert.match(tenantSettingsPage, /return `\$\{days\} \$\{days === 1 \? 'day' : 'days'\} until deletion\.`/)
   assert.match(tenantSettingsPage, /return 'Deletion timing unavailable\.'/)
 
-  const workspaceRowStart = tenantSettingsPage.indexOf('<li v-for="workspace in filteredWorkspaces"')
-  const workspaceRowEnd = tenantSettingsPage.indexOf('</li>', workspaceRowStart)
-  assert.ok(workspaceRowStart >= 0 && workspaceRowEnd > workspaceRowStart)
-  const workspaceRow = tenantSettingsPage.slice(workspaceRowStart, workspaceRowEnd)
-  assert.match(workspaceRow, /workspaceDeletionCountdown\(workspace\.deletionRequestedAt\)/)
-  assert.match(workspaceRow, /workspaceStatus\(workspace\)/)
-  assert.match(workspaceRow, /@click="restoreWorkspace\(workspace\)"/)
+  assert.match(tenantSettingsPage, /deletion: workspaceDeletionCountdown\(workspace\.deletionRequestedAt\)/)
+  const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
+  const inventoryEnd = tenantSettingsPage.indexOf('</section>', inventoryStart)
+  const inventory = tenantSettingsPage.slice(inventoryStart, inventoryEnd)
+  assert.match(inventory, /<template #deletion="\{ row \}">/)
+  assert.match(inventory, /\{\{ row\.deletion \}\}/)
+  assert.match(inventory, /<StatusBadge :status="String\(row\.status\)"/)
+  assert.match(inventory, /@click="restoreWorkspace\(row as unknown as WorkspaceRow\)"/)
 
   assert.match(tenantSettingsPage, /const deletionCountdownNow = ref\(Date\.now\(\)\)/)
   assert.match(tenantSettingsPage, /window\.setInterval\(\(\) => \{\s*deletionCountdownNow\.value = Date\.now\(\)\s*\}, WORKSPACE_COUNTDOWN_REFRESH_MS\)/s)
@@ -415,58 +434,77 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
   assert.match(cleanup, /window\.clearInterval\(deletionCountdownTimer\)/)
 })
 
-function assertSimpleResourceTable(source, { columns, rows, rowKey, loading, emptyText }) {
+function assertQueryableResourceTable(source, { columns, rows, rowKey, loading, loaded, error, emptyText }) {
   assert.equal((source.match(/<ResourceTable\b/g) ?? []).length, 1)
   assert.match(source, new RegExp(`:columns="${columns}"`))
   assert.match(source, new RegExp(`:rows="${rows}"`))
-  assert.match(source, /variant="simple"/)
+  assert.doesNotMatch(source, /variant="simple"/)
+  assert.match(source, /\bsearchable\b/)
+  assert.match(source, /\bpaginated\b/)
+  assert.match(source, /:search-keys=/)
   assert.match(source, /:interactive="false"/)
   assert.match(source, new RegExp(`row-key="${rowKey}"`))
   assert.match(source, new RegExp(`:loading="${loading}"`))
+  assert.match(source, new RegExp(`:loaded="${loaded}"`))
+  assert.match(source, new RegExp(`:error="${error}"`))
+  assert.match(source, /:stale=/)
+  assert.match(source, /\bretryable\b/)
+  assert.match(source, /@retry=/)
   assert.match(source, emptyText)
   assert.doesNotMatch(source, /<table\b|<ul\b|\bk-table\b/)
 }
 
-test('settings access lists use the canonical simple ResourceTable contract', () => {
+test('settings access lists use the canonical queryable ResourceTable contract', () => {
   assert.match(memberList, /import ResourceTable from ['"]@\/portalkit\/ResourceTable\.vue['"]$/m)
   assert.match(memberList, /import ResourceTableDeleteButton from ['"]@\/portalkit\/ResourceTableDeleteButton\.vue['"]$/m)
-  assertSimpleResourceTable(memberList, {
+  assertQueryableResourceTable(memberList, {
     columns: 'memberColumns',
     rows: 'memberRows',
     rowKey: 'user',
     loading: 'loading',
+    loaded: 'loaded',
+    error: 'error',
     emptyText: /:empty-text="memberEmptyText"/,
   })
   assert.match(memberList, /const memberRows = computed<Record<string, unknown>\[\]>\(\(\) =>\s*props\.members\.map\(/)
   assert.doesNotMatch(memberList, /v-if="loading"|v-else-if="members\.length/)
+  assert.match(memberList, /:filters="memberFilters"/)
+  assert.match(memberList, /const memberFilters[\s\S]*?key: 'role',[\s\S]*?label: 'Role'/)
 
   const appAccessStart = tenantSettingsPage.indexOf('<section v-if="showAppAccess && !selWs.deletionRequestedAt"')
   const appAccessEnd = tenantSettingsPage.indexOf('</section>', appAccessStart) + '</section>'.length
   assert.ok(appAccessStart >= 0 && appAccessEnd > appAccessStart)
   const appAccess = tenantSettingsPage.slice(appAccessStart, appAccessEnd)
-  assertSimpleResourceTable(appAccess, {
+  assertQueryableResourceTable(appAccess, {
     columns: 'appAccessColumns',
     rows: 'appAccessRows',
     rowKey: 'binding',
     loading: 'appAccessLoading',
+    loaded: 'appAccessHasSnapshot',
+    error: 'appAccessError',
     emptyText: /empty-text="No app access grants\./,
   })
   assert.match(tenantSettingsPage, /const appAccessRows = computed<Record<string, unknown>\[\]>\(\(\) =>\s*appAccessGrants\.value\.map\(/)
   assert.match(appAccess, /ResourceTableDeleteButton/)
   assert.doesNotMatch(appAccess, /v-if="appAccessLoading"|v-else-if="appAccessGrants\.length/)
 
-  const serviceAccountsStart = tenantSettingsPage.indexOf('<ResourceTable\n                  v-if="canEditWs"')
+  const serviceAccountsHeading = tenantSettingsPage.indexOf('<!-- Service accounts -->')
+  const serviceAccountsStart = tenantSettingsPage.indexOf('<ResourceTable', serviceAccountsHeading)
   const serviceAccountsEnd = tenantSettingsPage.indexOf('</ResourceTable>', serviceAccountsStart) + '</ResourceTable>'.length
   assert.ok(serviceAccountsStart >= 0 && serviceAccountsEnd > serviceAccountsStart)
   const serviceAccounts = tenantSettingsPage.slice(serviceAccountsStart, serviceAccountsEnd)
-  assertSimpleResourceTable(serviceAccounts, {
+  assertQueryableResourceTable(serviceAccounts, {
     columns: 'serviceAccountColumns',
     rows: 'serviceAccountRows',
     rowKey: 'uuid',
     loading: 'sasLoading',
+    loaded: 'sasHasSnapshot',
+    error: 'sasError',
     emptyText: /empty-text="No service accounts in this workspace\."/,
   })
   assert.match(tenantSettingsPage, /const serviceAccountRows = computed<Record<string, unknown>\[\]>\(\(\) =>\s*sas\.value\.map\(/)
+  assert.match(serviceAccounts, /:filters="serviceAccountFilters"/)
+  assert.match(tenantSettingsPage, /const serviceAccountFilters[\s\S]*?key: 'role',[\s\S]*?label: 'Role'/)
   assert.match(tenantSettingsPage, /import ResourceTableActionButton from ['"]@\/portalkit\/ResourceTableActionButton\.vue['"]$/m)
   const actionButtons = [...serviceAccounts.matchAll(/<ResourceTableActionButton\b[\s\S]*?\/>/g)].map(match => match[0])
   assert.equal(actionButtons.length, 2)
@@ -493,6 +531,40 @@ test('settings access lists use the canonical simple ResourceTable contract', ()
   assert.match(serviceAccounts, /saOperation\(String\(row\.uuid\)\) === 'delete'/)
   assert.match(serviceAccounts, /:disabled="isSABusy\(String\(row\.uuid\)\)"[\s\S]*?:busy="saOperation\(String\(row\.uuid\)\) === 'delete'"/)
   assert.doesNotMatch(serviceAccounts, /v-if="sasLoading"|v-else-if="sas\.length|<li\b/)
+})
+
+test('settings table reads delegate initial, stale, and retry states without duplicate banners', () => {
+  // A denied read clears the snapshot before cached admin roles update.
+  // Keep recovery visible without leaving the add/create form available.
+  assert.match(memberList, /v-if="!readonly && \(loaded !== false \|\| !error\)"/)
+  assert.match(tenantSettingsPage, /v-if="canEditWs && \(sasHasSnapshot \|\| !sasError\)"/)
+  for (const [rows, loading, loaded, error, key] of [
+    ['wsMembers', 'wsMembersLoading', 'wsMembersHasSnapshot', 'wsMembersError', ':key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"'],
+    ['orgMembers', 'orgMembersLoading', 'orgMembersHasSnapshot', 'orgMembersError', ':key="organizationTargetUUID ?? \'\'"'],
+  ]) {
+    const roster = [...tenantSettingsPage.matchAll(/<MemberList\b[\s\S]*?\/>/g)]
+      .map(([source]) => source)
+      .find(source => source.includes(`:members="${rows}"`))
+    assert.ok(roster, `missing ${rows} roster`)
+    assert.ok(roster.includes(key), `${rows} must reset controls when its authority changes`)
+    assert.ok(roster.includes(`:loading="${loading}"`))
+    assert.ok(roster.includes(`:loaded="${loaded}"`))
+    assert.ok(roster.includes(`:error="${error}"`))
+    assert.ok(roster.includes(`:stale="${loaded} && !!${error}"`))
+    assert.match(roster, /\bretryable\b/)
+    assert.match(roster, /@retry=/)
+    assert.doesNotMatch(roster, /v-if=/)
+  }
+  const accessTables = [...tenantSettingsPage.matchAll(/<ResourceTable\b[\s\S]*?>/g)]
+    .map(([source]) => source)
+    .filter(source => /:rows="(?:appAccessRows|serviceAccountRows)"/.test(source))
+  assert.equal(accessTables.length, 2)
+  for (const table of accessTables) {
+    assert.ok(table.includes(':key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"'))
+    assert.doesNotMatch(table, /v-if="(?:appAccess|sas)HasSnapshot/)
+  }
+  assert.doesNotMatch(tenantSettingsPage, /<div v-if="(?:orgMembers|wsMembers|appAccess|sas)(?:Error|Loading)/)
+  assert.doesNotMatch(tenantSettingsPage, /Refreshing (?:organization members|workspace members|app access grants|service accounts)…/)
 })
 
 test('Workspace danger zone is recoverable, admin-only, and grouped in the Workspace card', () => {
@@ -582,14 +654,15 @@ test('workspace list adoption follows the winning per-org load state', () => {
   assert.match(reload, /workspaceLoadStateByOrg\[orgUUID \?\? ''\] \?\? 'idle'\) !== 'loading'/)
 
   const adoptionStart = tenantSettingsPage.indexOf('// App bootstrap and the shell switcher')
-  const adoptionEnd = tenantSettingsPage.indexOf('\n)\n\nfunction setWorkspaceLifecycleFilter', adoptionStart)
+  const adoptionEnd = tenantSettingsPage.indexOf('\n)\n\n// Organization switching happens', adoptionStart)
   assert.ok(adoptionStart >= 0 && adoptionEnd > adoptionStart)
   const adoption = tenantSettingsPage.slice(adoptionStart, adoptionEnd)
   assert.match(adoption, /workspaceLoadStateByOrg\[tenant\.orgUUID\]/)
   assert.match(adoption, /loadState === 'ready' && scopedOrgUUID\.value === orgUUID && !workspaceListError\.value/)
   assert.match(adoption, /if \(loadState === 'error'\) \{[\s\S]*workspaceListLoading\.value = false/)
   assert.match(adoption, /scopedOrgUUID\.value = orgUUID[\s\S]*workspaceListLoading\.value = false/)
-  assert.match(tenantSettingsPage, /const workspaceListInitialLoading = computed\(\(\) => workspaceListLoading\.value && workspaces\.value\.length === 0\)/)
+  assert.match(tenantSettingsPage, /const workspaceListLoaded = computed\(\(\) => !!tenant\.orgUUID && scopedOrgUUID\.value === tenant\.orgUUID\)/)
+  assert.match(tenantSettingsPage, /const workspaceListInitialLoading = computed\(\(\) => workspaceListLoading\.value && !workspaceListLoaded\.value\)/)
   assert.doesNotMatch(tenantSettingsPage, /scopedOrgUUID\.value !== org \|\| workspaceListLoading\.value/)
 })
 
@@ -609,8 +682,8 @@ test('settings sections keep read failures local and expose independent retries'
     assert.match(source, new RegExp(`tenant\\.listReadError\\('${kind}'`))
     assert.match(source, /(?:request|requestGeneration) === .*Request/)
     assert.match(source, /finally \{[\s\S]*(?:request|requestGeneration) === .*Request/)
-    assert.match(tenantSettingsPage, new RegExp(`@click="${loader}(?:\\(\\))?"`))
-    assert.match(tenantSettingsPage, new RegExp(`${state}[\\s\\S]*?Retry`))
+    assert.match(tenantSettingsPage, new RegExp(`@retry="${loader}(?:\\(\\))?"`))
+    assert.match(tenantSettingsPage, new RegExp(`:error="${state}"`))
     assert.match(tenantSettingsPage, new RegExp(`Failed to load ${retryLabel.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}`))
   }
 
@@ -665,7 +738,7 @@ test('app access is always scoped to the inspected workspace', () => {
   const appAccess = tenantSettingsPage.slice(appAccessStart, appAccessEnd)
   assert.match(appAccess, /App access/)
   assert.match(appAccess, /:rows="appAccessRows"/)
-  assert.match(appAccess, /@click="reloadAppAccessGrants"/)
+  assert.match(appAccess, /@retry="reloadAppAccessGrants"/)
 })
 
 test('settings route names preserve the organizations section with trailing slashes', () => {

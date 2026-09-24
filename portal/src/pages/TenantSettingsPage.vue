@@ -34,10 +34,9 @@ import { confirmDialog } from '@/portalkit/confirm'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ResourceTableActionButton from '@/portalkit/ResourceTableActionButton.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
-import ResourceTableFilter from '@/portalkit/ResourceTableFilter.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
-import type { TableFilterDefinition, TableFilterOption } from '@/portalkit/table'
+import type { TableFilterDefinition } from '@/portalkit/table'
 import { toast } from '@/portalkit/toast'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import Tabs from '@/portalkit/Tabs.vue'
@@ -54,12 +53,8 @@ import {
   Pencil,
   Plus,
   RotateCcw,
-  RefreshCw,
-  Search,
-  ShieldCheck,
   Settings2,
   Trash2,
-  User as UserIcon,
   X,
 } from 'lucide-vue-next'
 
@@ -416,20 +411,24 @@ const selectedWorkspaceUUID = computed(() => selectedWorkspace.value?.uuid ?? nu
 const scopedOrgUUID = ref<string | null>(null)
 const workspaceListLoading = ref(false)
 const workspaceListError = ref<string | null>(null)
-const workspaceSearch = ref('')
-type WorkspaceLifecycleFilter = '' | 'not-deleting' | 'deleting'
-const workspaceLifecycleFilter = ref<WorkspaceLifecycleFilter>('')
-const workspaceLifecycleFilterDefinition: TableFilterDefinition = {
-  key: 'lifecycle',
+const workspaceColumns = [
+  { key: 'name', label: 'Name', primary: true },
+  { key: 'status', label: 'Status' },
+  { key: 'deletion', label: 'Deletion' },
+  { key: 'uuid', label: 'UUID' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
+]
+const workspaceFilters: TableFilterDefinition[] = [{
+  key: 'status',
   label: 'Lifecycle',
   allLabel: 'All workspaces',
-}
-const workspaceLifecycleFilterOptions: TableFilterOption[] = [
-  { value: 'not-deleting', label: 'Not deleting' },
-  { value: 'deleting', label: 'Deleting' },
-]
+  options: [
+    { value: 'Ready', label: 'Ready' },
+    { value: 'Provisioning', label: 'Provisioning' },
+    { value: 'Deleting', label: 'Deleting' },
+  ],
+}]
 let workspaceListRequest = 0
-const WORKSPACE_SEARCH_THRESHOLD = 5
 const WORKSPACE_GRACE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 const WORKSPACE_COUNTDOWN_REFRESH_MS = 60 * 1000
@@ -446,36 +445,16 @@ const workspaces = computed<WorkspaceRow[]>(() => {
   return (tenant.workspacesByOrg[org] ?? []).filter((workspace) => workspace.orgUUID === org)
 })
 
-const workspaceListInitialLoading = computed(() => workspaceListLoading.value && workspaces.value.length === 0)
-function workspaceMatchesLifecycleFilter(
-  workspace: WorkspaceRow,
-  filter: WorkspaceLifecycleFilter = workspaceLifecycleFilter.value,
-): boolean {
-  if (filter === 'deleting') return !!workspace.deletionRequestedAt
-  if (filter === 'not-deleting') return !workspace.deletionRequestedAt
-  return true
-}
-
-const lifecycleFilteredWorkspaces = computed(() =>
-  workspaces.value.filter((workspace) => workspaceMatchesLifecycleFilter(workspace)),
-)
-const showWorkspaceSearch = computed(() => lifecycleFilteredWorkspaces.value.length > WORKSPACE_SEARCH_THRESHOLD)
-const filteredWorkspaces = computed(() => {
-  const query = showWorkspaceSearch.value ? workspaceSearch.value.trim().toLocaleLowerCase() : ''
-  if (!query) return lifecycleFilteredWorkspaces.value
-  return lifecycleFilteredWorkspaces.value.filter((workspace) =>
-    `${workspace.displayName || ''} ${workspace.uuid}`.toLocaleLowerCase().includes(query),
-  )
-})
-const workspaceFilterResultAnnouncement = computed(() => {
-  const shown = filteredWorkspaces.value.length
-  const total = workspaces.value.length
-  return `${shown} of ${total} ${total === 1 ? 'workspace' : 'workspaces'} shown.`
-})
-
-watch(showWorkspaceSearch, (visible) => {
-  if (!visible) workspaceSearch.value = ''
-})
+// A successful empty read is a snapshot too. Keep it through retries and
+// transient failures; only an organization change invalidates its authority.
+const workspaceListLoaded = computed(() => !!tenant.orgUUID && scopedOrgUUID.value === tenant.orgUUID)
+const workspaceListInitialLoading = computed(() => workspaceListLoading.value && !workspaceListLoaded.value)
+const workspaceRows = computed(() => workspaces.value.map((workspace) => ({
+  ...workspace,
+  name: workspace.displayName || workspace.uuid,
+  status: workspaceStatus(workspace),
+  deletion: workspaceDeletionCountdown(workspace.deletionRequestedAt),
+})))
 
 const selectedWorkspace = computed<WorkspaceRow | null>(() => {
   if (tenant.workspaceMode !== 'workspace' || !tenant.workspaceUUID) return null
@@ -597,16 +576,6 @@ watch(
   },
 )
 
-function setWorkspaceLifecycleFilter(value: string): void {
-  if (value !== '' && value !== 'not-deleting' && value !== 'deleting') return
-  workspaceLifecycleFilter.value = value
-}
-
-function clearWorkspaceFilters(): void {
-  workspaceSearch.value = ''
-  setWorkspaceLifecycleFilter('')
-}
-
 // Organization switching happens in the standalone chooser or shell account
 // menu. Reset immediately, then reload the newly active organization's rows.
 watch(
@@ -667,14 +636,23 @@ const serviceAccountColumns = [
   { key: 'role', label: 'Role' },
   { key: 'createdAt', label: 'Created' },
   { key: 'lastTokenIssuedAt', label: 'Last token' },
+  { key: 'uuid', label: 'UUID' },
   { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
+
+const serviceAccountFilters: TableFilterDefinition[] = [{
+  key: 'role',
+  label: 'Role',
+  allLabel: 'All roles',
+  options: [
+    { value: 'member', label: 'Member' },
+    { value: 'admin', label: 'Admin' },
+  ],
+}]
 
 watch(
   () => tenant.orgUUID,
   () => {
-    workspaceSearch.value = ''
-    workspaceLifecycleFilter.value = ''
     restoringWorkspaceUUID.value = null
     dismissToken()
   },
@@ -1410,7 +1388,7 @@ function fmtDate(s?: string | null): string {
 
       <div class="mt-4">
         <InlineNotification
-          v-if="tenant.error && organizationSettingsOrg"
+          v-if="tenant.error && tenant.error !== workspaceListError && organizationSettingsOrg"
           class="mb-4"
           tone="error"
           :title="activeSection === 'organizations' ? 'Organization operation failed' : 'Workspace operation failed'"
@@ -1609,23 +1587,15 @@ function fmtDate(s?: string | null): string {
                     Workspace access management is unavailable while deletion is pending.
                   </div>
                   <template v-else>
-                    <div v-if="wsMembersError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
-                      <span class="flex min-w-0 items-start gap-2">
-                        <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-                        <span>{{ wsMembersHasSnapshot ? 'Showing the last successful result. ' : '' }}{{ wsMembersError }}</span>
-                      </span>
-                      <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" :disabled="wsMembersLoading" @click="reloadWsMembers">
-                        <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
-                        Retry
-                      </button>
-                    </div>
-                    <div v-if="wsMembersLoading && wsMembersHasSnapshot" class="mt-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-atomic="true">
-                      Refreshing workspace members…
-                    </div>
                     <MemberList
-                      v-if="wsMembersHasSnapshot || !wsMembersError"
+                      :key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"
                       :members="wsMembers"
-                      :loading="wsMembersLoading && !wsMembersHasSnapshot"
+                      :loading="wsMembersLoading"
+                      :loaded="wsMembersHasSnapshot"
+                      :error="wsMembersError"
+                      :stale="wsMembersHasSnapshot && !!wsMembersError"
+                      retryable
+                      @retry="reloadWsMembers"
                       :busy="wsMemberBusy"
                       scope-label="this workspace"
                       table-label="Workspace members"
@@ -1644,39 +1614,30 @@ function fmtDate(s?: string | null): string {
                     Create grants from the app's Share dialog; revoke them here. Workspace members need no grant.
                   </p>
 
-                  <div v-if="appAccessError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
-                    <span class="flex min-w-0 items-start gap-2">
-                      <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-                      <span>{{ appAccessHasSnapshot ? 'Showing the last successful result. ' : '' }}{{ appAccessError }}</span>
-                    </span>
-                    <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" :disabled="appAccessLoading" @click="reloadAppAccessGrants">
-                      <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
-                      Retry
-                    </button>
-                  </div>
-                  <div v-if="appAccessLoading && appAccessHasSnapshot" class="mb-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-atomic="true">
-                    Refreshing app access grants…
-                  </div>
                   <ResourceTable
-                    v-if="appAccessHasSnapshot || !appAccessError"
+                    :key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"
                     :columns="appAccessColumns"
                     :rows="appAccessRows"
                     aria-label="Published app access grants"
-                    variant="simple"
                     row-key="binding"
                     :interactive="false"
                     :loaded="appAccessHasSnapshot"
                     :loading="appAccessLoading"
+                    :error="appAccessError"
+                    :stale="appAccessHasSnapshot && !!appAccessError"
+                    retryable
+                    searchable
+                    search-placeholder="Search app access"
+                    :search-keys="['app', 'user']"
+                    paginated
+                    @retry="reloadAppAccessGrants"
                     empty-text="No app access grants. Public apps need none; private apps grant access per person."
                   >
                     <template #app="{ row }">
-                      <span class="font-mono text-[12px] text-text-secondary">{{ row.app }}</span>
+                      <span class="k-cell-mono">{{ row.app }}</span>
                     </template>
                     <template #user="{ row }">
-                      <div class="flex items-center gap-2">
-                        <UserIcon class="h-3.5 w-3.5 text-text-muted/70" :stroke-width="1.75" />
-                        <span class="font-mono text-[12px] text-text-secondary">{{ row.user }}</span>
-                      </div>
+                      <span class="k-cell-mono">{{ row.user }}</span>
                     </template>
                     <template #actions="{ row }">
                       <div class="flex justify-end">
@@ -1709,23 +1670,7 @@ function fmtDate(s?: string | null): string {
                   <span v-else>Only workspace admins can view and manage service accounts.</span>
                 </div>
 
-                <div v-if="sasError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
-                  <span class="flex min-w-0 items-start gap-2">
-                    <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-                    <span>{{ sasHasSnapshot ? 'Showing the last successful result. ' : '' }}{{ sasError }}</span>
-                  </span>
-                  <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" :disabled="sasLoading" @click="reloadSAs">
-                    <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
-                    Retry
-                  </button>
-                </div>
-
-                <div v-if="sasLoading && sasHasSnapshot" class="mb-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-atomic="true">
-                  Refreshing service accounts…
-                </div>
-
-                <template v-if="sasHasSnapshot || !sasError">
-                <div v-if="canEditWs" class="mb-4 flex flex-wrap items-center gap-2">
+                <div v-if="canEditWs && (sasHasSnapshot || !sasError)" class="mb-4 flex flex-wrap items-center gap-2">
                   <input
                     v-model="newSAName"
                     class="k-input min-w-[200px] w-auto flex-1 text-sm"
@@ -1754,37 +1699,33 @@ function fmtDate(s?: string | null): string {
                   :columns="serviceAccountColumns"
                   :rows="serviceAccountRows"
                   aria-label="Workspace service accounts"
-                  variant="simple"
+                  :key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"
                   row-key="uuid"
                   :interactive="false"
                   :loaded="sasHasSnapshot"
                   :loading="sasLoading"
+                  :error="sasError"
+                  :stale="sasHasSnapshot && !!sasError"
+                  retryable
+                  searchable
+                  search-placeholder="Search service accounts"
+                  :search-keys="['displayName', 'uuid']"
+                  :filters="serviceAccountFilters"
+                  paginated
+                  @retry="reloadSAs"
                   empty-text="No service accounts in this workspace."
                 >
-                  <template #displayName="{ row }">
-                    <div class="flex items-center gap-2">
-                      <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay/60">
-                        <ShieldCheck class="h-4 w-4 text-accent" :stroke-width="1.75" />
-                      </div>
-                      <div class="min-w-0">
-                        <div class="truncate text-sm text-text-primary">{{ row.displayName }}</div>
-                        <div class="font-mono text-[10px] text-text-muted">{{ row.uuid }}</div>
-                      </div>
-                    </div>
+                  <template #uuid="{ row }">
+                    <span class="k-cell-mono">{{ row.uuid }}</span>
                   </template>
                   <template #role="{ row }">
-                    <span class="k-badge k-badge--muted">
-                      <span class="k-badge__dot k-badge__dot--muted" aria-hidden="true" />
-                      {{ row.role }}
-                    </span>
+                    <span class="k-badge k-badge--muted">{{ row.role }}</span>
                   </template>
                   <template #createdAt="{ row }">
-                    <span class="text-[11px] text-text-muted">{{ fmtDate(String(row.createdAt ?? '')) }}</span>
+                    {{ fmtDate(String(row.createdAt ?? '')) }}
                   </template>
                   <template #lastTokenIssuedAt="{ row }">
-                    <span class="text-[11px] text-text-muted">
-                      {{ row.lastTokenIssuedAt ? fmtDate(String(row.lastTokenIssuedAt)) : '—' }}
-                    </span>
+                    {{ row.lastTokenIssuedAt ? fmtDate(String(row.lastTokenIssuedAt)) : '—' }}
                   </template>
                   <template #actions="{ row }">
                     <div class="flex flex-wrap items-center justify-end gap-1">
@@ -1815,8 +1756,7 @@ function fmtDate(s?: string | null): string {
                       />
                     </div>
                   </template>
-                  </ResourceTable>
-                </template>
+                </ResourceTable>
             </section>
 
           </template>
@@ -1973,43 +1913,55 @@ function fmtDate(s?: string | null): string {
               <h2 id="organization-workspaces-title" class="text-lg font-semibold text-text-primary">Workspaces</h2>
               <p class="mt-1 text-[12px] text-text-muted">All workspaces you can access in this organization, including those pending deletion.</p>
             </div>
-            <div v-if="workspaceListError" role="alert" class="flex items-start justify-between gap-3 text-sm text-danger">
-              <span>{{ workspaces.length ? `${workspaceListError} Showing the last successful result.` : workspaceListError }}</span>
-              <button type="button" class="k-btn k-btn--ghost shrink-0" :disabled="workspaceListLoading" @click="reloadScopedWorkspaces(tenant.orgUUID)">Retry</button>
-            </div>
-            <div v-if="workspaceListLoading" role="status" class="text-sm text-text-muted">{{ workspaces.length ? 'Refreshing workspaces…' : 'Loading workspaces…' }}</div>
-            <template v-if="!workspaceListInitialLoading && (workspaces.length || !workspaceListError)">
-              <div class="k-table__controls" role="search" aria-label="Filter workspaces">
-                <label v-if="showWorkspaceSearch" class="k-table__search">
-                  <span class="sr-only">Search workspaces</span>
-                  <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
-                  <input id="organization-workspaces-search" v-model="workspaceSearch" type="search" class="k-table__search-input" placeholder="Search workspaces" autocomplete="off" />
-                  <button v-if="workspaceSearch" type="button" class="k-table__search-clear" aria-label="Clear workspace search" @click="workspaceSearch = ''"><X :stroke-width="1.75" aria-hidden="true" /></button>
-                </label>
-                <ResourceTableFilter :definition="workspaceLifecycleFilterDefinition" :options="workspaceLifecycleFilterOptions" :model-value="workspaceLifecycleFilter" @update:model-value="setWorkspaceLifecycleFilter" />
-                <button v-if="workspaceLifecycleFilter || workspaceSearch" type="button" class="k-table__clear-filters" @click="clearWorkspaceFilters">Clear filters</button>
-                <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ workspaceFilterResultAnnouncement }}</span>
-              </div>
-              <ul class="divide-y divide-border-subtle" aria-label="Organization workspaces">
-                <li v-for="workspace in filteredWorkspaces" :key="workspace.uuid" class="flex flex-wrap items-center justify-between gap-3 py-3">
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <span class="break-words text-sm font-medium text-text-primary">{{ workspace.displayName || workspace.uuid }}</span>
-                      <StatusBadge :status="workspaceStatus(workspace)" :tone="workspaceStatus(workspace) === 'Ready' ? 'success' : workspaceStatus(workspace) === 'Deleting' ? 'danger' : 'warning'" />
-                      <span v-if="tenant.workspaceUUID === workspace.uuid" class="text-xs text-text-muted">Current workspace</span>
-                    </div>
-                    <p class="mt-1 break-all font-mono text-xs text-text-muted">{{ workspace.uuid }}</p>
-                    <p v-if="workspace.deletionRequestedAt" class="mt-1 text-xs text-text-muted">{{ workspaceDeletionCountdown(workspace.deletionRequestedAt) }}</p>
-                  </div>
-                  <button v-if="workspace.deletionRequestedAt && workspace.role === 'admin'" type="button" class="k-btn k-btn--ghost min-h-11" :aria-label="`Restore workspace ${workspace.displayName || workspace.uuid}`" :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID" @click="restoreWorkspace(workspace)">
-                    <Loader2 v-if="restoringWorkspaceUUID === workspace.uuid" class="h-4 w-4 animate-spin" aria-hidden="true" />
-                    <RotateCcw v-else class="h-4 w-4" aria-hidden="true" />
-                    Restore
-                  </button>
-                </li>
-                <li v-if="filteredWorkspaces.length === 0" class="py-5 text-sm text-text-muted">{{ workspaces.length ? 'No workspaces match these filters.' : 'No workspaces in this organization yet.' }}</li>
-              </ul>
-            </template>
+            <ResourceTable
+              :key="organizationSettingsOrg.uuid"
+              :columns="workspaceColumns"
+              :rows="workspaceRows"
+              aria-label="Organization workspaces"
+              row-key="uuid"
+              :interactive="false"
+              :loaded="workspaceListLoaded"
+              :loading="workspaceListLoading"
+              :error="workspaceListError"
+              :stale="workspaceListLoaded && !!workspaceListError"
+              retryable
+              searchable
+              search-placeholder="Search workspaces"
+              :search-keys="['name', 'uuid']"
+              :filters="workspaceFilters"
+              paginated
+              empty-text="No workspaces in this organization yet."
+              filter-empty-text="No workspaces match these filters."
+              search-empty-text="No workspaces match your search."
+              combined-filter-empty-text="No workspaces match your search and selected filters."
+              @retry="reloadScopedWorkspaces(tenant.orgUUID)"
+            >
+              <template #name="{ row }">
+                <span>{{ row.name }}</span>
+                <span v-if="tenant.workspaceUUID === row.uuid" class="k-badge ml-2">Current workspace</span>
+              </template>
+              <template #uuid="{ row }">
+                <span class="k-cell-mono">{{ row.uuid }}</span>
+              </template>
+              <template #status="{ row }">
+                <StatusBadge :status="String(row.status)" :tone="row.status === 'Ready' ? 'success' : row.status === 'Deleting' ? 'danger' : 'warning'" />
+              </template>
+              <template #deletion="{ row }">
+                <span v-if="row.deletion">{{ row.deletion }}</span>
+                <span v-else aria-label="Not scheduled for deletion">—</span>
+              </template>
+              <template #actions="{ row }">
+                <ResourceTableActionButton
+                  v-if="row.deletionRequestedAt && row.role === 'admin'"
+                  :icon="RotateCcw"
+                  :label="`Restore workspace ${String(row.name)}`"
+                  :busy-label="`Restoring workspace ${String(row.name)}…`"
+                  :busy="restoringWorkspaceUUID === row.uuid"
+                  :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID"
+                  @click="restoreWorkspace(row as unknown as WorkspaceRow)"
+                />
+              </template>
+            </ResourceTable>
           </section>
 
           <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-members-title" :aria-busy="orgMembersLoading">
@@ -2024,23 +1976,15 @@ function fmtDate(s?: string | null): string {
               Organization membership is unavailable while deletion is pending.
             </div>
             <template v-else>
-              <div v-if="orgMembersError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
-                <span class="flex min-w-0 items-start gap-2">
-                  <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-                  <span>{{ orgMembersHasSnapshot ? 'Showing the last successful result. ' : '' }}{{ orgMembersError }}</span>
-                </span>
-                <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" :disabled="orgMembersLoading" @click="reloadOrgMembers()">
-                  <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
-                  Retry
-                </button>
-              </div>
-              <div v-if="orgMembersLoading && orgMembersHasSnapshot" class="mt-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-atomic="true">
-                Refreshing organization members…
-              </div>
               <MemberList
-                v-if="orgMembersHasSnapshot || !orgMembersError"
+                :key="organizationTargetUUID ?? ''"
                 :members="orgMembers"
-                :loading="orgMembersLoading && !orgMembersHasSnapshot"
+                :loading="orgMembersLoading"
+                :loaded="orgMembersHasSnapshot"
+                :error="orgMembersError"
+                :stale="orgMembersHasSnapshot && !!orgMembersError"
+                retryable
+                @retry="reloadOrgMembers"
                 :busy="orgMemberBusy"
                 scope-label="this organization"
                 table-label="Organization members"

@@ -73,9 +73,14 @@ creation enters this flow with a preparation hint while bootstrap runs.
 Workspace settings show the active workspace directly, including its access and
 lifecycle controls. The profile menu's Settings action opens those settings.
 Organization settings contain the cross-workspace inventory in a card after the
-organization overview, including provisioning and deleting workspaces and
-recovery actions. Workspace switching stays in the picker; the inventory has no
-separate workspace inspection selection or open action. Explicit workspace settings
+organization overview, using the shared queryable ResourceTable for search,
+lifecycle filtering, pagination, and read states. It includes provisioning and
+deleting workspaces with shared row actions for recovery. Workspace switching stays
+in the picker; the inventory has no separate workspace inspection selection or open
+action. Member rosters, app access grants, and service accounts also use queryable
+ResourceTables with shared search, pagination, and loading/error/retry states.
+Member and service-account tables offer role filters; role editors remain native
+selects. Table state resets when its organization or workspace changes. Explicit workspace settings
 and resource links resolve the workspace encoded in their URL. The sidebar workspace menu
 shows and searches only the current organization’s workspaces. It does not load
 other organizations’ workspace lists. A quiet Change action beside the current organization name opens the

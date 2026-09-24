@@ -14,10 +14,17 @@ import type { MemberRow } from '@/stores/tenant'
 import { useUserSuggestions, type UserSuggestion } from '@/composables/useUserSuggestions'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
+import type { TableFilterDefinition } from '@/portalkit/table'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   members: MemberRow[]
   loading: boolean
+  // Omitted loaded preserves ResourceTable's loading-only contract for
+  // callers that do not track the first authoritative read separately.
+  loaded?: boolean | null
+  error?: string | null
+  stale?: boolean
+  retryable?: boolean
   // Per-user in-flight flags plus '__new__' for the add form; same shape the
   // page already tracks for its store calls.
   busy: Record<string, boolean>
@@ -36,11 +43,17 @@ const props = defineProps<{
   // whose writes would only 403 server-side; showing dead buttons and
   // letting the server reject them reads as a bug, not as permissions.
   readonly?: boolean
-}>()
+}>(), {
+  loaded: null,
+  error: null,
+  stale: false,
+  retryable: false,
+})
 
 const emit = defineEmits<{
   changeRole: [user: string, role: 'admin' | 'member']
   remove: [user: string]
+  retry: []
 }>()
 
 const newUser = ref('')
@@ -102,6 +115,16 @@ const memberColumns = computed(() => [
   ...(!props.readonly ? [{ key: 'actions', label: '', ariaLabel: 'Actions' }] : []),
 ])
 
+const memberFilters: TableFilterDefinition[] = [{
+  key: 'role',
+  label: 'Role',
+  allLabel: 'All roles',
+  options: [
+    { value: 'member', label: 'Member' },
+    { value: 'admin', label: 'Admin' },
+  ],
+}]
+
 // ResourceTable intentionally accepts record-shaped rows so it can remain a
 // reusable table for every provider. Copy the typed store rows at this
 // boundary; the parent still owns the canonical MemberRow values and all
@@ -150,7 +173,7 @@ async function submit() {
 
 <template>
   <div>
-    <div v-if="!readonly" class="flex flex-wrap items-center gap-2">
+    <div v-if="!readonly && (loaded !== false || !error)" class="flex flex-wrap items-center gap-2">
       <div class="relative min-w-[200px] flex-1">
         <input
           v-model="newUser"
@@ -220,11 +243,23 @@ async function submit() {
       :columns="memberColumns"
       :rows="memberRows"
       :aria-label="tableLabel"
-      variant="simple"
       row-key="user"
       :interactive="false"
       :loading="loading"
+      :loaded="loaded"
+      :error="error"
+      :stale="stale"
+      :retryable="retryable"
       :empty-text="memberEmptyText"
+      searchable
+      search-placeholder="Search members…"
+      :search-keys="['user', 'email', 'userDisplayName']"
+      :filters="memberFilters"
+      paginated
+      search-empty-text="No members match your search."
+      filter-empty-text="No members match this role."
+      combined-filter-empty-text="No members match your search and selected role."
+      @retry="emit('retry')"
     >
       <!-- Lead with the person (email, falling back to display name), keep
            the CR name as a small mono sublabel — it is what API calls and
