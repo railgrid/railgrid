@@ -17,13 +17,16 @@ limitations under the License.
 package restapi
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
@@ -122,7 +125,11 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 
 	orgUUID := uuid.NewString()
 	org := &tenancyv1alpha1.Organization{
-		ObjectMeta: metav1.ObjectMeta{Name: orgUUID},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        orgUUID,
+			Labels:      map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: user},
+			Annotations: map[string]string{tenancyv1alpha1.OrganizationBootstrapAnnotation: tenancyv1alpha1.OrganizationBootstrapVersion},
+		},
 		Spec: tenancyv1alpha1.OrganizationSpec{
 			DisplayName:          req.DisplayName,
 			Personal:             false,
@@ -136,32 +143,23 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Materialise the kcp Org workspace + the caller's Membership in it.
-	// Both are idempotent so we can run them inline without buffering.
-	if err := h.mgr.bootstrapper.EnsureOrgWorkspace(r.Context(), orgUUID); err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := h.mgr.bootstrapper.EnsureOrgMembership(r.Context(), orgUUID, user, tenancyv1alpha1.MembershipRoleAdmin); err != nil {
-		writeError(w, err)
-		return
-	}
-
-	// Update the caller's UMI.
-	if err := h.mgr.upsertUMIEntry(r.Context(), user, tenancyv1alpha1.MembershipIndexEntry{
-		OrgUUID:        orgUUID,
-		OrgDisplayName: req.DisplayName,
-		OrgCreatedAt:   created.CreationTimestamp,
-		OrgFirstAdmin:  user,
-		Role:           tenancyv1alpha1.MembershipRoleAdmin,
-		Personal:       false,
+	// The controller exclusively owns initial access writes. Waiting here is
+	// read-only: an overlapping POST must not regrant access after the
+	// controller has handed membership ownership over to normal management.
+	if err := wait.PollUntilContextTimeout(r.Context(), 200*time.Millisecond, 90*time.Second, true, func(ctx context.Context) (bool, error) {
+		latest, err := h.mgr.client.Organizations().Get(ctx, orgUUID, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		return apimeta.IsStatusConditionTrue(latest.Status.Conditions, tenancyv1alpha1.OrganizationConditionMembershipReady) &&
+			apimeta.IsStatusConditionTrue(latest.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced), nil
 	}); err != nil {
 		writeError(w, err)
 		return
 	}
 
 	view := projectOrg(created)
-	// The creator is seeded as the sole admin (Membership + UMI above).
+	// The controller has seeded the creator's org access.
 	view.Role = tenancyv1alpha1.MembershipRoleAdmin
 	writeJSON(w, http.StatusCreated, view)
 }

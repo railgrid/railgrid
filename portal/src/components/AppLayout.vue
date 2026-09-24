@@ -66,7 +66,7 @@ const showWorkspaceWizard = computed(() => {
   if (!tenantStore.workspaceSelectionHydrated) return false
   if (!list || list.some((workspace) => !workspace.deletionRequestedAt)) return false
   const path = routePath.value
-  if (path === '/settings' || path.startsWith('/settings/')) return false
+  if (path === '/workspaces' || path === '/settings' || path.startsWith('/settings/')) return false
   if (path === '/providers') return false
   if (path === '/organizations' || path.startsWith('/organizations/')) return false
   return true
@@ -78,7 +78,7 @@ const showWorkspaceWizard = computed(() => {
 // being hydrated; once the list arrives, readiness is authoritative.
 const showWorkspacePending = computed(() => {
   const path = routePath.value
-  if (path === '/settings' || path.startsWith('/settings/')) return false
+  if (path === '/workspaces' || path === '/settings' || path.startsWith('/settings/')) return false
   if (path === '/providers') return false
   if (path === '/organizations' || path.startsWith('/organizations/')) return false
   if (!auth.token) return false
@@ -105,7 +105,7 @@ watchEffect(() => {
   const list = tenantStore.workspacesByOrg[tenantStore.orgUUID]
   if (!list || list.length === 0) return
   const path = routePath.value
-  if (path === '/settings' || path.startsWith('/settings/') || path === '/providers' || path === '/organizations' || path.startsWith('/organizations/')) return
+  if (path === '/workspaces' || path === '/settings' || path.startsWith('/settings/') || path === '/providers' || path === '/organizations' || path.startsWith('/organizations/')) return
   void router.replace(scopePath('/settings/workspaces'))
 })
 

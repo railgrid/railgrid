@@ -386,13 +386,45 @@ POST /api/orgs
 1. Hub generates a UUID, creates an `Organization` CR with
    `metadata.name = <uuid>` and `spec.displayName = "ACME Corp"`. No
    "slug" or `name` field is taken from the request.
-2. Org controller creates kcp `Workspace` `root:railgrid:orgs:{uuid}` of
-   type `organization`. The initializer adds the caller as
-   `Membership{scope: org, role: admin}`.
-3. Index controller appends a `MembershipIndexEntry` to the caller's
-   `UserMembershipIndex`.
-4. Returns 201 with `{ "uuid": "...", "displayName": "...",
-   "workspacePath": "root:railgrid:orgs:..." }`.
+2. Both this handler and personal-org onboarding record the creator in
+   `metadata.labels["tenants.railgrid.ai/created-by"]` and request the common
+   lifecycle with `metadata.annotations["tenants.railgrid.ai/bootstrap"] = "v1"`.
+   The Organization controller allocates and persists `status.defaultWorkspace`
+   before provisioning. No workspace bootstrap configuration is exposed in spec.
+3. The controller ensures the kcp organization workspace at
+   `root:railgrid:tenants:{uuid}`, the caller's org-admin Membership, and
+   their organization entry in `UserMembershipIndex`. The REST handler
+   waits for durable org access readiness, then returns 201; it performs
+   no competing membership writes.
+4. The same Organization controller provisions a workspace named **default**
+   for personal and non-personal organizations:
+   child workspace, display name, core APIBinding, creator admin RBAC,
+   default MCPServer, and workspace membership-index entry. Provisioning is
+   asynchronous; organization conditions report progress and failures.
+5. Retries and hub restarts reuse the persisted workspace UUID. The controller
+   records `InitialWorkspaceAccessInitialized=True` after initial membership,
+   workspace-admin access and index setup succeed, and permanently stops those
+   access writes. Initial workspace RBAC includes all current organization admins,
+   including admins added while child creation was retrying. Membership changes and removals return a retryable conflict until
+   this handoff; new non-creator members may still be added. Afterward membership
+   changes remain authoritative even if MCP setup retries.
+   Once access is handed off, shared-org provisioning can finish even if the
+   original creator leaves and deletes their account.
+   Organization controllers are leader-elected so concurrent replicas cannot
+   replay old access setup after handoff.
+6. `InitialWorkspaceInitialized=True` records full bootstrap completion. Until
+   then, list and detail responses withhold the initial workspace's cluster
+   target so the portal continues showing provisioning. Organization REST views
+   also expose `initialWorkspacePending`, allowing the chooser to keep checking
+   while the initial child has not appeared, regardless of its entry URL. After completion the
+   controller stops: renaming/deleting this workspace or changing memberships
+   does not recreate it or restore the creator's permissions. Additional orgs do
+   not overwrite the user's personal-org/default-workspace/default-cluster
+   fields. Existing shared orgs without the bootstrap marker are left unchanged.
+   Existing Ready personal orgs adopt their User's workspace reference and mark
+   completion without recreating resources or granting access. The upgrade
+   migrates the earlier branch's `spec.initialWorkspace` records before changing
+   schemas, retaining pending UUIDs and completion conditions.
 
 ### Create a Workspace inside an Org
 
@@ -683,7 +715,13 @@ through ClusterRoles in the workspace).
 Bootstrap creates one Organization per User at User creation, with
 `spec.personal: true` and `spec.displayName` defaulting to
 `"{username}'s personal"` (editable). The user is the sole admin. The
-User CR gains:
+User reconciler requests the personal Organization and mirrors its workspace
+reference and cluster target onto the User. Provisioning, access handoff, and
+completion belong to the same Organization controller used for every new org.
+Identity-related RBAC repair is separate from bootstrap and follows current
+memberships when a User gains an RBAC identity.
+
+The User CR gains:
 
 ```go
 type UserSpec struct {

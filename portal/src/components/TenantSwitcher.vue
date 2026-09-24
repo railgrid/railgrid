@@ -58,7 +58,7 @@ watch(
 
 function onOrgChange(e: Event) {
   const value = (e.target as HTMLSelectElement).value
-  if (value) void router.push(`/${value}/settings/workspaces`)
+  if (value) void router.push(`/${value}/workspaces`)
 }
 
 function onWorkspaceChange(e: Event) {

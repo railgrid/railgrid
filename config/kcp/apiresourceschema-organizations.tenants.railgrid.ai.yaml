@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260904-9ab06b67.organizations.tenants.railgrid.ai
+  name: v260921-4d1aa6e55.organizations.tenants.railgrid.ai
 spec:
   group: tenants.railgrid.ai
   names:
@@ -178,6 +178,13 @@ spec:
               x-kubernetes-list-map-keys:
               - type
               x-kubernetes-list-type: map
+            defaultWorkspace:
+              description: |-
+                DefaultWorkspace is the UUID allocated for this organization's initial
+                workspace. The bootstrap controller persists it before provisioning and
+                retains it after completion, even if that workspace is later deleted.
+              format: uuid
+              type: string
             deletionRequestedAt:
               description: |-
                 DeletionRequestedAt records when a soft-delete was initiated for

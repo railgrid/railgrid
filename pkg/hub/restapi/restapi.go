@@ -47,6 +47,7 @@ import (
 
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -780,14 +781,16 @@ func (m *Manager) resolveOrInviteUser(ctx context.Context, identifier string, in
 
 // OrgView is the REST projection of an Organization.
 type OrgView struct {
-	UUID                 string     `json:"uuid"`
-	DisplayName          string     `json:"displayName"`
-	Personal             bool       `json:"personal"`
-	WorkspaceCreation    string     `json:"workspaceCreation"`
-	CatalogEntryCreation string     `json:"catalogEntryCreation"`
-	WorkspaceQuota       int32      `json:"workspaceQuota,omitempty"`
-	CreatedAt            time.Time  `json:"createdAt"`
-	DeletionRequestedAt  *time.Time `json:"deletionRequestedAt,omitempty"`
+	// InitialWorkspacePending distinguishes initial provisioning from an empty org.
+	InitialWorkspacePending bool       `json:"initialWorkspacePending,omitempty"`
+	UUID                    string     `json:"uuid"`
+	DisplayName             string     `json:"displayName"`
+	Personal                bool       `json:"personal"`
+	WorkspaceCreation       string     `json:"workspaceCreation"`
+	CatalogEntryCreation    string     `json:"catalogEntryCreation"`
+	WorkspaceQuota          int32      `json:"workspaceQuota,omitempty"`
+	CreatedAt               time.Time  `json:"createdAt"`
+	DeletionRequestedAt     *time.Time `json:"deletionRequestedAt,omitempty"`
 	// Role is the CALLER's org-scope role ("admin" | "member") — what the
 	// tenant middleware will resolve for org-scope requests. The portal
 	// uses it to hide admin-only controls (member management, rename,
@@ -796,14 +799,18 @@ type OrgView struct {
 }
 
 func projectOrg(o *tenancyv1alpha1.Organization) OrgView {
+	managed := o.Spec.Personal || o.Annotations[tenancyv1alpha1.OrganizationBootstrapAnnotation] == tenancyv1alpha1.OrganizationBootstrapVersion
+	legacyReady := o.Spec.Personal && o.Annotations[tenancyv1alpha1.OrganizationBootstrapAnnotation] == "" && apimeta.IsStatusConditionTrue(o.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady)
+	pending := managed && !legacyReady && o.Status.DeletionRequestedAt == nil && o.DeletionTimestamp.IsZero() && !apimeta.IsStatusConditionTrue(o.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized)
 	out := OrgView{
-		UUID:                 o.Name,
-		DisplayName:          o.Spec.DisplayName,
-		Personal:             o.Spec.Personal,
-		WorkspaceCreation:    o.Spec.WorkspaceCreation,
-		CatalogEntryCreation: o.Spec.CatalogEntryCreation,
-		WorkspaceQuota:       o.Spec.WorkspaceQuota,
-		CreatedAt:            o.CreationTimestamp.Time,
+		InitialWorkspacePending: pending,
+		UUID:                    o.Name,
+		DisplayName:             o.Spec.DisplayName,
+		Personal:                o.Spec.Personal,
+		WorkspaceCreation:       o.Spec.WorkspaceCreation,
+		CatalogEntryCreation:    o.Spec.CatalogEntryCreation,
+		WorkspaceQuota:          o.Spec.WorkspaceQuota,
+		CreatedAt:               o.CreationTimestamp.Time,
 	}
 	if o.Status.DeletionRequestedAt != nil {
 		t := o.Status.DeletionRequestedAt.Time

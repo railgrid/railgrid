@@ -14,38 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package organization implements the bootstrap controller that gives every
-// User a personal Organization on creation (per docs/organizations.md §Personal
-// Org). It reconciles two kinds in root:railgrid:users:
-//
-//   - User: when a User has no status.personalOrg, the controller creates a
-//     personal Organization for them and patches status.personalOrg with the
-//     new UUID. Idempotent: re-running on the same User is a no-op once
-//     status.personalOrg is set.
-//
-//   - Organization: ensures status.workspacePath is set to the canonical
-//     `root:railgrid:orgs:{metadata.name}` once and only once. The actual kcp
-//     Workspace at that path is NOT created by this PR — that lands in PR #2
-//     when the `organization` WorkspaceType is registered. Until then the
-//     controller leaves a WorkspaceReady=False condition with reason
-//     AwaitingWorkspaceType so observers know the Organization is half-baked
-//     by design.
-//
-// Scope as of PR #4:
-//   - User → Organization bootstrap (PR #1).
-//   - kcp Workspace creation at root:railgrid:orgs:{uuid} of type
-//     `organization`, idempotent + self-healing per O-11 (PR #2).
-//   - Admin Membership write inside the Org workspace + UserMembershipIndex
-//     entry sync (PR #4). The reconciler is now a four-step state
-//     machine: WorkspaceReady → MembershipReady → IndexSynced → Ready.
-//
-// NOT yet:
-//   - Full multi-cluster Membership controller that watches user-added
-//     Memberships and reflects them in the index. PR #4 handles the
-//     personal-Org bootstrap path inline; manual Org / Workspace
-//     membership management lands with the portal REST surface.
-//   - User-facing RBAC inside the Org workspace (Org workspaces are
-//     hub-mediated only per O-10; no per-User kubeconfig is ever issued).
+// Package organization gives every new organization the same bootstrap lifecycle.
+// The User reconciler requests a personal organization and mirrors its references;
+// the Organization reconciler provisions both personal and additional orgs, their
+// default workspace, API binding, administrator access, MCP server, and index.
+// Access handoff and completion are durable and prevent subsequent grant replay
+// or workspace recreation. Delayed identity access repair follows current
+// memberships separately from organization provisioning.
 package organization
 
 import (
@@ -55,6 +30,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -69,7 +45,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
-	"github.com/railgrid/railgrid/pkg/hub/quota"
 )
 
 const (
@@ -83,15 +58,14 @@ const (
 
 // WorkspaceProvisioner is the slice of the kcp Bootstrapper that this
 // controller needs to materialize Organization workspaces, the default
-// child Workspace inside each personal Org, and the two scope-flavored
-// Memberships inside them. Pulled out as an interface so unit tests
+// child Workspace inside each new Org, and membership/access setup. Pulled out as an interface so unit tests
 // can use a fake (see controller_test.go) without standing up an
 // embedded kcp.
 //
 // Implemented by *pkg/hub/kcp.Bootstrapper.
 type WorkspaceProvisioner interface {
 	// EnsureOrgWorkspace materializes the kcp Workspace at
-	// root:railgrid:orgs:{orgUUID}. Idempotent (per O-11).
+	// root:railgrid:tenants:{orgUUID}. Idempotent (per O-11).
 	EnsureOrgWorkspace(ctx context.Context, orgUUID string) error
 
 	// EnsureOrgMembership creates an org-scope Membership CR inside the
@@ -99,10 +73,13 @@ type WorkspaceProvisioner interface {
 	// Idempotent.
 	EnsureOrgMembership(ctx context.Context, orgUUID, userName, role string) error
 
+	// ListOrgMembershipRoles reads current organization membership authority.
+	// Initial workspace access includes every current org administrator.
+	ListOrgMembershipRoles(ctx context.Context, orgUUID string) (map[string]string, error)
+
 	// EnsureChildWorkspace materializes the kcp Workspace at
-	// root:railgrid:orgs:{orgUUID}:{wsUUID} of type `workspace`. Used to
-	// create the user's default team Workspace inside their personal
-	// Org so the portal can pin a default X-Railgrid-Workspace header.
+	// root:railgrid:tenants:{orgUUID}:{wsUUID} of type `workspace`. Used to
+	// create the initial team Workspace inside either organization kind.
 	// Idempotent (per O-11).
 	EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
 
@@ -136,49 +113,54 @@ type WorkspaceProvisioner interface {
 	EnsureChildWorkspaceDefaultMCPServer(ctx context.Context, orgUUID, wsUUID string) error
 
 	// GetChildWorkspaceClusterName returns the kcp logical-cluster
-	// short hash for the child team Workspace. Used by Step J to patch
+	// short hash for the child team Workspace. Used by User reconciliation to patch
 	// User.spec.DefaultCluster with the hash form (which kubectl /
 	// /clusters/{hash} address by) rather than the full path.
 	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
 }
 
-// Reconciler bootstraps personal Organizations for new Users and reconciles
-// Organization status. See package doc for scope.
+// Reconciler requests personal organizations and maintains User references.
+// The Organization lifecycle controller embeds its shared clients and helpers.
 type Reconciler struct {
 	client      client.Client
+	apiReader   client.Reader
 	provisioner WorkspaceProvisioner
 }
 
-// SetupWithManager registers the User and Organization watches with mgr.
-// provisioner is invoked from the status-reconcile step to materialize the
-// kcp Workspace at root:railgrid:orgs:{uuid}. Pass nil only for tests that
-// don't exercise the workspace-creation path.
-//
-// The controller is keyed on User (the trigger for personal-Org creation)
-// and additionally watches Organization so existing Organizations whose
-// status is stale (missing workspacePath, missing conditions, or whose
-// workspace creation previously failed) get reconciled too. Both kinds map
-// to the User key — for User watches the caller's name; for Organization
-// watches, the user identified by status.personalOrg back-reference.
+// SetupWithManager registers a User reference controller and a single
+// Organization lifecycle controller. Organization events refresh their personal
+// owner's references; creator User events resume pending organization bootstrap.
+// All provisioning is scoped by the Organization key, for both organization kinds.
 func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) error {
 	r := &Reconciler{
 		client:      mgr.GetClient(),
+		apiReader:   mgr.GetAPIReader(),
 		provisioner: provisioner,
 	}
 	klog.Info("Registering organization bootstrap controller")
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &tenancyv1alpha1.Organization{}, organizationCreatorIndex, organizationCreator); err != nil {
+		return fmt.Errorf("indexing initial workspace creators: %w", err)
+	}
 	// One-time backfill for the catalogEntryCreation default flip; see
 	// catalog_entry_creation_migration.go.
 	if err := mgr.Add(catalogEntryCreationBackfill(mgr)); err != nil {
 		return fmt.Errorf("registering catalogEntryCreation backfill: %w", err)
 	}
-	return builder.ControllerManagedBy(mgr).
+	if err := builder.ControllerManagedBy(mgr).
 		Named(controllerName).
 		For(&tenancyv1alpha1.User{}).
 		Watches(
 			&tenancyv1alpha1.Organization{},
 			handler.EnqueueRequestsFromMapFunc(r.mapOrganizationToUser),
 		).
-		Complete(r)
+		Complete(r); err != nil {
+		return err
+	}
+	return builder.ControllerManagedBy(mgr).
+		Named("organization-lifecycle").
+		For(&tenancyv1alpha1.Organization{}).
+		Watches(&tenancyv1alpha1.User{}, handler.EnqueueRequestsFromMapFunc(r.mapUserToOrganizations)).
+		Complete(&organizationReconciler{Reconciler: r})
 }
 
 // NewManager constructs a controller-runtime manager bound to a single
@@ -188,6 +170,11 @@ func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) err
 func NewManager(cfg *rest.Config, scheme *runtime.Scheme) (manager.Manager, error) {
 	return manager.New(cfg, manager.Options{
 		Scheme: scheme,
+		// Serialize access initialization across hub replicas. A stale in-flight
+		// writer must not replay grants after another replica hands access off.
+		LeaderElection:          true,
+		LeaderElectionID:        "railgrid-organization-bootstrap",
+		LeaderElectionNamespace: "default",
 		Metrics: server.Options{
 			// Hub serves its own /metrics; disable controller-runtime's.
 			BindAddress: "0",
@@ -198,20 +185,28 @@ func NewManager(cfg *rest.Config, scheme *runtime.Scheme) (manager.Manager, erro
 	})
 }
 
-// Reconcile drives both flows: User → Organization bootstrap, and
-// Organization status backfill. Request.Name is the User CR name; mapping
-// from Organization watches uses status.personalOrg to find the User.
+// Reconcile requests a personal Organization and mirrors its workspace references.
+// Provisioning belongs exclusively to organizationReconciler. Identity backfill
+// handles delayed first-login identities using current membership authority.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := klog.FromContext(ctx).WithValues("user", req.Name)
 
 	var user tenancyv1alpha1.User
-	if err := r.client.Get(ctx, req.NamespacedName, &user); err != nil {
+	if err := r.reader().Get(ctx, req.NamespacedName, &user); err != nil {
 		if apierrors.IsNotFound(err) {
 			// User deleted. Cascade of the personal Org is owned by the
 			// soft-delete reconciler (PR #8) — nothing for us to do here.
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("getting User: %w", err)
+	}
+
+	if user.Status.DeletionRequestedAt != nil || !user.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	if err := r.reconcileIdentityAccess(ctx, &user); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Step 1: ensure a personal Organization exists for this User. Idempotent:
@@ -243,32 +238,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		user = *userCopy
 	}
 
-	// Step 2: ensure a stable DefaultWorkspace UUID is recorded on the
-	// User before the organization status reconcile uses it to materialize
-	// the child team workspace. Storing the UUID before we attempt the
-	// kcp Workspace create keeps the operation idempotent on retry — a
-	// crash between status patch and workspace create simply re-attempts
-	// the same UUID on the next reconcile.
-	if user.Status.DefaultWorkspace == "" {
-		wsUUID := uuid.NewString()
-		userCopy := user.DeepCopy()
-		userCopy.Status.DefaultWorkspace = wsUUID
-		if err := r.client.Status().Update(ctx, userCopy); err != nil {
-			if apierrors.IsConflict(err) {
-				return ctrl.Result{Requeue: true}, nil
-			}
-			return ctrl.Result{}, fmt.Errorf("updating User.status.defaultWorkspace: %w", err)
-		}
-		logger.Info("Recorded default Workspace UUID", "workspace", wsUUID)
-		user = *userCopy
+	// Organization lifecycle owns provisioning and its workspace identity.
+	var org tenancyv1alpha1.Organization
+	if err := r.reader().Get(ctx, types.NamespacedName{Name: user.Status.PersonalOrg}, &org); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
-	// Step 3: reconcile the personal Organization's status (workspacePath +
-	// conditions, kcp workspace, admin Membership, default child Workspace,
-	// workspace-scope Membership, UserMembershipIndex entries). Runs on
-	// every reconcile so manual edits to status are healed.
-	if err := r.reconcileOrganizationStatus(ctx, &user); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconciling Organization status: %w", err)
+	if org.Status.DeletionRequestedAt != nil || !org.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+	if org.Status.DefaultWorkspace != "" && user.Status.DefaultWorkspace != org.Status.DefaultWorkspace {
+		user.Status.DefaultWorkspace = org.Status.DefaultWorkspace
+		if err := r.client.Status().Update(ctx, &user); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	// Keep legacy/default API addressing a reference operation, not a grant.
+	if org.Status.DefaultWorkspace != "" && r.provisioner != nil && apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized) {
+		cluster, err := r.provisioner.GetChildWorkspaceClusterName(ctx, org.Name, org.Status.DefaultWorkspace)
+		if err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+		if user.Spec.DefaultCluster != cluster {
+			user.Spec.DefaultCluster = cluster
+			if err := r.client.Update(ctx, &user); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -285,7 +280,7 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 	// Look for an existing personal Org owned by this User (in case a
 	// previous reconcile created the CR but failed to update status).
 	var existing tenancyv1alpha1.OrganizationList
-	if err := r.client.List(ctx, &existing, client.MatchingLabels{
+	if err := r.reader().List(ctx, &existing, client.MatchingLabels{
 		labelPersonalOwner: user.Name,
 	}); err != nil {
 		return "", false, fmt.Errorf("listing existing Organizations: %w", err)
@@ -302,16 +297,12 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 
 	org := &tenancyv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: orgUUID,
+			Name:        orgUUID,
+			Annotations: map[string]string{tenancyv1alpha1.OrganizationBootstrapAnnotation: tenancyv1alpha1.OrganizationBootstrapVersion},
 			Labels: map[string]string{
 				labelPersonalOwner: user.Name,
-				// quota.LabelCreatedBy lets roadmap step 7's Org quota check
-				// (CheckOrgQuota) count Orgs by creator. Personal Orgs
-				// carry spec.personal=true and are filtered out at the
-				// Counter level, so labelling them here keeps the data
-				// model consistent across personal and non-personal Orgs
-				// without affecting the count.
-				quota.LabelCreatedBy: user.Name,
+				// Creator metadata is shared with REST requests and quota accounting.
+				tenancyv1alpha1.OrganizationCreatorLabel: user.Name,
 			},
 		},
 		Spec: tenancyv1alpha1.OrganizationSpec{
@@ -337,65 +328,11 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 	return orgUUID, false, nil
 }
 
-// reconcileOrganizationStatus is the six-step state machine for a
-// personal Organization:
-//
-//	A. Workspace path        — record the canonical root:railgrid:orgs:{uuid}
-//	                           in status.workspacePath.
-//	B. EnsureOrgWorkspace    — materialize the kcp Workspace.
-//	                           Sets WorkspaceReady condition.
-//	C. EnsureOrgMembership   — create a Membership{user, scope:org,
-//	                           role:admin} CR inside the Org workspace
-//	                           so the user is the Org's first admin.
-//	                           Sets MembershipReady condition.
-//	E. EnsureChildWorkspace  — materialize the default child team
-//	                           Workspace at root:railgrid:orgs:{org}:{ws}
-//	                           so the portal can pin a default
-//	                           X-Railgrid-Workspace header on first login.
-//	                           Sets DefaultWorkspaceReady condition.
-//	F. EnsureWorkspaceMembership — create a Membership{user,
-//	                           scope:workspace, role:admin} inside the
-//	                           default child Workspace so the user can
-//	                           reach it immediately. Sets
-//	                           DefaultWorkspaceMembershipReady condition.
-//	D. Sync UserMembershipIndex — reconcile the user's index entries
-//	                           (one org-scope + one workspace-scope) so
-//	                           the portal switcher can render both
-//	                           rows. Sets IndexSynced condition.
-//	─────
-//	Aggregate Ready=True when A+B+C+E+F+D all succeed.
-//
-// Per O-11 every step is idempotent + self-healing. A failure at any step
-// leaves the corresponding condition False with a human-readable Reason
-// and Message; the next reconcile retries from that step. Subsequent
-// steps are skipped when an earlier step has not yet succeeded — for
-// example, no child Workspace is attempted before the parent Org
-// workspace exists; no workspace-scope Membership before the child
-// workspace exists; no index sync before both Memberships are written.
-func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tenancyv1alpha1.User) error {
-	orgName := user.Status.PersonalOrg
-	logger := klog.FromContext(ctx).WithValues("organization", orgName)
-
-	var org tenancyv1alpha1.Organization
-	if err := r.client.Get(ctx, types.NamespacedName{Name: orgName}, &org); err != nil {
-		if apierrors.IsNotFound(err) {
-			// The User references an Organization that no longer exists.
-			// Soft-delete cascade owns the User-side cleanup (PR #8); we
-			// don't repair here to avoid masking observer-visible state.
-			return nil
-		}
-		return fmt.Errorf("getting Organization %q: %w", orgName, err)
-	}
-
-	// An Organization in soft-delete is owned exclusively by the
-	// soft-delete reconciler (roadmap step 8). The bootstrap state
-	// machine would otherwise re-heal the same resources the cascade
-	// is tearing down, fighting it. Step out and let the soft-delete
-	// controller drive.
-	if org.Status.DeletionRequestedAt != nil {
-		return nil
-	}
-
+// reconcileBootstrap is shared by personal and additional organization creation.
+// Both organization kinds use identical one-time provisioning and access handoff.
+func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alpha1.User, org *tenancyv1alpha1.Organization, wsUUID string) error {
+	logger := klog.FromContext(ctx).WithValues("organization", org.Name)
+	accessInitialized := (apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized) || apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized))
 	desiredPath := orgWorkspaceParent + ":" + org.Name
 
 	// Step A: status.workspacePath.
@@ -406,7 +343,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	}
 
 	// Step B: kcp Workspace.
-	wsCond, workspaceOK := r.reconcileWorkspace(ctx, &org, desiredPath, logger)
+	wsCond, workspaceOK := r.reconcileWorkspace(ctx, org, desiredPath, logger)
 	if setCondition(&org.Status.Conditions, wsCond, org.Generation) {
 		changed = true
 	}
@@ -415,6 +352,9 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	var memCond metav1.Condition
 	membershipOK := false
 	switch {
+	case accessInitialized:
+		membershipOK = true
+		memCond = metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionMembershipReady, Status: metav1.ConditionTrue, Reason: reasonMembershipReady, Message: "Initial membership established; subsequent changes are managed through membership operations."}
 	case !workspaceOK:
 		memCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionMembershipReady,
@@ -452,9 +392,27 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		changed = true
 	}
 
+	// Publish org access before slow child provisioning. The create endpoint
+	// waits for this durable checkpoint, while membership mutations remain
+	// gated until the separate access handoff below.
+	if !accessInitialized && membershipOK &&
+		!apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced) {
+		if err := r.syncUserMembershipIndex(ctx, user, org, ""); err != nil {
+			return err
+		}
+		setCondition(&org.Status.Conditions, metav1.Condition{
+			Type:   tenancyv1alpha1.OrganizationConditionIndexSynced,
+			Status: metav1.ConditionTrue, Reason: reasonIndexSynced,
+			Message: "Initial organization membership index established; workspace provisioning is pending.",
+		}, org.Generation)
+		if err := r.client.Status().Update(ctx, org); err != nil {
+			return fmt.Errorf("publishing initial organization access: %w", err)
+		}
+		changed = false
+	}
+
 	// Step E: default child Workspace (only attempt after B succeeded
-	// and user.Status.DefaultWorkspace has a stable UUID).
-	wsUUID := user.Status.DefaultWorkspace
+	// and Organization.status.defaultWorkspace has a stable UUID).
 	var childCond metav1.Condition
 	defaultWorkspaceOK := false
 	switch {
@@ -475,12 +433,12 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	case wsUUID == "":
 		// Should not normally happen — Reconcile sets a UUID before
 		// calling this function — but tolerate it so a test that drives
-		// reconcileOrganizationStatus directly sees a coherent condition.
+		// bootstrap directly sees a coherent condition.
 		childCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady,
 			Status:  metav1.ConditionFalse,
 			Reason:  reasonAwaitingDefaultWorkspaceUUID,
-			Message: "User.status.defaultWorkspace has not yet been assigned a UUID.",
+			Message: "Organization.status.defaultWorkspace has not yet been assigned a UUID.",
 		}
 	default:
 		if err := r.provisioner.EnsureChildWorkspace(ctx, org.Name, wsUUID); err != nil {
@@ -562,12 +520,15 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		changed = true
 	}
 
-	// Step H: cluster-admin RBAC for the user in the default Workspace
+	// Step H: cluster-admin RBAC for every current org admin in the default Workspace
 	// (only attempt after G succeeded — the rbacIdentity needs the
 	// railgrid APIBinding's claim acceptance to write the ClusterRoleBinding).
 	var adminCond metav1.Condition
 	workspaceAdminOK := false
 	switch {
+	case accessInitialized:
+		workspaceAdminOK = true
+		adminCond = metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady, Status: metav1.ConditionTrue, Reason: reasonWorkspaceAdminReady, Message: "Initial workspace access established; subsequent changes are managed through membership operations."}
 	case !railgridBindOK:
 		adminCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
@@ -586,7 +547,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 			Message: "User.spec.RBACIdentity is empty; admin grant deferred.",
 		}
 	default:
-		if err := r.provisioner.EnsureChildWorkspaceAdmin(ctx, org.Name, wsUUID, user.Spec.RBACIdentity); err != nil {
+		if err := r.initializeWorkspaceAdminAccess(ctx, org.Name, wsUUID); err != nil {
 			logger.Error(err, "Granting workspace-admin failed; will retry")
 			adminCond = metav1.Condition{
 				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
@@ -599,29 +560,13 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
 				Status:  metav1.ConditionTrue,
 				Reason:  reasonWorkspaceAdminReady,
-				Message: "Cluster-admin granted to " + user.Spec.RBACIdentity + " in " + desiredPath + ":" + wsUUID + ".",
+				Message: "Current organization administrators granted access in " + desiredPath + ":" + wsUUID + ".",
 			}
 			workspaceAdminOK = true
 		}
 	}
 	if setCondition(&org.Status.Conditions, adminCond, org.Generation) {
 		changed = true
-	}
-
-	// Step H-backfill: ensure cluster-admin in every other workspace the
-	// user belongs to in this Org. The original H step above only handled
-	// user.Status.DefaultWorkspace; workspaces created via the REST
-	// surface (POST /api/orgs/{org}/workspaces) historically skipped the
-	// RBAC grant, so a portal switch into one of them 403s from the
-	// kcp proxy. Walking the UMI is the canonical source of "what
-	// workspaces should this user have access to" — the REST handler now
-	// grants RBAC inline, but this reconciler step self-heals legacy
-	// state and survives any future drift. Best-effort: per-workspace
-	// failures log + continue rather than fail the whole reconcile.
-	if workspaceAdminOK && user.Spec.RBACIdentity != "" {
-		if err := r.backfillWorkspaceAdmins(ctx, user, org.Name, wsUUID, logger); err != nil {
-			logger.Error(err, "UMI workspace-admin backfill failed; will retry on next reconcile")
-		}
 	}
 
 	// Step I: default MCPServer (only after H succeeded — needs admin
@@ -659,26 +604,6 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		changed = true
 	}
 
-	// Step J (no condition): patch User.spec.DefaultCluster to the kcp
-	// logical-cluster short hash for the child Workspace so kubectl can
-	// address it as /clusters/{hash}/api... — using the full
-	// root:railgrid:orgs:{org}:{ws} path works but makes for ugly
-	// kubeconfig server URLs. Only runs after Step E succeeds; the
-	// lookup uses Workspace.spec.cluster which kcp populates on Ready.
-	if defaultWorkspaceOK {
-		clusterName, lookupErr := r.provisioner.GetChildWorkspaceClusterName(ctx, org.Name, wsUUID)
-		switch {
-		case lookupErr != nil:
-			logger.Error(lookupErr, "Looking up child Workspace cluster hash failed; will retry")
-		case user.Spec.DefaultCluster != clusterName:
-			userCopy := user.DeepCopy()
-			userCopy.Spec.DefaultCluster = clusterName
-			if err := r.client.Update(ctx, userCopy); err != nil && !apierrors.IsConflict(err) {
-				logger.Error(err, "Patching User.spec.DefaultCluster failed; will retry")
-			}
-		}
-	}
-
 	// Step D: UserMembershipIndex sync (gated on Step C — the org
 	// Membership. Step E provides the workspace UUID; the workspace-scope
 	// UMI entry is written here as well since the in-workspace Membership
@@ -686,6 +611,8 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	// workspace WorkspaceType).
 	var indexCond metav1.Condition
 	switch {
+	case accessInitialized:
+		indexCond = metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionIndexSynced, Status: metav1.ConditionTrue, Reason: reasonIndexSynced, Message: "Initial membership index established; subsequent changes are managed through membership operations."}
 	case !membershipOK:
 		indexCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
@@ -701,7 +628,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		if defaultWorkspaceOK {
 			wsForIndex = wsUUID
 		}
-		if err := r.syncUserMembershipIndex(ctx, user, &org, wsForIndex); err != nil {
+		if err := r.syncUserMembershipIndex(ctx, user, org, wsForIndex); err != nil {
 			logger.Error(err, "UserMembershipIndex sync failed; will retry")
 			indexCond = metav1.Condition{
 				Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
@@ -722,6 +649,14 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		changed = true
 	}
 
+	// Hand access ownership to membership operations even if MCP setup fails.
+	// REST rejects creator membership mutations until this durable status write.
+	if membershipOK && workspaceAdminOK && indexCond.Status == metav1.ConditionTrue {
+		if setCondition(&org.Status.Conditions, metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionInitialWorkspaceAccessInitialized, Status: metav1.ConditionTrue, Reason: reasonAllStepsReady, Message: "Initial access setup completed."}, org.Generation) {
+			changed = true
+		}
+	}
+
 	// Aggregate Ready = all seven business steps green
 	// (workspace, membership, default WS, railgrid binding, admin,
 	// MCPServer, index).
@@ -729,15 +664,19 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	if setCondition(&org.Status.Conditions, readyCond, org.Generation) {
 		changed = true
 	}
+	if readyCond.Status == metav1.ConditionTrue {
+		if setCondition(&org.Status.Conditions, metav1.Condition{
+			Type:   tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized,
+			Status: metav1.ConditionTrue, Reason: reasonAllStepsReady,
+			Message: "Initial workspace bootstrap completed.",
+		}, org.Generation) {
+			changed = true
+		}
+	}
 	if !changed {
 		return nil
 	}
-	if err := r.client.Status().Update(ctx, &org); err != nil {
-		if apierrors.IsConflict(err) {
-			// Caller (Reconcile) returns ctrl.Result{} and controller-runtime
-			// will pick up the new resourceVersion on the next watch event.
-			return nil
-		}
+	if err := r.client.Status().Update(ctx, org); err != nil {
 		return fmt.Errorf("updating Organization status: %w", err)
 	}
 	return nil
@@ -809,8 +748,7 @@ const (
 
 // reconcileWorkspace runs step B (EnsureOrgWorkspace) and returns the
 // resulting condition plus a boolean signalling whether the workspace is
-// now considered Ready. Pulled out of reconcileOrganizationStatus for
-// readability; behavior is unchanged from PR #2.
+// now considered Ready.
 func (r *Reconciler) reconcileWorkspace(ctx context.Context, org *tenancyv1alpha1.Organization, desiredPath string, logger logr.Logger) (metav1.Condition, bool) {
 	if r.provisioner == nil {
 		return metav1.Condition{
@@ -835,71 +773,6 @@ func (r *Reconciler) reconcileWorkspace(ctx context.Context, org *tenancyv1alpha
 		Reason:  reasonWorkspaceProvisioned,
 		Message: "kcp Workspace " + desiredPath + " is Ready.",
 	}, true
-}
-
-// backfillWorkspaceAdmins walks the User's UMI and ensures cluster-admin
-// RBAC for the user's rbacIdentity wherever the rows say they belong:
-// every workspace-scope row, and every child team workspace of every org
-// where the user holds an org-scope admin row (O-15). The (orgUUID,
-// skipWsUUID) pair is excluded because the caller already reconciled it
-// as Step H.
-//
-// This is the self-healing path for legacy state (portal-created
-// workspaces once skipped the grant entirely; org-scope admin grants did
-// so until the REST handlers learned to bind them) and for users who were
-// granted membership before their first sign-in, when no rbacIdentity
-// existed to bind: the identity being set is what triggers this reconcile.
-//
-// Errors on individual workspaces are logged and skipped; one bad
-// workspace must not stall the whole reconcile. Idempotent — the
-// bootstrapper keeps one binding per user, so re-granting is a no-op.
-func (r *Reconciler) backfillWorkspaceAdmins(ctx context.Context, user *tenancyv1alpha1.User, orgUUID, skipWsUUID string, logger logr.Logger) error {
-	var index tenancyv1alpha1.UserMembershipIndex
-	if err := r.client.Get(ctx, types.NamespacedName{Name: user.Name}, &index); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("loading UMI for workspace-admin backfill: %w", err)
-	}
-	done := map[string]map[string]bool{}
-	grant := func(org, ws string) {
-		if org == orgUUID && ws == skipWsUUID {
-			return
-		}
-		if done[org][ws] {
-			return
-		}
-		if done[org] == nil {
-			done[org] = map[string]bool{}
-		}
-		done[org][ws] = true
-		if err := r.provisioner.EnsureChildWorkspaceAdmin(ctx, org, ws, user.Spec.RBACIdentity); err != nil {
-			logger.Error(err, "Granting workspace-admin failed; will retry on next reconcile",
-				"orgUUID", org, "workspaceUUID", ws)
-		}
-	}
-	for _, e := range index.Spec.Entries {
-		if e.SoftDeletedAt != nil {
-			continue
-		}
-		if e.WorkspaceUUID != "" {
-			grant(e.OrgUUID, e.WorkspaceUUID)
-			continue
-		}
-		if e.Role != tenancyv1alpha1.MembershipRoleAdmin {
-			continue
-		}
-		wss, err := r.provisioner.ListChildTeamWorkspaces(ctx, e.OrgUUID)
-		if err != nil {
-			logger.Error(err, "Listing child workspaces for org-admin backfill failed; will retry on next reconcile",
-				"orgUUID", e.OrgUUID)
-			continue
-		}
-		for _, ws := range wss {
-			grant(e.OrgUUID, ws)
-		}
-	}
-	return nil
 }
 
 // aggregateReady combines the seven step outcomes (workspace,
@@ -1002,17 +875,10 @@ func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv
 
 	if index.ResourceVersion == "" {
 		if err := r.client.Create(ctx, &index); err != nil {
-			if apierrors.IsAlreadyExists(err) {
-				// Lost the race; the next reconcile picks it up.
-				return nil
-			}
 			return fmt.Errorf("creating UserMembershipIndex %q: %w", user.Name, err)
 		}
 	} else if mutated {
 		if err := r.client.Update(ctx, &index); err != nil {
-			if apierrors.IsConflict(err) {
-				return nil
-			}
 			return fmt.Errorf("updating UserMembershipIndex %q: %w", user.Name, err)
 		}
 	}

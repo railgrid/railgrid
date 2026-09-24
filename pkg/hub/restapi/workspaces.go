@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
@@ -384,7 +385,14 @@ func (h *Handler) workspaceView(r *http.Request, orgUUID, wsUUID string) (Worksp
 	// but skip retargeting /clusters/{id} until it settles. The error case is
 	// indistinguishable from "not Ready" here and the row is still useful
 	// for display, so swallow it.
-	if cluster, err := h.mgr.bootstrapper.GetChildWorkspaceClusterName(r.Context(), orgUUID, wsUUID); err == nil && cluster != "" {
+	// A newly allocated cluster is not usable until initial bootstrap has
+	// installed its API binding and access. Keep both list and detail responses
+	// pending until that durable completion is visible. Fail closed if the org
+	// cannot be read; legacy orgs and separately-created workspaces are unchanged.
+	org, orgErr := h.mgr.client.Organizations().Get(r.Context(), orgUUID, metav1.GetOptions{})
+	bootstrapReady := orgErr == nil && (org.Status.DefaultWorkspace != wsUUID ||
+		apimeta.IsStatusConditionTrue(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized))
+	if cluster, err := h.mgr.bootstrapper.GetChildWorkspaceClusterName(r.Context(), orgUUID, wsUUID); bootstrapReady && err == nil && cluster != "" {
 		view.ClusterName = cluster
 	}
 	if t, found, err := h.mgr.bootstrapper.GetWorkspaceDeletionRequestedAt(r.Context(), orgUUID, wsUUID); err == nil && found && t != nil {

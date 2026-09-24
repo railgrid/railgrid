@@ -42,6 +42,7 @@ import (
 
 	"github.com/railgrid/railgrid/config/kcp"
 	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/bootstrap"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 	"github.com/railgrid/railgrid/pkg/util/confighelpers"
@@ -188,6 +189,16 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	b.workspaceIdentityHash = identityHash
 	logger.Info("Got tenancy.kcp.io identity hash", "hash", identityHash)
 
+	// Preserve legacy initial-workspace requests while the old tenant API
+	// schema still exposes them. Updating the export below prunes that field.
+	tenantMigrationClient, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.SystemTenants))
+	if err != nil {
+		return fmt.Errorf("creating tenant migration client: %w", err)
+	}
+	if err := bootstrap.PreserveInitialWorkspaceRequests(ctx, tenantMigrationClient); err != nil {
+		return err
+	}
+
 	// 5. Bootstrap ALL platform APIResourceSchemas + APIExports in
 	//    root:railgrid:system:controllers — the single home for platform exports.
 	//    The __TENANCY_IDENTITY_HASH__ placeholder in the APIExport YAML is
@@ -316,7 +327,37 @@ func (b *Bootstrapper) ensureTenancyObjectsBinding(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating system:tenants client: %w", err)
 	}
-	return ensureExportBinding(ctx, tenancyDynamic, kcppaths.SystemControllers, "tenants.railgrid.ai")
+	if err := ensureExportBinding(ctx, tenancyDynamic, kcppaths.SystemControllers, "tenants.railgrid.ai"); err != nil {
+		return err
+	}
+	// Discovery is the readiness contract for the controllers below. The
+	// matching binding may have a custom name: ensureExportBinding deliberately
+	// accepts existing bindings by export reference rather than metadata.name.
+	client, err := discovery.NewDiscoveryClientForConfig(b.UsersConfig())
+	if err != nil {
+		return err
+	}
+	return waitForTenancyDiscovery(ctx, client)
+}
+
+// Controller field indexes resolve kinds during setup, before their informers
+// start. A created (or even Bound) APIBinding alone does not guarantee discovery
+// has caught up, so fresh installations must wait before constructing managers.
+func waitForTenancyDiscovery(ctx context.Context, client discovery.DiscoveryInterface) error {
+	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, time.Minute, true, func(ctx context.Context) (bool, error) {
+		resources, err := client.ServerResourcesForGroupVersion("tenants.railgrid.ai/v1alpha1")
+		if err != nil {
+			if errors.IsNotFound(err) || errors.IsServiceUnavailable(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		found := map[string]bool{}
+		for _, resource := range resources.APIResources {
+			found[resource.Name] = true
+		}
+		return found["users"] && found["organizations"] && found["usermembershipindices"], nil
+	})
 }
 
 // UsersConfig returns a rest.Config targeting root:railgrid:system:tenants, where
