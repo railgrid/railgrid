@@ -152,6 +152,6 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer) })
         <p v-else class="mt-2 text-sm text-text-secondary">Ask an organization admin to create a workspace or give you access.</p>
       </div>
     </template>
-    <router-link :to="`/${orgID}/settings/workspaces`" class="k-btn k-btn--text mt-8">Manage workspaces</router-link>
+    <router-link :to="`/${orgID}/settings/organizations`" class="k-btn k-btn--text mt-8">Organization settings</router-link>
   </main>
 </template>

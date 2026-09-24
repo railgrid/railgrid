@@ -104,11 +104,11 @@ async function handleCreate() {
 
           <div class="flex items-center justify-between gap-3 pt-2">
             <router-link
-              :to="scopePath('/settings/workspaces')"
+              :to="scopePath('/settings/organizations')"
               class="flex items-center gap-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
             >
               <Settings class="h-3 w-3" :stroke-width="2" />
-              Manage workspaces in settings
+              Organization settings
             </router-link>
             <button
               type="submit"
