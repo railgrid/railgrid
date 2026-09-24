@@ -26,6 +26,7 @@ const { readLandingScope, readOrganizationWorkspace, rememberLandingScope } = aw
 const { useTenantStore } = await vite.ssrLoadModule('/src/stores/tenant.ts')
 const { useRouteContextStore } = await vite.ssrLoadModule('/src/stores/routeContext.ts')
 const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
+const { useProvidersStore } = await vite.ssrLoadModule('/src/stores/providers.ts')
 const { default: RouteContextState } = await vite.ssrLoadModule('/src/components/RouteContextState.vue')
 const { scopedPath, parsePortalScope, portalHref, portalRoutePath } = await vite.ssrLoadModule('/src/portalkit/navigation.ts')
 const { readTenant } = await vite.ssrLoadModule('/src/portalkit/tenant.ts')
@@ -84,7 +85,7 @@ test('canonical routes resolve exact IDs and preserve provider suffix, query and
   assert.equal(calls[1].headers.get('X-Railgrid-Org'), O)
   assert.equal(calls[1].headers.get('Authorization'), 'Bearer test-token')
   assert.equal(portalRoutePath(router.currentRoute.value.path), '/providers/infrastructure/instances/shared')
-  assert.equal(scopedPath('/settings/workspaces', tenant), `/${O}/settings/workspaces`)
+  assert.equal(scopedPath('/settings/workspaces', tenant), `/${O}/${W}/settings/workspaces`)
 })
 
 test('unscoped entry asks multi-org users when the remembered organization is missing or deleting', async () => {
@@ -389,13 +390,68 @@ test('new navigation fences a late context response and back restores the origin
   assert.equal(router.currentRoute.value.fullPath, resource)
 })
 
-test('org settings clear the operating workspace and list refresh cannot default it again', async () => {
+test('workspace and organization settings retain the operating workspace without a context reload', async () => {
+  const { router, tenant, auth, calls, context } = setup()
+  await router.push(resource)
+  const states = []
+  const stop = watch(() => [tenant.workspaceUUID, auth.clusterName, context.state], value => states.push(value), { flush: 'sync' })
+  const initialCalls = calls.length
+  for (const path of ['/settings/workspaces', '/settings/organizations', '/settings/workspaces']) {
+    await router.push(scopedPath(path, tenant))
+    assert.equal(tenant.workspaceUUID, W)
+    assert.equal(auth.clusterName, `cluster-${W}`)
+  }
+  stop()
+  assert.deepEqual(states, [], 'settings tabs must not clear workspace authority or flash a loading state')
+  assert.equal(calls.length, initialCalls)
+  assert.equal(portalHref('/providers/code', tenant), `/ui/${O}/${W}/providers/code`)
+})
+
+test('legacy workspace details select that operating workspace and preserve URL state', async () => {
   const { router, tenant, auth } = setup()
   await router.push(resource)
+  await router.push(`/${O}/settings/workspaces/${B}?tab=access#members`)
+  assert.equal(router.currentRoute.value.fullPath, `/${O}/${B}/settings/workspaces?tab=access#members`)
+  assert.equal(tenant.orgUUID, O)
+  assert.equal(tenant.workspaceUUID, B)
+  assert.equal(auth.clusterName, `cluster-${B}`)
+})
+
+test('legacy settings entry retains current workspace; cold entry opens organization settings', async () => {
+  let fixture = setup()
+  await fixture.router.push(resource)
+  await fixture.router.push(`/${O}/settings/workspaces`)
+  assert.equal(fixture.router.currentRoute.value.path, `/${O}/${W}/settings/workspaces`)
+  assert.equal(fixture.tenant.workspaceUUID, W)
+  fixture = setup()
+  await fixture.router.push(`/${O}/settings/workspaces`)
+  assert.equal(fixture.router.currentRoute.value.path, `/${O}/settings/organizations`)
+  assert.equal(fixture.tenant.workspaceUUID, null)
+})
+
+test('settings deep links verify their exact workspace and never substitute a denied destination', async () => {
+  const { router, tenant, context, auth } = setup()
+  await router.push(`/${O}/${W}/settings/organizations`)
+  assert.equal(tenant.workspaceUUID, W)
+  const real = globalThis.fetch
+  globalThis.fetch = (path, init) => path === `/api/orgs/${O}/workspaces/${B}`
+    ? Promise.resolve(response({}, 403)) : real(path, init)
   await router.push(`/${O}/settings/workspaces/${B}`)
+  assert.equal(router.currentRoute.value.path, `/${O}/${B}/settings/workspaces`)
+  assert.equal(context.state, 'unavailable')
+  assert.equal(auth.clusterName, null)
+  assert.notEqual(tenant.workspaceUUID, B)
+})
+
+test('organization-only settings work without a workspace or misleading provider links', async () => {
+  const { router, tenant, auth } = setup()
+  await router.push(`/${O}/settings/organizations`)
   assert.equal(tenant.orgUUID, O)
   assert.equal(tenant.workspaceUUID, null)
   assert.equal(auth.clusterName, null)
+  const providers = useProvidersStore()
+  providers.items = [{ name: 'edges', displayName: 'Edges', ready: true, hasUI: true, builtin: true }]
+  assert.deepEqual(providers.enabledNavItems, [])
   await tenant.fetchWorkspaces(O)
   assert.equal(tenant.workspaceUUID, null)
 })

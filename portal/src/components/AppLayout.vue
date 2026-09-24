@@ -106,7 +106,7 @@ watchEffect(() => {
   if (!list || list.length === 0) return
   const path = routePath.value
   if (path === '/workspaces' || path === '/settings' || path.startsWith('/settings/') || path === '/providers' || path === '/organizations' || path.startsWith('/organizations/')) return
-  void router.replace(scopePath('/settings/workspaces'))
+  void router.replace(`/${tenantStore.orgUUID}/workspaces`)
 })
 
 // Keep the routed slot suppressed for the whole navigation transition, but
@@ -994,7 +994,7 @@ const contextStatus = computed<ContextStatus>(() => {
               <button v-if="tenantStore.workspaceLoadState === 'error'" type="button" class="k-btn k-btn--ghost text-[11px]" @click="retryWorkspaceHydration">
                 Retry
               </button>
-              <router-link :to="scopePath('/settings/workspaces')" class="k-btn k-btn--ghost text-[11px]">Manage workspaces</router-link>
+              <router-link :to="scopePath('/settings/organizations')" class="k-btn k-btn--ghost text-[11px]">Organization settings</router-link>
             </div>
           </div>
         </div>

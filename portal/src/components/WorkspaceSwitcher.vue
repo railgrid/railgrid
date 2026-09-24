@@ -15,7 +15,6 @@ limitations under the License.
 -->
 
 <script setup lang="ts">
-import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, nextTick, onMounted, ref, useId, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -26,12 +25,11 @@ import {
   Loader2,
   RefreshCw,
   Search,
-  Settings2,
+  Plus,
 } from 'lucide-vue-next'
 import { useAnchoredPopover } from '@/composables/useAnchoredPopover'
 import { isWorkspaceAvailable, isWorkspaceUsable, useTenantStore, type WorkspaceRow } from '@/stores/tenant'
-
-const { scopePath } = useScopedNavigation()
+import CreateWorkspaceDialog from './CreateWorkspaceDialog.vue'
 
 const props = withDefaults(defineProps<{
   variant?: 'sidebar' | 'horizontal' | 'compact'
@@ -45,9 +43,15 @@ const router = useRouter()
 const WORKSPACE_SEARCH_THRESHOLD = 5
 const search = ref('')
 const searchRef = ref<HTMLInputElement | null>(null)
-const manageWorkspacesRef = ref<HTMLButtonElement | null>(null)
+const createWorkspaceRef = ref<HTMLButtonElement | null>(null)
 const panelId = useId()
 const listboxId = useId()
+const createOpen = ref(false)
+const canCreateWorkspace = computed(() => {
+  const org = tenant.activeOrg
+  return orgLoadState.value === 'ready' && !orgError.value && !!org && !org.deletionRequestedAt &&
+    (org.role === 'admin' || org.workspaceCreation === 'members')
+})
 const { open, triggerRef, panelRef, panelStyle, close, toggle } = useAnchoredPopover({ width: 344 })
 
 type WorkspaceStatus = 'Ready' | 'Pending' | 'Unverified'
@@ -205,7 +209,10 @@ function workspaceName(workspace: WorkspaceRow | null): string {
 
 async function ensureContextLoaded() {
   if (!tenant.orgListLoaded && orgLoadState.value !== 'loading') await tenant.fetchOrgs()
-  if (orgLoadState.value === 'error' || !tenant.orgUUID || tenant.workspaceListLoadedByOrg[tenant.orgUUID]) return
+  if (orgLoadState.value === 'error' || !tenant.orgUUID) return
+  // Reopening the picker checks pending creations, including a workspace
+  // whose creation dialog was closed before it became ready.
+  if (tenant.workspaceListLoadedByOrg[tenant.orgUUID] && workspaces.value.every(isWorkspaceUsable)) return
   const loadState = tenant.workspaceLoadStateByOrg[tenant.orgUUID] ?? 'idle'
   if (loadState === 'loading' || loadState === 'error') return
   await tenant.fetchWorkspaces(tenant.orgUUID, {
@@ -273,9 +280,15 @@ async function chooseWorkspace(workspace: WorkspaceRow): Promise<void> {
   }
 }
 
-function manageWorkspaces() {
-  close({ restoreFocus: true })
-  void router.push(scopePath('/settings/workspaces'))
+function openCreateWorkspace() {
+  if (!canCreateWorkspace.value) return
+  close()
+  createOpen.value = true
+}
+
+function closeCreateWorkspace() {
+  createOpen.value = false
+  void nextTick(() => triggerRef.value?.focus())
 }
 
 async function retryContext(): Promise<void> {
@@ -318,8 +331,8 @@ function focusInitialPanelControl() {
 
   const options = workspaceOptions()
   const selected = options.find((option) => option.getAttribute('aria-selected') === 'true')
-  const manage = manageWorkspacesRef.value
-  const target = selected ?? options[0] ?? (manage && !manage.disabled ? manage : null) ??
+  const create = createWorkspaceRef.value
+  const target = selected ?? options[0] ?? (create && !create.disabled ? create : null) ??
     panel.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), [href]')
   target?.focus()
   if (!panel.contains(document.activeElement)) panel.focus()
@@ -593,15 +606,15 @@ onMounted(() => { void ensureContextLoaded() })
           </div>
         </div>
 
-        <div class="border-t border-border-subtle p-1">
-          <button ref="manageWorkspacesRef" type="button" class="workspace-switcher-action k-menu-item focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset" @click="manageWorkspaces">
-            <Settings2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-            <span class="flex-1">Manage workspaces</span>
-            <ChevronDown class="h-3 w-3 -rotate-90 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
+        <div v-if="canCreateWorkspace" class="border-t border-border-subtle p-1">
+          <button ref="createWorkspaceRef" type="button" class="workspace-switcher-action k-menu-item focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset" @click="openCreateWorkspace">
+            <Plus class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
+            <span class="flex-1">Create workspace</span>
           </button>
         </div>
       </div>
     </Teleport>
+    <CreateWorkspaceDialog v-if="createOpen" @close="closeCreateWorkspace" />
   </div>
 </template>
 

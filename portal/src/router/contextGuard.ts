@@ -57,6 +57,20 @@ export function installContextGuard(router: Router): void {
     if (scope && !to.meta.public) void context.resolve(scope, true)
   })
   router.beforeEach(async (to) => {
+    // Old settings entry links retain the workspace in the committed URL.
+    // A cold org-only entry opens organization settings; never infer an
+    // operating workspace from another tab's persisted selection.
+    if (to.meta.workspaceSettingsEntry) {
+      const committed = parsePortalScope(router.currentRoute.value.path)
+      const workspace = committed?.orgUUID === to.params.orgID ? committed.workspaceUUID : null
+      return {
+        path: workspace
+          ? `/${to.params.orgID}/${workspace}/settings/workspaces`
+          : `/${to.params.orgID}/settings/organizations`,
+        query: to.query,
+        hash: to.hash,
+      }
+    }
     const attempt = ++navigation
     attempts.set(to, attempt)
     const current = () => attempt === navigation

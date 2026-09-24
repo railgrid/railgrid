@@ -55,7 +55,7 @@ must remain byte-identical. `make verify-portalkit` checks the manifest, the
 host copy, every portal copy, and unexpected files. Standalone helpers call
 `ensureRailgridUIStyles()`: a computed `:root` marker
 `--railgrid-ui-canonical: 1` is accepted only when its `--railgrid-ui-core-version` is at
-least the bundle's required core version (currently 18, from
+least the bundle's required core version (currently 23, from
 `RAILGRID_UI_CORE_VERSION` in `styles.ts`). Otherwise the
 canonical CSS is imported with Vite's `?inline` loader, so the embedded
 fallback uses Vite's minified form of the canonical rules and is appended

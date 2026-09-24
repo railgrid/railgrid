@@ -2,11 +2,14 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 
 const root = path.resolve(new URL('../../../', import.meta.url).pathname)
 const portalSrc = path.join(root, 'portal', 'src')
 const tenantSettingsPage = fs.readFileSync(path.join(portalSrc, 'pages/TenantSettingsPage.vue'), 'utf8')
 const memberList = fs.readFileSync(path.join(portalSrc, 'components/MemberList.vue'), 'utf8')
+const addMemberDialog = fs.readFileSync(path.join(portalSrc, 'components/AddMemberDialog.vue'), 'utf8')
+const createServiceAccountDialog = fs.readFileSync(path.join(portalSrc, 'components/CreateServiceAccountDialog.vue'), 'utf8')
 const organizationsPage = fs.readFileSync(path.join(portalSrc, 'pages/OrganizationsPage.vue'), 'utf8')
 const organizationCreatePage = fs.readFileSync(path.join(portalSrc, 'pages/OrganizationCreatePage.vue'), 'utf8')
 const accountMenu = fs.readFileSync(path.join(portalSrc, 'components/AccountAccessMenu.vue'), 'utf8')
@@ -26,15 +29,15 @@ function escapeRegExp(value) {
 }
 
 test('settings tabs preserve a Workspace-first scope hierarchy', () => {
-  assert.match(tenantSettingsPage, /activeSection === 'workspaces' \? 'Workspaces' : 'Organization settings'/)
+  assert.match(tenantSettingsPage, /activeSection === 'workspaces' \? 'Workspace settings' : 'Organization settings'/)
   assert.match(tenantSettingsPage, /import Tabs from ['"]@\/portalkit\/Tabs\.vue['"]/)
-  assert.match(tenantSettingsPage, /:tabs="settingsTabs"[\s\S]*:active="activeSection"[\s\S]*aria-label="Settings sections"/)
+  assert.match(tenantSettingsPage, /:tabs="visibleSettingsTabs"[\s\S]*:active="activeSection"[\s\S]*aria-label="Settings sections"/)
   const topLevelTabsStart = tenantSettingsPage.indexOf('const settingsTabs = [')
   const topLevelTabsEnd = tenantSettingsPage.indexOf('] as const', topLevelTabsStart)
   assert.ok(topLevelTabsStart >= 0 && topLevelTabsEnd > topLevelTabsStart)
   const topLevelTabs = tenantSettingsPage.slice(topLevelTabsStart, topLevelTabsEnd)
-  assert.match(topLevelTabs, /id: 'organizations', label: 'Organizations', icon: Building2/)
-  assert.match(topLevelTabs, /id: 'workspaces', label: 'Workspaces', icon: FolderTree/)
+  assert.match(topLevelTabs, /id: 'organizations', label: 'Organization', icon: Building2/)
+  assert.match(topLevelTabs, /id: 'workspaces', label: 'Workspace', icon: FolderTree/)
   assert.ok(topLevelTabs.indexOf("id: 'workspaces'") < topLevelTabs.indexOf("id: 'organizations'"))
   assert.doesNotMatch(topLevelTabs, /id: 'access'|id: 'service-accounts'/)
   assert.doesNotMatch(tenantSettingsPage, /workspaceSettingsTabs|workspaceSection/)
@@ -74,7 +77,7 @@ test('organization settings are scoped to the selected org and gate governance w
   assert.match(tenantSettingsPage, /const canDeleteOrg = computed\(\(\) => canEditOrg\.value && !organizationSettingsOrg\.value\?\.personal\)/)
   assert.match(tenantSettingsPage, /startEditOrgName\(\): void[\s\S]*?if \(!org \|\| !canEditOrg\.value\) return/)
   assert.match(tenantSettingsPage, /saveOrgName\(\): Promise<void>[\s\S]*?if \(!target \|\| !canEditOrg\.value /)
-  assert.match(tenantSettingsPage, /onAddOrgMember\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return false/)
+  assert.match(tenantSettingsPage, /onAddOrgMember\(user: string[\s\S]*?if \(!target \|\| !canAddOrgMembers\.value\) return false/)
   assert.match(tenantSettingsPage, /onChangeOrgMemberRole\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return/)
   assert.match(tenantSettingsPage, /onRemoveOrgMember\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return/)
   assert.match(orgSection, /:readonly="!canManageOrgMembers"/)
@@ -100,12 +103,13 @@ test('organization settings use the org MemberList contract and lifecycle action
   const orgSection = tenantSettingsPage.slice(orgSectionStart, orgSectionEnd)
   assert.match(orgSection, /<MemberList/)
   assert.match(orgSection, /:members="orgMembers"/)
-  assert.match(orgSection, /:loading="orgMembersLoading && !orgMembersHasSnapshot"/)
-  assert.match(orgSection, /orgMembersLoading && orgMembersHasSnapshot/)
-  assert.match(orgSection, /Showing the last successful result\./)
+  assert.match(orgSection, /:loading="orgMembersLoading"/)
+  assert.match(orgSection, /:loaded="orgMembersHasSnapshot"/)
+  assert.match(orgSection, /:error="orgMembersError"/)
+  assert.match(orgSection, /:stale="orgMembersHasSnapshot && !!orgMembersError"/)
   assert.match(orgSection, /:busy="orgMemberBusy"/)
   assert.match(orgSection, /scope-label="this organization"/)
-  assert.match(orgSection, /:add="onAddOrgMember"/)
+  assert.match(tenantSettingsPage, /<AddMemberDialog\b[\s\S]*?:add="onAddOrgMember"/)
   assert.match(orgSection, /@change-role="onChangeOrgMemberRole"/)
   assert.match(orgSection, /@remove="onRemoveOrgMember"/)
   assert.match(tenantSettingsPage, /tenant\.listOrgMembers\(targetOrgUUID\)/)
@@ -204,90 +208,36 @@ test('settings use one top-level gap and one continuous Workspace detail page', 
   assert.doesNotMatch(tenantSettingsPage, /<template v-else-if="activeSection === '(?:access|service-accounts)'">/)
 })
 
-test('workspace settings retain selection, lifecycle, access, and token controls', () => {
+test('active workspace settings retain lifecycle, access, and token controls without an inspector', () => {
   for (const pattern of [
-    /workspaceStatus\(workspace\)/,
-    /tenant\.createWorkspace\(org, name, \{ selectCreated: false \}\)/,
-    /tenant\.patchWorkspaceDisplayName/,
-    /tenant\.downloadKubeconfig/,
-    /tenant\.deleteWorkspace/,
-    /tenant\.undeleteWorkspace/,
-    /tenant\.listWorkspaceMembers/,
-    /tenant\.listAppAccessGrants/,
-    /tenant\.revokeAppAccessGrant/,
-    /tenant\.listServiceAccounts/,
-    /tenant\.issueSAToken/,
-    /tenant\.revokeSATokens/,
+    /tenant\.patchWorkspaceDisplayName/, /tenant\.downloadKubeconfig/,
+    /tenant\.deleteWorkspace/, /tenant\.undeleteWorkspace/,
+    /tenant\.listWorkspaceMembers/, /tenant\.listAppAccessGrants/, /tenant\.revokeAppAccessGrant/,
+    /tenant\.listServiceAccounts/, /tenant\.issueSAToken/, /tenant\.revokeSATokens/,
     /role="dialog" aria-modal="true"/,
-    /selectedWorkspaceUUID\.value = workspace\.uuid/,
-    /router\.push\(workspaceRoutePath\(workspace\.uuid\)\)/,
   ]) assert.match(tenantSettingsPage, pattern)
-  const activateStart = tenantSettingsPage.indexOf('async function activateInspectedWorkspace(): Promise<void>')
-  const activateEnd = tenantSettingsPage.indexOf('\n}\n\nconst kubeconfigDisabledReason', activateStart)
-  assert.ok(activateStart >= 0 && activateEnd > activateStart)
-  const activate = tenantSettingsPage.slice(activateStart, activateEnd)
-  assert.match(activate, /activateWorkspaceDisabledReason\.value/)
-  assert.match(activate, /router\.push\(\{ name: 'dashboard', params: \{ orgID: workspace\.orgUUID, workspaceID: workspace\.uuid \} \}\)/)
-  assert.match(activate, /tenant\.beginWorkspaceTransition\(\)/)
-  assert.match(activate, /await router\.push\(\{ name: 'dashboard', params: \{ orgID: workspace\.orgUUID, workspaceID: workspace\.uuid \} \}\)/)
-  assert.match(activate, /finally \{[\s\S]*tenant\.endWorkspaceTransition\(transitionToken\)/)
-  assert.match(tenantSettingsPage, /tenant\.orgLoadState === 'loading'/)
-  assert.match(tenantSettingsPage, /tenant\.orgLoadState !== 'ready' \|\| tenant\.orgError \|\| !tenant\.orgListLoaded/)
-  assert.match(tenantSettingsPage, /workspaceLoadState !== 'ready' \|\| tenant\.workspaceErrorByOrg\[workspace\.orgUUID\]/)
-  assert.match(workspaceControlHeader, /Inspecting workspace/)
-  assert.match(workspaceControlHeader, /Active operating Workspace:/)
-  assert.match(workspaceControlHeader, /Switch operating context/)
-  assert.match(workspaceControlHeader, /class="min-w-0" role="status" aria-live="polite" aria-atomic="true"/)
-  assert.doesNotMatch(workspaceControlHeader, /class="mt-5 flex[^\"]*"\s+role="status"/)
-  assert.match(memberList, /tableLabel: string/)
-  assert.match(memberList, /:aria-label="tableLabel"/)
+  assert.doesNotMatch(tenantSettingsPage, /newWorkspaceOpen|onCreateWorkspace|activateInspectedWorkspace|workspace-inspection-select/)
+  assert.doesNotMatch(workspaceControlHeader, /Inspecting workspace|operating context|isActive|activate/)
+  assert.match(workspaceControlHeader, /id="workspace-settings-title"/)
   assert.match(tenantSettingsPage, /scope-label="this workspace"[\s\S]*table-label="Workspace members"/)
-  assert.match(tenantSettingsPage, /scope-label="this organization"[\s\S]*table-label="Organization members"/)
-  // Settings must keep provisioning/deleting rows inspectable for lifecycle
-  // controls, while the global workspace target only accepts ready rows.
-  assert.doesNotMatch(tenantSettingsPage, /return workspaceStatus\(workspace\) === 'Ready'/)
-  assert.match(tenantSettingsPage, /v-if="canManageWs"[\s\S]*?aria-labelledby="workspace-danger-zone-title"/)
   assert.match(tenantSettingsPage, /const canEditWs = computed\(\(\) => canManageWs\.value && !selWs\.value\?\.deletionRequestedAt\)/)
   assert.match(tenantSettingsPage, /:readonly="!canEditWs"/)
   assert.match(tenantSettingsPage, /v-if="selWs\.deletionRequestedAt"[\s\S]*management is unavailable while deletion is pending/)
-  assert.match(tenantSettingsPage, /workspaceListError.*role="alert"/s)
+  assert.match(tenantSettingsPage, /const requestRoute = route\.fullPath/)
+  assert.match(tenantSettingsPage, /!isCurrentTarget\(target\) \|\| !canEditWs\.value \|\| route\.fullPath !== requestRoute/)
+  assert.match(tenantSettingsPage, /await router\.push\(`\/\$\{target\.org\}\/settings\/organizations`\)/)
 })
 
-test('workspace settings routes own local inspection without subsection navigation', () => {
-  for (const [routePath, routeName] of [
-    ['/settings/workspaces', 'settings-workspaces'],
-    ['/settings/workspaces/:workspaceUUID', 'settings-workspace-overview'],
-  ]) {
-    assert.match(router, new RegExp(`path: ORGANIZATION_ROUTE \\+ '${routePath.replaceAll('/', '\\/')}'[\\s\\S]*name: '${routeName}'`))
-  }
-  assert.doesNotMatch(router, /settings\/workspaces\/:workspaceUUID\/(?:access|service-accounts)/)
-  assert.doesNotMatch(router, /path: ORGANIZATION_ROUTE \+ '\/settings\/(?:access|service-accounts)'/)
-  assert.doesNotMatch(router, /path: '\/tenant'/)
-  assert.match(tenantSettingsPage, /const workspaceRouteUUID = computed<string \| null>/)
-  assert.match(tenantSettingsPage, /function workspaceRoutePath\(workspaceUUID: string\): string/)
-  assert.match(tenantSettingsPage, /const routedWorkspace = loadedWorkspaces\.find\(\(workspace\) => workspace\.uuid === requestedWorkspaceUUID\)/)
-  assert.match(tenantSettingsPage, /if \(!routedWorkspace\) \{[\s\S]*router\.replace\(scopePath\('\/settings\/workspaces'\)\)/)
-  const reloadStart = tenantSettingsPage.indexOf('async function reloadScopedWorkspaces(orgUUID: string | null)')
-  const reloadEnd = tenantSettingsPage.indexOf('\n}\n\n// App bootstrap', reloadStart)
-  assert.ok(reloadStart >= 0 && reloadEnd > reloadStart)
-  const reload = tenantSettingsPage.slice(reloadStart, reloadEnd)
-  const noOrgStart = reload.indexOf('if (!orgUUID)')
-  const noOrgEnd = reload.indexOf('\n  }\n\n  workspaceListLoading.value = true', noOrgStart)
-  assert.ok(noOrgStart >= 0 && noOrgEnd > noOrgStart)
-  const noOrg = reload.slice(noOrgStart, noOrgEnd)
-  assert.match(noOrg, /workspaceListLoading\.value = false/)
-  assert.match(noOrg, /activeSection\.value === 'workspaces' && workspaceRouteUUID\.value/)
-  assert.match(noOrg, /await router\.replace\(scopePath\('\/settings\/workspaces'\)\)/)
-  const routeWatchStart = tenantSettingsPage.indexOf('watch(\n  workspaceRouteUUID,')
-  const routeWatchEnd = tenantSettingsPage.indexOf('\n)\n\n// Workspace CRUD refreshes', routeWatchStart)
-  assert.ok(routeWatchStart >= 0 && routeWatchEnd > routeWatchStart)
-  const routeWatch = tenantSettingsPage.slice(routeWatchStart, routeWatchEnd)
-  assert.match(routeWatch, /if \(workspaceRouteUUID\.value\) void router\.replace\(scopePath\('\/settings\/workspaces'\)\)/)
-  assert.doesNotMatch(tenantSettingsPage, /workspaceRouteSection/)
-  assert.doesNotMatch(tenantSettingsPage, /navigateWorkspaceSection|workspaceSettingsTabs|workspaceSection/)
-  assert.match(tenantSettingsPage, /await tenant\.fetchWorkspaces\(orgUUID, \{ selectDefault: false \}\)/)
+test('workspace settings share the canonical operating workspace route', () => {
+  assert.match(router, /path: WORKSPACE_ROUTE \+ '\/settings\/workspaces'[\s\S]*name: 'settings-workspaces'/)
+  assert.match(router, /path: WORKSPACE_ROUTE \+ '\/settings\/organizations'[\s\S]*name: 'settings-organizations'/)
+  assert.match(router, /path: ORGANIZATION_ROUTE \+ '\/settings\/organizations'[\s\S]*name: 'settings-organization-overview'/)
+  assert.doesNotMatch(tenantSettingsPage, /workspaceRouteUUID|normalizeWorkspaceSelection/)
+  assert.match(tenantSettingsPage, /if \(tenant\.workspaceMode !== 'workspace' \|\| !tenant\.workspaceUUID\) return null/)
+  assert.match(tenantSettingsPage, /workspace\.uuid === tenant\.workspaceUUID/)
+  assert.match(tenantSettingsPage, /const selectedWorkspaceUUID = computed\(\(\) => selectedWorkspace\.value\?\.uuid \?\? null\)/)
   assert.match(tenantSettingsPage, /watch\(\s*selectedWorkspaceUUID,[\s\S]*Promise\.all\(\[reloadWsMembers\(\), reloadAppAccessGrants\(\), reloadSAs\(\)\]\)/)
-  assert.match(tenantSettingsPage, /if \(!selectedWorkspaceUUID\.value \|\| selWs\.value\?\.deletionRequestedAt\) return/)
+  assert.doesNotMatch(tenantSettingsPage, /selectedWorkspaceUUID\.value =/)
 })
 
 test('service-account token responses are fenced before modal assignment', () => {
@@ -322,69 +272,49 @@ test('one-time token copy exposes manual recovery instead of swallowing failure'
   assert.match(tenantSettingsPage, /Close without copying/)
 })
 
-test('Workspace inspection remains local until the explicit context switch', () => {
-  const inspectStart = tenantSettingsPage.indexOf('function selectWorkspace(workspace: WorkspaceRow): void')
-  const inspectEnd = tenantSettingsPage.indexOf('\n}\n\nfunction selectWorkspaceFromControl', inspectStart)
-  assert.ok(inspectStart >= 0 && inspectEnd > inspectStart)
-  const inspect = tenantSettingsPage.slice(inspectStart, inspectEnd)
-  assert.match(inspect, /selectedWorkspaceUUID\.value = workspace\.uuid/)
-  assert.match(inspect, /router\.push\(workspaceRoutePath\(workspace\.uuid\)\)/)
-  assert.doesNotMatch(inspect, /tenant\.selectWorkspace/)
-
-  assert.match(workspaceControlHeader, /Inspecting workspace/)
-  assert.match(workspaceControlHeader, /This is your active operating Workspace\./)
-  assert.match(workspaceControlHeader, /Changes below affect the inspected Workspace only\./)
-  assert.match(tenantSettingsPage, /router\.push\(\{ name: 'dashboard', params: \{ orgID: workspace\.orgUUID, workspaceID: workspace\.uuid \} \}\)/)
+test('organization inventory uses the canonical queryable resource table', () => {
+  const orgStart = tenantSettingsPage.indexOf('<template v-else-if="activeSection === \'organizations\'">')
+  const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
+  const inventoryEnd = tenantSettingsPage.indexOf('</section>', inventoryStart)
+  assert.ok(inventoryStart > orgStart && inventoryEnd > inventoryStart)
+  const inventory = tenantSettingsPage.slice(inventoryStart, inventoryEnd)
+  assert.match(inventory, /<ResourceTable/)
+  assert.match(inventory, /:key="organizationSettingsOrg\.uuid"/)
+  assert.match(inventory, /:columns="workspaceColumns"/)
+  assert.match(inventory, /:rows="workspaceRows"/)
+  assert.match(inventory, /aria-label="Organization workspaces"/)
+  assert.match(inventory, /row-key="uuid"/)
+  assert.match(inventory, /:interactive="false"/)
+  assert.match(inventory, /searchable/)
+  assert.match(inventory, /:search-keys="\['name', 'uuid'\]"/)
+  assert.match(inventory, /:filters="workspaceFilters"/)
+  assert.match(inventory, /paginated/)
+  assert.match(inventory, /:loaded="workspaceListLoaded"/)
+  assert.match(inventory, /:loading="workspaceListLoading"/)
+  assert.match(inventory, /:error="workspaceListError"/)
+  assert.match(inventory, /:stale="workspaceListLoaded && !!workspaceListError"/)
+  assert.match(inventory, /retryable/)
+  assert.match(inventory, /@retry="reloadScopedWorkspaces\(tenant\.orgUUID\)"/)
+  assert.match(inventory, /All workspaces you can access in this organization, including those pending deletion/)
+  assert.match(inventory, /Current workspace/)
+  assert.doesNotMatch(inventory, /<ul|<li|<ResourceTableFilter|@row-click|Open workspace/)
+  assert.doesNotMatch(tenantSettingsPage, /WORKSPACE_SEARCH_THRESHOLD|workspaceSearch|filteredWorkspaces|workspaceLifecycleFilter|workspaceFilterResultAnnouncement/)
 })
 
-test('Workspace settings adapt list selection for mobile and large inventories', () => {
-  assert.match(tenantSettingsPage, /const WORKSPACE_SEARCH_THRESHOLD = 5/)
-  assert.match(tenantSettingsPage, /const filteredWorkspaces = computed/)
-  assert.match(tenantSettingsPage, /id="workspace-inspection-select"/)
-  assert.match(tenantSettingsPage, /class="k-input min-h-11 w-full text-base"/)
-  assert.match(tenantSettingsPage, /@change="selectWorkspaceFromControl"/)
-  assert.match(tenantSettingsPage, /id="workspace-settings-search"/)
-  assert.match(tenantSettingsPage, /max-h-96[^"]*overflow-y-auto/)
-})
-
-test('Workspace lifecycle filter hides deleting rows by default and uses the standard filter control', () => {
-  assert.match(tenantSettingsPage, /import ResourceTableFilter from ['"]@\/portalkit\/ResourceTableFilter\.vue['"]/)
-  assert.match(tenantSettingsPage, /const workspaceLifecycleFilter = ref<WorkspaceLifecycleFilter>\('not-deleting'\)/)
-  assert.match(tenantSettingsPage, /label: 'Lifecycle'/)
+test('organization inventory filters the complete set without changing context and keeps guarded restore', () => {
+  assert.match(tenantSettingsPage, /const workspaceRows = computed\(\(\) => workspaces\.value\.map\(/)
+  assert.match(tenantSettingsPage, /name: workspace\.displayName \|\| workspace\.uuid/)
+  assert.match(tenantSettingsPage, /status: workspaceStatus\(workspace\)/)
   assert.match(tenantSettingsPage, /allLabel: 'All workspaces'/)
-  assert.match(tenantSettingsPage, /value: 'not-deleting', label: 'Not deleting'/)
-  assert.match(tenantSettingsPage, /value: 'deleting', label: 'Deleting'/)
-  assert.match(tenantSettingsPage, /if \(filter === 'deleting'\) return !!workspace\.deletionRequestedAt/)
-  assert.match(tenantSettingsPage, /if \(filter === 'not-deleting'\) return !workspace\.deletionRequestedAt/)
-  assert.match(tenantSettingsPage, /const lifecycleFilteredWorkspaces = computed\(\(\) =>\s*workspaces\.value\.filter/)
-  assert.match(tenantSettingsPage, /<ResourceTableFilter[\s\S]*:definition="workspaceLifecycleFilterDefinition"[\s\S]*@update:model-value="setWorkspaceLifecycleFilter"/)
-  assert.match(tenantSettingsPage, /class="k-table__controls" role="search" aria-label="Filter workspaces"/)
-  assert.match(tenantSettingsPage, /class="k-table__search hidden lg:block"/)
-  assert.match(tenantSettingsPage, /class="k-table__search-clear"/)
-  assert.match(tenantSettingsPage, /class="k-table__clear-filters"/)
-  assert.match(tenantSettingsPage, /workspaceFilterResultAnnouncement/)
-  assert.match(tenantSettingsPage, /v-for="workspace in lifecycleFilteredWorkspaces"/)
-  assert.match(tenantSettingsPage, /<li v-for="workspace in filteredWorkspaces"/)
-
-  const setterStart = tenantSettingsPage.indexOf('function setWorkspaceLifecycleFilter(value: string): void')
-  const setterEnd = tenantSettingsPage.indexOf('\n}\n\nfunction clearWorkspaceFilters', setterStart)
-  assert.ok(setterStart >= 0 && setterEnd > setterStart)
-  const setter = tenantSettingsPage.slice(setterStart, setterEnd)
-  assert.doesNotMatch(setter, /workspaceSearch\.value = ''/)
-  assert.match(setter, /workspaceMatchesLifecycleFilter\(workspace, nextFilter\)/)
-  assert.match(setter, /selectWorkspace\(firstVisibleWorkspace\)/)
-  assert.match(setter, /selectedWorkspaceUUID\.value = null/)
-  assert.match(setter, /router\.push\(scopePath\('\/settings\/workspaces'\)\)/)
-
-  const clearStart = tenantSettingsPage.indexOf('function clearWorkspaceFilters(): void')
-  const clearEnd = tenantSettingsPage.indexOf('\n}\n\n// Organization switching', clearStart)
-  assert.ok(clearStart >= 0 && clearEnd > clearStart)
-  const clear = tenantSettingsPage.slice(clearStart, clearEnd)
-  assert.match(clear, /workspaceSearch\.value = ''/)
-  assert.match(clear, /setWorkspaceLifecycleFilter\(''\)/)
-
-  assert.match(tenantSettingsPage, /if \(!workspaceMatchesLifecycleFilter\(routedWorkspace\)\)[\s\S]*routedWorkspace\.deletionRequestedAt \? 'deleting' : 'not-deleting'/)
-  assert.match(tenantSettingsPage, /workspaceLifecycleFilter\.value = 'not-deleting'[\s\S]*dismissToken\(\)/)
+  for (const status of ['Ready', 'Provisioning', 'Deleting']) {
+    assert.match(tenantSettingsPage, new RegExp(`value: '${status}', label: '${status}'`))
+  }
+  assert.match(tenantSettingsPage, /<ResourceTableActionButton\s+v-if="row\.deletionRequestedAt && row\.role === 'admin'"/)
+  assert.match(tenantSettingsPage, /:label="`Restore workspace \$\{String\(row\.name\)\}`"/)
+  assert.match(tenantSettingsPage, /:busy="restoringWorkspaceUUID === row\.uuid"/)
+  assert.match(tenantSettingsPage, /:disabled="!workspaceInventoryVerified \|\| !!restoringWorkspaceUUID"/)
+  assert.match(tenantSettingsPage, /workspace\.role !== 'admin' \|\| !workspace\.deletionRequestedAt/)
+  assert.match(tenantSettingsPage, /tenant\.undeleteWorkspace\(org, workspace\.uuid\)/)
 })
 
 test('settings adopts the winning workspace load after a concurrent startup request', () => {
@@ -392,8 +322,8 @@ test('settings adopts the winning workspace load after a concurrent startup requ
   assert.match(tenantSettingsPage, /loadState !== 'ready' && loadState !== 'error'/)
   assert.match(tenantSettingsPage, /scopedOrgUUID\.value = orgUUID/)
   assert.match(tenantSettingsPage, /workspaceListError\.value = loadState === 'error'/)
-  assert.match(tenantSettingsPage, /if \(loadState === 'error'\) \{[\s\S]*scopedOrgUUID\.value = null/)
-  assert.match(tenantSettingsPage, /scopedOrgUUID\.value = orgUUID[\s\S]*normalizeWorkspaceSelection\(orgUUID, loadedWorkspaces\)/)
+  assert.match(tenantSettingsPage, /if \(loadState === 'error'\) \{[\s\S]*workspaceListLoading\.value = false/)
+  assert.match(tenantSettingsPage, /scopedOrgUUID\.value = orgUUID[\s\S]*workspaceListLoading\.value = false/)
 })
 
 test('workspace access and service-account data stay fenced to the current selection', () => {
@@ -488,15 +418,14 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
   assert.match(tenantSettingsPage, /return `\$\{days\} \$\{days === 1 \? 'day' : 'days'\} until deletion\.`/)
   assert.match(tenantSettingsPage, /return 'Deletion timing unavailable\.'/)
 
-  const workspaceRowStart = tenantSettingsPage.indexOf('<li v-for="workspace in filteredWorkspaces"')
-  const workspaceRowEnd = tenantSettingsPage.indexOf('</li>', workspaceRowStart)
-  assert.ok(workspaceRowStart >= 0 && workspaceRowEnd > workspaceRowStart)
-  const workspaceRow = tenantSettingsPage.slice(workspaceRowStart, workspaceRowEnd)
-  assert.match(workspaceRow, /:aria-label="workspaceButtonLabel\(workspace\)"/)
-  assert.match(workspaceRow, /<span class="block truncate text-\[12px\]">\{\{ workspace\.displayName \|\| workspace\.uuid \}\}<\/span>/)
-  assert.match(workspaceRow, /<span\s+v-if="workspace\.deletionRequestedAt"\s+class="block text-\[10px\] italic text-text-muted"[\s\S]*?workspaceDeletionCountdown\(workspace\.deletionRequestedAt\)/)
-  assert.match(workspaceRow, /workspaceStatus\(workspace\)/)
-  assert.match(tenantSettingsPage, /return countdown\s*\? `\$\{name\}, \$\{workspaceStatus\(workspace\)\}\. \$\{countdown\}`/)
+  assert.match(tenantSettingsPage, /deletion: workspaceDeletionCountdown\(workspace\.deletionRequestedAt\)/)
+  const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
+  const inventoryEnd = tenantSettingsPage.indexOf('</section>', inventoryStart)
+  const inventory = tenantSettingsPage.slice(inventoryStart, inventoryEnd)
+  assert.match(inventory, /<template #deletion="\{ row \}">/)
+  assert.match(inventory, /\{\{ row\.deletion \}\}/)
+  assert.match(inventory, /<StatusBadge :status="String\(row\.status\)"/)
+  assert.match(inventory, /@click="restoreWorkspace\(row as unknown as WorkspaceRow\)"/)
 
   assert.match(tenantSettingsPage, /const deletionCountdownNow = ref\(Date\.now\(\)\)/)
   assert.match(tenantSettingsPage, /window\.setInterval\(\(\) => \{\s*deletionCountdownNow\.value = Date\.now\(\)\s*\}, WORKSPACE_COUNTDOWN_REFRESH_MS\)/s)
@@ -508,69 +437,143 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
   assert.match(cleanup, /window\.clearInterval\(deletionCountdownTimer\)/)
 })
 
-function assertSimpleResourceTable(source, { columns, rows, rowKey, loading, emptyText }) {
+function assertQueryableResourceTable(source, { columns, rows, rowKey, loading, loaded, error, emptyText }) {
   assert.equal((source.match(/<ResourceTable\b/g) ?? []).length, 1)
   assert.match(source, new RegExp(`:columns="${columns}"`))
   assert.match(source, new RegExp(`:rows="${rows}"`))
-  assert.match(source, /variant="simple"/)
+  assert.doesNotMatch(source, /variant="simple"/)
+  assert.match(source, /\bsearchable\b/)
+  assert.match(source, /\bpaginated\b/)
+  assert.match(source, /:search-keys=/)
   assert.match(source, /:interactive="false"/)
   assert.match(source, new RegExp(`row-key="${rowKey}"`))
   assert.match(source, new RegExp(`:loading="${loading}"`))
+  assert.match(source, new RegExp(`:loaded="${loaded}"`))
+  assert.match(source, new RegExp(`:error="${error}"`))
+  assert.match(source, /:stale=/)
+  assert.match(source, /\bretryable\b/)
+  assert.match(source, /@retry=/)
   assert.match(source, emptyText)
   assert.doesNotMatch(source, /<table\b|<ul\b|\bk-table\b/)
 }
 
-test('settings access lists use the canonical simple ResourceTable contract', () => {
+test('settings teardown retires requests and mutation contexts even when tenant IDs stay unchanged', () => {
+  // Execute the actual teardown, invalidators, and context predicates. Only
+  // their TypeScript signatures and Vue/browser dependencies are stubbed.
+  function functionSource(name, parameters = '') {
+    const start = tenantSettingsPage.indexOf(`function ${name}(`)
+    const body = tenantSettingsPage.indexOf('{', start)
+    const end = tenantSettingsPage.indexOf('\n}', body)
+    assert.ok(start >= 0 && body > start && end > body, `missing ${name}`)
+    return `function ${name}(${parameters}) ${tenantSettingsPage.slice(body, end + 2)}`
+  }
+  const cleanupStart = tenantSettingsPage.indexOf('onBeforeUnmount(() => {')
+  const cleanupEnd = tenantSettingsPage.indexOf('\n})', cleanupStart)
+  assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart)
+  const source = [
+    ...['invalidateWsMembersRequests', 'invalidateAppAccessRequests', 'invalidateServiceAccountRequests'].map(name => functionSource(name)),
+    ...['isCurrentWsMembersContext', 'isCurrentAppAccessContext', 'isCurrentServiceAccountContext', 'currentOrgMemberContext'].map(name => functionSource(name, 'context')),
+    tenantSettingsPage.slice(cleanupStart, cleanupEnd + 3),
+  ].join('\n')
+  let teardown
+  const generations = [
+    'orgMembersRequest', 'orgMemberContextGeneration', 'workspaceListRequest',
+    'wsMembersRequestGeneration', 'wsMembersContextGeneration',
+    'appAccessRequestGeneration', 'appAccessContextGeneration',
+    'serviceAccountRequestGeneration', 'serviceAccountContextGeneration',
+  ]
+  const state = {
+    ...Object.fromEntries(generations.map(name => [name, 7])),
+    creationFeedbackGeneration: 0, pageDisposed: false,
+    activeSection: { value: 'workspaces' },
+    selWs: { value: { uuid: 'workspace-a' } },
+    canEditWs: { value: true },
+    organizationTargetUUID: { value: 'org-a' },
+    tenant: { orgUUID: 'org-a', clearError() {} },
+    isCurrentTarget: target => target.org === 'org-a' && target.workspace === 'workspace-a',
+    wsMembersLoading: { value: true },
+    appAccessLoading: { value: true },
+    sasLoading: { value: true },
+    deletionCountdownTimer: null,
+    onTokenDialogKeydown() {},
+    window: { removeEventListener() {}, clearInterval() {} },
+    onBeforeUnmount(callback) { teardown = callback },
+  }
+  runInNewContext(source, state)
+  const pendingWorkspaceMutation = { generation: 7, target: { org: 'org-a', workspace: 'workspace-a' } }
+  const pendingOrgMutation = { generation: 7, target: 'org-a' }
+  const workspacePredicates = ['isCurrentWsMembersContext', 'isCurrentAppAccessContext', 'isCurrentServiceAccountContext']
+  for (const predicate of workspacePredicates) assert.equal(state[predicate](pendingWorkspaceMutation), true)
+  state.activeSection.value = 'organizations'
+  assert.equal(state.currentOrgMemberContext(pendingOrgMutation), true)
+
+  teardown()
+
+  for (const generation of generations) assert.ok(state[generation] > 7, `${generation} must retire outstanding work`)
+  assert.equal(state.currentOrgMemberContext(pendingOrgMutation), false)
+  state.activeSection.value = 'workspaces'
+  for (const predicate of workspacePredicates) assert.equal(state[predicate](pendingWorkspaceMutation), false)
+  for (const loading of ['wsMembersLoading', 'appAccessLoading', 'sasLoading']) assert.equal(state[loading].value, false)
+})
+
+test('settings access lists use the canonical queryable ResourceTable contract', () => {
   assert.match(memberList, /import ResourceTable from ['"]@\/portalkit\/ResourceTable\.vue['"]$/m)
   assert.match(memberList, /import ResourceTableDeleteButton from ['"]@\/portalkit\/ResourceTableDeleteButton\.vue['"]$/m)
-  assertSimpleResourceTable(memberList, {
+  assertQueryableResourceTable(memberList, {
     columns: 'memberColumns',
     rows: 'memberRows',
     rowKey: 'user',
     loading: 'loading',
+    loaded: 'loaded',
+    error: 'error',
     emptyText: /:empty-text="memberEmptyText"/,
   })
   assert.match(memberList, /const memberRows = computed<Record<string, unknown>\[\]>\(\(\) =>\s*props\.members\.map\(/)
   assert.doesNotMatch(memberList, /v-if="loading"|v-else-if="members\.length/)
+  assert.match(memberList, /:filters="memberFilters"/)
+  assert.match(memberList, /const memberFilters[\s\S]*?key: 'role',[\s\S]*?label: 'Role'/)
 
   const appAccessStart = tenantSettingsPage.indexOf('<section v-if="showAppAccess && !selWs.deletionRequestedAt"')
   const appAccessEnd = tenantSettingsPage.indexOf('</section>', appAccessStart) + '</section>'.length
   assert.ok(appAccessStart >= 0 && appAccessEnd > appAccessStart)
   const appAccess = tenantSettingsPage.slice(appAccessStart, appAccessEnd)
-  assertSimpleResourceTable(appAccess, {
+  assertQueryableResourceTable(appAccess, {
     columns: 'appAccessColumns',
     rows: 'appAccessRows',
     rowKey: 'binding',
     loading: 'appAccessLoading',
+    loaded: 'appAccessHasSnapshot',
+    error: 'appAccessError',
     emptyText: /empty-text="No app access grants\./,
   })
   assert.match(tenantSettingsPage, /const appAccessRows = computed<Record<string, unknown>\[\]>\(\(\) =>\s*appAccessGrants\.value\.map\(/)
   assert.match(appAccess, /ResourceTableDeleteButton/)
   assert.doesNotMatch(appAccess, /v-if="appAccessLoading"|v-else-if="appAccessGrants\.length/)
 
-  const serviceAccountsStart = tenantSettingsPage.indexOf('<ResourceTable\n                  v-if="canEditWs"')
+  const serviceAccountsHeading = tenantSettingsPage.indexOf('<!-- Service accounts -->')
+  const serviceAccountsStart = tenantSettingsPage.indexOf('<ResourceTable', serviceAccountsHeading)
   const serviceAccountsEnd = tenantSettingsPage.indexOf('</ResourceTable>', serviceAccountsStart) + '</ResourceTable>'.length
   assert.ok(serviceAccountsStart >= 0 && serviceAccountsEnd > serviceAccountsStart)
   const serviceAccounts = tenantSettingsPage.slice(serviceAccountsStart, serviceAccountsEnd)
-  assertSimpleResourceTable(serviceAccounts, {
+  assertQueryableResourceTable(serviceAccounts, {
     columns: 'serviceAccountColumns',
     rows: 'serviceAccountRows',
     rowKey: 'uuid',
     loading: 'sasLoading',
+    loaded: 'sasHasSnapshot',
+    error: 'sasError',
     emptyText: /empty-text="No service accounts in this workspace\."/,
   })
   assert.match(tenantSettingsPage, /const serviceAccountRows = computed<Record<string, unknown>\[\]>\(\(\) =>\s*sas\.value\.map\(/)
-  assert.match(tenantSettingsPage, /import ResourceTableActionButton from ['"]@\/portalkit\/ResourceTableActionButton\.vue['"]$/m)
-  const actionButtons = [...serviceAccounts.matchAll(/<ResourceTableActionButton\b[\s\S]*?\/>/g)].map(match => match[0])
-  assert.equal(actionButtons.length, 2)
-  assert.ok(actionButtons.some(action => /:icon="KeyRound"/.test(action) && /tone="accent"/.test(action)))
-  assert.ok(actionButtons.some(action => /:icon="Ban"/.test(action) && /tone="warning"/.test(action)))
-  assert.match(actionButtons.join('\n'), /:label="`Issue token for \$\{String\(row\.displayName\)\}`"/)
-  assert.match(actionButtons.join('\n'), /:label="`Revoke tokens for \$\{String\(row\.displayName\)\}`"/)
-  assert.match(actionButtons.join('\n'), /:busy-label="`Issuing token for \$\{String\(row\.displayName\)\}…`"/)
-  assert.match(actionButtons.join('\n'), /:busy-label="`Revoking tokens for \$\{String\(row\.displayName\)\}…`"/)
-  assert.doesNotMatch(serviceAccounts, /<button\b[\s\S]*?(?:Issue token|Revoke tokens)[\s\S]*?<\/button>/)
-  assert.equal((serviceAccounts.match(/<ResourceTableDeleteButton\b/g) ?? []).length, 1)
+  assert.match(serviceAccounts, /:filters="serviceAccountFilters"/)
+  assert.match(tenantSettingsPage, /const serviceAccountFilters[\s\S]*?key: 'role',[\s\S]*?label: 'Role'/)
+  assert.match(tenantSettingsPage, /import ActionMenu, \{ type ActionMenuItem \} from ['"]@\/portalkit\/ActionMenu\.vue['"]$/m)
+  assert.equal((serviceAccounts.match(/<ActionMenu\b/g) ?? []).length, 1)
+  assert.match(serviceAccounts, /:label="`Actions for \$\{String\(row\.displayName\)\}`"/)
+  assert.match(serviceAccounts, /:items="serviceAccountActions\(String\(row\.uuid\)\)"/)
+  assert.match(serviceAccounts, /:disabled="isSABusy\(String\(row\.uuid\)\)"/)
+  assert.match(serviceAccounts, /@select="onServiceAccountAction\(\$event, row\)"/)
+  assert.doesNotMatch(serviceAccounts, /<ResourceTableActionButton\b|<ResourceTableDeleteButton\b|<button\b/)
   assert.match(tenantSettingsPage, /type ServiceAccountOperation = 'issue' \| 'revoke' \| 'delete'/)
   assert.match(tenantSettingsPage, /const saBusy = ref<Record<string, ServiceAccountOperation>>\(\{\}\)/)
   assert.match(tenantSettingsPage, /function saOperation\(uuid: string\): ServiceAccountOperation \| undefined/)
@@ -578,14 +581,58 @@ test('settings access lists use the canonical simple ResourceTable contract', ()
   assert.match(tenantSettingsPage, /beginSAOperation\(uuid, 'issue'\)/)
   assert.match(tenantSettingsPage, /beginSAOperation\(uuid, 'revoke'\)/)
   assert.match(tenantSettingsPage, /beginSAOperation\(uuid, 'delete'\)/)
-  assert.match(serviceAccounts, /Revoke tokens/)
-  assert.match(serviceAccounts, /Revoking tokens for/)
-  assert.equal((serviceAccounts.match(/:disabled="isSABusy\(String\(row\.uuid\)\)"/g) ?? []).length, 3)
-  assert.match(serviceAccounts, /saOperation\(String\(row\.uuid\)\) === 'issue'/)
-  assert.match(serviceAccounts, /saOperation\(String\(row\.uuid\)\) === 'revoke'/)
-  assert.match(serviceAccounts, /saOperation\(String\(row\.uuid\)\) === 'delete'/)
-  assert.match(serviceAccounts, /:disabled="isSABusy\(String\(row\.uuid\)\)"[\s\S]*?:busy="saOperation\(String\(row\.uuid\)\) === 'delete'"/)
+  const menuActionsStart = tenantSettingsPage.indexOf('function serviceAccountActions(')
+  const menuActionsEnd = tenantSettingsPage.indexOf('\nfunction beginSAOperation', menuActionsStart)
+  assert.ok(menuActionsStart >= 0 && menuActionsEnd > menuActionsStart)
+  const menuActions = tenantSettingsPage.slice(menuActionsStart, menuActionsEnd)
+  assert.match(menuActions, /id: 'issue', label: 'Issue token', busy: saOperation\(uuid\) === 'issue'/)
+  assert.match(menuActions, /id: 'revoke', label: 'Revoke tokens', tone: 'warning', busy: saOperation\(uuid\) === 'revoke'/)
+  assert.match(menuActions, /id: 'delete', label: 'Delete service account', tone: 'danger', busy: saOperation\(uuid\) === 'delete'/)
+  assert.match(menuActions, /await nextTick\(\)[\s\S]*if \(!target \|\| !isCurrentTarget\(target\) \|\| activeSection\.value !== 'workspaces' \|\| isSABusy\(uuid\)\) return[\s\S]*action === 'issue'/)
+  assert.match(menuActions, /action === 'issue'\) void onIssueToken\(uuid, name\)/)
+  assert.match(menuActions, /action === 'revoke'\) void onRevokeTokens\(uuid, name\)/)
+  assert.match(menuActions, /action === 'delete'\) void onDeleteSA\(uuid, name\)/)
   assert.doesNotMatch(serviceAccounts, /v-if="sasLoading"|v-else-if="sas\.length|<li\b/)
+})
+
+test('settings table reads delegate initial, stale, and retry states without duplicate banners', () => {
+  // A denied read clears the snapshot before cached admin roles update.
+  // Keep recovery visible without leaving the add/create form available.
+  for (const [guard, permission, denied] of [
+    ['canAddWsMembers', 'canEditWs', 'wsMembersReadDenied'],
+    ['canAddOrgMembers', 'canManageOrgMembers', 'orgMembersReadDenied'],
+    ['canCreateSA', 'canEditWs', 'sasReadDenied'],
+  ]) {
+    assert.ok(tenantSettingsPage.includes(`const ${guard} = computed(() => ${permission}.value && !${denied}.value)`))
+    assert.ok(tenantSettingsPage.includes(`<button v-if="${guard}"`))
+  }
+  for (const [rows, loading, loaded, error, key] of [
+    ['wsMembers', 'wsMembersLoading', 'wsMembersHasSnapshot', 'wsMembersError', ':key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"'],
+    ['orgMembers', 'orgMembersLoading', 'orgMembersHasSnapshot', 'orgMembersError', ':key="organizationTargetUUID ?? \'\'"'],
+  ]) {
+    const roster = [...tenantSettingsPage.matchAll(/<MemberList\b[\s\S]*?\/>/g)]
+      .map(([source]) => source)
+      .find(source => source.includes(`:members="${rows}"`))
+    assert.ok(roster, `missing ${rows} roster`)
+    assert.ok(roster.includes(key), `${rows} must reset controls when its authority changes`)
+    assert.ok(roster.includes(`:loading="${loading}"`))
+    assert.ok(roster.includes(`:loaded="${loaded}"`))
+    assert.ok(roster.includes(`:error="${error}"`))
+    assert.ok(roster.includes(`:stale="${loaded} && !!${error}"`))
+    assert.match(roster, /\bretryable\b/)
+    assert.match(roster, /@retry=/)
+    assert.doesNotMatch(roster, /v-if=/)
+  }
+  const accessTables = [...tenantSettingsPage.matchAll(/<ResourceTable\b[\s\S]*?>/g)]
+    .map(([source]) => source)
+    .filter(source => /:rows="(?:appAccessRows|serviceAccountRows)"/.test(source))
+  assert.equal(accessTables.length, 2)
+  for (const table of accessTables) {
+    assert.match(table, /:key="`\$\{tenant\.orgUUID\}\/\$\{selectedWorkspaceUUID\}(?:\/\$\{saTableRevision\})?`"/)
+    assert.doesNotMatch(table, /v-if="(?:appAccess|sas)HasSnapshot/)
+  }
+  assert.doesNotMatch(tenantSettingsPage, /<div v-if="(?:orgMembers|wsMembers|appAccess|sas)(?:Error|Loading)/)
+  assert.doesNotMatch(tenantSettingsPage, /Refreshing (?:organization members|workspace members|app access grants|service accounts)…/)
 })
 
 test('Workspace danger zone is recoverable, admin-only, and grouped in the Workspace card', () => {
@@ -608,13 +655,8 @@ test('Workspace danger zone is recoverable, admin-only, and grouped in the Works
   assert.match(workspaceControlHeader, /\$slots\.lifecycle[\s\S]*slot name="lifecycle"/)
 })
 
-test('tenant settings creation preserves the current operating workspace', () => {
-  const pageStart = tenantSettingsPage.indexOf('async function onCreateWorkspace()')
-  const pageEnd = tenantSettingsPage.indexOf('\n}\n\n// ===== Workspace pane:', pageStart)
-  assert.ok(pageStart >= 0 && pageEnd > pageStart)
-  const pageCreate = tenantSettingsPage.slice(pageStart, pageEnd)
-  assert.match(pageCreate, /tenant\.createWorkspace\(org, name, \{ selectCreated: false \}\)/)
-  assert.doesNotMatch(pageCreate, /selectWorkspace\(created\)/)
+test('workspace creation retains explicit store selection control', () => {
+  assert.doesNotMatch(tenantSettingsPage, /tenant\.createWorkspace|newWorkspaceOpen/)
 
   const storeStart = tenant.indexOf('async function createWorkspace(')
   const storeEnd = tenant.indexOf('\n\n  // bootstrap drives', storeStart)
@@ -630,14 +672,6 @@ test('tenant settings creation preserves the current operating workspace', () =>
 })
 
 test('workspace creation and organization switching fence late responses', () => {
-  const createStart = tenantSettingsPage.indexOf('async function onCreateWorkspace()')
-  const createEnd = tenantSettingsPage.indexOf('\n}\n\n// ===== Workspace pane:', createStart)
-  assert.ok(createStart >= 0 && createEnd > createStart)
-  const pageCreate = tenantSettingsPage.slice(createStart, createEnd)
-  assert.match(pageCreate, /const request = \+\+workspaceCreateRequest/)
-  assert.match(pageCreate, /if \(request !== workspaceCreateRequest \|\| tenant\.orgUUID !== org\) return/)
-  assert.match(pageCreate, /if \(request === workspaceCreateRequest\) newWsBusy\.value = false/)
-
   const storeStart = tenant.indexOf('async function createWorkspace(')
   const storeEnd = tenant.indexOf('\n\n  // bootstrap drives', storeStart)
   assert.ok(storeStart >= 0 && storeEnd > storeStart)
@@ -688,14 +722,15 @@ test('workspace list adoption follows the winning per-org load state', () => {
   assert.match(reload, /workspaceLoadStateByOrg\[orgUUID \?\? ''\] \?\? 'idle'\) !== 'loading'/)
 
   const adoptionStart = tenantSettingsPage.indexOf('// App bootstrap and the shell switcher')
-  const adoptionEnd = tenantSettingsPage.indexOf('\n)\n\nfunction selectWorkspace', adoptionStart)
+  const adoptionEnd = tenantSettingsPage.indexOf('\n)\n\n// Organization switching happens', adoptionStart)
   assert.ok(adoptionStart >= 0 && adoptionEnd > adoptionStart)
   const adoption = tenantSettingsPage.slice(adoptionStart, adoptionEnd)
   assert.match(adoption, /workspaceLoadStateByOrg\[tenant\.orgUUID\]/)
   assert.match(adoption, /loadState === 'ready' && scopedOrgUUID\.value === orgUUID && !workspaceListError\.value/)
-  assert.match(adoption, /if \(loadState === 'error'\) \{[\s\S]*if \(scopedOrgUUID\.value !== orgUUID\) selectedWorkspaceUUID\.value = null[\s\S]*workspaceListLoading\.value = false/)
+  assert.match(adoption, /if \(loadState === 'error'\) \{[\s\S]*workspaceListLoading\.value = false/)
   assert.match(adoption, /scopedOrgUUID\.value = orgUUID[\s\S]*workspaceListLoading\.value = false/)
-  assert.match(tenantSettingsPage, /const workspaceListInitialLoading = computed\(\(\) => workspaceListLoading\.value && workspaces\.value\.length === 0\)/)
+  assert.match(tenantSettingsPage, /const workspaceListLoaded = computed\(\(\) => !!tenant\.orgUUID && scopedOrgUUID\.value === tenant\.orgUUID\)/)
+  assert.match(tenantSettingsPage, /const workspaceListInitialLoading = computed\(\(\) => workspaceListLoading\.value && !workspaceListLoaded\.value\)/)
   assert.doesNotMatch(tenantSettingsPage, /scopedOrgUUID\.value !== org \|\| workspaceListLoading\.value/)
 })
 
@@ -715,8 +750,8 @@ test('settings sections keep read failures local and expose independent retries'
     assert.match(source, new RegExp(`tenant\\.listReadError\\('${kind}'`))
     assert.match(source, /(?:request|requestGeneration) === .*Request/)
     assert.match(source, /finally \{[\s\S]*(?:request|requestGeneration) === .*Request/)
-    assert.match(tenantSettingsPage, new RegExp(`@click="${loader}(?:\\(\\))?"`))
-    assert.match(tenantSettingsPage, new RegExp(`${state}[\\s\\S]*?Retry`))
+    assert.match(tenantSettingsPage, new RegExp(`@retry="${loader}(?:\\(\\))?"`))
+    assert.match(tenantSettingsPage, new RegExp(`:error="${state}"`))
     assert.match(tenantSettingsPage, new RegExp(`Failed to load ${retryLabel.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}`))
   }
 
@@ -771,7 +806,7 @@ test('app access is always scoped to the inspected workspace', () => {
   const appAccess = tenantSettingsPage.slice(appAccessStart, appAccessEnd)
   assert.match(appAccess, /App access/)
   assert.match(appAccess, /:rows="appAccessRows"/)
-  assert.match(appAccess, /@click="reloadAppAccessGrants"/)
+  assert.match(appAccess, /@retry="reloadAppAccessGrants"/)
 })
 
 test('settings route names preserve the organizations section with trailing slashes', () => {
@@ -784,7 +819,7 @@ test('settings route names preserve the organizations section with trailing slas
   assert.ok(routeNameOffset >= 0 && normalizedPathOffset > routeNameOffset)
   assert.match(activeSection, /if \(route\.name === 'settings-organizations'\) return 'organizations'/)
   assert.ok(activeSection.includes("routePath.value.replace(/\\/+$/, '') === '/settings/organizations'"))
-  assert.match(router, /path: ORGANIZATION_ROUTE \+ '\/settings\/organizations'[\s\S]*name: 'settings-organizations'/)
+  assert.match(router, /path: ORGANIZATION_ROUTE \+ '\/settings\/organizations'[\s\S]*name: 'settings-organization-overview'/)
 })
 
 test('choosing the current organization continues to the requested destination', () => {
@@ -941,14 +976,12 @@ test('account developer access gates unverified Workspace context without anothe
 })
 
 test('member role controls have resource-specific names and use muted badges', () => {
-  assert.match(memberList, /placeholder="email or member ID"[\s\S]*aria-label="Member email or member ID"/)
   // Typing an email suggests matching people from the rate-limited search,
   // as an accessible combobox; existing members are not suggested again.
-  assert.match(memberList, /useUserSuggestions\(newUser\)/)
-  assert.match(memberList, /role="combobox"[\s\S]*:aria-expanded="showSuggestions"[\s\S]*:aria-controls="listboxId"/)
-  assert.match(memberList, /role="listbox"[\s\S]*role="option"[\s\S]*:aria-selected="i === activeSuggestion"/)
-  assert.match(memberList, /!existing\.has\(s\.user\)/)
-  assert.match(memberList, /v-model="newRole"[\s\S]*aria-label="Role for new member"/)
+  assert.match(addMemberDialog, /useUserSuggestions\(newUser\)/)
+  assert.match(addMemberDialog, /role="combobox"[\s\S]*:aria-expanded="showSuggestions"[\s\S]*:aria-controls="listboxId"/)
+  assert.match(addMemberDialog, /role="listbox"[\s\S]*role="option"[\s\S]*:aria-selected="index === activeSuggestion"/)
+  assert.match(addMemberDialog, /!existing\.has\(person\.user\)/)
 
   const roleStart = memberList.indexOf('<template #role="{ row }">')
   const roleEnd = memberList.indexOf('</template>', roleStart)
@@ -963,6 +996,25 @@ test('member role controls have resource-specific names and use muted badges', (
   assert.match(roleSelect, /:aria-label="`Role for \$\{memberUser\(row\)\} in \$\{scopeLabel\}`"/)
 })
 
+test('compact settings creation is separated from collection search and token issuance', () => {
+  assert.doesNotMatch(memberList, /<form\b|newUser|newRole|useUserSuggestions/)
+  assert.doesNotMatch(tenantSettingsPage, /newSAName|newSARole/)
+  assert.match(tenantSettingsPage, /<CreateServiceAccountDialog\b[\s\S]*?:create="onCreateSA"/)
+
+  for (const dialog of [addMemberDialog, createServiceAccountDialog]) {
+    assert.match(dialog, /<dialog\b[\s\S]*:aria-labelledby=[\s\S]*@cancel\.prevent="close"/)
+    assert.match(dialog, /\.showModal\(\)/)
+    assert.match(dialog, /<form @submit\.prevent="submit">/)
+    assert.match(dialog, /<label\b/)
+    assert.match(dialog, /ref<'admin' \| 'member'>\('member'\)/)
+    assert.match(dialog, /v-if="error"[\s\S]*role="alert"/)
+    assert.doesNotMatch(dialog, /tenant\.issueSAToken|newUser\.value = ''|name\.value = ''/)
+  }
+  assert.match(addMemberDialog, /Adding someone here grants access to this workspace only/)
+  assert.match(addMemberDialog, /Organization settings/)
+  assert.match(createServiceAccountDialog, /Issue token/)
+})
+
 test('organization selection clears workspace and fences workspace-scoped pages', () => {
   assert.match(organizationsPage, /await router\.push\(`\/\$\{org\.uuid\}\/workspaces`\)/)
   assert.match(organizationsPage, /await router\.push\(`\/\$\{org\.uuid\}\/workspaces`\)/)
@@ -973,7 +1025,7 @@ test('organization selection clears workspace and fences workspace-scoped pages'
   assert.match(selection, /workspaceUUID\.value = null/)
   assert.match(selection, /fetchWorkspaces\(uuid, \{ selectDefault: false \}\)/)
   assert.match(appLayout, /path === '\/organizations' \|\| path\.startsWith\('\/organizations\/'\)/)
-  assert.match(appLayout, /void router\.replace\(scopePath\('\/settings\/workspaces'\)\)/)
+  assert.match(appLayout, /void router\.replace\(`\/\$\{tenantStore\.orgUUID\}\/workspaces`\)/)
 })
 
 test('workspace trigger is borderless at rest, has no count, and filters lifecycle states honestly', () => {
@@ -1200,10 +1252,10 @@ test('workspace popover opens on a selected or first enabled option with an acti
   assert.match(focus, /const selected = options\.find\(\(option\) => option\.getAttribute\('aria-selected'\) === 'true'\)/)
   assert.match(focus, /const target = selected \?\? options\[0\]/)
 
-  const manageRef = switcher.match(/ref="([^"]*manage[^"]*)"/i)
-  assert.ok(manageRef, 'the no-enabled-option fallback must retain an actionable management control')
-  assert.match(focus, new RegExp(`const manage = ${escapeRegExp(manageRef[1])}\\.value`))
-  assert.match(focus, /manage && !manage\.disabled/)
+  const createRef = switcher.match(/ref="([^"]*create[^"]*)"/i)
+  assert.ok(createRef, 'the no-enabled-option fallback must retain the permitted creation control')
+  assert.match(focus, new RegExp(`const create = ${escapeRegExp(createRef[1])}\\.value`))
+  assert.match(focus, /create && !create\.disabled/)
   assert.match(focus, /target\?\.focus\(\)/)
   assert.match(focus, /panel\.querySelector<HTMLElement>\('button:not\(:disabled\), input:not\(:disabled\), \[href\]'\)/)
   assert.match(focus, /if \(!panel\.contains\(document\.activeElement\)\) panel\.focus\(\)/)
@@ -1317,17 +1369,17 @@ test('workspace popover returns focus to its trigger on close', () => {
   assert.match(popover, /focus\(\)/)
   const chooseStart = switcher.indexOf('function chooseWorkspace(')
   const chooseEnd = switcher.indexOf('\n}', chooseStart)
-  const manageStart = switcher.indexOf('function manageWorkspaces()')
-  const manageEnd = switcher.indexOf('\n}', manageStart)
+  const createCloseStart = switcher.indexOf('function closeCreateWorkspace()')
+  const createCloseEnd = switcher.indexOf('\n}', createCloseStart)
   assert.ok(chooseStart >= 0 && chooseEnd > chooseStart)
-  assert.ok(manageStart >= 0 && manageEnd > manageStart)
+  assert.ok(createCloseStart >= 0 && createCloseEnd > createCloseStart)
   assert.match(switcher.slice(chooseStart, chooseEnd), /close\(\{ restoreFocus: true \}\)/)
-  assert.match(switcher.slice(manageStart, manageEnd), /close\(\{ restoreFocus: true \}\)/)
+  assert.match(switcher.slice(createCloseStart, createCloseEnd), /triggerRef\.value\?\.focus\(\)/)
 })
 
 test('workspace selection redirects only after a successful different-workspace switch', () => {
   const chooseStart = switcher.indexOf('function chooseWorkspace(')
-  const chooseEnd = switcher.indexOf('\n}\n\nfunction manageWorkspaces', chooseStart)
+  const chooseEnd = switcher.indexOf('\n}\n\nfunction openCreateWorkspace', chooseStart)
   assert.ok(chooseStart >= 0 && chooseEnd > chooseStart)
   const choose = switcher.slice(chooseStart, chooseEnd)
   assert.match(choose, /if \(!isWorkspaceUsable\(workspace\)\) return/)
@@ -1354,7 +1406,7 @@ test('workspace transition tokens are monotonic and stale completions cannot cle
 
 test('workspace selection fences dashboard navigation with its own transition token', () => {
   const chooseStart = switcher.indexOf('async function chooseWorkspace(')
-  const chooseEnd = switcher.indexOf('\n}\n\nfunction manageWorkspaces', chooseStart)
+  const chooseEnd = switcher.indexOf('\n}\n\nfunction openCreateWorkspace', chooseStart)
   assert.ok(chooseStart >= 0 && chooseEnd > chooseStart)
   const choose = switcher.slice(chooseStart, chooseEnd)
   const invalid = choose.indexOf('if (!isWorkspaceUsable(workspace)) return')

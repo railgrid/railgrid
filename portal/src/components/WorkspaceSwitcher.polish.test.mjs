@@ -85,3 +85,11 @@ test('first-load completion moves focus from the dialog to the selected or first
   const postLoadFocus = openWatch.indexOf('focusInitialPanelControl()', load)
   assert.ok(load >= 0 && postLoadTick > load && postLoadFocus > postLoadTick)
 })
+
+test('workspace picker opens name-entry creation instead of navigating to management', () => {
+  assert.doesNotMatch(source, /Manage workspaces|manageWorkspaces|Settings2/)
+  assert.match(source, /@click="openCreateWorkspace"/)
+  assert.match(source, /<CreateWorkspaceDialog v-if="createOpen" @close="closeCreateWorkspace"/)
+  assert.match(source, /org\.role === 'admin' \|\| org\.workspaceCreation === 'members'/)
+  assert.match(source, /function closeCreateWorkspace\(\)[\s\S]*?triggerRef\.value\?\.focus\(\)/)
+})

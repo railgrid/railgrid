@@ -33,6 +33,13 @@ item is a `role="menuitem"` button with a stable roving `tabindex`,
 are not selectable. A divider separates the first contiguous danger group from
 preceding non-danger items.
 
+For an operation that continues after selection closes the menu, callers set
+the trigger's optional `busy` and resource-specific `busyLabel` props. The
+trigger displays the canonical spinner and stays visible in a resource table;
+its accessible name and polite status announcement identify the operation.
+`busyLabel` falls back to the trigger label with an ellipsis. Busy triggers
+close an open menu and prevent opening or selecting again until work settles.
+
 ## Behavior
 
 Keyboard behavior is complete and deterministic: closed `ArrowDown`, Enter, or

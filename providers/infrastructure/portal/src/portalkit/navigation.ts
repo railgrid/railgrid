@@ -24,8 +24,10 @@ export function scopedPath(path: string, scope: NavigationScope): string {
   if (parsePortalScope(path) || /^\/(?:login|auth|organizations|bonkers)(?:[/?#]|$)/.test(path)) return path
   if (!scope.orgUUID) return '/organizations'
   const org = `/${encodeURIComponent(scope.orgUUID)}`
-  if (path === '/settings' || path.startsWith('/settings/')) return org + path
-  if (!scope.workspaceUUID) return path === '/providers' ? org + path : org + '/settings/workspaces'
+  if (!scope.workspaceUUID) {
+    if (path === '/settings' || path.startsWith('/settings/')) return org + path
+    return path === '/providers' ? org + path : org + '/workspaces'
+  }
   return `${org}/${encodeURIComponent(scope.workspaceUUID)}${path === '/' ? '' : path}`
 }
 

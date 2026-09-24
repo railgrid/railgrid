@@ -25,12 +25,22 @@ const props = withDefaults(defineProps<{
   label: string
   items: readonly ActionMenuItem[]
   disabled?: boolean
+  /** Caller-owned operation in progress after the menu closes. */
+  busy?: boolean
+  /** Resource-specific progress, for example "Issuing token for automation…". */
+  busyLabel?: string
   /** Optional visible trigger text for actions such as dashboard "Add tile". */
   showLabel?: boolean
 }>(), {
   disabled: false,
+  busy: false,
   showLabel: false,
 })
+
+const accessibleLabel = computed(() => props.busy
+  ? props.busyLabel || `${props.label}…`
+  : props.label)
+const unavailable = computed(() => props.disabled || props.busy)
 
 const emit = defineEmits<{
   select: [id: string]
@@ -86,7 +96,7 @@ function setInitialActive(): void {
 }
 
 function openMenu(index = firstSelectableIndex()): void {
-  if (props.disabled || open.value || !props.items.length) return
+  if (unavailable.value || open.value || !props.items.length) return
   open.value = true
   activeIndex.value = index
   if (index >= 0) void nextTick(() => menuItems()[index]?.focus())
@@ -115,7 +125,7 @@ function toggleMenu(): void {
 
 function select(id: string): void {
   const item = props.items.find(candidate => candidate.id === id)
-  if (!item || props.disabled || item.disabled || item.busy) return
+  if (!item || unavailable.value || item.disabled || item.busy) return
   closeMenu(true)
   emit('select', id)
 }
@@ -226,8 +236,8 @@ watch(() => props.items, () => {
   }
 }, { deep: true })
 
-watch(() => props.disabled, disabled => {
-  if (disabled) closeMenu()
+watch(unavailable, blocked => {
+  if (blocked) closeMenu()
 })
 
 onMounted(() => {
@@ -248,19 +258,22 @@ onBeforeUnmount(() => {
       ref="trigger"
       type="button"
       class="k-icon-action k-action-menu__trigger"
-      :class="{ 'k-action-menu__trigger--with-label': showLabel }"
-      :data-k-tip="label"
-      :aria-label="label"
+      :class="{ 'k-action-menu__trigger--with-label': showLabel, 'k-table-action--busy': busy, 'k-table-action--neutral': busy }"
+      :data-k-tip="accessibleLabel"
+      :aria-label="accessibleLabel"
+      :aria-busy="busy || undefined"
       :aria-controls="menuID"
       aria-haspopup="menu"
       :aria-expanded="open"
-      :disabled="disabled"
+      :disabled="unavailable"
       @click="toggleMenu"
       @keydown="handleTriggerKeydown"
     >
-      <Ellipsis :size="16" :stroke-width="1.75" aria-hidden="true" />
-      <span v-if="showLabel" class="k-action-menu__trigger-label">{{ label }}</span>
+      <Loader2 v-if="busy" class="k-action-menu__busy" :size="16" :stroke-width="1.75" aria-hidden="true" />
+      <Ellipsis v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
+      <span v-if="showLabel" class="k-action-menu__trigger-label">{{ accessibleLabel }}</span>
     </button>
+    <span class="k-table__live" role="status" aria-live="polite" aria-atomic="true">{{ busy ? accessibleLabel : '' }}</span>
 
     <Teleport to="body">
       <div

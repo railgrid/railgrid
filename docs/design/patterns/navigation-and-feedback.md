@@ -50,8 +50,10 @@ control-state eases. The `.k-progress__bar` width transition is a sanctioned
 
 ## Scoped destinations
 
-Workspace pages use `/ui/{orgID}/{workspaceID}/...`; organization settings use
-`/ui/{orgID}/settings/...`. IDs remain stable when display names change. The
+Workspace pages and settings use `/ui/{orgID}/{workspaceID}/...`. Organization
+settings retain that workspace scope when opened from a workspace; the
+organization-only `/ui/{orgID}/settings/organizations` destination remains
+available without an active workspace. IDs remain stable when display names change. The
 address bar is sufficient to share an existing resource with an authorized
 teammate; query parameters and fragments remain part of the destination.
 
@@ -68,13 +70,27 @@ workspace chooser with direct Open actions. Pending workspaces show preparation
 status and refresh for up to a minute; Retry resumes checking. Empty organizations
 offer creation when allowed, otherwise explain how to get access. New organization
 creation enters this flow with a preparation hint while bootstrap runs.
-Workspace management remains a separate settings destination; explicit settings
-and resource links never trigger automatic workspace selection. The sidebar workspace menu
+Workspace settings show the active workspace directly, including its access and
+lifecycle controls. The profile menu's Settings action opens those settings.
+Organization settings contain the cross-workspace inventory in a card after the
+organization overview, using the shared queryable ResourceTable for search,
+lifecycle filtering, pagination, and read states. It includes provisioning and
+deleting workspaces with shared row actions for recovery. Workspace switching stays
+in the picker; the inventory has no separate workspace inspection selection or open
+action. Member rosters, app access grants, and service accounts also use queryable
+ResourceTables with shared search, pagination, and loading/error/retry states.
+Member and service-account tables offer role filters; role editors remain native
+selects. Table state resets when its organization or workspace changes. Explicit workspace settings
+and resource links resolve the workspace encoded in their URL. The sidebar workspace menu
 shows and searches only the current organization’s workspaces. It does not load
 other organizations’ workspace lists. A quiet Change action beside the current organization name opens the
 organization chooser (accessible label: Change organization), preserving the current destination for Back or continuing
-in the same organization. Other organizations are shown only in that chooser. Manage workspaces is the
-sole footer action; the picker has no persistent explanatory banner.
+in the same organization. Other organizations are shown only in that chooser.
+Create workspace is the picker footer action when permitted. It opens a focused
+name-entry dialog for the current organization and enters the new workspace once
+it is ready. Creation errors retain the draft, and readiness retries check the
+created workspace without creating another. The picker has no persistent
+explanatory banner.
 A workspace switch navigates to its dashboard. Back/Forward restores the context encoded
 in each history entry. A failed destination retains its URL and offers Retry,
 Switch account, and Choose organization without substituting another workspace.

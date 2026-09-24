@@ -304,6 +304,9 @@ export const useProvidersStore = defineStore('providers', () => {
   const enabledNavItems = computed<ProviderNavItem[]>(() =>
     items.value
       .filter((p) => {
+        // Provider destinations need a workspace. Organization-only settings
+        // must not turn every provider link into the same active fallback.
+        if (!useTenantStore().workspaceUUID) return false
         if (!p.ready || !p.hasUI) return false
         // Legacy in-tree route OR new-style first-party provider:
         // always shown, no binding required.
