@@ -51,7 +51,7 @@ const (
 	// Set at create time by the hub's Org-create endpoint (roadmap step 10)
 	// and by the personal-Org bootstrap controller (roadmap step 1+). Used
 	// here to count Orgs against the user's quota.
-	LabelCreatedBy = "tenants.railgrid.ai/created-by"
+	LabelCreatedBy = tenancyv1alpha1.OrganizationCreatorLabel
 )
 
 // EffectiveOrgsPerUser returns the effective Org quota for the given

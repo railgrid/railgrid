@@ -39,7 +39,7 @@ const hasPortalSession = computed(() => !!auth.token)
 // Keep the terminal singleton mounted so sessions survive navigation, but do
 // not expose its chrome on the standalone organization chooser.
 const hideTerminalDock = computed(
-  () => route.path === '/organizations' || route.path.startsWith('/organizations/'),
+  () => route.name === 'workspace-chooser' || route.path === '/organizations' || route.path.startsWith('/organizations/'),
 )
 
 // Register the dynamic provider route shape exactly once at app boot, before
@@ -62,7 +62,7 @@ const showProvisioning = computed(
 const showTenantErrorInline = computed(() => {
   if (!hasPortalSession.value || !tenant.error) return false
   const path = portalRoutePath(route.path)
-  return !path.startsWith('/settings') && !path.startsWith('/organizations')
+  return path !== '/workspaces' && !path.startsWith('/settings') && !path.startsWith('/organizations')
 })
 
 // ToastHost teleports its visual stack to <body>, outside AppLayout's DOM

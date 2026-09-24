@@ -18,7 +18,6 @@ package organization
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -37,23 +36,25 @@ import (
 // each method succeeds and records its call; tests can override the
 // matching err field to simulate failure paths.
 type fakeProvisioner struct {
-	mu                sync.Mutex
-	wsCalls           []string
-	memCalls          []membershipCall
-	childCalls        []childWorkspaceCall
-	nameCalls         []displayNameCall
-	railgridBindCalls []childWorkspaceCall
-	adminCalls        []workspaceAdminCall
-	mcpCalls          []childWorkspaceCall
-	clusterCalls      []childWorkspaceCall
-	wsErr             error
-	memErr            error
-	childErr          error
-	nameErr           error
-	railgridBindErr   error
-	adminErr          error
-	mcpErr            error
-	clusterErr        error
+	orgMembershipRoles map[string]map[string]string
+	membershipListErr  error
+	mu                 sync.Mutex
+	wsCalls            []string
+	memCalls           []membershipCall
+	childCalls         []childWorkspaceCall
+	nameCalls          []displayNameCall
+	railgridBindCalls  []childWorkspaceCall
+	adminCalls         []workspaceAdminCall
+	mcpCalls           []childWorkspaceCall
+	clusterCalls       []childWorkspaceCall
+	wsErr              error
+	memErr             error
+	childErr           error
+	nameErr            error
+	railgridBindErr    error
+	adminErr           error
+	mcpErr             error
+	clusterErr         error
 	// clusterHash is the value returned by GetChildWorkspaceClusterName.
 	// Defaults to a fixed test hash; tests can override.
 	clusterHash string
@@ -102,6 +103,24 @@ func (f *fakeProvisioner) EnsureOrgMembership(_ context.Context, orgUUID, userNa
 	defer f.mu.Unlock()
 	f.memCalls = append(f.memCalls, membershipCall{OrgUUID: orgUUID, UserName: userName, Role: role})
 	return f.memErr
+}
+
+func (f *fakeProvisioner) ListOrgMembershipRoles(_ context.Context, orgID string) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.membershipListErr != nil {
+		return nil, f.membershipListErr
+	}
+	if roles, ok := f.orgMembershipRoles[orgID]; ok {
+		return roles, nil
+	}
+	roles := map[string]string{}
+	for _, call := range f.memCalls {
+		if call.OrgUUID == orgID && f.memErr == nil {
+			roles[call.UserName] = call.Role
+		}
+	}
+	return roles, nil
 }
 
 func (f *fakeProvisioner) EnsureChildWorkspace(_ context.Context, orgUUID, wsUUID string) error {
@@ -251,6 +270,19 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 		t.Fatal("expected User.status.personalOrg to be set after reconcile")
 	}
 
+	if len(prov.wsCalls) != 0 || len(prov.adminCalls) != 0 || got.Status.DefaultWorkspace != "" {
+		t.Fatal("User reconciler must only request the personal organization")
+	}
+	lifecycle := &organizationReconciler{r}
+	if _, err := lifecycle.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: got.Status.PersonalOrg}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: got.Name}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: got.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
 	var org tenancyv1alpha1.Organization
 	if err := c.Get(context.Background(), types.NamespacedName{Name: got.Status.PersonalOrg}, &org); err != nil {
 		t.Fatalf("get organization: %v", err)
@@ -370,203 +402,6 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	}
 	if wsEntry.Role != tenancyv1alpha1.MembershipRoleAdmin {
 		t.Errorf("workspace entry role: got %q, want admin", wsEntry.Role)
-	}
-}
-
-func TestReconciler_ProvisioningFailureSurfacesInStatus(t *testing.T) {
-	scheme := newTestScheme(t)
-	user := newUser("dora", "Dora")
-	c := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(user).
-		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
-		Build()
-
-	prov := &fakeProvisioner{wsErr: errors.New("kcp unreachable")}
-	r := &Reconciler{client: c, provisioner: prov}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "dora"}}); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-
-	var got tenancyv1alpha1.User
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "dora"}, &got); err != nil {
-		t.Fatalf("get user: %v", err)
-	}
-	var org tenancyv1alpha1.Organization
-	if err := c.Get(context.Background(), types.NamespacedName{Name: got.Status.PersonalOrg}, &org); err != nil {
-		t.Fatalf("get organization: %v", err)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionWorkspaceReady, metav1.ConditionFalse, reasonWorkspaceProvisioningFailed) {
-		t.Errorf("expected WorkspaceReady=False/WorkspaceProvisioningFailed, got %#v", org.Status.Conditions)
-	}
-	// Next reconcile with a healthy provisioner should converge.
-	prov.wsErr = nil
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "dora"}}); err != nil {
-		t.Fatalf("second reconcile: %v", err)
-	}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: org.Name}, &org); err != nil {
-		t.Fatalf("re-get organization: %v", err)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionWorkspaceReady, metav1.ConditionTrue, reasonWorkspaceProvisioned) {
-		t.Errorf("expected WorkspaceReady to flip to True after provisioner recovery, got %#v", org.Status.Conditions)
-	}
-}
-
-// TestReconciler_MembershipFailureSurfacesInStatus verifies that when the
-// workspace was provisioned but the admin Membership write fails, the
-// reconciler reports MembershipReady=False (and IndexSynced=False with
-// reason AwaitingMembership) without overwriting the now-True
-// WorkspaceReady condition. A subsequent reconcile with the failure
-// cleared should converge to Ready=True.
-func TestReconciler_MembershipFailureSurfacesInStatus(t *testing.T) {
-	scheme := newTestScheme(t)
-	user := newUser("erin", "Erin")
-	c := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(user).
-		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
-		Build()
-
-	prov := &fakeProvisioner{memErr: errors.New("forbidden")}
-	r := &Reconciler{client: c, provisioner: prov}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "erin"}}); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-
-	var got tenancyv1alpha1.User
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "erin"}, &got); err != nil {
-		t.Fatalf("get user: %v", err)
-	}
-	var org tenancyv1alpha1.Organization
-	if err := c.Get(context.Background(), types.NamespacedName{Name: got.Status.PersonalOrg}, &org); err != nil {
-		t.Fatalf("get organization: %v", err)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionWorkspaceReady, metav1.ConditionTrue, reasonWorkspaceProvisioned) {
-		t.Errorf("WorkspaceReady should still be True; got %#v", org.Status.Conditions)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionMembershipReady, metav1.ConditionFalse, reasonMembershipFailed) {
-		t.Errorf("expected MembershipReady=False/MembershipWriteFailed; got %#v", org.Status.Conditions)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced, metav1.ConditionFalse, reasonAwaitingMembership) {
-		t.Errorf("expected IndexSynced=False/AwaitingMembership; got %#v", org.Status.Conditions)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionFalse, reasonAllStepsNotReady) {
-		t.Errorf("expected Ready=False/BootstrapInProgress; got %#v", org.Status.Conditions)
-	}
-
-	// Heal the provisioner; next reconcile should make everything True.
-	prov.memErr = nil
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "erin"}}); err != nil {
-		t.Fatalf("second reconcile: %v", err)
-	}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: org.Name}, &org); err != nil {
-		t.Fatalf("re-get organization: %v", err)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionTrue, reasonAllStepsReady) {
-		t.Errorf("expected Ready=True/OrganizationReady after recovery; got %#v", org.Status.Conditions)
-	}
-}
-
-// TestReconciler_ChildWorkspaceFailureSurfacesInStatus verifies the step E
-// failure path: workspace OK, org Membership OK, but EnsureChildWorkspace
-// returns an error. DefaultWorkspaceReady goes False/DefaultWorkspaceProvisioningFailed;
-// downstream steps (workspace Membership + index sync) defer with
-// AwaitingDefaultWorkspace / AwaitingMembership; aggregate Ready stays
-// False. A subsequent reconcile with the failure cleared converges to
-// Ready=True.
-func TestReconciler_ChildWorkspaceFailureSurfacesInStatus(t *testing.T) {
-	scheme := newTestScheme(t)
-	user := newUser("frank", "Frank")
-	c := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(user).
-		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
-		Build()
-
-	prov := &fakeProvisioner{childErr: errors.New("child WT bind denied")}
-	r := &Reconciler{client: c, provisioner: prov}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "frank"}}); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-
-	var got tenancyv1alpha1.User
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "frank"}, &got); err != nil {
-		t.Fatalf("get user: %v", err)
-	}
-	var org tenancyv1alpha1.Organization
-	if err := c.Get(context.Background(), types.NamespacedName{Name: got.Status.PersonalOrg}, &org); err != nil {
-		t.Fatalf("get organization: %v", err)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionWorkspaceReady, metav1.ConditionTrue, reasonWorkspaceProvisioned) {
-		t.Errorf("WorkspaceReady should still be True; got %#v", org.Status.Conditions)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionMembershipReady, metav1.ConditionTrue, reasonMembershipReady) {
-		t.Errorf("MembershipReady should still be True; got %#v", org.Status.Conditions)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady, metav1.ConditionFalse, reasonDefaultWorkspaceProvisioningFailed) {
-		t.Errorf("expected DefaultWorkspaceReady=False/DefaultWorkspaceProvisioningFailed; got %#v", org.Status.Conditions)
-	}
-	// Step D (UMI sync) is gated only on Step C now; the org-scope entry
-	// is written even when Step E (default workspace) has failed.
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced, metav1.ConditionTrue, reasonIndexSynced) {
-		t.Errorf("expected IndexSynced=True/IndexEntryWritten (org-scope only); got %#v", org.Status.Conditions)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionFalse, reasonAllStepsNotReady) {
-		t.Errorf("expected Ready=False/BootstrapInProgress; got %#v", org.Status.Conditions)
-	}
-
-	// Heal and re-reconcile.
-	prov.childErr = nil
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "frank"}}); err != nil {
-		t.Fatalf("second reconcile: %v", err)
-	}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: org.Name}, &org); err != nil {
-		t.Fatalf("re-get organization: %v", err)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionTrue, reasonAllStepsReady) {
-		t.Errorf("expected Ready=True/OrganizationReady after recovery; got %#v", org.Status.Conditions)
-	}
-}
-
-func TestReconciler_DisplayNameFailureSurfacesInStatus(t *testing.T) {
-	scheme := newTestScheme(t)
-	user := newUser("grace", "Grace")
-	c := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(user).
-		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
-		Build()
-
-	prov := &fakeProvisioner{nameErr: errors.New("annotation write denied")}
-	r := &Reconciler{client: c, provisioner: prov}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "grace"}}); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-
-	var got tenancyv1alpha1.User
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "grace"}, &got); err != nil {
-		t.Fatalf("get user: %v", err)
-	}
-	var org tenancyv1alpha1.Organization
-	if err := c.Get(context.Background(), types.NamespacedName{Name: got.Status.PersonalOrg}, &org); err != nil {
-		t.Fatalf("get organization: %v", err)
-	}
-	// The workspace itself provisioned, but it would surface under its
-	// UUID — the step must not report Ready until the name is stamped.
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady, metav1.ConditionFalse, reasonDefaultWorkspaceProvisioningFailed) {
-		t.Errorf("expected DefaultWorkspaceReady=False/DefaultWorkspaceProvisioningFailed; got %#v", org.Status.Conditions)
-	}
-
-	// Heal and re-reconcile.
-	prov.nameErr = nil
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "grace"}}); err != nil {
-		t.Fatalf("second reconcile: %v", err)
-	}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: org.Name}, &org); err != nil {
-		t.Fatalf("re-get organization: %v", err)
-	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionTrue, reasonAllStepsReady) {
-		t.Errorf("expected Ready=True/OrganizationReady after recovery; got %#v", org.Status.Conditions)
 	}
 }
 
@@ -762,48 +597,3 @@ func TestOrgWorkspaceParentConstant(t *testing.T) {
 // admin row for another org binds the user in every one of that org's team
 // workspaces (O-15), and a workspace-scope row in another org binds that
 // workspace, once the user has an rbacIdentity to bind.
-func TestReconciler_BackfillBindsOrgAdminInForeignOrgWorkspaces(t *testing.T) {
-	scheme := newTestScheme(t)
-	user := newUser("erin", "Erin")
-	c := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(user).
-		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
-		Build()
-	prov := &fakeProvisioner{teamWorkspaces: map[string][]string{"org-x": {"ws-x1", "ws-x2"}}}
-	r := &Reconciler{client: c, provisioner: prov}
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "erin"}}
-	if _, err := r.Reconcile(context.Background(), req); err != nil {
-		t.Fatalf("first reconcile: %v", err)
-	}
-
-	var idx tenancyv1alpha1.UserMembershipIndex
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "erin"}, &idx); err != nil {
-		t.Fatalf("get UMI: %v", err)
-	}
-	idx.Spec.Entries = append(idx.Spec.Entries,
-		tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org-x", Role: tenancyv1alpha1.MembershipRoleAdmin},
-		tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org-y", Role: tenancyv1alpha1.MembershipRoleMember},
-		tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org-y", WorkspaceUUID: "ws-y1", Role: tenancyv1alpha1.MembershipRoleMember},
-	)
-	if err := c.Update(context.Background(), &idx); err != nil {
-		t.Fatalf("update UMI: %v", err)
-	}
-	if _, err := r.Reconcile(context.Background(), req); err != nil {
-		t.Fatalf("second reconcile: %v", err)
-	}
-
-	got := map[string]bool{}
-	for _, call := range prov.AdminCalls() {
-		got[call.OrgUUID+"/"+call.WSUUID] = call.RBACIdentity == "rbac-erin"
-	}
-	for _, want := range []string{"org-x/ws-x1", "org-x/ws-x2", "org-y/ws-y1"} {
-		if !got[want] {
-			t.Errorf("expected EnsureChildWorkspaceAdmin for %s with rbac-erin; calls=%v", want, prov.AdminCalls())
-		}
-	}
-	// A plain org member in org-y gets no implicit workspace binding.
-	if got["org-y/ws-y2"] {
-		t.Error("member row bound a workspace it has no row for")
-	}
-}

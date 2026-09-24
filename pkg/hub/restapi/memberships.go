@@ -128,6 +128,10 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.requireInitialAccessHandoff(w, r, orgUUID, "", target.Name) {
+		return
+	}
+
 	// Adding someone who is already a member never changes their role: roles
 	// change only through PATCH. Without this, POSTing an existing member
 	// (yourself included) with role=admin rewrote the UMI row the tenant
@@ -197,6 +201,9 @@ func (h *Handler) patchOrgMembership(w http.ResponseWriter, r *http.Request) {
 	}
 	orgUUID := mux.Vars(r)["org"]
 	user := mux.Vars(r)["user"]
+	if !h.requireInitialAccessHandoff(w, r, mux.Vars(r)["org"], mux.Vars(r)["ws"], user) {
+		return
+	}
 	if err := h.mgr.bootstrapper.PatchOrgMembershipRole(r.Context(), orgUUID, user, req.Role); err != nil {
 		writeError(w, err)
 		return
@@ -250,6 +257,9 @@ func (h *Handler) deleteOrgMembership(w http.ResponseWriter, r *http.Request) {
 	}
 	orgUUID := mux.Vars(r)["org"]
 	user := mux.Vars(r)["user"]
+	if !h.requireInitialAccessHandoff(w, r, mux.Vars(r)["org"], mux.Vars(r)["ws"], user) {
+		return
+	}
 	cascade := r.URL.Query().Get("cascade") == "true"
 
 	if err := h.mgr.bootstrapper.DeleteOrgMembership(r.Context(), orgUUID, user); err != nil {
@@ -308,6 +318,9 @@ func (h *Handler) selfLeaveOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgUUID := mux.Vars(r)["org"]
+	if !h.requireInitialAccessHandoff(w, r, orgUUID, "", tc.User) {
+		return
+	}
 	if err := h.mgr.bootstrapper.DeleteOrgMembership(r.Context(), orgUUID, tc.User); err != nil {
 		writeError(w, err)
 		return
@@ -389,6 +402,10 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 		writeError(w, err)
 		return
 	}
+	if !h.requireInitialAccessHandoff(w, r, tc.OrgUUID, tc.WorkspaceUUID, target.Name) {
+		return
+	}
+
 	// Pull Org+Workspace display names for the UMI projection.
 	org, err := h.mgr.client.Organizations().Get(r.Context(), tc.OrgUUID, metav1.GetOptions{})
 	if err != nil {
@@ -483,6 +500,9 @@ func (h *Handler) patchWorkspaceMembership(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	user := mux.Vars(r)["user"]
+	if !h.requireInitialAccessHandoff(w, r, mux.Vars(r)["org"], mux.Vars(r)["ws"], user) {
+		return
+	}
 	if err := h.mgr.mutateUMI(r.Context(), user, func(idx *tenancyv1alpha1.UserMembershipIndex) bool {
 		for i := range idx.Spec.Entries {
 			e := &idx.Spec.Entries[i]
@@ -507,6 +527,9 @@ func (h *Handler) deleteWorkspaceMembership(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	user := mux.Vars(r)["user"]
+	if !h.requireInitialAccessHandoff(w, r, mux.Vars(r)["org"], mux.Vars(r)["ws"], user) {
+		return
+	}
 	if err := h.mgr.removeUMIEntry(r.Context(), user, tc.OrgUUID, tc.WorkspaceUUID); err != nil {
 		writeError(w, err)
 		return
@@ -532,6 +555,9 @@ func (m *Manager) revokeMemberWorkspaceRBAC(ctx context.Context, orgUUID, wsUUID
 func (h *Handler) selfLeaveWorkspace(w http.ResponseWriter, r *http.Request) {
 	tc, ok := h.requireTenantContext(w, r, true, false)
 	if !ok {
+		return
+	}
+	if !h.requireInitialAccessHandoff(w, r, tc.OrgUUID, tc.WorkspaceUUID, tc.User) {
 		return
 	}
 	if err := h.mgr.removeUMIEntry(r.Context(), tc.User, tc.OrgUUID, tc.WorkspaceUUID); err != nil {

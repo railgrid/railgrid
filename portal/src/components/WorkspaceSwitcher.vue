@@ -27,7 +27,6 @@ import {
   RefreshCw,
   Search,
   Settings2,
-  Sparkles,
 } from 'lucide-vue-next'
 import { useAnchoredPopover } from '@/composables/useAnchoredPopover'
 import { isWorkspaceAvailable, isWorkspaceUsable, useTenantStore, type WorkspaceRow } from '@/stores/tenant'
@@ -60,7 +59,6 @@ const workspaces = computed(() =>
   cachedWorkspaces.value.filter(isWorkspaceAvailable),
 )
 const showWorkspaceSearch = computed(() => workspaces.value.length > WORKSPACE_SEARCH_THRESHOLD)
-const usableWorkspaces = computed(() => workspaces.value.filter(isWorkspaceUsable))
 const orgLoadState = computed(() => tenant.orgLoadState)
 const orgLoading = computed(() => orgLoadState.value === 'loading')
 const orgError = computed(() => tenant.orgError)
@@ -101,9 +99,6 @@ const contextAuthorityVerified = computed(() =>
   workspaceLoadState.value === 'ready' &&
   !workspaceError.value &&
   !workspaceDataUnverified.value,
-)
-const showContextGuide = computed(() =>
-  usableWorkspaces.value.length > 1 && contextAuthorityVerified.value,
 )
 const workspaceLabel = computed(() => workspaceName(tenant.activeWorkspace))
 const orgLabel = computed(() => {
@@ -467,11 +462,15 @@ onMounted(() => { void ensureContextLoaded() })
         @keydown="onPanelKeydown"
       >
         <div class="border-b border-border-subtle px-3 py-2.5">
-          <div class="flex items-center justify-between gap-3">
-            <div class="min-w-0">
-              <div class="text-[12px] font-semibold text-text-primary">Switch workspace</div>
-              <div class="mt-0.5 truncate text-[10px] text-text-secondary">Within {{ orgContextLabel }}</div>
-            </div>
+          <div class="text-[12px] font-semibold text-text-primary">Switch workspace</div>
+          <div class="mt-1 flex min-w-0 items-center justify-between gap-3">
+            <span class="min-w-0 truncate text-[11px] text-text-secondary" :title="orgContextLabel">{{ orgContextLabel }}</span>
+            <router-link
+              :to="{ path: '/organizations', query: { from: router.currentRoute.value.fullPath } }"
+              class="workspace-switcher-action k-btn k-btn--text shrink-0 px-2 py-1 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              aria-label="Change organization"
+              @click="close()"
+            >Change</router-link>
           </div>
           <div v-if="showWorkspaceSearch" class="relative mt-2">
             <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
@@ -485,11 +484,6 @@ onMounted(() => { void ensureContextLoaded() })
               :aria-controls="listboxId"
             />
           </div>
-        </div>
-
-        <div v-if="showContextGuide" class="flex items-start gap-2 border-b border-border-subtle bg-accent-subtle/40 px-3 py-2 text-[10px] text-text-secondary">
-          <Sparkles class="mt-0.5 h-3 w-3 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
-          <span>AI tools and resources follow the selected context. A successful switch opens Dashboard.</span>
         </div>
 
         <div class="min-h-0 flex-1 overflow-y-auto">

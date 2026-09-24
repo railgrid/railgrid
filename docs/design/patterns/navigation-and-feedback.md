@@ -56,8 +56,26 @@ address bar is sufficient to share an existing resource with an authorized
 teammate; query parameters and fragments remain part of the destination.
 
 The host resolves explicit context before mounting scoped content and preserves
-it through sign-in. A workspace switch navigates to its dashboard; organization
-switching opens workspace management. Back/Forward restores the context encoded
+it through sign-in. Unscoped entry (including ordinary sign-in) resumes the
+last visited organization and workspace after checking current access. The
+browser remembers IDs per account across sign-out; explicit links take priority.
+With multiple available organizations and no valid remembered organization,
+show the chooser instead of selecting the personal or first organization. A
+sole available organization keeps direct entry. Organization entry resumes its last accessible workspace, remembered separately per
+account and organization. With exactly one available workspace, enter it when ready.
+Multiple workspaces without a valid preference open `/ui/{orgID}/workspaces`, a
+workspace chooser with direct Open actions. Pending workspaces show preparation
+status and refresh for up to a minute; Retry resumes checking. Empty organizations
+offer creation when allowed, otherwise explain how to get access. New organization
+creation enters this flow with a preparation hint while bootstrap runs.
+Workspace management remains a separate settings destination; explicit settings
+and resource links never trigger automatic workspace selection. The sidebar workspace menu
+shows and searches only the current organization’s workspaces. It does not load
+other organizations’ workspace lists. A quiet Change action beside the current organization name opens the
+organization chooser (accessible label: Change organization), preserving the current destination for Back or continuing
+in the same organization. Other organizations are shown only in that chooser. Manage workspaces is the
+sole footer action; the picker has no persistent explanatory banner.
+A workspace switch navigates to its dashboard. Back/Forward restores the context encoded
 in each history entry. A failed destination retains its URL and offers Retry,
 Switch account, and Choose organization without substituting another workspace.
 Use shared navigation helpers for native links and keep asset URLs separate.

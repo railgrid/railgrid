@@ -21,6 +21,14 @@ import (
 )
 
 const (
+	// OrganizationCreatorLabel records the creating User on both personal and
+	// non-personal organizations. It also supports organization quota counting.
+	OrganizationCreatorLabel = "tenants.railgrid.ai/created-by"
+	// OrganizationBootstrapAnnotation opts newly created organizations into the
+	// common bootstrap lifecycle without backfilling legacy shared organizations.
+	OrganizationBootstrapAnnotation = "tenants.railgrid.ai/bootstrap"
+	OrganizationBootstrapVersion    = "v1"
+
 	// WorkspaceCreationMembers lets any Org member create child Workspaces.
 	WorkspaceCreationMembers = "members"
 	// WorkspaceCreationAdmin restricts child Workspace creation to Org admins.
@@ -33,22 +41,17 @@ const (
 	// to Org admins.
 	CatalogEntryCreationAdmin = "admin"
 
-	// OrganizationConditionReady is set True once both the Organization CR
-	// and the corresponding kcp workspace are in place. False with a reason
-	// during initial provisioning or while a soft-delete cascade is in
-	// progress.
+	// OrganizationConditionReady reports completion of organization and default
+	// workspace provisioning. It is False during bootstrap or soft deletion.
 	OrganizationConditionReady = "Ready"
 
 	// OrganizationConditionWorkspaceReady reports whether the underlying
-	// kcp workspace at status.workspacePath has been provisioned. Decoupled
-	// from Ready so the bootstrap controller can land an Organization CR
-	// before the WorkspaceType: organization plumbing lands in a later PR.
+	// kcp workspace at status.workspacePath has been provisioned.
 	OrganizationConditionWorkspaceReady = "WorkspaceReady"
 
 	// OrganizationConditionMembershipReady reports whether the admin
-	// Membership for the Organization's first admin (the personal-Org
-	// owner during bootstrap) has been written to the Org workspace.
-	// PR #4 introduces this condition together with the Membership CRD.
+	// Membership for the Organization's creator has been written to the Org
+	// workspace during bootstrap.
 	OrganizationConditionMembershipReady = "MembershipReady"
 
 	// OrganizationConditionIndexSynced reports whether the owning User's
@@ -57,10 +60,8 @@ const (
 	OrganizationConditionIndexSynced = "IndexSynced"
 
 	// OrganizationConditionDefaultWorkspaceReady reports whether the
-	// personal Org's default child Workspace has been provisioned at
-	// root:railgrid:tenants:{org-uuid}:{default-ws-uuid}. The portal pins this
-	// UUID as the default X-Railgrid-Workspace so members always have
-	// somewhere to land on first login.
+	// Organization's default child Workspace has been provisioned at
+	// root:railgrid:tenants:{org-uuid}:{default-ws-uuid}.
 	OrganizationConditionDefaultWorkspaceReady = "DefaultWorkspaceReady"
 
 	// OrganizationConditionDefaultWorkspaceRailgridBound reports whether
@@ -83,9 +84,18 @@ const (
 	// level so observers can see when it lands.
 	OrganizationConditionDefaultWorkspaceMCPServerReady = "DefaultWorkspaceMCPServerReady"
 
+	// OrganizationConditionInitialWorkspaceInitialized records completion of
+	// an organization's one-time bootstrap. Later workspace deletion, renaming,
+	// and membership changes must not restart that bootstrap.
+	OrganizationConditionInitialWorkspaceInitialized = "InitialWorkspaceInitialized"
+
+	// OrganizationConditionInitialWorkspaceAccessInitialized hands bootstrap
+	// access ownership to membership management, independently of MCP readiness.
+	OrganizationConditionInitialWorkspaceAccessInitialized = "InitialWorkspaceAccessInitialized"
+
 	// ReasonAwaitingWorkspaceType marks an Organization whose kcp workspace
 	// has not been created yet because the organization WorkspaceType is
-	// not yet registered (lands in a follow-up PR).
+	// not yet registered.
 	ReasonAwaitingWorkspaceType = "AwaitingWorkspaceType"
 
 	// OrganizationConditionDeletionInProgress reports the lifecycle
@@ -188,6 +198,13 @@ type OrganizationSpec struct {
 
 // OrganizationStatus defines the observed state of an Organization.
 type OrganizationStatus struct {
+	// DefaultWorkspace is the UUID allocated for this organization's initial
+	// workspace. The bootstrap controller persists it before provisioning and
+	// retains it after completion, even if that workspace is later deleted.
+	// +optional
+	// +kubebuilder:validation:Format=uuid
+	DefaultWorkspace string `json:"defaultWorkspace,omitempty"`
+
 	// WorkspacePath is the path to the materialized kcp Workspace, always
 	// root:railgrid:tenants:{metadata.name}. Set by the bootstrap controller once
 	// the workspace has been provisioned.

@@ -92,7 +92,7 @@ async function createOrganization() {
       route.name === submittingRoute.name &&
       route.fullPath === submittingRoute.fullPath
     ) {
-      await router.replace(`/${created.uuid}/settings/workspaces`)
+      await router.replace(`/${created.uuid}/workspaces?preparing=1`)
     }
   } catch (error: unknown) {
     localError.value = error instanceof Error ? error.message : 'Failed to create organization.'

@@ -57,6 +57,7 @@ export interface OrgRow {
   displayName: string
   personal: boolean
   workspaceCreation?: string
+  initialWorkspacePending?: boolean
   catalogEntryCreation?: string
   createdAt?: string
   deletionRequestedAt?: string | null

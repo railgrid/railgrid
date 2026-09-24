@@ -1,6 +1,10 @@
 import { ORGANIZATION_ROUTE, WORKSPACE_ROUTE } from '@/portalkit/navigation'
 
 export const routes = [
+  {
+    path: ORGANIZATION_ROUTE + '/workspaces', name: 'workspace-chooser',
+    component: () => import('@/pages/WorkspaceChooserPage.vue'),
+  },
   { path: '/', name: 'landing', component: () => import('@/pages/NotFoundPage.vue') },
   { path: ORGANIZATION_ROUTE + '/providers', name: 'org-providers', component: () => import('@/pages/ProvidersPage.vue') },
   {

@@ -59,7 +59,7 @@ test('root publishes and cleans up the teleported toast clearance', () => {
   assert.match(app, /terminalFullscreen: terminal\.panelState\.isFullscreen/)
   assert.match(app, /!hideTerminalDock\.value && terminal\.isVisible/)
   assert.match(app, /const path = portalRoutePath\(route\.path\)/)
-  assert.match(app, /return !path\.startsWith\('\/settings'\) && !path\.startsWith\('\/organizations'\)/)
+  assert.match(app, /return path !== '\/workspaces' && !path\.startsWith\('\/settings'\) && !path\.startsWith\('\/organizations'\)/)
 })
 
 test('settings renders selected-context tenant failures and clears navigation residue', () => {

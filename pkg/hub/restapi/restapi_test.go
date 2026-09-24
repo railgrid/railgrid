@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,10 +34,12 @@ import (
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	ktesting "k8s.io/client-go/testing"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
@@ -640,7 +643,27 @@ func TestListWorkspaces_PreservesSoftDeletedWorkspaceAdminRole(t *testing.T) {
 }
 
 func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
-	mgr, ops, _ := newTestManager(t)
+	mgr, ops, dyn := newTestManager(t)
+	// Simulate the asynchronous controller publishing access readiness after
+	// a pending read. The request handler must only observe this handoff.
+	reads := 0
+	dyn.(*dynamicfake.FakeDynamicClient).PrependReactor("get", "organizations", func(action ktesting.Action) (bool, runtime.Object, error) {
+		reads++
+		if reads == 1 {
+			return false, nil, nil
+		}
+		name := action.(ktesting.GetAction).GetName()
+		obj, err := dyn.(*dynamicfake.FakeDynamicClient).Tracker().Get(railgridclient.OrganizationGVR, "", name)
+		if err != nil {
+			return true, nil, err
+		}
+		org := obj.(*unstructured.Unstructured).DeepCopy()
+		_ = unstructured.SetNestedSlice(org.Object, []interface{}{
+			map[string]interface{}{"type": tenancyv1alpha1.OrganizationConditionMembershipReady, "status": "True"},
+			map[string]interface{}{"type": tenancyv1alpha1.OrganizationConditionIndexSynced, "status": "True"},
+		}, "status", "conditions")
+		return true, org, nil
+	})
 	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
 	defer srv.Close()
 
@@ -666,11 +689,21 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 	if view.DisplayName != "acme" || view.UUID == "" {
 		t.Errorf("view: %#v", view)
 	}
-	if !ops.orgWorkspaces[view.UUID] {
-		t.Error("EnsureOrgWorkspace not called")
+	created, err := mgr.client.Organizations().Get(context.Background(), view.UUID, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if ops.orgMemberships[view.UUID]["alice"] != "admin" {
-		t.Errorf("alice's membership: %v", ops.orgMemberships[view.UUID])
+	if created.Labels[tenancyv1alpha1.OrganizationCreatorLabel] != "alice" || created.Annotations[tenancyv1alpha1.OrganizationBootstrapAnnotation] != tenancyv1alpha1.OrganizationBootstrapVersion {
+		t.Fatalf("missing common bootstrap metadata: %#v", created.ObjectMeta)
+	}
+	if created.Status.DefaultWorkspace != "" {
+		t.Fatal("REST must leave workspace allocation to the controller")
+	}
+	if reads < 2 {
+		t.Fatal("creation returned before controller access readiness")
+	}
+	if len(ops.orgWorkspaces) != 0 || len(ops.orgMemberships) != 0 {
+		t.Fatal("REST creation must not write access concurrently with the controller")
 	}
 }
 
@@ -1274,7 +1307,7 @@ func TestWorkspaceMembership_AddKeepsExistingOrgRole(t *testing.T) {
 }
 
 func TestDeleteOrgMembership_RemovesFromBootstrapper(t *testing.T) {
-	mgr, ops, _ := newTestManager(t)
+	mgr, ops, _ := newTestManager(t, &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}})
 	_ = ops.EnsureOrgMembership(context.Background(), "org-a", "bob", "member")
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
 	defer srv.Close()
@@ -1291,7 +1324,7 @@ func TestDeleteOrgMembership_RemovesFromBootstrapper(t *testing.T) {
 }
 
 func TestDeleteOrgMembership_CascadeFlagReadsQueryParam(t *testing.T) {
-	mgr, ops, _ := newTestManager(t)
+	mgr, ops, _ := newTestManager(t, &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}})
 	_ = ops.EnsureOrgMembership(context.Background(), "org-a", "bob", "member")
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
 	defer srv.Close()
@@ -1307,7 +1340,7 @@ func TestDeleteOrgMembership_CascadeFlagReadsQueryParam(t *testing.T) {
 }
 
 func TestPatchOrgMembershipRole(t *testing.T) {
-	mgr, ops, _ := newTestManager(t)
+	mgr, ops, _ := newTestManager(t, &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}})
 	_ = ops.EnsureOrgMembership(context.Background(), "org-a", "bob", "member")
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
 	defer srv.Close()
@@ -1326,7 +1359,7 @@ func TestPatchOrgMembershipRole(t *testing.T) {
 }
 
 func TestSelfLeaveOrg(t *testing.T) {
-	mgr, ops, _ := newTestManager(t)
+	mgr, ops, _ := newTestManager(t, &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}})
 	_ = ops.EnsureOrgMembership(context.Background(), "org-a", "bob", "member")
 	srv := newTestServer(t, mgr, memberTC("bob", "org-a", ""))
 	defer srv.Close()
@@ -1518,3 +1551,107 @@ func TestDownloadKubeconfig_InstallVariant(t *testing.T) {
 
 // jsonBody wraps a []byte as a Reader for http.Post.
 func jsonBody(b []byte) io.Reader { return bytes.NewReader(b) }
+
+func TestInitialWorkspace_OperatingTargetWaitsForBootstrap(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		initial     string
+		initialized bool
+		personal    bool
+		wantReady   bool
+	}{
+		{name: "allocated but not initialized", initial: "ws-1"},
+		{name: "initialized", initial: "ws-1", initialized: true, wantReady: true},
+		{name: "legacy organization", wantReady: true},
+		{name: "pending personal organization", initial: "ws-1", personal: true},
+		{name: "initialized personal organization", initial: "ws-1", personal: true, initialized: true, wantReady: true},
+		{name: "another workspace", initial: "ws-other", wantReady: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}, Spec: tenancyv1alpha1.OrganizationSpec{Personal: test.personal}}
+			if test.initial != "" {
+				org.Status.DefaultWorkspace = test.initial
+			}
+			if test.initialized {
+				org.Status.Conditions = []metav1.Condition{{Type: tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized, Status: metav1.ConditionTrue}}
+			}
+			mgr, ops, _ := newTestManager(t, org)
+			if err := ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1"); err != nil {
+				t.Fatal(err)
+			}
+			for _, endpoint := range []string{"/api/orgs/org-a/workspaces", "/api/orgs/org-a/workspaces/ws-1"} {
+				tc := adminTC("alice", "org-a", "")
+				if strings.HasSuffix(endpoint, "/ws-1") {
+					tc.WorkspaceUUID = "ws-1"
+				}
+				srv := newTestServer(t, mgr, tc)
+				resp, err := http.Get(srv.URL + endpoint)
+				if err != nil {
+					srv.Close()
+					t.Fatal(err)
+				}
+				var view WorkspaceView
+				if strings.HasSuffix(endpoint, "/ws-1") {
+					err = json.NewDecoder(resp.Body).Decode(&view)
+				} else {
+					var list ListResponse[WorkspaceView]
+					err = json.NewDecoder(resp.Body).Decode(&list)
+					if err == nil && len(list.Items) != 1 {
+						t.Fatalf("expected one workspace: %#v", list)
+					}
+					if err == nil {
+						view = list.Items[0]
+					}
+				}
+				_ = resp.Body.Close()
+				srv.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("%s status: %d", endpoint, resp.StatusCode)
+				}
+				if got := view.ClusterName != ""; got != test.wantReady {
+					t.Fatalf("%s ready=%v, want %v: %#v", endpoint, got, test.wantReady, view)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectOrg_InitialWorkspacePending(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                  string
+		personal, managed, ready, initialized, deleting, want bool
+	}{
+		{name: "legacy shared"},
+		{name: "new shared", managed: true, want: true},
+		{name: "new personal", personal: true, managed: true, want: true},
+		{name: "pending legacy personal", personal: true, want: true},
+		{name: "ready legacy personal", personal: true, ready: true},
+		{name: "ready without handoff", managed: true, ready: true, want: true},
+		{name: "completed shared", managed: true, initialized: true},
+		{name: "completed personal", personal: true, managed: true, initialized: true},
+		{name: "deleting", managed: true, deleting: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			org := &tenancyv1alpha1.Organization{Spec: tenancyv1alpha1.OrganizationSpec{Personal: tc.personal}}
+			if tc.managed {
+				org.Annotations = map[string]string{tenancyv1alpha1.OrganizationBootstrapAnnotation: tenancyv1alpha1.OrganizationBootstrapVersion}
+			}
+			if tc.ready {
+				org.Status.Conditions = append(org.Status.Conditions, metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionReady, Status: metav1.ConditionTrue})
+			}
+			if tc.initialized {
+				org.Status.Conditions = append(org.Status.Conditions, metav1.Condition{Type: tenancyv1alpha1.OrganizationConditionInitialWorkspaceInitialized, Status: metav1.ConditionTrue})
+			}
+			if tc.deleting {
+				now := metav1.Now()
+				org.Status.DeletionRequestedAt = &now
+			}
+			if got := projectOrg(org).InitialWorkspacePending; got != tc.want {
+				t.Fatalf("pending=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
