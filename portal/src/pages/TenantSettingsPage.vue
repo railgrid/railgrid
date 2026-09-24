@@ -2341,6 +2341,7 @@ function fmtDate(s?: string | null): string {
               :row-selection-disabled-reason="workspaceRowSelectionDisabledReason"
               :selection-label="workspaceSelectionLabel"
               :selection-disabled="workspaceDeleteSelectionDisabled"
+              :selection-clear-disabled="workspaceDeleteBatchBusy || !!restoringWorkspaceUUID"
               :interactive="false"
               :loaded="workspaceListLoaded"
               :loading="workspaceListLoading"

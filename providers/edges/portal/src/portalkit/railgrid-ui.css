@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 24;
+  --railgrid-ui-core-version: 25;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -2115,11 +2115,17 @@ railgrid-resource-table-filter { display: contents; }
   align-items: center;
   background: var(--color-surface-raised, #111320);
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 8px 12px;
   min-height: 46px;
   padding: 7px 16px;
+}
+.k-table__selection-summary {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: max-content max-content;
 }
 .k-table__selection-count {
   color: var(--color-text-primary, #e9e9f2);
@@ -2138,6 +2144,7 @@ railgrid-resource-table-filter { display: contents; }
   font-size: 11px;
   min-height: 30px;
   padding: 0 8px;
+  white-space: nowrap;
 }
 .k-table__clear-selection:hover:not(:disabled) { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); }
 .k-table__clear-selection:focus-visible {
@@ -2145,7 +2152,7 @@ railgrid-resource-table-filter { display: contents; }
   outline-offset: 2px;
 }
 .k-table__clear-selection:disabled { cursor: not-allowed; opacity: 0.45; }
-.k-table__selection-actions { align-items: center; display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.k-table__selection-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; grid-column: 2; justify-content: flex-end; min-width: 0; }
 .k-table__selection-heading { padding: 4px 8px 4px 12px; text-align: center; width: 1%; }
 .k-table__selection-cell { padding: 6px 5px 6px 12px; text-align: center; vertical-align: middle; white-space: nowrap; width: 1%; }
 .k-table__checkbox-target {
@@ -2474,6 +2481,8 @@ railgrid-resource-table-filter { display: contents; }
 }
 
 @media (max-width: 600px) {
+  .k-table__selection-bar { grid-template-columns: minmax(0, 1fr); }
+  .k-table__selection-actions { grid-column: 1; justify-content: flex-start; }
   .k-table__search,
   .k-table__loading-control--search {
     flex-basis: 100%;

@@ -83,6 +83,9 @@ only after `loaded` is true and the read is settled without an error or stale
 result. In server mode, absence from the current page never prunes a key.
 `selection-disabled` disables row/header checkboxes and Clear selection while
 the caller reports a busy or unverified state; it does not itself prune keys.
+`selection-clear-disabled` can override only Clear selection, allowing users to
+leave an unverified selection after a read failure while mutations remain
+disabled. Keep this override disabled while an operation is running.
 `row-selectable(row)` and a non-empty
 `row-selection-disabled-reason(row)` make a row ineligible. Ineligible rows
 expose a keyboard-focusable help control with the reason, since a disabled
@@ -142,10 +145,15 @@ applies to all selection controls.
 
 For selectable tables, the search/filter toolbar and selection actions share a
 reserved toolbar row. Selecting resources replaces the visible search and
-filter controls with the selection count and actions; clearing the selection
-restores the prior search and filter controls. The inactive toolbar remains
-hidden and inert while the row keeps the taller panel's space, including when
-mobile filters wrap. Clear selection returns focus to the header checkbox.
+filter controls with a compact selection count and actions; clearing the
+selection restores the prior search and filter controls. The count and Clear
+selection button stay together in a grid track, so changing the count does not
+wrap the button or change the reserved row height. On narrow layouts, selection
+actions use their own row. The inactive toolbar remains hidden and inert while
+the row keeps the taller panel's space, including when mobile filters wrap.
+After Clear selection, focus returns to the header checkbox when it is fully
+visible in the table scroll area. If it is clipped or disabled, focus moves to
+the scroll area's visible focus outline without scrolling the page or table.
 
 ## Code and evidence
 

@@ -95,6 +95,8 @@ const props = withDefaults(defineProps<{
   selectedKeys?: TableSelectionKey[]
   /** Disables every selection control while a bulk action is busy or rows are unverified. */
   selectionDisabled?: boolean
+  /** Override Clear selection's disabled state, e.g. to leave an unverified selection. */
+  selectionClearDisabled?: boolean | null
   /** Return false when a row must not participate in selection. */
   rowSelectable?: (row: Record<string, unknown>) => boolean
   /** Explain why a row cannot be selected; a non-empty reason also disables it. */
@@ -127,6 +129,7 @@ const props = withDefaults(defineProps<{
   selectable: false,
   selectedKeys: () => [],
   selectionDisabled: false,
+  selectionClearDisabled: null,
 })
 
 const componentID = useId()
@@ -160,6 +163,7 @@ const currentFilters = computed<TableFilterState>(() => {
 const normalizedSelectedKeys = computed(() => uniqueSelectionKeys(props.selectedKeys))
 const selectedKeySet = computed(() => new Set(normalizedSelectedKeys.value))
 const selectedCount = computed(() => normalizedSelectedKeys.value.length)
+const clearSelectionDisabled = computed(() => props.selectionClearDisabled ?? props.selectionDisabled)
 const selectionToolbarActive = computed(() => props.selectable && selectedCount.value > 0)
 const duplicateRowKeys = computed(() => {
   const counts = new Map<TableSelectionKey, number>()
@@ -194,6 +198,11 @@ const primaryTooltipElement = ref<HTMLElement | null>(null)
 const headerSelectionCheckbox = ref<HTMLInputElement | null>(null)
 const tableScrollRegion = ref<HTMLElement | null>(null)
 let activeTooltipAnchor: HTMLElement | null = null
+let activeSelectionTooltip: {
+  anchor: HTMLElement
+  rowIdentity: string | number
+  value: string
+} | null = null
 let primaryTooltipRequest = 0
 
 const explicitReadState = computed(() => props.loaded !== null)
@@ -471,12 +480,31 @@ function clearSelection() {
   if (normalizedSelectedKeys.value.length > 0) emit('update:selectedKeys', [])
 }
 
+function checkboxIsVisibleInScrollRegion(checkbox: HTMLInputElement, region: HTMLElement): boolean {
+  const checkboxRect = checkbox.getBoundingClientRect()
+  const regionRect = region.getBoundingClientRect()
+  const visibleLeft = regionRect.left + region.clientLeft
+  const visibleTop = regionRect.top + region.clientTop
+  const visibleRight = visibleLeft + region.clientWidth
+  const visibleBottom = visibleTop + region.clientHeight
+
+  return checkboxRect.width > 0
+    && checkboxRect.height > 0
+    && checkboxRect.left >= visibleLeft
+    && checkboxRect.right <= visibleRight
+    && checkboxRect.top >= visibleTop
+    && checkboxRect.bottom <= visibleBottom
+}
+
 async function clearSelectionFromToolbar() {
   clearSelection()
   await nextTick()
   if (selectedCount.value === 0) {
     const checkbox = headerSelectionCheckbox.value
-    const target = checkbox && !checkbox.disabled ? checkbox : tableScrollRegion.value
+    const region = tableScrollRegion.value
+    const target = checkbox && !checkbox.disabled && region && checkboxIsVisibleInScrollRegion(checkbox, region)
+      ? checkbox
+      : region
     target?.focus({ preventScroll: true })
   }
 }
@@ -606,6 +634,7 @@ function updatePrimaryOverflow(container: HTMLElement | null) {
 function hideTooltip() {
   primaryTooltipRequest += 1
   activeTooltipAnchor = null
+  activeSelectionTooltip = null
   primaryTooltip.value = null
 }
 
@@ -654,6 +683,7 @@ async function showTooltip(anchor: HTMLElement | null, value: string) {
 }
 
 async function showPrimaryTooltip(container: HTMLElement | null) {
+  activeSelectionTooltip = null
   if (!container || !updatePrimaryOverflow(container)) {
     hideTooltip()
     return
@@ -668,9 +698,44 @@ async function showPrimaryTooltip(container: HTMLElement | null) {
   await showTooltip(container, value)
 }
 
-function showSelectionReasonTooltip(event: Event, reason: string) {
-  void showTooltip(event.currentTarget as HTMLElement | null, reason)
+function showSelectionReasonTooltip(event: Event, row: Record<string, unknown>, index: number) {
+  const anchor = event.currentTarget as HTMLElement | null
+  const reason = rowSelectionState(row).reason
+  if (!anchor || !reason) return
+
+  activeSelectionTooltip = {
+    anchor,
+    rowIdentity: rowIdentity(row, index),
+    value: reason,
+  }
+  void showTooltip(anchor, reason)
 }
+
+watch(
+  () => visibleRows.value.map((row, index) => ({
+    rowIdentity: rowIdentity(row, index),
+    reason: rowSelectionState(row).reason,
+  })),
+  rows => {
+    const active = activeSelectionTooltip
+    if (!active) return
+    if (activeTooltipAnchor !== active.anchor) {
+      activeSelectionTooltip = null
+      return
+    }
+
+    const current = rows.find(row => row.rowIdentity === active.rowIdentity)
+    if (!current?.reason || !active.anchor.isConnected) {
+      hideTooltip()
+      return
+    }
+    if (current.reason !== active.value) {
+      active.value = current.reason
+      void showTooltip(active.anchor, current.reason)
+    }
+  },
+  { flush: 'post' },
+)
 
 function leaveSelectionReasonTooltip(event: MouseEvent) {
   if (document.activeElement !== event.currentTarget) hideTooltip()
@@ -870,12 +935,12 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
           :aria-hidden="!selectionToolbarActive ? 'true' : undefined"
           :inert="!selectionToolbarActive"
         >
-          <p class="k-table__selection-count">
-            {{ selectedCount }} {{ selectedCount === 1 ? 'resource' : 'resources' }} selected
-          </p>
-          <button class="k-table__clear-selection" type="button" :disabled="selectionDisabled" @click="clearSelectionFromToolbar">
-            Clear selection
-          </button>
+          <div class="k-table__selection-summary">
+            <p class="k-table__selection-count">{{ selectedCount }} selected</p>
+            <button class="k-table__clear-selection" type="button" :disabled="clearSelectionDisabled" @click="clearSelectionFromToolbar">
+              Clear selection
+            </button>
+          </div>
           <div class="k-table__selection-actions">
             <slot name="selection-actions" :selectedKeys="normalizedSelectedKeys" :keys="normalizedSelectedKeys" :count="selectedCount" />
           </div>
@@ -946,11 +1011,11 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                     type="button"
                     :aria-label="selectionHelpLabel(row, i)"
                     :aria-describedby="selectionReasonID(i)"
-                    @mouseenter="showSelectionReasonTooltip($event, rowSelectionState(row).reason)"
+                    @mouseenter="showSelectionReasonTooltip($event, row, i)"
                     @mouseleave="leaveSelectionReasonTooltip"
-                    @focusin.stop="showSelectionReasonTooltip($event, rowSelectionState(row).reason)"
+                    @focusin.stop="showSelectionReasonTooltip($event, row, i)"
                     @focusout.stop="hideTooltip"
-                    @click.stop="showSelectionReasonTooltip($event, rowSelectionState(row).reason)"
+                    @click.stop="showSelectionReasonTooltip($event, row, i)"
                     @keydown.esc.stop="hideTooltip"
                   >
                     <Info :stroke-width="1.75" aria-hidden="true" />
