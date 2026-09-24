@@ -275,9 +275,9 @@ test('one-time token copy exposes manual recovery instead of swallowing failure'
 test('organization inventory uses the canonical queryable resource table', () => {
   const orgStart = tenantSettingsPage.indexOf('<template v-else-if="activeSection === \'organizations\'">')
   const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
-  const inventoryEnd = tenantSettingsPage.indexOf('</section>', inventoryStart)
+  const inventoryEnd = tenantSettingsPage.indexOf('</ResourceTable>', inventoryStart) + '</ResourceTable>'.length
   assert.ok(inventoryStart > orgStart && inventoryEnd > inventoryStart)
-  const inventory = tenantSettingsPage.slice(inventoryStart, inventoryEnd)
+  const inventory = tenantSettingsPage.slice(tenantSettingsPage.indexOf('<ResourceTable', inventoryStart), inventoryEnd)
   assert.match(inventory, /<ResourceTable/)
   assert.match(inventory, /:key="organizationSettingsOrg\.uuid"/)
   assert.match(inventory, /:columns="workspaceColumns"/)
@@ -295,7 +295,7 @@ test('organization inventory uses the canonical queryable resource table', () =>
   assert.match(inventory, /:stale="workspaceListLoaded && !!workspaceListError"/)
   assert.match(inventory, /retryable/)
   assert.match(inventory, /@retry="reloadScopedWorkspaces\(tenant\.orgUUID\)"/)
-  assert.match(inventory, /All workspaces you can access in this organization, including those pending deletion/)
+  assert.match(tenantSettingsPage.slice(inventoryStart, inventoryEnd), /All workspaces you can access in this organization, including those pending deletion/)
   assert.match(inventory, /Current workspace/)
   assert.doesNotMatch(inventory, /<ul|<li|<ResourceTableFilter|@row-click|Open workspace/)
   assert.doesNotMatch(tenantSettingsPage, /WORKSPACE_SEARCH_THRESHOLD|workspaceSearch|filteredWorkspaces|workspaceLifecycleFilter|workspaceFilterResultAnnouncement/)
@@ -312,7 +312,7 @@ test('organization inventory filters the complete set without changing context a
   assert.match(tenantSettingsPage, /<ResourceTableActionButton\s+v-if="row\.deletionRequestedAt && row\.role === 'admin'"/)
   assert.match(tenantSettingsPage, /:label="`Restore workspace \$\{String\(row\.name\)\}`"/)
   assert.match(tenantSettingsPage, /:busy="restoringWorkspaceUUID === row\.uuid"/)
-  assert.match(tenantSettingsPage, /:disabled="!workspaceInventoryVerified \|\| !!restoringWorkspaceUUID"/)
+  assert.match(tenantSettingsPage, /:disabled="!workspaceInventoryVerified \|\| !!restoringWorkspaceUUID \|\| workspaceDeleteBatchBusy"/)
   assert.match(tenantSettingsPage, /workspace\.role !== 'admin' \|\| !workspace\.deletionRequestedAt/)
   assert.match(tenantSettingsPage, /tenant\.undeleteWorkspace\(org, workspace\.uuid\)/)
 })
@@ -410,7 +410,7 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
   assert.match(tenantSettingsPage, /const WORKSPACE_GRACE_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/)
   assert.match(tenantSettingsPage, /const DAY_MS = 24 \* 60 \* 60 \* 1000/)
   assert.match(tenantSettingsPage, /const requestedAtMs = Date\.parse\(deletionRequestedAt\)/)
-  assert.match(tenantSettingsPage, /const remainingMs = requestedAtMs \+ WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow\.value/)
+  assert.match(tenantSettingsPage, /const remainingMs = Math\.min\(WORKSPACE_GRACE_PERIOD_MS, requestedAtMs \+ WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow\.value\)/)
   assert.match(tenantSettingsPage, /if \(remainingMs <= 0\) return 'Deletion window expired\.'/)
   assert.match(tenantSettingsPage, /if \(remainingMs < DAY_MS\) return 'Deletion scheduled today \(under one day\)\.'/)
   assert.match(tenantSettingsPage, /const days = Math\.ceil\(remainingMs \/ DAY_MS\)/)
@@ -420,8 +420,8 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
 
   assert.match(tenantSettingsPage, /deletion: workspaceDeletionCountdown\(workspace\.deletionRequestedAt\)/)
   const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
-  const inventoryEnd = tenantSettingsPage.indexOf('</section>', inventoryStart)
-  const inventory = tenantSettingsPage.slice(inventoryStart, inventoryEnd)
+  const inventoryEnd = tenantSettingsPage.indexOf('</ResourceTable>', inventoryStart) + '</ResourceTable>'.length
+  const inventory = tenantSettingsPage.slice(tenantSettingsPage.indexOf('<ResourceTable', inventoryStart), inventoryEnd)
   assert.match(inventory, /<template #deletion="\{ row \}">/)
   assert.match(inventory, /\{\{ row\.deletion \}\}/)
   assert.match(inventory, /<StatusBadge :status="String\(row\.status\)"/)
@@ -484,7 +484,11 @@ test('settings teardown retires requests and mutation contexts even when tenant 
   ]
   const state = {
     ...Object.fromEntries(generations.map(name => [name, 7])),
-    creationFeedbackGeneration: 0, pageDisposed: false,
+    creationFeedbackGeneration: 0, pageDisposed: false, workspaceDeleteScopeGeneration: 0,
+    selectedWorkspaceKeys: { value: [] },
+    workspaceDeleteProgress: { value: null },
+    workspaceDeleteSummary: { value: null },
+    workspaceDeleteBatchBusy: { value: false },
     activeSection: { value: 'workspaces' },
     selWs: { value: { uuid: 'workspace-a' } },
     canEditWs: { value: true },

@@ -78,7 +78,7 @@ HOST_UI="$ROOT/portal/src/assets/railgrid-ui.css"
 # asset. Every other direct file in the canonical directories must be listed
 # above so adding a new source file cannot silently skip every portal.
 TS_CANONICAL_ONLY=(README.md dashboardtile.conformance.test.mjs kube.behavior.test.mjs page-state.ts)
-VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs Toast.behavior.test.mjs Toast.conformance.test.mjs)
+VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs ResourceTable.selection.test.mjs Toast.behavior.test.mjs Toast.conformance.test.mjs)
 AGENTKIT_CANONICAL_ONLY=(README.md styles.conformance.test.mjs)
 AGENTKIT_VUE_CANONICAL_ONLY=(conversation.conformance.test.mjs)
 

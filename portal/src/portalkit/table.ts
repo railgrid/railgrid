@@ -21,6 +21,62 @@ export type TableFilterState = Record<string, string>
 /** Client pagination is the default; server mode renders one supplied page. */
 export type TablePaginationMode = 'client' | 'server'
 
+/** Primitive stable key used by ResourceTable's opt-in row selection. */
+export type TableSelectionKey = string | number
+
+/** One authoritative client row after applying its stable key and eligibility. */
+export interface TableSelectionCandidate {
+  key: TableSelectionKey
+  selectable: boolean
+}
+
+/** Remove duplicate controlled keys without collapsing numeric and string IDs. */
+export function uniqueSelectionKeys(keys: readonly TableSelectionKey[]): TableSelectionKey[] {
+  return [...new Set(keys)]
+}
+
+/** Keep selected keys that remain present and eligible in a complete client result. */
+export function pruneClientSelectionKeys(
+  selectedKeys: readonly TableSelectionKey[],
+  authoritativeRows: readonly TableSelectionCandidate[],
+): TableSelectionKey[] {
+  const eligibleKeys = new Set(authoritativeRows.filter(row => row.selectable).map(row => row.key))
+  return uniqueSelectionKeys(selectedKeys).filter(key => eligibleKeys.has(key))
+}
+
+/** Report selection state for the eligible rows on one rendered page only. */
+export function selectionPageState(
+  selectedKeys: readonly TableSelectionKey[],
+  pageKeys: readonly TableSelectionKey[],
+): { allSelected: boolean; partiallySelected: boolean } {
+  const selected = new Set(selectedKeys)
+  const selectedCount = pageKeys.reduce<number>((count, key) => count + (selected.has(key) ? 1 : 0), 0)
+  return {
+    allSelected: pageKeys.length > 0 && selectedCount === pageKeys.length,
+    partiallySelected: selectedCount > 0 && selectedCount < pageKeys.length,
+  }
+}
+
+/** Toggle eligible keys on one page while retaining keys from every other page. */
+export function updatePageSelection(
+  selectedKeys: readonly TableSelectionKey[],
+  pageKeys: readonly TableSelectionKey[],
+  checked: boolean,
+): TableSelectionKey[] {
+  const normalized = uniqueSelectionKeys(selectedKeys)
+  const pageSet = new Set(pageKeys)
+  if (!checked) return normalized.filter(key => !pageSet.has(key))
+
+  const next = [...normalized]
+  const present = new Set(next)
+  pageKeys.forEach(key => {
+    if (present.has(key)) return
+    present.add(key)
+    next.push(key)
+  })
+  return next
+}
+
 /** Metadata returned with one server-fetched page. Cursor values are opaque. */
 export interface TablePageInfo {
   hasNext?: boolean

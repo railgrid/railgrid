@@ -489,7 +489,9 @@ function workspaceDeletionCountdown(deletionRequestedAt?: string | null): string
   if (!deletionRequestedAt) return null
   const requestedAtMs = Date.parse(deletionRequestedAt)
   if (!Number.isFinite(requestedAtMs)) return 'Deletion timing unavailable.'
-  const remainingMs = requestedAtMs + WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow.value
+  // Local delete stamps can be milliseconds newer than the minute ticker. A
+  // future-dated stamp still starts at 30 days, never a misleading 31.
+  const remainingMs = Math.min(WORKSPACE_GRACE_PERIOD_MS, requestedAtMs + WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow.value)
   if (remainingMs <= 0) return 'Deletion window expired.'
   if (remainingMs < DAY_MS) return 'Deletion scheduled today (under one day).'
   const days = Math.ceil(remainingMs / DAY_MS)
@@ -503,10 +505,277 @@ const workspaceInventoryVerified = computed(() =>
   !tenant.workspaceErrorByOrg[tenant.orgUUID ?? ''],
 )
 
+type WorkspaceDeleteOutcome = { uuid: string; ok: boolean; error?: string }
+type WorkspaceDeleteSummaryItem = {
+  uuid: string
+  name: string
+  status: 'requested' | 'failed'
+  error?: string
+  attempts: number
+}
+type WorkspaceDeleteSummary = { orgUUID: string; items: WorkspaceDeleteSummaryItem[] }
+type WorkspaceDeleteProgress = { orgUUID: string; total: number; completed: number; succeeded: number; failed: number }
+type WorkspaceDeleteContext = {
+  orgUUID: string
+  routePath: string
+  generation: number
+  workspaceMode: 'workspace' | 'organization'
+  workspaceUUID: string | null
+}
+
+const selectedWorkspaceKeys = ref<Array<string | number>>([])
+const workspaceDeleteBatchBusy = ref(false)
+const workspaceDeleteProgress = ref<WorkspaceDeleteProgress | null>(null)
+const workspaceDeleteSummary = ref<WorkspaceDeleteSummary | null>(null)
+let workspaceDeleteScopeGeneration = 0
+let workspaceSelectionRevision = 0
+let workspaceDeleteRunSequence = 0
+let activeWorkspaceDeleteRun = 0
+
+watch(selectedWorkspaceKeys, () => { workspaceSelectionRevision++ }, { deep: true, flush: 'sync' })
+
+// A route may leave Organization settings and return to the same org before
+// an in-flight confirmation or worker finishes. The generation fence closes
+// that same-ID race and makes every old shouldContinue callback stop sending.
+watch(
+  [() => route.fullPath, () => tenant.orgUUID, () => tenant.workspaceMode, () => tenant.workspaceUUID],
+  () => {
+    workspaceDeleteScopeGeneration++
+    selectedWorkspaceKeys.value = []
+    workspaceDeleteProgress.value = null
+    workspaceDeleteSummary.value = null
+  },
+  { flush: 'sync' },
+)
+
+const workspaceDeleteSelectionDisabled = computed(() =>
+  workspaceDeleteBatchBusy.value || !workspaceInventoryVerified.value || !!restoringWorkspaceUUID.value ||
+  !organizationTargetUUID.value || !!organizationSettingsOrg.value?.deletionRequestedAt,
+)
+
+function workspaceBulkDeleteDisabledReason(workspace: WorkspaceRow): string | null {
+  if (!workspaceInventoryVerified.value) return 'Verify the current workspace inventory before deleting.'
+  const targetOrg = organizationTargetUUID.value
+  if (!targetOrg || activeSection.value !== 'organizations' || workspace.orgUUID !== targetOrg || targetOrg !== tenant.orgUUID) {
+    return 'This workspace is outside the current organization settings scope.'
+  }
+  if (organizationSettingsOrg.value?.deletionRequestedAt || activeOrg.value?.deletionRequestedAt) {
+    return 'Restore the organization before deleting workspaces.'
+  }
+  if (workspace.role !== 'admin') return 'Workspace admin access is required to delete this workspace.'
+  if (workspace.deletionRequestedAt) return 'This workspace is already scheduled for deletion.'
+  if (tenant.workspaceMode === 'workspace' && tenant.workspaceUUID === workspace.uuid) {
+    return 'Switch to another operating workspace before deleting this one.'
+  }
+  if (restoringWorkspaceUUID.value) return 'Wait for the workspace restore to finish before selecting workspaces.'
+  return null
+}
+
+function workspaceRowSelectable(row: Record<string, unknown>): boolean {
+  const workspace = workspaces.value.find((candidate) => candidate.uuid === String(row.uuid ?? ''))
+  return !!workspace && !workspaceBulkDeleteDisabledReason(workspace)
+}
+
+function workspaceRowSelectionDisabledReason(row: Record<string, unknown>): string {
+  const workspace = workspaces.value.find((candidate) => candidate.uuid === String(row.uuid ?? ''))
+  return workspace ? workspaceBulkDeleteDisabledReason(workspace) ?? '' : 'Workspace details are not available in the verified inventory.'
+}
+
+function workspaceSelectionLabel(row: Record<string, unknown>): string {
+  const name = String(row.name || row.displayName || row.uuid || 'Workspace')
+  const uuid = String(row.uuid ?? '')
+  return uuid ? `${name} (UUID ${uuid})` : name
+}
+
+const selectedWorkspaceDeleteTargets = computed(() => selectedWorkspaceKeys.value
+  .map((key) => String(key))
+  .map((uuid) => workspaces.value.find((workspace) => workspace.uuid === uuid))
+  .filter((workspace): workspace is WorkspaceRow => !!workspace))
+
+const workspaceDeleteActionDisabled = computed(() => {
+  const selectedCount = selectedWorkspaceKeys.value.length
+  return workspaceDeleteSelectionDisabled.value || selectedCount === 0 ||
+    selectedWorkspaceDeleteTargets.value.length !== selectedCount ||
+    selectedWorkspaceDeleteTargets.value.some((workspace) => !!workspaceBulkDeleteDisabledReason(workspace))
+})
+
+const retryableWorkspaceDeleteIDs = computed(() => {
+  const summary = workspaceDeleteSummary.value
+  if (!summary || summary.orgUUID !== organizationTargetUUID.value) return []
+  const selected = new Set(selectedWorkspaceKeys.value.map((key) => String(key)))
+  return summary.items
+    .filter((item) => item.status === 'failed' && selected.has(item.uuid))
+    .map((item) => item.uuid)
+    .filter((uuid) => {
+      const workspace = workspaces.value.find((candidate) => candidate.uuid === uuid)
+      return !!workspace && !workspaceBulkDeleteDisabledReason(workspace)
+    })
+})
+const workspaceDeleteRequestedCount = computed(() => workspaceDeleteSummary.value?.items.filter((item) => item.status === 'requested').length ?? 0)
+const workspaceDeleteFailedCount = computed(() => workspaceDeleteSummary.value?.items.filter((item) => item.status === 'failed').length ?? 0)
+
+function workspaceDeleteContextIsCurrent(context: WorkspaceDeleteContext): boolean {
+  return !pageDisposed && context.generation === workspaceDeleteScopeGeneration &&
+    activeSection.value === 'organizations' && route.fullPath === context.routePath &&
+    tenant.orgUUID === context.orgUUID && organizationTargetUUID.value === context.orgUUID &&
+    organizationSettingsOrg.value?.uuid === context.orgUUID &&
+    tenant.workspaceMode === context.workspaceMode && (tenant.workspaceUUID ?? null) === context.workspaceUUID
+}
+
+function workspaceDeleteDispatchIsAllowed(context: WorkspaceDeleteContext): boolean {
+  return workspaceDeleteContextIsCurrent(context) &&
+    !organizationSettingsOrg.value?.deletionRequestedAt && !activeOrg.value?.deletionRequestedAt &&
+    workspaceInventoryVerified.value && !restoringWorkspaceUUID.value
+}
+
+function workspaceDeleteTargetIsEligible(context: WorkspaceDeleteContext, uuid: string): boolean {
+  if (!workspaceDeleteDispatchIsAllowed(context)) return false
+  const workspace = workspaces.value.find((candidate) => candidate.uuid === uuid)
+  return !!workspace && !workspaceBulkDeleteDisabledReason(workspace)
+}
+
+function sameWorkspaceIDs(left: string[], right: string[]): boolean {
+  return left.length === right.length && [...left].sort().every((uuid, index) => uuid === [...right].sort()[index])
+}
+
+function recordWorkspaceDeleteOutcomes(
+  orgUUID: string,
+  names: Map<string, string>,
+  outcomes: WorkspaceDeleteOutcome[],
+): void {
+  const existing = workspaceDeleteSummary.value?.orgUUID === orgUUID
+    ? [...workspaceDeleteSummary.value.items]
+    : []
+  const byUUID = new Map<string, WorkspaceDeleteSummaryItem>(existing.map((item): [string, WorkspaceDeleteSummaryItem] => [item.uuid, item]))
+  for (const outcome of outcomes) {
+    const previous = byUUID.get(outcome.uuid)
+    byUUID.set(outcome.uuid, {
+      uuid: outcome.uuid,
+      name: names.get(outcome.uuid) ?? previous?.name ?? outcome.uuid,
+      status: outcome.ok ? 'requested' : 'failed',
+      error: outcome.ok ? undefined : outcome.error || 'The request did not complete. Retry after checking the workspace inventory.',
+      attempts: (previous?.attempts ?? 0) + 1,
+    })
+  }
+  workspaceDeleteSummary.value = { orgUUID, items: [...byUUID.values()] }
+}
+
+async function requestWorkspaceDeletions(keys: Array<string | number>, retryOnly: boolean): Promise<void> {
+  if (workspaceDeleteBatchBusy.value || !workspaceInventoryVerified.value || restoringWorkspaceUUID.value) return
+  const orgUUID = organizationTargetUUID.value
+  if (!orgUUID || activeSection.value !== 'organizations' || organizationSettingsOrg.value?.deletionRequestedAt || activeOrg.value?.deletionRequestedAt) return
+
+  const ids = [...new Set(keys.map((key) => String(key)))].filter(Boolean)
+  if (retryOnly) {
+    const failed = new Set(workspaceDeleteSummary.value?.orgUUID === orgUUID
+      ? workspaceDeleteSummary.value.items.filter((item) => item.status === 'failed').map((item) => item.uuid)
+      : [])
+    if (!ids.length || ids.some((uuid) => !failed.has(uuid))) return
+  }
+  if (!ids.length || ids.some((uuid) => !workspaceDeleteTargetIsEligible({
+    orgUUID,
+    routePath: route.fullPath,
+    generation: workspaceDeleteScopeGeneration,
+    workspaceMode: tenant.workspaceMode,
+    workspaceUUID: tenant.workspaceUUID ?? null,
+  }, uuid))) return
+
+  // A retry acts only on failed rows the user has kept selected. Capture the
+  // whole selection so a clear, query reset, or other change while the modal
+  // is open cannot silently submit a different set of targets.
+  const selectedAtPrompt = selectedWorkspaceKeys.value.map((key) => String(key))
+  if (ids.some((uuid) => !selectedAtPrompt.includes(uuid))) return
+  const selectionRevisionAtPrompt = workspaceSelectionRevision
+  const selectedIDsAtPrompt = [...selectedAtPrompt]
+  const context: WorkspaceDeleteContext = {
+    orgUUID,
+    routePath: route.fullPath,
+    generation: workspaceDeleteScopeGeneration,
+    workspaceMode: tenant.workspaceMode,
+    workspaceUUID: tenant.workspaceUUID ?? null,
+  }
+  const names = new Map<string, string>(ids.map((uuid): [string, string] => {
+    const workspace = workspaces.value.find((candidate) => candidate.uuid === uuid)
+    return [uuid, workspace?.displayName || uuid]
+  }))
+  const countLabel = `${ids.length} workspace${ids.length === 1 ? '' : 's'}`
+  const workspaceSubject = ids.length === 1 ? 'This workspace' : `These ${countLabel}`
+  const restorePronoun = ids.length === 1 ? 'it' : 'them'
+  const selectionList = ids.map((uuid) => `${names.get(uuid)} (UUID ${uuid})`).join('\n')
+  const confirmed = await confirmDialog({
+    title: `Delete ${countLabel}?`,
+    message: `${workspaceSubject} in "${organizationSettingsOrg.value?.displayName || orgUUID}" will enter a recoverable 30-day grace period. Restore ${restorePronoun} within 30 days to cancel deletion.\n\nSelected workspaces:\n${selectionList}`,
+    danger: true,
+    confirmLabel: `Delete ${countLabel}`,
+  })
+  if (!confirmed) return
+  if (!workspaceDeleteContextIsCurrent(context) || workspaceSelectionRevision !== selectionRevisionAtPrompt ||
+    !sameWorkspaceIDs(selectedWorkspaceKeys.value.map((key) => String(key)), selectedIDsAtPrompt) ||
+    ids.some((uuid) => !workspaceDeleteTargetIsEligible(context, uuid))) return
+
+  workspaceDeleteBatchBusy.value = true
+  const runID = ++workspaceDeleteRunSequence
+  activeWorkspaceDeleteRun = runID
+  workspaceDeleteProgress.value = { orgUUID, total: ids.length, completed: 0, succeeded: 0, failed: 0 }
+  const observed = new Map<string, WorkspaceDeleteOutcome>()
+  try {
+    const results = await tenant.deleteWorkspaces(orgUUID, ids, {
+      shouldContinue: () => workspaceDeleteDispatchIsAllowed(context),
+      onProgress: (outcome, completed, total) => {
+        if (!workspaceDeleteContextIsCurrent(context)) return
+        observed.set(outcome.uuid, outcome)
+        const progress = workspaceDeleteProgress.value
+        if (progress?.orgUUID === orgUUID) {
+          progress.completed = completed
+          progress.total = total
+          progress.succeeded = [...observed.values()].filter((item) => item.ok).length
+          progress.failed = [...observed.values()].filter((item) => !item.ok).length
+        }
+        if (outcome.ok) {
+          selectedWorkspaceKeys.value = selectedWorkspaceKeys.value.filter((key) => String(key) !== outcome.uuid)
+        }
+      },
+    })
+    for (const result of results) observed.set(result.uuid, result)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'The batch stopped before all results were confirmed.'
+    for (const uuid of ids) {
+      if (!observed.has(uuid)) observed.set(uuid, { uuid, ok: false, error: `Result not confirmed: ${detail}` })
+    }
+  } finally {
+    if (workspaceDeleteContextIsCurrent(context)) {
+      const outcomes = ids.map((uuid) => observed.get(uuid) ?? {
+        uuid,
+        ok: false,
+        error: 'The request was not sent. Retry after checking the workspace inventory.',
+      })
+      recordWorkspaceDeleteOutcomes(orgUUID, names, outcomes)
+      // The store marks successful rows locally before returning. Refresh once
+      // to adopt server state, but never hold the batch busy state on this GET.
+      if (!workspaceListLoading.value) void reloadScopedWorkspaces(orgUUID)
+    }
+    if (activeWorkspaceDeleteRun === runID) {
+      if (context.generation === workspaceDeleteScopeGeneration) workspaceDeleteProgress.value = null
+      // Scope changes clear feedback and stop queued sends. Keep Restore locked
+      // until this exact worker pool returns, without waiting for its follow-up GET.
+      workspaceDeleteBatchBusy.value = false
+      activeWorkspaceDeleteRun = 0
+    }
+  }
+}
+
+async function onDeleteSelectedWorkspaces(keys: Array<string | number>): Promise<void> {
+  await requestWorkspaceDeletions(keys, false)
+}
+
+async function onRetryFailedWorkspaceDeletions(): Promise<void> {
+  await requestWorkspaceDeletions(retryableWorkspaceDeleteIDs.value, true)
+}
+
 const restoringWorkspaceUUID = ref<string | null>(null)
 async function restoreWorkspace(workspace: WorkspaceRow): Promise<void> {
   if (!workspaceInventoryVerified.value || workspace.orgUUID !== tenant.orgUUID ||
-    activeOrg.value?.deletionRequestedAt || workspace.role !== 'admin' || !workspace.deletionRequestedAt || restoringWorkspaceUUID.value) return
+    activeOrg.value?.deletionRequestedAt || workspace.role !== 'admin' || !workspace.deletionRequestedAt || restoringWorkspaceUUID.value || workspaceDeleteBatchBusy.value) return
   const org = workspace.orgUUID
   restoringWorkspaceUUID.value = workspace.uuid
   try {
@@ -1097,6 +1366,11 @@ watch(
 onBeforeUnmount(() => {
   pageDisposed = true
   creationFeedbackGeneration++
+  workspaceDeleteScopeGeneration++
+  selectedWorkspaceKeys.value = []
+  workspaceDeleteProgress.value = null
+  workspaceDeleteSummary.value = null
+  workspaceDeleteBatchBusy.value = false
   // A same-workspace navigation can leave the target IDs unchanged. Retire
   // this page's requests so late mutations cannot publish feedback or reload.
   orgMembersRequest++
@@ -1990,12 +2264,83 @@ function fmtDate(s?: string | null): string {
               <h2 id="organization-workspaces-title" class="text-lg font-semibold text-text-primary">Workspaces</h2>
               <p class="mt-1 text-[12px] text-text-muted">All workspaces you can access in this organization, including those pending deletion.</p>
             </div>
+            <div
+              v-if="workspaceDeleteBatchBusy && workspaceDeleteProgress?.orgUUID === organizationTargetUUID"
+              class="space-y-2 rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2.5"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-2 text-[12px]">
+                <span class="font-medium text-text-primary">Deleting selected workspaces</span>
+                <span class="text-text-secondary">{{ workspaceDeleteProgress.completed }} of {{ workspaceDeleteProgress.total }} requests finished</span>
+              </div>
+              <progress
+                class="h-2 w-full accent-accent"
+                :value="workspaceDeleteProgress.completed"
+                :max="workspaceDeleteProgress.total"
+                aria-label="Workspace deletion requests completed"
+              />
+              <p class="text-[11px] text-text-muted">
+                {{ workspaceDeleteProgress.succeeded }} requested<span v-if="workspaceDeleteProgress.failed"> · {{ workspaceDeleteProgress.failed }} failed</span>.
+              </p>
+            </div>
+            <section
+              v-if="workspaceDeleteSummary?.orgUUID === organizationTargetUUID"
+              class="space-y-2 border-t border-border-default/30 pt-3"
+              aria-labelledby="workspace-delete-results-title"
+              aria-live="polite"
+            >
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div class="min-w-0">
+                  <h3 id="workspace-delete-results-title" class="text-[13px] font-semibold text-text-primary">Workspace deletion results</h3>
+                  <p class="mt-1 text-[11px] text-text-secondary">
+                    {{ workspaceDeleteRequestedCount }} deletion request{{ workspaceDeleteRequestedCount === 1 ? '' : 's' }} accepted
+                    <span v-if="workspaceDeleteFailedCount"> · {{ workspaceDeleteFailedCount }} failed</span>.
+                  </p>
+                </div>
+                <div class="flex shrink-0 flex-wrap items-center gap-2">
+                  <button
+                    v-if="workspaceDeleteFailedCount"
+                    type="button"
+                    class="k-btn k-btn--danger min-h-10 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                    :disabled="workspaceDeleteSelectionDisabled || retryableWorkspaceDeleteIDs.length === 0"
+                    :aria-label="`Retry failed workspace deletions for ${retryableWorkspaceDeleteIDs.length} selected workspaces`"
+                    @click="onRetryFailedWorkspaceDeletions"
+                  >
+                    Retry failed
+                  </button>
+                  <button
+                    type="button"
+                    class="k-btn k-btn--ghost min-h-10 px-3 text-[12px] text-text-secondary sm:min-h-0 sm:py-1.5"
+                    @click="workspaceDeleteSummary = null"
+                  >
+                    Dismiss results
+                  </button>
+                </div>
+              </div>
+              <ul class="max-h-52 space-y-2 overflow-y-auto pr-2" aria-label="Workspace deletion result details">
+                <li v-for="item in workspaceDeleteSummary.items" :key="item.uuid" class="flex flex-col gap-0.5 text-[11px] sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                  <span class="min-w-0 break-words text-text-primary">
+                    {{ item.name }} <span class="font-mono text-text-muted">(UUID {{ item.uuid }})</span>
+                  </span>
+                  <span v-if="item.status === 'requested'" class="shrink-0 text-success">Deletion requested</span>
+                  <span v-else class="min-w-0 break-words text-danger">{{ item.error }}</span>
+                </li>
+              </ul>
+            </section>
             <ResourceTable
               :key="organizationSettingsOrg.uuid"
               :columns="workspaceColumns"
               :rows="workspaceRows"
               aria-label="Organization workspaces"
               row-key="uuid"
+              selectable
+              v-model:selected-keys="selectedWorkspaceKeys"
+              :row-selectable="workspaceRowSelectable"
+              :row-selection-disabled-reason="workspaceRowSelectionDisabledReason"
+              :selection-label="workspaceSelectionLabel"
+              :selection-disabled="workspaceDeleteSelectionDisabled"
               :interactive="false"
               :loaded="workspaceListLoaded"
               :loading="workspaceListLoading"
@@ -2013,9 +2358,21 @@ function fmtDate(s?: string | null): string {
               combined-filter-empty-text="No workspaces match your search and selected filters."
               @retry="reloadScopedWorkspaces(tenant.orgUUID)"
             >
+              <template #selection-actions="{ keys, count }">
+                <button
+                  type="button"
+                  class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                  :disabled="workspaceDeleteActionDisabled"
+                  :aria-label="`Delete ${count} selected workspaces`"
+                  @click="onDeleteSelectedWorkspaces(keys)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                  Delete selected
+                </button>
+              </template>
               <template #name="{ row }">
                 <span>{{ row.name }}</span>
-                <span v-if="tenant.workspaceUUID === row.uuid" class="k-badge ml-2">Current workspace</span>
+                <span v-if="tenant.workspaceMode === 'workspace' && tenant.workspaceUUID === row.uuid" class="k-badge ml-2">Current workspace</span>
               </template>
               <template #uuid="{ row }">
                 <span class="k-cell-mono">{{ row.uuid }}</span>
@@ -2034,7 +2391,7 @@ function fmtDate(s?: string | null): string {
                   :label="`Restore workspace ${String(row.name)}`"
                   :busy-label="`Restoring workspace ${String(row.name)}…`"
                   :busy="restoringWorkspaceUUID === row.uuid"
-                  :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID"
+                  :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID || workspaceDeleteBatchBusy"
                   @click="restoreWorkspace(row as unknown as WorkspaceRow)"
                 />
               </template>

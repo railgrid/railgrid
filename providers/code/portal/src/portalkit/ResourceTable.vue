@@ -1,7 +1,7 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { AlertCircle, ChevronLeft, ChevronRight, Inbox, Search, X } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
+import { AlertCircle, ChevronLeft, ChevronRight, Inbox, Info, Search, X } from 'lucide-vue-next'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import {
   cursorPageRange,
@@ -10,6 +10,11 @@ import {
   paginateTableRows,
   tablePageCount,
   tableRange,
+  pruneClientSelectionKeys,
+  selectionPageState,
+  uniqueSelectionKeys,
+  updatePageSelection,
+  type TableSelectionKey,
   type ResourceTableChange,
   type TableFilterDefinition,
   type TableFilterState,
@@ -84,6 +89,18 @@ const props = withDefaults(defineProps<{
   pageInfo?: TablePageInfo | null
   /** Accessible name for an interactive row. A function can derive it from the row. */
   rowAriaLabel?: string | ((row: Record<string, unknown>, index: number) => string)
+  /** Adds native row checkboxes and a controlled selection bar. */
+  selectable?: boolean
+  /** Controlled stable resource keys. Bind with v-model:selected-keys. */
+  selectedKeys?: TableSelectionKey[]
+  /** Disables every selection control while a bulk action is busy or rows are unverified. */
+  selectionDisabled?: boolean
+  /** Return false when a row must not participate in selection. */
+  rowSelectable?: (row: Record<string, unknown>) => boolean
+  /** Explain why a row cannot be selected; a non-empty reason also disables it. */
+  rowSelectionDisabledReason?: (row: Record<string, unknown>) => string
+  /** Complete accessible name for a row selection checkbox. */
+  selectionLabel?: (row: Record<string, unknown>) => string
 }>(), {
   // Vue casts an omitted Boolean prop to false in child components. A null
   // sentinel preserves omission so legacy callers retain loading -> content
@@ -107,8 +124,12 @@ const props = withDefaults(defineProps<{
   pageSize: 10,
   pageSizeOptions: () => [10, 25, 50],
   paginationMode: 'client',
+  selectable: false,
+  selectedKeys: () => [],
+  selectionDisabled: false,
 })
 
+const componentID = useId()
 const query = ref('')
 const page = ref(1)
 const selectedPageSize = ref(normalizePageSize(props.pageSize))
@@ -136,6 +157,21 @@ const currentFilters = computed<TableFilterState>(() => {
   const values = controlledFilterValues.value ?? selectedFilters
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, String(value ?? '')]))
 })
+const normalizedSelectedKeys = computed(() => uniqueSelectionKeys(props.selectedKeys))
+const selectedKeySet = computed(() => new Set(normalizedSelectedKeys.value))
+const selectedCount = computed(() => normalizedSelectedKeys.value.length)
+const duplicateRowKeys = computed(() => {
+  const counts = new Map<TableSelectionKey, number>()
+  props.rows.forEach(row => {
+    const key = stableSelectionKey(row)
+    if (key !== null) counts.set(key, (counts.get(key) ?? 0) + 1)
+  })
+  return new Set([...counts].filter(([, count]) => count > 1).map(([key]) => key))
+})
+const authoritativeSelectionRows = computed(() => props.rows.flatMap(row => {
+  const state = rowSelectionState(row)
+  return state.key === null ? [] : [{ key: state.key, selectable: state.selectable }]
+}))
 const filterSignature = computed(() => Object.entries(currentFilters.value)
   .sort(([left], [right]) => left.localeCompare(right))
   .map(([key, value]) => `${key}\u0000${value}`)
@@ -146,6 +182,7 @@ const filterSignature = computed(() => Object.entries(currentFilters.value)
 const deferredQuery = ref(currentQuery.value)
 const deferredFilters = ref<TableFilterState>({ ...currentFilters.value })
 const filterPending = ref(false)
+const selectionAnnouncement = ref('')
 const primaryTooltip = ref<{
   value: string
   left: number
@@ -190,6 +227,11 @@ const visibleRows = computed(() => isServerPagination.value
     ? paginateTableRows(filteredRows.value, currentPage.value, currentPageSize.value)
     : filteredRows.value,
 )
+const eligiblePageKeys = computed(() => uniqueSelectionKeys(visibleRows.value.flatMap(row => {
+  const state = rowSelectionState(row)
+  return state.selectable && state.key !== null ? [state.key] : []
+})))
+const selectionOnPage = computed(() => selectionPageState(normalizedSelectedKeys.value, eligiblePageKeys.value))
 const serverTotal = computed(() => {
   if (!isServerPagination.value || props.pageInfo?.total === undefined) return null
   return normalizeTotal(props.pageInfo.total)
@@ -233,7 +275,7 @@ const primaryColumnKey = computed(() => {
     ?? columns[0]?.key
     ?? null
 })
-const renderedColumnCount = computed(() => Math.max(visibleColumns.value.length, 1))
+const renderedColumnCount = computed(() => Math.max(visibleColumns.value.length + (props.selectable ? 1 : 0), 1))
 const staleMessageRole = computed(() => props.refreshMode === 'background' ? 'status' : 'alert')
 const staleMessageLive = computed(() => props.refreshMode === 'background' ? 'polite' : 'assertive')
 const showPendingBody = computed(() =>
@@ -280,8 +322,26 @@ const emit = defineEmits<{
   'update:pageSize': [pageSize: number]
   'update:query': [query: string]
   'update:filterValues': [filters: TableFilterState]
+  'update:selectedKeys': [keys: TableSelectionKey[]]
 }>()
 
+watch([currentQuery, filterSignature], () => clearSelection(), { flush: 'sync' })
+watch(selectedCount, count => {
+  selectionAnnouncement.value = count > 0
+    ? `${count} ${count === 1 ? 'resource' : 'resources'} selected.`
+    : 'Selection cleared.'
+}, { flush: 'post' })
+watch([
+  authoritativeSelectionRows,
+  () => props.selectedKeys,
+  () => props.loaded,
+  () => props.loading,
+  () => props.error,
+  () => props.stale,
+  () => props.selectionDisabled,
+  isServerPagination,
+  () => props.selectable,
+], pruneAuthoritativeClientSelection, { immediate: true, flush: 'post' })
 watch(() => props.pageSize, value => {
   const next = normalizePageSize(value)
   if (selectedPageSize.value !== next) selectedPageSize.value = next
@@ -384,6 +444,7 @@ function setPageSize(value: number) {
 }
 
 function setQuery(value: string) {
+  if (value !== currentQuery.value) clearSelection()
   if (props.query === undefined) query.value = value
   resetCursorHistory()
   if (props.page === undefined) page.value = 1
@@ -394,12 +455,107 @@ function setQuery(value: string) {
 
 function setFilter(key: string, value: string) {
   const next = { ...snapshotFilters(), [key]: value }
+  if (next[key] !== currentFilters.value[key]) clearSelection()
   if (controlledFilterValues.value === undefined) selectedFilters[key] = value
   resetCursorHistory()
   if (props.page === undefined) page.value = 1
   emit('update:filterValues', next)
   emit('update:page', 1)
   emitChange('filter', 1, null, { filters: next })
+}
+
+function clearSelection() {
+  if (normalizedSelectedKeys.value.length > 0) emit('update:selectedKeys', [])
+}
+
+function isSelectionKey(value: unknown): value is TableSelectionKey {
+  return (typeof value === 'string' && value.trim().length > 0)
+    || (typeof value === 'number' && Number.isFinite(value))
+}
+
+function stableSelectionKey(row: Record<string, unknown>): TableSelectionKey | null {
+  if (typeof props.rowKey === 'function') {
+    const value = props.rowKey(row, props.rows.indexOf(row))
+    if (isSelectionKey(value)) return value
+  } else if (typeof props.rowKey === 'string' && isSelectionKey(row[props.rowKey])) {
+    return row[props.rowKey] as TableSelectionKey
+  }
+
+  for (const key of ['name', 'id', 'uid']) {
+    if (isSelectionKey(row[key])) return row[key] as TableSelectionKey
+  }
+  return null
+}
+
+function rowSelectionState(row: Record<string, unknown>): {
+  key: TableSelectionKey | null
+  selectable: boolean
+  reason: string
+} {
+  const key = stableSelectionKey(row)
+  const requestedReason = props.rowSelectionDisabledReason?.(row)?.trim() ?? ''
+  const rowAllowed = props.rowSelectable?.(row) !== false
+  const duplicate = key !== null && duplicateRowKeys.value.has(key)
+  const reason = key === null
+    ? 'This resource has no stable key for selection.'
+    : duplicate
+      ? 'This resource has a duplicate stable key and cannot be selected.'
+      : requestedReason || (rowAllowed ? '' : 'This resource is not available for selection.')
+  return { key, selectable: key !== null && !duplicate && rowAllowed && !requestedReason, reason }
+}
+
+function selectionCheckboxLabel(row: Record<string, unknown>, index: number): string {
+  const customLabel = props.selectionLabel?.(row)?.trim()
+  if (customLabel) return customLabel
+  const key = stableSelectionKey(row)
+  const resource = key === null ? `resource on row ${index + 1}` : String(key)
+  return `${selectedKeySet.value.has(key as TableSelectionKey) ? 'Deselect' : 'Select'} ${resource}`
+}
+
+function selectionReasonID(index: number): string {
+  return `${componentID}-selection-reason-${index}`
+}
+
+function selectionDescription(row: Record<string, unknown>): string {
+  const state = rowSelectionState(row)
+  if (!state.selectable) return state.reason
+  return props.selectionDisabled ? 'Selection is unavailable while resources are busy or unverified.' : ''
+}
+
+function selectionHelpLabel(row: Record<string, unknown>, index: number): string {
+  const label = selectionCheckboxLabel(row, index)
+  return `Why can't I select ${label.replace(/^(Select|Deselect)\s+/i, '')}?`
+}
+
+function toggleRowSelection(row: Record<string, unknown>, checked: boolean) {
+  if (props.selectionDisabled) return
+  const state = rowSelectionState(row)
+  if (!state.selectable || state.key === null) return
+  emit('update:selectedKeys', updatePageSelection(normalizedSelectedKeys.value, [state.key], checked))
+}
+
+function togglePageSelection(checked: boolean) {
+  if (props.selectionDisabled) return
+  emit('update:selectedKeys', updatePageSelection(normalizedSelectedKeys.value, eligiblePageKeys.value, checked))
+}
+
+function isRowSelected(row: Record<string, unknown>): boolean {
+  const key = stableSelectionKey(row)
+  return key !== null && selectedKeySet.value.has(key)
+}
+
+function pruneAuthoritativeClientSelection() {
+  if (!props.selectable
+    || props.paginationMode === 'server'
+    || props.loaded !== true
+    || props.loading
+    || props.error
+    || props.stale
+    || props.selectionDisabled
+    || normalizedSelectedKeys.value.length === 0) return
+
+  const next = pruneClientSelectionKeys(normalizedSelectedKeys.value, authoritativeSelectionRows.value)
+  if (next.length !== normalizedSelectedKeys.value.length) emit('update:selectedKeys', next)
 }
 
 function rowIdentity(row: Record<string, unknown>, index: number): string | number {
@@ -517,6 +673,7 @@ onBeforeUnmount(() => {
 
 function clearFilters() {
   const next = Object.fromEntries(props.filters.map(filter => [filter.key, '']))
+  if (currentQuery.value || hasFacetFilters.value) clearSelection()
   if (props.query === undefined) query.value = ''
   if (controlledFilterValues.value === undefined) {
     Object.keys(selectedFilters).forEach(key => { selectedFilters[key] = '' })
@@ -559,7 +716,7 @@ function isExplicitControlTarget(event: Event): boolean {
   if (!target || target === currentTarget) return false
   const element = target as Element | null
   const control = element?.closest?.(
-    'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])',
+    'a, button, input, label, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])',
   )
   return Boolean(control && control !== currentTarget)
 }
@@ -666,14 +823,48 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         <button v-if="hasFacetFilters" class="k-table__clear-filters" type="button" @click="clearFilters">{{ clearActionLabel }}</button>
       </div>
 
+      <span v-if="selectable" class="k-table__selection-live" role="status" aria-live="polite" aria-atomic="true">
+        {{ selectionAnnouncement }}
+      </span>
+      <div v-if="selectable && selectedCount > 0" class="k-table__selection-bar">
+        <p class="k-table__selection-count">
+          {{ selectedCount }} {{ selectedCount === 1 ? 'resource' : 'resources' }} selected
+        </p>
+        <button class="k-table__clear-selection" type="button" :disabled="selectionDisabled" @click="clearSelection">
+          Clear selection
+        </button>
+        <div class="k-table__selection-actions">
+          <slot name="selection-actions" :selectedKeys="normalizedSelectedKeys" :keys="normalizedSelectedKeys" :count="selectedCount" />
+        </div>
+      </div>
+
       <div class="k-table__scroll" role="region" :aria-label="`${tableAriaLabel} scroll area`" tabindex="0">
         <table class="k-table__table" :aria-label="tableAriaLabel">
-          <thead><tr class="k-table__head-row"><th v-for="col in visibleColumns" :key="col.key" class="k-table__heading" :class="[`k-table__heading--${col.align ?? 'start'}`, { 'k-table__heading--primary': col.key === primaryColumnKey }]" :aria-label="col.ariaLabel || col.label || col.key">{{ col.label }}</th></tr></thead>
+          <thead><tr class="k-table__head-row">
+            <th v-if="selectable" class="k-table__heading k-table__selection-heading" scope="col">
+              <label class="k-table__checkbox-target">
+                <input
+                  class="k-table__checkbox"
+                  type="checkbox"
+                  :checked="selectionOnPage.allSelected"
+                  :indeterminate="selectionOnPage.partiallySelected"
+                  :aria-checked="selectionOnPage.partiallySelected ? 'mixed' : undefined"
+                  :aria-label="`Select all eligible ${tableAriaLabel.toLocaleLowerCase()} on this page`"
+                  :disabled="selectionDisabled || eligiblePageKeys.length === 0"
+                  @change="togglePageSelection(($event.target as HTMLInputElement).checked)"
+                >
+              </label>
+            </th>
+            <th v-for="col in visibleColumns" :key="col.key" class="k-table__heading" :class="[`k-table__heading--${col.align ?? 'start'}`, { 'k-table__heading--primary': col.key === primaryColumnKey }]" :aria-label="col.ariaLabel || col.label || col.key">{{ col.label }}</th>
+          </tr></thead>
           <tbody>
             <template v-for="(row, i) in visibleRows" :key="rowIdentity(row, i)">
               <tr
                 class="stagger-item k-table__row"
-                :class="{ 'k-table__row--interactive': interactive }"
+                :class="{
+                  'k-table__row--interactive': interactive,
+                  'k-table__row--selected': selectable && isRowSelected(row) && rowSelectionState(row).selectable,
+                }"
                 :tabindex="interactive ? 0 : undefined"
                 :aria-label="interactive ? rowAriaLabel(row, i) : undefined"
                 :style="{ animationDelay: `${i * 35}ms` }"
@@ -682,6 +873,36 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                 @focusout="hidePrimaryTooltip"
                 @keydown="onRowKeydown(row, $event)"
               >
+                <td v-if="selectable" class="k-table__cell k-table__selection-cell">
+                  <label
+                    class="k-table__checkbox-target"
+                    :class="{ 'k-table__checkbox-target--explained': !!rowSelectionState(row).reason }"
+                  >
+                    <input
+                      class="k-table__checkbox"
+                      type="checkbox"
+                      :checked="isRowSelected(row)"
+                      :aria-label="selectionCheckboxLabel(row, i)"
+                      :aria-describedby="selectionDescription(row) ? selectionReasonID(i) : undefined"
+                      :disabled="selectionDisabled || !rowSelectionState(row).selectable"
+                      @change="toggleRowSelection(row, ($event.target as HTMLInputElement).checked)"
+                    >
+                  </label>
+                  <span v-if="selectionDescription(row)" :id="selectionReasonID(i)" class="k-table__selection-reason">
+                    {{ selectionDescription(row) }}
+                  </span>
+                  <button
+                    v-if="rowSelectionState(row).reason"
+                    class="k-table__selection-help"
+                    type="button"
+                    :data-k-tip="rowSelectionState(row).reason"
+                    :aria-label="selectionHelpLabel(row, i)"
+                    :aria-describedby="selectionReasonID(i)"
+                    @click.stop
+                  >
+                    <Info :stroke-width="1.75" aria-hidden="true" />
+                  </button>
+                </td>
                 <td v-for="col in visibleColumns" :key="col.key" class="k-table__cell" :class="[`k-table__cell--${col.align ?? 'start'}`, { 'k-table__cell--primary': col.key === primaryColumnKey }]">
                   <div v-if="col.key === primaryColumnKey && actionsColumn" class="k-table__primary">
                     <div class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hidePrimaryTooltip">

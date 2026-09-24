@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 22;
+  --railgrid-ui-core-version: 23;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -2108,6 +2108,90 @@ railgrid-resource-table-filter { display: contents; }
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: 2px;
 }
+.k-table__selection-bar {
+  align-items: center;
+  background: var(--color-surface-raised, #111320);
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 46px;
+  padding: 7px 16px;
+}
+.k-table__selection-count {
+  color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+.k-table__clear-selection {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-accent, #8b6bff);
+  cursor: pointer;
+  font-size: 11px;
+  min-height: 30px;
+  padding: 0 8px;
+}
+.k-table__clear-selection:hover:not(:disabled) { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); }
+.k-table__clear-selection:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+.k-table__clear-selection:disabled { cursor: not-allowed; opacity: 0.45; }
+.k-table__selection-actions { align-items: center; display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.k-table__selection-heading { padding: 4px 8px 4px 12px; text-align: center; width: 1%; }
+.k-table__selection-cell { padding: 6px 5px 6px 12px; text-align: center; vertical-align: middle; white-space: nowrap; width: 1%; }
+.k-table__checkbox-target {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  min-height: 28px;
+  min-width: 28px;
+  vertical-align: middle;
+}
+.k-table__checkbox {
+  accent-color: var(--color-accent, #8b6bff);
+  cursor: pointer;
+  height: 16px;
+  margin: 0;
+  width: 16px;
+}
+.k-table__checkbox:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 3px; }
+.k-table__checkbox:disabled { cursor: not-allowed; }
+.k-table__selection-help {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: help;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  margin-inline-start: 1px;
+  padding: 0;
+  vertical-align: middle;
+  width: 24px;
+}
+.k-table__selection-help:hover,
+.k-table__selection-help:focus-visible { color: var(--color-text-primary, #e9e9f2); }
+.k-table__selection-help:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 1px; }
+.k-table__selection-help svg { height: 14px; width: 14px; }
+.k-table__selection-reason,
+.k-table__selection-live {
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  margin: -1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+}
 .k-table__scroll {
   max-width: 100%;
   overscroll-behavior-inline: contain;
@@ -2152,6 +2236,17 @@ railgrid-resource-table-filter { display: contents; }
   width: 1%;
 }
 .k-table__cell--primary { width: 100%; }
+/* Keep the selection checkbox anchored at one edge for eligible and explained
+ * disabled rows. This override follows the generic cell padding intentionally. */
+.k-table.k-table--resource .k-table__selection-heading {
+  padding-inline: 8px 4px;
+  text-align: start;
+}
+.k-table.k-table--resource .k-table__selection-cell {
+  padding-inline: 8px 4px;
+  text-align: start;
+  width: 1%;
+}
 .k-table__primary {
   align-items: center;
   display: flex;
@@ -2242,6 +2337,8 @@ railgrid-resource-table-filter { display: contents; }
 .k-table__row.k-table__row--interactive { cursor: pointer; }
 .k-table__row.k-table__row--interactive:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 4%, transparent); }
 .k-table__row.k-table__row--interactive:hover .k-table__cell { color: var(--color-text-primary, #e9e9f2); }
+.k-table__row.k-table__row--selected { background: color-mix(in srgb, var(--color-accent, #8b6bff) 7%, var(--color-surface, #0a0b12)); }
+.k-table__row.k-table__row--selected:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 11%, var(--color-surface, #0a0b12)); }
 .k-table__row.k-table__row--interactive:focus-visible {
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: -2px;
@@ -2413,9 +2510,13 @@ railgrid-resource-table-filter { display: contents; }
     min-width: 44px;
   }
   .k-table__clear-filters,
+  .k-table__clear-selection,
   .k-table__retry {
     min-height: 44px;
   }
+  .k-table__checkbox-target { min-height: 44px; min-width: 44px; }
+  .k-table__checkbox-target--explained { min-width: 16px; }
+  .k-table__selection-help { height: 44px; min-height: 44px; min-width: 44px; width: 44px; }
   .k-table__page-button,
   .k-table-action {
     height: 44px;

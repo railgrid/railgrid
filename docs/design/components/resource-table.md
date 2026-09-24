@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.resource-table","title":"ResourceTable and filtering contract","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"ResourceTable preserves native table semantics, truthful read states, and independently configured queryable or explicit simple modes."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-table.md#resourcetable-and-filtering-contract","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourceTable.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableFilter.vue","role":"implementation"},{"path":"provider-sdk/portalkit/resource-table-filter.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/table.ts","role":"implementation"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"command","ref":"make verify-ui-conformance","status":"passing"},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.patterns.resource-reads","relation":"implements","path":"docs/design/patterns/resource-reads.md"},{"id":"design.patterns.controls","relation":"see-also","path":"docs/design/patterns/controls.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"}]}
+{"schema":1,"id":"design.components.resource-table","title":"ResourceTable and filtering contract","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"ResourceTable preserves native table semantics, truthful read states, independently configured queryable or explicit simple modes, and opt-in controlled row selection."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-table.md#resourcetable-and-filtering-contract","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourceTable.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableFilter.vue","role":"implementation"},{"path":"provider-sdk/portalkit/resource-table-filter.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/table.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs","role":"reference"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"command","ref":"make verify-ui-conformance","status":"passing"},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"passing","evidence":"Organization workspaces bulk-selection and deletion fixtures passed in Chromium light/dark at 1440px and 390px, covering keyboard and checked/mixed states, page/query behavior, confirmation, partial-failure retry, and navigation cancellation. Fixture evidence covers this flow, not every provider consumer."}]},"relatedDocuments":[{"id":"design.patterns.resource-reads","relation":"implements","path":"docs/design/patterns/resource-reads.md"},{"id":"design.patterns.controls","relation":"see-also","path":"docs/design/patterns/controls.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"}]}
 ---
 
 # ResourceTable and filtering contract
@@ -8,7 +8,8 @@
 
 `ResourceTable` presents resource collections while preserving native table
 semantics, truthful read states, and independently configured queryable or
-explicit simple modes.
+explicit simple modes. It can opt into controlled, stable-key row selection
+without coupling selection to resource navigation or page state.
 
 ## Use when
 
@@ -57,6 +58,42 @@ retains the current valid page. Cursor-backed lists use
 fetch. Server mode renders supplied rows as-is, never applies local slicing, and
 exposes only backend-returned next-page state.
 
+Row selection is an explicit `selectable` opt-in. Bind `selected-keys` as the
+controlled `string | number` keys for selected resources and handle
+`update:selected-keys`. A stable `row-key` is required for selectable rows; the
+default stable fields are `name`, `id`, and `uid`. Rows without a stable key and
+duplicate keys in the supplied result cannot be selected. A `row-key` function
+retains its existing `(row, index)` signature for row rendering. Selection
+passes the matching index from the source `rows` array, not the locally filtered
+page. Its result must remain stable across server page changes and derive
+identity from resource data, independent of the index. `selection-label(row)`
+can provide a complete checkbox name.
+
+The header uses a native mixed-state checkbox to select eligible rows on the
+currently rendered page: the locally filtered page in client mode or the
+supplied page in server mode. It never selects all search matches. Selection
+survives page and page-size changes, and a query or filter value change clears
+it. The bar below the filters shows the total controlled key count, including
+keys preserved from other server pages; its `selection-actions` slot receives
+`selectedKeys`, `keys` (an alias), and `count`. The built-in Clear selection
+button clears the complete selection.
+
+In client mode, selected keys are pruned against the full supplied `rows` set
+only after `loaded` is true and the read is settled without an error or stale
+result. In server mode, absence from the current page never prunes a key.
+`selection-disabled` disables row/header checkboxes and Clear selection while
+the caller reports a busy or unverified state; it does not itself prune keys.
+`row-selectable(row)` and a non-empty
+`row-selection-disabled-reason(row)` make a row ineligible. Ineligible rows
+expose a keyboard-focusable help control with the reason, since a disabled
+checkbox cannot receive keyboard focus.
+
+Consumers own the available bulk actions, permissions, confirmation, request
+execution, and per-resource outcomes. Clear selection when the organization or
+resource scope changes, and revalidate targets before sending requests. In server
+mode, consumers also reconcile off-page selections against authoritative data;
+the table cannot infer deletion from absence on the current page.
+
 ## Content
 
 Search and compact labeled facets sit above the table. Categorical filters use
@@ -89,12 +126,20 @@ using `fullValue(row)` when a slot label differs. Icon-only actions use
 behavior, nested-control isolation, and row-action accessibility are identical
 between Queryable and Simple. See the [accessible interaction policy](../accessibility/interaction.md).
 
+When enabled, selection keeps a native checkbox column before the primary
+column. Header state uses the input's checked and indeterminate properties,
+and every row checkbox has a resource-specific accessible name. The live count
+remains mounted while selectable so clearing the selection is announced.
+Disabled row explanations are available from a focusable help button and its
+tooltip; global selection disablement applies to all selection controls.
+
 ## Code and evidence
 
 Canonical implementations are `provider-sdk/portalkit-vue/ResourceTable.vue`,
 `provider-sdk/portalkit-vue/ResourceTableFilter.vue`,
 `provider-sdk/portalkit/resource-table-filter.ts`,
-`provider-sdk/portalkit-vue/table.ts`, and
+`provider-sdk/portalkit-vue/table.ts` (including the focused
+`ResourceTable.selection.test.mjs` contract), and
 `provider-sdk/portalkit/railgrid-ui.css`. Verify with `make verify-portalkit` and
 `make verify-ui-conformance`.
 
