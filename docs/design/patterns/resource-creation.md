@@ -11,6 +11,25 @@ compact addition whose meaning depends on the current parent. Do not insert a
 substantial form into a collection page where it reflows or competes with the
 collection.
 
+Organization and workspace member additions, and the current workspace-scoped
+service-account creation form, use compact dialogs. Their short identity-and-role
+decision does not need a dedicated creation route. Put **Add member** or **Create
+service account** in the collection card header; keep creation fields out of the
+resting collection so they do not compete with table search. The service-account
+case is an explicit exception to the route-owned default for independently
+managed resources. Revisit it if creation gains substantial permissions setup,
+external prerequisites, multiple steps, or resumable drafts.
+
+Each dialog names the organization or workspace receiving access, uses persistent
+field labels, explains the role, and defaults to **Member**. Workspace member
+addition explains that access is workspace-only and points to organization
+membership management when organization access is intended. Keep validation and
+request errors inside the dialog and preserve its draft after a failed request.
+On success, close the dialog, refresh the collection without discarding its
+search or filters, and confirm the result. Service-account creation does not
+automatically issue a secret: **Issue token** remains a separate, deliberate
+action. Use the existing dialog focus, keyboard, and responsive conventions.
+
 Choose the surface for the user's task, not field count, API shape, or
 implementation convenience. Use the operation's truthful domain verb, such as
 **Connect**, **Provision**, or **Deploy**. Use readable provider-owned routes;

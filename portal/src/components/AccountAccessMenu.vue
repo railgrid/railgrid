@@ -545,7 +545,7 @@ onBeforeUnmount(() => {
       <div class="my-1 h-px bg-border-subtle" />
 
       <router-link
-        :to="scopePath('/settings/workspaces')"
+        :to="scopePath(tenant.workspaceUUID ? '/settings/workspaces' : '/settings/organizations')"
         class="account-menu-item k-menu-item"
         :class="settingsActive ? 'is-selected' : ''"
         :aria-current="settingsActive ? 'page' : undefined"

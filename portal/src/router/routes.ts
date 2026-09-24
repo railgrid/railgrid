@@ -1,4 +1,5 @@
 import { ORGANIZATION_ROUTE, WORKSPACE_ROUTE } from '@/portalkit/navigation'
+import type { RouteLocationGeneric } from 'vue-router'
 
 export const routes = [
   {
@@ -42,18 +43,38 @@ export const routes = [
     redirect: (to: { params: Record<string, unknown> }) => `/${to.params.orgID}/settings/workspaces`,
   },
   {
-    path: ORGANIZATION_ROUTE + '/settings/workspaces',
+    path: WORKSPACE_ROUTE + '/settings',
+    redirect: (to: { params: Record<string, unknown> }) => `/${to.params.orgID}/${to.params.workspaceID}/settings/workspaces`,
+  },
+  {
+    path: WORKSPACE_ROUTE + '/settings/workspaces',
     name: 'settings-workspaces',
+    component: () => import('@/pages/TenantSettingsPage.vue'),
+  },
+  {
+    path: WORKSPACE_ROUTE + '/settings/organizations',
+    name: 'settings-organizations',
+    component: () => import('@/pages/TenantSettingsPage.vue'),
+  },
+  {
+    path: ORGANIZATION_ROUTE + '/settings/workspaces',
+    name: 'settings-workspaces-entry',
+    meta: { workspaceSettingsEntry: true },
     component: () => import('@/pages/TenantSettingsPage.vue'),
   },
   {
     path: ORGANIZATION_ROUTE + '/settings/workspaces/:workspaceUUID',
     name: 'settings-workspace-overview',
-    component: () => import('@/pages/TenantSettingsPage.vue'),
+    redirect: (to: RouteLocationGeneric) => ({
+      name: 'settings-workspaces',
+      params: { orgID: to.params.orgID, workspaceID: to.params.workspaceUUID },
+      query: to.query,
+      hash: to.hash,
+    }),
   },
   {
     path: ORGANIZATION_ROUTE + '/settings/organizations',
-    name: 'settings-organizations',
+    name: 'settings-organization-overview',
     component: () => import('@/pages/TenantSettingsPage.vue'),
   },
   {
