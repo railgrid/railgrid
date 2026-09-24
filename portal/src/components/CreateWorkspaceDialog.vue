@@ -50,11 +50,14 @@ async function checkReady(revision = generation) {
     // Read only the new workspace: polling the shared list would repeatedly
     // suspend the current workspace while its hydration state is loading.
     const response = await authFetch(`/api/orgs/${encodeURIComponent(orgID)}/workspaces/${encodeURIComponent(created.value.uuid)}`, {
-      headers: { 'X-Railgrid-Org': orgID },
+      // Workspace reads require headers matching the URL. The operating
+      // workspace remains selected until this new workspace can be entered.
+      headers: { 'X-Railgrid-Org': orgID, 'X-Railgrid-Workspace': created.value.uuid },
     })
     if (!current(revision)) return
     if (!response.ok) {
-      throw new Error('Your workspace was created, but its readiness could not be checked. Try again.')
+      const status = await response.json().catch(() => null) as { message?: string } | null
+      throw new Error(`Your workspace was created, but its readiness could not be checked (HTTP ${response.status}). ${status?.message || 'Try again.'}`)
     }
     const workspace = await response.json() as WorkspaceRow
     if (!current(revision)) return

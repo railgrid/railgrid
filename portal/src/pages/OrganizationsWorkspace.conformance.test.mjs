@@ -268,19 +268,6 @@ test('one-time token copy exposes manual recovery instead of swallowing failure'
   assert.match(tenantSettingsPage, /Close without copying/)
 })
 
-test('opening an organization inventory row enters that workspace directly', () => {
-  const start = tenantSettingsPage.indexOf('async function selectWorkspace(workspace: WorkspaceRow)')
-  const end = tenantSettingsPage.indexOf('\n}\n\nfunction setWorkspaceLifecycleFilter', start)
-  assert.ok(start >= 0 && end > start)
-  const select = tenantSettingsPage.slice(start, end)
-  assert.match(select, /if \(!canSelectWorkspace\(workspace\)\) return/)
-  assert.match(select, /tenant\.beginWorkspaceTransition\(\)/)
-  assert.match(select, /await router\.push\(\{ name: 'settings-workspaces', params: \{ orgID: workspace\.orgUUID, workspaceID: workspace\.uuid \} \}\)/)
-  assert.match(select, /finally \{[\s\S]*tenant\.endWorkspaceTransition\(transitionToken\)/)
-  assert.match(tenantSettingsPage, /workspaceInventoryVerified\.value && workspace\.orgUUID === activeOrg\.value\?\.uuid/)
-  assert.match(tenantSettingsPage, /!workspace\.deletionRequestedAt && !!workspace\.clusterName/)
-})
-
 test('organization inventory keeps lifecycle rows visible at every width', () => {
   const orgStart = tenantSettingsPage.indexOf('<template v-else-if="activeSection === \'organizations\'">')
   const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
@@ -595,7 +582,7 @@ test('workspace list adoption follows the winning per-org load state', () => {
   assert.match(reload, /workspaceLoadStateByOrg\[orgUUID \?\? ''\] \?\? 'idle'\) !== 'loading'/)
 
   const adoptionStart = tenantSettingsPage.indexOf('// App bootstrap and the shell switcher')
-  const adoptionEnd = tenantSettingsPage.indexOf('\n)\n\nasync function selectWorkspace', adoptionStart)
+  const adoptionEnd = tenantSettingsPage.indexOf('\n)\n\nfunction setWorkspaceLifecycleFilter', adoptionStart)
   assert.ok(adoptionStart >= 0 && adoptionEnd > adoptionStart)
   const adoption = tenantSettingsPage.slice(adoptionStart, adoptionEnd)
   assert.match(adoption, /workspaceLoadStateByOrg\[tenant\.orgUUID\]/)

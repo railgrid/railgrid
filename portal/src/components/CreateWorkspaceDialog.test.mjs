@@ -18,7 +18,7 @@ function setup() {
   const navigations = []
   const route = ref({ fullPath: '/org-a/old/' })
   const auth = reactive({ token: 'test-session' })
-  const state = { creates: 0, rows: [], status: 'ready', creation: null, closed: 0, fetch: null }
+  const state = { creates: 0, reads: [], rows: [], status: 'ready', creation: null, closed: 0, fetch: null }
   const created = { uuid: 'new', orgUUID: 'org-a', displayName: 'New workspace' }
   const tenant = reactive({
     orgUUID: 'org-a', workspaceUUID: 'old', orgLoadState: 'ready', orgError: null,
@@ -42,9 +42,17 @@ function setup() {
         return new Response(JSON.stringify(result), { status: state.createStatus || 201 })
       }
       assert.equal(url, '/api/orgs/org-a/workspaces/new')
+      // The hub's requireTenantContext binds workspace GETs to BOTH headers.
+      // A scoped URL alone does not select the workspace, and the existing
+      // operating workspace is deliberately still "old" during preparation.
+      const headers = new Headers(options.headers)
+      state.reads.push({ org: headers.get('X-Railgrid-Org'), workspace: headers.get('X-Railgrid-Workspace') })
+      if (headers.get('X-Railgrid-Org') !== 'org-a' || headers.get('X-Railgrid-Workspace') !== 'new') {
+        return new Response(JSON.stringify({ message: 'Workspace path and tenant headers must match.' }), { status: 400 })
+      }
       if (state.fetch) await state.fetch()
       const row = state.rows.find(row => row.uuid === 'new') || created
-      return new Response(JSON.stringify(row), { status: state.status === 'ready' ? 200 : 503 })
+      return new Response(JSON.stringify(state.readError || row), { status: state.readStatus || (state.status === 'ready' ? 200 : 503) })
     },
     computed, ref, Error, useAuthStore: () => auth, useId: () => 'dialog', useTenantStore: () => tenant,
     useRouter: () => ({ currentRoute: route, async push(to) { navigations.push(to); tenant.workspaceUUID = to.params.workspaceID } }),
@@ -73,6 +81,19 @@ test('creation preserves current context until the exact new workspace is usable
   state.rows = [{ ...created, clusterName: 'new-cluster' }]
   await api.checkReady()
   assert.equal(navigations[0].params.workspaceID, 'new')
+  assert.equal(state.closed, 1)
+})
+
+test('readiness addresses the new workspace while preserving the current operating context', async () => {
+  const { api, state, tenant, created, navigations } = setup()
+  state.rows = [{ ...created, clusterName: 'new-cluster' }]
+  state.fetch = () => { assert.equal(tenant.workspaceUUID, 'old') }
+  await api.submit()
+  assert.equal(api.error.value, '')
+  assert.deepEqual(state.reads, [{ org: 'org-a', workspace: 'new' }])
+  assert.equal(navigations.length, 1)
+  assert.equal(navigations[0].params.workspaceID, 'new')
+  assert.equal(tenant.workspaceUUID, 'new')
   assert.equal(state.closed, 1)
 })
 
@@ -106,6 +127,22 @@ test('readiness failures retain the created workspace and provide a safe retry',
   assert.equal(navigations.length, 1)
 })
 
+test('readiness contract errors show the server reason without retrying or creating again', async () => {
+  const { api, state, tenant, timers } = setup()
+  state.readStatus = 400
+  state.readError = { message: 'Workspace path and tenant headers must match.' }
+  await api.submit()
+  assert.match(api.error.value, /HTTP 400/)
+  assert.match(api.error.value, /Workspace path and tenant headers must match/)
+  assert.equal(api.created.value.uuid, 'new')
+  assert.equal(tenant.workspaceUUID, 'old')
+  assert.equal(tenant.error, undefined)
+  assert.equal(state.creates, 1)
+  assert.equal(state.reads.length, 1)
+  assert.equal(timers.size, 0)
+  assert.equal(api.busy.value, false)
+})
+
 test('closing or changing organization fences late creation and readiness responses', async () => {
   for (const stage of ['creation', 'readiness']) {
     for (const action of ['close', 'dispose', 'changeOrg', 'changeRoute', 'changeSession']) {
@@ -115,7 +152,8 @@ test('closing or changing organization fences late creation and readiness respon
       else env.state.fetch = () => new Promise(done => { resolve = done })
       env.state.rows = [{ ...env.created, clusterName: 'ready' }]
       const pending = env.api.submit()
-      while (!resolve) await Promise.resolve()
+      for (let turn = 0; !resolve && turn < 100; turn++) await Promise.resolve()
+      assert.equal(typeof resolve, 'function', `${stage}/${action}: request did not reach the deferred response`)
       if (action === 'close') env.api.close()
       else if (action === 'dispose') env.dispose()
       else if (action === 'changeOrg') { env.tenant.orgUUID = 'org-b'; env.changeOrg() }

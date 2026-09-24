@@ -72,11 +72,11 @@ offer creation when allowed, otherwise explain how to get access. New organizati
 creation enters this flow with a preparation hint while bootstrap runs.
 Workspace settings show the active workspace directly, including its access and
 lifecycle controls. The profile menu's Settings action opens those settings.
-Organization settings contain the cross-workspace inventory, including
-provisioning and deleting workspaces and recovery actions. Opening an available
-workspace from that inventory changes the operating workspace; there is no
-separate workspace inspection selection. Explicit workspace settings and resource
-links resolve the workspace encoded in their URL. The sidebar workspace menu
+Organization settings contain the cross-workspace inventory in a card after the
+organization overview, including provisioning and deleting workspaces and
+recovery actions. Workspace switching stays in the picker; the inventory has no
+separate workspace inspection selection or open action. Explicit workspace settings
+and resource links resolve the workspace encoded in their URL. The sidebar workspace menu
 shows and searches only the current organization’s workspaces. It does not load
 other organizations’ workspace lists. A quiet Change action beside the current organization name opens the
 organization chooser (accessible label: Change organization), preserving the current destination for Back or continuing

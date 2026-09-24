@@ -506,11 +506,6 @@ const workspaceInventoryVerified = computed(() =>
   !tenant.workspaceErrorByOrg[tenant.orgUUID ?? ''],
 )
 
-function canSelectWorkspace(workspace: WorkspaceRow): boolean {
-  return workspaceInventoryVerified.value && workspace.orgUUID === activeOrg.value?.uuid &&
-    !activeOrg.value?.deletionRequestedAt && !workspace.deletionRequestedAt && !!workspace.clusterName
-}
-
 const restoringWorkspaceUUID = ref<string | null>(null)
 async function restoreWorkspace(workspace: WorkspaceRow): Promise<void> {
   if (!workspaceInventoryVerified.value || workspace.orgUUID !== tenant.orgUUID ||
@@ -601,16 +596,6 @@ watch(
     workspaceListLoading.value = false
   },
 )
-
-async function selectWorkspace(workspace: WorkspaceRow): Promise<void> {
-  if (!canSelectWorkspace(workspace)) return
-  const transitionToken = tenant.beginWorkspaceTransition()
-  try {
-    await router.push({ name: 'settings-workspaces', params: { orgID: workspace.orgUUID, workspaceID: workspace.uuid } })
-  } finally {
-    tenant.endWorkspaceTransition(transitionToken)
-  }
-}
 
 function setWorkspaceLifecycleFilter(value: string): void {
   if (value !== '' && value !== 'not-deleting' && value !== 'deleting') return
@@ -1837,51 +1822,6 @@ function fmtDate(s?: string | null): string {
            is absent from the refreshed org list, keeping Restore reachable. -->
       <template v-else-if="activeSection === 'organizations'">
         <div class="space-y-5">
-          <section v-if="organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt" class="space-y-4" aria-labelledby="organization-workspaces-title" :aria-busy="workspaceListLoading">
-            <div>
-              <h2 id="organization-workspaces-title" class="text-lg font-semibold text-text-primary">Workspaces</h2>
-              <p class="mt-1 text-sm text-text-muted">All workspaces you can access in this organization, including those pending deletion.</p>
-            </div>
-            <div v-if="workspaceListError" role="alert" class="flex items-start justify-between gap-3 text-sm text-danger">
-              <span>{{ workspaces.length ? `${workspaceListError} Showing the last successful result.` : workspaceListError }}</span>
-              <button type="button" class="k-btn k-btn--ghost shrink-0" :disabled="workspaceListLoading" @click="reloadScopedWorkspaces(tenant.orgUUID)">Retry</button>
-            </div>
-            <div v-if="workspaceListLoading" role="status" class="text-sm text-text-muted">{{ workspaces.length ? 'Refreshing workspaces…' : 'Loading workspaces…' }}</div>
-            <template v-if="!workspaceListInitialLoading && (workspaces.length || !workspaceListError)">
-              <div class="k-table__controls" role="search" aria-label="Filter workspaces">
-                <label v-if="showWorkspaceSearch" class="k-table__search">
-                  <span class="sr-only">Search workspaces</span>
-                  <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
-                  <input id="organization-workspaces-search" v-model="workspaceSearch" type="search" class="k-table__search-input" placeholder="Search workspaces" autocomplete="off" />
-                  <button v-if="workspaceSearch" type="button" class="k-table__search-clear" aria-label="Clear workspace search" @click="workspaceSearch = ''"><X :stroke-width="1.75" aria-hidden="true" /></button>
-                </label>
-                <ResourceTableFilter :definition="workspaceLifecycleFilterDefinition" :options="workspaceLifecycleFilterOptions" :model-value="workspaceLifecycleFilter" @update:model-value="setWorkspaceLifecycleFilter" />
-                <button v-if="workspaceLifecycleFilter || workspaceSearch" type="button" class="k-table__clear-filters" @click="clearWorkspaceFilters">Clear filters</button>
-                <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ workspaceFilterResultAnnouncement }}</span>
-              </div>
-              <ul class="divide-y divide-border-subtle" aria-label="Organization workspaces">
-                <li v-for="workspace in filteredWorkspaces" :key="workspace.uuid" class="flex flex-wrap items-center justify-between gap-3 py-3">
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <span class="break-words text-sm font-medium text-text-primary">{{ workspace.displayName || workspace.uuid }}</span>
-                      <StatusBadge :status="workspaceStatus(workspace)" :tone="workspaceStatus(workspace) === 'Ready' ? 'success' : workspaceStatus(workspace) === 'Deleting' ? 'danger' : 'warning'" />
-                      <span v-if="tenant.workspaceUUID === workspace.uuid" class="text-xs text-text-muted">Current workspace</span>
-                    </div>
-                    <p class="mt-1 break-all font-mono text-xs text-text-muted">{{ workspace.uuid }}</p>
-                    <p v-if="workspace.deletionRequestedAt" class="mt-1 text-xs text-text-muted">{{ workspaceDeletionCountdown(workspace.deletionRequestedAt) }}</p>
-                  </div>
-                  <button v-if="workspace.deletionRequestedAt && workspace.role === 'admin'" type="button" class="k-btn k-btn--ghost min-h-11" :aria-label="`Restore workspace ${workspace.displayName || workspace.uuid}`" :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID" @click="restoreWorkspace(workspace)">
-                    <Loader2 v-if="restoringWorkspaceUUID === workspace.uuid" class="h-4 w-4 animate-spin" aria-hidden="true" />
-                    <RotateCcw v-else class="h-4 w-4" aria-hidden="true" />
-                    Restore
-                  </button>
-                  <button v-else-if="!workspace.deletionRequestedAt" type="button" class="k-btn k-btn--ghost min-h-11" :aria-label="`Open workspace ${workspace.displayName || workspace.uuid}`" :disabled="!canSelectWorkspace(workspace)" @click="selectWorkspace(workspace)">Open workspace</button>
-                </li>
-                <li v-if="filteredWorkspaces.length === 0" class="py-5 text-sm text-text-muted">{{ workspaces.length ? 'No workspaces match these filters.' : 'No workspaces in this organization yet.' }}</li>
-              </ul>
-            </template>
-          </section>
-
           <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-settings-title">
             <div class="mb-4 flex items-start justify-between gap-3">
               <div class="min-w-0">
@@ -2019,6 +1959,50 @@ function fmtDate(s?: string | null): string {
                 </div>
               </div>
             </div>
+          </section>
+
+          <section v-if="organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt" class="space-y-4 rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-workspaces-title" :aria-busy="workspaceListLoading">
+            <div>
+              <h2 id="organization-workspaces-title" class="text-lg font-semibold text-text-primary">Workspaces</h2>
+              <p class="mt-1 text-[12px] text-text-muted">All workspaces you can access in this organization, including those pending deletion.</p>
+            </div>
+            <div v-if="workspaceListError" role="alert" class="flex items-start justify-between gap-3 text-sm text-danger">
+              <span>{{ workspaces.length ? `${workspaceListError} Showing the last successful result.` : workspaceListError }}</span>
+              <button type="button" class="k-btn k-btn--ghost shrink-0" :disabled="workspaceListLoading" @click="reloadScopedWorkspaces(tenant.orgUUID)">Retry</button>
+            </div>
+            <div v-if="workspaceListLoading" role="status" class="text-sm text-text-muted">{{ workspaces.length ? 'Refreshing workspaces…' : 'Loading workspaces…' }}</div>
+            <template v-if="!workspaceListInitialLoading && (workspaces.length || !workspaceListError)">
+              <div class="k-table__controls" role="search" aria-label="Filter workspaces">
+                <label v-if="showWorkspaceSearch" class="k-table__search">
+                  <span class="sr-only">Search workspaces</span>
+                  <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
+                  <input id="organization-workspaces-search" v-model="workspaceSearch" type="search" class="k-table__search-input" placeholder="Search workspaces" autocomplete="off" />
+                  <button v-if="workspaceSearch" type="button" class="k-table__search-clear" aria-label="Clear workspace search" @click="workspaceSearch = ''"><X :stroke-width="1.75" aria-hidden="true" /></button>
+                </label>
+                <ResourceTableFilter :definition="workspaceLifecycleFilterDefinition" :options="workspaceLifecycleFilterOptions" :model-value="workspaceLifecycleFilter" @update:model-value="setWorkspaceLifecycleFilter" />
+                <button v-if="workspaceLifecycleFilter || workspaceSearch" type="button" class="k-table__clear-filters" @click="clearWorkspaceFilters">Clear filters</button>
+                <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ workspaceFilterResultAnnouncement }}</span>
+              </div>
+              <ul class="divide-y divide-border-subtle" aria-label="Organization workspaces">
+                <li v-for="workspace in filteredWorkspaces" :key="workspace.uuid" class="flex flex-wrap items-center justify-between gap-3 py-3">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="break-words text-sm font-medium text-text-primary">{{ workspace.displayName || workspace.uuid }}</span>
+                      <StatusBadge :status="workspaceStatus(workspace)" :tone="workspaceStatus(workspace) === 'Ready' ? 'success' : workspaceStatus(workspace) === 'Deleting' ? 'danger' : 'warning'" />
+                      <span v-if="tenant.workspaceUUID === workspace.uuid" class="text-xs text-text-muted">Current workspace</span>
+                    </div>
+                    <p class="mt-1 break-all font-mono text-xs text-text-muted">{{ workspace.uuid }}</p>
+                    <p v-if="workspace.deletionRequestedAt" class="mt-1 text-xs text-text-muted">{{ workspaceDeletionCountdown(workspace.deletionRequestedAt) }}</p>
+                  </div>
+                  <button v-if="workspace.deletionRequestedAt && workspace.role === 'admin'" type="button" class="k-btn k-btn--ghost min-h-11" :aria-label="`Restore workspace ${workspace.displayName || workspace.uuid}`" :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID" @click="restoreWorkspace(workspace)">
+                    <Loader2 v-if="restoringWorkspaceUUID === workspace.uuid" class="h-4 w-4 animate-spin" aria-hidden="true" />
+                    <RotateCcw v-else class="h-4 w-4" aria-hidden="true" />
+                    Restore
+                  </button>
+                </li>
+                <li v-if="filteredWorkspaces.length === 0" class="py-5 text-sm text-text-muted">{{ workspaces.length ? 'No workspaces match these filters.' : 'No workspaces in this organization yet.' }}</li>
+              </ul>
+            </template>
           </section>
 
           <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-members-title" :aria-busy="orgMembersLoading">
