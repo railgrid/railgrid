@@ -633,7 +633,6 @@ sync-portalkit: ## Vendor the shared portalkit UI kits into provider portals
 verify-portalkit: ## Verify vendored portalkit copies are in sync with the canonical source
 	@hack/sync-portalkit.sh --verify
 	@node --test provider-sdk/portalkit/dashboardtile.conformance.test.mjs provider-sdk/portalkit/kube.behavior.test.mjs
-	@node --test provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs
 	@$(MAKE) verify-agentkit
 
 verify-provider-contract: ## Verify provider manifests, claims and route classes match the provider contract
@@ -659,6 +658,7 @@ test-create-flow-conformance: ## Verify route-owned creation uses the canonical 
 	@node --test hack/create-flow-conformance.test.mjs
 
 verify-ui-conformance: test-portal-settings-conformance test-create-flow-conformance ## Verify provider UI source uses the canonical k-* design vocabulary
+	@node --test provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs
 	@node hack/verify-ui-conformance.test.mjs
 	@node hack/verify-ui-conformance.mjs
 
