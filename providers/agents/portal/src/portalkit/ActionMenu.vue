@@ -309,9 +309,3 @@ onBeforeUnmount(() => {
     </Teleport>
   </div>
 </template>
-
-<style scoped>
-.k-action-menu__trigger.k-table-action--busy:disabled {
-  opacity: 1;
-}
-</style>

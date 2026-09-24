@@ -260,6 +260,7 @@ test('busy progress stays visible outside the closed menu and is announced', () 
   const beforeMenu = sourceBlock(component, '</button>', '<Teleport to="body">')
   assert.match(beforeMenu, /role="status" aria-live="polite" aria-atomic="true">\{\{ busy \? accessibleLabel : '' \}\}/)
   assert.match(stylesheet, /\.k-table__primary-actions:has\(\.k-table-action--busy\)/)
+  assert.match(stylesheet, /\.k-icon-action\.k-table-action--busy:disabled\s*\{\s*opacity:\s*1;/)
 })
 
 test('canonical icon action, layer, and bounded search recipes remain intact', () => {
