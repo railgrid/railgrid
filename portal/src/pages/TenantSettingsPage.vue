@@ -98,6 +98,12 @@ function navigateSettings(section: string): void {
 // ===== Active organization and workspace selection =========================
 
 const activeOrg = computed(() => tenant.activeOrg)
+let creationFeedbackGeneration = 0
+let pageDisposed = false
+
+function isCurrentCreationFeedback(generation: number): boolean {
+  return !pageDisposed && generation === creationFeedbackGeneration
+}
 
 // The org list endpoint intentionally hides soft-deleted organizations. A
 // successful delete therefore refreshes the store and may move the shell to a
@@ -228,6 +234,7 @@ const orgMembers = ref<MemberRow[]>([])
 const orgMembersLoading = ref(false)
 const orgMembersError = ref<string | null>(null)
 const orgMembersHasSnapshot = ref(false)
+const orgMembersReadDenied = ref(false)
 const orgMemberBusy = ref<Record<string, boolean>>({})
 let orgMembersRequest = 0
 let orgMemberContextGeneration = 0
@@ -257,6 +264,7 @@ async function reloadOrgMembers(targetOrgUUID = organizationTargetUUID.value): P
     orgMembersHasSnapshot.value = false
     orgMembersLoading.value = false
     orgMembersError.value = null
+    orgMembersReadDenied.value = false
     return
   }
   // A completion from a previous organization must not even begin a reload:
@@ -271,6 +279,7 @@ async function reloadOrgMembers(targetOrgUUID = organizationTargetUUID.value): P
       const readError = tenant.listReadError('org-members', targetOrgUUID)
       const readDenied = tenant.listReadDenied('org-members', targetOrgUUID)
       if (readDenied) {
+        orgMembersReadDenied.value = true
         // A same-scope 401/403 is an authoritative loss of access. Do not
         // leave a sensitive roster visible while the cached role catches up.
         orgMembers.value = []
@@ -281,6 +290,7 @@ async function reloadOrgMembers(targetOrgUUID = organizationTargetUUID.value): P
         // successful rows and let the page identify this as stale data.
         orgMembersError.value = readError
       } else {
+        orgMembersReadDenied.value = false
         orgMembers.value = members
         orgMembersHasSnapshot.value = true
         orgMembersError.value = null
@@ -299,8 +309,9 @@ async function reloadOrgMembers(targetOrgUUID = organizationTargetUUID.value): P
 
 async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<boolean> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrgMembers.value) return false
+  if (!target || !canAddOrgMembers.value) return false
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
+  const feedbackGeneration = creationFeedbackGeneration
   orgMemberBusy.value = { ...orgMemberBusy.value, __new__: true }
   try {
     const ok = await tenant.addOrgMember(target, user, role)
@@ -310,11 +321,11 @@ async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<b
     if (ok) {
       toast('ok', `Added ${user} to the organization as ${role}.`, {
         action: { label: 'Show in list', run: () => {
-          if (currentOrgMemberContext(context)) orgMemberList.value?.reveal(user)
+          if (isCurrentCreationFeedback(feedbackGeneration) && canAddOrgMembers.value) orgMemberList.value?.reveal(user)
         } },
       })
-      await reloadOrgMembers(target)
-      return currentOrgMemberContext(context)
+      void reloadOrgMembers(target)
+      return true
     }
     return false
   } finally {
@@ -395,6 +406,7 @@ watch(
     // membership authority. Never carry a prior roster through that boundary.
     orgMembers.value = []
     orgMembersHasSnapshot.value = false
+    orgMembersReadDenied.value = false
     orgMembersError.value = null
     orgMembersLoading.value = false
     editingOrgName.value = false
@@ -745,6 +757,7 @@ const wsMembers = ref<MemberRow[]>([])
 const wsMembersLoading = ref(false)
 const wsMembersError = ref<string | null>(null)
 const wsMembersHasSnapshot = ref(false)
+const wsMembersReadDenied = ref(false)
 const wsMemberBusy = ref<Record<string, boolean>>({})
 let wsMembersRequestGeneration = 0
 let wsMembersContextGeneration = 0
@@ -790,6 +803,7 @@ async function reloadWsMembers() {
       const readError = tenant.listReadError('workspace-members', target.org, target.ws)
       const readDenied = tenant.listReadDenied('workspace-members', target.org, target.ws)
       if (readDenied) {
+        wsMembersReadDenied.value = true
         wsMembers.value = []
         wsMembersHasSnapshot.value = false
         wsMembersError.value = readError ?? 'You no longer have access to workspace members.'
@@ -798,6 +812,7 @@ async function reloadWsMembers() {
         // the last successful snapshot until this exact target reads cleanly.
         wsMembersError.value = readError
       } else {
+        wsMembersReadDenied.value = false
         wsMembers.value = members
         wsMembersHasSnapshot.value = true
         wsMembersError.value = null
@@ -816,9 +831,10 @@ async function reloadWsMembers() {
 
 async function onAddWsMember(user: string, role: 'admin' | 'member'): Promise<boolean> {
   const target = selectedTarget()
-  if (!target || !canEditWs.value) return false
+  if (!target || !canAddWsMembers.value) return false
   invalidateWsMembersRequests()
   const context: WorkspaceAccessContext = { target, generation: wsMembersContextGeneration }
+  const feedbackGeneration = creationFeedbackGeneration
   wsMemberBusy.value = { ...wsMemberBusy.value, __new__: true }
   try {
     const ok = await tenant.addWorkspaceMember(target.org, target.ws, user, role)
@@ -826,11 +842,11 @@ async function onAddWsMember(user: string, role: 'admin' | 'member'): Promise<bo
     if (ok) {
       toast('ok', `Added ${user} to the workspace as ${role}.`, {
         action: { label: 'Show in list', run: () => {
-          if (isCurrentWsMembersContext(context)) wsMemberList.value?.reveal(user)
+          if (isCurrentCreationFeedback(feedbackGeneration) && canAddWsMembers.value) wsMemberList.value?.reveal(user)
         } },
       })
-      await reloadWsMembers()
-      return isCurrentWsMembersContext(context)
+      void reloadWsMembers()
+      return true
     }
     return false
   } finally {
@@ -1011,6 +1027,7 @@ const sas = ref<SARow[]>([])
 const sasLoading = ref(false)
 const sasError = ref<string | null>(null)
 const sasHasSnapshot = ref(false)
+const sasReadDenied = ref(false)
 const saTableQuery = ref('')
 const saTableRevision = ref(0)
 type ServiceAccountOperation = 'issue' | 'revoke' | 'delete'
@@ -1078,6 +1095,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  pageDisposed = true
+  creationFeedbackGeneration++
   // A same-workspace navigation can leave the target IDs unchanged. Retire
   // this page's requests so late mutations cannot publish feedback or reload.
   orgMembersRequest++
@@ -1108,6 +1127,14 @@ function serviceAccountActions(uuid: string): ActionMenuItem[] {
     { id: 'revoke', label: 'Revoke tokens', tone: 'warning', busy: saOperation(uuid) === 'revoke' },
     { id: 'delete', label: 'Delete service account', tone: 'danger', busy: saOperation(uuid) === 'delete' },
   ]
+}
+
+function serviceAccountProgress(row: Record<string, unknown>): string {
+  const operation = saOperation(String(row.uuid))
+  const name = String(row.displayName)
+  if (operation === 'issue') return `Issuing token for ${name}…`
+  if (operation === 'revoke') return `Revoking tokens for ${name}…`
+  return `Deleting service account ${name}…`
 }
 
 async function onServiceAccountAction(action: string, row: Record<string, unknown>) {
@@ -1161,6 +1188,7 @@ async function reloadSAs() {
       const readError = tenant.listReadError('service-accounts', target.org, target.ws)
       const readDenied = tenant.listReadDenied('service-accounts', target.org, target.ws)
       if (readDenied) {
+        sasReadDenied.value = true
         sas.value = []
         sasHasSnapshot.value = false
         sasError.value = readError ?? 'You no longer have access to service accounts.'
@@ -1169,6 +1197,7 @@ async function reloadSAs() {
         // visible and report this request as stale until a retry succeeds.
         sasError.value = readError
       } else {
+        sasReadDenied.value = false
         sas.value = serviceAccounts
         sasHasSnapshot.value = true
         sasError.value = null
@@ -1188,9 +1217,10 @@ async function reloadSAs() {
 async function onCreateSA(name: string, role: 'admin' | 'member'): Promise<boolean> {
   name = name.trim()
   const target = selectedTarget()
-  if (!name || !target || !canEditWs.value || saCreateBusy.value) return false
+  if (!name || !target || !canCreateSA.value || saCreateBusy.value) return false
   invalidateServiceAccountRequests()
   const context: WorkspaceAccessContext = { target, generation: serviceAccountContextGeneration }
+  const feedbackGeneration = creationFeedbackGeneration
   saCreateBusy.value = true
   try {
     const created = await tenant.createServiceAccount(target.org, target.ws, name, role)
@@ -1198,14 +1228,14 @@ async function onCreateSA(name: string, role: 'admin' | 'member'): Promise<boole
     if (created) {
       toast('ok', `Created service account "${created.displayName}".`, {
         action: { label: 'Show in list', run: () => {
-          if (!isCurrentServiceAccountContext(context)) return
+          if (!isCurrentCreationFeedback(feedbackGeneration) || !canCreateSA.value) return
           saTableQuery.value = created.uuid
           saTableRevision.value++
           document.getElementById('workspace-service-accounts-title')?.scrollIntoView({ block: 'start' })
         } },
       })
-      await reloadSAs()
-      return isCurrentServiceAccountContext(context)
+      void reloadSAs()
+      return true
     }
     return false
   } finally {
@@ -1314,6 +1344,7 @@ function clearWorkspaceAccessState(): void {
   invalidateAppAccessRequests()
   wsMembers.value = []
   wsMembersHasSnapshot.value = false
+  wsMembersReadDenied.value = false
   wsMembersLoading.value = false
   wsMembersError.value = null
   wsMemberBusy.value = {}
@@ -1328,6 +1359,7 @@ function clearServiceAccountState(): void {
   invalidateServiceAccountRequests()
   sas.value = []
   sasHasSnapshot.value = false
+  sasReadDenied.value = false
   sasLoading.value = false
   sasError.value = null
   saBusy.value = {}
@@ -1396,9 +1428,21 @@ const memberDialog = ref<'workspace' | 'organization' | null>(null)
 const createSADialogOpen = ref(false)
 const wsMemberList = ref<InstanceType<typeof MemberList> | null>(null)
 const orgMemberList = ref<InstanceType<typeof MemberList> | null>(null)
-const canAddWsMembers = computed(() => canEditWs.value && (wsMembersHasSnapshot.value || !wsMembersError.value))
-const canAddOrgMembers = computed(() => canManageOrgMembers.value && (orgMembersHasSnapshot.value || !orgMembersError.value))
-const canCreateSA = computed(() => canEditWs.value && (sasHasSnapshot.value || !sasError.value))
+// Transport failures do not revoke creation permission or discard open drafts.
+// A denied read stays denied throughout retries until a successful read restores it.
+const canAddWsMembers = computed(() => canEditWs.value && !wsMembersReadDenied.value)
+const canAddOrgMembers = computed(() => canManageOrgMembers.value && !orgMembersReadDenied.value)
+const canCreateSA = computed(() => canEditWs.value && !sasReadDenied.value)
+
+// Toast actions outlive individual mutations, but never a route, authority, or
+// page lifetime. Retire them synchronously so leaving and returning cannot
+// resurrect an old action, even when the final target IDs are the same.
+watch(
+  [() => route.fullPath, () => tenant.orgUUID, selectedWorkspaceUUID, organizationTargetUUID,
+    canEditWs, canManageOrgMembers, wsMembersReadDenied, orgMembersReadDenied, sasReadDenied],
+  () => { creationFeedbackGeneration++ },
+  { flush: 'sync' },
+)
 
 function dismissCreationDialogs() {
   memberDialog.value = null
@@ -1783,6 +1827,8 @@ function fmtDate(s?: string | null): string {
                     <ActionMenu
                       :label="`Actions for ${String(row.displayName)}`"
                       :items="serviceAccountActions(String(row.uuid))"
+                      :busy="isSABusy(String(row.uuid))"
+                      :busy-label="serviceAccountProgress(row)"
                       :disabled="isSABusy(String(row.uuid))"
                       @select="onServiceAccountAction($event, row)"
                     />

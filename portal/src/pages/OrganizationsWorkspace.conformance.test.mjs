@@ -77,7 +77,7 @@ test('organization settings are scoped to the selected org and gate governance w
   assert.match(tenantSettingsPage, /const canDeleteOrg = computed\(\(\) => canEditOrg\.value && !organizationSettingsOrg\.value\?\.personal\)/)
   assert.match(tenantSettingsPage, /startEditOrgName\(\): void[\s\S]*?if \(!org \|\| !canEditOrg\.value\) return/)
   assert.match(tenantSettingsPage, /saveOrgName\(\): Promise<void>[\s\S]*?if \(!target \|\| !canEditOrg\.value /)
-  assert.match(tenantSettingsPage, /onAddOrgMember\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return false/)
+  assert.match(tenantSettingsPage, /onAddOrgMember\(user: string[\s\S]*?if \(!target \|\| !canAddOrgMembers\.value\) return false/)
   assert.match(tenantSettingsPage, /onChangeOrgMemberRole\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return/)
   assert.match(tenantSettingsPage, /onRemoveOrgMember\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return/)
   assert.match(orgSection, /:readonly="!canManageOrgMembers"/)
@@ -484,6 +484,7 @@ test('settings teardown retires requests and mutation contexts even when tenant 
   ]
   const state = {
     ...Object.fromEntries(generations.map(name => [name, 7])),
+    creationFeedbackGeneration: 0, pageDisposed: false,
     activeSection: { value: 'workspaces' },
     selWs: { value: { uuid: 'workspace-a' } },
     canEditWs: { value: true },
@@ -597,12 +598,12 @@ test('settings access lists use the canonical queryable ResourceTable contract',
 test('settings table reads delegate initial, stale, and retry states without duplicate banners', () => {
   // A denied read clears the snapshot before cached admin roles update.
   // Keep recovery visible without leaving the add/create form available.
-  for (const [guard, permission, snapshot, error] of [
-    ['canAddWsMembers', 'canEditWs', 'wsMembersHasSnapshot', 'wsMembersError'],
-    ['canAddOrgMembers', 'canManageOrgMembers', 'orgMembersHasSnapshot', 'orgMembersError'],
-    ['canCreateSA', 'canEditWs', 'sasHasSnapshot', 'sasError'],
+  for (const [guard, permission, denied] of [
+    ['canAddWsMembers', 'canEditWs', 'wsMembersReadDenied'],
+    ['canAddOrgMembers', 'canManageOrgMembers', 'orgMembersReadDenied'],
+    ['canCreateSA', 'canEditWs', 'sasReadDenied'],
   ]) {
-    assert.ok(tenantSettingsPage.includes(`const ${guard} = computed(() => ${permission}.value && (${snapshot}.value || !${error}.value))`))
+    assert.ok(tenantSettingsPage.includes(`const ${guard} = computed(() => ${permission}.value && !${denied}.value)`))
     assert.ok(tenantSettingsPage.includes(`<button v-if="${guard}"`))
   }
   for (const [rows, loading, loaded, error, key] of [

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
+import ts from '../../portal/node_modules/typescript/lib/typescript.js'
+import { computed, effectScope, nextTick, reactive, ref, watch } from '../../portal/node_modules/vue/index.mjs'
 
 const component = readFileSync(new URL('./ActionMenu.vue', import.meta.url), 'utf8')
 const layoutSelector = readFileSync(new URL('./LayoutSelector.vue', import.meta.url), 'utf8')
@@ -130,7 +132,7 @@ test('ActionMenu renders tones and keeps disabled or busy items out of the rovin
   assert.match(itemTemplate, /:aria-busy="item\.busy \? 'true' : undefined"/)
   assert.match(itemTemplate, /<Loader2 v-if="item\.busy"/)
   assert.match(component, /if \(!item\.disabled && !item\.busy\) indexes\.push\(index\)/)
-  assert.match(component, /if \(!item \|\| props\.disabled \|\| item\.disabled \|\| item\.busy\) return/)
+  assert.match(component, /if \(!item \|\| unavailable\.value \|\| item\.disabled \|\| item\.busy\) return/)
 })
 
 test('ActionMenu keyboard paths activate, wrap, restore focus, and dismiss', () => {
@@ -176,11 +178,11 @@ test('teleported LayoutSelector keeps native Tab navigation relative to its trig
 
 test('ActionMenu exposes the trigger/menu ARIA relationship and outside dismissal guards', () => {
   const triggerTemplate = templateBlock(component, '<button\n      :id="triggerID"')
-  assert.match(triggerTemplate, /:aria-label="label"/)
+  assert.match(triggerTemplate, /:aria-label="accessibleLabel"/)
   assert.match(triggerTemplate, /:aria-controls="menuID"/)
   assert.match(triggerTemplate, /aria-haspopup="menu"/)
   assert.match(triggerTemplate, /:aria-expanded="open"/)
-  assert.match(triggerTemplate, /:disabled="disabled"/)
+  assert.match(triggerTemplate, /:disabled="unavailable"/)
 
   const menuTemplate = sourceBlock(component, '<div\n        v-if="open"', '        <template v-for="(item, index)')
   assert.match(menuTemplate, /role="menu"/)
@@ -199,6 +201,65 @@ test('ActionMenu exposes the trigger/menu ARIA relationship and outside dismissa
     assert.match(block, /if \(!open\.value \|\| \(target && \(root\.value\?\.contains\(target\) \|\| panelRef\.value\?\.contains\(target\)\)\)\) return/)
     assert.match(block, /closeMenu\(\)/)
   }
+})
+
+test('caller busy state closes the menu, blocks repeat actions, and recovers', async () => {
+  const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const executable = ts.transpileModule(script.replace(/^import .*$/gm, '').replace(/^export /gm, ''), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const props = reactive({ label: 'Actions for automation', items: [{ id: 'issue', label: 'Issue token' }], busyLabel: 'Issuing token for automation…' })
+  const emitted = []
+  const scope = effectScope()
+  const api = scope.run(() => runInNewContext(`${executable}\n({ open, openMenu, select, accessibleLabel, unavailable })`, {
+    computed, nextTick, ref, watch,
+    defineProps: () => props,
+    withDefaults: (value, defaults) => Object.assign(value, { ...defaults, ...value }),
+    defineEmits: () => (...event) => emitted.push(event),
+    defineExpose: () => {}, useId: () => 'test',
+    onMounted: () => {}, onBeforeUnmount: () => {}, ensureRailgridUIStyles: () => {},
+    useAnchoredPopover: () => {
+      const open = ref(false)
+      return { open, triggerRef: ref(null), panelRef: ref(null), panelStyle: ref({}), close: () => { open.value = false } }
+    },
+  }))
+  try {
+    api.openMenu()
+    assert.equal(api.open.value, true)
+    props.busy = true
+    // Even before the watcher closes the panel, a second selection is denied.
+    api.select('issue')
+    assert.deepEqual(emitted, [])
+    await nextTick()
+    assert.equal(api.open.value, false)
+    assert.equal(api.unavailable.value, true)
+    assert.equal(api.accessibleLabel.value, 'Issuing token for automation…')
+    api.openMenu()
+    assert.equal(api.open.value, false)
+    props.busyLabel = undefined
+    assert.equal(api.accessibleLabel.value, 'Actions for automation…')
+    props.busy = false
+    await nextTick()
+    assert.equal(api.accessibleLabel.value, 'Actions for automation')
+    api.openMenu()
+    api.select('issue')
+    assert.deepEqual(emitted, [['select', 'issue']])
+    assert.equal(api.open.value, false)
+  } finally {
+    scope.stop()
+  }
+})
+
+test('busy progress stays visible outside the closed menu and is announced', () => {
+  const trigger = templateBlock(component, '<button\n      :id="triggerID"')
+  assert.match(trigger, /'k-table-action--busy': busy/)
+  assert.match(trigger, /'k-table-action--neutral': busy/)
+  assert.match(trigger, /<Loader2 v-if="busy" class="k-action-menu__busy"/)
+  assert.match(trigger, /:aria-busy="busy \|\| undefined"/)
+  assert.match(trigger, /:data-k-tip="accessibleLabel"/)
+  const beforeMenu = sourceBlock(component, '</button>', '<Teleport to="body">')
+  assert.match(beforeMenu, /role="status" aria-live="polite" aria-atomic="true">\{\{ busy \? accessibleLabel : '' \}\}/)
+  assert.match(stylesheet, /\.k-table__primary-actions:has\(\.k-table-action--busy\)/)
 })
 
 test('canonical icon action, layer, and bounded search recipes remain intact', () => {
