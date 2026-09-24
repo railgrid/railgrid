@@ -4,12 +4,15 @@
 
      Compact, accessible edit trigger for ResourceTable action cells. -->
 <script setup lang="ts">
+import { ref } from 'vue'
 import { Pencil } from 'lucide-vue-next'
+import ResourceTableActionTooltip from './ResourceTableActionTooltip.vue'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 // Standalone provider portals load the exact canonical recipe through the
 // shared helper; the host portal already imports the same railgrid-ui.css file.
 ensureRailgridUIStyles()
+const button = ref<HTMLButtonElement | null>(null)
 
 withDefaults(defineProps<{
   /** Accessible resource-specific action, for example "Edit table orders". */
@@ -26,13 +29,14 @@ const emit = defineEmits<{
 
 <template>
   <button
+    ref="button"
     class="k-table-action k-table-action--edit"
     type="button"
-    :data-k-tip="label"
     :aria-label="label"
     :disabled="disabled"
     @click.stop="emit('click', $event)"
   >
     <Pencil class="k-table-action__icon" :stroke-width="1.75" aria-hidden="true" />
+    <ResourceTableActionTooltip :anchor="button" :label="label" />
   </button>
 </template>

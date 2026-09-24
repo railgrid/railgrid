@@ -7,7 +7,7 @@ import { User as UserIcon } from 'lucide-vue-next'
 import type { MemberRow } from '@/stores/tenant'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
-import type { TableFilterDefinition } from '@/portalkit/table'
+import type { TableFilterDefinition, TableSelectionKey } from '@/portalkit/table'
 
 const props = withDefaults(defineProps<{
   members: MemberRow[]
@@ -31,17 +31,32 @@ const props = withDefaults(defineProps<{
   // whose writes would only 403 server-side; showing dead buttons and
   // letting the server reject them reads as a bug, not as permissions.
   readonly?: boolean
+  // Selection stays opt-in so existing roster callers retain their current UI.
+  selectable?: boolean
+  selectedKeys?: TableSelectionKey[]
+  selectionDisabled?: boolean
+  selectionClearDisabled?: boolean | null
+  rowSelectable?: (row: Record<string, unknown>) => boolean
+  rowSelectionDisabledReason?: (row: Record<string, unknown>) => string
+  selectionLabel?: (row: Record<string, unknown>) => string
+  // Locks row mutations and selection while a bulk operation is in flight.
+  bulkBusy?: boolean
 }>(), {
   loaded: null,
   error: null,
   stale: false,
   retryable: false,
+  selectable: false,
+  selectionDisabled: false,
+  selectionClearDisabled: null,
+  bulkBusy: false,
 })
 
 const emit = defineEmits<{
   changeRole: [user: string, role: 'admin' | 'member']
   remove: [user: string]
   retry: []
+  'update:selectedKeys': [keys: TableSelectionKey[]]
 }>()
 
 const rosterRef = ref<HTMLElement | null>(null)
@@ -81,6 +96,13 @@ const memberFilters: TableFilterDefinition[] = [{
 // mutations continue to use the original user key.
 const memberRows = computed<Record<string, unknown>[]>(() =>
   props.members.map((member) => ({ ...member })),
+)
+
+const resourceSelectionDisabled = computed(() =>
+  props.selectionDisabled || props.bulkBusy || !!props.readonly,
+)
+const resourceSelectionClearDisabled = computed(() =>
+  !!props.bulkBusy || !!props.readonly || (props.selectionClearDisabled ?? resourceSelectionDisabled.value),
 )
 
 const memberEmptyText = computed(() => props.readonly
@@ -135,8 +157,19 @@ function memberPrimaryValue(row: Record<string, unknown>): string {
       search-empty-text="No members match your search."
       filter-empty-text="No members match this role."
       combined-filter-empty-text="No members match your search and selected role."
+      :selectable="selectable"
+      :selected-keys="selectedKeys"
+      :selection-disabled="resourceSelectionDisabled"
+      :selection-clear-disabled="resourceSelectionClearDisabled"
+      :row-selectable="rowSelectable"
+      :row-selection-disabled-reason="rowSelectionDisabledReason"
+      :selection-label="selectionLabel"
       @retry="emit('retry')"
+      @update:selected-keys="emit('update:selectedKeys', $event)"
     >
+      <template #selection-actions="slotProps">
+        <slot name="selection-actions" v-bind="slotProps" />
+      </template>
       <!-- Lead with the person (email, falling back to display name), keep
            the CR name as a small mono sublabel — it is what API calls and
            RBAC are keyed on, so it stays visible/copyable. -->
@@ -168,7 +201,7 @@ function memberPrimaryValue(row: Record<string, unknown>): string {
           class="k-input w-auto px-2 py-1 text-[12px] disabled:opacity-60"
           :aria-label="`Role for ${memberUser(row)} in ${scopeLabel}`"
           :value="memberRole(row)"
-          :disabled="!!busy[memberUser(row)]"
+          :disabled="bulkBusy || !!busy[memberUser(row)]"
           @change="(e) => emit('changeRole', memberUser(row), (e.target as HTMLSelectElement).value as 'admin' | 'member')"
         >
           <option value="member">member</option>
@@ -181,6 +214,7 @@ function memberPrimaryValue(row: Record<string, unknown>): string {
             :label="`Remove ${memberUser(row)} from ${scopeLabel}`"
             :busy-label="`Removing ${memberUser(row)}…`"
             :busy="!!busy[memberUser(row)]"
+            :disabled="bulkBusy"
             @click="emit('remove', memberUser(row))"
           />
         </div>

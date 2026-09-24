@@ -28,7 +28,7 @@ glow.
   `text-primary` and uses the standard focus ring. SkillsWorkbench's inline
   Tailwind toggle follows the same shape.
 - **Progress:** `.k-progress` is a 2px-radius `surface-overlay` track with
-  semantic `__bar` fills (`--accent`, `--warning`, and `--danger`) and a width
+  semantic `__bar` fills (`--accent`, `--warning`, and `--danger`) and a transform
   transition.
 - **Avatar:** `.k-avatar` is a mono-initials circle, 28px or `--sm` 20px. A
   6px success presence dot uses `.live-dot`; the mono email chip remains the
@@ -43,9 +43,20 @@ glow.
 ## Behavior
 
 The toggle's `aria-checked="true"` state selects `bg-accent`, while off uses
-`border-default`; the standard focus ring remains in use. Progress uses a width
-transition and semantic `__bar` fills. A dropzone uses `.is-dragover` for its
-target state and `.is-error` for danger state.
+`border-default`; the standard focus ring remains in use. Progress uses a transform
+transition and semantic `__bar` fills. Set `--k-progress-value` to a fraction from
+0 to 1, rather than setting the fill's width; values are clamped to that range.
+The fill scales from the start edge and updates immediately under reduced
+motion. Consumers supply a labeled `role="progressbar"` and matching
+`aria-valuemin`, `aria-valuemax`, and `aria-valuenow` on the track. A dropzone uses
+`.is-dragover` for its target state and `.is-error` for danger state.
+
+```html
+<div class="k-progress" role="progressbar" aria-label="Upload progress"
+     aria-valuemin="0" aria-valuemax="100" aria-valuenow="42">
+  <div class="k-progress__bar" style="--k-progress-value: 0.42"></div>
+</div>
+```
 
 ## Content
 

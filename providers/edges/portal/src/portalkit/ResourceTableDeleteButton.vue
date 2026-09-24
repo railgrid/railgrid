@@ -6,13 +6,15 @@
      destructive confirmation remains the caller's responsibility via
      confirmDialog({ danger: true }). -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Loader2, Trash2 } from 'lucide-vue-next'
+import ResourceTableActionTooltip from './ResourceTableActionTooltip.vue'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 // Standalone provider portals load the exact canonical recipe through the
 // shared helper; the host portal already imports the same railgrid-ui.css file.
 ensureRailgridUIStyles()
+const button = ref<HTMLButtonElement | null>(null)
 
 const props = withDefaults(defineProps<{
   /** Accessible resource-specific action, for example "Delete connection". */
@@ -37,10 +39,10 @@ const emit = defineEmits<{
 
 <template>
   <button
+    ref="button"
     class="k-table-action k-table-action--delete"
     :class="{ 'k-table-action--busy': busy }"
     type="button"
-    :data-k-tip="accessibleLabel"
     :aria-label="accessibleLabel"
     :aria-busy="busy || undefined"
     :disabled="disabled || busy"
@@ -48,5 +50,6 @@ const emit = defineEmits<{
   >
     <Loader2 v-if="busy" class="k-table-action__icon k-table-action__icon--spinning" :stroke-width="1.75" aria-hidden="true" />
     <Trash2 v-else class="k-table-action__icon" :stroke-width="1.75" aria-hidden="true" />
+    <ResourceTableActionTooltip :anchor="button" :label="accessibleLabel" />
   </button>
 </template>

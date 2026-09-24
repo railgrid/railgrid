@@ -31,7 +31,7 @@ VUE_PORTALS=(
   "providers/infrastructure/portal"
   "providers/kuery/portal"
 )
-VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue CreateGuidance.vue FirstRunGuide.vue FormSelect.vue LayoutSelector.vue layoutPreference.ts ResourceBackLink.vue ResourceBoard.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue useAnchoredPopover.ts useDelayedLoading.ts)
+VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue CreateGuidance.vue FirstRunGuide.vue FormSelect.vue LayoutSelector.vue layoutPreference.ts ResourceBackLink.vue ResourceBoard.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionTooltip.vue ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue useAnchoredPopover.ts useDelayedLoading.ts)
 VUE_TOAST_FILES=(InlineNotification.vue ToastHost.vue toast.ts)
 VUE_TOAST_PORTALS=(
   "portal"
@@ -78,7 +78,7 @@ HOST_UI="$ROOT/portal/src/assets/railgrid-ui.css"
 # asset. Every other direct file in the canonical directories must be listed
 # above so adding a new source file cannot silently skip every portal.
 TS_CANONICAL_ONLY=(README.md dashboardtile.conformance.test.mjs kube.behavior.test.mjs page-state.ts)
-VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs Toast.behavior.test.mjs Toast.conformance.test.mjs)
+VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs ResourceTable.selection.test.mjs Toast.behavior.test.mjs Toast.conformance.test.mjs)
 AGENTKIT_CANONICAL_ONLY=(README.md styles.conformance.test.mjs)
 AGENTKIT_VUE_CANONICAL_ONLY=(conversation.conformance.test.mjs)
 

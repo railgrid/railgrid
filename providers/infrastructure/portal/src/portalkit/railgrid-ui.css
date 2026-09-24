@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 23;
+  --railgrid-ui-core-version: 29;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1167,9 +1167,13 @@ html.light [data-k-tip]::after {
 }
 .k-progress__bar {
   height: 100%;
+  width: 100%;
   background: var(--color-success, #2fd6a0);
-  transition: width 0.3s ease;
+  transform: scaleX(clamp(0, var(--k-progress-value, 1), 1));
+  transform-origin: left center;
+  transition: transform 0.3s ease;
 }
+.k-progress__bar:dir(rtl) { transform-origin: right center; }
 .k-progress__bar--accent { background: var(--color-accent, #8b6bff); }
 .k-progress__bar--warning { background: var(--color-warning, #f0a63a); }
 .k-progress__bar--danger { background: var(--color-danger, #ff5d5d); }
@@ -1838,6 +1842,9 @@ html.light [data-k-tip]::after {
   gap: 8px;
   padding: 10px 12px;
 }
+.k-table__toolbar-stack { display: grid; min-width: 0; }
+.k-table__toolbar-panel { grid-area: 1 / 1; min-width: 0; }
+.k-table__toolbar-panel--inactive { visibility: hidden; }
 .k-table__loading-control {
   border-radius: 4px;
   height: 32px;
@@ -2109,6 +2116,98 @@ railgrid-resource-table-filter { display: contents; }
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: 2px;
 }
+.k-table__selection-bar {
+  align-items: center;
+  background: var(--color-surface-raised, #111320);
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 12px;
+  min-height: 46px;
+  padding: 7px 16px;
+}
+.k-table__selection-summary {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: max-content max-content;
+}
+.k-table__selection-count {
+  color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+  white-space: nowrap;
+}
+.k-table__clear-selection {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-accent, #8b6bff);
+  cursor: pointer;
+  font-size: 11px;
+  min-height: 30px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.k-table__clear-selection:hover:not(:disabled) { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); }
+.k-table__clear-selection:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+.k-table__clear-selection:disabled { cursor: not-allowed; opacity: 0.45; }
+.k-table__selection-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; grid-column: 2; justify-content: flex-end; min-width: 0; }
+.k-table__selection-heading { padding: 4px 8px 4px 12px; text-align: center; width: 1%; }
+.k-table__selection-cell { padding: 6px 5px 6px 12px; text-align: center; vertical-align: middle; white-space: nowrap; width: 1%; }
+.k-table__checkbox-target {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  min-height: 28px;
+  min-width: 28px;
+  vertical-align: middle;
+}
+.k-table__checkbox {
+  accent-color: var(--color-accent, #8b6bff);
+  cursor: pointer;
+  height: 16px;
+  margin: 0;
+  width: 16px;
+}
+.k-table__checkbox:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 3px; }
+.k-table__checkbox:disabled { cursor: not-allowed; }
+.k-table__selection-help {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: help;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  margin-inline-start: 1px;
+  padding: 0;
+  vertical-align: middle;
+  width: 24px;
+}
+.k-table__selection-help:hover,
+.k-table__selection-help:focus-visible { color: var(--color-text-primary, #e9e9f2); }
+.k-table__selection-help:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 1px; }
+.k-table__selection-help svg { height: 14px; width: 14px; }
+.k-table__selection-reason,
+.k-table__selection-live {
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  margin: -1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+}
 .k-table__scroll {
   max-width: 100%;
   overscroll-behavior-inline: contain;
@@ -2153,6 +2252,17 @@ railgrid-resource-table-filter { display: contents; }
   width: 1%;
 }
 .k-table__cell--primary { width: 100%; }
+/* Keep the selection checkbox anchored at one edge for eligible and explained
+ * disabled rows. This override follows the generic cell padding intentionally. */
+.k-table.k-table--resource .k-table__selection-heading {
+  padding-inline: 8px 4px;
+  text-align: start;
+}
+.k-table.k-table--resource .k-table__selection-cell {
+  padding-inline: 8px 4px;
+  text-align: start;
+  width: 1%;
+}
 .k-table__primary {
   align-items: center;
   display: flex;
@@ -2210,6 +2320,9 @@ railgrid-resource-table-filter { display: contents; }
   z-index: 1100;
 }
 .k-table__primary-tooltip--positioned { visibility: visible; }
+.k-table-action-tooltip {
+  font-family: var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
+}
 .k-table.k-table--resource .k-table__heading--start,
 .k-table.k-table--resource .k-table__cell--start { text-align: start; }
 .k-table.k-table--resource .k-table__heading--center,
@@ -2243,11 +2356,14 @@ railgrid-resource-table-filter { display: contents; }
 .k-table__row.k-table__row--interactive { cursor: pointer; }
 .k-table__row.k-table__row--interactive:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 4%, transparent); }
 .k-table__row.k-table__row--interactive:hover .k-table__cell { color: var(--color-text-primary, #e9e9f2); }
+.k-table__row.k-table__row--selected { background: color-mix(in srgb, var(--color-accent, #8b6bff) 7%, var(--color-surface, #0a0b12)); }
+.k-table__row.k-table__row--selected:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 11%, var(--color-surface, #0a0b12)); }
 .k-table__row.k-table__row--interactive:focus-visible {
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: -2px;
 }
 .k-table__empty-cell { padding: 36px 20px; text-align: center; color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6)); }
+.k-table .k-table__empty-cell { white-space: normal; overflow-wrap: anywhere; }
 .k-table__empty-icon { width: 24px; height: 24px; margin: 0 auto 8px; opacity: 0.7; }
 .k-table__empty-label { margin: 0; font-size: 12px; }
 .k-table__pending-cell { padding: 36px 20px; text-align: center; }
@@ -2374,6 +2490,8 @@ railgrid-resource-table-filter { display: contents; }
 }
 
 @media (max-width: 600px) {
+  .k-table__selection-bar { grid-template-columns: minmax(0, 1fr); }
+  .k-table__selection-actions { grid-column: 1; justify-content: flex-start; }
   .k-table__search,
   .k-table__loading-control--search {
     flex-basis: 100%;
@@ -2387,6 +2505,26 @@ railgrid-resource-table-filter { display: contents; }
   .k-table__range { flex-basis: 100%; }
   .k-table__page-size { margin-inline-start: 0; }
   .k-table__page-actions { margin-inline-start: auto; }
+}
+
+@media (max-width: 360px) {
+  .k-table__selection-summary { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+  .k-table__clear-selection { justify-self: start; padding-inline: 0; }
+}
+
+/* Keep idle desktop rows quiet without removing controls from the keyboard
+ * order or changing column geometry. The header checkbox stays discoverable. */
+@media (hover: hover) and (pointer: fine) {
+  .k-table--resource:not(.k-table--selecting) .k-table__row:not(:hover):not(:focus-within) .k-table__selection-cell {
+    opacity: 0;
+  }
+}
+
+/* A hybrid device may have a mouse as its primary pointer and still use touch. */
+@media (any-pointer: coarse) {
+  .k-table--resource:not(.k-table--selecting) .k-table__row:not(:hover):not(:focus-within) .k-table__selection-cell {
+    opacity: 1;
+  }
 }
 
 @media (hover: none) {
@@ -2414,9 +2552,13 @@ railgrid-resource-table-filter { display: contents; }
     min-width: 44px;
   }
   .k-table__clear-filters,
+  .k-table__clear-selection,
   .k-table__retry {
     min-height: 44px;
   }
+  .k-table__checkbox-target { min-height: 44px; min-width: 44px; }
+  .k-table__checkbox-target--explained { min-width: 16px; }
+  .k-table__selection-help { height: 44px; min-height: 44px; min-width: 44px; width: 44px; }
   .k-table__page-button,
   .k-table-action {
     height: 44px;
@@ -2921,6 +3063,7 @@ railgrid-resource-table-filter { display: contents; }
 
 @media (prefers-reduced-motion: reduce) {
   .live-dot { animation: none; }
+  .k-progress__bar { transition: none; }
   .k-spin { animation: none; }
   .k-resource-technical__chevron { transition: none; }
   .k-action-menu__busy { animation: none; }

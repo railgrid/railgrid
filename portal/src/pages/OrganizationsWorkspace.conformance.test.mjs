@@ -75,11 +75,11 @@ test('organization settings are scoped to the selected org and gate governance w
   assert.match(tenantSettingsPage, /const canEditOrg = computed\(\(\) => canManageOrg\.value && !organizationSettingsOrg\.value\?\.deletionRequestedAt\)/)
   assert.match(tenantSettingsPage, /const canManageOrgMembers = computed\(\(\) => canManageOrg\.value && !organizationSettingsOrg\.value\?\.deletionRequestedAt\)/)
   assert.match(tenantSettingsPage, /const canDeleteOrg = computed\(\(\) => canEditOrg\.value && !organizationSettingsOrg\.value\?\.personal\)/)
-  assert.match(tenantSettingsPage, /startEditOrgName\(\): void[\s\S]*?if \(!org \|\| !canEditOrg\.value\) return/)
+  assert.match(tenantSettingsPage, /startEditOrgName\(\): void[\s\S]*?if \(!org \|\| !canEditOrg\.value \|\| orgMemberBulkLocked\.value\) return/)
   assert.match(tenantSettingsPage, /saveOrgName\(\): Promise<void>[\s\S]*?if \(!target \|\| !canEditOrg\.value /)
-  assert.match(tenantSettingsPage, /onAddOrgMember\(user: string[\s\S]*?if \(!target \|\| !canAddOrgMembers\.value\) return false/)
-  assert.match(tenantSettingsPage, /onChangeOrgMemberRole\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return/)
-  assert.match(tenantSettingsPage, /onRemoveOrgMember\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value\) return/)
+  assert.match(tenantSettingsPage, /onAddOrgMember\(user: string[\s\S]*?if \(!target \|\| !canAddOrgMembers\.value \|\| orgMemberBulkLocked\.value \|\| orgBusy\.value\) return false/)
+  assert.match(tenantSettingsPage, /onChangeOrgMemberRole\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value \|\| orgMemberBulkLocked\.value \|\| orgBusy\.value\) return/)
+  assert.match(tenantSettingsPage, /onRemoveOrgMember\(user: string[\s\S]*?if \(!target \|\| !canManageOrgMembers\.value \|\| orgMemberBulkLocked\.value \|\| orgBusy\.value\) return/)
   assert.match(orgSection, /:readonly="!canManageOrgMembers"/)
   assert.match(orgSection, /v-if="canEditOrg"/)
   assert.match(orgSection, /v-if="canManageOrg"/)
@@ -108,6 +108,19 @@ test('organization settings use the org MemberList contract and lifecycle action
   assert.match(orgSection, /:error="orgMembersError"/)
   assert.match(orgSection, /:stale="orgMembersHasSnapshot && !!orgMembersError"/)
   assert.match(orgSection, /:busy="orgMemberBusy"/)
+  assert.match(orgSection, /:selectable="canManageOrgMembers"/)
+  assert.match(orgSection, /v-model:selected-keys="selectedOrgMemberKeys"/)
+  assert.match(orgSection, /:row-selectable="orgMemberRowSelectable"/)
+  assert.match(orgSection, /:row-selection-disabled-reason="orgMemberRowSelectionDisabledReason"/)
+  assert.match(orgSection, /:selection-label="orgMemberSelectionLabel"/)
+  assert.match(orgSection, /:selection-disabled="orgMemberBulkBusy \|\| orgMemberSingleMutationBusy \|\| orgBusy/)
+  assert.match(orgSection, /@change-role="onChangeOrgMemberRole"/)
+  assert.match(orgSection, /@remove="onRemoveOrgMember"/)
+  assert.match(orgSection, /onRemoveSelectedOrgMembers\(keys\)/)
+  assert.match(tenantSettingsPage, /membership in every child workspace in this organization/)
+  assert.match(orgSection, /Retry failed removals/)
+  assert.match(orgSection, /@click="onRetryFailedOrgMemberRemovals"/)
+  assert.match(orgSection, /incomplete/i)
   assert.match(orgSection, /scope-label="this organization"/)
   assert.match(tenantSettingsPage, /<AddMemberDialog\b[\s\S]*?:add="onAddOrgMember"/)
   assert.match(orgSection, /@change-role="onChangeOrgMemberRole"/)
@@ -116,6 +129,8 @@ test('organization settings use the org MemberList contract and lifecycle action
   assert.match(tenantSettingsPage, /tenant\.addOrgMember\(target, user, role\)/)
   assert.match(tenantSettingsPage, /tenant\.patchOrgMemberRole\(target, user, role\)/)
   assert.match(tenantSettingsPage, /tenant\.removeOrgMember\(target, user, true\)/)
+  assert.match(tenantSettingsPage, /mutate: \(context, item\) => tenant\.removeOrgMember\(context\.target, item\.user, true\)/)
+  assert.match(tenantSettingsPage, /orgMemberBulkScopeGeneration\.value\+\+/)
   assert.match(tenantSettingsPage, /confirmDialog\(\{[\s\S]*Remove \$\{user\} from this organization/)
   assert.match(tenantSettingsPage, /message: 'They will lose organization-level access and membership in all child workspaces in this organization\.'/)
   assert.match(tenantSettingsPage, /tenant\.patchOrgDisplayName\(target, orgNameDraft\.value\.trim\(\)\)/)
@@ -275,9 +290,9 @@ test('one-time token copy exposes manual recovery instead of swallowing failure'
 test('organization inventory uses the canonical queryable resource table', () => {
   const orgStart = tenantSettingsPage.indexOf('<template v-else-if="activeSection === \'organizations\'">')
   const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
-  const inventoryEnd = tenantSettingsPage.indexOf('</section>', inventoryStart)
+  const inventoryEnd = tenantSettingsPage.indexOf('</ResourceTable>', inventoryStart) + '</ResourceTable>'.length
   assert.ok(inventoryStart > orgStart && inventoryEnd > inventoryStart)
-  const inventory = tenantSettingsPage.slice(inventoryStart, inventoryEnd)
+  const inventory = tenantSettingsPage.slice(tenantSettingsPage.indexOf('<ResourceTable', inventoryStart), inventoryEnd)
   assert.match(inventory, /<ResourceTable/)
   assert.match(inventory, /:key="organizationSettingsOrg\.uuid"/)
   assert.match(inventory, /:columns="workspaceColumns"/)
@@ -295,7 +310,7 @@ test('organization inventory uses the canonical queryable resource table', () =>
   assert.match(inventory, /:stale="workspaceListLoaded && !!workspaceListError"/)
   assert.match(inventory, /retryable/)
   assert.match(inventory, /@retry="reloadScopedWorkspaces\(tenant\.orgUUID\)"/)
-  assert.match(inventory, /All workspaces you can access in this organization, including those pending deletion/)
+  assert.match(tenantSettingsPage.slice(inventoryStart, inventoryEnd), /All workspaces you can access in this organization, including those pending deletion/)
   assert.match(inventory, /Current workspace/)
   assert.doesNotMatch(inventory, /<ul|<li|<ResourceTableFilter|@row-click|Open workspace/)
   assert.doesNotMatch(tenantSettingsPage, /WORKSPACE_SEARCH_THRESHOLD|workspaceSearch|filteredWorkspaces|workspaceLifecycleFilter|workspaceFilterResultAnnouncement/)
@@ -312,7 +327,7 @@ test('organization inventory filters the complete set without changing context a
   assert.match(tenantSettingsPage, /<ResourceTableActionButton\s+v-if="row\.deletionRequestedAt && row\.role === 'admin'"/)
   assert.match(tenantSettingsPage, /:label="`Restore workspace \$\{String\(row\.name\)\}`"/)
   assert.match(tenantSettingsPage, /:busy="restoringWorkspaceUUID === row\.uuid"/)
-  assert.match(tenantSettingsPage, /:disabled="!workspaceInventoryVerified \|\| !!restoringWorkspaceUUID"/)
+  assert.match(tenantSettingsPage, /:disabled="!workspaceInventoryVerified \|\| !!restoringWorkspaceUUID \|\| workspaceDeleteBatchBusy"/)
   assert.match(tenantSettingsPage, /workspace\.role !== 'admin' \|\| !workspace\.deletionRequestedAt/)
   assert.match(tenantSettingsPage, /tenant\.undeleteWorkspace\(org, workspace\.uuid\)/)
 })
@@ -410,7 +425,7 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
   assert.match(tenantSettingsPage, /const WORKSPACE_GRACE_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/)
   assert.match(tenantSettingsPage, /const DAY_MS = 24 \* 60 \* 60 \* 1000/)
   assert.match(tenantSettingsPage, /const requestedAtMs = Date\.parse\(deletionRequestedAt\)/)
-  assert.match(tenantSettingsPage, /const remainingMs = requestedAtMs \+ WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow\.value/)
+  assert.match(tenantSettingsPage, /const remainingMs = Math\.min\(WORKSPACE_GRACE_PERIOD_MS, requestedAtMs \+ WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow\.value\)/)
   assert.match(tenantSettingsPage, /if \(remainingMs <= 0\) return 'Deletion window expired\.'/)
   assert.match(tenantSettingsPage, /if \(remainingMs < DAY_MS\) return 'Deletion scheduled today \(under one day\)\.'/)
   assert.match(tenantSettingsPage, /const days = Math\.ceil\(remainingMs \/ DAY_MS\)/)
@@ -420,8 +435,8 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
 
   assert.match(tenantSettingsPage, /deletion: workspaceDeletionCountdown\(workspace\.deletionRequestedAt\)/)
   const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
-  const inventoryEnd = tenantSettingsPage.indexOf('</section>', inventoryStart)
-  const inventory = tenantSettingsPage.slice(inventoryStart, inventoryEnd)
+  const inventoryEnd = tenantSettingsPage.indexOf('</ResourceTable>', inventoryStart) + '</ResourceTable>'.length
+  const inventory = tenantSettingsPage.slice(tenantSettingsPage.indexOf('<ResourceTable', inventoryStart), inventoryEnd)
   assert.match(inventory, /<template #deletion="\{ row \}">/)
   assert.match(inventory, /\{\{ row\.deletion \}\}/)
   assert.match(inventory, /<StatusBadge :status="String\(row\.status\)"/)
@@ -454,7 +469,11 @@ function assertQueryableResourceTable(source, { columns, rows, rowKey, loading, 
   assert.match(source, /\bretryable\b/)
   assert.match(source, /@retry=/)
   assert.match(source, emptyText)
-  assert.doesNotMatch(source, /<table\b|<ul\b|\bk-table\b/)
+  const bulkOutcomeDetails = source.replace(
+    /<ul\b(?=[^>]*\baria-label="(?:Workspace member removal|App access revocation|Service account deletion) result details")[^>]*>[\s\S]*?<\/ul>/g,
+    '',
+  )
+  assert.doesNotMatch(bulkOutcomeDetails, /<table\b|<ul\b|\bk-table\b/)
 }
 
 test('settings teardown retires requests and mutation contexts even when tenant IDs stay unchanged', () => {
@@ -484,7 +503,18 @@ test('settings teardown retires requests and mutation contexts even when tenant 
   ]
   const state = {
     ...Object.fromEntries(generations.map(name => [name, 7])),
-    creationFeedbackGeneration: 0, pageDisposed: false,
+    creationFeedbackGeneration: 0, pageDisposed: false, workspaceDeleteScopeGeneration: 0,
+    settingsBulkScopeGeneration: { value: 0 },
+    orgMemberBulkScopeGeneration: { value: 0 },
+    saBulk: { resetSelection() {} },
+    wsMemberBulk: { resetSelection() {} },
+    orgMemberBulk: { resetSelection() {} },
+    failedOrgMemberRemovals: { value: [] },
+    appAccessBulk: { resetSelection() {} },
+    selectedWorkspaceKeys: { value: [] },
+    workspaceDeleteProgress: { value: null },
+    workspaceDeleteSummary: { value: null },
+    workspaceDeleteBatchBusy: { value: false },
     activeSection: { value: 'workspaces' },
     selWs: { value: { uuid: 'workspace-a' } },
     canEditWs: { value: true },
@@ -510,6 +540,8 @@ test('settings teardown retires requests and mutation contexts even when tenant 
   teardown()
 
   for (const generation of generations) assert.ok(state[generation] > 7, `${generation} must retire outstanding work`)
+  assert.ok(state.settingsBulkScopeGeneration.value > 0, 'settings bulk operations are retired at teardown')
+  assert.ok(state.orgMemberBulkScopeGeneration.value > 0, 'organization member bulk operations are retired at teardown')
   assert.equal(state.currentOrgMemberContext(pendingOrgMutation), false)
   state.activeSection.value = 'workspaces'
   for (const predicate of workspacePredicates) assert.equal(state[predicate](pendingWorkspaceMutation), false)
@@ -571,9 +603,12 @@ test('settings access lists use the canonical queryable ResourceTable contract',
   assert.equal((serviceAccounts.match(/<ActionMenu\b/g) ?? []).length, 1)
   assert.match(serviceAccounts, /:label="`Actions for \$\{String\(row\.displayName\)\}`"/)
   assert.match(serviceAccounts, /:items="serviceAccountActions\(String\(row\.uuid\)\)"/)
-  assert.match(serviceAccounts, /:disabled="isSABusy\(String\(row\.uuid\)\)"/)
+  assert.match(serviceAccounts, /:disabled="isSABusy\(String\(row\.uuid\)\) \|\| anySettingsAccessMutationBusy"/)
+  assert.match(serviceAccounts, /<template #selection-actions=/)
+  const serviceAccountRowActions = serviceAccounts.slice(serviceAccounts.indexOf('<template #actions="{ row }">'))
+  assert.ok(serviceAccountRowActions.startsWith('<template #actions="{ row }">'))
   assert.match(serviceAccounts, /@select="onServiceAccountAction\(\$event, row\)"/)
-  assert.doesNotMatch(serviceAccounts, /<ResourceTableActionButton\b|<ResourceTableDeleteButton\b|<button\b/)
+  assert.doesNotMatch(serviceAccountRowActions, /<ResourceTableActionButton\b|<ResourceTableDeleteButton\b|<button\b/)
   assert.match(tenantSettingsPage, /type ServiceAccountOperation = 'issue' \| 'revoke' \| 'delete'/)
   assert.match(tenantSettingsPage, /const saBusy = ref<Record<string, ServiceAccountOperation>>\(\{\}\)/)
   assert.match(tenantSettingsPage, /function saOperation\(uuid: string\): ServiceAccountOperation \| undefined/)
@@ -588,7 +623,7 @@ test('settings access lists use the canonical queryable ResourceTable contract',
   assert.match(menuActions, /id: 'issue', label: 'Issue token', busy: saOperation\(uuid\) === 'issue'/)
   assert.match(menuActions, /id: 'revoke', label: 'Revoke tokens', tone: 'warning', busy: saOperation\(uuid\) === 'revoke'/)
   assert.match(menuActions, /id: 'delete', label: 'Delete service account', tone: 'danger', busy: saOperation\(uuid\) === 'delete'/)
-  assert.match(menuActions, /await nextTick\(\)[\s\S]*if \(!target \|\| !isCurrentTarget\(target\) \|\| activeSection\.value !== 'workspaces' \|\| isSABusy\(uuid\)\) return[\s\S]*action === 'issue'/)
+  assert.match(menuActions, /await nextTick\(\)[\s\S]*if \(anySettingsAccessMutationBusy\.value \|\| !target \|\| !isCurrentTarget\(target\) \|\| activeSection\.value !== 'workspaces' \|\| isSABusy\(uuid\)\) return[\s\S]*action === 'issue'/)
   assert.match(menuActions, /action === 'issue'\) void onIssueToken\(uuid, name\)/)
   assert.match(menuActions, /action === 'revoke'\) void onRevokeTokens\(uuid, name\)/)
   assert.match(menuActions, /action === 'delete'\) void onDeleteSA\(uuid, name\)/)

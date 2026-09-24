@@ -32,6 +32,8 @@ import AddMemberDialog from '@/components/AddMemberDialog.vue'
 import CreateServiceAccountDialog from '@/components/CreateServiceAccountDialog.vue'
 import WorkspaceControlHeader from '@/components/WorkspaceControlHeader.vue'
 import { useTenantStore, type AppAccessGrantRow, type MemberRow, type OrgRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
+import { useAuthStore } from '@/stores/auth'
+import { useSettingsBulkAction, type SettingsBulkItem } from '@/composables/useSettingsBulkAction'
 import { confirmDialog } from '@/portalkit/confirm'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
@@ -63,6 +65,7 @@ import {
 const { scopePath, routePath } = useScopedNavigation()
 
 const tenant = useTenantStore()
+const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -151,14 +154,14 @@ const orgBusy = ref(false)
 
 function startEditOrgName(): void {
   const org = organizationSettingsOrg.value
-  if (!org || !canEditOrg.value) return
+  if (!org || !canEditOrg.value || orgMemberBulkLocked.value) return
   orgNameDraft.value = org.displayName
   editingOrgName.value = true
 }
 
 async function saveOrgName(): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canEditOrg.value || !orgNameDraft.value.trim()) return
+  if (!target || !canEditOrg.value || !orgNameDraft.value.trim() || orgMemberBulkLocked.value) return
   orgBusy.value = true
   try {
     const ok = await tenant.patchOrgDisplayName(target, orgNameDraft.value.trim())
@@ -173,7 +176,7 @@ async function saveOrgName(): Promise<void> {
 
 async function onDeleteOrg(): Promise<void> {
   const org = organizationSettingsOrg.value
-  if (!org || !canEditOrg.value) return
+  if (!org || !canEditOrg.value || orgMemberBulkLocked.value) return
   if (org.personal) {
     toast('error', 'Personal organizations cannot be deleted.')
     return
@@ -186,7 +189,7 @@ async function onDeleteOrg(): Promise<void> {
     confirmLabel: 'Delete',
   }))) return
 
-  if (route.fullPath !== requestRoute || organizationTargetUUID.value !== org.uuid || !canEditOrg.value) return
+  if (route.fullPath !== requestRoute || organizationTargetUUID.value !== org.uuid || !canEditOrg.value || orgMemberBulkLocked.value) return
   const target = org.uuid
   // Capture the pre-refresh identity and a local timestamp before calling the
   // store. The store's delete action refreshes /api/orgs and the target is
@@ -214,7 +217,7 @@ async function onDeleteOrg(): Promise<void> {
 
 async function onUndeleteOrg(): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrg.value) return
+  if (!target || !canManageOrg.value || orgMemberBulkLocked.value) return
   orgBusy.value = true
   try {
     const ok = await tenant.undeleteOrg(target)
@@ -236,6 +239,7 @@ const orgMembersError = ref<string | null>(null)
 const orgMembersHasSnapshot = ref(false)
 const orgMembersReadDenied = ref(false)
 const orgMemberBusy = ref<Record<string, boolean>>({})
+const failedOrgMemberRemovals = ref<OrgMemberRetryTarget[]>([])
 let orgMembersRequest = 0
 let orgMemberContextGeneration = 0
 
@@ -309,7 +313,7 @@ async function reloadOrgMembers(targetOrgUUID = organizationTargetUUID.value): P
 
 async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<boolean> {
   const target = organizationTargetUUID.value
-  if (!target || !canAddOrgMembers.value) return false
+  if (!target || !canAddOrgMembers.value || orgMemberBulkLocked.value || orgBusy.value) return false
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
   const feedbackGeneration = creationFeedbackGeneration
   orgMemberBusy.value = { ...orgMemberBusy.value, __new__: true }
@@ -339,7 +343,7 @@ async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<b
 
 async function onChangeOrgMemberRole(user: string, role: 'admin' | 'member'): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrgMembers.value) return
+  if (!target || !canManageOrgMembers.value || orgMemberBulkLocked.value || orgBusy.value) return
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
   orgMemberBusy.value = { ...orgMemberBusy.value, [user]: true }
   try {
@@ -360,7 +364,7 @@ async function onChangeOrgMemberRole(user: string, role: 'admin' | 'member'): Pr
 
 async function onRemoveOrgMember(user: string): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canManageOrgMembers.value) return
+  if (!target || !canManageOrgMembers.value || orgMemberBulkLocked.value || orgBusy.value) return
   const context: OrgMemberContext = { target, generation: orgMemberContextGeneration }
   if (!(await confirmDialog({
     title: `Remove ${user} from this organization?`,
@@ -368,12 +372,13 @@ async function onRemoveOrgMember(user: string): Promise<void> {
     danger: true,
     confirmLabel: 'Remove',
   }))) return
-  if (!currentOrgMemberContext(context)) return
+  if (!currentOrgMemberContext(context) || orgMemberBulkLocked.value || orgBusy.value) return
   orgMemberBusy.value = { ...orgMemberBusy.value, [user]: true }
   try {
     const ok = await tenant.removeOrgMember(target, user, true)
     if (!currentOrgMemberContext(context)) return
     if (ok) {
+      clearFailedOrgMemberRemoval(target, user)
       toast('ok', `Removed ${user} from the organization.`)
       await reloadOrgMembers(target)
     }
@@ -412,6 +417,7 @@ watch(
     editingOrgName.value = false
     orgNameDraft.value = ''
     orgMemberBusy.value = {}
+    failedOrgMemberRemovals.value = []
   },
 )
 
@@ -489,7 +495,9 @@ function workspaceDeletionCountdown(deletionRequestedAt?: string | null): string
   if (!deletionRequestedAt) return null
   const requestedAtMs = Date.parse(deletionRequestedAt)
   if (!Number.isFinite(requestedAtMs)) return 'Deletion timing unavailable.'
-  const remainingMs = requestedAtMs + WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow.value
+  // Local delete stamps can be milliseconds newer than the minute ticker. A
+  // future-dated stamp still starts at 30 days, never a misleading 31.
+  const remainingMs = Math.min(WORKSPACE_GRACE_PERIOD_MS, requestedAtMs + WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow.value)
   if (remainingMs <= 0) return 'Deletion window expired.'
   if (remainingMs < DAY_MS) return 'Deletion scheduled today (under one day).'
   const days = Math.ceil(remainingMs / DAY_MS)
@@ -503,10 +511,277 @@ const workspaceInventoryVerified = computed(() =>
   !tenant.workspaceErrorByOrg[tenant.orgUUID ?? ''],
 )
 
+type WorkspaceDeleteOutcome = { uuid: string; ok: boolean; error?: string }
+type WorkspaceDeleteSummaryItem = {
+  uuid: string
+  name: string
+  status: 'requested' | 'failed'
+  error?: string
+  attempts: number
+}
+type WorkspaceDeleteSummary = { orgUUID: string; items: WorkspaceDeleteSummaryItem[] }
+type WorkspaceDeleteProgress = { orgUUID: string; total: number; completed: number; succeeded: number; failed: number }
+type WorkspaceDeleteContext = {
+  orgUUID: string
+  routePath: string
+  generation: number
+  workspaceMode: 'workspace' | 'organization'
+  workspaceUUID: string | null
+}
+
+const selectedWorkspaceKeys = ref<Array<string | number>>([])
+const workspaceDeleteBatchBusy = ref(false)
+const workspaceDeleteProgress = ref<WorkspaceDeleteProgress | null>(null)
+const workspaceDeleteSummary = ref<WorkspaceDeleteSummary | null>(null)
+let workspaceDeleteScopeGeneration = 0
+let workspaceSelectionRevision = 0
+let workspaceDeleteRunSequence = 0
+let activeWorkspaceDeleteRun = 0
+
+watch(selectedWorkspaceKeys, () => { workspaceSelectionRevision++ }, { deep: true, flush: 'sync' })
+
+// A route may leave Organization settings and return to the same org before
+// an in-flight confirmation or worker finishes. The generation fence closes
+// that same-ID race and makes every old shouldContinue callback stop sending.
+watch(
+  [() => route.fullPath, () => tenant.orgUUID, () => tenant.workspaceMode, () => tenant.workspaceUUID],
+  () => {
+    workspaceDeleteScopeGeneration++
+    selectedWorkspaceKeys.value = []
+    workspaceDeleteProgress.value = null
+    workspaceDeleteSummary.value = null
+  },
+  { flush: 'sync' },
+)
+
+const workspaceDeleteSelectionDisabled = computed(() =>
+  workspaceDeleteBatchBusy.value || !workspaceInventoryVerified.value || !!restoringWorkspaceUUID.value ||
+  !organizationTargetUUID.value || !!organizationSettingsOrg.value?.deletionRequestedAt,
+)
+
+function workspaceBulkDeleteDisabledReason(workspace: WorkspaceRow): string | null {
+  if (!workspaceInventoryVerified.value) return 'Verify the current workspace inventory before deleting.'
+  const targetOrg = organizationTargetUUID.value
+  if (!targetOrg || activeSection.value !== 'organizations' || workspace.orgUUID !== targetOrg || targetOrg !== tenant.orgUUID) {
+    return 'This workspace is outside the current organization settings scope.'
+  }
+  if (organizationSettingsOrg.value?.deletionRequestedAt || activeOrg.value?.deletionRequestedAt) {
+    return 'Restore the organization before deleting workspaces.'
+  }
+  if (workspace.role !== 'admin') return 'Workspace admin access is required to delete this workspace.'
+  if (workspace.deletionRequestedAt) return 'This workspace is already scheduled for deletion.'
+  if (tenant.workspaceMode === 'workspace' && tenant.workspaceUUID === workspace.uuid) {
+    return 'Switch to another operating workspace before deleting this one.'
+  }
+  if (restoringWorkspaceUUID.value) return 'Wait for the workspace restore to finish before selecting workspaces.'
+  return null
+}
+
+function workspaceRowSelectable(row: Record<string, unknown>): boolean {
+  const workspace = workspaces.value.find((candidate) => candidate.uuid === String(row.uuid ?? ''))
+  return !!workspace && !workspaceBulkDeleteDisabledReason(workspace)
+}
+
+function workspaceRowSelectionDisabledReason(row: Record<string, unknown>): string {
+  const workspace = workspaces.value.find((candidate) => candidate.uuid === String(row.uuid ?? ''))
+  return workspace ? workspaceBulkDeleteDisabledReason(workspace) ?? '' : 'Workspace details are not available in the verified inventory.'
+}
+
+function workspaceSelectionLabel(row: Record<string, unknown>): string {
+  const name = String(row.name || row.displayName || row.uuid || 'Workspace')
+  const uuid = String(row.uuid ?? '')
+  return uuid ? `${name} (UUID ${uuid})` : name
+}
+
+const selectedWorkspaceDeleteTargets = computed(() => selectedWorkspaceKeys.value
+  .map((key) => String(key))
+  .map((uuid) => workspaces.value.find((workspace) => workspace.uuid === uuid))
+  .filter((workspace): workspace is WorkspaceRow => !!workspace))
+
+const workspaceDeleteActionDisabled = computed(() => {
+  const selectedCount = selectedWorkspaceKeys.value.length
+  return workspaceDeleteSelectionDisabled.value || selectedCount === 0 ||
+    selectedWorkspaceDeleteTargets.value.length !== selectedCount ||
+    selectedWorkspaceDeleteTargets.value.some((workspace) => !!workspaceBulkDeleteDisabledReason(workspace))
+})
+
+const retryableWorkspaceDeleteIDs = computed(() => {
+  const summary = workspaceDeleteSummary.value
+  if (!summary || summary.orgUUID !== organizationTargetUUID.value) return []
+  const selected = new Set(selectedWorkspaceKeys.value.map((key) => String(key)))
+  return summary.items
+    .filter((item) => item.status === 'failed' && selected.has(item.uuid))
+    .map((item) => item.uuid)
+    .filter((uuid) => {
+      const workspace = workspaces.value.find((candidate) => candidate.uuid === uuid)
+      return !!workspace && !workspaceBulkDeleteDisabledReason(workspace)
+    })
+})
+const workspaceDeleteRequestedCount = computed(() => workspaceDeleteSummary.value?.items.filter((item) => item.status === 'requested').length ?? 0)
+const workspaceDeleteFailedCount = computed(() => workspaceDeleteSummary.value?.items.filter((item) => item.status === 'failed').length ?? 0)
+
+function workspaceDeleteContextIsCurrent(context: WorkspaceDeleteContext): boolean {
+  return !pageDisposed && context.generation === workspaceDeleteScopeGeneration &&
+    activeSection.value === 'organizations' && route.fullPath === context.routePath &&
+    tenant.orgUUID === context.orgUUID && organizationTargetUUID.value === context.orgUUID &&
+    organizationSettingsOrg.value?.uuid === context.orgUUID &&
+    tenant.workspaceMode === context.workspaceMode && (tenant.workspaceUUID ?? null) === context.workspaceUUID
+}
+
+function workspaceDeleteDispatchIsAllowed(context: WorkspaceDeleteContext): boolean {
+  return workspaceDeleteContextIsCurrent(context) &&
+    !organizationSettingsOrg.value?.deletionRequestedAt && !activeOrg.value?.deletionRequestedAt &&
+    workspaceInventoryVerified.value && !restoringWorkspaceUUID.value
+}
+
+function workspaceDeleteTargetIsEligible(context: WorkspaceDeleteContext, uuid: string): boolean {
+  if (!workspaceDeleteDispatchIsAllowed(context)) return false
+  const workspace = workspaces.value.find((candidate) => candidate.uuid === uuid)
+  return !!workspace && !workspaceBulkDeleteDisabledReason(workspace)
+}
+
+function sameWorkspaceIDs(left: string[], right: string[]): boolean {
+  return left.length === right.length && [...left].sort().every((uuid, index) => uuid === [...right].sort()[index])
+}
+
+function recordWorkspaceDeleteOutcomes(
+  orgUUID: string,
+  names: Map<string, string>,
+  outcomes: WorkspaceDeleteOutcome[],
+): void {
+  const existing = workspaceDeleteSummary.value?.orgUUID === orgUUID
+    ? [...workspaceDeleteSummary.value.items]
+    : []
+  const byUUID = new Map<string, WorkspaceDeleteSummaryItem>(existing.map((item): [string, WorkspaceDeleteSummaryItem] => [item.uuid, item]))
+  for (const outcome of outcomes) {
+    const previous = byUUID.get(outcome.uuid)
+    byUUID.set(outcome.uuid, {
+      uuid: outcome.uuid,
+      name: names.get(outcome.uuid) ?? previous?.name ?? outcome.uuid,
+      status: outcome.ok ? 'requested' : 'failed',
+      error: outcome.ok ? undefined : outcome.error || 'The request did not complete. Retry after checking the workspace inventory.',
+      attempts: (previous?.attempts ?? 0) + 1,
+    })
+  }
+  workspaceDeleteSummary.value = { orgUUID, items: [...byUUID.values()] }
+}
+
+async function requestWorkspaceDeletions(keys: Array<string | number>, retryOnly: boolean): Promise<void> {
+  if (workspaceDeleteBatchBusy.value || !workspaceInventoryVerified.value || restoringWorkspaceUUID.value) return
+  const orgUUID = organizationTargetUUID.value
+  if (!orgUUID || activeSection.value !== 'organizations' || organizationSettingsOrg.value?.deletionRequestedAt || activeOrg.value?.deletionRequestedAt) return
+
+  const ids = [...new Set(keys.map((key) => String(key)))].filter(Boolean)
+  if (retryOnly) {
+    const failed = new Set(workspaceDeleteSummary.value?.orgUUID === orgUUID
+      ? workspaceDeleteSummary.value.items.filter((item) => item.status === 'failed').map((item) => item.uuid)
+      : [])
+    if (!ids.length || ids.some((uuid) => !failed.has(uuid))) return
+  }
+  if (!ids.length || ids.some((uuid) => !workspaceDeleteTargetIsEligible({
+    orgUUID,
+    routePath: route.fullPath,
+    generation: workspaceDeleteScopeGeneration,
+    workspaceMode: tenant.workspaceMode,
+    workspaceUUID: tenant.workspaceUUID ?? null,
+  }, uuid))) return
+
+  // A retry acts only on failed rows the user has kept selected. Capture the
+  // whole selection so a clear, query reset, or other change while the modal
+  // is open cannot silently submit a different set of targets.
+  const selectedAtPrompt = selectedWorkspaceKeys.value.map((key) => String(key))
+  if (ids.some((uuid) => !selectedAtPrompt.includes(uuid))) return
+  const selectionRevisionAtPrompt = workspaceSelectionRevision
+  const selectedIDsAtPrompt = [...selectedAtPrompt]
+  const context: WorkspaceDeleteContext = {
+    orgUUID,
+    routePath: route.fullPath,
+    generation: workspaceDeleteScopeGeneration,
+    workspaceMode: tenant.workspaceMode,
+    workspaceUUID: tenant.workspaceUUID ?? null,
+  }
+  const names = new Map<string, string>(ids.map((uuid): [string, string] => {
+    const workspace = workspaces.value.find((candidate) => candidate.uuid === uuid)
+    return [uuid, workspace?.displayName || uuid]
+  }))
+  const countLabel = `${ids.length} workspace${ids.length === 1 ? '' : 's'}`
+  const workspaceSubject = ids.length === 1 ? 'This workspace' : `These ${countLabel}`
+  const restorePronoun = ids.length === 1 ? 'it' : 'them'
+  const selectionList = ids.map((uuid) => `${names.get(uuid)} (UUID ${uuid})`).join('\n')
+  const confirmed = await confirmDialog({
+    title: `Delete ${countLabel}?`,
+    message: `${workspaceSubject} in "${organizationSettingsOrg.value?.displayName || orgUUID}" will enter a recoverable 30-day grace period. Restore ${restorePronoun} within 30 days to cancel deletion.\n\nSelected workspaces:\n${selectionList}`,
+    danger: true,
+    confirmLabel: `Delete ${countLabel}`,
+  })
+  if (!confirmed) return
+  if (!workspaceDeleteContextIsCurrent(context) || workspaceSelectionRevision !== selectionRevisionAtPrompt ||
+    !sameWorkspaceIDs(selectedWorkspaceKeys.value.map((key) => String(key)), selectedIDsAtPrompt) ||
+    ids.some((uuid) => !workspaceDeleteTargetIsEligible(context, uuid))) return
+
+  workspaceDeleteBatchBusy.value = true
+  const runID = ++workspaceDeleteRunSequence
+  activeWorkspaceDeleteRun = runID
+  workspaceDeleteProgress.value = { orgUUID, total: ids.length, completed: 0, succeeded: 0, failed: 0 }
+  const observed = new Map<string, WorkspaceDeleteOutcome>()
+  try {
+    const results = await tenant.deleteWorkspaces(orgUUID, ids, {
+      shouldContinue: () => workspaceDeleteDispatchIsAllowed(context),
+      onProgress: (outcome, completed, total) => {
+        if (!workspaceDeleteContextIsCurrent(context)) return
+        observed.set(outcome.uuid, outcome)
+        const progress = workspaceDeleteProgress.value
+        if (progress?.orgUUID === orgUUID) {
+          progress.completed = completed
+          progress.total = total
+          progress.succeeded = [...observed.values()].filter((item) => item.ok).length
+          progress.failed = [...observed.values()].filter((item) => !item.ok).length
+        }
+        if (outcome.ok) {
+          selectedWorkspaceKeys.value = selectedWorkspaceKeys.value.filter((key) => String(key) !== outcome.uuid)
+        }
+      },
+    })
+    for (const result of results) observed.set(result.uuid, result)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'The batch stopped before all results were confirmed.'
+    for (const uuid of ids) {
+      if (!observed.has(uuid)) observed.set(uuid, { uuid, ok: false, error: `Result not confirmed: ${detail}` })
+    }
+  } finally {
+    if (workspaceDeleteContextIsCurrent(context)) {
+      const outcomes = ids.map((uuid) => observed.get(uuid) ?? {
+        uuid,
+        ok: false,
+        error: 'The request was not sent. Retry after checking the workspace inventory.',
+      })
+      recordWorkspaceDeleteOutcomes(orgUUID, names, outcomes)
+      // The store marks successful rows locally before returning. Refresh once
+      // to adopt server state, but never hold the batch busy state on this GET.
+      if (!workspaceListLoading.value) void reloadScopedWorkspaces(orgUUID)
+    }
+    if (activeWorkspaceDeleteRun === runID) {
+      if (context.generation === workspaceDeleteScopeGeneration) workspaceDeleteProgress.value = null
+      // Scope changes clear feedback and stop queued sends. Keep Restore locked
+      // until this exact worker pool returns, without waiting for its follow-up GET.
+      workspaceDeleteBatchBusy.value = false
+      activeWorkspaceDeleteRun = 0
+    }
+  }
+}
+
+async function onDeleteSelectedWorkspaces(keys: Array<string | number>): Promise<void> {
+  await requestWorkspaceDeletions(keys, false)
+}
+
+async function onRetryFailedWorkspaceDeletions(): Promise<void> {
+  await requestWorkspaceDeletions(retryableWorkspaceDeleteIDs.value, true)
+}
+
 const restoringWorkspaceUUID = ref<string | null>(null)
 async function restoreWorkspace(workspace: WorkspaceRow): Promise<void> {
   if (!workspaceInventoryVerified.value || workspace.orgUUID !== tenant.orgUUID ||
-    activeOrg.value?.deletionRequestedAt || workspace.role !== 'admin' || !workspace.deletionRequestedAt || restoringWorkspaceUUID.value) return
+    activeOrg.value?.deletionRequestedAt || workspace.role !== 'admin' || !workspace.deletionRequestedAt || restoringWorkspaceUUID.value || workspaceDeleteBatchBusy.value) return
   const org = workspace.orgUUID
   restoringWorkspaceUUID.value = workspace.uuid
   try {
@@ -634,6 +909,10 @@ function isCurrentTarget(target: WorkspaceTarget): boolean {
 // UMI rows) — the same rows the tenant middleware resolves server-side.
 const canManageWs = computed(() => selWs.value?.role === 'admin')
 const canEditWs = computed(() => canManageWs.value && !selWs.value?.deletionRequestedAt)
+
+// Self-removal is excluded from workspace bulk removal by the stable User CR
+// name returned from /api/users/me. Never guess from the cached login email.
+watch(() => auth.token, () => { void auth.fetchSelf() }, { immediate: true })
 
 const kubeconfigDisabledReason = computed<string | null>(() => {
   const workspace = selWs.value
@@ -830,6 +1109,7 @@ async function reloadWsMembers() {
 }
 
 async function onAddWsMember(user: string, role: 'admin' | 'member'): Promise<boolean> {
+  if (anySettingsAccessMutationBusy.value) return false
   const target = selectedTarget()
   if (!target || !canAddWsMembers.value) return false
   invalidateWsMembersRequests()
@@ -859,6 +1139,7 @@ async function onAddWsMember(user: string, role: 'admin' | 'member'): Promise<bo
 }
 
 async function onChangeWsMemberRole(user: string, role: 'admin' | 'member') {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   invalidateWsMembersRequests()
@@ -881,10 +1162,11 @@ async function onChangeWsMemberRole(user: string, role: 'admin' | 'member') {
 }
 
 async function onRemoveWsMember(user: string) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   if (!(await confirmDialog({ title: `Remove ${user} from this workspace?`, danger: true, confirmLabel: 'Remove' }))) return
-  if (!isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
+  if (anySettingsAccessMutationBusy.value || !isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
   invalidateWsMembersRequests()
   const context: WorkspaceAccessContext = { target, generation: wsMembersContextGeneration }
   wsMemberBusy.value = { ...wsMemberBusy.value, [user]: true }
@@ -992,6 +1274,7 @@ async function reloadAppAccessGrants() {
 }
 
 async function onRevokeAppAccess(grant: AppAccessGrantRow) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   const confirmed = await confirmDialog({
@@ -1001,7 +1284,7 @@ async function onRevokeAppAccess(grant: AppAccessGrantRow) {
     danger: true,
   })
   if (!confirmed) return
-  if (!isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
+  if (anySettingsAccessMutationBusy.value || !isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
   invalidateAppAccessRequests()
   const context: WorkspaceAccessContext = { target, generation: appAccessContextGeneration }
   appAccessBusy.value = { ...appAccessBusy.value, [grant.binding]: true }
@@ -1097,10 +1380,22 @@ watch(
 onBeforeUnmount(() => {
   pageDisposed = true
   creationFeedbackGeneration++
+  orgMemberBulkScopeGeneration.value++
+  orgMemberBulk.resetSelection()
+  workspaceDeleteScopeGeneration++
+  selectedWorkspaceKeys.value = []
+  workspaceDeleteProgress.value = null
+  workspaceDeleteSummary.value = null
+  workspaceDeleteBatchBusy.value = false
+  settingsBulkScopeGeneration.value++
+  saBulk.resetSelection()
+  wsMemberBulk.resetSelection()
+  appAccessBulk.resetSelection()
   // A same-workspace navigation can leave the target IDs unchanged. Retire
   // this page's requests so late mutations cannot publish feedback or reload.
   orgMembersRequest++
   orgMemberContextGeneration++
+  failedOrgMemberRemovals.value = []
   workspaceListRequest++
   invalidateWsMembersRequests()
   invalidateAppAccessRequests()
@@ -1143,7 +1438,7 @@ async function onServiceAccountAction(action: string, row: Record<string, unknow
   const target = selectedTarget()
   // Let the menu restore its trigger before a confirmation captures focus.
   await nextTick()
-  if (!target || !isCurrentTarget(target) || activeSection.value !== 'workspaces' || isSABusy(uuid)) return
+  if (anySettingsAccessMutationBusy.value || !target || !isCurrentTarget(target) || activeSection.value !== 'workspaces' || isSABusy(uuid)) return
   if (action === 'issue') void onIssueToken(uuid, name)
   else if (action === 'revoke') void onRevokeTokens(uuid, name)
   else if (action === 'delete') void onDeleteSA(uuid, name)
@@ -1217,7 +1512,7 @@ async function reloadSAs() {
 async function onCreateSA(name: string, role: 'admin' | 'member'): Promise<boolean> {
   name = name.trim()
   const target = selectedTarget()
-  if (!name || !target || !canCreateSA.value || saCreateBusy.value) return false
+  if (anySettingsAccessMutationBusy.value || !name || !target || !canCreateSA.value || saCreateBusy.value) return false
   invalidateServiceAccountRequests()
   const context: WorkspaceAccessContext = { target, generation: serviceAccountContextGeneration }
   const feedbackGeneration = creationFeedbackGeneration
@@ -1244,10 +1539,11 @@ async function onCreateSA(name: string, role: 'admin' | 'member'): Promise<boole
 }
 
 async function onDeleteSA(uuid: string, name: string) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   if (!(await confirmDialog({ title: `Delete service account "${name}"?`, message: 'Active tokens will stop working.', danger: true, confirmLabel: 'Delete' }))) return
-  if (!isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
+  if (anySettingsAccessMutationBusy.value || !isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
   invalidateServiceAccountRequests()
   const context: WorkspaceAccessContext = { target, generation: serviceAccountContextGeneration }
   beginSAOperation(uuid, 'delete')
@@ -1264,6 +1560,7 @@ async function onDeleteSA(uuid: string, name: string) {
 }
 
 async function onIssueToken(uuid: string, name: string) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   const tokenRequestRoute = route.fullPath
   const tokenRequestIsAdmin = canEditWs.value
@@ -1298,10 +1595,11 @@ async function onIssueToken(uuid: string, name: string) {
 }
 
 async function onRevokeTokens(uuid: string, name: string) {
+  if (anySettingsAccessMutationBusy.value) return
   const target = selectedTarget()
   if (!target || !canEditWs.value) return
   if (!(await confirmDialog({ title: `Revoke all tokens for "${name}"?`, message: 'Existing token holders will be locked out.', danger: true, confirmLabel: 'Revoke' }))) return
-  if (!isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
+  if (anySettingsAccessMutationBusy.value || !isCurrentTarget(target) || !canEditWs.value || activeSection.value !== 'workspaces') return
   invalidateServiceAccountRequests()
   const context: WorkspaceAccessContext = { target, generation: serviceAccountContextGeneration }
   beginSAOperation(uuid, 'revoke')
@@ -1316,6 +1614,500 @@ async function onRevokeTokens(uuid: string, name: string) {
     if (isCurrentServiceAccountContext(context)) endSAOperation(uuid)
   }
 }
+
+// ===== Workspace bulk access actions ======================================
+
+type SettingsBulkContext = {
+  target: WorkspaceTarget
+  routePath: string
+  generation: number
+  workspaceName: string
+  organizationName: string
+}
+type OrgMemberBulkContext = {
+  target: string
+  routePath: string
+  generation: number
+  organizationName: string
+}
+
+type ServiceAccountBulkItem = SettingsBulkItem & Pick<SARow, 'uuid' | 'displayName'>
+type WorkspaceMemberBulkItem = SettingsBulkItem & Pick<MemberRow, 'user' | 'role' | 'email' | 'userDisplayName'>
+type OrgMemberBulkItem = SettingsBulkItem & Pick<MemberRow, 'user' | 'role' | 'email' | 'userDisplayName'>
+type OrgMemberRetryTarget = OrgMemberBulkItem & { organizationUUID: string }
+type AppAccessBulkItem = SettingsBulkItem & Pick<AppAccessGrantRow, 'binding' | 'app' | 'user'>
+
+const settingsBulkScopeGeneration = ref(0)
+const orgMemberBulkScopeGeneration = ref(0)
+const anySettingsSingleMutationBusy = computed(() => saCreateBusy.value ||
+  Object.keys(saBusy.value).length > 0 || Object.keys(wsMemberBusy.value).length > 0 || Object.keys(appAccessBusy.value).length > 0)
+const orgMemberSingleMutationBusy = computed(() => Object.keys(orgMemberBusy.value).length > 0)
+
+function captureOrgMemberBulkContext(): OrgMemberBulkContext | null {
+  const target = organizationTargetUUID.value
+  if (!target || activeSection.value !== 'organizations' || tenant.orgUUID !== target ||
+    !canManageOrgMembers.value || orgMembersReadDenied.value || orgBusy.value) return null
+  return {
+    target,
+    routePath: route.fullPath,
+    generation: orgMemberBulkScopeGeneration.value,
+    organizationName: organizationSettingsOrg.value?.displayName || target,
+  }
+}
+
+function isCurrentOrgMemberBulkContext(context: OrgMemberBulkContext): boolean {
+  return !pageDisposed && context.generation === orgMemberBulkScopeGeneration.value &&
+    context.routePath === route.fullPath && activeSection.value === 'organizations' &&
+    tenant.orgUUID === context.target && organizationTargetUUID.value === context.target &&
+    organizationSettingsOrg.value?.uuid === context.target && canManageOrgMembers.value &&
+    !orgMembersReadDenied.value && !orgBusy.value
+}
+
+function captureSettingsBulkContext(): SettingsBulkContext | null {
+  const target = selectedTarget()
+  if (!target || activeSection.value !== 'workspaces' || !canEditWs.value) return null
+  return {
+    target,
+    routePath: route.fullPath,
+    generation: settingsBulkScopeGeneration.value,
+    workspaceName: selWs.value?.displayName || target.ws,
+    organizationName: activeOrg.value?.displayName || target.org,
+  }
+}
+
+function isCurrentSettingsBulkContext(context: SettingsBulkContext): boolean {
+  return !pageDisposed && context.generation === settingsBulkScopeGeneration.value &&
+    context.routePath === route.fullPath && activeSection.value === 'workspaces' &&
+    isCurrentTarget(context.target) && canEditWs.value && !selWs.value?.deletionRequestedAt
+}
+
+function workspaceScopeDescription(context: SettingsBulkContext): string {
+  return `Workspace "${context.workspaceName}" (UUID ${context.target.ws}) in organization "${context.organizationName}" (UUID ${context.target.org})`
+}
+
+function serializeBulkItem(item: object): string {
+  return JSON.stringify(item) ?? ''
+}
+
+function orgMemberBulkSnapshot(item: OrgMemberBulkItem): string {
+  return serializeBulkItem({
+    key: item.key,
+    name: item.name,
+    user: item.user,
+    role: item.role,
+    email: item.email ?? '',
+    userDisplayName: item.userDisplayName ?? '',
+  })
+}
+
+function clearFailedOrgMemberRemoval(targetOrgUUID: string, user: string): void {
+  failedOrgMemberRemovals.value = failedOrgMemberRemovals.value.filter((item) =>
+    item.organizationUUID !== targetOrgUUID || item.user !== user)
+}
+
+function rememberFailedOrgMemberRemoval(context: OrgMemberBulkContext, item: OrgMemberBulkItem): void {
+  const retained = failedOrgMemberRemovals.value.find((target) =>
+    target.organizationUUID === context.target && target.user === item.user)
+  if (retained && orgMemberBulkSnapshot(retained) === orgMemberBulkSnapshot(item)) return
+  const next = failedOrgMemberRemovals.value.filter((target) =>
+    target.organizationUUID !== context.target || target.user !== item.user)
+  failedOrgMemberRemovals.value = [...next, { ...item, organizationUUID: context.target }]
+}
+
+const saBulk = useSettingsBulkAction<ServiceAccountBulkItem, SettingsBulkContext>({
+  captureContext: captureSettingsBulkContext,
+  isContextCurrent: isCurrentSettingsBulkContext,
+  resolveItems: (_context, keys) => keys.flatMap((key) => {
+    const row = sas.value.find((candidate) => candidate.uuid === key)
+    return row ? [{ key: row.uuid, name: row.displayName, uuid: row.uuid, displayName: row.displayName }] : []
+  }),
+  snapshotItem: (item) => serializeBulkItem({ key: item.key, name: item.name, uuid: item.uuid }),
+  ineligibleReason: (_context, item) => {
+    if (!sasHasSnapshot.value || sasLoading.value || !!sasError.value || sasReadDenied.value) return 'Verify the current service account list before deleting accounts.'
+    if (!canEditWs.value) return 'Workspace admin access is required.'
+    if (anySettingsSingleMutationBusy.value) return 'Wait for the current access action to finish.'
+    return sas.value.some((row) => row.uuid === item.uuid) ? null : 'This service account is no longer in the current list.'
+  },
+  confirm: async (context, items) => confirmDialog({
+    title: `Delete ${items.length} selected service account${items.length === 1 ? '' : 's'}?`,
+    message: `${workspaceScopeDescription(context)}. Deleting these accounts will stop their active tokens from working.\n\nSelected service accounts:\n${items.map((item) => `${item.name} (UUID ${item.uuid})`).join('\n')}`,
+    confirmLabel: `Delete ${items.length} account${items.length === 1 ? '' : 's'}`,
+    danger: true,
+  }),
+  mutate: (context, item) => tenant.deleteServiceAccount(context.target.org, context.target.ws, item.uuid),
+  clearError: () => tenant.clearError(),
+  readError: () => tenant.error,
+  onSuccess: (_context, item) => {
+    sas.value = sas.value.filter((row) => row.uuid !== item.uuid)
+  },
+  refresh: async () => { await reloadSAs() },
+  fallbackError: 'The service account could not be deleted. Retry after checking the current list.',
+})
+
+const wsMemberBulk = useSettingsBulkAction<WorkspaceMemberBulkItem, SettingsBulkContext>({
+  captureContext: captureSettingsBulkContext,
+  isContextCurrent: isCurrentSettingsBulkContext,
+  resolveItems: (_context, keys) => keys.flatMap((key) => {
+    const row = wsMembers.value.find((candidate) => candidate.user === key)
+    return row ? [{
+      key: row.user,
+      name: memberBulkName(row),
+      user: row.user,
+      role: row.role,
+      email: row.email,
+      userDisplayName: row.userDisplayName,
+    }] : []
+  }),
+  snapshotItem: (item) => serializeBulkItem({
+    key: item.key,
+    name: item.name,
+    user: item.user,
+    role: item.role,
+    email: item.email ?? '',
+    userDisplayName: item.userDisplayName ?? '',
+  }),
+  ineligibleReason: (_context, item) => {
+    if (!wsMembersHasSnapshot.value || wsMembersLoading.value || !!wsMembersError.value || wsMembersReadDenied.value) return 'Verify the current workspace member list before removing members.'
+    if (!auth.self?.user) return 'Your identity is still loading. Wait before selecting workspace members.'
+    if (item.user === auth.self?.user) return 'You cannot remove yourself with a bulk action. Use the individual remove action.'
+    if (anySettingsSingleMutationBusy.value) return 'Wait for the current access action to finish.'
+    return wsMembers.value.some((row) => row.user === item.user) ? null : 'This member is no longer in the current list.'
+  },
+  confirm: async (context, items) => confirmDialog({
+    title: `Remove ${items.length} selected member${items.length === 1 ? '' : 's'}?`,
+    message: `Remove these people from ${workspaceScopeDescription(context)}? They will lose workspace access.\n\nSelected members:\n${items.map((item) => item.name).join('\n')}`,
+    confirmLabel: `Remove ${items.length} member${items.length === 1 ? '' : 's'}`,
+    danger: true,
+  }),
+  mutate: (context, item) => tenant.removeWorkspaceMember(context.target.org, context.target.ws, item.user),
+  clearError: () => tenant.clearError(),
+  readError: () => tenant.error,
+  onSuccess: (_context, item) => {
+    wsMembers.value = wsMembers.value.filter((row) => row.user !== item.user)
+    const next = { ...wsMemberBusy.value }
+    delete next[item.user]
+    wsMemberBusy.value = next
+  },
+  refresh: async () => { await reloadWsMembers() },
+  fallbackError: 'The member could not be removed. Retry after checking the current list.',
+})
+
+const orgMemberBulk = useSettingsBulkAction<OrgMemberBulkItem, OrgMemberBulkContext>({
+  captureContext: captureOrgMemberBulkContext,
+  isContextCurrent: isCurrentOrgMemberBulkContext,
+  resolveItems: (_context, keys) => keys.flatMap((key) => {
+    const row = orgMembers.value.find((candidate) => candidate.user === key)
+    return row ? [{
+      key: row.user,
+      name: memberBulkName(row),
+      user: row.user,
+      role: row.role,
+      email: row.email,
+      userDisplayName: row.userDisplayName,
+    }] : []
+  }),
+  snapshotItem: orgMemberBulkSnapshot,
+  ineligibleReason: (_context, item) => {
+    if (!orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value || orgMembersReadDenied.value) return 'Verify the current organization member list before removing members.'
+    if (!auth.self?.user) return 'Your identity is still loading. Wait before selecting organization members.'
+    if (item.user === auth.self.user) return 'You cannot remove yourself with a bulk action. Use the individual remove action.'
+    if (!canManageOrgMembers.value) return 'Organization admin access is required.'
+    if (orgBusy.value) return 'Wait for the current organization action to finish.'
+    if (orgMemberSingleMutationBusy.value) return 'Wait for the current organization member action to finish.'
+    return orgMembers.value.some((row) => row.user === item.user) ? null : 'This member is no longer in the current list.'
+  },
+  confirm: async (context, items) => confirmDialog({
+    title: `Remove ${items.length} selected member${items.length === 1 ? '' : 's'}?`,
+    message: `Remove these people from organization "${context.organizationName}" (UUID ${context.target})? They will lose organization-level access and membership in every child workspace in this organization.\n\nSelected members:\n${items.map((item) => item.name).join('\n')}`,
+    confirmLabel: `Remove ${items.length} member${items.length === 1 ? '' : 's'}`,
+    danger: true,
+  }),
+  mutate: (context, item) => tenant.removeOrgMember(context.target, item.user, true),
+  clearError: () => tenant.clearError(),
+  readError: () => tenant.error,
+  onSuccess: (_context, item) => {
+    orgMembers.value = orgMembers.value.filter((row) => row.user !== item.user)
+    clearFailedOrgMemberRemoval(_context.target, item.user)
+    const next = { ...orgMemberBusy.value }
+    delete next[item.user]
+    orgMemberBusy.value = next
+  },
+  onAttemptedFailure: (context, item) => rememberFailedOrgMemberRemoval(context, item),
+  refresh: async (context) => { await reloadOrgMembers(context.target) },
+  fallbackError: 'The member could not be removed. Retry after checking the current organization member list.',
+})
+
+function orgMemberRetryIneligibleReason(context: OrgMemberBulkContext, item: OrgMemberBulkItem): string | null {
+  if (!orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value || orgMembersReadDenied.value) {
+    return 'Verify the current organization member list before retrying cleanup.'
+  }
+  if (!auth.self?.user) return 'Your identity is still loading. Wait before retrying organization member cleanup.'
+  if (item.user === auth.self.user) return 'You cannot remove yourself with a bulk action. Use the individual remove action.'
+  if (!canManageOrgMembers.value) return 'Organization admin access is required.'
+  if (orgBusy.value) return 'Wait for the current organization action to finish.'
+  if (orgMemberSingleMutationBusy.value) return 'Wait for the current organization member action to finish.'
+  const current = orgMembers.value.find((row) => row.user === item.user)
+  if (current) {
+    const currentItem: OrgMemberBulkItem = {
+      key: current.user,
+      name: memberBulkName(current),
+      user: current.user,
+      role: current.role,
+      email: current.email,
+      userDisplayName: current.userDisplayName,
+    }
+    if (orgMemberBulkSnapshot(currentItem) !== orgMemberBulkSnapshot(item)) {
+      return 'This member changed after the failed removal. Review the current member before removing them.'
+    }
+  }
+  return context.target === organizationTargetUUID.value ? null : 'The organization scope changed. Review the current organization.'
+}
+
+const orgMemberRetryActionDisabled = computed(() => {
+  const context = captureOrgMemberBulkContext()
+  const targets = failedOrgMemberRemovals.value.filter((item) => item.organizationUUID === context?.target)
+  return orgMemberBulkBusy.value || orgMemberSingleMutationBusy.value || orgBusy.value || !context ||
+    !orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value ||
+    orgMembersReadDenied.value || !auth.self?.user ||
+    !targets.some((item) => !orgMemberRetryIneligibleReason(context, item))
+})
+
+const changedOrgMemberRetryTargets = computed(() => {
+  const context = captureOrgMemberBulkContext()
+  if (!context) return []
+  return failedOrgMemberRemovals.value.filter((item) =>
+    item.organizationUUID === context.target &&
+    orgMemberRetryIneligibleReason(context, item) === 'This member changed after the failed removal. Review the current member before removing them.'
+  )
+})
+
+async function onRetryFailedOrgMemberRemovals(): Promise<void> {
+  if (orgMemberBulkLocked.value || orgMemberSingleMutationBusy.value || orgBusy.value || !auth.self?.user) return
+  const context = captureOrgMemberBulkContext()
+  if (!context) return
+  const targets = failedOrgMemberRemovals.value
+    .filter((item) => item.organizationUUID === context.target && !orgMemberRetryIneligibleReason(context, item))
+    .map(({ organizationUUID: _organizationUUID, ...item }) => item)
+  if (!targets.length) return
+
+  const retainedResolver = (currentContext: OrgMemberBulkContext, keys: string[]): OrgMemberBulkItem[] => {
+    if (currentContext.target !== context.target) return []
+    const byUser = new Map(failedOrgMemberRemovals.value
+      .filter((item) => item.organizationUUID === context.target)
+      .map((item) => [item.user, item]))
+    return keys.flatMap((key) => {
+      const item = byUser.get(key)
+      if (!item) return []
+      const { organizationUUID: _organizationUUID, ...retained } = item
+      return [retained]
+    })
+  }
+  await orgMemberBulk.runItems(targets, {
+    resolveItems: retainedResolver,
+    ineligibleReason: orgMemberRetryIneligibleReason,
+    confirm: async (retryContext, items) => confirmDialog({
+      title: `Retry cleanup for ${items.length} failed member removal${items.length === 1 ? '' : 's'}?`,
+      message: `Retry organization membership and child-workspace access cleanup in organization "${retryContext.organizationName}" (UUID ${retryContext.target}) for these original removal targets?\n\n${items.map((item) => item.name).join('\n')}`,
+      confirmLabel: `Retry ${items.length} cleanup${items.length === 1 ? '' : 's'}`,
+      danger: true,
+    }),
+  })
+}
+
+const appAccessBulk = useSettingsBulkAction<AppAccessBulkItem, SettingsBulkContext>({
+  captureContext: captureSettingsBulkContext,
+  isContextCurrent: isCurrentSettingsBulkContext,
+  resolveItems: (_context, keys) => keys.flatMap((key) => {
+    const row = appAccessGrants.value.find((candidate) => candidate.binding === key)
+    return row ? [{ key: row.binding, name: `${row.app} — ${row.user}`, binding: row.binding, app: row.app, user: row.user }] : []
+  }),
+  snapshotItem: (item) => serializeBulkItem({ key: item.key, name: item.name, binding: item.binding, app: item.app, user: item.user }),
+  ineligibleReason: (_context, item) => {
+    if (!appAccessHasSnapshot.value || appAccessLoading.value || !!appAccessError.value) return 'Verify the current app access list before revoking grants.'
+    if (anySettingsSingleMutationBusy.value) return 'Wait for the current access action to finish.'
+    return appAccessGrants.value.some((grant) => grant.binding === item.binding) ? null : 'This app access grant is no longer in the current list.'
+  },
+  confirm: async (context, items) => confirmDialog({
+    title: `Revoke ${items.length} selected app access grant${items.length === 1 ? '' : 's'}?`,
+    message: `Remove these invitations from ${workspaceScopeDescription(context)}? The listed people will lose access to these private apps and can be invited again from each app's Share dialog.\n\nSelected grants:\n${items.map((item) => `${item.app} — ${item.user} (binding ${item.binding})`).join('\n')}`,
+    confirmLabel: `Revoke ${items.length} grant${items.length === 1 ? '' : 's'}`,
+    danger: true,
+  }),
+  mutate: (context, item) => tenant.revokeAppAccessGrant(context.target.org, context.target.ws, item.binding),
+  clearError: () => tenant.clearError(),
+  readError: () => tenant.error,
+  onSuccess: (_context, item) => {
+    appAccessGrants.value = appAccessGrants.value.filter((grant) => grant.binding !== item.binding)
+    const next = { ...appAccessBusy.value }
+    delete next[item.binding]
+    appAccessBusy.value = next
+  },
+  refresh: async () => { await reloadAppAccessGrants() },
+  fallbackError: 'The app access grant could not be revoked. Retry after checking the current list.',
+})
+
+const selectedSAKeys = saBulk.selectedKeys
+const saBulkBusy = saBulk.busy
+const saBulkOutcomes = saBulk.outcomes
+const selectedWsMemberKeys = wsMemberBulk.selectedKeys
+const wsMemberBulkBusy = wsMemberBulk.busy
+const wsMemberBulkOutcomes = wsMemberBulk.outcomes
+const selectedOrgMemberKeys = orgMemberBulk.selectedKeys
+const orgMemberBulkBusy = orgMemberBulk.busy
+const orgMemberBulkLocked = orgMemberBulk.locked
+const orgMemberBulkOutcomes = orgMemberBulk.outcomes
+const selectedAppAccessKeys = appAccessBulk.selectedKeys
+const appAccessBulkBusy = appAccessBulk.busy
+const appAccessBulkOutcomes = appAccessBulk.outcomes
+const anySettingsBulkBusy = computed(() => saBulkBusy.value || wsMemberBulkBusy.value || appAccessBulkBusy.value)
+const anySettingsAccessMutationBusy = computed(() => anySettingsBulkBusy.value || anySettingsSingleMutationBusy.value)
+
+function memberBulkName(member: MemberRow): string {
+  const profile = member.email && member.userDisplayName
+    ? `${member.userDisplayName} (${member.email})`
+    : member.email || member.userDisplayName
+  return profile ? `${profile} · ${member.user}` : member.user
+}
+
+const saBulkActionDisabled = computed(() => {
+  const context = captureSettingsBulkContext()
+  const keys = normalizedSettingsSelection(selectedSAKeys.value)
+  return anySettingsAccessMutationBusy.value || !context || !sasHasSnapshot.value || sasLoading.value || !!sasError.value ||
+    !keys.length || saBulk.resolveItems(context, keys).length !== keys.length ||
+    saBulk.resolveItems(context, keys).some((item) => saBulk.ineligibleReason(context, item))
+})
+
+const wsMemberBulkActionDisabled = computed(() => {
+  const context = captureSettingsBulkContext()
+  const keys = normalizedSettingsSelection(selectedWsMemberKeys.value)
+  return anySettingsAccessMutationBusy.value || !context || !wsMembersHasSnapshot.value || wsMembersLoading.value || !!wsMembersError.value ||
+    !auth.self?.user || !keys.length || wsMemberBulk.resolveItems(context, keys).length !== keys.length ||
+    wsMemberBulk.resolveItems(context, keys).some((item) => wsMemberBulk.ineligibleReason(context, item))
+})
+
+const orgMemberBulkActionDisabled = computed(() => {
+  const context = captureOrgMemberBulkContext()
+  const keys = normalizedSettingsSelection(selectedOrgMemberKeys.value)
+  return orgMemberBulkBusy.value || orgMemberSingleMutationBusy.value || !context ||
+    !orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value ||
+    orgMembersReadDenied.value || !auth.self?.user || !keys.length ||
+    orgMemberBulk.resolveItems(context, keys).length !== keys.length ||
+    orgMemberBulk.resolveItems(context, keys).some((item) => orgMemberBulk.ineligibleReason(context, item))
+})
+
+const appAccessBulkActionDisabled = computed(() => {
+  const context = captureSettingsBulkContext()
+  const keys = normalizedSettingsSelection(selectedAppAccessKeys.value)
+  return anySettingsAccessMutationBusy.value || !context || !appAccessHasSnapshot.value || appAccessLoading.value || !!appAccessError.value ||
+    !keys.length || appAccessBulk.resolveItems(context, keys).length !== keys.length ||
+    appAccessBulk.resolveItems(context, keys).some((item) => appAccessBulk.ineligibleReason(context, item))
+})
+
+function normalizedSettingsSelection(keys: readonly (string | number)[]): string[] {
+  return [...new Set(keys.map(String).filter(Boolean))]
+}
+
+function wsMemberRowSelectable(row: Record<string, unknown>): boolean {
+  const context = captureSettingsBulkContext()
+  if (!context) return false
+  const item = wsMemberBulk.resolveItems(context, [String(row.user ?? '')])[0]
+  return !!item && !wsMemberBulk.ineligibleReason(context, item)
+}
+
+function orgMemberRowSelectable(row: Record<string, unknown>): boolean {
+  const context = captureOrgMemberBulkContext()
+  if (!context) return false
+  const item = orgMemberBulk.resolveItems(context, [String(row.user ?? '')])[0]
+  return !!item && !orgMemberBulk.ineligibleReason(context, item)
+}
+
+function orgMemberRowSelectionDisabledReason(row: Record<string, unknown>): string {
+  const user = String(row.user ?? '')
+  const member = orgMembers.value.find((candidate) => candidate.user === user)
+  if (!member) return 'Member details are not available in the current list.'
+  if (!auth.self?.user) return 'Your identity is still loading.'
+  if (member.user === auth.self.user) return 'Use the individual remove action to remove yourself.'
+  if (!orgMembersHasSnapshot.value || orgMembersLoading.value || !!orgMembersError.value || orgMembersReadDenied.value) return 'Verify the current organization member list before selecting members.'
+  if (!canManageOrgMembers.value) return 'Organization admin access is required.'
+  if (orgBusy.value) return 'Wait for the current organization action to finish.'
+  if (orgMemberSingleMutationBusy.value) return 'Wait for the current organization member action to finish.'
+  return ''
+}
+
+function orgMemberSelectionLabel(row: Record<string, unknown>): string {
+  const user = String(row.user ?? 'Member')
+  const member = orgMembers.value.find((candidate) => candidate.user === user)
+  return member ? `Select ${memberBulkName(member)} in ${organizationSettingsOrg.value?.displayName || 'this organization'}` : `Select ${user} in this organization`
+}
+
+function wsMemberRowSelectionDisabledReason(row: Record<string, unknown>): string {
+  const user = String(row.user ?? '')
+  const member = wsMembers.value.find((candidate) => candidate.user === user)
+  if (!member) return 'Member details are not available in the current list.'
+  if (!auth.self?.user) return 'Your identity is still loading.'
+  if (member.user === auth.self?.user) return 'Use the individual remove action to remove yourself.'
+  if (!wsMembersHasSnapshot.value || wsMembersLoading.value || !!wsMembersError.value) return 'Verify the current workspace member list before selecting members.'
+  if (Object.keys(wsMemberBusy.value).length > 0) return 'Wait for the current member action to finish.'
+  return ''
+}
+
+function memberSelectionLabel(row: Record<string, unknown>): string {
+  const user = String(row.user ?? 'Member')
+  const member = wsMembers.value.find((candidate) => candidate.user === user)
+  return member ? `Select ${memberBulkName(member)} in ${selWs.value?.displayName || 'this workspace'}` : `Select ${user} in this workspace`
+}
+
+async function onDeleteSelectedSAs(keys: Array<string | number>): Promise<void> {
+  if (anySettingsAccessMutationBusy.value) return
+  await saBulk.run(keys)
+}
+
+async function onRemoveSelectedWsMembers(keys: Array<string | number>): Promise<void> {
+  if (anySettingsAccessMutationBusy.value || !auth.self?.user) return
+  await wsMemberBulk.run(keys)
+}
+
+async function onRemoveSelectedOrgMembers(keys: Array<string | number>): Promise<void> {
+  if (orgMemberSingleMutationBusy.value || orgBusy.value || !auth.self?.user || !canManageOrgMembers.value) return
+  await orgMemberBulk.run(keys)
+}
+
+async function onRevokeSelectedAppAccess(keys: Array<string | number>): Promise<void> {
+  if (anySettingsAccessMutationBusy.value) return
+  await appAccessBulk.run(keys)
+}
+
+watch(
+  [() => route.fullPath, () => tenant.orgUUID, () => activeOrg.value?.uuid, selectedWorkspaceUUID,
+    () => tenant.workspaceMode, () => tenant.workspaceUUID, activeSection, canEditWs,
+    wsMembersReadDenied, sasReadDenied,
+    () => tenant.listReadDenied('app-access', activeOrg.value?.uuid ?? '', selectedWorkspaceUUID.value ?? ''),
+    () => auth.token, () => auth.self?.user],
+  () => {
+    settingsBulkScopeGeneration.value++
+    saBulk.resetSelection()
+    wsMemberBulk.resetSelection()
+    appAccessBulk.resetSelection()
+  },
+  { flush: 'sync' },
+)
+
+watch(
+  [() => route.fullPath, () => tenant.orgUUID, () => tenant.workspaceMode, organizationTargetUUID, activeSection,
+    canManageOrgMembers, orgMembersReadDenied, () => auth.token, () => auth.self?.user, orgBusy],
+  () => {
+    orgMemberBulkScopeGeneration.value++
+    orgMemberBulk.resetSelection()
+  },
+  { flush: 'sync' },
+)
+
+watch(
+  [() => route.fullPath, () => tenant.orgUUID, () => tenant.workspaceMode, organizationTargetUUID, activeSection,
+    canManageOrgMembers, orgMembersReadDenied, () => auth.token, () => auth.self?.user],
+  () => { failedOrgMemberRemovals.value = [] },
+  { flush: 'sync' },
+)
 
 const copiedToken = ref(false)
 const tokenCopyError = ref<string | null>(null)
@@ -1451,11 +2243,14 @@ function dismissCreationDialogs() {
 }
 
 function openMemberDialog(scope: 'workspace' | 'organization') {
+  if (scope === 'workspace' && anySettingsAccessMutationBusy.value) return
+  if (scope === 'organization' && (orgMemberBulkLocked.value || orgBusy.value)) return
   tenant.clearError()
   memberDialog.value = scope
 }
 
 function openServiceAccountDialog() {
+  if (anySettingsAccessMutationBusy.value) return
   tenant.clearError()
   createSADialogOpen.value = true
 }
@@ -1696,7 +2491,7 @@ function fmtDate(s?: string | null): string {
                         Only workspace admins can add, remove, or change members.
                       </p>
                     </div>
-                    <button v-if="canAddWsMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" @click="openMemberDialog('workspace')">
+                    <button v-if="canAddWsMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" :disabled="anySettingsAccessMutationBusy" @click="openMemberDialog('workspace')">
                       <Plus class="h-4 w-4" aria-hidden="true" /> Add member
                     </button>
                   </div>
@@ -1718,9 +2513,50 @@ function fmtDate(s?: string | null): string {
                       table-label="Workspace members"
                       ref="wsMemberList"
                       :readonly="!canEditWs"
+                      :selectable="canEditWs"
+                      v-model:selected-keys="selectedWsMemberKeys"
+                      :selection-disabled="!auth.self?.user || anySettingsAccessMutationBusy || !wsMembersHasSnapshot || wsMembersLoading || !!wsMembersError"
+                      :row-selectable="wsMemberRowSelectable"
+                      :row-selection-disabled-reason="wsMemberRowSelectionDisabledReason"
+                      :selection-label="memberSelectionLabel"
+                      :bulk-busy="anySettingsAccessMutationBusy"
                       @change-role="onChangeWsMemberRole"
                       @remove="onRemoveWsMember"
-                    />
+                    >
+                      <template #selection-actions="{ keys, count }">
+                        <button
+                          type="button"
+                          class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                          :disabled="anySettingsAccessMutationBusy || wsMemberBulkActionDisabled"
+                          :aria-busy="wsMemberBulkBusy || undefined"
+                          :aria-label="`Remove ${count} selected workspace member${count === 1 ? '' : 's'}`"
+                          @click="onRemoveSelectedWsMembers(keys)"
+                        >
+                          <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                          {{ wsMemberBulkBusy ? 'Removing…' : 'Remove selected' }}
+                        </button>
+                      </template>
+                    </MemberList>
+                    <div v-if="wsMemberBulkOutcomes.length" class="mt-3 space-y-2">
+                      <InlineNotification
+                        :tone="wsMemberBulkOutcomes.some((item) => !item.succeeded) ? 'warning' : 'success'"
+                        title="Workspace member removal results"
+                        :message="`${wsMemberBulkOutcomes.filter((item) => item.succeeded).length} removed, ${wsMemberBulkOutcomes.filter((item) => !item.succeeded).length} failed.`"
+                        announce="polite"
+                        dismissible
+                        dismiss-label="Dismiss workspace member removal results"
+                        @dismiss="wsMemberBulkOutcomes.splice(0)"
+                      />
+                      <ul class="max-h-36 space-y-1 overflow-y-auto text-[11px]" aria-label="Workspace member removal result details">
+                        <li v-for="item in wsMemberBulkOutcomes" :key="item.key" class="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
+                          <span class="min-w-0 break-words text-text-primary">{{ item.name }}</span>
+                          <span :class="item.succeeded ? 'shrink-0 text-success' : 'min-w-0 break-words text-danger'">{{ item.succeeded ? 'Removed' : item.error || 'Could not remove' }}</span>
+                        </li>
+                      </ul>
+                      <p v-if="wsMemberBulkOutcomes.some((item) => !item.succeeded)" class="text-[11px] text-text-muted">
+                        Failed members remain selected so you can retry them.
+                      </p>
+                    </div>
                   </template>
             </section>
 
@@ -1738,6 +2574,10 @@ function fmtDate(s?: string | null): string {
                     aria-label="Published app access grants"
                     row-key="binding"
                     :interactive="false"
+                    :selectable="canEditWs"
+                    v-model:selected-keys="selectedAppAccessKeys"
+                    :selection-disabled="!canEditWs || anySettingsAccessMutationBusy || !appAccessHasSnapshot || appAccessLoading || !!appAccessError"
+                    :selection-label="(row) => `Select app access for ${String(row.user)} to ${String(row.app)}`"
                     :loaded="appAccessHasSnapshot"
                     :loading="appAccessLoading"
                     :error="appAccessError"
@@ -1750,6 +2590,19 @@ function fmtDate(s?: string | null): string {
                     @retry="reloadAppAccessGrants"
                     empty-text="No app access grants. Public apps need none; private apps grant access per person."
                   >
+                    <template #selection-actions="{ keys, count }">
+                      <button
+                        type="button"
+                        class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                        :disabled="anySettingsAccessMutationBusy || appAccessBulkActionDisabled"
+                        :aria-busy="appAccessBulkBusy || undefined"
+                        :aria-label="`Revoke ${count} selected app access grant${count === 1 ? '' : 's'}`"
+                        @click="onRevokeSelectedAppAccess(keys)"
+                      >
+                        <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                        {{ appAccessBulkBusy ? 'Revoking…' : 'Revoke selected' }}
+                      </button>
+                    </template>
                     <template #app="{ row }">
                       <span class="k-cell-mono">{{ row.app }}</span>
                     </template>
@@ -1762,11 +2615,32 @@ function fmtDate(s?: string | null): string {
                           :label="`Revoke ${String(row.user)}'s access to ${String(row.app)}`"
                           :busy-label="`Revoking ${String(row.user)}'s access…`"
                           :busy="!!appAccessBusy[String(row.binding)]"
+                          :disabled="anySettingsAccessMutationBusy"
                           @click="onRevokeAppAccess(row as unknown as AppAccessGrantRow)"
                         />
                       </div>
                     </template>
                   </ResourceTable>
+                  <div v-if="appAccessBulkOutcomes.length" class="mt-3 space-y-2">
+                    <InlineNotification
+                      :tone="appAccessBulkOutcomes.some((item) => !item.succeeded) ? 'warning' : 'success'"
+                      title="App access revocation results"
+                      :message="`${appAccessBulkOutcomes.filter((item) => item.succeeded).length} revoked, ${appAccessBulkOutcomes.filter((item) => !item.succeeded).length} failed.`"
+                      announce="polite"
+                      dismissible
+                      dismiss-label="Dismiss app access revocation results"
+                      @dismiss="appAccessBulkOutcomes.splice(0)"
+                    />
+                    <ul class="max-h-36 space-y-1 overflow-y-auto text-[11px]" aria-label="App access revocation result details">
+                      <li v-for="item in appAccessBulkOutcomes" :key="item.key" class="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
+                        <span class="min-w-0 break-words text-text-primary">{{ item.name }}</span>
+                        <span :class="item.succeeded ? 'shrink-0 text-success' : 'min-w-0 break-words text-danger'">{{ item.succeeded ? 'Revoked' : item.error || 'Could not revoke' }}</span>
+                      </li>
+                    </ul>
+                    <p v-if="appAccessBulkOutcomes.some((item) => !item.succeeded)" class="text-[11px] text-text-muted">
+                      Failed grants remain selected so you can retry them.
+                    </p>
+                  </div>
             </section>
 
             <!-- Service accounts -->
@@ -1779,7 +2653,7 @@ function fmtDate(s?: string | null): string {
                       Issued bearer tokens are short-lived and shown only once.
                     </p>
                   </div>
-                  <button v-if="canCreateSA" type="button" class="k-btn k-btn--primary self-start shrink-0" @click="openServiceAccountDialog">
+                  <button v-if="canCreateSA" type="button" class="k-btn k-btn--primary self-start shrink-0" :disabled="anySettingsAccessMutationBusy" @click="openServiceAccountDialog">
                     <Plus class="h-4 w-4" aria-hidden="true" /> Create service account
                   </button>
                 </div>
@@ -1798,6 +2672,10 @@ function fmtDate(s?: string | null): string {
                   v-model:query="saTableQuery"
                   row-key="uuid"
                   :interactive="false"
+                  selectable
+                  v-model:selected-keys="selectedSAKeys"
+                  :selection-disabled="anySettingsAccessMutationBusy || !!selWs.deletionRequestedAt || !sasHasSnapshot || sasLoading || !!sasError"
+                  :selection-label="(row) => `Select service account ${String(row.displayName)} for deletion`"
                   :loaded="sasHasSnapshot"
                   :loading="sasLoading"
                   :error="sasError"
@@ -1811,6 +2689,19 @@ function fmtDate(s?: string | null): string {
                   @retry="reloadSAs"
                   empty-text="No service accounts in this workspace."
                 >
+                  <template #selection-actions="{ keys, count }">
+                    <button
+                      type="button"
+                      class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                      :disabled="anySettingsAccessMutationBusy || saBulkActionDisabled"
+                      :aria-busy="saBulkBusy || undefined"
+                      :aria-label="`Delete ${count} selected service account${count === 1 ? '' : 's'}`"
+                      @click="onDeleteSelectedSAs(keys)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                      {{ saBulkBusy ? 'Deleting…' : 'Delete selected' }}
+                    </button>
+                  </template>
                   <template #uuid="{ row }">
                     <span class="k-cell-mono">{{ row.uuid }}</span>
                   </template>
@@ -1829,11 +2720,31 @@ function fmtDate(s?: string | null): string {
                       :items="serviceAccountActions(String(row.uuid))"
                       :busy="isSABusy(String(row.uuid))"
                       :busy-label="serviceAccountProgress(row)"
-                      :disabled="isSABusy(String(row.uuid))"
+                      :disabled="isSABusy(String(row.uuid)) || anySettingsAccessMutationBusy"
                       @select="onServiceAccountAction($event, row)"
                     />
                   </template>
                 </ResourceTable>
+                <div v-if="saBulkOutcomes.length" class="mt-3 space-y-2">
+                  <InlineNotification
+                    :tone="saBulkOutcomes.some((item) => !item.succeeded) ? 'warning' : 'success'"
+                    title="Service account deletion results"
+                    :message="`${saBulkOutcomes.filter((item) => item.succeeded).length} deleted, ${saBulkOutcomes.filter((item) => !item.succeeded).length} failed.`"
+                    announce="polite"
+                    dismissible
+                    dismiss-label="Dismiss service account deletion results"
+                    @dismiss="saBulkOutcomes.splice(0)"
+                  />
+                  <ul class="max-h-36 space-y-1 overflow-y-auto text-[11px]" aria-label="Service account deletion result details">
+                    <li v-for="item in saBulkOutcomes" :key="item.key" class="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
+                      <span class="min-w-0 break-words text-text-primary">{{ item.name }}</span>
+                      <span :class="item.succeeded ? 'shrink-0 text-success' : 'min-w-0 break-words text-danger'">{{ item.succeeded ? 'Deleted' : item.error || 'Could not delete' }}</span>
+                    </li>
+                  </ul>
+                  <p v-if="saBulkOutcomes.some((item) => !item.succeeded)" class="text-[11px] text-text-muted">
+                    Failed accounts remain selected so you can retry them.
+                  </p>
+                </div>
             </section>
 
           </template>
@@ -1908,7 +2819,7 @@ function fmtDate(s?: string | null): string {
                   v-if="canEditOrg"
                   type="button"
                   class="k-btn k-btn--ghost px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-50"
-                  :disabled="!!organizationSettingsOrg.deletionRequestedAt"
+                  :disabled="!!organizationSettingsOrg.deletionRequestedAt || orgMemberBulkBusy"
                   @click="startEditOrgName"
                 >
                   <Pencil class="inline h-3 w-3" :stroke-width="2" /> Rename
@@ -1925,7 +2836,7 @@ function fmtDate(s?: string | null): string {
                 <button
                   type="button"
                   class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-success transition-colors hover:border-success/40 hover:bg-success-subtle disabled:opacity-60"
-                  :disabled="orgBusy || !orgNameDraft.trim()"
+                  :disabled="orgBusy || orgMemberBulkBusy || !orgNameDraft.trim()"
                   @click="saveOrgName"
                 >
                   <Loader2 v-if="orgBusy" class="inline h-3 w-3 animate-spin" :stroke-width="2" />
@@ -1959,7 +2870,7 @@ function fmtDate(s?: string | null): string {
                     v-if="!organizationSettingsOrg.deletionRequestedAt && canDeleteOrg"
                     type="button"
                     class="k-btn k-btn--danger inline-flex items-center gap-1 px-2.5 py-1 text-[11px] disabled:opacity-50"
-                    :disabled="orgBusy"
+                    :disabled="orgBusy || orgMemberBulkBusy"
                     title="Soft-delete with a recoverable 30-day grace window"
                     @click="onDeleteOrg"
                   >
@@ -1975,7 +2886,7 @@ function fmtDate(s?: string | null): string {
                     v-else-if="organizationSettingsOrg.deletionRequestedAt"
                     type="button"
                     class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] text-accent transition-colors hover:bg-accent-subtle disabled:opacity-50"
-                    :disabled="orgBusy"
+                    :disabled="orgBusy || orgMemberBulkBusy"
                     @click="onUndeleteOrg"
                   >
                     <RotateCcw class="h-3 w-3" :stroke-width="2" /> Restore organization
@@ -1990,12 +2901,84 @@ function fmtDate(s?: string | null): string {
               <h2 id="organization-workspaces-title" class="text-lg font-semibold text-text-primary">Workspaces</h2>
               <p class="mt-1 text-[12px] text-text-muted">All workspaces you can access in this organization, including those pending deletion.</p>
             </div>
+            <div
+              v-if="workspaceDeleteBatchBusy && workspaceDeleteProgress?.orgUUID === organizationTargetUUID"
+              class="space-y-2 rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2.5"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-2 text-[12px]">
+                <span class="font-medium text-text-primary">Deleting selected workspaces</span>
+                <span class="text-text-secondary">{{ workspaceDeleteProgress.completed }} of {{ workspaceDeleteProgress.total }} requests finished</span>
+              </div>
+              <progress
+                class="h-2 w-full accent-accent"
+                :value="workspaceDeleteProgress.completed"
+                :max="workspaceDeleteProgress.total"
+                aria-label="Workspace deletion requests completed"
+              />
+              <p class="text-[11px] text-text-muted">
+                {{ workspaceDeleteProgress.succeeded }} requested<span v-if="workspaceDeleteProgress.failed"> · {{ workspaceDeleteProgress.failed }} failed</span>.
+              </p>
+            </div>
+            <section
+              v-if="workspaceDeleteSummary?.orgUUID === organizationTargetUUID"
+              class="space-y-2 border-t border-border-default/30 pt-3"
+              aria-labelledby="workspace-delete-results-title"
+              aria-live="polite"
+            >
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div class="min-w-0">
+                  <h3 id="workspace-delete-results-title" class="text-[13px] font-semibold text-text-primary">Workspace deletion results</h3>
+                  <p class="mt-1 text-[11px] text-text-secondary">
+                    {{ workspaceDeleteRequestedCount }} deletion request{{ workspaceDeleteRequestedCount === 1 ? '' : 's' }} accepted
+                    <span v-if="workspaceDeleteFailedCount"> · {{ workspaceDeleteFailedCount }} failed</span>.
+                  </p>
+                </div>
+                <div class="flex shrink-0 flex-wrap items-center gap-2">
+                  <button
+                    v-if="workspaceDeleteFailedCount"
+                    type="button"
+                    class="k-btn k-btn--danger min-h-10 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                    :disabled="workspaceDeleteSelectionDisabled || retryableWorkspaceDeleteIDs.length === 0"
+                    :aria-label="`Retry failed workspace deletions for ${retryableWorkspaceDeleteIDs.length} selected workspaces`"
+                    @click="onRetryFailedWorkspaceDeletions"
+                  >
+                    Retry failed
+                  </button>
+                  <button
+                    type="button"
+                    class="k-btn k-btn--ghost min-h-10 px-3 text-[12px] text-text-secondary sm:min-h-0 sm:py-1.5"
+                    @click="workspaceDeleteSummary = null"
+                  >
+                    Dismiss results
+                  </button>
+                </div>
+              </div>
+              <ul class="max-h-52 space-y-2 overflow-y-auto pr-2" aria-label="Workspace deletion result details">
+                <li v-for="item in workspaceDeleteSummary.items" :key="item.uuid" class="flex flex-col gap-0.5 text-[11px] sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                  <span class="min-w-0 break-words text-text-primary">
+                    {{ item.name }} <span class="font-mono text-text-muted">(UUID {{ item.uuid }})</span>
+                  </span>
+                  <span v-if="item.status === 'requested'" class="shrink-0 text-success">Deletion requested</span>
+                  <span v-else class="min-w-0 break-words text-danger">{{ item.error }}</span>
+                </li>
+              </ul>
+            </section>
             <ResourceTable
               :key="organizationSettingsOrg.uuid"
               :columns="workspaceColumns"
               :rows="workspaceRows"
               aria-label="Organization workspaces"
               row-key="uuid"
+              selectable
+              v-model:selected-keys="selectedWorkspaceKeys"
+              :row-selectable="workspaceRowSelectable"
+              :row-selection-disabled-reason="workspaceRowSelectionDisabledReason"
+              :selection-label="workspaceSelectionLabel"
+              :selection-disabled="workspaceDeleteSelectionDisabled"
+              :selection-clear-disabled="workspaceDeleteBatchBusy || !!restoringWorkspaceUUID"
               :interactive="false"
               :loaded="workspaceListLoaded"
               :loading="workspaceListLoading"
@@ -2013,9 +2996,21 @@ function fmtDate(s?: string | null): string {
               combined-filter-empty-text="No workspaces match your search and selected filters."
               @retry="reloadScopedWorkspaces(tenant.orgUUID)"
             >
+              <template #selection-actions="{ keys, count }">
+                <button
+                  type="button"
+                  class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                  :disabled="workspaceDeleteActionDisabled"
+                  :aria-label="`Delete ${count} selected workspaces`"
+                  @click="onDeleteSelectedWorkspaces(keys)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                  Delete selected
+                </button>
+              </template>
               <template #name="{ row }">
                 <span>{{ row.name }}</span>
-                <span v-if="tenant.workspaceUUID === row.uuid" class="k-badge ml-2">Current workspace</span>
+                <span v-if="tenant.workspaceMode === 'workspace' && tenant.workspaceUUID === row.uuid" class="k-badge ml-2">Current workspace</span>
               </template>
               <template #uuid="{ row }">
                 <span class="k-cell-mono">{{ row.uuid }}</span>
@@ -2034,7 +3029,7 @@ function fmtDate(s?: string | null): string {
                   :label="`Restore workspace ${String(row.name)}`"
                   :busy-label="`Restoring workspace ${String(row.name)}…`"
                   :busy="restoringWorkspaceUUID === row.uuid"
-                  :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID"
+                  :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID || workspaceDeleteBatchBusy"
                   @click="restoreWorkspace(row as unknown as WorkspaceRow)"
                 />
               </template>
@@ -2049,7 +3044,7 @@ function fmtDate(s?: string | null): string {
                   Members can use this organization and its workspaces. Only organization admins can add, remove, or change roles.
                 </p>
               </div>
-              <button v-if="canAddOrgMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" @click="openMemberDialog('organization')">
+              <button v-if="canAddOrgMembers" type="button" class="k-btn k-btn--primary self-start shrink-0" :disabled="orgMemberBulkBusy || orgBusy" @click="openMemberDialog('organization')">
                 <Plus class="h-4 w-4" aria-hidden="true" /> Add member
               </button>
             </div>
@@ -2071,9 +3066,77 @@ function fmtDate(s?: string | null): string {
                 table-label="Organization members"
                 ref="orgMemberList"
                 :readonly="!canManageOrgMembers"
+                :selectable="canManageOrgMembers"
+                v-model:selected-keys="selectedOrgMemberKeys"
+                :selection-disabled="orgMemberBulkBusy || orgMemberSingleMutationBusy || orgBusy || !auth.self?.user || !orgMembersHasSnapshot || orgMembersLoading || !!orgMembersError || orgMembersReadDenied"
+                :selection-clear-disabled="orgMemberBulkBusy || orgMemberSingleMutationBusy || orgBusy"
+                :row-selectable="orgMemberRowSelectable"
+                :row-selection-disabled-reason="orgMemberRowSelectionDisabledReason"
+                :selection-label="orgMemberSelectionLabel"
+                :bulk-busy="orgMemberBulkBusy"
                 @change-role="onChangeOrgMemberRole"
                 @remove="onRemoveOrgMember"
+              >
+                <template #selection-actions="{ keys, count }">
+                  <button
+                    type="button"
+                    class="k-btn k-btn--danger inline-flex min-h-10 items-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                    :disabled="orgMemberBulkActionDisabled"
+                    :aria-busy="orgMemberBulkBusy || undefined"
+                    :aria-label="`Remove ${count} selected organization member${count === 1 ? '' : 's'}`"
+                    @click="onRemoveSelectedOrgMembers(keys)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                    {{ orgMemberBulkBusy ? 'Removing…' : 'Remove selected' }}
+                  </button>
+                </template>
+              </MemberList>
+              <div v-if="failedOrgMemberRemovals.some((item) => item.organizationUUID === organizationTargetUUID)" class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start">
+                <InlineNotification
+                  class="min-w-0 flex-1"
+                  tone="warning"
+                  title="Organization access removal incomplete"
+                  message="Some removals are incomplete. Retry to finish removing organization and workspace access."
+                  announce="polite"
+                />
+                <button
+                  type="button"
+                  class="k-btn k-btn--danger inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 px-3 text-[12px] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                  :disabled="orgMemberRetryActionDisabled"
+                  :aria-busy="orgMemberBulkBusy || undefined"
+                  @click="onRetryFailedOrgMemberRemovals"
+                >
+                  <RotateCcw class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                  {{ orgMemberBulkBusy ? 'Retrying removals…' : 'Retry failed removals' }}
+                </button>
+              </div>
+              <InlineNotification
+                v-if="changedOrgMemberRetryTargets.length"
+                class="mt-2"
+                tone="warning"
+                :message="`${changedOrgMemberRetryTargets.length} member${changedOrgMemberRetryTargets.length === 1 ? '' : 's'} changed after the failed removal and will be skipped. Review ${changedOrgMemberRetryTargets.length === 1 ? 'that member' : 'those members'} in the list before trying again.`"
+                announce="polite"
               />
+              <div v-if="orgMemberBulkOutcomes.length" class="mt-3 space-y-2">
+                <InlineNotification
+                  :tone="orgMemberBulkOutcomes.some((item) => !item.succeeded) ? 'warning' : 'success'"
+                  title="Organization member removal results"
+                  :message="`${orgMemberBulkOutcomes.filter((item) => item.succeeded).length} removed, ${orgMemberBulkOutcomes.filter((item) => !item.succeeded).length} failed.`"
+                  announce="polite"
+                  dismissible
+                  dismiss-label="Dismiss organization member removal results"
+                  @dismiss="orgMemberBulkOutcomes.splice(0)"
+                />
+                <ul class="max-h-36 space-y-1 overflow-y-auto text-[11px]" aria-label="Organization member removal result details">
+                  <li v-for="item in orgMemberBulkOutcomes" :key="item.key" class="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
+                    <span class="min-w-0 break-words text-text-primary">{{ item.name }}</span>
+                    <span :class="item.succeeded ? 'shrink-0 text-success' : 'min-w-0 break-words text-danger'">{{ item.succeeded ? 'Removed' : item.error || 'Could not remove' }}</span>
+                  </li>
+                </ul>
+                <p v-if="orgMemberBulkOutcomes.some((item) => !item.succeeded)" class="text-[11px] text-text-muted">
+                  You can retry incomplete removals above.
+                </p>
+              </div>
             </template>
           </section>
         </div>
