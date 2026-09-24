@@ -73,7 +73,7 @@ The header uses a native mixed-state checkbox to select eligible rows on the
 currently rendered page: the locally filtered page in client mode or the
 supplied page in server mode. It never selects all search matches. Selection
 survives page and page-size changes, and a query or filter value change clears
-it. The bar below the filters shows the total controlled key count, including
+it. The selection toolbar replaces the filters and shows the total controlled key count, including
 keys preserved from other server pages; its `selection-actions` slot receives
 `selectedKeys`, `keys` (an alias), and `count`. The built-in Clear selection
 button clears the complete selection.
