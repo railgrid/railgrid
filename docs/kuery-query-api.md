@@ -10,8 +10,11 @@ There is one route, and it is a verb on a named resource you must be able to
 see and must be granted the verb on:
 
 ```
-POST {hub}/services/providers/kuery/dataplane/clusters/{clusterID}/savedviews/{name}/run
+POST {hub}/clusters/{clusterID}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run
 ```
+
+It is a kcp **custom subresource** on the kuery APIExport, so `kubectl get --raw`
+and API discovery show it like any other path.
 
 - `{clusterID}` is your workspace's kcp logical-cluster ID — the same value the
   portal and `kubectl` address it by. A workspace path
@@ -36,23 +39,25 @@ proxy stripped and re-injected that header. Nothing replaced them at `/api/`.
 
 ## Authorization
 
-Send `Authorization: Bearer <token>`. Before the query engine is touched, the
-provider runs two checks **as you**, with your own credential:
+Send `Authorization: Bearer <token>` to the hub's kcp front door. Before the
+query engine is touched, two checks run **about you**:
 
-1. a real `GET` of `savedviews/{name}` in `{clusterID}` — you must be able to
-   see the view; and
-2. a `SelfSubjectAccessReview` for `create` on `savedviews/run`, scoped to
-   `{name}` — you must be granted the verb on that view.
+1. kcp authorizes you for the `savedviews/run` subresource on `{name}` in
+   `{clusterID}` with ordinary RBAC — you must be granted the verb on that
+   view — and forwards the request to the provider with your identity stamped;
+2. the provider runs a `SubjectAccessReview` for `get` on `savedviews/{name}`
+   on your behalf — you must be able to see the view.
 
-So a bearer for workspace A cannot run a view in workspace B even by sending a
-forged `X-Railgrid-Cluster` straight to the provider pod: the cluster in the
-path is what is gated, and a request whose header disagrees with its path is
-refused outright. Every refusal — no such view, no visibility, no grant — comes
-back as the same `404`, so the status cannot be used to probe for what exists.
+Your token never reaches the provider. A bearer for workspace A cannot run a
+view in workspace B: the cluster in the path is what kcp authorizes, and a
+request sent straight at the provider pod carries no kcp-stamped identity and
+is refused. Every refusal — no such view, no visibility, no grant — comes back
+as the same `404`, so the status cannot be used to probe for what exists.
 
 - **OIDC user token** — the token your portal session uses.
 - **Service-account token** — non-interactive/bot access. Grant the SA `get` on
-  the view and `create` on `savedviews/run` for it.
+  the view and `*` on `savedviews/run` for it (kcp maps the HTTP method onto
+  the RBAC verb, so the grant on a custom subresource is spelled `*`).
 
 Results are additionally scoped to the edges kuery has actually engaged for
 your workspace. That set is the `Engagement` records in the provider's own
@@ -98,7 +103,7 @@ workspace with your own credential on first use. Revoking someone's access to
 that name stops their ad-hoc queries.
 
 ```bash
-curl -sS "$HUB/services/providers/kuery/dataplane/clusters/$CLUSTER/savedviews/fleet-deployments/run" \
+curl -sS "$HUB/clusters/$CLUSTER/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/fleet-deployments/run" \
   -H "Authorization: Bearer $RAILGRID_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"input":{}}' | jq .result
@@ -161,5 +166,5 @@ Per-cluster tree:
 
 For agent/LLM use, the `kuery_impact` MCP tool wraps the impact query and
 returns the upstream/downstream split directly. Both MCP tools run through the
-same two gates as the REST verb: pass `savedView` to run a specific view, or
+same gated executor as the verb: pass `savedView` to run a specific view, or
 omit it to use your own scratch view.

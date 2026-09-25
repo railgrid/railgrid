@@ -13,10 +13,14 @@
 //
 // It serves three groups of routes on the same port:
 //
-//   - /dataplane/clusters/{id}/savedviews/{name}/run — the ONE tenant route.
-//     A verb on a bound resource, addressed by the tenant's kcp
-//     logical-cluster ID and authorized as the caller through the shared
-//     provider-sdk/dataplane gates. There is no /api/ surface: the flat
+//   - /clusters/{id}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run
+//     — the ONE tenant route: the kcp custom subresource savedviews/run on
+//     kuery's APIExport, which a caller reaches on the hub's kcp front door
+//     like any other kube path and the serving shard forwards here with the
+//     caller's identity stamped. kcp authorizes the verb with RBAC; the
+//     shared provider-sdk/dataplane gate settles visibility of the SavedView
+//     on the caller's behalf and the handler acts as the provider. There is
+//     no hub-proxied /dataplane/ spelling and no /api/ surface: the flat
 //     /api/query, /api/edges and /api/status routes, and the header-derived
 //     tenant they trusted, were deleted outright rather than deprecated.
 //   - /mcp, /mcp/sse — the same executor for agents, through the same gates.
@@ -198,22 +202,33 @@ func runServe() {
 	ready := &vwhealth.Readiness{}
 	go vwhealth.Watch(ctx, providerCfg, apiExportName, ready, 0)
 
+	// Caller factory. On the verb route there is no caller bearer: the shard
+	// authenticates the caller and stamps an identity, visibility is decided
+	// by a SubjectAccessReview run on the caller's behalf, and the handler
+	// then acts as the provider through kuery's export virtual workspace —
+	// which is what WithProviderConfig hands the factory. Without it the verb
+	// fails closed. The base config's credential is dropped: a client the
+	// factory hands back for a bearer (For, the MCP class only) can act as
+	// nothing but that bearer.
+	callers, err := dataplane.NewCallerFactory(providerCfg, dataplane.WithProviderConfig(providerCfg, apiExportName))
+	if err != nil {
+		log.Fatalf("data-plane caller factory: %v", err)
+	}
+
 	// Engagement controller: watches KubernetesCluster edges across bound
-	// tenant workspaces and feeds connected edges into the sync controller via
-	// the hub's edges-proxy, recording each as an Engagement.
+	// tenant workspaces and feeds connected edges into the sync controller
+	// through kuery's own export virtual workspace, recording each as an
+	// Engagement.
 	engagementCtl, err := engagement.New(engagement.Config{
 		ProviderConfig: providerCfg,
-		HubBaseURL:     os.Getenv("RAILGRID_HUB_URL"),
-		APIExportName:  apiExportName,
-		// The name the hub knows this provider by. It is what authenticates
-		// every identity request (the hub TokenReviews the provider's own
-		// bearer in the provider workspace and refuses a request that names
-		// anyone else) and what its policy measures the requested rules
-		// against — so it is the same name the heartbeat registers under.
-		ProviderName: envOr("RAILGRID_PROVIDER_NAME", "kuery"),
-		Sync:         kc.Sync,
-		Store:        kc.Store,
-		Readiness:    ready,
+		// Edges are reached through kuery's own export virtual workspace, as
+		// the provider, under the claims the tenant accepted.
+		ExportEndpoint:     callers.ExportEndpoint,
+		ProviderRESTConfig: callers.ProviderRESTConfig,
+		APIExportName:      apiExportName,
+		Sync:               kc.Sync,
+		Store:              kc.Store,
+		Readiness:          ready,
 	})
 	if err != nil {
 		log.Fatalf("engagement controller: %v", err)
@@ -254,12 +269,13 @@ func runServe() {
 		}
 	}()
 
-	// Caller factory: the provider's own connection with every credential
-	// dropped, so a client it hands back can only ever act as the bearer on
-	// the request it was built for.
-	callers, err := dataplane.NewCallerFactory(providerCfg)
+	// Which "<resource>/<verb>" coordinates are answered on the path a kcp
+	// shard forwards, read from the CatalogEntry manifest this image ships so
+	// the routes cannot drift from the declaration. It is the only way a verb
+	// is reached, so no manifest is a startup failure, not a degraded mode.
+	subresources, err := subresourceRoutes()
 	if err != nil {
-		log.Fatalf("data-plane caller factory: %v", err)
+		log.Fatalf("custom subresource routes: %v", err)
 	}
 
 	runner := &queryapi.RunHandler{
@@ -283,16 +299,18 @@ func runServe() {
 	}
 
 	// The whole surface, one handler per route class. The query verb is
-	// mounted as the data plane and therefore dispatched off the raw request
-	// path — an http.ServeMux would have cleaned "//" and ".." out of it and
-	// answered with a redirect instead of the refusal the grammar owes the
-	// caller.
+	// mounted as the data plane behind serve's subresource adapter at
+	// /clusters/ and therefore dispatched off the raw request path — an
+	// http.ServeMux would have cleaned "//" and ".." out of it and answered
+	// with a redirect instead of the refusal the grammar owes the caller.
 	handler, err := serve.New(serve.Options{
 		Name:      "kuery",
 		Readiness: vwhealth.Handler(ready),
 		Portal:    dist,
 		MCP:       mcpHandler,
 		DataPlane: runner,
+
+		Subresources: subresources,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)

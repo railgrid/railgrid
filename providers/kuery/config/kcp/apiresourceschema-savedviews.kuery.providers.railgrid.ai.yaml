@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-b1e9b5e6.savedviews.kuery.providers.railgrid.ai
+  name: v260925-98850485.savedviews.kuery.providers.railgrid.ai
 spec:
   group: kuery.providers.railgrid.ai
   names:
@@ -28,12 +28,13 @@ spec:
       description: |-
         SavedView is a named, tenant-authored fleet query. It is kuery's only
         exported kind, and it exists because a verb needs an object to hang off:
-        running a query is POST
-        /dataplane/clusters/{clusterID}/savedviews/{name}/run, which the hub
-        authorizes as "create savedviews/run on this name" for the caller's own
-        bearer. There is no un-named query route, so there is no query a tenant can
-        run that their RBAC does not cover — including the playground's, which runs
-        a per-user SavedView the portal creates with the kube client.
+        running a query is POST on the custom subresource savedviews/run,
+        /clusters/{clusterID}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run,
+        which kcp authorizes with the caller's own RBAC on "savedviews/run" for
+        this name before forwarding it to the provider. There is no un-named query
+        route, so there is no query a tenant can run that their RBAC does not
+        cover — including the playground's, which runs a per-user SavedView the
+        portal creates with the kube client.
 
         Cluster-scoped on purpose: the data-plane grammar addresses an object by
         cluster and name with no namespace segment, and a namespaced kind could not

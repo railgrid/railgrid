@@ -147,7 +147,7 @@ func TestGetProjectAssistantThreadTurnEnforcesThreadOwnership(t *testing.T) {
 
 func assistantTurnDetailHTTPTestRequest(method, path, user string) *http.Request {
 	request := httptest.NewRequest(method, path, nil)
-	request.Header.Set("Authorization", "Bearer "+user+"-token")
+	request = stampTestCaller(request, testUserForToken(user+"-token"))
 	request.Header.Set("X-Railgrid-User", user)
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")

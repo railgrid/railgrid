@@ -572,7 +572,7 @@ type TemplateDataPlane struct {
 	Endpoints map[string]TemplateDataPlaneEndpoint `json:"endpoints,omitempty"`
 
 	// Components maps a component name to that component's own verb set,
-	// served as …/<resource>/<name>/components/<component>/<verb>. Used by
+	// served as …/<resource>/<name>/<verb>?component=<component>. Used by
 	// multi-tier templates so a caller can sync the backend and restart the
 	// frontend independently. Component names should match the template's
 	// spec.development components where both are declared. Every endpoint

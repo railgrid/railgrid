@@ -460,16 +460,15 @@ type ProviderDependency struct {
 	// tenant's behalf, in the tenant's own workspace.
 	//
 	// Declaring grants NOTHING. A composition reaches a workspace only when a
-	// workspace or org admin accepted it in the Enable dialog, and only then
-	// will the hub's scoped-identity policy admit a rule for it (clause E,
-	// pkg/hub/identity/policy.go). A catalog update that adds or widens a
-	// composition is pending until someone accepts it again, so a provider
-	// cannot widen itself by shipping a new chart.
+	// workspace or org admin accepted it in the Enable dialog, which is what
+	// accepts the claim on the tenant's APIBinding. A catalog update that adds
+	// or widens a composition is pending until someone accepts it again, so a
+	// provider cannot widen itself by shipping a new chart.
 	//
-	// It is deliberately NOT an APIExport permission claim. A first-party
-	// claim pins to one export's identityHash (AGENTS.md §5.7), so a provider
-	// holding one breaks the moment an Org self-hosts the dependency it
-	// claims — which is exactly the case composition has to keep working.
+	// Each composition is ALSO the identity-agnostic permission claim the
+	// generated APIExport carries (provider-sdk/apiexportgen), resolved by kcp
+	// per consumer workspace against whichever copy of the dependency that
+	// workspace bound — so it keeps working when an Org self-hosts it.
 	// +optional
 	// +listType=map
 	// +listMapKey=group
@@ -893,7 +892,7 @@ type ProviderSelfHostingChart struct {
 
 // ProviderSelfHostingValue is one Helm value the installer must set.
 type ProviderSelfHostingValue struct {
-	// Name is the Helm value path, e.g. "apiExport.edgesIdentityHash".
+	// Name is the Helm value path, e.g. "store.databaseURLSecretRef.name".
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
@@ -903,18 +902,6 @@ type ProviderSelfHostingValue struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	Description string `json:"description,omitempty"`
-
-	// IdentityFor names an APIExport whose kcp identity hash is the value for
-	// this setting, e.g. "edges.providers.railgrid.ai". When set, the hub resolves
-	// the hash and fills the value in for the installer.
-	//
-	// This exists because identity hashes are the one required value a person
-	// cannot reasonably produce by hand: today they are copied out of an admin
-	// debug view, and getting one wrong yields a provider that binds
-	// successfully and then silently sees none of the resources it claimed.
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	IdentityFor string `json:"identityFor,omitempty"`
 
 	// Value is a literal default the hub puts in the generated command.
 	// +optional

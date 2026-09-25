@@ -41,7 +41,7 @@ func TestFetchProviderActionCatalogRejectsSelfSignedByDefault(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}).fetchProviderActionCatalog(context.Background(), identity{token: "caller-token"})
+	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}).fetchProviderActionCatalog(context.Background(), identity{})
 	if err == nil {
 		t.Fatal("catalog lookup accepted a self-signed hub without an explicit insecure opt-in")
 	}
@@ -122,7 +122,7 @@ func TestProjectAssistantSkillCatalogResolverFailureIsolated(t *testing.T) {
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return nil, errors.New("provider catalog backend secret should not escape")
 	}
-	snapshot, err := server.projectAssistantSkillCatalogSnapshot(context.Background(), workspace.Scope{}, identity{token: "caller-token"})
+	snapshot, err := server.projectAssistantSkillCatalogSnapshot(context.Background(), workspace.Scope{}, identity{})
 	if err != nil {
 		t.Fatalf("catalog snapshot = %v, want source failure isolation", err)
 	}
@@ -174,7 +174,7 @@ func TestFetchProviderActionCatalogInsecureOptInPreservesCallerHeaders(t *testin
 			t.Errorf("catalog request = %s %s, want GET %s", r.Method, r.URL.Path, providerCatalogPath)
 		}
 		wantHeaders := map[string]string{
-			"Authorization":        "Bearer caller-token",
+			"Authorization":        "Bearer provider-hub-token",
 			"X-Railgrid-Tenant":    "cluster-1",
 			"X-Railgrid-Cluster":   "cluster-1",
 			"X-Railgrid-Org":       "org-1",
@@ -201,14 +201,13 @@ func TestFetchProviderActionCatalogInsecureOptInPreservesCallerHeaders(t *testin
 		baseInsecure = baseTLS.InsecureSkipVerify
 	}
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, mcpInsecureSkipTLSVerify: true}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, hubToken: "provider-hub-token", mcpInsecureSkipTLSVerify: true}
 	catalog, err := s.fetchProviderActionCatalog(context.Background(), identity{
 		tenant:        "cluster-1",
 		clusterID:     "cluster-1",
 		orgUUID:       "org-1",
 		workspaceUUID: "workspace-1",
 		user:          "alice@example.com",
-		token:         "caller-token",
 	})
 	if err != nil {
 		t.Fatalf("insecure catalog lookup failed: %v", err)
@@ -242,7 +241,7 @@ func TestFetchProviderActionCatalogRejectsRedirect(t *testing.T) {
 	}))
 	defer redirect.Close()
 
-	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: redirect.URL, mcpInsecureSkipTLSVerify: true}).fetchProviderActionCatalog(context.Background(), identity{token: "caller-token"})
+	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: redirect.URL, mcpInsecureSkipTLSVerify: true}).fetchProviderActionCatalog(context.Background(), identity{})
 	if err == nil {
 		t.Fatal("catalog lookup followed a redirect")
 	}

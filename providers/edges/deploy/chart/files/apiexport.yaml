@@ -10,10 +10,16 @@
 #
 # Written by provider-sdk/cmd/apiexportgen from two inputs:
 #   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
-#   spec.resources                        <- kcp apigen (hack/apigen.sh)
-# Regenerate with: make codegen-<provider>-provider. spec.permissionClaims
-# carries no identityHash: provider-sdk/install stamps one per installation for
-# first-party (*.railgrid.ai) claim groups.
+#   spec.resources                        <- kcp apigen (hack/apigen.sh), plus
+#                                            one "<resource>/<verb>" custom
+#                                            subresource per manifest.yaml
+#                                            spec.dataPlane.verbs[] entry and
+#                                            spec.actions[] entry, naming the
+#                                            schema apigen minted for the verb's
+#                                            "<Verb>Request" kind
+# Regenerate with: make codegen-<provider>-provider. No claim carries an
+# identityHash: kcp resolves a first-party claim per consumer workspace against
+# whatever export that workspace bound (PermissionClaimPolicy admits it).
 apiVersion: apis.kcp.io/v1alpha2
 kind: APIExport
 metadata:
@@ -47,7 +53,7 @@ spec:
   resources:
   - group: edges.railgrid.ai
     name: addons
-    schema: v260918-e56cbbc8.addons.edges.railgrid.ai
+    schema: v260924-87f1980f.addons.edges.railgrid.ai
     storage:
       crd: {}
   - group: edges.railgrid.ai
@@ -80,3 +86,120 @@ spec:
     schema: v260911-c8af9718.workloads.edges.railgrid.ai
     storage:
       crd: {}
+  - group: edges.railgrid.ai
+    name: kubernetesclusters/agent-token
+    schema: v260924-87f1980f.agent-token.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: kubernetesclusters/k8s
+    schema: v260924-87f1980f.k8s.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: kubernetesclusters/mcp
+    schema: v260924-87f1980f.mcp.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: kubernetesclusters/ssh
+    schema: v260924-87f1980f.ssh.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: linuxservers/addon-credentials
+    schema: v260924-87f1980f.addon-credentials.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: linuxservers/agent-token
+    schema: v260924-87f1980f.agent-token.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: linuxservers/k8s
+    schema: v260924-87f1980f.k8s.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: linuxservers/ssh
+    schema: v260924-87f1980f.ssh.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: linuxservers/ssh-credentials
+    schema: v260924-87f1980f.ssh-credentials.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: macosservers/addon-credentials
+    schema: v260924-87f1980f.addon-credentials.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: macosservers/agent-token
+    schema: v260924-87f1980f.agent-token.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: services/mcp
+    schema: v260924-87f1980f.mcp.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai
+  - group: edges.railgrid.ai
+    name: services/proxy
+    schema: v260924-87f1980f.proxy.edges.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: edges.providers.railgrid.ai

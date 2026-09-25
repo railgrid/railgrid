@@ -272,9 +272,24 @@ func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, dataplane.PathPrefix+"clusters/ws/instances/app/components/backend/exec", strings.NewReader(string(body)))
-	req.Header.Set("Authorization", "Bearer caller")
+	// The exec verb as a kcp shard forwards it: kube path, component as a
+	// query parameter, the stamped caller and the parsed route in the context
+	// (what serve's subresource adapter sets), and no bearer.
+	target, err := sdkdataplane.SubresourcePath(infrav1alpha1.GroupName, infrav1alpha1.Version, sdkdataplane.Request{
+		ClusterID: "ws", Resource: infrav1alpha1.InstancesResource, Name: "app", Component: "backend", Verb: "exec",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(string(body)))
 	req.Header.Set("Idempotency-Key", "run-1")
+	route, err := sdkdataplane.ParseSubresourceRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := sdkdataplane.ProxiedIdentity{User: "caller@railgrid.test", Groups: []string{"system:authenticated"}}
+	req.Header.Set(sdkdataplane.HeaderRemoteUser, caller.User)
+	req = req.WithContext(sdkdataplane.WithRoute(sdkdataplane.WithProxiedIdentity(req.Context(), caller), route))
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
@@ -282,9 +297,9 @@ func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) 
 	}
 }
 
-// mirroredCallers is the caller factory both gates run through: the Instance
-// is visible in cluster "ws" to bearer "caller", and every verb on
-// instances/* is granted, so this test exercises the status mirror rather
+// mirroredCallers is the provider caller factory the gate runs through: the
+// Instance is visible in cluster "ws", and the caller's access review for
+// "get" on it is granted, so this test exercises the status mirror rather
 // than RBAC.
 func mirroredCallers(instance *unstructured.Unstructured) *conformance.FakeCallers {
 	object := instance.DeepCopy()
@@ -296,10 +311,10 @@ func mirroredCallers(instance *unstructured.Unstructured) *conformance.FakeCalle
 	instancesGVR := schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances"}
 	return &conformance.FakeCallers{
 		Cluster:   "ws",
-		Token:     "caller",
+		User:      "caller@railgrid.test",
 		Objects:   []*unstructured.Unstructured{object},
 		ListKinds: map[schema.GroupVersionResource]string{instancesGVR: "InstanceList"},
-		Allow:     func(a conformance.Attributes) bool { return a.Verb == sdkdataplane.SSARVerb },
+		Allow:     func(a conformance.Attributes) bool { return a.Verb == "get" && a.Resource == instancesGVR.Resource },
 	}
 }
 

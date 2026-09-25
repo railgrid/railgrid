@@ -51,16 +51,20 @@ func (s *MCPSession) Close() {
 func ConnectMCP(ctx context.Context, d Deps, conn *agentsv1alpha1.Connection) (*MCPSession, error) {
 	// An instance-backed connection names a workload provisioned by the
 	// infrastructure provider and is reached over the platform's internal data
-	// plane — no public hostname, and authorized as the calling user rather
-	// than by a credential of its own. The verb root IS the MCP endpoint: the
-	// template pins the upstream path (the browser template pins /mcp), so
-	// nothing is appended here.
+	// plane — no public hostname, and authorized as THIS PROVIDER through the
+	// instances/proxy claim on its own export, not by a credential of its own.
+	// The verb root IS the MCP endpoint: the template pins the upstream path
+	// (the browser template pins /mcp), so nothing is appended here.
 	if instance, resource := instanceRef(conn, browserResource); instance != "" {
-		endpoint, err := d.DataPlane.ProxyURL("mcp", conn.Name, resource, instance)
+		endpoint, err := d.DataPlane.ProxyURL(ctx, "mcp", conn.Name, resource, instance, "")
 		if err != nil {
 			return nil, err
 		}
-		return ConnectMCPEndpoint(ctx, endpoint, d.DataPlane.Token, conn.Name, d.DataPlane.Insecure)
+		client, err := d.DataPlane.HTTPClient()
+		if err != nil {
+			return nil, err
+		}
+		return ConnectMCPEndpointWithClient(ctx, endpoint, client, conn.Name)
 	}
 	endpoint := strings.TrimSpace(conn.Spec.BaseURL)
 	if endpoint == "" {
@@ -93,6 +97,17 @@ func ConnectMCPEndpoint(ctx context.Context, endpoint, bearer, prefix string, in
 	httpClient := &http.Client{Timeout: 60 * time.Second, Transport: base}
 	if bearer != "" {
 		httpClient.Transport = &bearerTransport{token: bearer, base: base}
+	}
+	return ConnectMCPEndpointWithClient(ctx, endpoint, httpClient, prefix)
+}
+
+// ConnectMCPEndpointWithClient is ConnectMCPEndpoint with the HTTP client
+// supplied: the way an instance-backed connection is dialed, where the client
+// authenticates as this provider (DataPlane.HTTPClient) rather than with a
+// bearer of the connection's own.
+func ConnectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClient *http.Client, prefix string) (*MCPSession, error) {
+	if httpClient == nil {
+		return nil, fmt.Errorf("connecting to MCP server %q: no HTTP client", prefix)
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "railgrid-agents", Version: "0.1.0"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{

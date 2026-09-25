@@ -114,6 +114,12 @@ spec:
     verbs:
     - get
     - create
+  - group: edges.railgrid.ai
+    resource: kubernetesclusters
+    verbs:
+    - get
+    - list
+    - watch
   resources:
   - group: fixture.railgrid.ai
     name: widgets
@@ -290,5 +296,151 @@ spec:
 	if !strings.Contains(string(content), "defaultSelector:") ||
 		!strings.Contains(string(content), "railgrid.ai/owner: fixture") {
 		t.Fatalf("the selector did not reach the generated export:\n%s", content)
+	}
+}
+
+// --- composition claims (identity-agnostic, always on) ----------------------
+
+func TestParseCompositionsFlattensDependenciesInManifestOrder(t *testing.T) {
+	compositions, err := LoadCompositions(filepath.Join("testdata", "manifest.yaml"))
+	if err != nil {
+		t.Fatalf("LoadCompositions: %v", err)
+	}
+	if len(compositions) != 2 {
+		t.Fatalf("compositions = %d, want 2: %+v", len(compositions), compositions)
+	}
+	if got := compositions[0]; got.Group != "edges.railgrid.ai" || got.Resource != "kubernetesclusters" || len(got.Verbs) != 3 {
+		t.Errorf("first composition = %+v", got)
+	}
+	if got := compositions[1]; got.Group != "rbac.authorization.k8s.io" || got.Resource != "clusterroles" {
+		t.Errorf("second composition = %+v", got)
+	}
+}
+
+// A manifest with no dependencies at all must yield no compositions rather
+// than an error: most providers compose nothing.
+func TestParseCompositionsToleratesAManifestWithoutDependencies(t *testing.T) {
+	compositions, err := ParseCompositions([]byte("kind: CatalogEntry\nspec:\n  apiExport:\n    name: x\n"))
+	if err != nil {
+		t.Fatalf("ParseCompositions: %v", err)
+	}
+	if len(compositions) != 0 {
+		t.Errorf("compositions = %+v, want none", compositions)
+	}
+}
+
+// There is no opt-in any more: the fixture manifest declares compositions, so
+// the generated export claims them. Every composition the manifest does not
+// already claim is appended AFTER the manifest's own claims, with its own verbs
+// and NO identityHash — the field kcp resolves per consumer workspace. The
+// exact bytes are pinned by TestGenerateRenamesTheExportAndStampsTheClaims;
+// this checks the rule rather than the rendering.
+func TestGenerateAlwaysAppendsOneClaimPerComposition(t *testing.T) {
+	content, err := Generate(Options{
+		ManifestPath:     filepath.Join("testdata", "manifest.yaml"),
+		APIGenExportPath: filepath.Join("testdata", "apigen-export.yaml"),
+		SchemasDir:       filepath.Join("testdata", "schemas"),
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	got := string(content)
+	// The fixture composes kubernetesclusters.edges.railgrid.ai (new) and
+	// clusterroles.rbac.authorization.k8s.io (already claimed by the manifest,
+	// with a NARROWER verb set): one claim is appended, not two.
+	if !strings.Contains(got, "resource: kubernetesclusters") {
+		t.Errorf("the composition did not reach the export:\n%s", got)
+	}
+	if n := strings.Count(got, "resource: clusterroles"); n != 1 {
+		t.Errorf("clusterroles was claimed %d time(s), want 1 (the manifest's own)", n)
+	}
+	if strings.Contains(got, "- delete") {
+		t.Errorf("the composition widened the manifest's clusterroles claim:\n%s", got)
+	}
+	// The appended claim comes last, after every manifest claim.
+	if strings.Index(got, "resource: kubernetesclusters") < strings.Index(got, "resource: clusterroles") {
+		t.Errorf("a composition claim was written before the manifest's own:\n%s", got)
+	}
+	// The header prose mentions identityHash, so check the body only.
+	if body := strings.TrimPrefix(got, Header); strings.Contains(body, "identityHash") {
+		t.Errorf("an identityHash was written; the claim must stay identity-agnostic:\n%s", body)
+	}
+}
+
+// The fixture's second composition repeats the manifest's own clusterroles
+// claim with a WIDER verb set. The manifest entry must survive untouched and
+// nothing may be appended for it: a hand-written claim is a deliberate
+// statement about kcp's wire contract and a composition never widens it.
+func TestMergeCompositionClaimsKeepsTheManifestClaimOnADuplicate(t *testing.T) {
+	claims := MergeCompositionClaims(
+		[]PermissionClaim{
+			{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get", "create"}, TenantScoped: true},
+			{Resource: "secrets", Verbs: []string{"get"}},
+		},
+		[]Composition{
+			{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get", "create", "delete"}},
+			{Group: "", Resource: "secrets", Verbs: []string{"get", "list"}},
+			{Group: "edges.railgrid.ai", Resource: "kubernetesclusters", Verbs: []string{"get"}},
+		},
+	)
+	if len(claims) != 3 {
+		t.Fatalf("claims = %d, want 3 (2 manifest + 1 new): %+v", len(claims), claims)
+	}
+	if got := claims[0]; len(got.Verbs) != 2 || !got.TenantScoped {
+		t.Errorf("the manifest claim was rewritten by the composition: %+v", got)
+	}
+	if got := claims[1]; len(got.Verbs) != 1 {
+		t.Errorf("a core-group duplicate was not matched on the empty group: %+v", got)
+	}
+	if got := claims[2]; got.Group != "edges.railgrid.ai" || got.Resource != "kubernetesclusters" {
+		t.Errorf("third claim = %+v, want the composed kind", got)
+	}
+}
+
+// A composition listed twice (two dependencies naming the same kind) must not
+// produce two claims: kcp rejects an export claiming the same group/resource
+// more than once.
+func TestMergeCompositionClaimsDeduplicatesCompositionsAgainstEachOther(t *testing.T) {
+	claims := MergeCompositionClaims(nil, []Composition{
+		{Group: "edges.railgrid.ai", Resource: "kubernetesclusters", Verbs: []string{"get"}},
+		{Group: "edges.railgrid.ai", Resource: "kubernetesclusters", Verbs: []string{"get", "list"}},
+	})
+	if len(claims) != 1 {
+		t.Fatalf("claims = %+v, want one", claims)
+	}
+	if len(claims[0].Verbs) != 1 {
+		t.Errorf("the first occurrence must win: %+v", claims[0])
+	}
+}
+
+// Merging must not alias the caller's verb slice, or a later append would
+// rewrite the manifest's composition in place.
+func TestMergeCompositionClaimsCopiesTheVerbs(t *testing.T) {
+	composition := Composition{Group: "edges.railgrid.ai", Resource: "kubernetesclusters", Verbs: []string{"get", "list"}}
+	claims := MergeCompositionClaims(nil, []Composition{composition})
+	claims[0].Verbs[0] = "delete"
+	if composition.Verbs[0] != "get" {
+		t.Errorf("the composition's verbs were aliased: %+v", composition.Verbs)
+	}
+}
+
+func TestGenerateWithCompositionClaimsIsDeterministic(t *testing.T) {
+	opts := Options{
+		ManifestPath:     filepath.Join("testdata", "manifest.yaml"),
+		APIGenExportPath: filepath.Join("testdata", "apigen-export.yaml"),
+		SchemasDir:       filepath.Join("testdata", "schemas"),
+	}
+	first, err := Generate(opts)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		again, err := Generate(opts)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if string(again) != string(first) {
+			t.Fatalf("run %d differs from the first", i)
+		}
 	}
 }

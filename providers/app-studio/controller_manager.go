@@ -31,7 +31,6 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -40,9 +39,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/railgrid/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/identityclient"
 	"github.com/railgrid/provider-sdk/leaderelection"
-	"github.com/railgrid/provider-sdk/tenantaccess"
 	"github.com/railgrid/provider-sdk/vwhealth"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
@@ -52,6 +51,7 @@ import (
 	"github.com/railgrid/provider-app-studio/controller/session"
 	"github.com/railgrid/provider-app-studio/controller/studio"
 	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
 	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 	appscheme "github.com/railgrid/provider-app-studio/scheme"
@@ -107,6 +107,13 @@ type controllerDeps struct {
 	StopAssistant func(context.Context, workspace.Scope) error
 	HubBase       string
 	HubInsecure   bool
+	// Callers acts as the provider through its export virtual workspace
+	// (dataplane.Callers with WithProviderConfig); it is how the dependency
+	// watch lists and watches the composed kinds under the claims the tenant
+	// accepted, and how the Project reconciler calls the Code provider's
+	// commit verbs it has claimed. Nil (REST-only dev) means no watches and
+	// deferred commits.
+	Callers *dataplane.Callers
 	// SessionSignals / ProjectSignals wake the Session and Project
 	// reconcilers on assistant and workspace transitions (nil: resync only).
 	SessionSignals *reconcilesignal.Bus
@@ -117,26 +124,41 @@ type controllerDeps struct {
 	SessionRetention time.Duration
 }
 
-// dependencyWatches builds the per-workspace watch hub the Project and Studio
-// reconcilers share. Watches ride the tenant-path identity exactly as the
-// reconcilers' writes do, so they need the hub address; without one (REST-only
-// dev) there is no identity to watch with either and there are no watches.
-func dependencyWatches(deps controllerDeps) *tenantwatch.Hub {
-	if deps.HubBase == "" {
+// projectCallers hands the Project reconciler its commit caller, keeping a
+// nil *dataplane.Callers a nil interface (a typed nil would pass the
+// reconciler's "no credential" check and then panic).
+func projectCallers(callers *dataplane.Callers) codecommit.Caller {
+	if callers == nil {
 		return nil
 	}
-	hubBase, insecure := deps.HubBase, deps.HubInsecure
-	return tenantwatch.NewHub(func(cluster, token string) (dynamic.Interface, error) {
-		return tenantaccess.NewDynamicClient(hubBase, cluster, token, insecure)
-	})
+	return callers
+}
+
+// dependencyWatches builds the per-workspace watch hub the Project and Studio
+// reconcilers share. The watch lists and watches the composed kinds THROUGH
+// App Studio's own export virtual workspace, as the provider: the composition
+// is a permission claim the tenant accepted, and kcp serves a claimed kind on
+// the claimer's virtual workspace. No per-workspace identity is minted for it.
+// Without a provider credential (REST-only dev) there are no watches.
+func dependencyWatches(deps controllerDeps) *tenantwatch.Hub {
+	if deps.Callers == nil {
+		return nil
+	}
+	return tenantwatch.NewHub(deps.Callers.AsProvider)
 }
 
 // scopedIdentities builds the hub identity client the Project and Studio
-// reconcilers mint each owner's identity with. It is how this provider reaches
-// a DEPENDENCY's objects — inside the tenant workspace, through the
-// workspace's own bindings — and also what a project's workload acts as when
-// it reaches the MCP aggregate or calls a data-plane verb on its own instance.
-// Its own kinds still ride its APIExport virtual workspace.
+// reconcilers mint each owner's identity with. It is what a project presents
+// to things that are NOT the Kubernetes API: the Code provider's commit and
+// stage-commit-bundle actions, the workspace's MCP aggregate, and a data-plane
+// verb on its own instance. It is also what the per-workspace dependency watch
+// lists and watches with (dependencyWatches below).
+//
+// It is NOT how the dependency objects are converged any more. App Studio's
+// APIExport claims instances, repositories and repositorycommits with no
+// identityHash, kcp resolves those claims per consumer workspace, and the
+// reconcilers read and write them on the manager's own client — the same one
+// that carries this provider's own kinds.
 //
 // A failure here is logged and degrades to nil rather than refusing to start:
 // a REST-only dev deployment has no hub to ask, and the Project and Studio
@@ -255,6 +277,7 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 		StopAssistant: deps.StopAssistant,
 		HubBase:       deps.HubBase,
 		HubInsecure:   deps.HubInsecure,
+		Callers:       projectCallers(deps.Callers),
 		Watches:       watches,
 		Signals:       deps.ProjectSignals,
 		Identities:    identities,
@@ -265,10 +288,7 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 		return fmt.Errorf("session controller: %w", err)
 	}
 	if err := (&studio.Reconciler{
-		HubBase:     deps.HubBase,
-		HubInsecure: deps.HubInsecure,
-		Watches:     watches,
-		Identities:  identities,
+		Watches: watches,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("studio controller: %w", err)
 	}

@@ -74,7 +74,10 @@ type fakeOps struct {
 	// Admin claims migration (admin_provider_claims.go). bindingClaims is the
 	// claim set each binding currently holds, keyed "group/resource", so a
 	// re-accept can report "already correct" the way the real one does.
-	bindingClaims    map[wsKey][]string
+	bindingClaims map[wsKey][]string
+	// enableClaims is what EnsureProviderAPIBinding was last asked to write
+	// per (org,ws): "group/resource" → accepted.
+	enableClaims     map[wsKey]map[string]bool
 	reacceptCalls    map[wsKey]int
 	reacceptErr      map[wsKey]error
 	listForExportErr error
@@ -193,24 +196,23 @@ func (f *fakeOps) EnsureChildWorkspaceDefaultMCPServer(_ context.Context, orgUUI
 // provider-enable handler. The handler is exercised via its own
 // dedicated tests; for the existing org/workspace flows it just needs
 // to not error.
-func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, orgUUID, wsUUID, bindingName, _, _ string, _ []kcp.ProviderClaim) error {
+func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, orgUUID, wsUUID, bindingName, _, _ string, claims []kcp.ProviderClaim) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := wsKey{orgUUID, wsUUID}
+	if f.enableClaims == nil {
+		f.enableClaims = map[wsKey]map[string]bool{}
+	}
+	f.enableClaims[key] = map[string]bool{}
+	for _, c := range claims {
+		f.enableClaims[key][c.Group+"/"+c.Resource] = c.Accepted
+	}
 	if f.providerBindings[key] == nil {
 		f.providerBindings[key] = map[string]string{}
 	}
 	f.providerBindings[key][bindingName] = bindingName
 	f.providerBindCalls[key]++
 	return nil
-}
-
-// StaleClaimIdentities reports no stale claims. The mismatch logic is exercised
-// directly against the real comparison in pkg/hub/kcp; here it only has to
-// satisfy the interface without making every unrelated handler test carry a
-// warning field.
-func (f *fakeOps) StaleClaimIdentities(_ context.Context, _, _ string) (map[string][]kcp.ClaimIdentityMismatch, error) {
-	return nil, nil
 }
 
 // ListProviderAPIBindings is the test stub for the read-side provider-enable

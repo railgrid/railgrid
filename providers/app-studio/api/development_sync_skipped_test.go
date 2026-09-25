@@ -93,12 +93,14 @@ type fakeSkipAgent struct {
 func (a *fakeSkipAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, rest, ok := strings.Cut(r.URL.Path, "/components/")
-	if !ok {
+	// The component of a multi-component instance travels as ?component=,
+	// never in the path; the verb is the last path segment.
+	component := r.URL.Query().Get("component")
+	if component == "" {
 		http.NotFound(w, r)
 		return
 	}
-	component, verb, _ := strings.Cut(rest, "/")
+	verb := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 	switch {
 	case r.Method == http.MethodGet && verb == "process":
 		_ = json.NewEncoder(w).Encode(map[string]any{"running": true, "syncEncodings": a.encodings[component]})
@@ -156,7 +158,7 @@ func TestSyncProjectDevelopmentTargetReportsSkippedFiles(t *testing.T) {
 		APIVersion:   "infrastructure.railgrid.ai/v1alpha1",
 		Components:   map[string]projectTemplateComponent{"web": {WorkspacePath: "web"}, "api": {WorkspacePath: "api"}},
 	}
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: hub.URL, workspaces: workspaces}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: hub.URL, callers: newTestCallers(nil, hub.URL), workspaces: workspaces}
 
 	raw, err := server.syncProjectDevelopmentTarget(ctx, client, id, project, target)
 	if err != nil {

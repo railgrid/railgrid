@@ -275,7 +275,7 @@ CR name appears in no binding. (`app-studio-publishing.md`,
 
 ### 23. Virtual subresources that no server serves are kcp RBAC's best trick.
 
-`agents/delegate`, `instances/access`, `tables/query_table` — RBAC
+`agents/delegate`, `instances/access`, `tables/query-table` — RBAC
 coordinates with no storage behind them. Granting a capability *is* writing
 the rule; revoking removes it; `resourceNames` scopes it per object; `kubectl
 get clusterrole` audits it. We learned this the expensive way: Provider

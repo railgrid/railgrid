@@ -1,6 +1,16 @@
 # Edge-fronted BYO providers
 
-**Status:** Design + phase 1 (fail-fast gating) + phase 2 (transport) implemented
+**Status:** Design + phase 1 (fail-fast gating) + phase 2 (transport) implemented.
+**Superseded in part (2026-09-25):** data-plane verbs no longer go through the
+hub's backend proxy at all — they are kcp custom subresources on
+`/clusters/{id}/apis/…`, and the org-owned provider hop is made by the hub
+through kcp at the edges `services/{name}/proxy` verb with the delegated token
+in `X-Railgrid-Upstream-Authorization` (`pkg/hub/providers/proxy_edge.go`).
+The `/services/providers/{name}/dataplane/…` paths and the "caller's bearer"
+authorization model below describe the transport as it was designed; see
+[provider-connectivity-contract.md](./provider-connectivity-contract.md)
+§"Pillar 2 route classes" for the current one. What remains on the backend
+proxy for an org-owned provider is MCP, browser OAuth, webhooks and health.
 **Reads as a delta on:** [byo-providers.md](./byo-providers.md), [edges-marketplace.md](./edges-marketplace.md), [platform-internal-networking.md](./platform-internal-networking.md), [provider-connectivity-contract.md](./provider-connectivity-contract.md)
 
 [byo-providers.md](./byo-providers.md) gets an org-owned provider *registered*:

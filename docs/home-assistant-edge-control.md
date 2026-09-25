@@ -172,9 +172,12 @@ Both routes work in server mode and kubernetes mode.
   connectable):
 
   ```
-  /services/providers/edges/dataplane/clusters/{cluster}/services/{name}/proxy[/...]
-  /services/providers/edges/dataplane/clusters/{cluster}/services/{name}/mcp
+  /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/proxy[/...]
+  /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/mcp
   ```
+
+  (declared verbs on `services`, published as kcp custom subresources and
+  reached on the hub's kcp front door; kcp forwards them to the provider)
 
   `proxy` authorizes via kcp SAR (same delegated call as `ssh`), loads the
   Service, resolves the LinuxServer tunnel from the `ConnManager`, reads the
@@ -273,7 +276,7 @@ spec:
 4. Verify the data plane:
    ```
    curl -H "Authorization: Bearer $USER_TOKEN" \
-     https://<hub>/services/providers/edges/dataplane/clusters/<cluster>/services/ha-box-home-assistant/proxy/api/config
+     https://<hub>/clusters/<cluster>/apis/edges.railgrid.ai/v1alpha1/services/ha-box-home-assistant/proxy/api/config
    ```
 5. Create an Agent with `spec.tools.interactive.families: [core, edges]` and
    `requireApproval: ["*ha_call_service*"]`. Chat: "open the gates" → the model

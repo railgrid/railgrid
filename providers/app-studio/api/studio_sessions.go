@@ -28,7 +28,7 @@ import (
 
 // Session CRs and the Studio singleton — the API-side halves of the
 // control-plane projections the reconcilers converge (controller/session,
-// controller/studio). Both writes are best-effort as the caller: a workspace
+// controller/studio). Both writes are best-effort as the provider: a workspace
 // without them loses `kubectl` visibility or web search, not the ability to
 // build.
 

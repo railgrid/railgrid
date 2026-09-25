@@ -41,8 +41,13 @@ const projectRepositoryUIDAnnotation = "app-studio.ai.railgrid.ai/project-uid"
 // they hold user code; deletion only releases the claim (handler-side), which
 // is why the declared composition on repositories carries no delete.
 //
-// c is the tenant-workspace client, as the project identity: a Repository
-// belongs to the Code provider the WORKSPACE bound, whichever copy that is.
+// c is the manager's client for the request's cluster. Repositories are a kind
+// App Studio's APIExport claims, so the Code provider the WORKSPACE bound —
+// whichever copy that is — serves them into this provider's own virtual
+// workspace for every workspace that accepted the claim. The claim carries no
+// identityHash and is resolved per consumer workspace, which is what makes
+// "whichever copy" true without the provider ever holding a per-workspace
+// credential for it.
 func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *aiv1alpha1.Project) (*unstructured.Unstructured, error) {
 	b := p.Spec.Repository
 	if b == nil || strings.TrimSpace(b.RepositoryRef) == "" {

@@ -36,95 +36,77 @@ func (t staticWorkspaces) lookup(_ context.Context, clusterID, token string) (te
 	return ws, nil
 }
 
-// The tenant a data-plane request addresses comes from the PATH, and the
-// org/workspace scope the store is keyed on comes from kcp — never from a
-// header value that happens to look like a workspace path.
-func TestIdentityScopeComesFromThePathNotHeaders(t *testing.T) {
-	s := &Server{
-		store: store.NewMemoryStore(),
-		workspaces: staticWorkspaces{
-			"c1": {ClusterID: "c1", Path: "root:railgrid:tenants:org1:ws1", OrgUUID: "org1", WorkspaceUUID: "ws1"},
-		}.lookup,
-	}
-	r := httptest.NewRequest(http.MethodGet, "/dataplane/clusters/c1/agents/scout/sessions", nil)
-	r.Header.Set("X-Railgrid-Cluster", "c1")
-	r.Header.Set("X-Railgrid-User", "alice")
-	r.Header.Set("Authorization", "Bearer t")
-	req, ok := dataplane.ParsePath(dataplane.DataplaneRoot, r.URL.Path)
-	if !ok {
-		t.Fatalf("%s is not a data-plane path", r.URL.Path)
-	}
-
-	id := s.dataPlaneIdentity(r, req)
-	if id.clusterID != "c1" || id.tenant != "c1" {
-		t.Errorf("cluster = %q/%q, want c1", id.clusterID, id.tenant)
-	}
-	if id.orgUUID != "org1" || id.workspaceUUID != "ws1" || id.workspacePath != "root:railgrid:tenants:org1:ws1" {
-		t.Errorf("scope = %+v, want org1/ws1 resolved from kcp", id)
-	}
-	if id.user != "alice" || id.token != "t" {
-		t.Errorf("user/token = %q/%q", id.user, id.token)
-	}
-
-	// A path-shaped header is opaque and is not a tenant this provider can be
-	// talked into addressing: the cluster in the URL wins, and the scope still
-	// comes from the lookup for THAT cluster. (A header that disagrees with the
-	// path never gets this far — dataplane.Gate refuses it with 400.)
-	r = httptest.NewRequest(http.MethodGet, "/dataplane/clusters/c1/agents/scout/sessions", nil)
-	r.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:victim-org:victim-ws")
-	r.Header.Set("Authorization", "Bearer t")
-	id = s.dataPlaneIdentity(r, req)
-	if id.clusterID != "c1" || id.orgUUID != "org1" || id.workspaceUUID != "ws1" {
-		t.Errorf("a path-shaped tenant header moved the scope: %+v", id)
-	}
-}
-
-// A caller that holds the verb grant but cannot read the workspace's
-// LogicalCluster — a service identity minted for exactly one verb — still gets
-// a usable scope, from the cluster→workspace mapping recorded when someone who
-// could read it came through. Without this the unified run verb would refuse
-// every non-human caller.
-func TestIdentityFallsBackToTheRecordedTenantRef(t *testing.T) {
+// The tenant a data-plane request addresses comes from the PATH, the user
+// from the identity kcp stamped, and nothing from a header: a verb carries no
+// bearer, so the identity has no token and the store scope is resolved per
+// cluster rather than read as the caller.
+func TestIdentityComesFromThePathAndTheStampedCaller(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.SaveTenantRef(t.Context(), "c1", store.TenantRef{OrgUUID: "org1", WorkspaceUUID: "ws1"}); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{
-		store:      st,
-		workspaces: staticWorkspaces{}.lookup, // every lookup fails
+		store: st,
+		// A lookup that would answer — and must not be consulted, because
+		// there is no caller credential to run it with.
+		workspaces: staticWorkspaces{
+			"c1": {ClusterID: "c1", Path: "root:railgrid:tenants:other-org:other-ws", OrgUUID: "other-org", WorkspaceUUID: "other-ws"},
+		}.lookup,
 	}
-	r := httptest.NewRequest(http.MethodPost, "/dataplane/clusters/c1/agents/scout/run", nil)
-	r.Header.Set("Authorization", "Bearer service-account-token")
-	req, _ := dataplane.ParsePath(dataplane.DataplaneRoot, r.URL.Path)
+	ctx := dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: "alice", Groups: []string{"system:authenticated"}})
+	req := dataplane.Request{ClusterID: "c1", Resource: "agents", Name: "scout", Verb: "sessions"}
 
-	id := s.dataPlaneIdentity(r, req)
+	id := s.dataPlaneIdentity(ctx, req)
+	if id.clusterID != "c1" || id.tenant != "c1" {
+		t.Errorf("cluster = %q/%q, want c1", id.clusterID, id.tenant)
+	}
+	if id.user != "alice" {
+		t.Errorf("user = %q, want the stamped caller", id.user)
+	}
+	if id.token != "" {
+		t.Errorf("a verb has no bearer; token = %q", id.token)
+	}
 	if id.orgUUID != "org1" || id.workspaceUUID != "ws1" {
-		t.Fatalf("scope = %q/%q, want the recorded org1/ws1", id.orgUUID, id.workspaceUUID)
+		t.Errorf("scope = %q/%q, want the recorded org1/ws1 mapping, not a caller read", id.orgUUID, id.workspaceUUID)
 	}
 	if id.workspaceErr != nil {
-		t.Errorf("a resolved fallback must not also report an error: %v", id.workspaceErr)
+		t.Errorf("a resolved scope must not also report an error: %v", id.workspaceErr)
 	}
 }
 
-func TestRequireClientReportsUnresolvedWorkspace(t *testing.T) {
-	s := &Server{
-		store:  store.NewMemoryStore(),
-		tenant: nil,
+// A workspace this provider has no recorded mapping for still gets a usable,
+// deterministic scope — the cluster-keyed fallback background execution writes
+// under — rather than an error. A verb on a fresh workspace has to work, and
+// there is no caller credential to learn the mapping with.
+func TestIdentityFallsBackToTheClusterKeyedScope(t *testing.T) {
+	s := &Server{store: store.NewMemoryStore()}
+	ctx := dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: "system:serviceaccount:default:job"})
+	id := s.dataPlaneIdentity(ctx, dataplane.Request{ClusterID: "c1", Resource: "agents", Name: "scout", Verb: "run"})
+	if id.orgUUID != unmappedOrg || id.workspaceUUID != "c1" {
+		t.Fatalf("scope = %q/%q, want %s/c1", id.orgUUID, id.workspaceUUID, unmappedOrg)
 	}
-	// No tenant client at all: 501, as before.
-	r := httptest.NewRequest(http.MethodGet, "/dataplane/clusters/c1/agents/scout/sessions", nil)
+	if id.workspaceErr != nil {
+		t.Errorf("the fallback is a resolution, not a failure: %v", id.workspaceErr)
+	}
+	// The same answer background.scopeFor gives, so the two halves agree on
+	// where a run's rows live.
+	bg := &background{server: s}
+	if got := bg.scopeFor(t.Context(), "c1", "scout"); got.OrgUUID != id.orgUUID || got.WorkspaceUUID != id.workspaceUUID {
+		t.Errorf("background scope %+v disagrees with the verb's %q/%q", got, id.orgUUID, id.workspaceUUID)
+	}
+}
+
+// requireClient serves gated requests only. A request that did not come
+// through the data-plane router carries no identity this provider is entitled
+// to act on — the hub's headers are never a trust root — and is refused.
+func TestRequireClientRefusesAnUngatedRequest(t *testing.T) {
+	s := &Server{store: store.NewMemoryStore()}
+	r := httptest.NewRequest(http.MethodGet, "/clusters/c1/apis/agents.railgrid.ai/v1alpha1/agents/scout/sessions", nil)
 	r.Header.Set("X-Railgrid-Tenant", "c1")
 	r.Header.Set("X-Railgrid-Cluster", "c1")
 	r.Header.Set("Authorization", "Bearer t")
 	w := httptest.NewRecorder()
-	if _, _, ok := s.requireClient(w, r); ok || w.Code != http.StatusNotImplemented {
-		t.Fatalf("requireClient without a tenant client = %d, want 501", w.Code)
-	}
-
-	// Missing tenant header: 401.
-	r = httptest.NewRequest(http.MethodGet, "/dataplane/clusters/c1/agents/scout/sessions", nil)
-	w = httptest.NewRecorder()
 	if _, _, ok := s.requireClient(w, r); ok || w.Code != http.StatusUnauthorized {
-		t.Fatalf("requireClient without tenant headers = %d, want 401", w.Code)
+		t.Fatalf("requireClient without a gate = %d, want 401", w.Code)
 	}
 }

@@ -15,20 +15,26 @@ import (
 // fixed phrase, so nothing about the tenant, the token or the backend reaches
 // the caller.
 var (
-	// ErrNoBearer is returned when the request carries no usable
-	// Authorization: Bearer credential. Maps to 401.
+	// ErrNoCaller is returned when a verb request carries no caller: the
+	// shard did not stamp an identity, or the request did not come through
+	// serve's subresource adapter at all. Maps to 401.
+	ErrNoCaller = errors.New("dataplane: no caller identity on request")
+	// ErrNoBearer is returned when a caller-credentialed request (the MCP
+	// class, where the hub aggregate forwards the caller's bearer) carries no
+	// usable Authorization: Bearer credential. Maps to 401.
 	ErrNoBearer = errors.New("dataplane: no bearer token on request")
 	// ErrClusterMismatch is returned when the cluster in the path differs
-	// from the hub-injected X-Railgrid-Cluster. Maps to 400: the request is
-	// self-contradictory and retrying it unchanged cannot succeed.
+	// from the X-Railgrid-Cluster header. serve's adapter sets the header from
+	// the path, so a disagreement means the request was assembled by hand.
+	// Maps to 400: the request is self-contradictory and retrying it
+	// unchanged cannot succeed.
 	ErrClusterMismatch = errors.New("dataplane: path cluster does not match the request cluster header")
 	// ErrBadPath is returned for a request that does not match the grammar.
 	// Maps to 400.
 	ErrBadPath = errors.New("dataplane: malformed data-plane path")
-	// ErrDenied is returned when either gate refuses: the caller cannot see
-	// the addressed object, the object is being deleted, or the caller has no
-	// grant for the verb. Maps to 404 by default so the response does not
-	// disclose whether the object exists.
+	// ErrDenied is returned when the gate refuses: the caller cannot see the
+	// addressed object, or the object is being deleted. Maps to 404 by
+	// default so the response does not disclose whether the object exists.
 	ErrDenied = errors.New("dataplane: denied")
 )
 
@@ -45,7 +51,7 @@ func StatusForAs(err error, deniedStatus int) int {
 	switch {
 	case err == nil:
 		return http.StatusOK
-	case errors.Is(err, ErrNoBearer):
+	case errors.Is(err, ErrNoCaller), errors.Is(err, ErrNoBearer), errors.Is(err, ErrNoProxiedIdentity):
 		return http.StatusUnauthorized
 	case errors.Is(err, ErrClusterMismatch), errors.Is(err, ErrBadPath):
 		return http.StatusBadRequest

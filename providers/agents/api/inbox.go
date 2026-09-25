@@ -142,11 +142,12 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	s.events.publish(wsScope, "inbox", map[string]any{
 		"id": item.ID, "state": string(item.State), "agent": item.AgentName, "runID": item.RunID,
 	})
-	// Resume the paused run as the resolving user (tenant client + edges).
+	// Resume the paused run as this provider (the gate's client). No edges:
+	// a verb carries no caller credential, and the edges family dials the
+	// hub's aggregate MCP endpoint as the calling user.
 	if item.Kind == store.InboxKindApproval && item.RunID != "" && state != store.InboxStateAnswered {
 		rd := resumeDeps{
 			Creds: c, CR: clientCR{c},
-			EdgesEndpoint: s.aggregateMCPEndpoint(r.Context(), id), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
 			ClusterID: id.clusterID,
 		}
 		go s.resumeApprovedRun(wsScope, item, rd, state == store.InboxStateApproved, req.Response)

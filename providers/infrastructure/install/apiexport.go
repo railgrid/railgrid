@@ -64,23 +64,23 @@ var (
 	}
 )
 
-// PlatformSchemaInAPIExport reads every embedded platform CRD,
-// mints an APIResourceSchema for each, and appends a corresponding
-// entry to APIExport.spec.resources. Idempotent on every axis: a
-// content-equal schema reuses its existing name; an already-present
-// resource entry is left alone.
+// PlatformSchemaInAPIExport re-points the APIExport's templates entry at
+// CachedResource virtual storage: it mints an APIResourceSchema from the
+// embedded Templates CRD (a content-equal schema reuses its existing name) and
+// upserts the entry with storage.virtual backed by the
+// CachedResourceEndpointSlice from install/endpointslice.go, so tenants who
+// APIBind see Templates as a read-only projection of the provider workspace.
 //
-// templatesIdentityHash, when non-empty, switches the
-// templates.infrastructure.railgrid.ai entry to use storage.virtual
-// (backed by the CachedResourceEndpointSlice from
-// install/endpointslice.go) so tenants who APIBind see Templates as
-// a read-only projection of the provider workspace. Empty falls back
-// to storage.crd, matching the pre-CachedResource behavior.
+// Every other entry — instances and the instances/<verb> subresources — is
+// what codegen generated and sdkinstall.Bootstrap applied, and is left alone.
+// Templates cannot be, because the storage the generated entry carries is a
+// CRD (apigen knows nothing of CachedResources), and this is the one place the
+// runtime knows the identityHash the virtual reference needs.
 //
-// Called from init_cmd.go AFTER install.CRDs +
-// install.PlatformCachedResources + install.PlatformCachedResourceEndpointSlices +
-// install.WaitForCachedResourceIdentity. Errors mean "the binary boot
-// didn't complete" — log + bubble.
+// Called from init_cmd.go AFTER sdkinstall.Bootstrap + install.CRDs +
+// install.PlatformCachedResources + install.PlatformCachedResourceEndpointSlices
+// + install.WaitForCachedResourceIdentity. templatesIdentityHash must be set;
+// the callers refuse to fall back to CRD storage.
 func PlatformSchemaInAPIExport(ctx context.Context, config *rest.Config, templatesIdentityHash string) error {
 	log := klog.FromContext(ctx).WithName("install.apiexport")
 	dyn, err := dynamic.NewForConfig(config)
@@ -105,6 +105,9 @@ func PlatformSchemaInAPIExport(ctx context.Context, config *rest.Config, templat
 		if err := utilyaml.Unmarshal(raw, &crd); err != nil {
 			return fmt.Errorf("parse crds/%s: %w", e.Name(), err)
 		}
+		if crd.Spec.Group != infrav1alpha1.GroupName || crd.Spec.Names.Plural != "templates" {
+			continue
+		}
 		schemaName, err := ensureAPIResourceSchema(ctx, dyn, &crd)
 		if err != nil {
 			return fmt.Errorf("ensure APIResourceSchema for %s: %w", crd.Name, err)
@@ -115,15 +118,11 @@ func PlatformSchemaInAPIExport(ctx context.Context, config *rest.Config, templat
 		}
 		processed++
 	}
-	log.Info("platform schemas registered on APIExport",
+	log.Info("templates entry re-pointed on APIExport",
 		"count", processed,
 		"apiExport", APIExportName,
 		"templatesStorage", storageKindLabel(templatesIdentityHash),
 	)
-	// Anchor on the platform group import so the linter doesn't strip
-	// the dependency the controller package will share once PR B
-	// collapses the two install/controller flows.
-	_ = infrav1alpha1.GroupName
 	return nil
 }
 

@@ -30,15 +30,20 @@ test('Quickstart geometry is locally bounded and container responsive', async ()
 })
 
 // Pillar 3's data rule: bound CRs are read and written with the kube client
-// over /clusters/{id}; the backend is called only for a data-plane verb.
-test('Quickstart reads its CRs with the kube client and calls only the verb', async () => {
+// over /clusters/{id}, and the verb is a kcp custom subresource on the same
+// path — addressed with the kube client's verbPath, never string-built and
+// never through the hub's /services/providers/ backend proxy.
+test('Quickstart reads its CRs with the kube client and calls the verb as a kcp subresource', async () => {
   const element = await read('./element.ts')
 
   assert.match(element, /createKubeClient\(\{/)
   assert.match(element, /cluster: this\._ctx\?\.tenant/)
-  assert.match(element, /\/dataplane\/clusters\/\$\{encodeURIComponent\(ctx\.tenant\)\}\/greetings\//)
-  // serviceBase() from portalkit, not a hand-rolled /ui/ -> /services/ rewrite.
-  assert.match(element, /serviceBase\(ctx\.basePath \|\| ''\)/)
+  assert.match(element, /\.verbPath\(greetings, name, 'greet'\)/)
+  // The retired hub-proxied grammar must not come back in any spelling.
+  assert.doesNotMatch(element, /\/dataplane\//)
+  assert.doesNotMatch(element, /\/actions\//)
+  assert.doesNotMatch(element, /\/services\/providers\//)
+  assert.doesNotMatch(element, /serviceBase\(/)
   assert.doesNotMatch(element, /replace\(\/\^\\\/ui\\\/providers/)
   // No ad-hoc REST, and no polling for a context the host pushes.
   assert.doesNotMatch(element, /['"`]\/api\//)

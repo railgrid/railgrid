@@ -145,7 +145,7 @@ per-project ServiceAccount.
       **Superseded for the reconciler (2026-09-20, §9 Cut D.1).** The
       convergence loop no longer speaks MCP: it invokes the Code provider's
       `repositories/commit/v1` action (`controller/project/commitaction.go`),
-      staging through `repositories/stage_commit_bundle` when the payload is
+      staging through `repositories/stage-commit-bundle` when the payload is
       past the catalogue's 1 MiB input ceiling. `hubmcp` stays for its wire
       constants and encoding helpers, which the api layer and the bundle
       builder still share, and for the api layer's own MCP tools (checkout,
@@ -165,7 +165,7 @@ per-project ServiceAccount.
       carries everything: what the project acts as when something acts as it
       — `use` on the workspace MCPServer, `get` on the APIBindings, `create`
       on the declared `instances/{verb}` and
-      `connections/mint_registry_token` — AND what this provider's own
+      `connections/mint-registry-token` — AND what this provider's own
       reconcilers do to the dependency objects inside that workspace, bounded
       by the composition the CatalogEntry declares
       (`spec.dependencies[].composes`; `internal/crossprovider/composition.go`).
@@ -297,7 +297,7 @@ rebind or the APIBinding to pick up the new schemas.
   creating it, and a dirty workspace to self-commit once idle.
 - 2026-09-20: Cut D.1 and D.4 (remediation §9). **D.1** — one commit path:
   `internal/codecommit` makes the Code provider's `repositories/commit/v1`
-  call (staging oversized payloads through `stage_commit_bundle`), and both
+  call (staging oversized payloads through `stage-commit-bundle`), and both
   the Project reconciler and the assistant's `commit_project_files` tool go
   through it, differing only in whose bearer they carry. `code__commit_files`
   now has no caller in this provider, which retires the base64 capability

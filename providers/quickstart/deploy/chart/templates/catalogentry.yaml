@@ -37,18 +37,37 @@ data:
       backend:
         url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
         healthPath: "/readyz"
-      # No permissionClaims: the provider reconciles only the Greetings its
-      # own APIExport serves. Mirrors manifest.yaml and init_cmd.go — all
-      # three must change together.
+      # The provider reconciles only the Greetings its own APIExport serves;
+      # the single claim below is the subresource gate, not data. Mirrors
+      # manifest.yaml — both must change together.
       apiExport:
         name: "quickstart.providers.railgrid.ai"
+        permissionClaims:
+          # Every provider that serves a custom subresource needs this one claim:
+          # on the shard-forwarded path there is no caller bearer, so the provider
+          # runs a SubjectAccessReview for the stamped caller through its own
+          # APIExport virtual workspace, and kcp serves that builtin there only for
+          # an export that claims it (hack/verify-provider-contract.mjs
+          # subresource-access-claim). Built-in review API: no identityHash, verb
+          # create only; tenantScoped because the VW confines each review to the
+          # tenant's OWN workspace.
+          - group: authorization.k8s.io
+            resource: subjectaccessreviews
+            verbs: [create]
+            tenantScoped: true
       # Data-plane verbs this provider serves, declared so the coordinate is
-      # machine-readable. Declaring one grants and serves nothing: every call is
-      # still authorized by this provider's own caller-scoped SSAR on
-      # {resource}/{verb}. What the declaration buys is that the hub
-      # scoped-identity service can mint a capability for a verb it can verify
-      # exists (pkg/hub/identity/policy.go clause C), instead of consumers
-      # hardcoding a coordinate nobody validates.
+      # machine-readable. Declaring one grants nothing: every call is still
+      # authorized by kcp as `create` on {resource}/{verb} with ordinary RBAC,
+      # then gated for visibility by this provider. What the declaration buys,
+      # per verb: codegen emits the kcp custom subresource "<resource>/<verb>"
+      # on the generated APIExport (the shard routes
+      # it to this provider through its DataPlaneEndpointSlice) together with the
+      # "<Verb>Request" schema the entry names; a consumer provider can compose the
+      # coordinate under spec.dependencies[].composes[] and have it claimed on ITS
+      # export; and the hub scoped-identity service (pkg/hub/identity/policy.go
+      # clause C) can mint a capability only for a verb it can verify exists. None
+      # of this is a permission claim of this provider: a claim names another
+      # export's resources, never one's own verbs.
       dataPlane:
         verbs:
           - resource: greetings

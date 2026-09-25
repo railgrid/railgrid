@@ -39,6 +39,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/apiurl"
@@ -68,8 +70,11 @@ type dataPlaneGrant struct {
 	// really does serve all of them. Anything narrower must be listed, or the
 	// grant widens itself as new resources join the group's APIExport.
 	resources []string
-	// subresources are virtual subresources granted with "create". They
-	// invoke something (a shell, a job) and are dropped for readOnly servers.
+	// subresources are the provider's kcp custom subresources (data-plane
+	// verbs) granted with dataplane.SubresourceVerbs: the coordinate is the
+	// capability, and kcp maps the HTTP method a verb uses onto the RBAC
+	// verb. They invoke something (a shell, a job) and are dropped for
+	// readOnly servers.
 	subresources []string
 }
 
@@ -103,10 +108,11 @@ var dataPlaneGrants = map[string][]dataPlaneGrant{
 	// modelcredentials is named explicitly so binding a new resource in the
 	// group never widens this to <newresource>/test.
 	"agents.railgrid.ai": {{resources: []string{"modelcredentials"}, subresources: []string{"test", "discover"}}},
-	// The infrastructure data plane gates "create" on instances/{verb} for
-	// every verb (providers/infrastructure/dataplane/handler.go); exec is the
-	// one an MCP token may hold. instances is the only resource the data plane
-	// serves, so exec is granted on instances alone and never on templates.
+	// The infrastructure data plane serves instances/{verb} as kcp custom
+	// subresources (providers/infrastructure/dataplane/handler.go); exec is
+	// the one an MCP token may hold. instances is the only resource the data
+	// plane serves, so exec is granted on instances alone and never on
+	// templates.
 	"infrastructure.railgrid.ai": {{resources: []string{"instances"}, subresources: []string{"exec"}}},
 }
 
@@ -235,10 +241,10 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 					subs = append(subs, r+"/"+s)
 				}
 			}
-			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: subs, Verbs: []string{"create"}})
+			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: subs, Verbs: append([]string(nil), dataplane.SubresourceVerbs...)})
 		}
 		if subs := actionSubs[g]; len(subs) > 0 {
-			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: sortedKeys(subs), Verbs: []string{"create"}})
+			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: sortedKeys(subs), Verbs: append([]string(nil), dataplane.SubresourceVerbs...)})
 		}
 	}
 

@@ -16,13 +16,16 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/kro"
+	sdkdataplane "github.com/railgrid/provider-sdk/dataplane"
 )
 
 // devComponentPaths builds a development contract from name → workspacePath
@@ -86,7 +89,24 @@ func TestRequireDevComponentDefaultsWhenSingle(t *testing.T) {
 	}
 }
 
-// captureHandler records the request callDataPlane synthesizes.
+// serveVerb stands in for the hub front door in tests: it drives an
+// http.Handler with the request a VerbCaller would put on the wire — the kube
+// path, the verb's own headers and the caller's bearer, set last so nothing in
+// the extras can override it.
+func serveVerb(h http.Handler, ctx context.Context, token, method, path string, body io.Reader, headers http.Header) (*http.Response, error) {
+	req := httptest.NewRequest(method, path, body).WithContext(ctx)
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Result(), nil
+}
+
+// captureHandler records the request callDataPlane puts on the wire.
 type captureHandler struct {
 	req  *http.Request
 	body string
@@ -100,7 +120,20 @@ func (c *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
-func TestCallDataPlaneSynthesizesHubShapedRequest(t *testing.T) {
+func (c *captureHandler) DoVerb(ctx context.Context, token, method, path string, body io.Reader, headers http.Header) (*http.Response, error) {
+	return serveVerb(c, ctx, token, method, path, body, headers)
+}
+
+// verbBase is the kube path prefix of this provider's instance verbs in a
+// cluster, as the tests expect callDataPlane to spell it.
+func verbBase(cluster string) string {
+	return "/clusters/" + cluster + "/apis/" + infrav1alpha1.GroupName + "/" + infrav1alpha1.Version + "/"
+}
+
+// callDataPlane addresses the verb the one way it exists: the kcp
+// custom-subresource path on the front door, component as a query parameter,
+// authenticated with the caller's own bearer and nothing else.
+func TestCallDataPlaneAddressesTheKubePath(t *testing.T) {
 	h := &captureHandler{}
 	ident := identity{tenant: "root:orgs:acme", clusterID: "abc123xyz", user: "dev@acme.io", token: "tok"}
 
@@ -111,18 +144,56 @@ func TestCallDataPlaneSynthesizesHubShapedRequest(t *testing.T) {
 	if status != http.StatusOK || string(body) != `{"ok":true}` {
 		t.Fatalf("status/body = %d %q", status, string(body))
 	}
-	wantPath := "/dataplane/clusters/abc123xyz/simplewebapps/my-site/components/app/sync"
+	wantPath := verbBase("abc123xyz") + "simplewebapps/my-site/sync"
 	if h.req.URL.Path != wantPath {
 		t.Errorf("path = %q, want %q", h.req.URL.Path, wantPath)
+	}
+	if got := h.req.URL.Query()[sdkdataplane.ComponentQuery]; len(got) != 1 || got[0] != "app" {
+		t.Errorf("component query = %v, want [app]", got)
 	}
 	if got := h.req.Header.Get("Authorization"); got != "Bearer tok" {
 		t.Errorf("Authorization = %q, want caller bearer", got)
 	}
-	if got := h.req.Header.Get("X-Railgrid-Tenant"); got != "root:orgs:acme" {
-		t.Errorf("X-Railgrid-Tenant = %q", got)
+	// The hub-proxy identity headers are not part of a verb: kcp
+	// authenticates the bearer itself and stamps its own.
+	for _, name := range []string{"X-Railgrid-Tenant", "X-Railgrid-Cluster", "X-Railgrid-User"} {
+		if got := h.req.Header.Get(name); got != "" {
+			t.Errorf("%s = %q, want none on a verb", name, got)
+		}
+	}
+	if got := h.req.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q", got)
 	}
 	if h.body != `{"files":[]}` {
 		t.Errorf("body = %q", h.body)
+	}
+
+	// An instance-level verb has no component parameter at all.
+	h = &captureHandler{}
+	if _, _, err := callDataPlane(context.Background(), h, ident, http.MethodGet, "instances", "my-site", "", "runtime-status", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if h.req.URL.RawQuery != "" || h.req.URL.Path != verbBase("abc123xyz")+"instances/my-site/runtime-status" {
+		t.Errorf("instance verb = %s?%s, want no query", h.req.URL.Path, h.req.URL.RawQuery)
+	}
+}
+
+// A component name or verb the grammar refuses never leaves the process as a
+// mangled URL.
+func TestCallDataPlaneRefusesUnaddressableCoordinates(t *testing.T) {
+	h := &captureHandler{}
+	ident := identity{clusterID: "abc", token: "tok"}
+	for _, tc := range []struct{ name, component, verb string }{
+		{"my-app", "../other", "sync"},
+		{"my-app", "app", "status"},
+		{"", "app", "sync"},
+	} {
+		if _, _, err := callDataPlane(context.Background(), h, ident, http.MethodPost, "instances", tc.name, tc.component, tc.verb, nil, nil); err == nil {
+			t.Errorf("name=%q component=%q verb=%q: want an error", tc.name, tc.component, tc.verb)
+		}
+	}
+	if h.req != nil {
+		t.Error("nothing may be sent for an unaddressable coordinate")
 	}
 }
 
@@ -158,6 +229,10 @@ func (s *scriptedDataPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(s.body))
 }
 
+func (s *scriptedDataPlane) DoVerb(ctx context.Context, token, method, path string, body io.Reader, headers http.Header) (*http.Response, error) {
+	return serveVerb(s, ctx, token, method, path, body, headers)
+}
+
 func TestPushDevSyncCallsOnlyComponentsWithFiles(t *testing.T) {
 	dp := &scriptedDataPlane{status: http.StatusOK, body: `{"phase":"Synced","sourceRevision":3}`}
 	ident := identity{tenant: "root:orgs:acme", clusterID: "abc", token: "tok"}
@@ -168,7 +243,7 @@ func TestPushDevSyncCallsOnlyComponentsWithFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pushDevSync: %v", err)
 	}
-	if len(dp.reqs) != 1 || dp.reqs[0].URL.Path != "/dataplane/clusters/abc/instances/my-app/components/frontend/sync" {
+	if len(dp.reqs) != 1 || dp.reqs[0].URL.Path != verbBase("abc")+"instances/my-app/sync" || dp.reqs[0].URL.Query().Get(sdkdataplane.ComponentQuery) != "frontend" {
 		t.Fatalf("sync calls = %d (first %v), want only frontend", len(dp.reqs), dp.reqs)
 	}
 	if _, called := out["backend"]; called || out["frontend"].Files != 1 {
@@ -192,8 +267,8 @@ func TestRunDevExecUsesRunActionAndAppliedRevision(t *testing.T) {
 		t.Fatalf("exec calls = %d, want 1", len(dp.reqs))
 	}
 	req := dp.reqs[0]
-	if req.Method != http.MethodPost || req.URL.Path != "/dataplane/clusters/abc/instances/my-app/components/backend/exec" {
-		t.Fatalf("exec request = %s %s", req.Method, req.URL.Path)
+	if req.Method != http.MethodPost || req.URL.Path != verbBase("abc")+"instances/my-app/exec" || req.URL.Query().Get(sdkdataplane.ComponentQuery) != "backend" {
+		t.Fatalf("exec request = %s %s?%s", req.Method, req.URL.Path, req.URL.RawQuery)
 	}
 	if got := req.Header.Get("Idempotency-Key"); got != "key-1" {
 		t.Errorf("Idempotency-Key = %q, want key-1", got)
@@ -555,8 +630,14 @@ type scriptedResponse struct {
 	body   string
 }
 
+func (v *verbDataPlane) DoVerb(ctx context.Context, token, method, path string, body io.Reader, headers http.Header) (*http.Response, error) {
+	return serveVerb(v, ctx, token, method, path, body, headers)
+}
+
 func (v *verbDataPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	_, rest, _ := strings.Cut(r.URL.Path, "/components/")
+	// "<component>/<verb>" from the kube path: the verb is the last segment,
+	// the component the query parameter.
+	rest := r.URL.Query().Get(sdkdataplane.ComponentQuery) + r.URL.Path[strings.LastIndex(r.URL.Path, "/"):]
 	raw, _ := io.ReadAll(r.Body)
 	v.calls = append(v.calls, r.Method+" "+rest)
 	if v.bodies == nil {

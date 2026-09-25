@@ -5,7 +5,8 @@ Drive a development-mode instance: sync, exec, logs, restart, status
 ### Synopsis
 
 Drive a development-mode infrastructure Instance (for an App Studio project,
-<project>-dev) through the hub data plane, as you.
+<project>-dev) through its data-plane verbs, as you. Each verb is a Kubernetes
+custom subresource on the Instance, reached through the hub's kcp front door.
 
 Component paths are relative to the component's workspacePath: for the
 application template, sync api/ to component "api" and web/ to "web".

@@ -29,6 +29,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // The types below mirror the App Studio REST projections
@@ -197,12 +199,130 @@ Develop with 'railgrid sandbox' against <project>-dev and record commits with
 	return cmd
 }
 
-func projectURL(s *hubSession, name string, sub ...string) string {
-	u := s.appStudioURL() + "/api/projects/" + url.PathEscape(name)
-	if len(sub) > 0 {
-		u += "/" + strings.Join(sub, "/")
+// App Studio's API coordinates. Every operation below is either a read or
+// write of a Project CR through the hub's kcp proxy (list, the existence check
+// behind `sandbox exec`), or one of the provider's data-plane verbs — kcp
+// custom subresources "projects/{verb}" and "studios/{verb}" on its APIExport,
+// declared in providers/app-studio/manifest.yaml spec.dataPlane.verbs and
+// served by providers/app-studio/api/dataplane_table.go. There is no
+// /services/providers/app-studio/api/... facade any more.
+const (
+	appStudioAPIGroup   = "ai.railgrid.ai"
+	appStudioAPIVersion = "v1alpha1"
+	projectsResource    = "projects"
+	studiosResource     = "studios"
+	// appStudioStudioName mirrors aiv1alpha1.StudioName: the per-workspace
+	// singleton that workspace-wide verbs (create-project) hang off.
+	appStudioStudioName = "studio"
+)
+
+// appStudioAPIURL is the tenant kube API base of App Studio's kinds in the
+// session's workspace: /clusters/{cluster}/apis/ai.railgrid.ai/v1alpha1.
+func appStudioAPIURL(s *hubSession) string {
+	return fmt.Sprintf("%s/clusters/%s/apis/%s/%s", s.Hub, url.PathEscape(s.Cluster), appStudioAPIGroup, appStudioAPIVersion)
+}
+
+// projectAPIURL is the Project CR itself (a kube GET, authorized by the
+// caller's own RBAC on the object).
+func projectAPIURL(s *hubSession, name string) string {
+	return appStudioAPIURL(s) + "/" + projectsResource + "/" + url.PathEscape(name)
+}
+
+// projectVerbURL addresses a data-plane verb on one project:
+//
+//	/clusters/{cluster}/apis/ai.railgrid.ai/v1alpha1/projects/{name}/{verb}[/{tail}]
+//
+// tail is the part of the address inside the object (a grant id, a file
+// path), which stays out of the verb so one grant covers the set.
+func projectVerbURL(s *hubSession, name, verb string, tail ...string) string {
+	u := apiurl.ProviderVerbURL(s.Hub, url.PathEscape(s.Cluster), appStudioAPIGroup, appStudioAPIVersion, projectsResource, url.PathEscape(name), verb)
+	for _, t := range tail {
+		u += "/" + url.PathEscape(t)
 	}
 	return u
+}
+
+// studioVerbURL addresses a workspace-wide verb on the Studio singleton:
+//
+//	/clusters/{cluster}/apis/ai.railgrid.ai/v1alpha1/studios/studio/{verb}
+func studioVerbURL(s *hubSession, verb string) string {
+	return apiurl.ProviderVerbURL(s.Hub, url.PathEscape(s.Cluster), appStudioAPIGroup, appStudioAPIVersion, studiosResource, appStudioStudioName, verb)
+}
+
+// ensureStudio creates the workspace's Studio when it is missing. A Studio
+// verb is authorized against the Studio object, and the provider's gate is a
+// real read of it, so in a workspace that has never created a project the
+// verb would 404 with nothing to authorize against. Creating the bound CR
+// first is the answer: the API server validates it against the CRD and the
+// caller's membership, and the provider's reconciler fills in the service
+// references afterwards. Already-exists is success.
+func ensureStudio(ctx context.Context, s *hubSession) error {
+	studiosURL := appStudioAPIURL(s) + "/" + studiosResource
+	if err := s.do(ctx, http.MethodGet, studiosURL+"/"+appStudioStudioName, nil, nil); err == nil {
+		return nil
+	}
+	body := map[string]any{
+		"apiVersion": appStudioAPIGroup + "/" + appStudioAPIVersion,
+		"kind":       "Studio",
+		"metadata":   map[string]any{"name": appStudioStudioName},
+		"spec":       map[string]any{"search": map[string]any{"size": "small"}, "browser": map[string]any{"size": "small"}},
+	}
+	if err := s.do(ctx, http.MethodPost, studiosURL, body, nil); err != nil {
+		var apiErr *hubAPIError
+		if errors.As(err, &apiErr) && apiErr.Code == http.StatusConflict {
+			return nil
+		}
+		return fmt.Errorf("creating the workspace's App Studio Studio (is App Studio enabled in this workspace?): %w", err)
+	}
+	return nil
+}
+
+// appProjectCR is the Project CR as the API server serves it: what the list
+// needs. Anything joined — live instance status, the commit ledger — comes
+// from the `view` verb, which is why that verb exists.
+type appProjectCR struct {
+	Metadata struct {
+		Name              string    `json:"name"`
+		CreationTimestamp time.Time `json:"creationTimestamp"`
+		DeletionTimestamp *string   `json:"deletionTimestamp,omitempty"`
+	} `json:"metadata"`
+	Spec struct {
+		DisplayName string `json:"displayName"`
+		Description string `json:"description"`
+		Repository  *struct {
+			RepositoryRef string `json:"repositoryRef"`
+		} `json:"repository"`
+		Template *struct {
+			Name string `json:"name"`
+		} `json:"template"`
+	} `json:"spec"`
+	Status struct {
+		Phase     string     `json:"phase"`
+		UpdatedAt *time.Time `json:"updatedAt"`
+	} `json:"status"`
+}
+
+// appProjectFromCR projects a Project CR onto the fields `app list` prints.
+func appProjectFromCR(cr appProjectCR) appProjectView {
+	p := appProjectView{
+		Name:        cr.Metadata.Name,
+		DisplayName: cr.Spec.DisplayName,
+		Description: cr.Spec.Description,
+		Phase:       cr.Status.Phase,
+		Deleting:    cr.Metadata.DeletionTimestamp != nil,
+		CreatedAt:   cr.Metadata.CreationTimestamp,
+		UpdatedAt:   cr.Status.UpdatedAt,
+	}
+	if p.DisplayName == "" {
+		p.DisplayName = cr.Metadata.Name
+	}
+	if cr.Spec.Template != nil {
+		p.Template = cr.Spec.Template.Name
+	}
+	if cr.Spec.Repository != nil && cr.Spec.Repository.RepositoryRef != "" {
+		p.Repository = &appRepositoryView{Ref: cr.Spec.Repository.RepositoryRef}
+	}
+	return p
 }
 
 func cmdContext(cmd *cobra.Command) context.Context {
@@ -228,18 +348,20 @@ func newAppListCommand(target *hubTarget) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var raw json.RawMessage
-			if err := s.do(ctx, http.MethodGet, s.appStudioURL()+"/api/projects", nil, &raw); err != nil {
+			// Projects are Project CRs: a kube list through the hub's kcp
+			// proxy, authorized by the caller's own RBAC on the kind.
+			var list listResponse[appProjectCR]
+			if err := s.do(ctx, http.MethodGet, appStudioAPIURL(s)+"/"+projectsResource, nil, &list); err != nil {
 				return err
 			}
+			items := make([]appProjectView, 0, len(list.Items))
+			for _, cr := range list.Items {
+				items = append(items, appProjectFromCR(cr))
+			}
 			if output == "json" {
-				return printJSON(cmd.OutOrStdout(), raw)
+				return printJSON(cmd.OutOrStdout(), listResponse[appProjectView]{Items: items})
 			}
-			var list listResponse[appProjectView]
-			if err := json.Unmarshal(raw, &list); err != nil {
-				return fmt.Errorf("decoding projects: %w", err)
-			}
-			return printAppList(cmd.OutOrStdout(), list.Items)
+			return printAppList(cmd.OutOrStdout(), items)
 		},
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output format: json")
@@ -325,8 +447,11 @@ func runAppCreate(ctx context.Context, out, errOut io.Writer, target hubTarget, 
 	if err != nil {
 		return err
 	}
+	if err := ensureStudio(ctx, s); err != nil {
+		return err
+	}
 	var raw json.RawMessage
-	if err := s.do(ctx, http.MethodPost, s.appStudioURL()+"/api/projects", req, &raw); err != nil {
+	if err := s.do(ctx, http.MethodPost, studioVerbURL(s, "create-project"), req, &raw); err != nil {
 		// The hub never renames: a taken project or Repository name is a 409
 		// whose message says what collided and what to do.
 		var apiErr *hubAPIError
@@ -352,7 +477,7 @@ func runAppCreate(ctx context.Context, out, errOut io.Writer, target hubTarget, 
 			case <-time.After(5 * sandboxPollInterval):
 			}
 			raw = nil
-			if err := s.do(ctx, http.MethodGet, projectURL(s, p.Name), nil, &raw); err != nil {
+			if err := s.do(ctx, http.MethodGet, projectVerbURL(s, p.Name, "view"), nil, &raw); err != nil {
 				return err
 			}
 			if err := json.Unmarshal(raw, &p); err != nil {
@@ -411,13 +536,13 @@ func newAppStatusCommand(target *hubTarget) *cobra.Command {
 				return err
 			}
 			st := appStatus{}
-			if err := s.do(ctx, http.MethodGet, projectURL(s, args[0]), nil, &st.Project); err != nil {
+			if err := s.do(ctx, http.MethodGet, projectVerbURL(s, args[0], "view"), nil, &st.Project); err != nil {
 				return err
 			}
-			if err := s.do(ctx, http.MethodGet, projectURL(s, args[0], "promotion"), nil, &st.Promotion); err != nil {
+			if err := s.do(ctx, http.MethodGet, projectVerbURL(s, args[0], "promotion"), nil, &st.Promotion); err != nil {
 				st.PromotionError = err.Error()
 			}
-			if err := s.do(ctx, http.MethodGet, projectURL(s, args[0], "publishing"), nil, &st.Publishing); err != nil {
+			if err := s.do(ctx, http.MethodGet, projectVerbURL(s, args[0], "publishing"), nil, &st.Publishing); err != nil {
 				st.PublishingError = err.Error()
 			}
 			if output == "json" {
@@ -648,11 +773,11 @@ func runAppSync(ctx context.Context, out, errOut io.Writer, target hubTarget, na
 	}
 	var res appSyncOutput
 	_, _ = fmt.Fprintf(errOut, "railgrid app: loading %s's workspace from its repository…\n", name)
-	if err := s.do(ctx, http.MethodPost, projectURL(s, name, "hydrate-workspace"), map[string]any{}, &res.Hydrate); err != nil {
+	if err := s.do(ctx, http.MethodPost, projectVerbURL(s, name, "hydrate-workspace"), map[string]any{}, &res.Hydrate); err != nil {
 		return fmt.Errorf("hydrating the workspace: %w", err)
 	}
 	_, _ = fmt.Fprintf(errOut, "railgrid app: syncing %s's workspace to its development instance…\n", name)
-	if err := s.do(ctx, http.MethodPost, projectURL(s, name, "sync-development"), map[string]any{}, &res.Sync); err != nil {
+	if err := s.do(ctx, http.MethodPost, projectVerbURL(s, name, "sync-development"), map[string]any{}, &res.Sync); err != nil {
 		return fmt.Errorf("syncing the development instance: %w", err)
 	}
 	if output == "json" {
@@ -740,7 +865,7 @@ nothing. Each promote rolls pods, even for the same commit.`,
 			}
 			req := buildPromoteRequest(hostnamePrefix, commitSHA)
 			var raw json.RawMessage
-			if err := s.do(ctx, http.MethodPost, projectURL(s, args[0], "promote"), req, &raw); err != nil {
+			if err := s.do(ctx, http.MethodPost, projectVerbURL(s, args[0], "promote"), req, &raw); err != nil {
 				return err
 			}
 			if output == "json" {
@@ -796,7 +921,7 @@ func settlePublishing(ctx context.Context, s *hubSession, name string, pub appPu
 		case <-time.After(publishSettleInterval):
 		}
 		var next appPublishingView
-		if err := s.do(ctx, http.MethodGet, projectURL(s, name, "publishing"), nil, &next); err == nil {
+		if err := s.do(ctx, http.MethodGet, projectVerbURL(s, name, "publishing"), nil, &next); err == nil {
 			pub = next
 		}
 	}
@@ -834,7 +959,7 @@ func newAppPublishCommand(target *hubTarget) *cobra.Command {
 				return err
 			}
 			var raw json.RawMessage
-			if err := s.do(ctx, method, projectURL(s, args[0], "publishing"), body, &raw); err != nil {
+			if err := s.do(ctx, method, projectVerbURL(s, args[0], "publishing"), body, &raw); err != nil {
 				return err
 			}
 			if output == "json" {

@@ -25,6 +25,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	sdk "github.com/railgrid/provider-sdk/dataplane"
 )
 
 // Runtime is the provider's handle to the cluster where workloads run. It is
@@ -96,10 +98,17 @@ func serveProxy(w http.ResponseWriter, r *http.Request, rt Runtime, target Resol
 			req.URL.Scheme = base.Scheme
 			req.URL.Host = base.Host
 			req.URL.Path = upstreamPath
+			// The component parameter addressed the object, not the verb; the
+			// rest of the query string is the verb's own and rides along
+			// verbatim.
+			req.URL.RawQuery = stripComponentQuery(req.URL.RawQuery)
 			req.Host = base.Host
-			// The runtime credential is supplied by Transport; never forward the
-			// caller's bearer token to the runtime cluster.
+			// The runtime credential is supplied by Transport, and no caller
+			// credential exists on a verb; nothing identity-shaped is
+			// forwarded to the runtime cluster. The identity kcp stamped was
+			// for this provider to read, and the hop counter is kcp's own.
 			req.Header.Del("Authorization")
+			stripCallerIdentity(req.Header)
 			if token != "" {
 				req.Header.Set(controlTokenHeader, token)
 			} else {
@@ -112,6 +121,45 @@ func serveProxy(w http.ResponseWriter, r *http.Request, rt Runtime, target Resol
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// stripCallerIdentity removes the caller-identity headers a kcp shard (and,
+// for MCP, the hub proxy) stamps, so the workload behind the runtime Service
+// learns nothing about who called — the provider authorized them already.
+func stripCallerIdentity(h http.Header) {
+	h.Del(sdk.HeaderRemoteUser)
+	h.Del(sdk.HeaderRemoteGroup)
+	h.Del(sdk.HeaderHops)
+	h.Del(sdk.HeaderCluster)
+	h.Del(sdk.HeaderTenant)
+	h.Del(sdk.HeaderUser)
+	for name := range h {
+		if strings.HasPrefix(http.CanonicalHeaderKey(name), sdk.HeaderRemoteExtraPrefix) {
+			h.Del(name)
+		}
+	}
+}
+
+// stripComponentQuery removes every "component" pair from a raw query string
+// without re-encoding or reordering what remains: the upstream must see the
+// caller's own query exactly as it was sent. The key is compared decoded, as
+// the parser read it, so an encoded spelling cannot slip through.
+func stripComponentQuery(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	kept := make([]string, 0, 4)
+	for _, pair := range strings.Split(raw, "&") {
+		key := pair
+		if i := strings.IndexByte(pair, '='); i >= 0 {
+			key = pair[:i]
+		}
+		if decoded, err := url.QueryUnescape(key); err == nil && decoded == sdk.ComponentQuery {
+			continue
+		}
+		kept = append(kept, pair)
+	}
+	return strings.Join(kept, "&")
 }
 
 // serviceProxyPath composes the runtime API path that reverse-proxies to the

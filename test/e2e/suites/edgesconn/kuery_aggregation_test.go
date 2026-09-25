@@ -38,6 +38,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"sigs.k8s.io/yaml"
+
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // Kuery runs beside the edges provider in this suite; :18098 is edges.
@@ -186,7 +188,8 @@ func TestKueryAggregatesEdgeObjects(t *testing.T) {
 
 	// 7. THE PROOF: a SavedView in the tenant workspace that finds the
 	// Deployment and expands its descendants, run through kuery's one tenant
-	// route, POST /dataplane/clusters/{clusterID}/savedviews/{name}/run.
+	// verb — the kcp custom subresource savedviews/run on its APIExport,
+	// POST /clusters/{clusterID}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run.
 	const viewName = "kuery-agg-view"
 	view := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "kuery.providers.railgrid.ai/v1alpha1",
@@ -548,22 +551,22 @@ func enableKueryViaHub(t *testing.T, tenant dynamic.Interface, tenantWS string) 
 	}
 }
 
-// runSavedView POSTs the saved view's run verb straight at the kuery provider,
-// bypassing the hub. The bearer is the kcp admin token because kuery's gates
-// (a real GET of the SavedView, then a SelfSubjectAccessReview for
-// savedviews/run) run as the caller against kcp itself; a hub user token
-// means nothing there. Reaching the pod directly is the point: the gates must
-// hold without the proxy in front.
+// runSavedView POSTs the saved view's run verb on kcp's own front door: the
+// verb is a custom subresource on kuery's APIExport, so kcp authenticates the
+// bearer (the kcp admin token — a hub user token means nothing there),
+// authorizes the POST on savedviews/run with RBAC, and reverse-proxies the
+// request to the kuery provider with the caller's identity stamped. The
+// provider is never addressed directly: a verb has no bearer-authenticated
+// spelling of its own, and its gate runs on the identity kcp forwards.
 func runSavedView(t *testing.T, tenantWS, view string) (int, []byte) {
 	t.Helper()
-	path := "/dataplane/clusters/" + tenantWS + "/savedviews/" + view + "/run"
-	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+kueryPort+path, bytes.NewReader([]byte("{}")))
+	path := apiurl.ProviderVerbPath(tenantWS, "kuery.providers.railgrid.ai", "v1alpha1", "savedviews", view, "run")
+	req, err := http.NewRequest(http.MethodPost, kcpServer+path, bytes.NewReader([]byte(`{"input":{}}`)))
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+adminToken)
-	req.Header.Set("X-Railgrid-Cluster", tenantWS)
 	resp, err := insecureClient(60 * time.Second).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)

@@ -62,8 +62,9 @@ Claude / Cursor / similar MCP clients:
 The configuration hints then carry the workspace's long-lived MCP token from
 the hub's connect endpoint, which also works after an OIDC login.
 
-Use --edge to print the per-edge MCP endpoint URL (single Kubernetes edge):
-  https://railgrid.example.com/services/providers/edges/agent/root:railgrid:user-default/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp
+Use --edge to print the per-edge MCP endpoint URL (single Kubernetes edge),
+the edge's "mcp" verb on the hub's kcp front door:
+  https://railgrid.example.com/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp
 
 The previous per-kind MCP endpoints (--name for KubernetesMCP,
 --linux-name for LinuxMCP) were removed; their tools now appear on the
@@ -293,15 +294,16 @@ func edgeTypeKind(edgeName string) string {
 // mcpURLFromServerURL derives the per-edge MCP endpoint URL from a kcp server URL and edge name.
 //
 // Input:  https://railgrid.example.com/clusters/11tcw27t4rdtnacy, "my-edge"
-// Output: https://railgrid.example.com/services/providers/edges/dataplane/clusters/11tcw27t4rdtnacy/kubernetesclusters/my-edge/mcp
+// Output: https://railgrid.example.com/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp
 //
 // Per-edge MCP exposes the kube toolset against a single KubernetesCluster edge,
 // so the URL targets the `kubernetesclusters` resource on the edges provider
 // (server edges have no Kubernetes API and are rejected by the handler).
 //
-// It is a consumer verb on the data plane, class (a). It used to hang off the
-// provider's /agent mount — class (f), whose credential is an edge
-// ServiceAccount, not a person's — which is why it moved.
+// It is the edge's "mcp" data-plane verb: a kcp custom subresource on the
+// edges APIExport, authorized with the caller's own RBAC and reverse-proxied
+// by kcp to the provider. It never hangs off the provider's /agent tunnel,
+// whose credential is an edge ServiceAccount, not a person's.
 //
 // Returns an error if the server URL does not contain a /clusters/ path segment.
 func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
@@ -309,7 +311,7 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 	if cluster == "default" {
 		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
 	}
-	return apiurl.ProviderDataPlaneURL(base, "edges", "kubernetesclusters", cluster, edgeName, "mcp"), nil
+	return apiurl.EdgeVerbURL(base, "kubernetes", cluster, edgeName, "mcp"), nil
 }
 
 // mcpKubernetesURLFromServerURL / mcpLinuxURLFromServerURL were

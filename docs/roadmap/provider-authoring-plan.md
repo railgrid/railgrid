@@ -127,7 +127,8 @@ the grammar exists to refuse), another grew an `/api/*` facade for its portal.
 
 `provider-sdk/serve` ended that. `serve.New(Options{…})` returns the provider's
 complete `http.Handler` with the fixed, closed layout — `/healthz`, `/readyz`,
-`/mcp` + `/mcp/sse`, `/dataplane/`, `/actions/`, `/workload-identities/*`,
+`/mcp` + `/mcp/sse`, `/clusters/` (the shard-forwarded custom subresources;
+`/dataplane/` and `/actions/` are gone since 2026-09-25), `/workload-identities/*`,
 `/oauth/`, `/agent/`, `/webhooks/`, and the portal file server with SPA index
 fallback — plus request logging, and a `ServeHTTP` that matches the grammar
 prefixes on the **raw** path before any mux can clean it. It *refuses to

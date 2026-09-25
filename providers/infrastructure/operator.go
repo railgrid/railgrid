@@ -185,7 +185,7 @@ func bootstrapOnce(ctx context.Context, providerCfg, runtimeCfg *rest.Config, pr
 	if err := operator.Bootstrap(ctx, providerCfg, operator.BootstrapOptions{
 		WorkspacePath:        workspacePath,
 		APIExportName:        apiExportName,
-		CatalogEntryFile:     os.Getenv("RAILGRID_CATALOGENTRY_FILE"),
+		CatalogEntryFile:     catalogEntryPath(),
 		SkipSeedTemplates:    os.Getenv("INFRASTRUCTURE_SKIP_SEED_TEMPLATES") != "",
 		CodingSandboxEnabled: codingSandboxEnabled(),
 	}); err != nil {

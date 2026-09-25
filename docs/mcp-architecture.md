@@ -94,11 +94,11 @@ federates `infrastructure` or `code`. Its tools surface as `edges__*`.
   [`mcp_service.go`](https://github.com/railgrid/railgrid/blob/main/providers/edges/internal/tunnel/mcp_service.go),
   fresh per request, from the edges the **caller** can see in the addressed
   workspace.
-- **Reaching one edge's own MCP endpoint** is a declared data-plane verb, not a
-  separate mount:
+- **Reaching one edge's own MCP endpoint** is a declared data-plane verb — a
+  kcp custom subresource on the hub's kcp front door, not a separate mount:
 
   ```
-  /services/providers/edges/dataplane/clusters/{clusterID}/{resource}/{name}/mcp
+  /clusters/{clusterID}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/mcp
   ```
 
   where `{resource}` is `kubernetesclusters` or `services`
@@ -468,10 +468,11 @@ There is one way in: **be a provider**. Tools cannot be compiled into the hub.
    Do all tenant work **as that token**, scoped to that workspace — never with a
    provider-wide service account.
 4. **A tool is a projection, not a third access path.** Every tool must wrap a
-   read the caller could have done through the bound CR, or a declared verb it
-   invokes through `provider-sdk/dataplane` with the same two gates. A tool may
-   not hold a credential or reach a coordinate the caller would not be granted
-   directly.
+   read the caller could have done through the bound CR, or a declared verb
+   the caller could have invoked as a custom subresource on `/clusters/{id}`
+   — run through the same executor and the same authorization as the verb. A
+   tool may not hold a credential or reach a coordinate the caller would not
+   be granted directly.
 5. Your tools appear in the aggregate as `<your-provider>__<tool>`
    automatically, on the **one** aggregate endpoint; clients do not add each
    provider separately.

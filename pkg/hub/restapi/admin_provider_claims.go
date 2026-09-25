@@ -29,11 +29,13 @@ package restapi
 // claim gets it for free.
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gorilla/mux"
 	"k8s.io/klog/v2"
 
+	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
@@ -111,11 +113,11 @@ func (h *Handler) reacceptProviderClaims(w http.ResponseWriter, r *http.Request)
 	}
 
 	claims := tenantScopedClaims(prov.PermissionClaims)
-	if len(claims) == 0 {
+	if len(claims) == 0 && len(hubaccess.DeclaredCompositions(prov.Dependencies)) == 0 {
 		// Refused rather than run: writing an empty claim set would strip every
 		// tenant's grants, which is the opposite of a migration. In practice
 		// this means the hub has not observed the provider's CatalogEntry yet.
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "provider "+providerName+" declares no tenant-scoped permission claims")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "provider "+providerName+" declares no tenant-scoped permission claims and no compositions")
 		return
 	}
 
@@ -138,7 +140,22 @@ func (h *Handler) reacceptProviderClaims(w http.ResponseWriter, r *http.Request)
 	}
 
 	for _, ref := range refs {
-		changed, err := h.mgr.bootstrapper.ReacceptProviderAPIBindingClaims(ctx, ref, prov.APIExportPath, prov.APIExportName, claims)
+		// The compositions this workspace consented to (recorded in its Grant
+		// at Enable) are claims on the binding too, and a binding written
+		// before the hub put them there is exactly what this migration
+		// repairs. Only the accepted ones are added: re-accepting is not
+		// consenting on the tenant's behalf.
+		perBinding, err := h.compositionClaimsFor(ctx, ref, prov, claims)
+		if err != nil {
+			logger.Error(err, "reading composition consent", "org", ref.OrgUUID, "workspace", ref.WorkspaceUUID, "binding", ref.BindingName)
+			resp.Failed = append(resp.Failed, ReacceptClaimFailure{Org: ref.OrgUUID, Workspace: ref.WorkspaceUUID, Binding: ref.BindingName, Error: err.Error()})
+			continue
+		}
+		if len(perBinding) == 0 {
+			resp.Unchanged++
+			continue
+		}
+		changed, err := h.mgr.bootstrapper.ReacceptProviderAPIBindingClaims(ctx, ref, prov.APIExportPath, prov.APIExportName, perBinding)
 		switch {
 		case err != nil:
 			logger.Error(err, "re-accepting provider claims", "org", ref.OrgUUID, "workspace", ref.WorkspaceUUID, "binding", ref.BindingName)
@@ -179,4 +196,33 @@ func tenantScopedClaims(declared []providers.PermissionClaim) []kcp.ProviderClai
 		})
 	}
 	return out
+}
+
+// compositionClaimsFor appends to base the composition claims the workspace
+// behind ref accepted, read from its Grant. Without a grant store, or without a
+// grant, nothing is added.
+func (h *Handler) compositionClaimsFor(ctx context.Context, ref kcp.ProviderBindingRef, prov providers.Provider, base []kcp.ProviderClaim) ([]kcp.ProviderClaim, error) {
+	out := append([]kcp.ProviderClaim(nil), base...)
+	if h.mgr.hubAccess == nil || len(prov.Dependencies) == 0 {
+		return out, nil
+	}
+	grant, err := h.mgr.hubAccess.Get(ctx, hubaccess.GrantKey{OrgUUID: ref.OrgUUID, WorkspaceUUID: ref.WorkspaceUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID})
+	if err != nil {
+		return nil, err
+	}
+	if grant == nil {
+		return out, nil
+	}
+	accepted := map[string]bool{}
+	for _, g := range grant.Spec.Capabilities {
+		if group, resource, ok := hubaccess.ParseComposeCapability(g.Capability); ok {
+			accepted[acceptedKey(group, resource)] = true
+		}
+	}
+	for _, c := range appendCompositionClaims(out, prov.Dependencies, accepted)[len(out):] {
+		if c.Accepted {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }

@@ -26,8 +26,8 @@ import (
 // TODO(provider-contract-remediation §5.3): the route strings in the kind doc
 // comments below are the RETIRED dialect. What the provider serves now is
 //
-//	/services/providers/edges/agent/clusters/{cluster}/{resource}/{name}/proxy
-//	/services/providers/edges/dataplane/clusters/{cluster}/{resource}/{name}/{verb}
+//	/services/providers/edges/agent/clusters/{cluster}/{resource}/{name}/proxy   (agent tunnel, hub-proxied)
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/{verb} (every verb: a kcp custom subresource)
 //
 // The wording is not corrected in place because a kind's doc comment IS its
 // APIResourceSchema description, and hack/apigen.sh refuses a schema content

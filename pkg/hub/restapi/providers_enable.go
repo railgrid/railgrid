@@ -24,7 +24,6 @@ package restapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -167,7 +166,6 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	// appears in req.AcceptedClaims. Verbs always come from the
 	// provider's declared claim so the user can't escalate by sending
 	// a different verb list.
-	acceptedKey := func(group, resource string) string { return group + "/" + resource }
 	accepted := make(map[string]bool, len(req.AcceptedClaims))
 	for _, c := range req.AcceptedClaims {
 		accepted[acceptedKey(c.Group, c.Resource)] = true
@@ -193,7 +191,7 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims := make([]kcp.ProviderClaim, 0, len(prov.PermissionClaims))
+	claims := make([]kcp.ProviderClaim, 0, len(prov.PermissionClaims)+len(declaredCompositions))
 	for _, declared := range prov.PermissionClaims {
 		claims = append(claims, kcp.ProviderClaim{
 			Group:    declared.Group,
@@ -207,34 +205,22 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if err := h.mgr.bootstrapper.EnsureProviderAPIBinding(
-		r.Context(),
-		tc.OrgUUID,
-		tc.WorkspaceUUID,
-		providerName, // binding name matches provider name (existing convention from portal/src/stores/providers.ts:283)
-		prov.APIExportPath,
-		prov.APIExportName,
-		claims,
-	); err != nil {
-		// A stale cross-provider identity is a configuration conflict, not a
-		// server fault, and it is the caller who can act on it — so return the
-		// detail rather than burying it in a 500. Enabling anyway would create
-		// a binding kcp calls healthy and that serves none of the claimed
-		// resources.
-		if errors.Is(err, kcp.ErrClaimIdentityMismatch) {
-			writeStatus(w, http.StatusConflict, "Conflict", err.Error())
-			return
-		}
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure APIBinding: "+err.Error())
-		return
-	}
-
 	// Record the hub-access decisions this caller is entitled to make: each
 	// capability they may decide is accepted (ticked) or declined (not); the
 	// ones they may not decide keep whatever was decided before, or stay
 	// undecided. A provider that declares no hub access gets any stale grant
 	// removed.
+	//
+	// The compositions are settled here, BEFORE the binding is written, because
+	// they are permission claims on the provider's APIExport
+	// (provider-sdk/cmd/apiexportgen derives one per composes[] entry) and the
+	// tenant's decision has to reach the APIBinding: an accepted composition is
+	// an Accepted claim, a declined or undecided one a Rejected claim. Without
+	// the claim on the binding kcp does not serve the dependency's kind on the
+	// provider's virtual workspace for this workspace at all, so a reconciler
+	// holding a finalizer on such an object could never release it.
 	resp := EnableProviderResponse{BindingName: providerName}
+	composedAccepted := map[string]bool{}
 	if h.mgr.hubAccess != nil {
 		key := hubaccess.GrantKey{OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID}
 		if len(prov.HubAccess) > 0 || len(declaredCompositions) > 0 {
@@ -250,6 +236,7 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 			if grant != nil {
 				for _, g := range grant.Spec.Capabilities {
 					if group, resource, ok := hubaccess.ParseComposeCapability(g.Capability); ok {
+						composedAccepted[acceptedKey(group, resource)] = true
 						resp.Compositions = append(resp.Compositions, AcceptedComposition{
 							Provider: dependencyFor(declaredCompositions, group, resource),
 							Group:    group, Resource: resource,
@@ -263,11 +250,62 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
+	} else {
+		// No grant store: the decision is exactly what this request ticked.
+		for _, d := range declaredCompositions {
+			if acceptedCompositions[compositionKey(d.Dependency, d.Group, d.Resource)] {
+				composedAccepted[acceptedKey(d.Group, d.Resource)] = true
+			}
+		}
+	}
+	claims = appendCompositionClaims(claims, prov.Dependencies, composedAccepted)
+
+	if err := h.mgr.bootstrapper.EnsureProviderAPIBinding(
+		r.Context(),
+		tc.OrgUUID,
+		tc.WorkspaceUUID,
+		providerName, // binding name matches provider name (existing convention from portal/src/stores/providers.ts:283)
+		prov.APIExportPath,
+		prov.APIExportName,
+		claims,
+	); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure APIBinding: "+err.Error())
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// appendCompositionClaims renders the provider's spec.dependencies[].composes[]
+// as binding claims, Accepted when accepted[acceptedKey(group, resource)] holds.
+// These are the same claims provider-sdk/cmd/apiexportgen puts on the generated
+// APIExport, so the binding lists exactly what the export declares. A
+// composition the manifest also lists under spec.apiExport.permissionClaims is
+// already in claims and is not repeated — the generator resolves that duplicate
+// in the manifest's favour too.
+func appendCompositionClaims(claims []kcp.ProviderClaim, dependencies []providers.Dependency, accepted map[string]bool) []kcp.ProviderClaim {
+	seen := make(map[string]bool, len(claims))
+	for _, c := range claims {
+		seen[acceptedKey(c.Group, c.Resource)] = true
+	}
+	for _, dependency := range dependencies {
+		for _, composition := range dependency.Composes {
+			key := acceptedKey(composition.Group, composition.Resource)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			claims = append(claims, kcp.ProviderClaim{
+				Group:    composition.Group,
+				Resource: composition.Resource,
+				Verbs:    append([]string(nil), composition.Verbs...),
+				Accepted: accepted[key],
+			})
+		}
+	}
+	return claims
 }
 
 // resolveAcceptedHubAccess validates the capabilities a user accepted against
@@ -489,12 +527,6 @@ type EnabledProviderDetail struct {
 	// SelfHosted is true when the binding targets the Org's own provider
 	// instance rather than the platform's.
 	SelfHosted bool `json:"selfHosted"`
-	// StaleClaims lists claims this provider still pins to a different copy of
-	// a dependency than this workspace binds — the state a provider lands in
-	// when that dependency is swapped underneath it. kcp reports such a binding
-	// as healthy while serving none of the claimed resources, so this is the
-	// only place the condition is visible before a downstream 404.
-	StaleClaims []StaleClaim `json:"staleClaims,omitempty"`
 	// Terminating is true when the provider has been disabled but kcp is still
 	// cascade-deleting the bound APIs' resources. The binding (and the
 	// provider's API surface) remains live until that finishes, so the portal
@@ -542,63 +574,6 @@ type CompositionState struct {
 	Implicit bool `json:"implicit,omitempty"`
 }
 
-// StaleClaim describes one mispointed claim in terms the portal can render
-// without knowing what an identityHash is.
-type StaleClaim struct {
-	// Group and Resource name the claimed resource, e.g.
-	// "infrastructure.railgrid.ai" / "instances".
-	Group    string `json:"group"`
-	Resource string `json:"resource"`
-	// BoundExportPath is the copy this workspace actually uses, and so the one
-	// the provider would have to be repointed at.
-	BoundExportPath string `json:"boundExportPath"`
-	// ClaimedIdentity and BoundIdentity are the two hashes, truncated: enough
-	// to tell them apart in a UI, and the full values are of no use to a reader
-	// who cannot act on them anyway.
-	ClaimedIdentity string `json:"claimedIdentity"`
-	BoundIdentity   string `json:"boundIdentity"`
-	// Repointable is true when the provider is self-hosted by this Org, in
-	// which case re-enabling it repairs the pin. For a platform provider the
-	// export is shared by every Org and re-enabling changes nothing, so the
-	// portal must not offer that as the fix.
-	Repointable bool `json:"repointable"`
-}
-
-// staleClaimsFor converts the kcp-level mismatches into the portal's view.
-//
-// selfHosted decides Repointable, and the two are the same question asked from
-// different ends: a provider the Org self-hosts owns its APIExport, so
-// re-enabling it repoints the pin; a platform provider's export is shared by
-// every Org, so re-enabling changes nothing and offering it as the fix would
-// send the user round a loop.
-func staleClaimsFor(mismatches []kcp.ClaimIdentityMismatch, selfHosted bool) []StaleClaim {
-	if len(mismatches) == 0 {
-		return nil
-	}
-	out := make([]StaleClaim, 0, len(mismatches))
-	for _, m := range mismatches {
-		out = append(out, StaleClaim{
-			Group:           m.Group,
-			Resource:        m.Resource,
-			BoundExportPath: m.ServingExportPath,
-			ClaimedIdentity: shortIdentity(m.Declared),
-			BoundIdentity:   shortIdentity(m.Actual),
-			Repointable:     selfHosted,
-		})
-	}
-	return out
-}
-
-// shortIdentity trims a 64-character hash to a prefix. Full hashes are all
-// visually identical, and a reader comparing two of them only needs enough to
-// see that they differ.
-func shortIdentity(hash string) string {
-	if len(hash) <= 12 {
-		return hash
-	}
-	return hash[:12]
-}
-
 // listEnabledProviders handles GET /api/orgs/{org}/workspaces/{ws}/providers/enabled.
 // Returns the set of provider APIBindings present in the target
 // workspace (those referencing root:railgrid:providers:*), keyed by
@@ -621,16 +596,6 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "list APIBindings: "+err.Error())
 		return
 	}
-	// Best-effort: a provider mid-provision, or a transient read failure, must
-	// not blank the sidebar. Losing the warning for one render is recoverable;
-	// losing the enabled-set is not.
-	stale, err := h.mgr.bootstrapper.StaleClaimIdentities(r.Context(), tc.OrgUUID, tc.WorkspaceUUID)
-	if err != nil {
-		klog.FromContext(r.Context()).Error(err, "Listing stale claim identities",
-			"org", tc.OrgUUID, "workspace", tc.WorkspaceUUID)
-		stale = nil
-	}
-
 	names := make(map[string]string, len(bindings))
 	details := make(map[string]EnabledProviderDetail, len(bindings))
 	for provider, binding := range bindings {
@@ -639,7 +604,6 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 			BindingName:     binding.Name,
 			ExportPath:      binding.ExportPath,
 			SelfHosted:      binding.SelfHosted,
-			StaleClaims:     staleClaimsFor(stale[provider], binding.SelfHosted),
 			Terminating:     binding.Terminating,
 			DeletionBlocked: binding.DeletionBlocked,
 			HubAccess:       h.hubAccessState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, provider),
@@ -722,3 +686,7 @@ func (h *Handler) compositionState(ctx context.Context, orgUUID, wsUUID, name st
 	}
 	return state
 }
+
+// acceptedKey keys a claim by what identifies it on a binding: its group and
+// resource. Verbs and selectors ride along with the declaration.
+func acceptedKey(group, resource string) string { return group + "/" + resource }

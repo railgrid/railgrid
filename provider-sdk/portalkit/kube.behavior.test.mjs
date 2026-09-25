@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-const { createKubeClient, kubeResourcePath, isKubeError, isKubeNotFound, isKubeConflict, isKubeResourceUnavailable, KubeError } = await import('./kube.ts')
+const { createKubeClient, kubeResourcePath, kubeVerbPath, pathSegment, isKubeError, isKubeNotFound, isKubeConflict, isKubeResourceUnavailable, KubeError } = await import('./kube.ts')
 
 const instances = { group: 'infrastructure.railgrid.ai', version: 'v1alpha1', resource: 'instances' }
 const secrets = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
@@ -159,4 +159,30 @@ test('onResponse fires after the body is read so callers can fence context switc
   const client = createKubeClient({ fetch, cluster: 'c1', onResponse: () => { fired += 1 } })
   await client.get(instances, 'web')
   assert.equal(fired, 1)
+})
+
+test('verb paths are kcp custom subresources with the component as a query parameter', () => {
+  assert.equal(kubeVerbPath('abc123', instances, 'web', 'exec'), '/clusters/abc123/apis/infrastructure.railgrid.ai/v1alpha1/instances/web/exec')
+  assert.equal(
+    kubeVerbPath('abc123', instances, 'web', 'log', { component: 'app', tail: '/follow', query: { since: '1h' } }),
+    '/clusters/abc123/apis/infrastructure.railgrid.ai/v1alpha1/instances/web/log/follow?component=app&since=1h',
+  )
+  assert.equal(kubeVerbPath('abc123', instances, 'a b', 'proxy', { tail: 'x/y z' }), '/clusters/abc123/apis/infrastructure.railgrid.ai/v1alpha1/instances/a%20b/proxy/x/y%20z')
+  assert.throws(() => kubeVerbPath('abc123', instances, 'web', 'status'))
+  assert.throws(() => kubeVerbPath('abc123', instances, '', 'exec'))
+  assert.throws(() => kubeVerbPath('abc123', secrets, 'tok', 'rotate'))
+  const { fetch } = fakeFetch(async () => [200, {}])
+  const client = createKubeClient({ fetch, cluster: 'abc123' })
+  assert.equal(client.verbPath(instances, 'web', 'restart'), '/clusters/abc123/apis/infrastructure.railgrid.ai/v1alpha1/instances/web/restart')
+})
+
+test('segments are escaped the way Go url.PathEscape is, so the provider accepts them as sent', () => {
+  // Go leaves "$&+:=@" alone in a path segment and escapes "!'()*"; the
+  // provider refuses a percent-encoded path, so ":" must travel raw.
+  assert.equal(pathSegment('schedule:daily'), 'schedule:daily')
+  assert.equal(pathSegment('a b/c'), 'a%20b%2Fc')
+  assert.equal(pathSegment("it's*"), "it%27s%2A")
+  assert.equal(pathSegment('x@y=z&w+$'), 'x@y=z&w+$')
+  assert.equal(kubeVerbPath('abc123', instances, 'web', 'session', { tail: 'schedule:daily/messages' }),
+    '/clusters/abc123/apis/infrastructure.railgrid.ai/v1alpha1/instances/web/session/schedule:daily/messages')
 })

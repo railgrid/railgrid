@@ -22,6 +22,8 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
@@ -45,6 +47,7 @@ type edgeUpstream struct {
 	tenant        string
 	cluster       string
 	authorization string
+	upstreamAuth  string
 }
 
 // recordingIssuer is a DelegatedTokenIssuer that records what it was asked
@@ -86,16 +89,22 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 		rec.tenant = r.Header.Get("X-Railgrid-Tenant")
 		rec.cluster = r.Header.Get("X-Railgrid-Cluster")
 		rec.authorization = r.Header.Get("Authorization")
+		rec.upstreamAuth = r.Header.Get(dataplane.HeaderUpstreamAuthorization)
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(srv.Close)
-	edgesURL, err := url.Parse(srv.URL)
+	// The recording server stands in for kcp's front door: the hop lands on
+	// the edges provider's services/{name}/proxy verb there, and kcp (not the
+	// hub) forwards it to the edges provider.
+	kcpURL, err := url.Parse(srv.URL)
 	if err != nil {
 		t.Fatalf("parse upstream: %v", err)
 	}
+	edgesURL, _ := url.Parse("http://edges.invalid")
 
 	reg := NewRegistry()
-	// The platform edges provider carries the tunnel.
+	// The platform edges provider carries the tunnel; its backend is never
+	// dialled by the hub for this hop.
 	reg.Upsert(Provider{Name: EdgesProviderName, BackendURL: edgesURL, EndpointsValid: true})
 	// A platform provider of the same name as the org's, so a test can tell
 	// which one was chosen instead of inferring it.
@@ -111,6 +120,7 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 	})
 
 	proxy := NewBackendProxy(reg, logr.Discard())
+	proxy.SetKCPFrontDoor(kcpURL, http.DefaultTransport)
 	proxy.SetTenantResolver(TenantResolverFunc(func(*http.Request) (string, string, error) {
 		if orgOfCaller == "" {
 			return "", "", errors.New("anonymous caller")
@@ -155,19 +165,20 @@ func serveProxy(p *ProviderProxy, path string) *httptest.ResponseRecorder {
 func TestBackendProxyRoutesOrgProviderOverItsEdge(t *testing.T) {
 	proxy, rec := newEdgeBackedProxy(t, testOrg)
 
-	w := serveProxy(proxy, "/services/providers/infrastructure/dataplane/clusters/x/apps/demo/log")
+	w := serveProxy(proxy, "/services/providers/infrastructure/mcp")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
 	}
 	if !rec.hit {
-		t.Fatal("the edges provider was never called — the request did not take the tunnel")
+		t.Fatal("kcp was never called — the request did not take the tunnel")
 	}
-	// The edges provider strips /services/providers/edges, so its handler must
-	// see the data-plane path with the hub-owned Service named.
-	wantPrefix := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy"
-	if got := rec.path; got != wantPrefix+"/dataplane/clusters/x/apps/demo/log" {
-		t.Errorf("edges provider saw path %q, want %q", got, wantPrefix+"/dataplane/clusters/x/apps/demo/log")
+	// The hop is the edges provider's services/{name}/proxy custom
+	// subresource on kcp's front door, with the hub-owned Service named and
+	// the provider-relative path appended.
+	wantPrefix := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
+	if got := rec.path; got != wantPrefix+"/mcp" {
+		t.Errorf("kcp saw path %q, want %q", got, wantPrefix+"/mcp")
 	}
 }
 
@@ -181,7 +192,7 @@ func TestBackendProxyEdgeRouteCarriesCallerIdentity(t *testing.T) {
 	issuer := &recordingIssuer{}
 	proxy.SetDelegatedTokenIssuer(issuer)
 
-	w := serveProxy(proxy, "/services/providers/infrastructure/dataplane/clusters/x/apps/demo/log")
+	w := serveProxy(proxy, "/services/providers/infrastructure/mcp")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
@@ -192,10 +203,16 @@ func TestBackendProxyEdgeRouteCarriesCallerIdentity(t *testing.T) {
 	if want := testClusterIDFor("root:railgrid:tenants:" + testOrg + ":" + testWS); rec.tenant != want || rec.cluster != want {
 		t.Errorf("X-Railgrid-Tenant / X-Railgrid-Cluster = (%q, %q), want the caller's workspace cluster ID %q in both", rec.tenant, rec.cluster, want)
 	}
-	if rec.authorization != "Bearer "+delegatedToken {
-		t.Errorf("Authorization = %q, want the delegated token", rec.authorization)
+	// The hop authenticates to kcp as the hub (the transport's business, not
+	// a header the request carries); the delegated token is what the edges
+	// service proxy presents upstream.
+	if rec.authorization != "" {
+		t.Errorf("Authorization = %q, want none on the kcp hop", rec.authorization)
 	}
-	if strings.Contains(rec.authorization, callerBearer) {
+	if rec.upstreamAuth != "Bearer "+delegatedToken {
+		t.Errorf("%s = %q, want the delegated token", dataplane.HeaderUpstreamAuthorization, rec.upstreamAuth)
+	}
+	if strings.Contains(rec.authorization+rec.upstreamAuth, callerBearer) {
 		t.Error("the caller's hub bearer reached the org-owned provider")
 	}
 	if issuer.calls != 1 || issuer.org != testOrg || issuer.ws != testWS || issuer.user != "alice" || issuer.provider != "infrastructure" {
@@ -208,7 +225,7 @@ func TestBackendProxyEdgeRouteCarriesCallerIdentity(t *testing.T) {
 // org-owned provider receives. Each failure refuses the request outright
 // rather than falling back to forwarding the bearer.
 func TestBackendProxyOrgProviderNeverSeesUserBearer(t *testing.T) {
-	const path = "/services/providers/infrastructure/dataplane/x"
+	const path = "/services/providers/infrastructure/mcp"
 
 	t.Run("no issuer wired", func(t *testing.T) {
 		proxy, rec := newEdgeBackedProxyWithTenant(t, testOrg, testWS)
@@ -276,8 +293,8 @@ func TestBackendProxyOrgProviderNeverSeesUserBearer(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
 		}
-		if !rec.hit || rec.authorization != "" {
-			t.Errorf("anonymous probe forwarded with Authorization %q (hit=%v)", rec.authorization, rec.hit)
+		if !rec.hit || rec.authorization != "" || rec.upstreamAuth != "" {
+			t.Errorf("anonymous probe forwarded with Authorization %q / upstream %q (hit=%v)", rec.authorization, rec.upstreamAuth, rec.hit)
 		}
 		if issuer.calls != 0 {
 			t.Error("a delegated token was minted for an anonymous request")
@@ -331,7 +348,7 @@ func TestBackendProxyResolvesCallerOnce(t *testing.T) {
 		return "alice", "root:railgrid:tenants:" + testOrg + ":" + testWS, nil
 	}))
 
-	serveProxy(proxy, "/services/providers/infrastructure/dataplane/x")
+	serveProxy(proxy, "/services/providers/infrastructure/mcp")
 
 	if resolves != 1 {
 		t.Errorf("tenant resolver called %d times for one request, want 1", resolves)
@@ -344,7 +361,7 @@ func TestBackendProxyResolvesCallerOnce(t *testing.T) {
 func TestBackendProxyOtherOrgDoesNotReachTheEdge(t *testing.T) {
 	proxy, rec := newEdgeBackedProxy(t, "some-other-org")
 
-	serveProxy(proxy, "/services/providers/infrastructure/dataplane/x")
+	serveProxy(proxy, "/services/providers/infrastructure/mcp")
 
 	if rec.hit {
 		t.Fatal("another Org's request was routed over this Org's edge tunnel")
@@ -357,7 +374,7 @@ func TestBackendProxyOtherOrgDoesNotReachTheEdge(t *testing.T) {
 func TestBackendProxyAnonymousStaysPlatformScoped(t *testing.T) {
 	proxy, rec := newEdgeBackedProxy(t, "")
 
-	serveProxy(proxy, "/services/providers/infrastructure/dataplane/x")
+	serveProxy(proxy, "/services/providers/infrastructure/mcp")
 
 	if rec.hit {
 		t.Fatal("an unidentified caller was routed over an Org's edge tunnel")
@@ -454,7 +471,7 @@ func TestBackendProxyAlwaysUsesThePlatformEdgesProvider(t *testing.T) {
 		BackendURL: orgEdgesURL, EndpointsValid: true,
 	})
 
-	serveProxy(proxy, "/services/providers/infrastructure/dataplane/x")
+	serveProxy(proxy, "/services/providers/infrastructure/mcp")
 
 	if orgEdges.hit {
 		t.Fatal("the Org's own edges provider carried the tunnel — it is on both ends of the trust boundary")
@@ -466,13 +483,13 @@ func TestBackendProxyAlwaysUsesThePlatformEdgesProvider(t *testing.T) {
 
 func TestEdgeProxyPathComposition(t *testing.T) {
 	route := &EdgeRoute{Cluster: testCluster, ServiceName: "provider-infrastructure"}
-	base := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy"
+	base := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
 
 	for _, tc := range []struct{ name, rest, want string }{
 		{"empty rest addresses the service root", "", base},
 		{"bare slash does not double", "/", base},
-		{"leading slash preserved once", "/dataplane/x", base + "/dataplane/x"},
-		{"missing leading slash is added", "dataplane/x", base + "/dataplane/x"},
+		{"leading slash preserved once", "/mcp/sse", base + "/mcp/sse"},
+		{"missing leading slash is added", "mcp", base + "/mcp"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := route.EdgeProxyPath(tc.rest); got != tc.want {

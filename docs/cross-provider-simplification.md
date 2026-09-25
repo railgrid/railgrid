@@ -10,6 +10,17 @@ August 2026 audit body is retained as history.
 
 ---
 
+> **Superseded in part (2026-09-25).** Data-plane verbs and actions are now
+> reachable **only** as kcp custom subresources on the provider's APIExport
+> (`/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}`). The
+> hub-proxied grammar `/services/providers/{name}/{dataplane,actions}/clusters/…`,
+> the caller-bearer "two gates", `X-Railgrid-Cluster` on a verb and
+> `dataplane.ParsePath`/`ProviderPath` described below no longer exist; the hub's
+> backend proxy carries MCP, browser OAuth, signed webhooks, the agent tunnel
+> and health only. The current contract is
+> [provider-connectivity-contract.md](./provider-connectivity-contract.md)
+> §"Pillar 2 route classes"; this document is kept as the dated record.
+
 ## Status after remediation (2026-09-19)
 
 > **Read this section first; everything below it is history.** The body of this
@@ -38,7 +49,7 @@ August 2026 audit body is retained as history.
 
 1. **Foreign credential via the Secrets side-door — closed.** App Studio no
    longer reads code's `Connection` Secret. It invokes code's
-   `mint_registry_token` action **as the caller**, then writes its own
+   `mint-registry-token` action **as the caller**, then writes its own
    `dockerconfigjson` Secret and names it on the Instance's
    `spec.imagePullSecretRef`
    (`providers/app-studio/api/project_promote.go:56-61,66-68,87-103,172-185`).
@@ -327,9 +338,9 @@ Humans and workload SAs pass the identical gates. There is no hub-side grant
 authorizer; **grants are kcp RBAC rules**:
 
 ```yaml
-# "this workload may run query_table on Table trips"
+# "this workload may run query-table on Table trips"
 - apiGroups: ["databricks.railgrid.ai"]
-  resources: ["tables/query_table"]
+  resources: ["tables/query-table"]
   verbs: ["create"]
   resourceNames: ["trips"]
 ```
@@ -468,11 +479,11 @@ Anchors: [server.go:206,355,358](../pkg/hub/server.go),
 **Phase 1 — Provider Actions onto the P2 grammar (reshapes PR #499). DONE on
 this branch.**
 Move the databricks action route to
-`/services/providers/databricks/actions/clusters/{clusterID}/tables/{name}/query_table/v1`;
+`/services/providers/databricks/actions/clusters/{clusterID}/tables/{name}/query-table/v1`;
 add the verb SSAR; extend
 [project_scope.go](../pkg/hub/workloadidentity/project_scope.go) to collect
 `allowedActions` and [ensureWorkloadRBAC](../pkg/hub/serviceaccounts/workload_identity.go)
-to emit `tables/query_table` rules; delete
+to emit `tables/query-table` rules; delete
 [provideractions/handler.go](../pkg/hub/provideractions/handler.go) +
 [authorizer.go](../pkg/hub/provideractions/authorizer.go) and the `/actions`
 proxy reservation; retire `virtualWorkspace.url` (X-3) and put

@@ -40,39 +40,59 @@ selecting the client. It runs under `provider-sdk/leaderelection` so more than
 one replica is safe, and it polls nothing: no `resyncPeriod`, no `RequeueAfter`,
 no ticker. See [`controller_manager.go`](controller_manager.go).
 
-**Pillar 2 — REST is only for verbs.** Exactly one route carries tenant traffic:
+**Pillar 2 — REST is only for verbs, and a verb is a kcp custom subresource.**
+Exactly one route carries tenant traffic, and it is a Kubernetes API path:
 
 ```
-POST /dataplane/clusters/{clusterID}/greetings/{name}/greet
+POST /clusters/{clusterID}/apis/quickstart.providers.railgrid.ai/v1alpha1/greetings/{name}/greet
 ```
 
-plus `/healthz` and `/readyz`. The layout is not hand-built: [`main.go`](main.go)
+The manifest declares `greetings/greet` under `spec.dataPlane.verbs`; codegen
+publishes it on the APIExport as a custom subresource whose storage points at
+this provider's `DataPlaneEndpointSlice`. A caller addresses it on whichever kcp
+front door they hold a credential for — the hub's `/clusters/{id}` for a user
+or a tenant ServiceAccount, `kubectl` included — and kcp authorizes `create` on
+`greetings/greet` with ordinary RBAC, then reverse-proxies the request to this
+binary with the caller's identity stamped in `X-Remote-User` / `X-Remote-Group`
+headers. There is **no hub-proxied spelling** of a verb: nothing under
+`/services/providers/quickstart/` carries tenant data, and the provider refuses
+a verb request that arrives with a bearer instead of a stamped caller (401).
+
+Plus `/healthz` and `/readyz`. The layout is not hand-built: [`main.go`](main.go)
 passes one handler per route class to `provider-sdk/serve`, which refuses
-anything that is not one of them. There is no `/api/*`, and there will not be: if
-the UI needs to list, create or edit a Greeting it does that against kcp, because
-a Greeting is a bound CR and a backend route that mirrored it would be a
-deviation even when authorized correctly.
+anything that is not one of them — and refuses to mount a data plane at all
+without the manifest's `Subresources` table, so a missing manifest is a startup
+error rather than a provider that quietly serves no verb. There is no `/api/*`,
+and there will not be: if the UI needs to list, create or edit a Greeting it does
+that against kcp, because a Greeting is a bound CR and a backend route that
+mirrored it would be a deviation even when authorized correctly.
 
-[`server/greet.go`](server/greet.go) is the file to read. It runs the two gates
-through `provider-sdk/dataplane`, **as the caller**:
+[`server/greet.go`](server/greet.go) is the file to read. It reads the route
+`serve`'s adapter parsed from the request context (`dataplane.RouteFrom`) and
+runs the one gate through `provider-sdk/dataplane`, **as the provider**:
 
-1. **A real GET** of `greetings/{name}` in `{clusterID}` with the caller's own
-   bearer. It proves the caller can see the object — which is what makes
-   "workspace A's token cannot greet workspace B's Greeting" true — and it hands
-   the object back, so the verb reads `spec` from what the caller was entitled
-   to see rather than from a second, unauthorized read.
-2. **A SelfSubjectAccessReview** for `create` on the virtual subresource
-   `greetings/greet`, scoped to `{name}`. `create` is not negotiable: the hub
-   materializes every data-plane grant as exactly that rule, so any other verb
-   string silently breaks workload identities.
+1. **Visibility.** The caller must be able to see `greetings/{name}` in
+   `{clusterID}`. The provider holds the caller's name and groups and no
+   credential to read with, so `dataplane.Gate` creates a **SubjectAccessReview**
+   for `get` on the object on the caller's behalf, then reads the object as
+   itself — both through the provider's APIExport virtual workspace, the one
+   door where it has standing in a tenant workspace. That is what makes
+   "workspace A's caller cannot greet workspace B's Greeting" true, and it hands
+   the object back so the verb reads `spec` from what the caller was entitled to
+   see. kcp serves `SubjectAccessReview` there only for an export that claims
+   `authorization.k8s.io/subjectaccessreviews`, which is the one permission
+   claim in [`manifest.yaml`](manifest.yaml).
+2. **The verb grant is not repeated.** kcp already authorized `create` on
+   `greetings/greet` before it forwarded the request. `create` is not
+   negotiable: the hub materializes every data-plane grant as exactly that rule.
 
-The provider's own credential never authorizes anything on this path. It lends
-only its host and CA to `dataplane.NewCallerFactory`, which drops every
-credential; the request then authenticates as the caller or not at all.
+A denial is `404`, never `403`, so a caller cannot learn whether the object
+exists. The caller's name — from the stamped identity, `dataplane.ProxiedIdentityFrom`
+— labels the greeting and authorizes nothing.
 [`server/server_test.go`](server/server_test.go) drives this handler — mounted
-in the same `serve.New` server `main.go` builds — through
-`provider-sdk/dataplane/conformance`, the same suite every provider's data plane
-is held to.
+in the same `serve.New` server `main.go` builds, with the routes read from this
+very `manifest.yaml` — through `provider-sdk/dataplane/conformance`, the same
+suite every provider's data plane is held to.
 
 **Pillar 3 — the UI is a custom element.** [`portal/`](portal) builds one IIFE
 `main.js` (Vite), embedded by [`assets.go`](assets.go) and served by the hub at
@@ -89,8 +109,11 @@ setter is the element's only lifecycle hook that matters: react to it, never
 poll for it. Everything the element reads goes through the host-owned transport,
 `portalkit/tenant.ts providerFetch(ctx)` — Greetings are listed and created with
 `createKubeClient({ fetch: providerFetch(ctx), cluster: ctx.tenant })` over
-`/clusters/{id}`, and the backend is called only for the `greet` verb, at
-`serviceBase(ctx.basePath) + '/dataplane/clusters/…'`. Navigation is a
+`/clusters/{id}`, and the `greet` verb goes to the same place — it is a kcp
+custom subresource, so the element POSTs to
+`kube.verbPath(greetings, name, 'greet')`
+(`/clusters/{id}/apis/…/greetings/{name}/greet`) through the same transport.
+The provider's backend URL is never addressed from the browser. Navigation is a
 `railgrid-navigate` CustomEvent; the element imports no router. The element
 renders into light DOM so the portal stylesheet cascades in.
 
@@ -162,8 +185,10 @@ Two caveats, both worth knowing before you copy this:
   the default when `RAILGRID_KCP_DIR` is unset.
 
 - `run-provider-quickstart` does not set `RAILGRID_PROVIDER_KUBECONFIG`, so the
-  controller manager and the `greet` verb start disabled (the portal still
-  serves). Export it and `make` passes it through:
+  controller manager starts disabled and the `greet` verb fails closed (the
+  portal still serves). It does set `RAILGRID_CATALOGENTRY_FILE`, which serve
+  requires: with no manifest there is no data plane, and the binary refuses to
+  start. Export the kubeconfig and `make` passes it through:
 
   ```sh
   RAILGRID_PROVIDER_KUBECONFIG=.kcp/quickstart-runtime.kubeconfig \
@@ -171,14 +196,15 @@ Two caveats, both worth knowing before you copy this:
   ```
 
 Then, in the portal, enable the provider on a workspace and create a Greeting.
-From a shell, the same thing through the hub proxy:
+From a shell, the same thing as a kube API call on the hub's kcp front door —
+the verb is a custom subresource of the Greeting, so `kubectl` can reach it too:
 
 ```sh
 curl -sk -X POST \
   -H "Authorization: Bearer test:user-default" \
   -H 'Content-Type: application/json' \
   -d '{"input":{}}' \
-  "https://console.127.0.0.1.sslip.io:9443/services/providers/quickstart/dataplane/clusters/$CLUSTER/greetings/hello/greet" | jq
+  "https://console.127.0.0.1.sslip.io:9443/clusters/$CLUSTER/apis/quickstart.providers.railgrid.ai/v1alpha1/greetings/hello/greet" | jq
 ```
 
 ```json
@@ -188,9 +214,10 @@ curl -sk -X POST \
 }
 ```
 
-A caller without `create` on `greetings/greet`, or one addressing a workspace
-they are not a member of, gets `404` — the gates do not disclose whether the
-object exists.
+A caller without `create` on `greetings/greet` is refused by kcp before the
+provider is asked; one who holds the grant but cannot see the object, or who
+addresses a workspace they are not a member of, gets `404` — the gate does not
+disclose whether the object exists.
 
 Tear it down with `make uninstall-provider-quickstart` (deleting the `Provider`
 triggers full teardown of the sub-workspace).
@@ -201,7 +228,7 @@ Other targets:
 |---|---|
 | `make build-quickstart-provider` | Builds `portal/dist` (npm) then the Go binary into `bin/`. |
 | `make codegen-quickstart-provider` | Regenerates deepcopy, the CRD and the APIResourceSchema from `apis/`. Run it after any change under `apis/`. |
-| `make e2e-provider` | The end-to-end suite: hub + embedded kcp + this binary as host subprocesses, two workspaces, the reconciler, and the verb's cross-workspace denial. |
+| `make e2e-provider` | The end-to-end suite: hub + embedded kcp + this binary as host subprocesses, two workspaces, the reconciler, the verb through kcp and through the hub's front door, its cross-workspace denial, and the cross-provider claim hop. |
 
 Provider-local checks, run from `providers/quickstart/`:
 
@@ -221,8 +248,9 @@ ConfigMap the init container self-applies into the provider workspace. See
 The one input it cannot default is the credential: a Secret named by
 `providerKubeconfig.secretName` with the key `kubeconfig`. Both containers mount
 it at `/var/run/secrets/railgrid` and read it as `RAILGRID_PROVIDER_KUBECONFIG` —
-`init` to bootstrap the workspace, `serve` to watch tenant workspaces and to
-build the caller-scoped clients the `greet` verb gates through.
+`init` to bootstrap the workspace, `serve` to watch tenant workspaces and to act
+as the provider through its export virtual workspace when the `greet` verb
+decides visibility and reads its object.
 
 Build the image from the **repository root** (the build context includes
 `provider-sdk/`, which `go.mod` replaces in):

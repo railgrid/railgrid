@@ -40,8 +40,8 @@ func TestAgentCredentialRoundTrip(t *testing.T) {
 		ClusterID:          "2hx82dl9ncmepp5l",
 		Resource:           "linuxservers",
 		Name:               "edge-1",
-		RefreshPath:        "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/agent-token",
-		SSHCredentialsPath: "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/ssh-credentials",
+		RefreshPath:        "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/agent-token",
+		SSHCredentialsPath: "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/ssh-credentials",
 	}
 
 	encoded, err := want.Encode()
@@ -71,26 +71,32 @@ func TestAgentCredentialRoundTrip(t *testing.T) {
 	}
 }
 
-// The routes in the bundle are rendered from the SAME public base an edge's
-// status.URL is stamped from, so an agent and a CLI client never disagree
-// about where this provider is.
-func TestAgentCredentialRoutesUseThePublicDataPlaneBase(t *testing.T) {
-	const base = "/services/providers/edges/" + DataPlaneRoot
-	s := testServer(base)
+// The routes in the bundle are the SAME hub-relative kube paths an edge's
+// status.URL is stamped with — the verbs as kcp custom subresources on this
+// provider's export — so an agent and a CLI client never disagree about where
+// a verb is. The agent composes hubURL + path and kcp authenticates its
+// ServiceAccount token on the front door.
+func TestAgentCredentialRoutesAreKubePaths(t *testing.T) {
+	s := testServer()
+	const base = "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1"
 
-	if got, want := s.publicVerbPath("c1", linuxServerResource, "edge-1", VerbAgentToken),
-		base+"/clusters/c1/linuxservers/edge-1/agent-token"; got != want {
+	if got, want := s.publicVerbPath("2hx82dl9ncmepp5l", linuxServerResource, "edge-1", VerbAgentToken),
+		base+"/agent-token"; got != want {
 		t.Fatalf("refresh path = %q, want %q", got, want)
 	}
-	if got, want := s.publicVerbPath("c1", linuxServerResource, "edge-1", VerbSSHCredentials),
-		base+"/clusters/c1/linuxservers/edge-1/ssh-credentials"; got != want {
+	if got, want := s.publicVerbPath("2hx82dl9ncmepp5l", linuxServerResource, "edge-1", VerbSSHCredentials),
+		base+"/ssh-credentials"; got != want {
 		t.Fatalf("ssh-credentials path = %q, want %q", got, want)
 	}
+	if got, want := s.publicVerbPath("2hx82dl9ncmepp5l", linuxServerResource, "edge-1", VerbAddonCredentials),
+		base+"/addon-credentials"; got != want {
+		t.Fatalf("addon-credentials path = %q, want %q", got, want)
+	}
 
-	// Unconfigured public base: no route rather than a relative one an agent
-	// would turn into a request against itself.
-	if got := testServer("").publicVerbPath("c1", linuxServerResource, "edge-1", VerbAgentToken); got != "" {
-		t.Fatalf("unconfigured base produced %q, want empty", got)
+	// A coordinate that would not parse back — a workspace path for the
+	// cluster — yields no route rather than one the agent would 400 on.
+	if got := s.publicVerbPath("root:railgrid:tenants:acme", linuxServerResource, "edge-1", VerbAgentToken); got != "" {
+		t.Fatalf("an unrenderable coordinate produced %q, want empty", got)
 	}
 }
 

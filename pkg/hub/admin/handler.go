@@ -53,7 +53,6 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/users", h.listUsers).Methods(http.MethodGet)
 	r.HandleFunc("/organizations", h.listOrganizations).Methods(http.MethodGet)
 	r.HandleFunc("/providers", h.listProviders).Methods(http.MethodGet)
-	r.HandleFunc("/identities", h.listIdentities).Methods(http.MethodGet)
 	// Provisioning is declarative: creating a Provider object in
 	// root:railgrid:system:providers drives the Provider reconciler
 	// (pkg/hub/providers/provider_controller.go) to create the sub-workspace +
@@ -237,15 +236,6 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	writeJSON(w, map[string]any{"items": items})
-}
-
-func (h *Handler) listIdentities(w http.ResponseWriter, r *http.Request) {
-	ids, err := h.svc.ListRootIdentities(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, map[string]any{"items": ids})
 }
 
 // createProviderRequest is the body of POST /api/admin/providers.

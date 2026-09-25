@@ -10,26 +10,28 @@ package engagement
 
 import (
 	"context"
-	"sync/atomic"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/dynamic"
-	dynamicfake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	kuerysync "github.com/railgrid/kuery/pkg/sync"
 
 	kueryv1alpha1 "github.com/railgrid/provider-kuery/apis/v1alpha1"
 )
+
+// edgeResource is the resource form of the claimed kind, for NotFound errors.
+var edgeResource = schema.GroupResource{Group: edgeGVK.Group, Resource: "kubernetesclusters"}
 
 func edgeObject(name string, connected bool) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
@@ -44,54 +46,141 @@ func edgeObject(name string, connected bool) *unstructured.Unstructured {
 			// spelled exactly as the served CRD has it — ConnectionStatus.URL
 			// carries the JSON tag "URL" — because reading the wrong spelling
 			// is precisely how every edge came out unengageable.
-			"URL": "/services/providers/edges/dataplane/clusters/cluster/kubernetesclusters/" + name + "/k8s",
+			"URL": "/clusters/cluster/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/" + name + "/k8s",
 		},
 	}}
 }
 
-// watchFixture is a Controller whose edge watches dial a fake dynamic client
-// and whose Engagement records land in a fake provider workspace.
-func watchFixture(t *testing.T) (*Controller, *dynamicfake.FakeDynamicClient, *atomic.Int32) {
+// edgeObjectWithURL is edgeObject with an explicit coordinate. An empty one
+// leaves status.URL unset, which is exactly how an edge first appears: the
+// edges provider creates the object and stamps the URL it serves it on a
+// moment later, from a different reconcile.
+func edgeObjectWithURL(name string, connected bool, statusURL string) *unstructured.Unstructured {
+	object := edgeObject(name, connected)
+	status, _ := object.Object["status"].(map[string]any)
+	if statusURL == "" {
+		delete(status, "URL")
+		return object
+	}
+	status["URL"] = statusURL
+	return object
+}
+
+// managerCache stands in for the engagement manager's cluster-aware caches:
+// in these tests it is the ONLY place an edge object can be read from, and it
+// holds no credential of any kind. A read that needed the workspace's minted
+// identity could not be served from here at all — which is the point.
+type managerCache struct {
+	mu      sync.Mutex
+	objects map[string]*unstructured.Unstructured
+	reads   map[string]int
+}
+
+func newManagerCache() *managerCache {
+	return &managerCache{objects: map[string]*unstructured.Unstructured{}, reads: map[string]int{}}
+}
+
+func (m *managerCache) put(cluster string, object *unstructured.Unstructured) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.objects[cluster+"/"+object.GetName()] = object
+}
+
+func (m *managerCache) remove(cluster, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.objects, cluster+"/"+name)
+}
+
+func (m *managerCache) reads_(cluster, name string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reads[cluster+"/"+name]
+}
+
+func (m *managerCache) readerFor(cluster multicluster.ClusterName) client.Reader {
+	return &clusterReader{cache: m, cluster: string(cluster)}
+}
+
+// clusterReader is one workspace's view of the cache, exactly as the manager
+// hands a controller a cluster-scoped reader.
+type clusterReader struct {
+	cache   *managerCache
+	cluster string
+}
+
+func (r *clusterReader) Get(_ context.Context, key client.ObjectKey, object client.Object, _ ...client.GetOption) error {
+	r.cache.mu.Lock()
+	defer r.cache.mu.Unlock()
+	full := r.cluster + "/" + key.Name
+	r.cache.reads[full]++
+	stored, ok := r.cache.objects[full]
+	if !ok {
+		return apierrors.NewNotFound(edgeResource, key.Name)
+	}
+	target, ok := object.(*unstructured.Unstructured)
+	if !ok {
+		return fmt.Errorf("edges are read unstructured, got %T", object)
+	}
+	stored.DeepCopyInto(target)
+	return nil
+}
+
+func (r *clusterReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return fmt.Errorf("the edge reconciler must not list: a fresh cache replays every edge as its own request")
+}
+
+// reconcileFixture is a Controller whose edges come off a stand-in for the
+// manager's cluster-aware cache and whose Engagement records land in a fake
+// provider workspace.
+func reconcileFixture(t *testing.T) (*Controller, *managerCache) {
 	t.Helper()
-	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
-	dials := &atomic.Int32{}
+	cache := newManagerCache()
 	store := testStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	c := &Controller{
 		cfg: Config{
 			Store:          store,
 			Sync:           kuerysync.NewSyncController(kuerysync.Config{Store: store}),
 			ProviderConfig: &rest.Config{},
 		},
-		// An empty hub base makes the edgeproxy URL relative, so engage fails
-		// fast in-process instead of dialling anything.
-		hubBase: "",
-		claims:  testClaims(t, "replica-a", kubefake.NewClientset()),
+		claims: testClaims(t, "replica-a", kubefake.NewClientset()),
 		registry: NewRegistryWithClient(ctrlfake.NewClientBuilder().
 			WithScheme(NewScheme()).
 			WithStatusSubresource(&kueryv1alpha1.Engagement{}).
 			Build()),
-		engaged:     map[string]engagedEdge{},
-		wanted:      map[string]string{},
-		edgeWatches: map[string]edgeWatch{},
-		runCtx:      ctx,
-		identities:  map[string]*workspaceIdentity{},
-		tenantDynamicFor: func(string, credential) (dynamic.Interface, error) {
-			dials.Add(1)
-			return dyn, nil
+		engaged:  map[string]engagedEdge{},
+		wanted:   map[string]string{},
+		observed: map[string]edgeObservation{},
+		runCtx:   ctx,
+		clusterCacheFor: func(_ context.Context, name multicluster.ClusterName) (client.Reader, error) {
+			return cache.readerFor(name), nil
 		},
 	}
-	t.Cleanup(func() {
-		for cluster := range c.edgeWatches {
-			c.stopEdgeWatch(cluster)
-		}
-		cancel()
-	})
-	return c, dyn, dials
+	// An empty export endpoint makes the edge URL relative, so engage fails
+	// fast in-process instead of dialling anything.
+	c.cfg.ExportEndpoint = func(context.Context) (string, error) { return "", nil }
+	c.cfg.ProviderRESTConfig = func(target string) (*rest.Config, error) { return &rest.Config{Host: target}, nil }
+	return c, cache
 }
 
-// engagementPhase polls for the phase of one edge's record, so a test asserts
-// on the watch goroutine's effect without a sleep.
+// reconcileEdgeOnce drives one edge through the reconciler and fails on error.
+func reconcileEdgeOnce(t *testing.T, c *Controller, cluster, edge string) {
+	t.Helper()
+	if _, err := c.reconcileEdge(context.Background(), edgeRequest(cluster, edge)); err != nil {
+		t.Fatalf("reconcileEdge(%s/%s): %v", cluster, edge, err)
+	}
+}
+
+func edgeRequest(cluster, edge string) mcreconcile.Request {
+	req := mcreconcile.Request{}
+	req.Name = edge
+	return req.WithCluster(multicluster.ClusterName(cluster))
+}
+
+// engagementPhase polls for the phase of one edge's record, so a test can
+// assert on work that a claim-shard event drove without a sleep.
 func engagementPhase(t *testing.T, c *Controller, cluster, edge string, want kueryv1alpha1.EngagementPhase, why string) {
 	t.Helper()
 	name := EngagementName(cluster, edge)
@@ -111,9 +200,33 @@ func engagementPhase(t *testing.T, c *Controller, cluster, edge string, want kue
 	t.Fatalf("%s: engagement for %s/%s is %q, want %q", why, cluster, edge, last, want)
 }
 
+// awaitEngagement polls one edge's record until it satisfies want.
+func awaitEngagement(
+	t *testing.T,
+	c *Controller,
+	cluster, edge, why string,
+	want func(kueryv1alpha1.EngagementStatus) bool,
+) {
+	t.Helper()
+	name := EngagementName(cluster, edge)
+	deadline := time.Now().Add(5 * time.Second)
+	var last kueryv1alpha1.EngagementStatus
+	for time.Now().Before(deadline) {
+		var got kueryv1alpha1.Engagement
+		if err := c.registry.client.Get(context.Background(), client.ObjectKey{Name: name}, &got); err == nil {
+			last = got.Status
+			if want(last) {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s: engagement for %s/%s is phase=%q message=%q, which is not what was wanted",
+		why, cluster, edge, last.Phase, last.Message)
+}
+
 func noEngagement(t *testing.T, c *Controller, cluster, edge, why string) {
 	t.Helper()
-	time.Sleep(200 * time.Millisecond)
 	var got kueryv1alpha1.Engagement
 	err := c.registry.client.Get(context.Background(), client.ObjectKey{Name: EngagementName(cluster, edge)}, &got)
 	if err == nil {
@@ -121,133 +234,146 @@ func noEngagement(t *testing.T, c *Controller, cluster, edge, why string) {
 	}
 }
 
-// The edge watch is the list AND the actor: a fresh watch replays every edge,
-// and each one becomes an Engagement whose phase reflects the edge's connected
-// state. There is no separate reconcile pass and no per-binding requeue.
-func TestEdgeWatchRecordsEngagementsFromTheWatchAlone(t *testing.T) {
-	c, dyn, dials := watchFixture(t)
+// The edges come off the manager's cluster-aware cache, which is how this
+// provider already watches its own kinds; no other client is involved in
+// reading one.
+func TestEdgeReadsComeFromTheManager(t *testing.T) {
+	c, cache := reconcileFixture(t)
 	const cluster = "1ngen6o0so3jwz2h"
 
-	identity := &staticCredential{token: "token-1"}
-	if err := c.ensureEdgeWatch(cluster, identity); err != nil {
-		t.Fatalf("ensureEdgeWatch: %v", err)
+	cache.put(cluster, edgeObject("edge-1", false))
+	reconcileEdgeOnce(t, c, cluster, "edge-1")
+
+	engagementPhase(t, c, cluster, "edge-1", kueryv1alpha1.EngagementPhaseStale, "disconnected edge read from the manager")
+	if got := cache.reads_(cluster, "edge-1"); got != 1 {
+		t.Fatalf("the manager's cache was read %d times, want exactly 1 — it is the only source of edges", got)
 	}
+}
+
+// The reconciler IS the list and the actor: every edge in an engaged workspace
+// arrives as its own request, and each one becomes an Engagement whose phase
+// reflects the edge's connected state. There is no per-binding requeue and no
+// list pass.
+func TestEdgeReconcileRecordsEngagementsFromTheManagerAlone(t *testing.T) {
+	c, cache := reconcileFixture(t)
+	const cluster = "1ngen6o0so3jwz2h"
 
 	// A disconnected edge is recorded but not queryable.
-	if err := dyn.Tracker().Add(edgeObject("edge-1", false)); err != nil {
-		t.Fatal(err)
-	}
+	cache.put(cluster, edgeObject("edge-1", false))
+	reconcileEdgeOnce(t, c, cluster, "edge-1")
 	engagementPhase(t, c, cluster, "edge-1", kueryv1alpha1.EngagementPhaseStale, "disconnected edge added")
 
 	// Connecting engages it. The engage itself dials the edgeproxy, which the
 	// fixture has no server for, so the record lands on Pending — the point
-	// here is that the watch acted on the transition at all, without a list.
-	if err := dyn.Tracker().Update(edgeGVR, edgeObject("edge-1", true), ""); err != nil {
-		t.Fatal(err)
+	// here is that the change was acted on at all, without a list.
+	cache.put(cluster, edgeObject("edge-1", true))
+	if _, err := c.reconcileEdge(context.Background(), edgeRequest(cluster, "edge-1")); err == nil {
+		t.Fatal("a failed engage must be returned, so controller-runtime retries it")
 	}
 	engagementPhase(t, c, cluster, "edge-1", kueryv1alpha1.EngagementPhasePending, "edge connected")
 
 	// Disconnecting stands it back down.
-	if err := dyn.Tracker().Update(edgeGVR, edgeObject("edge-1", false), ""); err != nil {
-		t.Fatal(err)
-	}
+	cache.put(cluster, edgeObject("edge-1", false))
+	reconcileEdgeOnce(t, c, cluster, "edge-1")
 	engagementPhase(t, c, cluster, "edge-1", kueryv1alpha1.EngagementPhaseStale, "edge disconnected")
 
 	// Deleting the edge disengages it for good.
-	if err := dyn.Tracker().Delete(edgeGVR, "", "edge-1", metav1.DeleteOptions{}); err != nil {
-		t.Fatal(err)
-	}
+	cache.remove(cluster, "edge-1")
+	reconcileEdgeOnce(t, c, cluster, "edge-1")
 	engagementPhase(t, c, cluster, "edge-1", kueryv1alpha1.EngagementPhaseDisengaged, "edge deleted")
 
-	// Engaging an edge hands its name to the identity, so the next mint
-	// carries the named get and the named create on kubernetesclusters/k8s
-	// that the edges data plane's two gates check. Deleting it hands the name
-	// back, so the grant shrinks.
-	if !identity.saw("edge-1") {
-		t.Fatal("the engaged edge was never named to the workspace identity")
-	}
-	if !identity.forgot("edge-1") {
-		t.Fatal("a deleted edge must stop being named by the identity")
-	}
-
-	// The same identity keeps its watch — a rotated token no longer re-dials
-	// anything, because the identity refreshes the bearer underneath the
-	// connection. A different identity (the binding was recreated, so the
-	// credential is a different one) replaces the watch.
-	if err := c.ensureEdgeWatch(cluster, identity); err != nil {
-		t.Fatalf("ensureEdgeWatch again: %v", err)
-	}
-	if got := dials.Load(); got != 1 {
-		t.Fatalf("dials = %d, want 1 (the same identity reuses the watch)", got)
-	}
-	if err := c.ensureEdgeWatch(cluster, &staticCredential{token: "token-2"}); err != nil {
-		t.Fatalf("ensureEdgeWatch with a new identity: %v", err)
-	}
-	if got := dials.Load(); got != 2 {
-		t.Fatalf("dials = %d, want 2 (a new identity re-dials)", got)
-	}
-
-	// Stopping the watch ends the work.
-	c.stopEdgeWatch(cluster)
-	if _, ok := c.edgeWatches[cluster]; ok {
-		t.Fatal("stopEdgeWatch left the watch registered")
-	}
-	if err := dyn.Tracker().Add(edgeObject("edge-2", true)); err != nil {
-		t.Fatal(err)
-	}
-	noEngagement(t, c, cluster, "edge-2", "after stopEdgeWatch")
 }
 
-// A workspace that disables kuery loses its edge watch, and every engagement
-// it had is stood down so the query path stops offering its edges.
-func TestDropClusterStopsWatchAndDisengagesRecords(t *testing.T) {
+// An edge whose state has not changed is not acted on again. Reconciles are
+// level-triggered and the edges provider rewrites status on every heartbeat,
+// so without this every heartbeat would re-run the engage path and restamp a
+// record that changed in nothing but its timestamp.
+func TestUnchangedEdgeIsNotReEngaged(t *testing.T) {
+	c, cache := reconcileFixture(t)
+	const (
+		cluster   = "1ngen6o0so3jwz2h"
+		edge      = "edge-1"
+		statusURL = "/clusters/" + cluster + "/apis/edges.railgrid.ai/v1alpha1" +
+			"/kubernetesclusters/" + edge + "/k8s"
+	)
+
+	// A connected edge whose engage cannot succeed here: the first attempt is
+	// returned as an error, and the state it failed on is deliberately NOT
+	// remembered, so the retry controller-runtime schedules is a real one.
+	cache.put(cluster, edgeObjectWithURL(edge, true, statusURL))
+	if _, err := c.reconcileEdge(context.Background(), edgeRequest(cluster, edge)); err == nil {
+		t.Fatal("the failed engage must be returned")
+	}
+	if _, err := c.reconcileEdge(context.Background(), edgeRequest(cluster, edge)); err == nil {
+		t.Fatal("the retry must attempt the engage again")
+	}
+
+	// A DISCONNECTED edge succeeds (there is nothing to dial), so its state is
+	// remembered — and a heartbeat that changes neither the flag nor the
+	// coordinate is not acted on a second time.
+	cache.put(cluster, edgeObjectWithURL(edge, false, statusURL))
+	reconcileEdgeOnce(t, c, cluster, edge)
+	engagementPhase(t, c, cluster, edge, kueryv1alpha1.EngagementPhaseStale, "edge disconnected")
+	before := cache.reads_(cluster, edge)
+
+	if err := c.registry.SetStatus(context.Background(), EngagementName(cluster, edge),
+		func(status *kueryv1alpha1.EngagementStatus) { status.Message = "touched" }); err != nil {
+		t.Fatalf("marking the record: %v", err)
+	}
+	reconcileEdgeOnce(t, c, cluster, edge)
+	if got := cache.reads_(cluster, edge); got != before+1 {
+		t.Fatalf("reads = %d, want one more: the edge is still read, only the acting is deduplicated", got)
+	}
+	var got kueryv1alpha1.Engagement
+	if err := c.registry.client.Get(context.Background(), client.ObjectKey{Name: EngagementName(cluster, edge)}, &got); err != nil {
+		t.Fatalf("reading the record: %v", err)
+	}
+	if got.Status.Message != "touched" {
+		t.Fatalf("an unchanged edge was acted on again: message = %q", got.Status.Message)
+	}
+}
+
+// After a term ends there is no manager to read a workspace through, so a
+// reconcile that arrives late does nothing rather than erroring in a loop.
+func TestEdgeReconcileAfterTheTermIsANoop(t *testing.T) {
+	c := &Controller{observed: map[string]edgeObservation{}}
+	result, err := c.reconcileEdge(context.Background(), edgeRequest("1ngen6o0so3jwz2h", "edge-1"))
+	if err != nil || result.RequeueAfter != 0 {
+		t.Fatalf("reconcileEdge outside a term = (%v, %v), want a silent no-op", result, err)
+	}
+}
+
+// A workspace that disables kuery has every engagement stood down so the query
+// path stops offering its edges, and everything remembered about its edges is
+// dropped — the workspace leaves the manager with its APIBinding, so there is
+// no watch to stop and no further event to dedup against.
+func TestDropClusterDisengagesRecordsAndForgetsObservations(t *testing.T) {
 	ctx := context.Background()
-	c, dyn, _ := watchFixture(t)
+	c, cache := reconcileFixture(t)
 	const cluster = "1ngen6o0so3jwz2h"
 
-	if err := c.ensureEdgeWatch(cluster, &staticCredential{token: "token-1"}); err != nil {
-		t.Fatalf("ensureEdgeWatch: %v", err)
-	}
-	if err := dyn.Tracker().Add(edgeObject("edge-1", false)); err != nil {
-		t.Fatal(err)
-	}
+	cache.put(cluster, edgeObject("edge-1", false))
+	reconcileEdgeOnce(t, c, cluster, "edge-1")
 	engagementPhase(t, c, cluster, "edge-1", kueryv1alpha1.EngagementPhaseStale, "edge observed")
 
 	c.dropCluster(ctx, cluster)
-	if len(c.edgeWatches) != 0 {
-		t.Fatalf("edge watches after dropCluster = %d, want 0", len(c.edgeWatches))
+	if len(c.observed) != 0 {
+		t.Fatalf("observed edges after dropCluster = %d, want 0", len(c.observed))
 	}
 	engagementPhase(t, c, cluster, "edge-1", kueryv1alpha1.EngagementPhaseDisengaged, "workspace disabled kuery")
 }
 
-// After a leadership term ends there is no context to parent an edge watch, so
-// ensureEdgeWatch declines rather than starting a goroutine the next leader
-// will duplicate.
-func TestEnsureEdgeWatchAfterTheTermIsANoop(t *testing.T) {
-	dialled := false
-	c := &Controller{
-		edgeWatches:      map[string]edgeWatch{},
-		tenantDynamicFor: func(string, credential) (dynamic.Interface, error) { dialled = true; return nil, nil },
-	}
-	if err := c.ensureEdgeWatch("1ngen6o0so3jwz2h", &staticCredential{token: "token"}); err != nil {
-		t.Fatalf("ensureEdgeWatch: %v", err)
-	}
-	if dialled || len(c.edgeWatches) != 0 {
-		t.Fatalf("watch started outside a term: dialled=%t watches=%d", dialled, len(c.edgeWatches))
-	}
-}
-
 // An edge a peer already holds is not synced here — that is the sharding — but
 // it IS remembered, so when the peer lets go the claim shard's own watch is
-// what hands the edge over. Nothing re-lists, and nothing waits for the next
-// heartbeat pass.
+// what hands the edge over. Nothing re-reads the edge set, and nothing waits
+// for the next heartbeat pass.
 func TestPeerHeldEdgeIsRememberedAndTakenOver(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	const (
 		cluster   = "1ngen6o0so3jwz2h"
 		edge      = "edge-1"
-		statusURL = "/services/providers/edges/dataplane/clusters/" + cluster +
+		statusURL = "/clusters/" + cluster + "/apis/edges.railgrid.ai/v1alpha1" +
 			"/kubernetesclusters/" + edge + "/k8s"
 	)
 	storeName := StoreName(cluster, edge)
@@ -265,19 +391,14 @@ func TestPeerHeldEdgeIsRememberedAndTakenOver(t *testing.T) {
 			WithScheme(NewScheme()).
 			WithStatusSubresource(&kueryv1alpha1.Engagement{}).
 			Build()),
-		identityCache: newIdentityCache(nil),
-		engaged:       map[string]engagedEdge{},
-		wanted:        map[string]string{},
-		edgeWatches:   map[string]edgeWatch{},
-		identities:    map[string]*workspaceIdentity{},
-		runCtx:        ctx,
+		engaged:  map[string]engagedEdge{},
+		wanted:   map[string]string{},
+		observed: map[string]edgeObservation{},
+		runCtx:   ctx,
 	}
-	identity := c.identityFor(&apiskcpv1alpha2.APIBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "kuery", UID: "b-1"},
-	}, cluster)
 
-	// The edge exists and has a record, as the workspace's edge watch would
-	// have left it; only the claim is somebody else's.
+	// The edge exists and has a record, as the workspace's edge reconcile
+	// would have left it; only the claim is somebody else's.
 	if _, err := c.registry.Ensure(ctx, cluster, edge); err != nil {
 		t.Fatalf("recording the engagement: %v", err)
 	}
@@ -288,7 +409,9 @@ func TestPeerHeldEdgeIsRememberedAndTakenOver(t *testing.T) {
 		t.Fatal("the peer could not claim the edge")
 	}
 
-	c.claimAndEngage(ctx, cluster, identity, edge, statusURL)
+	if err := c.claimAndEngage(ctx, cluster, edge, statusURL); err != nil {
+		t.Fatalf("declining a peer's claim is not an error: %v", err)
+	}
 	if c.claims.Held(storeName) {
 		t.Fatal("an edge a peer holds was claimed here")
 	}
@@ -339,28 +462,13 @@ func waitForWatch(t *testing.T, cs *kubefake.Clientset) {
 	t.Fatal("the claim shard never opened its Lease watch")
 }
 
-// edgeObjectWithURL is edgeObject with an explicit coordinate. An empty one
-// leaves status.url unset, which is exactly how an edge first appears: the
-// edges provider creates the object and stamps the URL it serves it on a
-// moment later, from a different reconcile.
-func edgeObjectWithURL(name string, connected bool, statusURL string) *unstructured.Unstructured {
-	object := edgeObject(name, connected)
-	status, _ := object.Object["status"].(map[string]any)
-	if statusURL == "" {
-		delete(status, "URL")
-		return object
-	}
-	status["URL"] = statusURL
-	return object
-}
-
 // The coordinate is read under the key the edges provider actually publishes.
 // edges.railgrid.ai/KubernetesCluster embeds the shared ConnectionStatus, whose
 // URL field is tagged "URL", so a consumer reading "url" finds nothing on every
 // edge there has ever been. The lower-case spelling still resolves, because
 // sibling kinds in the group publish it that way.
 func TestEdgeStatusURLReadsThePublishedKey(t *testing.T) {
-	const published = "/services/providers/edges/dataplane/clusters/c/kubernetesclusters/e/k8s"
+	const published = "/clusters/c/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/e/k8s"
 	for name, status := range map[string]map[string]any{
 		"as the CRD spells it":      {"URL": published},
 		"lower-case sibling naming": {"url": published},
@@ -379,86 +487,33 @@ func TestEdgeStatusURLReadsThePublishedKey(t *testing.T) {
 	}
 }
 
-// awaitEngagement polls one edge's record until it satisfies want, so a test
-// asserts on the watch goroutine's effect without a sleep.
-func awaitEngagement(
-	t *testing.T,
-	c *Controller,
-	cluster, edge, why string,
-	want func(kueryv1alpha1.EngagementStatus) bool,
-) {
-	t.Helper()
-	name := EngagementName(cluster, edge)
-	deadline := time.Now().Add(5 * time.Second)
-	var last kueryv1alpha1.EngagementStatus
-	for time.Now().Before(deadline) {
-		var got kueryv1alpha1.Engagement
-		if err := c.registry.client.Get(context.Background(), client.ObjectKey{Name: name}, &got); err == nil {
-			last = got.Status
-			if want(last) {
-				return
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("%s: engagement for %s/%s is phase=%q message=%q, which is not what was wanted",
-		why, cluster, edge, last.Phase, last.Message)
-}
-
-// waitForEdgeWatch blocks until the workspace's edge watch has actually been
-// opened against the fake, so a test never races its own tracker writes against
-// the goroutine meant to observe them.
-func waitForEdgeWatch(t *testing.T, dyn *dynamicfake.FakeDynamicClient) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, action := range dyn.Actions() {
-			if action.GetVerb() == "watch" && action.GetResource().Resource == edgeGVR.Resource {
-				return
-			}
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("the edge watch was never opened")
-}
-
 // An edge that exists before the edges provider has published its status.url is
-// WANTED, not failed: nothing is dialled, no claim is taken, and no error is
-// surfaced as terminal. The update that adds the coordinate arrives on the same
-// watch and is what engages it — exactly once.
+// WANTED, not failed: nothing is dialled, no claim is handed back, and no error
+// is surfaced as terminal. The update that adds the coordinate arrives as
+// another reconcile of the same edge and is what engages it — exactly once.
 //
-// This is the whole bug: that update does not change status.connected, so a
-// dedup keyed on the connected flag alone swallowed it, and the one engage
-// attempt made at first sight — against an empty URL — was the only one the
-// edge ever got.
+// This is the whole bug the dedup was widened for: that update does not change
+// status.connected, so a dedup keyed on the connected flag alone swallowed it,
+// and the one engage attempt made at first sight — against an empty URL — was
+// the only one the edge ever got.
 func TestEdgeWithoutStatusURLIsWantedUntilTheURLArrives(t *testing.T) {
-	c, dyn, _ := watchFixture(t)
+	c, cache := reconcileFixture(t)
 	const (
 		cluster   = "1ngen6o0so3jwz2h"
 		edge      = "edge-1"
-		statusURL = "/services/providers/edges/dataplane/clusters/" + cluster +
+		statusURL = "/clusters/" + cluster + "/apis/edges.railgrid.ai/v1alpha1" +
 			"/kubernetesclusters/" + edge + "/k8s"
 	)
 	storeName := StoreName(cluster, edge)
 
-	identity := &staticCredential{token: "token-1"}
-	if err := c.ensureEdgeWatch(cluster, identity); err != nil {
-		t.Fatalf("ensureEdgeWatch: %v", err)
-	}
-	waitForEdgeWatch(t, dyn)
-
 	// The edge is up, but the provider has not said where to reach it yet.
-	if err := dyn.Tracker().Add(edgeObjectWithURL(edge, true, "")); err != nil {
-		t.Fatal(err)
-	}
+	cache.put(cluster, edgeObjectWithURL(edge, true, ""))
+	reconcileEdgeOnce(t, c, cluster, edge)
 	awaitEngagement(t, c, cluster, edge, "an edge with no published status.url",
 		func(status kueryv1alpha1.EngagementStatus) bool {
 			return status.Phase == kueryv1alpha1.EngagementPhasePending &&
 				status.Message == noStatusURLMessage
 		})
-	if got := identity.observations(edge); got != 0 {
-		t.Fatalf("the identity was handed the edge %d times, want 0: an edge with no coordinate is never dialled", got)
-	}
 	if !c.claims.Held(storeName) {
 		t.Fatal("the replica waiting for the coordinate must hold the claim, or the record is reaped as an orphan")
 	}
@@ -470,55 +525,39 @@ func TestEdgeWithoutStatusURLIsWantedUntilTheURLArrives(t *testing.T) {
 	}
 
 	// The edges provider stamps the coordinate. status.connected is unchanged
-	// across this update, so only a watch that compares status.url acts on it.
-	if err := dyn.Tracker().Update(edgeGVR, edgeObjectWithURL(edge, true, statusURL), ""); err != nil {
-		t.Fatal(err)
-	}
+	// across this update, so only a dedup that compares status.url acts on it.
+	cache.put(cluster, edgeObjectWithURL(edge, true, statusURL))
 	// The fixture has no edgeproxy to dial, so the attempt itself cannot
 	// succeed; what is asserted is that the update drove a real engage at all.
+	if _, err := c.reconcileEdge(context.Background(), edgeRequest(cluster, edge)); err == nil {
+		t.Fatal("the failed engage must be returned so it is retried")
+	}
 	awaitEngagement(t, c, cluster, edge, "status.url published",
 		func(status kueryv1alpha1.EngagementStatus) bool {
 			return status.Phase == kueryv1alpha1.EngagementPhasePending &&
 				status.Message == "engage failed; retrying"
 		})
-	if got := identity.observations(edge); got != 1 {
-		t.Fatalf("the identity was handed the edge %d times, want exactly 1", got)
-	}
-	if !c.claims.Held(storeName) {
-		t.Fatal("the replica that engages an edge must hold its claim")
-	}
 	c.mu.Lock()
 	_, stillWanted := c.wanted[storeName]
 	c.mu.Unlock()
 	if stillWanted {
 		t.Fatalf("wanted still holds %q after the edge was taken on here", storeName)
 	}
-
-	// A heartbeat that changes neither the flag nor the coordinate is still not
-	// a second attempt — the dedup got wider, not weaker.
-	if err := dyn.Tracker().Update(edgeGVR, edgeObjectWithURL(edge, true, statusURL), ""); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(200 * time.Millisecond)
-	if got := identity.observations(edge); got != 1 {
-		t.Fatalf("a heartbeat-only update re-attempted the engage: the identity was handed the edge %d times, want 1", got)
-	}
 }
 
 // A shard event on an edge that is wanted but not yet engageable re-evaluates
-// it rather than failing: the Available handover runs the same path the watch
-// does, finds no coordinate, and leaves the edge wanted for the status.url
-// update to pick up.
+// it rather than failing: the Available handover runs the same path the
+// reconcile does, finds no coordinate, and leaves the edge wanted for the
+// status.url update to pick up.
 func TestTakeOverOfAnEdgeWithNoCoordinateStaysWanted(t *testing.T) {
 	ctx := context.Background()
-	c, _, _ := watchFixture(t)
+	c, _ := reconcileFixture(t)
 	const (
 		cluster = "1ngen6o0so3jwz2h"
 		edge    = "edge-1"
 	)
 	storeName := StoreName(cluster, edge)
 
-	identity := &staticCredential{token: "token-1"}
 	c.mu.Lock()
 	c.wanted[storeName] = ""
 	c.mu.Unlock()
@@ -526,7 +565,9 @@ func TestTakeOverOfAnEdgeWithNoCoordinateStaysWanted(t *testing.T) {
 		t.Fatalf("recording the engagement: %v", err)
 	}
 
-	c.claimAndEngage(ctx, cluster, identity, edge, "")
+	if err := c.claimAndEngage(ctx, cluster, edge, ""); err != nil {
+		t.Fatalf("an edge with no coordinate is a wait, not an error: %v", err)
+	}
 
 	if !c.claims.Held(storeName) {
 		t.Fatal("a takeover of an edge with no coordinate must still hold it, ready for the update that adds one")
@@ -545,4 +586,27 @@ func TestTakeOverOfAnEdgeWithNoCoordinateStaysWanted(t *testing.T) {
 			return status.Phase == kueryv1alpha1.EngagementPhasePending &&
 				status.Message == noStatusURLMessage
 		})
+}
+
+// The heartbeat pass is one clock for the whole replica now, and it re-asserts
+// every workspace it syncs an edge in. It used to hang off each workspace's
+// watch goroutine, which is the only reason it was ever per workspace.
+func TestEngagedClustersAreTheHeartbeatsScope(t *testing.T) {
+	c, _ := reconcileFixture(t)
+	c.mu.Lock()
+	c.engaged["1ngen6o0so3jwz2h/edge-1"] = engagedEdge{edgeName: "edge-1"}
+	c.engaged["1ngen6o0so3jwz2h/edge-2"] = engagedEdge{edgeName: "edge-2"}
+	c.engaged["2hx82dl9ncmepp5l/edge-3"] = engagedEdge{edgeName: "edge-3"}
+	c.mu.Unlock()
+
+	got := map[string]bool{}
+	for _, cluster := range c.engagedClusters() {
+		if got[cluster] {
+			t.Fatalf("workspace %q is re-asserted twice per pass", cluster)
+		}
+		got[cluster] = true
+	}
+	if len(got) != 2 || !got["1ngen6o0so3jwz2h"] || !got["2hx82dl9ncmepp5l"] {
+		t.Fatalf("engagedClusters = %v, want one entry per workspace with an engaged edge", got)
+	}
 }

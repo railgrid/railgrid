@@ -9,7 +9,8 @@
 package api
 
 import (
-	"context"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"sort"
@@ -19,59 +20,104 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/dataplane/conformance"
-	"github.com/railgrid/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/serve"
 
 	agentsclient "github.com/railgrid/provider-agents/client"
 )
 
 const (
 	conformanceCluster = "aaaaaaaaaaaaaaaa"
-	conformanceToken   = "caller-token"
+	conformanceUser    = "alice@railgrid.test"
 	conformanceAgent   = "scout"
 )
 
-// TestDataPlaneConformance drives the provider's whole data-plane mux through
-// the contract's observable behaviour: granted verb 200, missing bearer 401,
-// path/header cluster mismatch 400, workspace A's token cannot reach workspace
-// B, an ungranted verb denied without disclosing the object, and a malformed
-// path refused where the grammar says it is.
+// verbBase is the kube path of a verb on one of this provider's kinds, as a
+// kcp shard forwards it.
+func verbBase(cluster, resource, name string) string {
+	return "/clusters/" + cluster + "/apis/" + agentsclient.AgentGVR.Group + "/" + agentsclient.AgentGVR.Version + "/" + resource + "/" + name
+}
+
+// gatedHandler is the provider's REAL data-plane surface: the DataPlane
+// handler mounted in a serve.New server whose subresource table is derived
+// from this provider's own manifest, exactly as runServe does. Driving it
+// rather than the bare handler is what proves the declaration, the adapter
+// and the gate are wired together.
+func gatedHandler(t *testing.T, s *Server) http.Handler {
+	t.Helper()
+	routes, err := serve.SubresourcesFromCatalogEntryFile("../manifest.yaml")
+	if err != nil {
+		t.Fatalf("manifest.yaml: %v", err)
+	}
+	handler, err := serve.New(serve.Options{
+		Name:         "agents",
+		Readiness:    http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }),
+		DataPlane:    s.DataPlane(),
+		Subresources: routes,
+	})
+	if err != nil {
+		t.Fatalf("serve.New refused this provider's layout: %v", err)
+	}
+	return handler
+}
+
+// stamped builds a request the way a kcp shard forwards one: no bearer, the
+// caller in X-Remote-User / X-Remote-Group.
+func stamped(method, path string, body io.Reader, user string) *http.Request {
+	r := httptest.NewRequest(method, path, body)
+	if body != nil {
+		r.Header.Set("Content-Type", "application/json")
+	}
+	if user != "" {
+		r.Header.Set(dataplane.HeaderRemoteUser, user)
+		r.Header.Add(dataplane.HeaderRemoteGroup, "system:authenticated")
+	}
+	return r
+}
+
+// TestDataPlaneConformance drives the provider's whole data-plane server
+// through the contract's observable behaviour: granted verb 200, no stamped
+// caller 401, a caller who cannot see the object denied without disclosing
+// it, workspace A's caller cannot reach workspace B, an undeclared verb not
+// served, and a malformed path refused where the grammar says it is.
 //
-// It is the one test that proves the gates are actually wired rather than
+// It is the one test that proves the gate is actually wired rather than
 // merely imported, and it is the same suite every other provider is held to.
 func TestDataPlaneConformance(t *testing.T) {
 	callers := &conformance.FakeCallers{
 		Cluster: conformanceCluster,
-		Token:   conformanceToken,
+		User:    conformanceUser,
 		Objects: []*unstructured.Unstructured{agentObject(conformanceAgent)},
 		ListKinds: map[schema.GroupVersionResource]string{
 			agentsclient.AgentGVR: "AgentList",
 		},
-		// One granted verb and one refused one, on the same object, so the
-		// difference the suite observes is the grant and nothing else.
+		// The gate asks one thing on the caller's behalf: may they see the
+		// agent. kcp authorized the verb itself before forwarding.
 		Allow: func(a conformance.Attributes) bool {
-			return a.Resource == "agents" && a.Name == conformanceAgent && a.Subresource == "sessions"
+			return a.Verb == "get" && a.Resource == "agents" && a.Name == conformanceAgent
 		},
 	}
 
 	server := newGatedTestServer(t, callers)
-	base := "/dataplane/clusters/" + conformanceCluster + "/agents/" + conformanceAgent
+	base := verbBase(conformanceCluster, "agents", conformanceAgent)
 
-	conformance.Test(t, server.DataPlane(), conformance.Fixtures{
+	conformance.Test(t, gatedHandler(t, server), conformance.Fixtures{
 		Callers:     callers,
-		Method:      "GET",
+		Method:      http.MethodGet,
 		GrantedPath: base + "/sessions",
-		DeniedPath:  base + "/messages",
+		// A verb this provider never declared: the adapter does not serve it.
+		DeniedPath: base + "/delegate",
 		MalformedPaths: []string{
 			// A traversal segment, which must be refused rather than cleaned
 			// into a path addressing a different object.
-			"/dataplane/clusters/" + conformanceCluster + "/agents/../" + conformanceAgent + "/sessions",
+			verbBase(conformanceCluster, "agents", "..") + "/" + conformanceAgent + "/sessions",
 			// An empty segment.
-			"/dataplane/clusters/" + conformanceCluster + "//" + conformanceAgent + "/sessions",
+			"/clusters/" + conformanceCluster + "/apis/" + agentsclient.AgentGVR.Group + "/" + agentsclient.AgentGVR.Version + "/agents//" + conformanceAgent + "/sessions",
 			// A workspace path where a logical-cluster ID belongs.
-			"/dataplane/clusters/root:railgrid:tenants:acme/agents/" + conformanceAgent + "/sessions",
-			// A verb this provider does not serve.
-			base + "/delegate",
+			verbBase("root:railgrid:tenants:acme", "agents", conformanceAgent) + "/sessions",
+			// A subresource kcp reserves for the object's own shape.
+			base + "/status",
 		},
 		// These are plain REST verbs, not actions: no {"input": …} envelope
 		// and no declared input limit.
@@ -80,18 +126,18 @@ func TestDataPlaneConformance(t *testing.T) {
 	})
 }
 
-// TestRunVerbsGateOnTheRunObject: the run verbs address a Run, so the two
-// gates run against the Run — and the agent whose store rows they then read
-// comes off that object's spec, never off the request.
+// TestRunVerbsGateOnTheRunObject: the run verbs address a Run, so the gate
+// runs against the Run — and the agent whose store rows they then read comes
+// off that object's spec, never off the request.
 //
 // That is the whole reason Run became a kind. While a run was reachable only
-// as a tail segment on its agent, the gates could see the agent and not the
+// as a tail segment on its agent, the gate could see the agent and not the
 // run: a caller granted one agent's runs was granted all of them, and nothing
 // stopped a request naming run X while claiming agent Y.
 func TestRunVerbsGateOnTheRunObject(t *testing.T) {
 	callers := &conformance.FakeCallers{
 		Cluster: conformanceCluster,
-		Token:   conformanceToken,
+		User:    conformanceUser,
 		Objects: []*unstructured.Unstructured{
 			agentObject(conformanceAgent),
 			runObject("r1", conformanceAgent),
@@ -100,55 +146,82 @@ func TestRunVerbsGateOnTheRunObject(t *testing.T) {
 			agentsclient.AgentGVR: "AgentList",
 			agentsclient.RunGVR:   "RunList",
 		},
+		// The caller may see r1 and nothing else.
 		Allow: func(a conformance.Attributes) bool {
-			return a.Resource == "runs" && a.Subresource == "trace"
+			return a.Verb == "get" && a.Resource == "runs" && a.Name == "r1"
 		},
 	}
-	handler := newGatedTestServer(t, callers).DataPlane()
-	base := "/dataplane/clusters/" + conformanceCluster + "/runs"
+	handler := gatedHandler(t, newGatedTestServer(t, callers))
+	base := verbBase(conformanceCluster, "runs", "")
 
 	for _, tc := range []struct {
 		method, path string
 		want         int
 		why          string
 	}{
-		{"GET", base + "/r1/trace", 404, "the run object exists and the verb is granted, but the store has no rows for it"},
-		{"GET", base + "/r1/wait", 404, "the verb is not granted, and a denial must not disclose that the run exists"},
-		{"POST", base + "/r1/cancel", 404, "same"},
-		{"GET", base + "/r2/trace", 404, "no such run object"},
-		{"GET", base + "/r1/unknown", 400, "not a verb this provider serves"},
-		{"GET", base + "/r1/trace/extra", 400, "trace takes no tail"},
+		{"GET", base + "r1/trace", 404, "the run object exists and is visible, but the store has no rows for it"},
+		{"GET", base + "r1/wait", 404, "same: the object is gated, the store has nothing"},
+		{"POST", base + "r1/cancel", 404, "same"},
+		{"GET", base + "r2/trace", 404, "no such run object, and a denial must not disclose that"},
+		{"GET", base + "r1/unknown", 404, "not a verb this provider declares"},
+		{"GET", base + "r1/trace/extra", 400, "trace takes no tail"},
+		{"POST", base + "r1/trace", 405, "trace answers GET only"},
 	} {
-		request := httptest.NewRequest(tc.method, tc.path, nil)
-		request.Header.Set("Authorization", "Bearer "+conformanceToken)
-		request.Header.Set("X-Railgrid-Cluster", conformanceCluster)
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, request)
+		handler.ServeHTTP(recorder, stamped(tc.method, tc.path, nil, conformanceUser))
 		if recorder.Code != tc.want {
 			t.Errorf("%s %s → %d, want %d (%s): %s", tc.method, tc.path, recorder.Code, tc.want, tc.why, recorder.Body.String())
 		}
 	}
 }
 
+// TestVerbHandlersActAsTheProvider: after the gate a handler holds the
+// provider's client, not a caller's — there is no caller credential on a verb,
+// and the Server under test has no tenant client and no hub URL to build one
+// from. The verb still completes, through the client the gate returned, and
+// the identity it labels with is the one kcp stamped.
+func TestVerbHandlersActAsTheProvider(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster:   conformanceCluster,
+		User:      conformanceUser,
+		Objects:   []*unstructured.Unstructured{agentObject(conformanceAgent)},
+		ListKinds: map[schema.GroupVersionResource]string{agentsclient.AgentGVR: "AgentList"},
+		Allow:     func(a conformance.Attributes) bool { return a.Verb == "get" },
+	}
+	s := newGatedTestServer(t, callers)
+	if s.tenant != nil {
+		t.Fatal("this test needs a Server with no caller-credentialed tenant client")
+	}
+	handler := gatedHandler(t, s)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, stamped(http.MethodGet, verbBase(conformanceCluster, "agents", conformanceAgent)+"/sessions", nil, conformanceUser))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET sessions → %d: %s", rec.Code, rec.Body.String())
+	}
+
+	ctx := dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: conformanceUser})
+	id := s.dataPlaneIdentity(ctx, dataplane.Request{ClusterID: conformanceCluster, Resource: "agents", Name: conformanceAgent, Verb: "sessions"})
+	if id.user != conformanceUser {
+		t.Errorf("user = %q, want the stamped caller %q", id.user, conformanceUser)
+	}
+	if id.token != "" {
+		t.Errorf("a verb handler must hold no caller bearer; got %q", id.token)
+	}
+}
+
 // newGatedTestServer builds a Server whose data plane can actually complete a
-// request: an in-memory store, a tenant client (so requireClient does not
-// answer 501), a stubbed workspace lookup (so it does not answer 400 for want
-// of an org/workspace scope), and the caller factory under test.
+// request: an in-memory store, a stubbed workspace lookup and the caller
+// factory under test. No tenant client and no hub URL: a verb acts through
+// the gate's provider client, and needs neither.
 func newGatedTestServer(t *testing.T, callers *conformance.FakeCallers) *Server {
 	t.Helper()
-	s, err := New(t.Context(), Config{InMemoryStore: true, HubURL: "https://hub.test"})
+	s, err := New(t.Context(), Config{InMemoryStore: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
 	s.callers = callers
-	s.workspaces = func(_ context.Context, clusterID, _ string) (tenantaccess.Workspace, error) {
-		return tenantaccess.Workspace{
-			Path:          "root:railgrid:tenants:org:ws",
-			OrgUUID:       "org-" + clusterID,
-			WorkspaceUUID: "ws-" + clusterID,
-		}, nil
-	}
 	return s
 }
 
@@ -175,10 +248,11 @@ func agentObject(name string) *unstructured.Unstructured {
 // step: the route table this package serves, the CatalogEntry in manifest.yaml,
 // and the chart's copy of it (the one that actually reaches production).
 //
-// A verb that is served but not declared cannot be granted to a workload
-// identity — the hub's scoped-identity policy refuses to mint a capability for
-// a coordinate no CatalogEntry claims. A verb that is declared but not served
-// is worse: the hub will happily mint the capability and the call 404s.
+// A verb that is served but not declared is unreachable: serve's adapter
+// dispatches only declared coordinates, and the hub's scoped-identity policy
+// refuses to mint a capability for a coordinate no CatalogEntry claims. A verb
+// that is declared but not served is worse: kcp routes it here and the call
+// 404s.
 func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 	manifest := readVerbBlock(t, "../manifest.yaml")
 	chart := readVerbBlock(t, "../deploy/chart/templates/catalogentry.yaml")
@@ -206,7 +280,7 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 	}
 	for coordinate := range served {
 		if _, ok := declared[coordinate]; !ok {
-			t.Errorf("%s is served but not declared in the CatalogEntry, so no workload identity can be granted it", coordinate)
+			t.Errorf("%s is served but not declared in the CatalogEntry, so kcp never routes it here", coordinate)
 		}
 	}
 }

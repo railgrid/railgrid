@@ -254,6 +254,7 @@ init-provider-edges: build-edges-provider ## Bootstrap edges APIExport + write d
 		> $(EDGES_RUNTIME_KUBECONFIG)
 	RAILGRID_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
 	RAILGRID_KCP_DIR=$(EDGES_KCP_DIR) \
+	RAILGRID_DATAPLANE_URL=http://localhost:$(EDGES_PORT) \
 	EDGES_WORKSPACE_PATH=$(EDGES_WORKSPACE_PATH) \
 		$(BINDIR)/edges-provider init
 
@@ -272,6 +273,7 @@ run-provider-edges: build-edges-provider ## Run the edges provider (needs: hub +
 	RAILGRID_HUB_EXTERNAL_URL=$(EDGES_HUB_EXTERNAL_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=edges \
+	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/edges/manifest.yaml \
 	RAILGRID_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
 	RAILGRID_DEV_MODE=true \
 		$(BINDIR)/edges-provider serve
@@ -367,32 +369,40 @@ test-hub-chart: ## Lint and render the railgrid-hub chart's provider hardening v
 ## under providers/infrastructure/config/crds/ and are embedded into the
 ## binary via go:embed — the hub does not install them, the provider does
 ## (one of the deliberate self-contained-system properties).
-codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastructure provider's local API
-	@mkdir -p providers/infrastructure/config/crds
+codegen-infrastructure-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the infrastructure provider's local API (+ chart schemas)
+	@mkdir -p providers/infrastructure/config/crds providers/infrastructure/config/kcp providers/infrastructure/deploy/chart/files/schemas
 	cd providers/infrastructure && \
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/infrastructure/config/crds
 	# The provider embeds its platform-facing CRDs from install/crds/ (//go:embed
 	# in install/crds.go) and applies them into the kcp provider workspace at
-	# init. Keep the embed copy in lockstep with generated schemas — otherwise
-	# the operator installs stale CRDs and kcp silently prunes new fields.
-	# InfrastructureProvider is intentionally NOT embedded (it is applied to the
-	# host cluster by the chart), so it stays in config/ only. Remove stale embed
-	# files first so deleted platform APIs cannot remain installed accidentally.
+	# init; the Templates CRD is also what the runtime-minted, virtual-storage
+	# templates schema is derived from. Keep the embed copy in lockstep with the
+	# generated CRDs. InfrastructureProvider is intentionally NOT embedded (it is
+	# applied to the host cluster by the chart), so it stays in config/ only.
+	# Remove stale embed files first so deleted platform APIs cannot remain
+	# installed accidentally.
 	find providers/infrastructure/install/crds -maxdepth 1 -type f -name '*.yaml' -delete
 	cp providers/infrastructure/config/crds/infrastructure.railgrid.ai_templates.yaml \
 	   providers/infrastructure/config/crds/infrastructure.railgrid.ai_instances.yaml \
 	   providers/infrastructure/install/crds/
-	@# infrastructure mints its APIResourceSchemas at RUNTIME (install/crds.go
-	@# plus the Templates CachedResource), so there is no apigen output to fold
-	@# in. The APIExport is generated from the manifest all the same, so a
-	@# permission claim is still written in exactly one place; spec.resources is
-	@# empty and provider-sdk/install merges it with the entries the runtime
-	@# writers add.
-	@mkdir -p providers/infrastructure/config/kcp providers/infrastructure/deploy/chart/files
+	./hack/apigen.sh --input-dir providers/infrastructure/config/crds --output-dir providers/infrastructure/config/kcp
+	@for r in instances templates; do \
+		cp providers/infrastructure/config/kcp/apiresourceschema-$$r.infrastructure.railgrid.ai.yaml \
+		   providers/infrastructure/deploy/chart/files/schemas/$$r.infrastructure.railgrid.ai.yaml; \
+	done
+	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
+	@# supplies metadata.name and spec.permissionClaims. --schemas-dir pins the
+	@# resource list to the schemas the chart ships (the host-cluster
+	@# InfrastructureProvider CRD is not one of them). At init the provider
+	@# re-points the templates entry at CachedResource virtual storage; the
+	@# instances entry and every instances/<verb> subresource are served as
+	@# generated.
 	cd provider-sdk && go run ./cmd/apiexportgen \
 		--manifest $(CURDIR)/providers/infrastructure/manifest.yaml \
+		--apigen-export $(CURDIR)/providers/infrastructure/config/kcp/apiexport-infrastructure.railgrid.ai.yaml \
+		--schemas-dir $(CURDIR)/providers/infrastructure/deploy/chart/files/schemas \
 		--out $(CURDIR)/providers/infrastructure/config/kcp/apiexport-infrastructure.providers.railgrid.ai.yaml
 	cp providers/infrastructure/config/kcp/apiexport-infrastructure.providers.railgrid.ai.yaml providers/infrastructure/deploy/chart/files/apiexport.yaml
 	./hack/ensure-boilerplate.sh
@@ -635,9 +645,21 @@ verify-portalkit: ## Verify vendored portalkit copies are in sync with the canon
 	@node --test provider-sdk/portalkit/dashboardtile.conformance.test.mjs provider-sdk/portalkit/kube.behavior.test.mjs
 	@$(MAKE) verify-agentkit
 
+# EXTERNAL_PROVIDERS_DIR (the same variable `make tilt` takes) is passed to the
+# permission-claim-policy generator so an out-of-tree provider's composes edges
+# are checked too. Without it CI still checks every in-tree edge exactly and
+# leaves the out-of-tree rules alone -- see the generator's header.
+CLAIM_POLICY_ARGS = $(if $(EXTERNAL_PROVIDERS_DIR),--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)",)
+
 verify-provider-contract: ## Verify provider manifests, claims and route classes match the provider contract
 	@node hack/verify-provider-contract.test.mjs
 	@node hack/verify-provider-contract.mjs
+	@node hack/generate-permission-claim-policy.test.mjs
+	@node hack/generate-permission-claim-policy.mjs --check $(CLAIM_POLICY_ARGS)
+
+.PHONY: permission-claim-policy
+permission-claim-policy: ## Regenerate config/kcp/permissionclaimpolicy.yaml from the provider manifests
+	@node hack/generate-permission-claim-policy.mjs $(CLAIM_POLICY_ARGS)
 
 verify-agentkit: ## Verify optional AgentKit style loading and conversation contracts
 	@node --test hack/verify-agentkit-dependencies.test.mjs
@@ -1067,6 +1089,16 @@ EXTERNAL_PROVIDERS ?= all
 ## The default loop: no kind cluster for the hub itself, so it starts in seconds
 ## and every Go change is a plain rebuild. Use tilt-cluster when you need real
 ## multi-shard kcp, in-cluster deployment, or to iterate on a kcp checkout.
+## KCP_IMAGE runs kcp from a published image instead of the server compiled
+## into the hub — that is how a kcp PR build is reached:
+## ghcr.io/kcp-dev/kcp-prs:pr-<number>-<short sha>. It serves on the same :6443
+## and keeps its own .kcp-external root, so the switch starts from an empty kcp.
+## hack/kcp-external.sh starts it with the feature gates the embedded server
+## has (CacheAPIs — without it no custom subresource is ever routed — and
+## WorkspaceMounts), and reads <root>/token-auth-file.csv when present so
+## static-token users exist on it too.
+KCP_IMAGE ?=
+
 tilt: ## Run Tiltfile (embedded binary mode); see tilt-cluster for the in-cluster stack
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
 	@# Tilt refuses a second instance on its API port, but its own message
@@ -1095,9 +1127,10 @@ ifneq ($(EXTERNAL_PROVIDERS_DIR),)
 	@kind get kubeconfig --name "$(KRO_KIND_NAME)" > "$(KRO_KIND_KUBECONFIG)"
 	KUBECONFIG="$(KRO_KIND_KUBECONFIG):$${KUBECONFIG:-$$HOME/.kube/config}" TMPDIR="$(TILT_TMPDIR)" \
 		tilt up -f Tiltfile --context "kind-$(KRO_KIND_NAME)" -- \
-		--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)" --external-providers="$(EXTERNAL_PROVIDERS)"
+		--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)" --external-providers="$(EXTERNAL_PROVIDERS)" \
+		--kcp-image="$(KCP_IMAGE)"
 else
-	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile
+	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile -- --kcp-image="$(KCP_IMAGE)"
 endif
 
 ## Full multi-shard kcp in a kind cluster + railgrid-hub in-cluster, against a local kcp checkout
@@ -1169,6 +1202,7 @@ run-provider-quickstart: build-quickstart-provider ## Run the quickstart provide
 	RAILGRID_HUB_URL=$(QUICKSTART_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=quickstart \
+	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/quickstart/manifest.yaml \
 	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 		$(BINDIR)/quickstart-provider
 
@@ -1188,6 +1222,12 @@ install-provider-quickstart: ## Apply quickstart Provider + CatalogEntry into ro
 ## Run provider e2e suite (embedded kcp + quickstart-provider subprocess).
 ## Lightweight — no kind/Helm, just two host binaries the suite drives over
 ## HTTP + kcp dynamic clients. RAILGRID_E2E_KEEP_DATA=true preserves logs/data.
+## RAILGRID_E2E_KCP_IMAGE=<image> runs kcp from a published image instead
+## (the same way `make tilt KCP_IMAGE=…` does), so a kcp PR build is tested by
+## the whole suite without a source checkout; RAILGRID_E2E_HUB_VERBOSITY=<n>
+## raises the hub's (and that kcp's) log level — 4 makes kcp's authorizers say
+## why a virtual-workspace request was refused; RAILGRID_E2E_HUB_GOFLAGS passes
+## extra flags to the hub build (e.g. -modfile=… to embed a kcp checkout).
 E2E_PROVIDER_TIMEOUT ?= 10m
 e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 	@test -z "$$(lsof -ti :19443 :16443 :18081 :2380 2>/dev/null)" || { \
@@ -1565,6 +1605,7 @@ init-provider-quickstart: build-quickstart-provider ## Bootstrap quickstart APIE
 	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 	QUICKSTART_WORKSPACE_PATH=$(QUICKSTART_WORKSPACE_PATH) \
 	RAILGRID_KCP_DIR=providers/quickstart/deploy/chart/files \
+	RAILGRID_DATAPLANE_URL=http://localhost:$(QUICKSTART_PORT) \
 		$(BINDIR)/quickstart-provider init
 
 ## Delete the quickstart CatalogEntry + Provider. Deleting the Provider triggers
@@ -1675,6 +1716,7 @@ run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (
 	RAILGRID_HUB_URL=$(KUERY_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=kuery \
+	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/kuery/manifest.yaml \
 	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
 	KUERY_STORE_DRIVER=postgres \
 	KUERY_STORE_DSN="$$STORE_DSN" \
@@ -1725,6 +1767,7 @@ init-provider-kuery: build-kuery-provider ## Bootstrap kuery APIExport (schemas+
 	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
 	KUERY_WORKSPACE_PATH=$(KUERY_WORKSPACE_PATH) \
 	RAILGRID_KCP_DIR=$(KUERY_KCP_DIR) \
+	RAILGRID_DATAPLANE_URL=http://localhost:$(KUERY_PORT) \
 		$(BINDIR)/kuery-provider init
 
 uninstall-provider-kuery: ## Delete kuery CatalogEntry + Provider (full teardown)
@@ -1832,6 +1875,7 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-br
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=infrastructure \
+	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/infrastructure/manifest.yaml \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)} \
 	RAILGRID_APP_BASE_DOMAIN=$${RAILGRID_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
@@ -1984,6 +2028,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
 		RAILGRID_HUB_INSECURE=true \
 		RAILGRID_PROVIDER_NAME=app-studio \
+		RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/app-studio/manifest.yaml \
 		RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
@@ -1999,6 +2044,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
 		RAILGRID_HUB_INSECURE=true \
 		RAILGRID_PROVIDER_NAME=app-studio \
+		RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/app-studio/manifest.yaml \
 		RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
@@ -2050,6 +2096,7 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 	RAILGRID_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
 	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
 	RAILGRID_KCP_DIR=$(APP_STUDIO_KCP_DIR) \
+	RAILGRID_DATAPLANE_URL=http://localhost:$(APP_STUDIO_PORT) \
 		$(BINDIR)/app-studio-provider init
 
 ## Delete the App Studio CatalogEntry. Useful while iterating on the chart.
@@ -2104,6 +2151,7 @@ run-provider-agents: build-agents-provider agents-db-up ## Run the agents provid
 	RAILGRID_HUB_URL=$(AGENTS_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=agents \
+	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/agents/manifest.yaml \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 	AGENTS_DATABASE_URL="$$AGENTS_DATABASE_URL" \
 	AGENTS_IN_MEMORY_STORE="$$AGENTS_IN_MEMORY_STORE" \
@@ -2140,6 +2188,7 @@ init-provider-agents: build-agents-provider ## Bootstrap agents APIExport + writ
 	RAILGRID_PROVIDER_KUBECONFIG=$(AGENTS_PROVIDER_KUBECONFIG) \
 	AGENTS_WORKSPACE_PATH=$(AGENTS_WORKSPACE_PATH) \
 	RAILGRID_KCP_DIR=$(AGENTS_KCP_DIR) \
+	RAILGRID_DATAPLANE_URL=http://localhost:$(AGENTS_PORT) \
 		$(BINDIR)/agents-provider init
 
 uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
@@ -2207,25 +2256,44 @@ uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry + Provi
 		delete -f $(KROMC_MANIFEST) -f $(KROMC_PROVIDER_MANIFEST)
 
 ## One-shot bootstrap for the infrastructure provider's workspace.
-## Uses the hub's admin kubeconfig to install CRDs, register APIExport
-## schemas, apply the Templates CachedResource, mint a low-privilege
-## ServiceAccount + token, and write a runtime kubeconfig that
-## run-provider-infrastructure passes to serve as RAILGRID_PROVIDER_KUBECONFIG.
+## Runs as the provider ServiceAccount: it reads the provider-token Secret the
+## Provider controller minted in the workspace, writes it to
+## INFRASTRUCTURE_PROVIDER_KUBECONFIG and hands that to init as its admin
+## kubeconfig — the same identity the chart's init container has. That identity
+## is load-bearing: the PermissionClaimPolicy reserves infrastructure.railgrid.ai
+## for the platform's providers, and kcp's APIExport admission refuses an export
+## (or an entry upsert) of that group from any other user, the hub admin
+## included. init then installs CRDs, registers APIExport schemas, applies the
+## Templates CachedResource, mints the low-privilege runtime ServiceAccount +
+## token, and writes the runtime kubeconfig that run-provider-infrastructure
+## passes to serve as RAILGRID_PROVIDER_KUBECONFIG.
 ##
 ## When KRO_KUBECONFIG is set, also seeds the kro cluster with a
 ## kro.run/cluster=true Secret pointing at this workspace's VW.
 INFRASTRUCTURE_WORKSPACE_PATH ?= root:railgrid:providers:infrastructure
 INFRASTRUCTURE_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/infrastructure-runtime.kubeconfig
+INFRASTRUCTURE_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/infrastructure-provider.kubeconfig
 init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrastructure provider workspace (CRDs, APIExport, SA, kubeconfig)
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
+	@echo "Reading provider-token from $(INFRASTRUCTURE_WORKSPACE_PATH) and writing $(INFRASTRUCTURE_PROVIDER_KUBECONFIG)"
+	@TOKEN=$$(kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
+		--server=$(KROMC_KCP_SERVER)/clusters/$(INFRASTRUCTURE_WORKSPACE_PATH) \
+		--insecure-skip-tls-verify \
+		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
+	mkdir -p $(KCP_DATA_DIR); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: railgrid\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: railgrid\n  context:\n    cluster: railgrid\n    user: railgrid\ncurrent-context: railgrid\nusers:\n- name: railgrid\n  user:\n    token: %s\n' \
+		"$(KROMC_KCP_SERVER)/clusters/$(INFRASTRUCTURE_WORKSPACE_PATH)" "$$TOKEN" \
+		> $(INFRASTRUCTURE_PROVIDER_KUBECONFIG)
 	@echo "Bootstrapping infrastructure provider workspace $(INFRASTRUCTURE_WORKSPACE_PATH)"
-	@echo "  admin:   $(KROMC_KCP_KUBECONFIG)"
-	@echo "  runtime: $(INFRASTRUCTURE_RUNTIME_KUBECONFIG)"
-	INFRASTRUCTURE_ADMIN_KUBECONFIG=$(KROMC_KCP_KUBECONFIG) \
+	@echo "  provider: $(INFRASTRUCTURE_PROVIDER_KUBECONFIG)"
+	@echo "  runtime:  $(INFRASTRUCTURE_RUNTIME_KUBECONFIG)"
+	INFRASTRUCTURE_ADMIN_KUBECONFIG=$(INFRASTRUCTURE_PROVIDER_KUBECONFIG) \
+	RAILGRID_DATAPLANE_URL=http://localhost:$(KROMC_PORT) \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	RAILGRID_KCP_DIR=$(CURDIR)/providers/infrastructure/deploy/chart/files \
 	INFRASTRUCTURE_KUBECONFIG=$(INFRASTRUCTURE_RUNTIME_KUBECONFIG) \
@@ -2257,6 +2325,7 @@ serve-provider-code: ## Run the already-built code provider
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=code \
+	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/code/manifest.yaml \
 	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
 	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
@@ -2283,35 +2352,38 @@ uninstall-provider-code: ## Delete the code CatalogEntry + Provider (full teardo
 		delete -f $(CODE_MANIFEST) -f $(CODE_PROVIDER_MANIFEST)
 
 CODE_WORKSPACE_PATH ?= root:railgrid:providers:code
-## Dev bootstrap for the code provider. The hub mints a real provider
-## kubeconfig only when it runs with a host cluster (--kubeconfig); the dev hubs
-## (embedded + Tiltfile.cluster) do not, so we derive a runtime kubeconfig from
-## the admin kubeconfig — reusing its working credential (a static token in
-## embedded mode, a client cert in cluster mode) and retargeting only the server
-## URL to the provider workspace — and ensure the APIExportEndpointSlice the
-## controller manager needs. run-provider-code reads it via RAILGRID_PROVIDER_KUBECONFIG.
+## Dev bootstrap for the code provider. Reads the provider-token Secret the
+## Provider controller minted in the code workspace and writes a runtime
+## kubeconfig carrying it, so init acts as the provider ServiceAccount
+## (system:serviceaccount:default:provider). That identity is load-bearing: the
+## PermissionClaimPolicy (config/kcp/permissionclaimpolicy.yaml) reserves
+## code.railgrid.ai for the platform's providers, and kcp's APIExport admission
+## refuses an export of that group from any other user — the admin included.
+## run-provider-code reads the same file via RAILGRID_PROVIDER_KUBECONFIG.
 ## Order: install-provider-code (creates the workspace) → init-provider-code →
 ## run-provider-code. Re-runnable. The Tiltfile.cluster flow reuses this target
 ## verbatim, overriding KROMC_KCP_KUBECONFIG / KROMC_KCP_SERVER.
-init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the code APIExportEndpointSlice
+init-provider-code: build-code-provider ## Write the dev provider kubeconfig + bootstrap the code APIExport
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
-	@mkdir -p $(KCP_DATA_DIR)
-	@# The provider workspace (root:railgrid:providers:code) is created
-	@# declaratively by the Provider controller when code-register applies the
-	@# Provider CR — no need to create it here.
-	@echo "Writing dev kubeconfig $(CODE_RUNTIME_KUBECONFIG) (workspace $(CODE_WORKSPACE_PATH), server $(KROMC_KCP_SERVER))"
-	@umask 077; kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) config view --raw --minify --flatten > $(CODE_RUNTIME_KUBECONFIG)
-	@CL=$$(kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config view -o jsonpath='{.clusters[0].name}'); \
-		kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
-			--server=$(KROMC_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
-			--insecure-skip-tls-verify=true >/dev/null
+	@echo "Reading provider-token from $(CODE_WORKSPACE_PATH) and writing $(CODE_RUNTIME_KUBECONFIG)"
+	@TOKEN=$$(kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
+		--server=$(KROMC_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
+		--insecure-skip-tls-verify \
+		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
+	mkdir -p $(KCP_DATA_DIR); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: railgrid\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: railgrid\n  context:\n    cluster: railgrid\n    user: railgrid\ncurrent-context: railgrid\nusers:\n- name: railgrid\n  user:\n    token: %s\n' \
+		"$(KROMC_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH)" "$$TOKEN" \
+		> $(CODE_RUNTIME_KUBECONFIG)
+	@echo "Running code-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
 	RAILGRID_PROVIDER_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
 	CODE_WORKSPACE_PATH=$(CODE_WORKSPACE_PATH) \
 	RAILGRID_KCP_DIR=$(CURDIR)/providers/code/deploy/chart/files \
+	RAILGRID_DATAPLANE_URL=http://localhost:$(CODE_PORT) \
 		$(BINDIR)/code-provider init
 
 # --- Provider Databricks (local dev) ---

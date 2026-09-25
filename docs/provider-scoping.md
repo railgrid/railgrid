@@ -322,12 +322,12 @@ instead.
 | Consumer | What it does with the bearer | Verdict |
 |---|---|---|
 | `provider-sdk/tenantaccess` `NewClient` | `rest.Config{Host: {hub}/clusters/{id}, BearerToken: …}` | **Works.** Also never fed a caller bearer today — its four callers pass a reconciler-minted SA token. |
-| `providers/infrastructure/dataplane/identity.go`, `authorizer.go` | `SelfSubjectAccessReview` on `<resource>/exec`, plus a caller-scoped instance GET | **Works.** SSAR asks "what can *this* credential do", so the delegated SA's workspace role is evaluated, matching the user's. No username or groups are supplied. |
+| Data-plane verbs (every provider, `provider-sdk/dataplane.Gate`) | none — a verb carries no bearer. kcp authenticates the caller on `/clusters/{id}/apis/…/{resource}/{name}/{verb}` and stamps the identity; the gate runs a `SubjectAccessReview` on it | **Unaffected.** A verb never goes through the backend proxy, so no delegated token is ever substituted on it; the identity kcp stamps is the one that presented the credential to the front door. |
 | `providers/infrastructure/tenant/`, `providers/code/tenant/` | `{hub}/clusters/{X-Railgrid-Cluster}` dynamic + authorization clients | **Works.** Opaque credential; the provider's own kubeconfig credentials are deliberately dropped from the config. |
 | `providers/edges` — tunnel, k8s subresource, `services/{name}/proxy` | TokenReview then SAR (`verb: proxy`) through the APIExport VW for the addressed cluster | **Works.** A delegated token authenticates in the workspace that minted it — the same one being addressed — keeps its groups, and its `cluster-admin` binding passes the SAR. Already exercised: the org-provider tunnel carries delegated tokens today. |
 | `providers/edges` — SSH with `spec.sshUserMapping: identity` | TokenReview'd username becomes the **Linux login name** | **Breaks.** Resolves to `system:serviceaccount:default:railgrid-du-<hash>`, which is not the human's account. `edges` is therefore in the default exclusion list. Lifting it means taking that identity from `X-Railgrid-User`. |
-| `providers/app-studio` (`tenant/scope.go`) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards the bearer to the hub MCP aggregate, to provider action routes, and to the infrastructure data plane | **Works.** All hops are hub surfaces that accept an SA token; each re-forwards `X-Railgrid-*` alongside. |
-| `providers/agents` (`tenant/scope.go`) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards it to the edges MCP endpoint and the infrastructure data plane | **Works.** Its own TokenReview/SAR path is the *s2s* endpoint, which is not hub-proxied and is unaffected. |
+| `providers/app-studio` (`tenant/scope.go`, MCP only) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards the bearer to the hub MCP aggregate. Another provider's verb is called **as app-studio** through its own export virtual workspace, never with the caller's token | **Works.** The remaining hop is a hub surface that accepts an SA token and re-forwards `X-Railgrid-*` alongside. |
+| `providers/agents` (`tenant/scope.go`, MCP only) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards it to the edges MCP endpoint. Infrastructure verbs are called as the provider (`Callers.ExportVerbURL`) | **Works.** |
 | `providers/databricks` | `{hub}/clusters/{id}` client + SSAR per action | **Works.** The Databricks-facing PAT is a workspace Secret, unrelated to the caller's bearer. |
 | `providers/kuery`, `providers/quickstart` | Echo the token's length/fingerprint only | **Works.** Neither uses it as a credential. |
 | Hub kcp proxy (`/clusters/{cluster}`, `pkg/server/proxy/proxy.go`) | Dispatches by token shape and dials `{front-proxy}/clusters/{cluster}` as the caller; user tokens are gated by workspace membership | **Works.** kcp pins an SA token to its own cluster claim, which is the workspace the delegated account was minted in. |
@@ -343,7 +343,8 @@ minutes and is scoped to one workspace instead of being a live hub credential.
 
 ## Proxy gating
 
-`/services/providers/{slug}` and `/ui/providers/{slug}` need the active
+`/services/providers/{slug}` (MCP, OAuth, webhooks, the agent tunnel, health
+— no verbs) and `/ui/providers/{slug}` need the active
 workspace from the tenant middleware. The slug (P-1) is resolved to a
 CatalogEntry UUID by looking it up in:
 

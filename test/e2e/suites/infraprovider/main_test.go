@@ -178,6 +178,12 @@ func TestMain(m *testing.M) {
 		// tree. Without it init fails with "reading APIExport file
 		// /etc/railgrid/kcp/apiexport.yaml: no such file or directory".
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "infrastructure", "deploy", "chart", "files"),
+		// The manifest is the declaration of the provider's verbs; init reads
+		// it to know which coordinates the export publishes, and the
+		// DataPlaneEndpointSlice those coordinates route through needs the
+		// shard-facing address of the serve process started below.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "infrastructure", "manifest.yaml"),
+		"RAILGRID_DATAPLANE_URL=http://127.0.0.1:"+providerPort,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -200,6 +206,9 @@ func TestMain(m *testing.M) {
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "infrastructure-provider"))
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
+		// serve refuses to start without the manifest: a verb exists only as
+		// a declared kcp custom subresource.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "infrastructure", "manifest.yaml"),
 		"RAILGRID_HUB_URL="+hubURL,
 		"RAILGRID_HUB_TOKEN="+staticToken,
 		"RAILGRID_HUB_INSECURE=true",

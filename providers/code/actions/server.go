@@ -5,15 +5,25 @@
 
 // Package actions serves caller-authorized, repository-bound provider actions.
 //
-// The route grammar, the two gates and the response envelope all come from
-// provider-sdk/dataplane: ParseRequest parses
-// /actions/clusters/{id}/repositories/{name}/{action}/v1, Gate proves the
-// caller can see the Repository and holds `create` on
-// repositories/{action}, and Serve bounds the body, the deadline and the
-// result. What stays here is what only this provider knows: pinning the
-// caller-visible Repository against the provider's own export read
-// (authority.go), resolving the Connection credential, and dispatching to a
-// git backend.
+// Every action is a kcp custom subresource on this provider's APIExport,
+// reached as
+//
+//	/clusters/{id}/apis/code.railgrid.ai/v1alpha1/{repositories|connections}/{name}/{action}
+//
+// kcp authenticates the caller, authorizes `create` on {resource}/{action}
+// with ordinary RBAC and reverse-proxies the request here with the caller's
+// identity stamped in requestheader headers. provider-sdk/serve's adapter
+// parses the path, checks the coordinate against the manifest and hands this
+// handler the parsed route (dataplane.RouteFrom) and the caller
+// (dataplane.ProxiedIdentityFrom). There is no bearer on an action.
+//
+// The gate and the response envelope come from provider-sdk/dataplane: Gate
+// proves the caller can see the bound object (a SubjectAccessReview run on the
+// caller's behalf) and returns the provider's own read of it together with a
+// client acting AS THE PROVIDER through its export virtual workspace; Serve
+// bounds the body, the deadline and the result. What stays here is what only
+// this provider knows: pinning the caller's input against that read, resolving
+// the Connection credential as the provider, and dispatching to a git backend.
 package actions
 
 import (
@@ -21,7 +31,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"reflect"
 	"strings"
 	"time"
 
@@ -34,7 +43,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
 )
@@ -44,10 +52,11 @@ import (
 // CatalogEntry.spec.actions[].limits.maxInputBytes allows
 // (apis/providers/v1alpha1/actions.go). It is documented as the single
 // catalogue exception in docs/provider-actions.md, "Uncatalogued large-upload
-// verbs", and is gated exactly like every catalogued action.
-const StageSnapshot = "stage_snapshot"
+// verbs", declared as a data-plane verb so its coordinate stays grantable, and
+// gated exactly like every catalogued action.
+const StageSnapshot = "stage-snapshot"
 
-// MaxInputBytes bounds the stage_snapshot body: a 25 MiB decoded bundle plus
+// MaxInputBytes bounds the stage-snapshot body: a 25 MiB decoded bundle plus
 // its base64 expansion and the surrounding JSON.
 const MaxInputBytes = 36 << 20
 
@@ -62,22 +71,27 @@ const MaxOutputBytes = 512 << 10
 // bounds the upload, the backend call and the encode together.
 const actionTimeout = 180 * time.Second
 
+// ContractVersion is the contract version every action here is declared at
+// (spec.actions[].id ends in "/v1"). The path does not carry it; serve's
+// adapter restores it from the declaration onto the route.
+const ContractVersion = "v1"
+
 // served maps each action name to the limits its CatalogEntry declaration
 // states (manifest.yaml). An action missing from this map is not served, so
 // adding a catalogue entry and serving it are one edit.
 var served = map[string]dataplane.Limits{
 	"branches":            jsonAction(50),
-	"branch_head":         jsonAction(50),
-	"find_pull_request":   jsonAction(50),
-	"pull_request":        jsonAction(50),
-	"create_pull_request": jsonAction(50),
-	"update_pull_request": jsonAction(50),
+	"branch-head":         jsonAction(50),
+	"find-pull-request":   jsonAction(50),
+	"pull-request":        jsonAction(50),
+	"create-pull-request": jsonAction(50),
+	"update-pull-request": jsonAction(50),
 	"feedback":            jsonAction(2000),
 	"comments":            jsonAction(50),
-	"add_comment":         jsonAction(50),
-	"reply_to_review":     jsonAction(50),
-	"prepare_snapshot":    jsonAction(50),
-	"publish_snapshot":    jsonAction(50),
+	"add-comment":         jsonAction(50),
+	"reply-to-review":     jsonAction(50),
+	"prepare-snapshot":    jsonAction(50),
+	"publish-snapshot":    jsonAction(50),
 	// commit takes the catalogue's whole 1 MiB input ceiling: a small
 	// generated app fits inline, and anything larger arrives as a bundleRef
 	// staged through StageCommitBundle.
@@ -97,7 +111,7 @@ var served = map[string]dataplane.Limits{
 		MaxInputBytes:  MaxInputBytes,
 		MaxOutputBytes: MaxOutputBytes,
 	},
-	// mint_clone_token is bound to a Repository, so it is served here rather
+	// mint-clone-token is bound to a Repository, so it is served here rather
 	// than in connectionActions: the grant to clone one repository must not
 	// follow from a grant on the Connection every repository shares.
 	MintCloneToken: {
@@ -120,11 +134,11 @@ func jsonAction(items int64) dataplane.Limits {
 // Repository: it hands a consumer a pull credential for that Connection's
 // container registry, so the credential itself never leaves this provider.
 // See tenant/registry_token.go for why it exists.
-const MintRegistryToken = "mint_registry_token"
+const MintRegistryToken = "mint-registry-token"
 
 // connectionActions are the actions bound to connections/{name} instead of
-// repositories/{name}. Gate 2 therefore asks about connections/{action}, and
-// a grant on a repository action never reaches one of these.
+// repositories/{name}. kcp therefore authorizes connections/{action}, and a
+// grant on a repository action never reaches one of these.
 var connectionActions = map[string]dataplane.Limits{
 	MintRegistryToken: {
 		Timeout:        actionTimeout,
@@ -138,8 +152,8 @@ var connectionActions = map[string]dataplane.Limits{
 var snapshotActions = map[string]bool{
 	StageSnapshot:      true,
 	StageCommitBundle:  true,
-	"prepare_snapshot": true,
-	"publish_snapshot": true,
+	"prepare-snapshot": true,
+	"publish-snapshot": true,
 }
 
 // statusFor maps a typed action failure to its HTTP status. Every code here
@@ -159,18 +173,14 @@ var statusFor = map[string]int{
 	"upstream_outcome_unconfirmed": http.StatusBadGateway,
 }
 
-// Server serves the repository-bound action routes.
+// Server serves the repository- and connection-bound action routes.
 type Server struct {
-	// Caller builds the caller-scoped client both gates run through. It never
-	// carries the provider's own credential.
-	Caller dataplane.CallerFactory
-	// Authority resolves the provider's own view of one of its own objects
-	// through its accepted APIExport, for pinning what gate 1 returned. It
-	// takes the resource being pinned because an action may be bound to a
-	// Repository or to a Connection, and the endpoint is found by proving the
-	// named object is readable through it.
-	Authority func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error)
-	Backends  *backend.Registry
+	// Callers builds the client the gate and every action run through: one
+	// acting as the provider in the addressed cluster, through its export
+	// virtual workspace. There is no caller credential on an action; anything
+	// asked about the caller is a SubjectAccessReview run on their behalf.
+	Callers  dataplane.ProviderCallerFactory
+	Backends *backend.Registry
 	// Bundles is this provider's own source-bundle store, which the commit
 	// verbs write into. A RepositoryCommit is only a pointer at it.
 	Bundles       commitbundle.Store
@@ -180,8 +190,8 @@ type Server struct {
 	snapshotSlots chan struct{}
 }
 
-func New(caller dataplane.CallerFactory, authority func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error), backends *backend.Registry) *Server {
-	return &Server{Caller: caller, Authority: authority, Backends: backends, slots: make(chan struct{}, 8), snapshotSlots: make(chan struct{}, 1)}
+func New(callers dataplane.ProviderCallerFactory, backends *backend.Registry) *Server {
+	return &Server{Callers: callers, Backends: backends, slots: make(chan struct{}, 8), snapshotSlots: make(chan struct{}, 1)}
 }
 
 type Input struct {
@@ -200,26 +210,30 @@ type Input struct {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := klog.FromContext(r.Context()).WithName("code-actions")
-	req, ok := dataplane.ParseRequest(dataplane.ActionsRoot, r)
+	// The route was parsed once, by serve's adapter, which also checked the
+	// coordinate against the manifest and restored the contract version. A
+	// request that did not come through it addresses nothing.
+	route, ok := dataplane.RouteFrom(r.Context())
 	if !ok {
 		dataplane.WriteError(w, dataplane.ErrBadPath)
 		return
 	}
-	// Which resource an action is bound to decides which object gate 1 reads
-	// and which subresource gate 2 asks about, so it is resolved from the
-	// route before anything else happens.
+	req := route.Request
+	// Which resource an action is bound to decides which object the gate
+	// reads, so it is resolved from the route before anything else happens.
 	gvr, kind := repositories, "Repository"
 	limits, isServed := served[req.Verb]
 	if req.Resource == connections.Resource {
 		gvr, kind = connections, "Connection"
 		limits, isServed = connectionActions[req.Verb]
 	}
-	if (req.Resource != repositories.Resource && req.Resource != connections.Resource) ||
-		req.Component != "" || req.Version != "v1" || req.Tail != "" || !isServed {
+	if route.Group != gvr.Group || route.APIVersion != gvr.Version ||
+		(req.Resource != repositories.Resource && req.Resource != connections.Resource) ||
+		req.Component != "" || req.Version != ContractVersion || req.Tail != "" || !isServed {
 		http.NotFound(w, r)
 		return
 	}
-	envelope := actionwire.New(r, "code", req.Verb, actionwire.ResourceRef{APIVersion: "code.railgrid.ai/v1alpha1", Kind: kind, Resource: gvr.Resource, Name: req.Name})
+	envelope := actionwire.New(r, "code", req.Verb, actionwire.ResourceRef{APIVersion: gvr.GroupVersion().String(), Kind: kind, Resource: gvr.Resource, Name: req.Name})
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-ID", envelope.RequestID)
@@ -227,7 +241,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		envelope.Failure(w, status, code, strings.ReplaceAll(code, "_", " "), false)
 	}
 
-	// Admission before either gate: a saturated process refuses work without
+	// Admission before the gate: a saturated process refuses work without
 	// reading a body or touching kcp.
 	select {
 	case s.slots <- struct{}{}:
@@ -237,16 +251,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The two gates, as the caller. The returned Repository is what resolve
-	// pins the provider's own read against.
-	visible, _, err := dataplane.Gate(r.Context(), r, s.Caller, gvr, req)
+	// The gate: the caller can see the bound object (kcp already authorized
+	// the verb itself before forwarding). What comes back is the provider's
+	// own read of that object and a client acting as the provider, which is
+	// what every action from here on acts through.
+	visible, provider, err := dataplane.Gate(r.Context(), s.Callers, gvr, req)
 	if err != nil {
 		// The detail stays provider-side; the caller learns only the status.
-		logger.V(3).Info("repository action refused", "action", req.Verb, "repository", req.Name, "err", err)
-		status := dataplane.StatusForAs(err, http.StatusForbidden)
+		logger.V(3).Info("action refused", "action", req.Verb, "resource", gvr.Resource, "name", req.Name, "err", err)
+		status := dataplane.StatusFor(err)
 		fail(status, gateFailureCode(status))
 		return
 	}
+	identity, _ := dataplane.ProxiedIdentityFrom(r.Context())
 
 	if snapshotActions[req.Verb] {
 		select {
@@ -260,9 +277,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	dataplane.Serve(w, r, envelope, limits, func(ctx context.Context, raw json.RawMessage) (any, *actionwire.Error) {
 		if req.Resource == connections.Resource {
-			return s.runConnection(ctx, req, visible, raw)
+			return s.runConnection(ctx, provider, req, visible, raw)
 		}
-		return s.run(ctx, r, req, visible, raw)
+		return s.run(ctx, provider, identity, req, visible, raw)
 	}, dataplane.WithErrorStatus(func(e *actionwire.Error) int {
 		if status, ok := statusFor[e.Code]; ok {
 			return status
@@ -281,6 +298,10 @@ func gateFailureCode(status int) string {
 		return "invalid_action_route"
 	case http.StatusForbidden:
 		return "action_forbidden"
+	case http.StatusNotFound:
+		// The contract's non-disclosing answer: the object is not there, or
+		// the caller cannot see it, and the two are indistinguishable.
+		return "action_not_found"
 	default:
 		return "action_unavailable"
 	}
@@ -290,29 +311,31 @@ func wireError(code string) *actionwire.Error {
 	return &actionwire.Error{Code: code, Message: strings.ReplaceAll(code, "_", " "), Retryable: false}
 }
 
-// run is the executor dataplane.Serve calls once the gates have passed and the
-// body has been decoded to its "input" member.
-func (s *Server) run(ctx context.Context, r *http.Request, req dataplane.Request, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
+// run is the executor dataplane.Serve calls once the gate has passed and the
+// body has been decoded to its "input" member. provider acts as this
+// provider in the request's cluster; visible is the provider's read of the
+// Repository the gate returned.
+func (s *Server) run(ctx context.Context, provider dynamic.Interface, identity dataplane.ProxiedIdentity, req dataplane.Request, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
 	// The commit verbs take their own input and never reach a git host: they
 	// write this provider's bundle store and a RepositoryCommit, which the
 	// commit controller applies. They therefore skip resolve() — there is no
 	// credential to load — and pin the Repository themselves (commit.go).
 	switch req.Verb {
 	case Commit:
-		return s.commit(ctx, req, visible, raw)
+		return s.commit(ctx, provider, req, visible, raw)
 	case StageCommitBundle:
 		return s.stageCommitBundle(ctx, req, visible, raw)
 	case MintCloneToken:
 		// A clone credential is minted from the Connection's own credential
 		// material, not fetched from a git host, so this verb takes its own
 		// input and never reaches the backend registry either.
-		return s.mintCloneToken(ctx, req, visible, raw)
+		return s.mintCloneToken(ctx, provider, visible, raw)
 	}
 	in, err := decodeInput(raw)
 	if err != nil {
 		return nil, wireError("invalid_action_input")
 	}
-	conn, repo, credential, err := s.resolve(ctx, req.ClusterID, req.Name, visible, in)
+	conn, repo, credential, err := s.resolve(ctx, provider, visible, in)
 	if err != nil {
 		return nil, wireError("action_forbidden")
 	}
@@ -327,43 +350,43 @@ func (s *Server) run(ctx context.Context, r *http.Request, req dataplane.Request
 	var output any
 	switch req.Verb {
 	case StageSnapshot:
-		output, err = s.stage(r, req.ClusterID, in)
+		output, err = s.stage(identity, req.ClusterID, in)
 	case "branches":
 		lister, ok := implementation.(backend.BranchLister)
 		if !ok {
 			return nil, wireError("unsupported_action")
 		}
 		output, err = lister.ListBranches(ctx, conn, credential, repo, in.Page)
-	case "branch_head":
+	case "branch-head":
 		var head string
 		head, err = collaboration.BranchHead(ctx, conn, credential, repo, in.Branch)
 		output = map[string]any{"head": head}
-	case "find_pull_request":
+	case "find-pull-request":
 		output, err = collaboration.FindPullRequest(ctx, conn, credential, repo, in.PullRequestInput)
-	case "pull_request":
+	case "pull-request":
 		output, err = collaboration.ReadPullRequest(ctx, conn, credential, repo, in.Number)
-	case "create_pull_request":
+	case "create-pull-request":
 		output, err = collaboration.CreatePullRequest(ctx, conn, credential, repo, in.PullRequestInput)
-	case "update_pull_request":
+	case "update-pull-request":
 		output, err = collaboration.UpdatePullRequest(ctx, conn, credential, repo, in.Number, in.PullRequestInput)
 	case "feedback":
 		output, err = collaboration.PullRequestFeedback(ctx, conn, credential, repo, in.Number, in.Commit)
 	case "comments":
 		output, err = collaboration.ListComments(ctx, conn, credential, repo, in.Number, in.Page)
-	case "add_comment":
+	case "add-comment":
 		output, err = collaboration.AddComment(ctx, conn, credential, repo, in.Number, in.Body)
-	case "reply_to_review":
+	case "reply-to-review":
 		output, err = collaboration.ReplyToReview(ctx, conn, credential, repo, in.Number, in.ParentCommentID, in.Body)
-	case "prepare_snapshot", "publish_snapshot":
+	case "prepare-snapshot", "publish-snapshot":
 		publisher, ok := implementation.(backend.SnapshotPublisher)
 		if !ok || in.Snapshot != nil || in.BundleRef == "" {
 			return nil, wireError("invalid_snapshot")
 		}
-		snapshot, loadErr := s.loadSnapshot(r, req.ClusterID, in)
+		snapshot, loadErr := s.loadSnapshot(identity, req.ClusterID, in)
 		if loadErr != nil {
 			return nil, wireError("snapshot_unavailable")
 		}
-		if req.Verb == "prepare_snapshot" {
+		if req.Verb == "prepare-snapshot" {
 			err = publisher.VerifySnapshot(ctx, conn, credential, repo, snapshot)
 		} else {
 			err = publisher.PublishSnapshot(ctx, conn, credential, repo, snapshot, in.Branch, in.ExpectedHead)
@@ -398,18 +421,18 @@ func decodeInput(raw json.RawMessage) (Input, error) {
 	return in, nil
 }
 
-// resolve pins what gate 1 returned against the provider's own read of the
-// Repository and its Connection, then loads the Connection credential. The
-// caller never reads a Secret; a replaced object, a changed spec or a
+// resolve pins the caller's input against the provider's read of the
+// Repository and its Connection, then loads the Connection credential as the
+// provider. The caller never reads a Secret; a replaced object or a
 // mismatched identity fails closed.
-func (s *Server) resolve(ctx context.Context, cluster, name string, visible *unstructured.Unstructured, input Input) (*api.Connection, *api.Repository, backend.Credential, error) {
+func (s *Server) resolve(ctx context.Context, provider dynamic.Interface, visible *unstructured.Unstructured, input Input) (*api.Connection, *api.Repository, backend.Credential, error) {
 	// Every action taking this input names the repository it means as
 	// owner/name; an input that omits it is refused here rather than reaching
 	// the binding with nothing to check.
 	if input.Repository == "" {
 		return nil, nil, backend.Credential{}, errors.New("repository action denied")
 	}
-	binding, err := s.pinRepositoryBinding(ctx, cluster, name, visible, input.RepositoryUID, input.ConnectionUID, input.Repository)
+	binding, err := s.pinRepositoryBinding(ctx, provider, visible, input.RepositoryUID, input.ConnectionUID, input.Repository)
 	if err != nil {
 		return nil, nil, backend.Credential{}, err
 	}
@@ -434,29 +457,26 @@ type repositoryBinding struct {
 // pinRepositoryBinding is resolve() stopping one step short of a resolved
 // credential: it proves the binding and opens the Secret, leaving what to mint
 // from it to the caller. An action that issues its own narrowed token
-// (mint_clone_token) must reach the GitHub App key itself, and must not mint
+// (mint-clone-token) must reach the GitHub App key itself, and must not mint
 // the Connection's full credential on the way past.
 //
-// repository, when non-empty, is the owner/name the caller claims; it is
-// checked before the Secret is ever read, so a caller that names the wrong
-// repository never reaches a credential lookup.
-func (s *Server) pinRepositoryBinding(ctx context.Context, cluster, name string, visible *unstructured.Unstructured, repositoryUID, connectionUID, repository string) (repositoryBinding, error) {
+// visible is the Repository as the gate read it — as the provider, through its
+// export virtual workspace, so it is already the authoritative view. What the
+// input pins is the CALLER's view: the UIDs say which Repository and which
+// Connection the caller believes it is asking about, so an object deleted and
+// recreated under the same name since the caller looked fails rather than
+// being served. repository, when non-empty, is the owner/name the caller
+// claims; it is checked before the Secret is ever read, so a caller that names
+// the wrong repository never reaches a credential lookup.
+func (s *Server) pinRepositoryBinding(ctx context.Context, provider dynamic.Interface, visible *unstructured.Unstructured, repositoryUID, connectionUID, repository string) (repositoryBinding, error) {
 	fail := func() (repositoryBinding, error) {
 		return repositoryBinding{}, errors.New("repository action denied")
 	}
-	if s.Authority == nil || repositoryUID == "" || connectionUID == "" || string(visible.GetUID()) != repositoryUID {
-		return fail()
-	}
-	provider, err := s.Authority(ctx, cluster, repositories, name)
-	if err != nil {
-		return fail()
-	}
-	authoritative, err := provider.Resource(repositories).Get(ctx, name, metav1.GetOptions{})
-	if err != nil || authoritative.GetUID() != visible.GetUID() || authoritative.GetDeletionTimestamp() != nil || !reflect.DeepEqual(authoritative.Object["spec"], visible.Object["spec"]) {
+	if provider == nil || visible == nil || repositoryUID == "" || connectionUID == "" || string(visible.GetUID()) != repositoryUID || visible.GetDeletionTimestamp() != nil {
 		return fail()
 	}
 	var repo api.Repository
-	if runtime.DefaultUnstructuredConverter.FromUnstructured(authoritative.Object, &repo) != nil || repo.Status.RepoID == "" {
+	if runtime.DefaultUnstructuredConverter.FromUnstructured(visible.Object, &repo) != nil || repo.Status.RepoID == "" {
 		return fail()
 	}
 	connection, err := provider.Resource(connections).Get(ctx, repo.Spec.ConnectionRef, metav1.GetOptions{})

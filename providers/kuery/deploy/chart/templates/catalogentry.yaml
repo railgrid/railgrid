@@ -33,17 +33,28 @@ data:
       iconURL: "/ui/providers/kuery/icon.svg"
       # Kuery syncs the edges a tenant already has, so edges must be enabled
       # here first — and `composes` is what its engagement controller is
-      # allowed to do with them, accepted by the tenant at Enable and measured
-      # again by the hub's identity policy (clause E) on every mint. Read-only:
-      # list and watch to learn which edges exist, get because the edges data
-      # plane's first gate is a real GET of the addressed edge as the caller.
-      # Mirrors manifest.yaml.
+      # allowed to do with them, accepted by the tenant at Enable as the
+      # identity-agnostic claims on kuery's own APIExport. Read-only on the
+      # kind; every method on kubernetesclusters/k8s, the verb kuery calls
+      # through its own virtual workspace. Mirrors manifest.yaml.
       dependencies:
         - name: edges
           composes:
             - group: edges.railgrid.ai
               resource: kubernetesclusters
               verbs: ["get", "list", "watch"]
+            # The verb kuery calls on an edge: its Kubernetes API, served by the
+            # edges provider as the custom subresource kubernetesclusters/k8s. A
+            # claim on the resource does not carry its subresources; each is
+            # claimed as its own entry, so kcp serves it on kuery's virtual
+            # workspace and forwards it to edges under kuery's identity.
+            - group: edges.railgrid.ai
+              resource: kubernetesclusters/k8s
+              # "*", not "create": kcp authorizes the HTTP METHOD as the RBAC verb
+              # on a custom subresource, and a Kubernetes client issues GET, LIST,
+              # WATCH, PATCH and more against the edge API behind this verb. A
+              # claim on "create" alone would let through only the POSTs.
+              verbs: ["*"]
       ui:
         url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
         indexPath: "/"
@@ -56,27 +67,46 @@ data:
         # true the whole time nothing reconciled.
         healthPath: "/readyz"
 
-      # No edgeProxyAccess: kuery reaches each tenant's edges as a hub-minted
-      # identity owned by that workspace's kuery APIBinding, carrying the
-      # composition above plus `create` on kubernetesclusters/k8s for the edges
-      # it engages. Mirrors manifest.yaml.
+      # No edgeProxyAccess: kuery CALLS each tenant's edges as itself through
+      # its own APIExport virtual workspace, under the claims above; nothing is
+      # minted per workspace. Mirrors manifest.yaml.
 
       apiExport:
         name: "kuery.providers.railgrid.ai"
-        # NO permissionClaims AT ALL. No first-party (*.railgrid.ai) claim,
-        # because one pins a single APIExport identityHash for every consumer
-        # and breaks the moment an org self-hosts the edges provider — the
-        # composition above is how the engagement controller reaches an edge
-        # instead. And no serviceaccounts, secrets, clusterroles or
-        # clusterrolebindings: a provider does not mint identities, it asks the
-        # hub (docs/provider-connectivity-contract.md §"Scoped identities").
+        permissionClaims:
+          # Every provider that serves a custom subresource needs this one claim:
+          # on the shard-forwarded path there is no caller bearer, so the provider
+          # runs a SubjectAccessReview for the stamped caller through its own
+          # APIExport virtual workspace, and kcp serves that builtin there only for
+          # an export that claims it (hack/verify-provider-contract.mjs
+          # subresource-access-claim). Built-in review API: no identityHash, verb
+          # create only; tenantScoped because the VW confines each review to the
+          # tenant's OWN workspace.
+          - group: authorization.k8s.io
+            resource: subjectaccessreviews
+            verbs: [create]
+            tenantScoped: true
+        # NO HAND-WRITTEN DATA claims beyond the review API above. The one
+        # data claim kuery's APIExport carries (edges.railgrid.ai/kubernetesclusters) is derived from the
+        # composition above by apiexportgen and pins no identityHash, so kcp
+        # resolves it per consumer workspace against the hub's
+        # PermissionClaimPolicy — which is how kuery reads a tenant's edges,
+        # and why an org self-hosting the edges provider still works. And no
+        # serviceaccounts, secrets, clusterroles or clusterrolebindings: a
+        # provider does not mint identities, it asks the hub
+        # (docs/provider-connectivity-contract.md §"Scoped identities").
       # Data-plane verbs this provider serves, declared so the coordinate is
-      # machine-readable. Declaring one grants and serves nothing: every call is
-      # still authorized by this provider's own caller-scoped SSAR on
-      # {resource}/{verb}. What the declaration buys is that the hub
-      # scoped-identity service can mint a capability for a verb it can verify
-      # exists (pkg/hub/identity/policy.go clause C), instead of consumers
-      # hardcoding a coordinate nobody validates.
+      # machine-readable. Declaring one grants nothing: every call is still
+      # authorized on {resource}/{verb}, as the caller, by this provider's own
+      # gates. What the declaration buys, per verb: codegen emits the kcp custom
+      # subresource "<resource>/<verb>" on the generated APIExport (the shard routes
+      # it to this provider through its DataPlaneEndpointSlice) together with the
+      # "<Verb>Request" schema the entry names; a consumer provider can compose the
+      # coordinate under spec.dependencies[].composes[] and have it claimed on ITS
+      # export; and the hub scoped-identity service (pkg/hub/identity/policy.go
+      # clause C) can mint a capability only for a verb it can verify exists. None
+      # of this is a permission claim of this provider: a claim names another
+      # export's resources, never one's own verbs.
       dataPlane:
         verbs:
           - resource: savedviews

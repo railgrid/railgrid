@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/railgrid/provider-sdk/dataplane"
 	rbacv1 "k8s.io/api/rbac/v1"
 
 	"github.com/railgrid/railgrid/pkg/hub/providers"
@@ -37,47 +38,38 @@ import (
 //	                   agent gets `proxy` on its OWN edge, by name).
 //	B. FOREIGN READ  — get on NAMED resources of another provider's group,
 //	                   where that provider is bound in the tenant workspace.
-//	C. FOREIGN VERB  — create on {resource}/{verb} of another provider's group,
-//	                   where {verb} is DECLARED by that provider for that
-//	                   resource — either as a catalog action (spec.actions) or
-//	                   as a data-plane verb (spec.dataPlane.verbs) —
-//	                   name-scoped.
+//	C. FOREIGN VERB  — {resource}/{verb} of another provider's group, where
+//	                   {verb} is DECLARED by that provider for that resource —
+//	                   either as a catalog action (spec.actions) or as a
+//	                   data-plane verb (spec.dataPlane.verbs) — name-scoped.
+//	                   The coordinate is the capability, so it is minted with
+//	                   dataplane.SubresourceVerbs: kcp authorizes a verb call
+//	                   by mapping the HTTP method onto the RBAC verb, and the
+//	                   method is the provider's transport detail.
 //	D. PLATFORM      — a fixed, closed allowlist of platform groups every
 //	                   workspace-scoped identity needs to function at all
 //	                   (self-reviews, its own LogicalCluster, its Leases),
 //	                   name-scoped wherever the API allows it.
-//	E. COMPOSITION   — CRUD on a kind of another provider that the requester
-//	                   DECLARES it composes (spec.dependencies[].composes) and
-//	                   that a workspace or org ADMIN ACCEPTED in this
-//	                   workspace. This is the one shape that writes another
-//	                   provider's objects, and it exists because building a
-//	                   product out of two providers' kinds — App Studio
-//	                   creating the infrastructure Instance and the code
-//	                   Repository a project is made of — is a tenant's
-//	                   decision to delegate, not a provider's to take.
+//
+// There is no composition clause. A kind of another provider that the
+// requester DECLARES it composes (spec.dependencies[].composes) is an
+// identity-agnostic permission claim on the requester's own APIExport, accepted
+// by the tenant at Enable and served by kcp on the requester's virtual
+// workspace — read, watched and written as the provider itself. Nothing is
+// minted for it.
 //
 // Everything else is refused with a reason the caller sees. In particular
 // there is no shape that grants anything on the core group (Secrets above all
-// — review X-4), and outside clause E no unnamed rule and no write on another
-// provider's objects.
+// — review X-4), no unnamed rule on another provider's group, and no write on
+// another provider's objects.
 //
-// Clause E is deliberately NOT an APIExport permission claim, which is the
-// other way a provider could reach a first-party group. A claim on a
-// `*.railgrid.ai` group pins to one export's identityHash (AGENTS.md §5.7), so
-// the moment an Org self-hosts the dependency, every claim-holder is pinned to
-// the platform copy and silently serves nothing. A composition names the
-// dependency by NAME and is resolved per workspace through whatever export is
-// bound there, which is what makes it BYO-safe. It is also revocable: a claim
-// lives in the consumer's APIExport, a composition in the tenant's own Grant.
-//
-// A note on list and watch, which the §10 design sketch included in shape B:
-// Kubernetes RBAC does not apply resourceNames to collection requests, so a
-// rule with resourceNames and verb `list` authorizes nothing at all, and one
-// without resourceNames authorizes reading EVERY object of that kind in the
-// workspace. "get/list/watch on named resources" is therefore not expressible;
-// this policy refuses list and watch on a foreign group rather than silently
-// emitting one of those two rules. A consumer that needs a collection reads it
-// by name, or the owning provider publishes a list API of its own.
+// A permission claim on a `*.railgrid.ai` group used to have to pin one
+// export's identityHash, which broke the moment an Org self-hosted the
+// dependency; kcp now resolves a claim with no identityHash per consumer
+// workspace, admitted by the platform's PermissionClaimPolicy, and the
+// dependencies[].composes[] declaration generates both that claim
+// (provider-sdk/apiexportgen) and the policy entry
+// (hack/generate-permission-claim-policy.mjs).
 
 // RuleClass names which policy clause admitted a rule. It is recorded on the
 // refusal reason and in tests.
@@ -92,8 +84,6 @@ const (
 	ClassForeignVerb RuleClass = "foreign-verb"
 	// ClassPlatform is clause D.
 	ClassPlatform RuleClass = "platform"
-	// ClassComposition is clause E.
-	ClassComposition RuleClass = "composition"
 )
 
 // Refusal explains why one requested rule was not allowed. It is returned to
@@ -131,19 +121,6 @@ const (
 	// CodePlatformNotAllowed means the rule named a platform API group but
 	// asked for something outside that group's closed allowlist.
 	CodePlatformNotAllowed = "platform_rule_not_allowed"
-	// CodeCompositionNotDeclared means the requester's CatalogEntry declares
-	// no composition for this (group, resource) on the dependency that owns
-	// the group.
-	CodeCompositionNotDeclared = "composition_not_declared"
-	// CodeCompositionNotGranted means the composition is declared but nobody
-	// in this workspace accepted it.
-	CodeCompositionNotGranted = "composition_not_granted"
-	// CodeCompositionVerbNotDeclared means the rule asked for a verb the
-	// composition does not declare.
-	CodeCompositionVerbNotDeclared = "composition_verb_not_declared"
-	// CodeCompositionShape means the rule is name-scoped where RBAC cannot
-	// name-scope it, or unnamed where this policy insists on names.
-	CodeCompositionShape = "composition_rule_shape"
 )
 
 // maxRules bounds one identity's ClusterRole. A policy-checked rule is cheap,
@@ -163,10 +140,6 @@ type ProviderCatalog interface {
 	// action names and data-plane verbs together. They are the only
 	// {resource}/{verb} subresources anybody may be granted create on.
 	DeclaredVerbs(provider, resource string) []string
-	// Compositions returns every composition provider declares across its
-	// dependencies (spec.dependencies[].composes). It is the declaration half
-	// of clause E; the consent half is CompositionGrants.
-	Compositions(provider string) []Composition
 }
 
 // BindingChecker answers whether a provider's API is bound in a tenant
@@ -179,18 +152,15 @@ type BindingChecker interface {
 
 // Policy decides which requested rules a provider may have.
 type Policy struct {
-	catalog      ProviderCatalog
-	bindings     BindingChecker
-	compositions CompositionGrants
+	catalog  ProviderCatalog
+	bindings BindingChecker
 }
 
 // NewPolicy builds a policy. bindings may be nil, in which case foreign-group
 // rules are refused outright: a hub that cannot tell whether a provider is
-// bound must not assume it is. compositions may be nil on the same terms — a
-// hub that cannot read a workspace's consent refuses every composition rather
-// than presuming consent it cannot see.
-func NewPolicy(catalog ProviderCatalog, bindings BindingChecker, compositions CompositionGrants) *Policy {
-	return &Policy{catalog: catalog, bindings: bindings, compositions: compositions}
+// bound must not assume it is.
+func NewPolicy(catalog ProviderCatalog, bindings BindingChecker) *Policy {
+	return &Policy{catalog: catalog, bindings: bindings}
 }
 
 // Authorize returns the normalized rules requester may be granted in
@@ -275,22 +245,7 @@ func (p *Policy) authorizeRule(requester, clusterID string, own map[string]bool,
 		return refuse(CodeUnknownProvider, fmt.Sprintf("no provider in the catalog exports API group %q", group))
 	}
 
-	// Clause E: tenant-consented composition. It is evaluated BEFORE B and C
-	// so a rule the requester declared as a composition is always measured
-	// against the composition's verbs and the tenant's acceptance — never
-	// admitted by the weaker foreign-read clause because it happened to ask
-	// for `get`.
-	//
-	// The clause claims a rule only when EVERY resource in it is composed.
-	// A rule mixing a composed kind with an ordinary foreign read falls
-	// through to B, which is the right answer: declaring a composition must
-	// never cost a provider access it already had.
-	if p.composes(requester, group, rule.Resources) {
-		return p.authorizeComposition(requester, clusterID, owner, rule, refuse)
-	}
-
-	// Outside clause E every foreign rule is name-scoped and
-	// read-only-or-declared.
+	// Every foreign rule is name-scoped and read-only-or-declared.
 	if len(rule.ResourceNames) == 0 {
 		return refuse(CodeUnnamedForeign, fmt.Sprintf("a rule on %s's group must name the exact resources it covers", owner))
 	}
@@ -321,12 +276,10 @@ func (p *Policy) authorizeRule(requester, clusterID string, own map[string]bool,
 	}
 
 	if len(sub) != 0 {
-		// Clause C: create on a declared verb subresource.
-		for _, verb := range rule.Verbs {
-			if verb != "create" {
-				return refuse(CodeForeignWrite, fmt.Sprintf("only create is minted on a %s subresource, not %q", owner, verb))
-			}
-		}
+		// Clause C: a declared verb subresource. Whatever verbs the request
+		// spells, the rule minted carries dataplane.SubresourceVerbs — the
+		// coordinate is the grant, and the HTTP method kcp maps onto an RBAC
+		// verb is not something a requester chooses.
 		for _, resource := range sub {
 			parts := strings.Split(resource, "/")
 			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
@@ -344,7 +297,7 @@ func (p *Policy) authorizeRule(requester, clusterID string, own map[string]bool,
 		return rbacv1.PolicyRule{
 			APIGroups:     []string{group},
 			Resources:     dedupeSorted(sub),
-			Verbs:         []string{"create"},
+			Verbs:         dedupeSorted(append([]string(nil), dataplane.SubresourceVerbs...)),
 			ResourceNames: dedupeSorted(rule.ResourceNames),
 		}, nil
 	}
@@ -365,156 +318,6 @@ func (p *Policy) authorizeRule(requester, clusterID string, own map[string]bool,
 		Verbs:         []string{"get"},
 		ResourceNames: dedupeSorted(rule.ResourceNames),
 	}, nil
-}
-
-// Clause E — tenant-consented composition.
-//
-// compositionUnnamedVerbs and compositionNamedVerbs split the closed verb
-// vocabulary by what RBAC can actually scope.
-//
-//   - `create` takes no resourceNames: a create request has no name to match
-//     yet, so a name-scoped create rule authorizes NOTHING. The grant is
-//     therefore "may create this kind in this workspace", and the workspace is
-//     the bound scope.
-//   - `list` and `watch` take no resourceNames either, for the reason clause B
-//     refuses them outright: RBAC does not apply resourceNames to collection
-//     requests. Here they are admitted anyway, and the difference is the whole
-//     argument for this clause. The identity is a ServiceAccount inside ONE
-//     tenant workspace, holding a ClusterRole the hub wrote and reconciles; a
-//     list it authorizes returns the objects of that one workspace — the
-//     workspace whose admin accepted the composition, of a kind they accepted.
-//     Bounding a reconciler to a workspace is precisely what the scoped
-//     identity is for, so "every Instance in this workspace" is the intended
-//     scope and not an escape from one. A reconciler cannot work without a
-//     watch; refusing it would push providers back to polling by name or to a
-//     permission claim, which is worse on every axis.
-//   - `get`, `update`, `patch` and `delete` act on an object that already
-//     exists and has a name, so they must name it. A composing reconciler
-//     knows the names — it created them.
-var compositionUnnamedVerbs = map[string]bool{"create": true, "list": true, "watch": true}
-
-var compositionNamedVerbs = map[string]bool{"get": true, "update": true, "patch": true, "delete": true}
-
-// composes reports whether requester declares a composition for EVERY
-// resource in resources on group. All-or-nothing is what keeps clause E from
-// taking a rule it would then refuse: a mixed rule belongs to B.
-func (p *Policy) composes(requester, group string, resources []string) bool {
-	declared := p.catalog.Compositions(requester)
-	if len(declared) == 0 {
-		return false
-	}
-	for _, resource := range resources {
-		found := false
-		for _, composition := range declared {
-			if composition.Group == group && composition.Resource == resource {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return len(resources) > 0
-}
-
-// authorizeComposition decides one rule under clause E. Every condition is
-// re-checked here, on this request, against the CURRENT catalog and the
-// CURRENT grant: the declaration bounds the verbs, the dependency must own
-// the group, its export must be bound in this workspace, and the tenant must
-// have accepted the composition. A narrowed chart narrows the identity on its
-// next refresh; a widened one grants nothing until somebody accepts it again.
-func (p *Policy) authorizeComposition(requester, clusterID, owner string, rule rbacv1.PolicyRule, refuse refuseFunc) (rbacv1.PolicyRule, error) {
-	group := rule.APIGroups[0]
-
-	// One verb class per rule: the two classes disagree about resourceNames,
-	// so a rule mixing them could not be expressed in RBAC without either
-	// widening the named verbs or neutering the unnamed ones.
-	named, unnamed := 0, 0
-	for _, verb := range rule.Verbs {
-		switch {
-		case compositionNamedVerbs[verb]:
-			named++
-		case compositionUnnamedVerbs[verb]:
-			unnamed++
-		default:
-			return refuse(CodeCompositionVerbNotDeclared, fmt.Sprintf("verb %q is not a composition verb (get, list, watch, create, update, patch, delete are)", verb))
-		}
-	}
-	if named != 0 && unnamed != 0 {
-		return refuse(CodeCompositionShape, "split the rule: create, list and watch are not name-scoped, and get, update, patch and delete must be")
-	}
-	if named != 0 && len(rule.ResourceNames) == 0 {
-		return refuse(CodeCompositionShape, fmt.Sprintf("a composition rule on %s's objects with get, update, patch or delete must name the exact objects it covers", owner))
-	}
-	if unnamed != 0 && len(rule.ResourceNames) != 0 {
-		return refuse(CodeCompositionShape, "create, list and watch cannot be scoped to resource names by RBAC; request them unnamed, bounded to this workspace")
-	}
-
-	declared := p.catalog.Compositions(requester)
-	for _, resource := range rule.Resources {
-		composition, ok := findComposition(declared, group, resource)
-		if !ok {
-			return refuse(CodeCompositionNotDeclared, fmt.Sprintf("%s declares no composition of %s/%s", requester, group, resource))
-		}
-		// The dependency the composition hangs off must be the provider that
-		// actually exports the group. Otherwise the consent prompt the admin
-		// answered ("App Studio manages infrastructure Instances") described a
-		// different provider's API than the rule reaches.
-		if composition.Dependency != owner {
-			return refuse(CodeCompositionNotDeclared, fmt.Sprintf("%s composes %s/%s on dependency %s, but %s exports that group", requester, group, resource, composition.Dependency, owner))
-		}
-		for _, verb := range rule.Verbs {
-			if !containsAny(composition.Verbs, verb) {
-				return refuse(CodeCompositionVerbNotDeclared, fmt.Sprintf("%s declares no verb %q on composed %s/%s", requester, verb, group, resource))
-			}
-		}
-	}
-
-	// The dependency has to be enabled here, exactly as for clauses B and C:
-	// composing a provider's kinds into a workspace that never accepted that
-	// provider would pull it in through the back door.
-	if p.bindings == nil {
-		return refuse(CodeUnboundProvider, "the hub cannot verify that "+owner+" is enabled in this workspace")
-	}
-	bound, err := p.bindings.IsBound(clusterID, owner)
-	if err != nil {
-		return rbacv1.PolicyRule{}, fmt.Errorf("checking whether %s is bound: %w", owner, err)
-	}
-	if !bound {
-		return refuse(CodeUnboundProvider, fmt.Sprintf("%s is not enabled in this workspace", owner))
-	}
-
-	// Consent last, so a misdeclared rule is reported as the declaration bug
-	// it is rather than as a missing acceptance nobody can grant.
-	if p.compositions == nil {
-		return refuse(CodeCompositionNotGranted, "the hub cannot read this workspace's composition grants")
-	}
-	for _, resource := range rule.Resources {
-		granted, err := p.compositions.IsComposed(clusterID, requester, group, resource)
-		if err != nil {
-			return rbacv1.PolicyRule{}, fmt.Errorf("checking whether %s may compose %s/%s: %w", requester, group, resource, err)
-		}
-		if !granted {
-			return refuse(CodeCompositionNotGranted, fmt.Sprintf("nobody in this workspace has accepted that %s manages %s/%s here; a workspace or organization admin accepts it by enabling %s again", requester, group, resource, requester))
-		}
-	}
-
-	return rbacv1.PolicyRule{
-		APIGroups:     []string{group},
-		Resources:     dedupeSorted(rule.Resources),
-		Verbs:         dedupeSorted(rule.Verbs),
-		ResourceNames: dedupeSorted(rule.ResourceNames),
-	}, nil
-}
-
-func findComposition(declared []Composition, group, resource string) (Composition, bool) {
-	for _, composition := range declared {
-		if composition.Group == group && composition.Resource == resource {
-			return composition, true
-		}
-	}
-	return Composition{}, false
 }
 
 // normalizeRules sorts and deduplicates so the same request always yields the

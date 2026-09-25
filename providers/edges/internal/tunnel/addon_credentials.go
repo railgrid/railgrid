@@ -42,7 +42,9 @@ type addonCredentialsRequest struct {
 	Token         string                  `json:"token,omitempty"`
 }
 
-// The ordinary edge GET and SSAR gates run before this handler. The provider
+// The ordinary gate runs before this handler: kcp authorized the POST on
+// {resource}/addon-credentials and the caller's visibility of its own edge was
+// reviewed on its behalf (dataplane.Gate). The provider
 // then proves the Addon belongs to that edge and resolves all Secret coordinates
 // from persisted state. Agents never receive general Secret permissions.
 func (p *Server) serveAddonCredentials(w http.ResponseWriter, r *http.Request, req dataplane.Request) {

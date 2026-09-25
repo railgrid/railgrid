@@ -81,15 +81,10 @@ function setup(t) {
   globalThis.location = { protocol: 'https:', host: 'railgrid.test', pathname: '/ui/bonkers/users' }
   globalThis.window = { location: globalThis.location, dispatchEvent() {} }
   globalThis.WebSocket = FakeSocket
-  // The terminal mints a short-lived ticket on the gated "ticket" verb and
-  // presents it as a WebSocket subprotocol; there is no bearer in the URL.
-  globalThis.fetch = async (path, init) => {
-    if (typeof path === 'string' && path.endsWith('/ticket')) {
-      const bearer = String(init?.headers?.Authorization ?? '').replace(/^Bearer /, '')
-      return response({ subprotocol: 'railgrid.ticket.for-' + bearer, expiresIn: 60 })
-    }
-    return response({})
-  }
+  // The terminal presents the bearer as the Kubernetes WebSocket subprotocol
+  // (base64url.bearer.authorization.k8s.io.<token>) straight on the edge's
+  // ssh verb; it fetches nothing first and there is no bearer in the URL.
+  globalThis.fetch = async () => response({})
   sockets.length = terminals.length = 0
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -184,7 +179,10 @@ test('reconnect fences the previous token attempt and keeps only the replacement
   assert.equal(sockets.length, 1)
   assert.ok(sockets[0].url.endsWith('/linuxservers/private-server/ssh'), sockets[0].url)
   assert.ok(!sockets[0].url.includes('token='), 'no bearer may appear in the WebSocket URL')
-  assert.deepEqual(sockets[0].protocols, ['railgrid.ticket.for-new-token'])
+  // The replacement token travels as the Kubernetes bearer subprotocol, never
+  // the fenced one, beside the terminal's own subprotocol (kcp's websocket
+  // authenticator requires one it can echo after removing the bearer).
+  assert.deepEqual(sockets[0].protocols, ['base64url.bearer.authorization.k8s.io.' + Buffer.from('new-token').toString('base64url'), 'railgrid.ssh.v1'])
   assert.equal(terminals[0].disposed, true)
   assert.equal(terminals[1].disposed, false)
 })
@@ -197,7 +195,7 @@ async function seedAdmin(admin) {
   assert.equal(admin.loaded, true)
 }
 function assertEmptyAdmin(admin) {
-  for (const key of ['users', 'orgs', 'providers', 'identities', 'kubeconfigServers']) assert.deepEqual(admin[key], [], key)
+  for (const key of ['users', 'orgs', 'providers', 'kubeconfigServers']) assert.deepEqual(admin[key], [], key)
   assert.equal(admin.isAdmin, null)
   assert.equal(admin.loaded, false)
   assert.equal(admin.loading, false)

@@ -106,7 +106,7 @@ func KCPClusterURL(kcpBase, cluster string) string {
 }
 
 // EdgeProviderCoordinates resolves an edge type ("kubernetes" | "server" | "macos") to the
-// owning provider's backend-proxy name, API group and resource. The edge plane
+// owning provider's name, API group and resource. The edge plane
 // is one provider `edges` holding all kinds under group edges.railgrid.ai;
 // only the resource differs by type. Unknown values default to kubernetes for
 // backwards compatibility with callers that omitted the edge type.
@@ -121,17 +121,14 @@ func EdgeProviderCoordinates(edgeType string) (provider, group, resource string)
 }
 
 // ProviderAgentProxyPath returns the agent-ingress path for an edge provider's
-// reverse-tunnel control connection: Pillar 2 route class (f), on the shared
-// grammar, routed through the hub backend proxy to the provider Service. The
-// provider sees the path unmodified and parses it with
-// provider-sdk/dataplane.
+// reverse-tunnel control connection: Pillar 2 route class (f), routed through
+// the hub backend proxy to the provider Service. It is not a data-plane verb
+// (the agent is not a kcp client; it authenticates with a join token or its
+// edge ServiceAccount and holds a long-lived tunnel), so it is the one
+// provider path that stays on the hub proxy. The provider sees the path
+// unmodified.
 //
 // Pattern: /services/providers/{provider}/agent/clusters/{cluster}/{resource}/{name}/proxy
-//
-// The old dialect carried /apis/{group}/v1alpha1 between the cluster and the
-// resource. It is gone, not aliased — dataplane.ParsePath refuses "apis" in
-// the resource position — so an agent built before this change cannot connect
-// and must be upgraded.
 func ProviderAgentProxyPath(provider, resource, cluster, edgeName, verb string) string {
 	return fmt.Sprintf("%s/%s/agent/clusters/%s/%s/%s/%s",
 		PathPrefixProvidersProxy, provider, cluster, resource, edgeName, verb)
@@ -145,29 +142,58 @@ func ProviderAgentProxyURL(hubBase, edgeType, cluster, edgeName, verb string) st
 		ProviderAgentProxyPath(provider, resource, cluster, edgeName, verb)
 }
 
-// ProviderDataPlanePath returns a consumer-egress path for a verb an edge
-// provider serves: Pillar 2 route class (a).
+// ProviderVerbPath returns the path of a provider data-plane verb: the kcp
+// custom subresource "{resource}/{verb}" the provider publishes on its
+// APIExport, addressed like any other kube API path on the front door the
+// caller holds a credential for (the hub's /clusters/{id}). kcp authorizes
+// SSAR "create" on the subresource with ordinary RBAC and reverse-proxies the
+// request to the provider. There is no hub-side grammar for a verb: this is
+// the only spelling.
 //
-// Pattern: /services/providers/{provider}/dataplane/clusters/{cluster}/{resource}/{name}/{verb}
-func ProviderDataPlanePath(provider, resource, cluster, name, verb string) string {
-	return fmt.Sprintf("%s/%s/dataplane/clusters/%s/%s/%s/%s",
-		PathPrefixProvidersProxy, provider, cluster, resource, name, verb)
+// Pattern: /clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/{verb}
+//
+// A verb on one component of a multi-component object carries the component
+// as the "component" query parameter (provider-sdk/dataplane.ComponentQuery),
+// which this helper leaves to the caller.
+func ProviderVerbPath(cluster, group, version, resource, name, verb string) string {
+	return fmt.Sprintf("/clusters/%s/apis/%s/%s/%s/%s/%s", cluster, group, version, resource, name, verb)
 }
 
-// ProviderDataPlaneURL is ProviderDataPlanePath against a hub base URL.
-func ProviderDataPlaneURL(hubBase, provider, resource, cluster, name, verb string) string {
-	return strings.TrimRight(hubBase, "/") + ProviderDataPlanePath(provider, resource, cluster, name, verb)
+// ProviderVerbURL is ProviderVerbPath against a hub (or kcp front door) base URL.
+func ProviderVerbURL(base, cluster, group, version, resource, name, verb string) string {
+	return strings.TrimRight(base, "/") + ProviderVerbPath(cluster, group, version, resource, name, verb)
 }
 
-// EdgeServiceProxyPath returns the consumer-egress path for a verb on a
-// Service published from an edge, routed through the hub backend proxy to the
-// edges provider.
+// EdgesAPIGroup and EdgesAPIVersion are the edges provider's API coordinates,
+// shared by every edge verb helper below.
+const (
+	EdgesAPIGroup   = "edges.railgrid.ai"
+	EdgesAPIVersion = "v1alpha1"
+)
+
+// EdgeVerbPath returns the kube path of a verb on an edge (a
+// kubernetescluster, linuxserver or macosserver): its Kubernetes API ("k8s"),
+// its SSH session ("ssh"), its MCP server ("mcp"), or an agent's own
+// credential verbs ("agent-token", "ssh-credentials", "addon-credentials").
+func EdgeVerbPath(cluster, resource, name, verb string) string {
+	return ProviderVerbPath(cluster, EdgesAPIGroup, EdgesAPIVersion, resource, name, verb)
+}
+
+// EdgeVerbURL is EdgeVerbPath against a hub base URL, resolving the resource
+// from the edge type.
+func EdgeVerbURL(hubBase, edgeType, cluster, name, verb string) string {
+	_, _, resource := EdgeProviderCoordinates(edgeType)
+	return strings.TrimRight(hubBase, "/") + EdgeVerbPath(cluster, resource, name, verb)
+}
+
+// EdgeServiceProxyPath returns the kube path of a verb on a Service published
+// from an edge, served by the edges provider as a custom subresource.
 //
-// verb is "proxy" (HTTP data plane), "mcp", or "ticket".
+// verb is "proxy" (HTTP data plane) or "mcp".
 //
-// Pattern: /services/providers/edges/dataplane/clusters/{cluster}/services/{name}/{verb}
+// Pattern: /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/{verb}
 func EdgeServiceProxyPath(cluster, name, verb string) string {
-	return ProviderDataPlanePath("edges", "services", cluster, name, verb)
+	return EdgeVerbPath(cluster, "services", name, verb)
 }
 
 // EdgeServiceProxyURL returns the full Service verb URL.
@@ -207,7 +233,10 @@ func EdgeAPIPath(cluster, edgeName string) string {
 //
 // If edgeURL does not start with /services/ it is returned unchanged.
 func ExternalizeURL(edgeURL, hubBase string) (string, error) {
-	if !strings.HasPrefix(edgeURL, "/services/") {
+	// A hub-relative path is either a kube path on the front door (an edge's
+	// status.URL names its k8s or ssh verb under /clusters/{id}/apis/…) or a
+	// backend-proxy route (/services/…). Anything else is already absolute.
+	if !strings.HasPrefix(edgeURL, "/clusters/") && !strings.HasPrefix(edgeURL, "/services/") {
 		return edgeURL, nil
 	}
 	hub, err := url.Parse(strings.TrimRight(hubBase, "/"))

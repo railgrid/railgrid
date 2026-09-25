@@ -207,6 +207,12 @@ func TestMain(m *testing.M) {
 		"RAILGRID_HUB_TOKEN="+staticToken,
 		"RAILGRID_PROVIDER_NAME=kuery",
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		// The CatalogEntry manifest is where serve reads the
+		// "<resource>/<verb>" coordinates it answers on the kcp
+		// custom-subresource path — the only way a verb is reached — so the
+		// provider refuses to start without it. init already applied the
+		// entry (applyKueryManifests), so this is not repeated there.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "kuery", "manifest.yaml"),
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog

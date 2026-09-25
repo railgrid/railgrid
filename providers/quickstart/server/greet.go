@@ -24,8 +24,8 @@ import (
 )
 
 // greetVerb is the one verb this provider serves. It is also, verbatim, the
-// subresource the hub grants: a consumer's RBAC rule is
-// `create` on `greetings/greet`.
+// custom subresource the APIExport publishes and the noun RBAC grants: a
+// consumer's rule is `create` on `greetings/greet`.
 const greetVerb = "greet"
 
 // greetLimits bound the verb. A data-plane verb declares its own limits rather
@@ -42,46 +42,50 @@ type greetResult struct {
 	Greeting string `json:"greeting"`
 }
 
-// ServeHTTP serves
+// ServeHTTP serves the greet verb as kcp forwards it:
 //
-//	POST /dataplane/clusters/{clusterID}/greetings/{name}/greet
+//	POST /clusters/{clusterID}/apis/quickstart.providers.railgrid.ai/v1alpha1/greetings/{name}/greet
 //
-// and is the one place a new provider author sees the two gates written out.
-// Read it top to bottom; everything a data-plane verb must do is here and
-// nothing else is.
+// and is the one place a new provider author sees the gate written out. Read
+// it top to bottom; everything a data-plane verb must do is here and nothing
+// else is.
 func (s *dataPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// 1. Parse. The grammar is the contract's, not ours: ParseRequest refuses
-	//    a traversal segment, a percent-encoded separator, a workspace path
-	//    where a logical-cluster ID belongs, and the legacy `apis` dialect. A
-	//    route that does not match falls through to a 400 rather than being
-	//    reinterpreted.
-	req, ok := dataplane.ParseRequest(dataplane.DataplaneRoot, r)
-	if !ok || req.Resource != s.deps.Greetings.Resource || req.Component != "" || req.Tail != "" {
+	// 1. The route. serve's subresource adapter is the one parser: it has
+	//    already refused a traversal segment, a percent-encoded separator, a
+	//    workspace path where a logical-cluster ID belongs, and any coordinate
+	//    the manifest does not declare, and it put what it parsed in the
+	//    request context. A request that arrives with no route did not come
+	//    through the adapter and is refused, whatever its URL says. The verb
+	//    takes no component and nothing beneath itself.
+	route, ok := dataplane.RouteFrom(r.Context())
+	if !ok || route.Resource != s.deps.Greetings.Resource || route.Component != "" || route.Tail != "" {
 		dataplane.WriteError(w, dataplane.ErrBadPath)
 		return
 	}
+	if route.Verb != greetVerb {
+		// The adapter only dispatches declared coordinates, so this is belt
+		// and braces: a verb this handler does not implement is not served.
+		http.NotFound(w, r)
+		return
+	}
 
-	// 2. The two gates, run AS THE CALLER with the caller's own bearer. The
-	//    provider's identity is not involved: it lends only the hub's address
-	//    and CA (see dataplane.NewCallerFactory in main.go).
+	// 2. The gate. kcp already authenticated the caller and authorized
+	//    `create` on greetings/greet with ordinary RBAC before it forwarded
+	//    the request at all; there is no bearer here and the verb grant is not
+	//    repeated. What the gate settles is VISIBILITY: the caller must be
+	//    able to see greetings/{name} in {clusterID}. The provider holds the
+	//    caller's name and groups and no credential to read with, so Gate
+	//    runs a SubjectAccessReview for `get` on the object on the caller's
+	//    behalf, then reads it AS THE PROVIDER through its APIExport virtual
+	//    workspace — the one door where the provider has standing in a tenant
+	//    workspace. That is what makes "workspace A's caller cannot greet
+	//    workspace B's Greeting" true, and it hands the object back so the
+	//    verb reads spec from what the caller was entitled to see.
 	//
-	//    Gate 1 is a real GET of greetings/{name} in {clusterID}. It proves
-	//    the caller can see this object — which is what makes "workspace A's
-	//    token cannot greet workspace B's Greeting" true — and it hands the
-	//    object back, so the verb reads spec from what the CALLER could see
-	//    rather than from a second, unauthorized read.
-	//
-	//    Gate 2 is a SelfSubjectAccessReview for `create` on the virtual
-	//    subresource greetings/{verb}, scoped to {name}. `create` is not
-	//    negotiable: the hub materializes every data-plane grant as exactly
-	//    that rule, so any other verb string silently breaks workload
-	//    identities.
-	//
-	//    Note the gates run before we check which verb was asked for. An
-	//    unimplemented verb and an ungranted one then look identical to a
-	//    caller, so the route cannot be used to enumerate what a provider can
-	//    do.
-	greeting, _, err := dataplane.Gate(r.Context(), r, s.deps.Callers, s.deps.Greetings, req)
+	//    A foreign provider (another export that claimed greetings/greet,
+	//    calling through its own virtual workspace) is authorized by the
+	//    claim kcp already enforced; Gate reads the parent and asks no review.
+	greeting, _, err := dataplane.Gate(r.Context(), s.deps.Callers, s.deps.Greetings, route.Request)
 	if err != nil {
 		// The detail stays here. WriteError answers with the status text and
 		// nothing else, so a denial cannot tell a caller whether the object
@@ -90,21 +94,23 @@ func (s *dataPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		dataplane.WriteError(w, err)
 		return
 	}
-	if req.Verb != greetVerb {
-		dataplane.WriteError(w, dataplane.ErrDenied)
-		return
-	}
 
 	// 3. Serve. dataplane.Serve owns the rest of the response path: POST only,
 	//    the input limit, a strict {"input": …} body, the timeout, the output
 	//    limits, and the actionwire envelope on success and on failure alike.
 	//    Write nothing to w after this point.
-	_, _, user, _ := dataplane.Identity(r)
-	env := actionwire.New(r, "quickstart", req.Verb, actionwire.ResourceRef{
+	//
+	//    The caller's name comes from the identity kcp stamped, the same one
+	//    Gate decided with. It labels the greeting; it authorizes nothing.
+	var user string
+	if identity, ok := dataplane.ProxiedIdentityFrom(r.Context()); ok {
+		user = identity.User
+	}
+	env := actionwire.New(r, "quickstart", route.Verb, actionwire.ResourceRef{
 		APIVersion: s.deps.Greetings.GroupVersion().String(),
 		Kind:       "Greeting",
 		Resource:   s.deps.Greetings.Resource,
-		Name:       req.Name,
+		Name:       route.Name,
 	})
 	dataplane.Serve(w, r, env, greetLimits, func(_ context.Context, _ json.RawMessage) (any, *actionwire.Error) {
 		return greet(greeting, user)
@@ -112,9 +118,9 @@ func (s *dataPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // greet is the whole of the verb: render the message the tenant stored on the
-// object for the caller the hub authenticated. It takes the object gate 1
-// returned, never a fresh read — the point of gate 1 handing the object back is
-// that the verb acts on what the caller was entitled to see.
+// object for the caller kcp authenticated. It takes the object the gate
+// returned, never a fresh read — the point of the gate handing the object back
+// is that the verb acts on what the caller was entitled to see.
 func greet(greeting *unstructured.Unstructured, user string) (any, *actionwire.Error) {
 	message, _, err := unstructured.NestedString(greeting.Object, "spec", "message")
 	if err != nil || message == "" {
@@ -126,9 +132,8 @@ func greet(greeting *unstructured.Unstructured, user string) (any, *actionwire.E
 		}
 	}
 	if user == "" {
-		// X-Railgrid-User is addressing and labelling material only. It is
-		// absent when the provider is reached without the hub in front, and
-		// that is a cosmetic difference, never an authorization one.
+		// Gate refuses a request with no caller, so this is unreachable on a
+		// served request; it keeps the label well-formed regardless.
 		user = "anonymous"
 	}
 	return greetResult{Greeting: message + ", " + user}, nil

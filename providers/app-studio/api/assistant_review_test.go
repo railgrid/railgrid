@@ -108,7 +108,7 @@ func newAssistantReviewHTTPTest(t *testing.T) (*mux.Router, *store.MemoryStore, 
 func assistantReviewHTTPTestRequest(method, path, body string) *http.Request {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+"test-user-token")
+	request = stampTestCaller(request, testUserForToken("test-user-token"))
 	request.Header.Set("X-Railgrid-User", "test-user")
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")

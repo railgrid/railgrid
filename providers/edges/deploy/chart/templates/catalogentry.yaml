@@ -5,8 +5,9 @@
 # ConfigMap that the init container mounts and applies into the provider
 # workspace via the provider kubeconfig (RAILGRID_CATALOGENTRY_FILE ->
 # sdkinstall.Bootstrap). backend.url points at the in-cluster Service so the hub
-# backend proxy forwards /services/providers/edges/* (agent ingress + edgeproxy)
-# here.
+# backend proxy forwards /services/providers/edges/* (agent ingress + MCP) here;
+# the data-plane verbs are kcp custom subresources the shard routes through the
+# DataPlaneEndpointSlice.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -113,12 +114,17 @@ data:
             verbs: [create]
             tenantScoped: true
       # Data-plane verbs this provider serves, declared so the coordinate is
-      # machine-readable. Declaring one grants and serves nothing: every call is
-      # still authorized by this provider's own caller-scoped SSAR on
-      # {resource}/{verb}. What the declaration buys is that the hub
-      # scoped-identity service can mint a capability for a verb it can verify
-      # exists (pkg/hub/identity/policy.go clause C), instead of consumers
-      # hardcoding a coordinate nobody validates.
+      # machine-readable. Declaring one grants nothing: every call is still
+      # authorized on {resource}/{verb}, as the caller, by this provider's own
+      # gates. What the declaration buys, per verb: codegen emits the kcp custom
+      # subresource "<resource>/<verb>" on the generated APIExport (the shard routes
+      # it to this provider through its DataPlaneEndpointSlice) together with the
+      # "<Verb>Request" schema the entry names; a consumer provider can compose the
+      # coordinate under spec.dependencies[].composes[] and have it claimed on ITS
+      # export; and the hub scoped-identity service (pkg/hub/identity/policy.go
+      # clause C) can mint a capability only for a verb it can verify exists. None
+      # of this is a permission claim of this provider: a claim names another
+      # export's resources, never one's own verbs.
       dataPlane:
         verbs:
           - resource: kubernetesclusters
@@ -134,10 +140,6 @@ data:
             description: "Reach the edge's MCP endpoint through its tunnel."
             stream: true
           - resource: kubernetesclusters
-            verb: ticket
-            description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
-            readOnly: true
-          - resource: kubernetesclusters
             verb: agent-token
             description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
             readOnly: true
@@ -149,10 +151,6 @@ data:
             verb: ssh
             description: "Open an SSH session to the edge through its tunnel."
             stream: true
-          - resource: linuxservers
-            verb: ticket
-            description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
-            readOnly: true
           - resource: linuxservers
             verb: addon-credentials
             description: Read runner auth and publish its token for an add-on assigned to this edge
@@ -178,10 +176,6 @@ data:
             verb: mcp
             description: "Reach a published Service's MCP endpoint."
             stream: true
-          - resource: services
-            verb: ticket
-            description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
-            readOnly: true
       # Lets an organization run edges in its own cluster (docs/byo-providers.md).
       # Mirrors manifest.yaml — keep both in sync.
       selfHosting:

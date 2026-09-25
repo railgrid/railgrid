@@ -21,6 +21,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +29,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-agents/store"
 )
 
 // mcpIdentity reconstructs the caller identity for tools that touch
@@ -52,6 +54,16 @@ func (s *Server) mcpIdentity(ctx context.Context, r *http.Request) identity {
 		if ref, ok, _ := s.store.GetTenantRef(ctx, id.clusterID); ok {
 			id.orgUUID, id.workspaceUUID = ref.OrgUUID, ref.WorkspaceUUID
 		}
+		return id
+	}
+	// This is the one class that still resolves the workspace as a caller, so
+	// record what it learned: data-plane verbs and background execution have
+	// no caller to read the LogicalCluster as and key their rows on this
+	// mapping (resolveClusterScope, background.scopeFor).
+	if id.workspacePath != "" && s.store != nil {
+		_ = s.store.SaveTenantRef(ctx, id.clusterID, store.TenantRef{
+			OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, UpdatedAt: time.Now().UTC(),
+		})
 	}
 	return id
 }

@@ -46,8 +46,8 @@ import type {
 } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
 import type { PreviewBridgeSession } from './previewBridge'
-import { providerFetch, readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
-import { createKubeClient, isKubeNotFound, type KubeObject, type KubeResourceRef } from './portalkit/kube'
+import { providerFetch, readTenant, tenantHeaders } from './portalkit/tenant'
+import { createKubeClient, isKubeNotFound, kubeVerbPath, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 import * as llmRegistry from './llmRegistry'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
 import {
@@ -101,60 +101,59 @@ function tenantSelection(ctx: RailgridContext | null): TenantSelection {
   return readTenant()
 }
 
-// providerBase resolves the hub backend-proxy prefix for this provider from the
-// micro-frontend basePath the host injects (/ui/providers/app-studio →
-// /services/providers/app-studio). The hub strips that prefix, injects the
-// verified X-Railgrid-* headers, and forwards to the provider's /dataplane
-// routes. Falls back to the well-known prefix if no basePath arrived yet.
-function providerBase(ctx: RailgridContext | null): string {
-  const derived = ctx?.basePath ? serviceBase(ctx.basePath) : ''
-  return (derived || '/services/providers/app-studio').replace(/\/$/, '')
-}
-
-// Every call this module makes is a data-plane verb on a bound resource:
+// Every call this module makes is a data-plane verb on a bound resource — a
+// kcp custom subresource App Studio publishes on its APIExport — addressed on
+// the hub's kcp front door like any other kube path:
 //
-//   {provider}/dataplane/clusters/{cluster}/projects/{name}/{verb}[/{tail}]
-//   {provider}/dataplane/clusters/{cluster}/sessions/{thread}/{verb}[/{tail}]
-//   {provider}/dataplane/clusters/{cluster}/studios/studio/{verb}
+//   /clusters/{cluster}/apis/ai.railgrid.ai/v1alpha1/projects/{name}/{verb}[/{tail}]
+//   /clusters/{cluster}/apis/ai.railgrid.ai/v1alpha1/sessions/{thread}/{verb}[/{tail}]
+//   /clusters/{cluster}/apis/ai.railgrid.ai/v1alpha1/studios/studio/{verb}
 //
-// The cluster is in the PATH, not only in a header: it is what the provider
-// authorizes against, so a request cannot address one workspace while claiming
-// another. The /api/projects/* facade these calls used to hit is gone.
-function dataPlaneBase(ctx: RailgridContext | null, resource: string, name: string): string {
+// kcp authenticates the caller (providerFetch injects the bearer), authorizes
+// the HTTP method as the RBAC verb on {resource}/{verb}, and reverse-proxies
+// the request to the provider with the caller's identity stamped. The cluster
+// is in the PATH: it is what kcp authorizes against, so a request cannot
+// address one workspace while claiming another. The hub-proxied
+// /services/providers/app-studio/dataplane/… grammar these calls used to hit,
+// like the /api/projects/* facade before it, is gone.
+function verbCluster(ctx: RailgridContext | null): string {
   const t = tenantSelection(ctx)
   if (!t.orgUUID || !t.workspaceUUID) {
     throw new Error('select an organization and workspace first')
   }
   const cluster = ctx?.tenant?.trim() ?? ''
   if (!cluster) throw new Error('select an organization and workspace first')
-  return `${providerBase(ctx)}/dataplane/clusters/${encodeURIComponent(cluster)}/${resource}/${encodeURIComponent(name)}`
+  return cluster
 }
+
+const projectResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'projects' }
+const sessionResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'sessions' }
+const studioResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'studios' }
 
 // projectURL addresses a verb on one project. tail is the part of the address
 // INSIDE the object — an integration alias, a grant id, a skill package —
-// which stays out of the verb so one grant covers the set.
+// which stays out of the verb so one grant covers the set. Callers that need
+// a query string append it: a verb path carries none of its own.
 function projectURL(ctx: RailgridContext | null, name: string, verb: string, ...tail: string[]): string {
-  return [dataPlaneBase(ctx, 'projects', name), verb, ...tail.map(encodeURIComponent)].join('/')
+  return kubeVerbPath(verbCluster(ctx), projectResource, name, verb, { tail: tail.join('/') })
 }
 
 // sessionURL addresses a verb on one assistant conversation. The Session is
 // named after the thread, and the provider reads the project off it — which is
 // why no project travels here any more.
 function sessionURL(ctx: RailgridContext | null, threadID: string, verb: string, ...tail: string[]): string {
-  return [dataPlaneBase(ctx, 'sessions', threadID), verb, ...tail.map(encodeURIComponent)].join('/')
+  return kubeVerbPath(verbCluster(ctx), sessionResource, threadID, verb, { tail: tail.join('/') })
 }
 
 // studioURL addresses a workspace-wide verb. The Studio is the per-workspace
 // singleton, so "create a project here" has an object to be authorized
 // against instead of being a collection route.
 function studioURL(ctx: RailgridContext | null, verb: string): string {
-  return `${dataPlaneBase(ctx, 'studios', STUDIO_NAME)}/${verb}`
+  return kubeVerbPath(verbCluster(ctx), studioResource, STUDIO_NAME, verb)
 }
 
 // STUDIO_NAME mirrors aiv1alpha1.StudioName: one Studio per workspace.
 const STUDIO_NAME = 'studio'
-
-const studioResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'studios' }
 
 // ProjectCR is the bound kind as the API server serves it. The list view needs
 // only what the CR itself carries; anything joined — live instance status, the
@@ -237,8 +236,6 @@ async function studioRequest<T>(ctx: RailgridContext | null, method: string, ver
 // the caller's workspace membership, validated by the CRD. The backend's
 // PATCH /api/projects/{p} facade re-implemented that with weaker validation
 // than the schema it was writing to, and is gone.
-const projectResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'projects' }
-
 function projectKubeClient(ctx: RailgridContext | null) {
   const cluster = ctx?.tenant?.trim() ?? ''
   if (!cluster) throw new Error('select an organization and workspace first')

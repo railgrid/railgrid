@@ -10,6 +10,17 @@ plan unless the section says so.
 
 ---
 
+> **Superseded in part (2026-09-25).** Data-plane verbs and actions are now
+> reachable **only** as kcp custom subresources on the provider's APIExport
+> (`/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}`). The
+> hub-proxied grammar `/services/providers/{name}/{dataplane,actions}/clusters/…`,
+> the caller-bearer "two gates", `X-Railgrid-Cluster` on a verb and
+> `dataplane.ParsePath`/`ProviderPath` described below no longer exist; the hub's
+> backend proxy carries MCP, browser OAuth, signed webhooks, the agent tunnel
+> and health only. The current contract is
+> [provider-connectivity-contract.md](./provider-connectivity-contract.md)
+> §"Pillar 2 route classes"; this document is kept as the dated record.
+
 ## Status — what this audit has already moved
 
 **This is a dated audit and is not rewritten as the tree changes.** The
@@ -40,6 +51,18 @@ finding below as open. As of **2026-09-20**, on branch
 - **Timer loops and readiness gaps** called out per provider: `CanSend` is now
   mandatory, `/readyz` comes from `vwhealth`, and every provider's write loops
   are leader-elected.
+- **Pillar 2 is no longer a second transport.** Every declared verb and action
+  is a kcp **custom subresource** `"<resource>/<verb>"` on the provider's own
+  APIExport, routed through a provider-owned `DataPlaneEndpointSlice`, so the
+  verb is an ordinary API path the shard reverse-proxies. The hub-proxied
+  grammar remains as a second entry point to the same handler.
+  `verify-provider-contract` gained `subresource-name`.
+- **Cross-provider reads are a permission claim again**, generated from
+  `spec.dependencies[].composes[]` with **no `identityHash`** and admitted by
+  a cluster-scoped `PermissionClaimPolicy` the hub applies at bootstrap. The
+  pinning objection that ruled claims out (§3.7, §3.8 and Part 4) no longer
+  holds: kcp resolves an unpinned claim per consumer workspace. The hub-minted
+  scoped identity remains for what a claim cannot carry.
 
 **Open.**
 
@@ -47,10 +70,12 @@ finding below as open. As of **2026-09-20**, on branch
   and have **not started** (plan §3, §7).
 - §3.7 app-studio's largest deviation is partly done: Cut D (conversations and
   the project source tree) has not started.
-- kuery and app-studio still mint their own workspace/project identities and
-  still hold `serviceaccounts`/`clusterroles`/`clusterrolebindings` claims.
-- Six providers still hold `secrets` claims that have not been narrowed to
-  provider-owned material (review X-4).
+- kuery and app-studio still hold per-workspace / per-project **hub-minted**
+  identities, now only for what a permission claim cannot carry (another
+  provider's verbs and actions, MCP `use`, app-studio's tenant-path dependency
+  watch). No in-tree provider claims `serviceaccounts`, `clusterroles` or
+  `clusterrolebindings`, and every in-tree `secrets` claim is narrowed by
+  `selector.matchLabels[railgrid.ai/owner]` (review X-4 closed in tree).
 
 ---
 
@@ -97,16 +122,39 @@ where the docs were vague. Each rule names the code that backs it. Rules marked
    `providers/<name>/apis/v1alpha1`, generated into APIResourceSchemas
    (`make codegen-<name>-provider`), applied together with one APIExport named
    `<name>.providers.railgrid.ai` by the provider's own `init` command through
-   `provider-sdk/install.Bootstrap` (`provider-sdk/install/install.go:138`).
-   The hub only creates the workspace, the `provider` ServiceAccount and the
-   kubeconfig Secret (`providers/quickstart/provider.yaml:1-7`,
-   `pkg/hub/providers/provision.go`).
+   `provider-sdk/install.Bootstrap` (`provider-sdk/install/install.go`).
+   That export carries three kinds of entry: apigen's resources, one
+   `"<resource>/<verb>"` **custom subresource** per declared verb and action
+   (Pillar 2 rule 0), and `spec.permissionClaims` — hand-written ones from
+   `spec.apiExport.permissionClaims` plus one identity-agnostic claim per
+   `spec.dependencies[].composes[]` entry. The hub only creates the workspace,
+   the `provider` ServiceAccount and the kubeconfig Secret
+   (`pkg/hub/providers/provision.go`).
 2. **Tenants consume it through an APIBinding created by the hub's Enable
    flow**, which runs as kcp-admin after checking membership and dependencies
-   (`pkg/hub/restapi/providers_enable.go:20-26,129,186`). The claims a tenant
-   accepts are the `tenantScoped` claims declared on the CatalogEntry;
-   rejected claims go through as `state: Rejected`. *providers.md decision #10
-   says "the portal calls kcp as the user"; that is not what shipped.*
+   (`pkg/hub/restapi/providers_enable.go`). The claims a tenant accepts are the
+   `tenantScoped` claims declared on the CatalogEntry; rejected claims go
+   through as `state: Rejected`. Accepting a composition-derived claim is what
+   lets the composing provider read and write that kind at all. *providers.md
+   decision #10 says "the portal calls kcp as the user"; that is not what
+   shipped.*
+   **A claim on another provider's first-party group carries no
+   `identityHash`.** kcp resolves it per consumer workspace against whatever
+   export that workspace bound, so an organization self-hosting the dependency
+   keeps working. Admission accepts the unpinned claim because a
+   cluster-scoped `PermissionClaimPolicy` (`admin.kcp.io`) pairs the claimer —
+   **the API group the export itself exports**, not the provider's name — with
+   the claimed group. It is generated from the same `composes[]` entries by
+   `hack/generate-permission-claim-policy.mjs` into
+   `config/kcp/permissionclaimpolicy.yaml`, checked in CI, and applied by the
+   hub at bootstrap through the admin virtual workspace at
+   `/services/admin/clusters/root`
+   (`pkg/hub/bootstrap/permissionclaimpolicy.go`). Naming a pairing reserves
+   both groups: only `spec.providers` may export them, including against
+   cluster admins. The subject is
+   `system:serviceaccount:default:provider`, whose bare ServiceAccount
+   username is logical-cluster-scoped in kcp — a known caveat, recorded in the
+   generated file.
 3. **Desired state and durable status live in the object.** Anything a tenant
    can see or that a reconcile must recover from is a `spec`/`status` field on
    the tenant's object, or a provider-private kind in the provider workspace.
@@ -139,9 +187,37 @@ where the docs were vague. Each rule names the code that backs it. Rules marked
 
 ### Pillar 2 — REST is only for non-standard, non-persistent verbs, in the data-plane shape
 
-The hub gives every provider one backend origin behind
-`/services/providers/{name}/*` (`pkg/hub/providers/proxy.go:111`). What may be
-served there is closed:
+A tenant verb is addressed on the **resource**, not on a side channel. Every
+`spec.dataPlane.verbs[]` entry and every `spec.actions[]` entry becomes a
+`spec.resources[]` entry on the provider's APIExport named
+`"<resource>/<verb>"` — a kcp custom subresource, RBAC style — so the verb is
+an ordinary API path:
+
+```
+/apis/{group}/{version}/{resource}/{name}/{verb}
+```
+
+discoverable with `kubectl` and authorized by kcp as RBAC on the
+`{resource}/{verb}` noun. The entry's `storage.virtual.reference` points at a
+provider-owned `DataPlaneEndpointSlice` (`dataplane.railgrid.ai/v1alpha1`, one
+per provider, named after the APIExport) whose `status.endpoints[].url` is the
+provider's `spec.backend.url`, and the serving shard reverse-proxies the
+request there at `<endpoint>/clusters/{id}/apis/…`. Generated by
+`provider-sdk/apiexportgen`; the CRD and the slice are applied by
+`provider-sdk/install` **before** the export, because kcp never replicates a
+reference to a kind that is not yet Established.
+
+**Rule 0 — the name.** `"<resource>/<verb>"` must match
+`^[a-z][-a-z0-9]*[a-z0-9](/[a-z][-a-z0-9]*[a-z0-9])?$` and may not be `status`
+or `scale`. Underscores are gone (`mint_clone_token` → `mint-clone-token`) and
+infrastructure's status verb is `instances/runtime-status`. One bad name makes
+the whole export unappliable, so `verify-provider-contract` checks it
+(`subresource-name`).
+
+The hub still gives every provider one backend origin behind
+`/services/providers/{name}/*` (`pkg/hub/providers/proxy.go`), and the
+hub-proxied grammar below is the second entry point to the same handler
+registration. What may be served there is closed:
 
 | Class | Shape | Auth | Reference |
 |---|---|---|---|
@@ -150,6 +226,7 @@ served there is closed:
 | **(b) MCP projection** | `/mcp`, `/mcp/sse` | caller bearer + `X-Railgrid-Cluster` for addressing | `pkg/hub/mcpaggregate/enumerator.go:80-85` federates exactly this path |
 | **(c) Health** | `/healthz`, `/readyz` | none | `provider-sdk/vwhealth.Handler` |
 | **(d) Browser OAuth** | `/oauth/{provider}/{start,callback,config}` | signed state; popup may `postMessage` to its opener | code `oauthgithub/oauth.go:148-152` |
+| **(a″) The same verbs, shard-forwarded** | `/clusters/{clusterID}/apis/{group}/{version}/{resource}/{name}/{verb}[/{tail}]` | kcp-stamped requestheader identity, no bearer; SAR for `get` on the parent | `provider-sdk/serve/subresource.go`, `provider-sdk/dataplane/subresource.go` |
 | **(e) Hub-only** | `/workload-identities/*` | refused by the proxy for callers | `pkg/hub/providers/proxy.go:463-471` |
 | **(f) Agent tunnel (proposed)** | `/agent/clusters/{clusterID}/{resource}/{name}/proxy` | join token or edge SA + SAR | edges `agent_proxy_builder_v2.go:90-242` |
 | **(g) Signed inbound webhook (proposed)** | `/webhooks/{kind}/{clusterID}/{name}/{token}` | HMAC token, acts as provider SA | agents `api/server.go:250-253` |
@@ -166,13 +243,32 @@ Rules:
    Providers may read those headers for *addressing* and *labels*; they must
    not derive authorization from them. Where the path carries the cluster
    ID, the path wins and must equal the header (code `actions/server.go:79`).
-3. **Two gates, as the caller, on every verb.** Gate 1: the caller can `get`
+3. **The caller is authorized on every verb, on both entry points.** On the
+   hub-proxied grammar, two gates as the caller. Gate 1: the caller can `get`
    the addressed resource (a real GET with the caller's token, which also
    yields the object for UID pinning). Gate 2: SelfSubjectAccessReview for
-   **`create`** on the virtual subresource `{resource}/{verb}`, name-scoped.
-   The hub materializes grants as exactly that rule
+   **`create`** on the subresource `{resource}/{verb}`, name-scoped. The hub
+   materializes grants as exactly that rule
    (`pkg/hub/serviceaccounts/workload_identity.go:435-439`), so any other verb
    string breaks workload identities.
+
+   On the shard-forwarded path there is **no bearer**: the shard authenticates
+   the user, strips inbound identity headers and stamps `X-Remote-User`,
+   `X-Remote-Group` and `X-Remote-Extra-*` plus a hop counter. Gate 1 keeps
+   its meaning and changes its mechanism — a `SubjectAccessReview` for `get`
+   on the parent, run by the provider on the caller's behalf, the object then
+   read by the provider, both through the provider's APIExport virtual
+   workspace (the provider identity has no standing on the shard's own
+   `/clusters/<tenant>`) — and gate 2 is **not** repeated, because kcp
+   authorized the noun before proxying. The published endpoint URL must be the
+   shard-facing address: anyone who can reach it directly can claim any
+   identity.
+   **Declare the verb, and wire the table.** `serve.Options.Subresources`
+   (built with `serve.SubresourcesFromCatalogEntryFile`) says which
+   coordinates are served on that path and whether each is a verb or an action
+   at a version; a coordinate absent from it is a 404 there even when a
+   handler would answer. The caller factory must be a
+   `ProviderCallerFactory` (`dataplane.WithProviderConfig(cfg, exportName)`).
 4. **Per-request tenant client, credential dropped.** Build a client for
    `<hub>/clusters/{clusterID}` from the provider kubeconfig's host and CA
    only, with the caller's bearer (`providers/code/tenant/client.go:56-60`,
@@ -224,6 +320,24 @@ Rules:
    `make verify-portalkit`. App Studio's hot-reloadable bootstrap
    (`element.ts:185-198`, `providerScriptLoader.ts:17`) is a better pattern
    than the docs describe and should become the default for new portals.
+
+### Cross-cutting — composition is one declaration
+
+A provider that creates and manages another provider's kind declares it once,
+in `spec.dependencies[].composes[]` (group, resource, verbs). Three artifacts
+are generated from that entry and all three must agree: the identity-agnostic
+permission claim on the composing provider's own APIExport
+(`provider-sdk/apiexportgen.MergeCompositionClaims`, always on), the tenant's
+consent — the claim accepted on the APIBinding at Enable, and the
+`compose:<group>/<resource>` capability in the workspace's `Grant` — and the
+platform whitelist in `config/kcp/permissionclaimpolicy.yaml`. The claim is
+how a composing reconciler **reads and writes** the kind, on the manager it
+already runs over its own APIExport virtual workspace. Clause E of the hub's
+identity policy still mints rules, but only for what a claim cannot carry: a
+call to another provider's data-plane verb or action, `use` on an MCP server,
+and App Studio's per-workspace dependency watch on the tenant path.
+`verify-provider-contract`'s `claims-parity` accepts a generated claim backed
+by **either** source and fails a composition that reaches no claim.
 
 ### Cross-cutting — one manifest, three copies
 
@@ -338,7 +452,7 @@ Paths under `providers/code/`.
   `actions_catalog_test.go`.
 - **❌ D3:** gate 2 checks verb `invoke` (`actions/server.go:215`); the hub
   grants `create`. Fix the string, `server_test.go:81`, README.
-- **📄** `stage_snapshot` is served (`actions/server.go:74,104`) but not in the
+- **📄** `stage-snapshot` is served (`actions/server.go:74,104`) but not in the
   catalog; on-disk bundle and snapshot stores are transient artifacts. Both
   are explained only in the README; move the rationale into
   `code-provider-architecture.md` and pin the carve-out in the contract.
@@ -492,18 +606,27 @@ Paths under `providers/agents/`.
 
 Paths under `providers/app-studio/`.
 
-> **Status 2026-09-20 — partly closed** (plan §9, Cuts A, B and C). The
+> **Status — partly closed** (plan §9, Cuts A, B and C). The
 > `/api/projects/*` surface and the `X-Railgrid-User` actor are gone; the provider
-> serves through `serve.New` and authorizes as the caller. Composition landed
-> on **hub-minted scoped identities**, not permission claims: first-party
-> claims pin to one export's `identityHash` and break org-owned providers, so
-> what app-studio composes is declared as `dependencies[].composes` on the
-> CatalogEntry, accepted at Enable as a `compose:<group>/<resource>` Grant,
-> and minted per object. Its only remaining claim is `secrets`.
+> serves through `serve.New` and authorizes as the caller. What app-studio
+> composes is declared once, as `dependencies[].composes` on the CatalogEntry,
+> and it reaches those kinds through **identity-agnostic permission claims**
+> generated from that declaration: `infrastructure.railgrid.ai/instances`,
+> `code.railgrid.ai/repositories` and `code.railgrid.ai/repositorycommits`,
+> none carrying an `identityHash`, admitted by the cluster-scoped
+> `PermissionClaimPolicy` pairing the claimer `ai.railgrid.ai` with those two
+> groups. The reconciler converges them with the multicluster manager's own
+> client (`controller/project/controller.go`, `repository.go`, `commit.go`).
+> Hub-minted scoped identities remain for what a claim cannot carry: code's
+> `repositories/commit` and `repositories/stage-commit-bundle` actions, `use`
+> on the workspace MCP aggregate, instance data-plane verbs, and the
+> per-workspace dependency watch in `controller/tenantwatch/tenantwatch.go`.
+> The `secrets` claim is narrowed to
+> `selector.matchLabels[railgrid.ai/owner]=app-studio` (X-4 closed here).
 >
 > **Cut D has not started:** conversations still live in Postgres and the
 > project source tree still lives on a PVC, so the Pillar 1 finding below
-> stands as written. The `secrets` claim is still resource-wide (X-4).
+> stands as written.
 
 - **Pillar 1:** Project, Session, Studio on `ai.railgrid.ai`;
   `apiexportprovider` present (`controller_manager.go:286-294`). ❌ No
@@ -551,7 +674,9 @@ Paths under `providers/kuery/`.
 >
 > The cross-provider finding is closed in a way this audit did not anticipate:
 > kuery's edge-watch identity is **hub-minted**, owned by the tenant's own
-> kuery APIBinding, and its export carries no permission claims at all. It
+> kuery APIBinding, and its export carries no identity claims at all (only
+> the identity-agnostic edges composition claim and the built-in
+> `subjectaccessreviews` review API its subresource gate needs). It
 > therefore dropped `edgeProxyAccess` — which, as the audit notes below, asked
 > for a grant on the provider SA that the code never used. The field itself
 > was deleted platform-wide on 2026-09-20.
@@ -726,6 +851,18 @@ that the contract should name them rather than leave each author to rediscover.
    enforcement and the envelope (cross-provider-simplification P2). Four
    dialects exist because every provider wrote its own; the quickstart cannot
    demonstrate Pillar 2 without one.
+10. **Publish every declared verb as a kcp custom subresource.** A verb the
+    catalog names but kcp cannot route is a coordinate consumers must be told
+    about out of band. Publishing it makes the verb `kubectl`-discoverable,
+    puts the authorization on kcp's own RBAC over the `{resource}/{verb}`
+    noun, and makes the manifest's declaration load-bearing rather than
+    documentary. It costs a name rule: no underscores, never `status` or
+    `scale`.
+11. **Reach a composed kind with an identity-agnostic permission claim**,
+    whitelisted by a cluster-scoped `PermissionClaimPolicy`, rather than with
+    a minted identity. Pinning was the only objection to a claim here, and kcp
+    resolving an unpinned claim per consumer workspace removes it. Keep the
+    minted identity for what a claim cannot carry.
 
 ---
 

@@ -165,6 +165,52 @@ const UNSCOPED_FROM = `  - defaultSelector:
 const UNSCOPED_TO = `  - resource: secrets
 `
 
+// spec.dependencies[].composes[]: the manifest's OTHER way of declaring a
+// claim. The generator turns each entry into an identityHash-less permission
+// claim, so claims-parity must accept the resulting claim without a matching
+// spec.apiExport.permissionClaims entry.
+const DEPENDENCIES = `  dependencies:
+    - name: edges
+      composes:
+        - group: edges.railgrid.ai
+          resource: kubernetesclusters
+          verbs: [get, list, watch]
+    - name: rbac-lookalike
+      composes:
+        - group: rbac.authorization.k8s.io
+          resource: clusterroles
+          verbs: [get, create, delete]
+`
+
+const COMPOSED_CLAIM = `  - group: edges.railgrid.ai
+    resource: kubernetesclusters
+    verbs:
+    - get
+    - list
+    - watch
+`
+
+/** The fixture manifest/chart with the compositions above declared. */
+function withDependencies(text) {
+  return text.replace('  actions:\n', `${DEPENDENCIES}  actions:\n`)
+}
+
+/** The generated export with the composed claim appended, as codegen writes it. */
+function withComposedClaim(claim = COMPOSED_CLAIM) {
+  return GENERATED_EXPORT.replace('  resources:', `${claim}  resources:`)
+}
+
+/** A repo whose manifest and chart declare the compositions. */
+function composingRepo(overrides = {}) {
+  return fixtureRepo({
+    'providers/fixture/manifest.yaml': withDependencies(MANIFEST),
+    'providers/fixture/deploy/chart/templates/catalogentry.yaml': withDependencies(CHART),
+    [EXPORT_PATH]: withComposedClaim(),
+    [CHART_EXPORT_PATH]: withComposedClaim(),
+    ...overrides,
+  })
+}
+
 const EXPORT_PATH = 'providers/fixture/config/kcp/apiexport-fixture.providers.railgrid.ai.yaml'
 const CHART_EXPORT_PATH = 'providers/fixture/deploy/chart/files/apiexport.yaml'
 
@@ -224,6 +270,62 @@ test('a data-plane verb named after a standard Kubernetes verb is reported', () 
     'providers/fixture/deploy/chart/templates/catalogentry.yaml': chartWithVerbs(good),
   }).run()
   assert.equal(clean.violations.filter((item) => item.check === 'reserved-verb').length, 0)
+})
+
+// Both declaration lists become kcp custom subresources named
+// "<resource>/<verb>", so both are held to kcp's spec.resources[].name pattern.
+const withVerbs = (text, verbs) => text.replace('  actions:\n', `  dataPlane:\n    verbs:\n${verbs}  actions:\n`)
+const withAction = (text, id) => text.replace(
+  '  - id: greet/v1\n',
+  `  - id: ${id}\n    boundResource:\n      apiVersion: fixture.railgrid.ai/v1alpha1\n      kind: Widget\n      resource: widgets\n  - id: greet/v1\n`,
+)
+
+/** A repo whose manifest and chart both carry `mutate`, applied to each. */
+function mutatedRepo(mutate) {
+  return fixtureRepo({
+    'providers/fixture/manifest.yaml': mutate(MANIFEST),
+    'providers/fixture/deploy/chart/templates/catalogentry.yaml': mutate(CHART),
+  })
+}
+
+function subresourceNames(result) {
+  return result.violations.filter((item) => item.check === CHECKS.SUBRESOURCE_NAME)
+}
+
+test('a data-plane verb kcp cannot name as a custom subresource is reported', () => {
+  const bad = '      - resource: sessions\n        verb: stage_upload\n      - resource: sessions\n        verb: edit\n'
+  const reported = subresourceNames(mutatedRepo((text) => withVerbs(text, bad)).run())
+  assert.equal(reported.length, 1)
+  assert.match(reported[0].message, /sessions\/stage_upload/)
+  assert.match(reported[0].message, /no underscores/)
+  assert.equal(reported[0].path, 'providers/fixture/manifest.yaml')
+  const good = bad.replace('verb: stage_upload', 'verb: stage-upload')
+  assert.equal(subresourceNames(mutatedRepo((text) => withVerbs(text, good)).run()).length, 0)
+})
+
+test('a data-plane verb named status or scale is reported, whatever its resource', () => {
+  const bad = '      - resource: instances\n        verb: status\n      - resource: instances\n        verb: scale\n'
+  const reported = subresourceNames(mutatedRepo((text) => withVerbs(text, bad)).run())
+  assert.equal(reported.length, 2)
+  assert.ok(reported.some((item) => /instances\/status/.test(item.message)))
+  assert.ok(reported.some((item) => /instances\/scale/.test(item.message)))
+  for (const item of reported) assert.match(item.message, /belong to the object's shape/)
+  const good = bad.replace('verb: status', 'verb: runtime-status').replace('verb: scale', 'verb: resize')
+  assert.equal(subresourceNames(mutatedRepo((text) => withVerbs(text, good)).run()).length, 0)
+})
+
+test('an action id kcp cannot name as a custom subresource is reported', () => {
+  const reported = subresourceNames(mutatedRepo((text) => withAction(text, 'mint_token/v1')).run())
+  assert.equal(reported.length, 1)
+  assert.match(reported[0].message, /spec\.actions\[0\] \(mint_token\/v1\)/)
+  assert.match(reported[0].message, /widgets\/mint_token/)
+  assert.equal(subresourceNames(mutatedRepo((text) => withAction(text, 'mint-token/v1')).run()).length, 0)
+})
+
+test('an action bound to no resource is left to the generator, not reported here', () => {
+  // The fixture's own greet/v1 declares no boundResource: an incomplete
+  // coordinate is not a NAME problem, and apiexportgen reports it as its own.
+  assert.equal(subresourceNames(fixtureRepo().run()).length, 0)
 })
 
 test('a conformant provider reports nothing', () => {
@@ -350,6 +452,78 @@ test('differing verbs on the same resource are two reports, not a silent pass', 
   assert.ok(claims.some((item) => /the generated APIExport claims secrets \[get list\]/.test(item.message)))
 })
 
+// --- composition-backed claims ---------------------------------------------
+//
+// A spec.dependencies[].composes[] entry IS a claim declaration: the generator
+// emits one identityHash-less permission claim per entry the manifest's own
+// spec.apiExport.permissionClaims does not already cover. claims-parity has to
+// accept those, and only those.
+
+test('a claim backed by a dependencies[].composes[] entry is accepted', () => {
+  const result = composingRepo().run()
+  assert.deepEqual(result.violations, [])
+})
+
+test('a composition that repeats a hand-written claim needs no second claim', () => {
+  // The fixture composes clusterroles with a WIDER verb set than the manifest
+  // claims. The generator keeps the hand-written claim and appends nothing, so
+  // the export carries exactly one clusterroles claim with the manifest's verbs
+  // -- and that must not read as a composition missing from the output.
+  const result = composingRepo().run()
+  assert.equal(result.violations.filter((item) => item.check === CHECKS.CLAIMS_PARITY).length, 0)
+})
+
+test('a composition-backed claim whose verbs drifted from both sources is reported', () => {
+  const drifted = withComposedClaim(`  - group: edges.railgrid.ai
+    resource: kubernetesclusters
+    verbs:
+    - get
+    - list
+    - delete
+`)
+  const result = composingRepo({ [EXPORT_PATH]: drifted, [CHART_EXPORT_PATH]: drifted }).run()
+  const claims = result.violations.filter((item) => item.check === CHECKS.CLAIMS_PARITY)
+  assert.equal(claims.length, 1)
+  assert.match(claims[0].message, /the generated APIExport claims kubernetesclusters\.edges\.railgrid\.ai \[delete get list\] scoped \* but manifest\.yaml does not declare it/)
+  assert.match(claims[0].message, /spec\.dependencies\[\]\.composes\[\]/)
+})
+
+test('a composition-backed claim narrowed by a selector is reported', () => {
+  // A composition carries no selector, so a scoped claim is backed by nothing.
+  const scoped = withComposedClaim(`  - defaultSelector:
+      matchLabels:
+        railgrid.ai/owner: fixture
+    group: edges.railgrid.ai
+    resource: kubernetesclusters
+    verbs:
+    - get
+    - list
+    - watch
+`)
+  const result = composingRepo({ [EXPORT_PATH]: scoped, [CHART_EXPORT_PATH]: scoped }).run()
+  const claims = result.violations.filter((item) => item.check === CHECKS.CLAIMS_PARITY)
+  assert.equal(claims.length, 1)
+  assert.match(claims[0].message, /scoped railgrid\.ai\/owner=fixture but manifest\.yaml does not declare it/)
+})
+
+test('a composition the generated APIExport does not claim is reported', () => {
+  const result = composingRepo({ [EXPORT_PATH]: GENERATED_EXPORT, [CHART_EXPORT_PATH]: GENERATED_EXPORT }).run()
+  const claims = result.violations.filter((item) => item.check === CHECKS.CLAIMS_PARITY)
+  assert.equal(claims.length, 1)
+  assert.match(claims[0].message, /manifest\.yaml composes kubernetesclusters\.edges\.railgrid\.ai \[get list watch\] scoped \* but the generated APIExport claims no kubernetesclusters\.edges\.railgrid\.ai; run make codegen-fixture-provider/)
+})
+
+test('a hand-written claim missing from the output still fails when compositions exist', () => {
+  // The composes[] source must not become a way for a declared permission
+  // claim to go missing unnoticed.
+  const dropped = withComposedClaim().replace('  - group: rbac.authorization.k8s.io\n    resource: clusterroles\n    verbs:\n    - get\n    - create\n', '')
+  const result = composingRepo({ [EXPORT_PATH]: dropped, [CHART_EXPORT_PATH]: dropped }).run()
+  const claims = result.violations.filter((item) => item.check === CHECKS.CLAIMS_PARITY)
+  assert.equal(claims.length, 2)
+  assert.ok(claims.some((item) => /manifest\.yaml claims clusterroles\.rbac\.authorization\.k8s\.io \[create get\] scoped \* but the generated APIExport does not/.test(item.message)))
+  assert.ok(claims.some((item) => /manifest\.yaml composes clusterroles\.rbac\.authorization\.k8s\.io \[create delete get\] scoped \* but the generated APIExport claims no clusterroles\.rbac\.authorization\.k8s\.io/.test(item.message)))
+})
+
 // The export's name is the other half of the contract: the CatalogEntry points
 // tenants at spec.apiExport.name, and that is the object init must create.
 test('an APIExport named after something other than spec.apiExport.name is reported', () => {
@@ -474,4 +648,41 @@ test('the real tree passes with the checked-in exception registry', () => {
   const result = verify()
   assert.deepEqual(result.violations.map((item) => `${item.provider} ${item.check}: ${item.message}`), [])
   assert.ok(result.providers.length >= 7, `expected the in-tree providers, got ${result.providers.join(', ')}`)
+})
+
+// An export that declares a custom subresource needs the review-API claim the
+// proxied gate runs through the export virtual workspace.
+const CUSTOM_SUBRESOURCE = `  - group: fixture.providers.railgrid.ai
+    name: widgets/greet
+    schema: v1alpha1.greet.fixture.providers.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: fixture.providers.railgrid.ai
+`
+const ACCESS_CLAIM = `  - group: authorization.k8s.io
+    resource: subjectaccessreviews
+    verbs:
+    - create
+`
+function accessClaims(result) {
+  return result.violations.filter((item) => item.check === CHECKS.SUBRESOURCE_ACCESS_CLAIM)
+}
+
+test('a custom subresource without the subjectaccessreviews claim is reported', () => {
+  const withSubresource = GENERATED_EXPORT + CUSTOM_SUBRESOURCE
+  const reported = accessClaims(fixtureRepo({ [EXPORT_PATH]: withSubresource, [CHART_EXPORT_PATH]: withSubresource }).run())
+  assert.equal(reported.length, 1)
+  assert.match(reported[0].message, /widgets\/greet/)
+  assert.match(reported[0].message, /authorization\.k8s\.io\/subjectaccessreviews/)
+  assert.match(reported[0].message, /make codegen-fixture-provider/)
+
+  const claimed = withSubresource.replace('  resources:', `${ACCESS_CLAIM}  resources:`)
+  assert.equal(accessClaims(fixtureRepo({ [EXPORT_PATH]: claimed, [CHART_EXPORT_PATH]: claimed }).run()).length, 0)
+})
+
+test('an export with no custom subresource is not asked for the claim', () => {
+  assert.equal(accessClaims(fixtureRepo().run()).length, 0)
 })

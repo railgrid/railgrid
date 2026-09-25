@@ -373,7 +373,7 @@ func TestMacOSAgentIngressRejectsAServiceAccountForAnotherEdge(t *testing.T) {
 	}
 	cfg := rec.start(t)
 
-	s := testServer("/services/providers/edges/dataplane")
+	s := testServer()
 	s.kcpConfig = cfg
 	s.tenantConfig = func(_ context.Context, cluster string) (*rest.Config, error) {
 		if cluster != consumer {
@@ -430,7 +430,7 @@ func TestMacOSAgentIngressBoundCredential(t *testing.T) {
 				authenticated: tc.authenticated, allowed: tc.allowed,
 			}
 			cfg := rec.start(t)
-			s := testServer("/services/providers/edges/dataplane")
+			s := testServer()
 			s.kcpConfig = cfg
 			s.tenantConfig = func(context.Context, string) (*rest.Config, error) { return cfg, nil }
 			s.logger = klog.Background()

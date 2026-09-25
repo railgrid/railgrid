@@ -168,10 +168,17 @@ resolves bearer → User CR → personal org / membership index. Provider SAs
 have no User CR and no membership, so hub-side injection of `X-Railgrid-Tenant`
 can never work for them without teaching the hub a parallel SA identity
 model. We don't need to: the app-studio → infrastructure data plane
-(`providers/app-studio/api/dataplane_client.go`) already established the
-pattern — address the target workspace **by cluster ID in the URL**, forward
-the bearer as-is through the hub backend proxy, and let the receiving
-provider authorize.
+already established the pattern — address the target workspace **by cluster
+ID in the URL** and let the receiving provider authorize.
+
+> **Superseded (2026-09-25).** The `/s2s/*` mount below was deleted rather than
+> moved ([agents-provider-architecture.md](./agents-provider-architecture.md)
+> §"The route surface"). Provider-to-provider invocation is a declared verb on
+> the agents APIExport (`agents/delegate`), a kcp custom subresource the
+> calling provider reaches **as itself** through its own export virtual
+> workspace on a `composes[]` claim (`verbs: ["*"]`) — see
+> [provider-connectivity-contract.md](./provider-connectivity-contract.md).
+> The route sketch is kept as the design record.
 
 S2S route (alongside, not replacing, the portal-shaped routes):
 

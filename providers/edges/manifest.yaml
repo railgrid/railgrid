@@ -3,8 +3,8 @@
 # Single, optional, self-contained provider for all seven edges.railgrid.ai kinds
 # (KubernetesCluster, LinuxServer, MacOSServer, Service, Workload, Placement,
 # Addon). It terminates the agent reverse tunnel (revdial) in-process, owns the
-# API + its APIExport, runs the token/RBAC/lifecycle controllers, and proxies
-# kubectl/SSH/MCP/Services through the hub backend proxy.
+# API + its APIExport, runs the token/RBAC/lifecycle controllers, and serves
+# kubectl/SSH/MCP/Services as kcp custom subresources on that export.
 #
 # The tunnel layer scales horizontally — each agent dials one replica and a
 # Lease registry + pod-to-pod relay route requests to the tunnel's owner — and
@@ -39,8 +39,10 @@ spec:
       - displayName: Services
         builtinRoute: services
   backend:
-    # Agent ingress (/agent/*) and consumer egress (/edgeproxy/*) route through
-    # the hub backend proxy at /services/providers/edges/* to this Service.
+    # Agent ingress (/agent/*) and the provider MCP endpoint (/mcp) route
+    # through the hub backend proxy at /services/providers/edges/* to this
+    # Service. The data-plane verbs do not: each is a kcp custom subresource
+    # the serving shard routes here through the DataPlaneEndpointSlice.
     # Overridden by the chart to the in-cluster Service DNS name.
     url: "http://localhost:8088"
     healthPath: "/readyz"
@@ -117,12 +119,18 @@ spec:
         verbs: [create]
         tenantScoped: true
   # Data-plane verbs this provider serves, declared so the coordinate is
-  # machine-readable. Declaring one grants and serves nothing: every call is
-  # still authorized by this provider's own caller-scoped SSAR on
-  # {resource}/{verb}. What the declaration buys is that the hub
-  # scoped-identity service can mint a capability for a verb it can verify
-  # exists (pkg/hub/identity/policy.go clause C), instead of consumers
-  # hardcoding a coordinate nobody validates.
+  # machine-readable. Declaring one grants nothing: kcp authorizes every call
+  # on {resource}/{verb} with ordinary RBAC before it forwards, and this
+  # provider's gate then reviews the caller's visibility of the object. What
+  # the declaration buys, per verb: codegen emits the kcp custom
+  # subresource "<resource>/<verb>" on the generated APIExport (the shard routes
+  # it to this provider through its DataPlaneEndpointSlice) together with the
+  # "<Verb>Request" schema the entry names; a consumer provider can compose the
+  # coordinate under spec.dependencies[].composes[] and have it claimed on ITS
+  # export; and the hub scoped-identity service (pkg/hub/identity/policy.go
+  # clause C) can mint a capability only for a verb it can verify exists. None
+  # of this is a permission claim of this provider: a claim names another
+  # export's resources, never one's own verbs.
   dataPlane:
     verbs:
       - resource: kubernetesclusters
@@ -138,10 +146,6 @@ spec:
         description: "Reach the edge's MCP endpoint through its tunnel."
         stream: true
       - resource: kubernetesclusters
-        verb: ticket
-        description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
-        readOnly: true
-      - resource: kubernetesclusters
         verb: agent-token
         description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
         readOnly: true
@@ -153,10 +157,6 @@ spec:
         verb: ssh
         description: "Open an SSH session to the edge through its tunnel."
         stream: true
-      - resource: linuxservers
-        verb: ticket
-        description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
-        readOnly: true
       - resource: linuxservers
         verb: addon-credentials
         description: Read runner auth and publish its token for an add-on assigned to this edge
@@ -182,10 +182,6 @@ spec:
         verb: mcp
         description: "Reach a published Service's MCP endpoint."
         stream: true
-      - resource: services
-        verb: ticket
-        description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
-        readOnly: true
   # Self-hosting: run the edges provider inside your own cluster, so agent
   # tunnels terminate there instead of on the platform. See docs/byo-providers.md.
   #

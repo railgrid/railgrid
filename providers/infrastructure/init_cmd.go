@@ -32,8 +32,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -62,43 +62,27 @@ func runInitCmd(ctx context.Context) error {
 		return fmt.Errorf("install CRDs: %w", err)
 	}
 
-	// dynCl targets the provider workspace (adminConfig.Host is retargeted from
-	// INFRASTRUCTURE_WORKSPACE_PATH). Reused for the APIExport shell, bind grant,
-	// and CatalogEntry self-registration below.
-	dynCl, err := dynamic.NewForConfig(adminConfig)
-	if err != nil {
-		return fmt.Errorf("dynamic client: %w", err)
-	}
-
-	// Materialize the APIExport shell BEFORE any APIExportEndpointSlice. The hub
-	// catalog controller used to create this; in the bootstrap split it is the
-	// provider init's job. It must exist first because the slice carries
-	// spec.export.path, which makes kcp's APIExportEndpointSlice admission resolve
-	// the export by path — a missing export surfaces as the misleading
-	// "no permission to bind to export" forbidden, not a NotFound.
-	//
-	// The shell is the generated file (deploy/chart/files/apiexport.yaml, from
-	// manifest.yaml) and carries an empty spec.resources on purpose:
-	// PlatformSchemaInAPIExport (below) upserts the Templates entry once the
-	// CachedResource identityHash is ready, and the Template controller adds
-	// per-template entries at runtime — ApplyAPIExport merges, so neither
-	// writer erases the other. The secrets claim rides in from the manifest
-	// (built-in type → no identityHash); tenantScoped auto-accept is a
-	// CatalogEntry/Enable concept and is not part of the kcp APIExport spec.
-	log.Printf("init: materializing APIExport shell %q", apiExportName)
-	export, err := install.APIExport(install.KCPDir())
-	if err != nil {
-		return fmt.Errorf("read generated APIExport: %w", err)
-	}
-	if err := sdkinstall.ApplyAPIExport(ctx, dynCl, export); err != nil {
-		return fmt.Errorf("materialize APIExport: %w", err)
-	}
-
-	// Bind grant: let any authenticated tenant bind this APIExport from their own
-	// workspace. Applied before the slice so the export reference is fully wired.
-	log.Printf("init: applying APIExport bind grant")
-	if err := sdkinstall.ApplyBindGrant(ctx, dynCl, apiExportName); err != nil {
-		return fmt.Errorf("apply bind grant: %w", err)
+	// The shipped APIResourceSchemas (instances, templates and one per
+	// instances/<verb> subresource, all from apigen), the DataPlaneEndpointSlice
+	// the subresource entries route through, the generated APIExport, its
+	// APIExportEndpointSlice and the bind grant — the same bootstrap every
+	// provider runs. The export is applied with templates on CRD storage; once
+	// the CachedResource identityHash is known, PlatformSchemaInAPIExport below
+	// re-points that one entry at virtual storage. The CatalogEntry is
+	// self-registered here too when RAILGRID_CATALOGENTRY_FILE names one (the
+	// chart's init container); the dev Makefile applies it through the admin
+	// path and leaves the variable unset.
+	workspacePath := os.Getenv("INFRASTRUCTURE_WORKSPACE_PATH")
+	log.Printf("init: bootstrapping schemas, APIExport %q, endpoint slices and bind grant", apiExportName)
+	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
+		Config:           adminConfig,
+		ExportName:       apiExportName,
+		WorkspacePath:    workspacePath,
+		KCPDir:           install.KCPDir(),
+		CatalogEntryFile: catalogEntryPath(),
+		DataPlaneURL:     strings.TrimSpace(os.Getenv("RAILGRID_DATAPLANE_URL")),
+	}); err != nil {
+		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}
 
 	// CachedResource MUST precede APIExport wiring: the APIExport's
@@ -117,8 +101,9 @@ func runInitCmd(ctx context.Context) error {
 
 	// The slice MUST carry the provider workspace path so kcp can resolve the
 	// export's logical cluster and publish endpoint URLs — otherwise kro never
-	// discovers the VW and tenant instances go unreconciled.
-	workspacePath := os.Getenv("INFRASTRUCTURE_WORKSPACE_PATH")
+	// discovers the VW and tenant instances go unreconciled. It is the
+	// kro-facing slice (named "infrastructure", what the kro chart is pointed
+	// at); the SDK bootstrap above wrote the export-named one beside it.
 	log.Printf("init: applying APIExportEndpointSlice (path=%q) for the provider's virtual-workspace controllers", workspacePath)
 	if err := install.PlatformAPIExportEndpointSlice(ctx, adminConfig, workspacePath); err != nil {
 		return fmt.Errorf("install APIExportEndpointSlice: %w", err)
@@ -136,20 +121,9 @@ func runInitCmd(ctx context.Context) error {
 		return fmt.Errorf("CachedResource identityHash empty (templates require virtual storage)")
 	}
 
-	log.Printf("init: registering platform schemas on APIExport (templates storage=%s)", storageLabel(templatesIdentityHash))
+	log.Printf("init: re-pointing the templates entry at CachedResource virtual storage (storage=%s)", storageLabel(templatesIdentityHash))
 	if err := install.PlatformSchemaInAPIExport(ctx, adminConfig, templatesIdentityHash); err != nil {
 		return fmt.Errorf("register APIExport schemas: %w", err)
-	}
-
-	// CatalogEntry self-registration: apply the provider's CatalogEntry into its
-	// own workspace (the Provider controller bound providers.railgrid.ai
-	// here). adminConfig.Host already targets the provider workspace. Empty
-	// RAILGRID_CATALOGENTRY_FILE → skip.
-	if f := os.Getenv("RAILGRID_CATALOGENTRY_FILE"); f != "" {
-		log.Printf("init: self-registering CatalogEntry from %s", f)
-		if err := sdkinstall.ApplyCatalogEntry(ctx, dynCl, f); err != nil {
-			return fmt.Errorf("apply CatalogEntry: %w", err)
-		}
 	}
 
 	// Seed catalog Templates so a fresh workspace renders a non-empty

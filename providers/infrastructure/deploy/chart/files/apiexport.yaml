@@ -10,16 +10,26 @@
 #
 # Written by provider-sdk/cmd/apiexportgen from two inputs:
 #   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
-#   spec.resources                        <- kcp apigen (hack/apigen.sh)
-# Regenerate with: make codegen-<provider>-provider. spec.permissionClaims
-# carries no identityHash: provider-sdk/install stamps one per installation for
-# first-party (*.railgrid.ai) claim groups.
+#   spec.resources                        <- kcp apigen (hack/apigen.sh), plus
+#                                            one "<resource>/<verb>" custom
+#                                            subresource per manifest.yaml
+#                                            spec.dataPlane.verbs[] entry and
+#                                            spec.actions[] entry, naming the
+#                                            schema apigen minted for the verb's
+#                                            "<Verb>Request" kind
+# Regenerate with: make codegen-<provider>-provider. No claim carries an
+# identityHash: kcp resolves a first-party claim per consumer workspace against
+# whatever export that workspace bound (PermissionClaimPolicy admits it).
 apiVersion: apis.kcp.io/v1alpha2
 kind: APIExport
 metadata:
   name: infrastructure.providers.railgrid.ai
 spec:
   permissionClaims:
+  - group: authorization.k8s.io
+    resource: subjectaccessreviews
+    verbs:
+    - create
   - defaultSelector:
       matchLabels:
         railgrid.ai/owner: infrastructure
@@ -28,4 +38,95 @@ spec:
     - get
     - list
     - watch
-  resources: []
+  resources:
+  - group: infrastructure.railgrid.ai
+    name: instances
+    schema: v260925-87f1980f.instances.infrastructure.railgrid.ai
+    storage:
+      crd: {}
+  - group: infrastructure.railgrid.ai
+    name: templates
+    schema: v260925-87f1980f.templates.infrastructure.railgrid.ai
+    storage:
+      crd: {}
+  - group: infrastructure.railgrid.ai
+    name: instances/env
+    schema: v260925-87f1980f.env.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai
+  - group: infrastructure.railgrid.ai
+    name: instances/exec
+    schema: v260925-87f1980f.exec.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai
+  - group: infrastructure.railgrid.ai
+    name: instances/log
+    schema: v260925-87f1980f.log.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai
+  - group: infrastructure.railgrid.ai
+    name: instances/process
+    schema: v260925-87f1980f.process.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai
+  - group: infrastructure.railgrid.ai
+    name: instances/proxy
+    schema: v260925-87f1980f.proxy.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai
+  - group: infrastructure.railgrid.ai
+    name: instances/restart
+    schema: v260925-87f1980f.restart.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai
+  - group: infrastructure.railgrid.ai
+    name: instances/runtime-status
+    schema: v260925-87f1980f.runtime-status.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai
+  - group: infrastructure.railgrid.ai
+    name: instances/sync
+    schema: v260925-87f1980f.sync.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai
+  - group: infrastructure.railgrid.ai
+    name: instances/workspace
+    schema: v260925-87f1980f.workspace.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai

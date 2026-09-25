@@ -87,7 +87,8 @@ func (s *Server) projectAssistantSkillSnapshot(ctx context.Context, scope worksp
 }
 
 // projectAssistantSkillSnapshotForIdentity loads the enabled catalog using the
-// caller-scoped authenticated provider catalog when the hub is configured.
+// workspace's provider catalog (fetched as the provider) when the hub is
+// configured.
 func (s *Server) projectAssistantSkillSnapshotForIdentity(ctx context.Context, scope workspace.Scope, id identity) (appskills.Snapshot, error) {
 	snapshot, err := s.projectAssistantSkillCatalogSnapshot(ctx, scope, id)
 	if err != nil {

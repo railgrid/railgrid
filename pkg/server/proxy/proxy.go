@@ -185,8 +185,19 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract bearer token.
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		writeUnauthorized(w)
-		return
+		// A browser cannot set Authorization on a WebSocket upgrade. The
+		// Kubernetes convention is to carry the bearer as a subprotocol
+		// (base64url.bearer.authorization.k8s.io.<base64url token>), which
+		// kcp's own authenticator understands; the hub reads the same
+		// subprotocol for its membership check and forwards the request
+		// untouched, so kcp authenticates it natively and echoes the
+		// protocol back the way kube-apiserver does.
+		if token, ok := websocketBearer(r); ok {
+			authHeader = "Bearer " + token
+		} else {
+			writeUnauthorized(w)
+			return
+		}
 	}
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
@@ -716,6 +727,35 @@ func parseServiceAccountToken(token string) (saTokenClaims, bool) {
 		return saTokenClaims{}, false
 	}
 	return claims, true
+}
+
+// websocketBearerProtocolPrefix is the Kubernetes WebSocket bearer subprotocol
+// (k8s.io/apiserver/pkg/authentication/request/websocket): the token follows
+// the prefix, base64url-encoded without padding.
+const websocketBearerProtocolPrefix = "base64url.bearer.authorization.k8s.io."
+
+// websocketBearer extracts the bearer a WebSocket upgrade carries as a
+// subprotocol. It reports false for a request that is not an upgrade or
+// offers no such protocol; the request is not modified.
+func websocketBearer(r *http.Request) (string, bool) {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return "", false
+	}
+	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, protocol := range strings.Split(header, ",") {
+			protocol = strings.TrimSpace(protocol)
+			if !strings.HasPrefix(protocol, websocketBearerProtocolPrefix) {
+				continue
+			}
+			encoded := strings.TrimPrefix(protocol, websocketBearerProtocolPrefix)
+			decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+			if err != nil || len(decoded) == 0 {
+				return "", false
+			}
+			return string(decoded), true
+		}
+	}
+	return "", false
 }
 
 func writeUnauthorized(w http.ResponseWriter) {

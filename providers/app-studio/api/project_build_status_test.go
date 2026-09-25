@@ -40,8 +40,13 @@ import (
 
 func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {
-			t.Fatalf("Authorization = %q", got)
+		// The MCP aggregate is the hub's own: reached as the provider, with
+		// the caller's name as a label.
+		if got := r.Header.Get("Authorization"); got != "Bearer provider-hub-token" {
+			t.Fatalf("Authorization = %q, want the provider's hub token", got)
+		}
+		if got := r.Header.Get("X-Railgrid-User"); got != "alice" {
+			t.Fatalf("X-Railgrid-User = %q, want alice", got)
 		}
 		var request struct {
 			Params struct {
@@ -64,11 +69,10 @@ func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, hubToken: "provider-hub-token"}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
-	req.Header.Set("Authorization", "Bearer caller-token")
-	run, err := s.fetchProjectBuildRun(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "70aed526")
+	run, err := s.fetchProjectBuildRun(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a", user: "alice"}, p, req, "70aed526")
 	if err != nil {
 		t.Fatalf("fetchProjectBuildRun: %v", err)
 	}
@@ -116,7 +120,7 @@ func TestDeclaredWorkflowPathIsPassedAsWorkflowFileName(t *testing.T) {
 		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
 	}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
-	req.Header.Set("Authorization", "Bearer caller-token")
+	req = stampTestCaller(req, testUserForToken("caller-token"))
 	if _, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "reviewed-sha"); err != nil {
 		t.Fatalf("getProjectBuildLogs: %v", err)
 	}
@@ -161,7 +165,7 @@ func TestDeclaredWorkflowErrorDoesNotFallBackToCompatibilityNames(t *testing.T) 
 		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
 	}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
-	req.Header.Set("Authorization", "Bearer caller-token")
+	req = stampTestCaller(req, testUserForToken("caller-token"))
 	if _, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "reviewed-sha"); err == nil {
 		t.Fatal("getProjectBuildLogs succeeded, want declared workflow error")
 	}
@@ -209,7 +213,7 @@ func TestProjectBuildWorkflowUsesCanonicalWithoutLegacyFallback(t *testing.T) {
 			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
 			p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 			req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
-			req.Header.Set("Authorization", "Bearer caller-token")
+			req = stampTestCaller(req, testUserForToken("caller-token"))
 			raw, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "  reviewed-sha  ")
 			if err != nil {
 				t.Fatalf("getProjectBuildLogs: %v", err)
@@ -263,7 +267,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnStatusError(t *testing.T) {
 	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
-	req.Header.Set("Authorization", "Bearer caller-token")
+	req = stampTestCaller(req, testUserForToken("caller-token"))
 	raw, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "reviewed-sha")
 	if err != nil {
 		t.Fatalf("getProjectBuildLogs: %v", err)
@@ -315,7 +319,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnRebuildError(t *testing.T) {
 	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodPost, "/rebuild", nil)
-	req.Header.Set("Authorization", "Bearer caller-token")
+	req = stampTestCaller(req, testUserForToken("caller-token"))
 	if _, err := s.rebuildProject(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "  reviewed-sha  "); err != nil {
 		t.Fatalf("rebuildProject: %v", err)
 	}
@@ -634,7 +638,7 @@ func TestResolveProjectComponentImagesKeepsPackagesBoundToProjectRepository(t *t
 		proxy.Add(codePackagesGVR, &packages[i])
 	}
 	proxy.Add(codeRepositoryCommitsGVR, &commit)
-	scope, err := proxy.Client().For("cluster-id", "caller-token")
+	scope, err := proxy.Client().For("cluster-id")
 	if err != nil {
 		t.Fatalf("create tenant scope: %v", err)
 	}

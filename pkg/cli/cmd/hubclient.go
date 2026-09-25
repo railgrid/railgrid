@@ -288,12 +288,6 @@ func workspaceMatches(ws workspaceView, query, cluster string) bool {
 	return ws.UUID == query || (ws.DisplayName != "" && strings.EqualFold(ws.DisplayName, query))
 }
 
-// appStudioURL is the App Studio provider's REST base (routes are mounted
-// under /api/projects).
-func (s *hubSession) appStudioURL() string {
-	return s.Hub + "/services/providers/app-studio"
-}
-
 // bearerToken returns the raw bearer the kubeconfig credentials produce. For
 // exec-plugin (OIDC) logins rest.Config.BearerToken is empty, so the header is
 // captured from the client-go transport stack instead.

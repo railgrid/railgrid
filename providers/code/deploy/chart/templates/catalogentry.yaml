@@ -47,6 +47,18 @@ data:
       apiExport:
         name: "code.providers.railgrid.ai"
         permissionClaims:
+          # Every provider that serves a custom subresource needs this one claim:
+          # on the shard-forwarded path there is no caller bearer, so the provider
+          # runs a SubjectAccessReview for the stamped caller through its own
+          # APIExport virtual workspace, and kcp serves that builtin there only for
+          # an export that claims it (hack/verify-provider-contract.mjs
+          # subresource-access-claim). Built-in review API: no identityHash, verb
+          # create only; tenantScoped because the VW confines each review to the
+          # tenant's OWN workspace.
+          - group: authorization.k8s.io
+            resource: subjectaccessreviews
+            verbs: [create]
+            tenantScoped: true
           - resource: secrets
             verbs: [get, list, watch, create, update, patch, delete]
             tenantScoped: true
@@ -72,8 +84,10 @@ data:
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
-      # Two verbs that are NOT actions. stage_snapshot and stage_commit_bundle are
-      # served on the same actions route as the catalogued verbs below, but their
+      # Two verbs that are NOT actions. stage-snapshot and stage-commit-bundle are
+      # served by the same actions handler as the catalogued verbs below, at the
+      # same kcp custom-subresource path (/clusters/{id}/apis/code.railgrid.ai/
+      # v1alpha1/repositories/{name}/{verb}), but their
       # bodies (a 25 MiB git bundle, a 48 MiB source tree) cannot be described under
       # limits.maxInputBytes, which the CatalogEntry API caps at 1 MiB — so they are
       # deliberately absent from spec.actions (docs/provider-actions.md,
@@ -87,23 +101,24 @@ data:
       # could ever be given them, so only a caller whose workspace RBAC already
       # allowed them could stage an upload at all. Declaring them grants nothing and
       # serves nothing; it makes the coordinate machine-readable so it CAN be
-      # granted. The two gates in actions/server.go are unchanged.
+      # granted. kcp authorizes the coordinate and actions/server.go gates on
+      # visibility exactly as for a catalogued action.
       dataPlane:
         verbs:
           - resource: repositories
-            verb: stage_snapshot
-            description: "Stage a git bundle and return the opaque bundleRef that the catalogued prepare_snapshot and publish_snapshot then name. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
+            verb: stage-snapshot
+            description: "Stage a git bundle and return the opaque bundleRef that the catalogued prepare-snapshot and publish-snapshot then name. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
             stream: false
             readOnly: false
           - resource: repositories
-            verb: stage_commit_bundle
+            verb: stage-commit-bundle
             description: "Stage a source tree and return the bundleRef/bundleDigest pair the catalogued commit names instead of inline files. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
             stream: false
             readOnly: false
       # Fifteen catalogued actions: fourteen bound to a Repository and one
-      # (mint_registry_token) to a Connection. The provider also serves two
-      # deliberately uncatalogued verbs on the same route, stage_snapshot and
-      # stage_commit_bundle: their bodies (a 25 MiB git bundle, a 48 MiB source
+      # (mint-registry-token) to a Connection. The provider also serves two
+      # deliberately uncatalogued verbs at the same path shape, stage-snapshot and
+      # stage-commit-bundle: their bodies (a 25 MiB git bundle, a 48 MiB source
       # tree) cannot be declared under limits.maxInputBytes, which the
       # CatalogEntry API caps at 1 MiB. See docs/provider-actions.md,
       # "Uncatalogued large-upload verbs". Both of those verbs ARE declared,
@@ -173,7 +188,7 @@ data:
         consent:
           required: false
         schemaDigest: sha256:83cae0fe851319cfc23544f9c6d202a4355e0878fa18e990bebfad2786d7bfe2
-      - id: branch_head/v1
+      - id: branch-head/v1
         displayName: Branch head
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
@@ -218,7 +233,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: find_pull_request/v1
+      - id: find-pull-request/v1
         displayName: Find pull request
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
@@ -265,7 +280,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: pull_request/v1
+      - id: pull-request/v1
         displayName: Pull request
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
@@ -306,7 +321,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: create_pull_request/v1
+      - id: create-pull-request/v1
         displayName: Create pull request
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
@@ -357,7 +372,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: update_pull_request/v1
+      - id: update-pull-request/v1
         displayName: Update pull request
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
@@ -490,7 +505,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: add_comment/v1
+      - id: add-comment/v1
         displayName: Add comment
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
@@ -531,7 +546,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: reply_to_review/v1
+      - id: reply-to-review/v1
         displayName: Reply to review
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
@@ -574,7 +589,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: prepare_snapshot/v1
+      - id: prepare-snapshot/v1
         displayName: Prepare snapshot
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
@@ -615,7 +630,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: publish_snapshot/v1
+      - id: publish-snapshot/v1
         displayName: Publish snapshot
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
@@ -669,7 +684,7 @@ data:
         description: Write and delete files in a managed Repository. The provider stores
           the source bundle and creates a RepositoryCommit; the result names that
           object, which the caller watches for the landed commit. Files over the
-          1 MiB input ceiling are uploaded with stage_commit_bundle and named here
+          1 MiB input ceiling are uploaded with stage-commit-bundle and named here
           as bundleRef.
         boundResource:
           apiVersion: code.railgrid.ai/v1alpha1
@@ -752,7 +767,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: mint_registry_token/v1
+      - id: mint-registry-token/v1
         displayName: Mint a registry pull token
         description: Issue a short-lived image-pull credential for the connection's
           container registry. For a GitHub App connection the token is issued with
@@ -812,7 +827,7 @@ data:
           maxResultItems: 50
         consent:
           required: false
-      - id: mint_clone_token/v1
+      - id: mint-clone-token/v1
         displayName: Mint a repository clone token
         description: Issue a short-lived, read-only git clone credential for this repository.
           For a GitHub App connection the token is issued with contents:read alone; the

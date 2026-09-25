@@ -39,13 +39,6 @@ export interface AdminProvider {
   onboarded: boolean
   builtin: boolean
 }
-export interface RootIdentity {
-  group: string
-  resource: string
-  identityHash: string
-  export: string
-  path: string
-}
 // KubeconfigServer selects which hub address a downloaded provider kubeconfig
 // points at. 'internal' is the hub's in-cluster Service — correct for a provider
 // installed by Helm alongside the hub, and it keeps that provider's traffic off
@@ -56,7 +49,6 @@ export const useAdminStore = defineStore('admin', () => {
   const users = ref<AdminUser[]>([])
   const orgs = ref<AdminOrg[]>([])
   const providers = ref<AdminProvider[]>([])
-  const identities = ref<RootIdentity[]>([])
   const loading = ref(false)
   // True only after all admin collections have been read successfully at
   // least once. Keep this true during later refreshes so callers can render
@@ -86,7 +78,6 @@ export const useAdminStore = defineStore('admin', () => {
     users.value = []
     orgs.value = []
     providers.value = []
-    identities.value = []
     kubeconfigServers.value = []
     isAdmin.value = null
     loaded.value = false
@@ -146,17 +137,15 @@ export const useAdminStore = defineStore('admin', () => {
     error.value = null
     forbidden.value = false
     try {
-      const [u, o, p, i] = await Promise.all([
+      const [u, o, p] = await Promise.all([
         get<AdminUser>('/api/admin/users', revision),
         get<AdminOrg>('/api/admin/organizations', revision),
         get<AdminProvider>('/api/admin/providers', revision),
-        get<RootIdentity>('/api/admin/identities', revision),
       ])
       if (!current()) return
       users.value = u
       orgs.value = o
       providers.value = p
-      identities.value = i
       loaded.value = true
     } catch (e) {
       if (!current()) return
@@ -239,5 +228,5 @@ export const useAdminStore = defineStore('admin', () => {
     URL.revokeObjectURL(url)
   }
 
-  return { users, orgs, providers, identities, loading, loaded, forbidden, error, isAdmin, kubeconfigServers, checkAccess, refresh, createProvider, deleteProvider, downloadProviderKubeconfig }
+  return { users, orgs, providers, loading, loaded, forbidden, error, isAdmin, kubeconfigServers, checkAccess, refresh, createProvider, deleteProvider, downloadProviderKubeconfig }
 })

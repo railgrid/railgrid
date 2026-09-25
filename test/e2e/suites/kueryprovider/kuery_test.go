@@ -253,9 +253,32 @@ func providerPost(t *testing.T, path, body string, headers map[string]string) (i
 	return resp.StatusCode, out
 }
 
-// runPath is the provider's one tenant route.
+// runPath is the provider's one tenant route: the kcp custom subresource
+// savedviews/run on kuery's APIExport, a kube path on the hub's kcp front
+// door. There is no hub-proxied /services/providers/kuery/dataplane spelling.
 func runPath(cluster, view string) string {
-	return "/dataplane/clusters/" + cluster + "/savedviews/" + view + "/run"
+	return "/clusters/" + cluster + "/apis/" + apiExportName + "/v1alpha1/savedviews/" + view + "/run"
+}
+
+// hubPost issues a POST against the hub's kcp front door. An empty token sends
+// no Authorization at all.
+func hubPost(t *testing.T, path, body, token string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, hubURL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, out
 }
 
 // TestACatalogProvisioning asserts the kcp-side artefacts provisioning leaves
@@ -465,81 +488,90 @@ func TestEDeletedRoutesAreGone(t *testing.T) {
 	}
 }
 
-// TestFQueryVerbGates is the tenant-isolation boundary, checked against the
-// provider pod directly so the hub proxy is not what is being trusted.
+// TestFQueryVerbGates is the tenant-isolation boundary on the verb route.
 //
-// Every refusal is the same 404: a caller must not be able to use the status
-// to learn whether a SavedView exists in a workspace they cannot see. The one
-// exception is a request that contradicts itself — a path cluster that
-// disagrees with the header — which is a 400, because retrying it unchanged
-// cannot succeed.
+// The run verb is a kcp custom subresource, so it is reached on the hub's kcp
+// front door and kcp authenticates the caller, authorizes the verb with RBAC
+// and forwards the request to the provider with the caller's identity stamped
+// in requestheader headers. Two things are checked: through the hub, every
+// refusal a caller could probe with is a non-disclosing 403/404 and a GET
+// never runs a query; and straight at the pod — where the hub is not what is
+// being trusted — a request with no stamped identity is refused whatever
+// bearer it carries, because a bearer is not a caller on this path and the
+// shard never forwards one.
 func TestFQueryVerbGates(t *testing.T) {
 	cluster := loginStaticTokenAndGetCluster(t)
 	const body = `{"input":{}}`
 
-	t.Run("no bearer is 401", func(t *testing.T) {
-		status, out := providerPost(t, runPath(cluster, "any-view"), body, map[string]string{
-			"X-Railgrid-Cluster": cluster,
-		})
-		if status != http.StatusUnauthorized {
-			t.Errorf("no bearer = %d, want 401; body=%s", status, truncate(out))
-		}
-	})
-
-	t.Run("a workspace path in the cluster position is 400", func(t *testing.T) {
-		// A path like root:railgrid:orgs:acme is a valid-looking tenant
-		// reference but not a logical-cluster ID. The grammar refuses it here
-		// rather than minting it into a URL the hub proxy answers with 403.
-		status, out := providerPost(t, runPath("root:railgrid:orgs:acme", "any-view"), body, map[string]string{
-			"Authorization": "Bearer " + staticToken,
-		})
-		if status != http.StatusBadRequest {
-			t.Errorf("workspace path in the path = %d, want 400; body=%s", status, truncate(out))
-		}
-	})
-
-	t.Run("a header disagreeing with the path is 400", func(t *testing.T) {
-		status, out := providerPost(t, runPath(cluster, "any-view"), body, map[string]string{
-			"Authorization":      "Bearer " + staticToken,
-			"X-Railgrid-Cluster": "zzzforeign000000",
-		})
-		if status != http.StatusBadRequest {
-			t.Errorf("cluster mismatch = %d, want 400; body=%s", status, truncate(out))
+	t.Run("no bearer on the front door is refused", func(t *testing.T) {
+		status, out := hubPost(t, runPath(cluster, "any-view"), body, "")
+		if status != http.StatusUnauthorized && status != http.StatusForbidden {
+			t.Errorf("no bearer = %d, want 401 or 403; body=%s", status, truncate(out))
 		}
 	})
 
 	t.Run("a view that does not exist is 404, not 403", func(t *testing.T) {
-		status, out := providerPost(t, runPath(cluster, "no-such-view"), body, map[string]string{
-			"Authorization":      "Bearer " + staticToken,
-			"X-Railgrid-Cluster": cluster,
-		})
+		// kcp authorized the verb (the caller administers this workspace) and
+		// forwarded; the provider's gate finds no such view and says so with
+		// the contract's non-disclosing status.
+		status, out := hubPost(t, runPath(cluster, "no-such-view"), body, staticToken)
 		if status != http.StatusNotFound {
 			t.Errorf("missing view = %d, want 404; body=%s", status, truncate(out))
 		}
 	})
 
-	t.Run("a foreign workspace is 404", func(t *testing.T) {
-		// The bearer is scoped to its own workspace, so both gates fail in a
-		// workspace it has no access to — and the answer is indistinguishable
-		// from "no such view".
-		status, out := providerPost(t, runPath("zzzforeign000000", "any-view"), body, map[string]string{
-			"Authorization":      "Bearer " + staticToken,
-			"X-Railgrid-Cluster": "zzzforeign000000",
-		})
-		if status != http.StatusNotFound {
-			t.Errorf("foreign workspace = %d, want 404; body=%s", status, truncate(out))
+	t.Run("a foreign workspace is refused", func(t *testing.T) {
+		// The caller has no standing in a cluster that is not theirs, so kcp
+		// refuses before the provider is involved — and the answer must not
+		// say whether the view, or the workspace, exists.
+		status, out := hubPost(t, runPath("zzzforeign000000", "any-view"), body, staticToken)
+		if status != http.StatusForbidden && status != http.StatusNotFound {
+			t.Errorf("foreign workspace = %d, want 403 or 404; body=%s", status, truncate(out))
+		}
+		if status == http.StatusOK {
+			t.Errorf("foreign workspace answered 200: %s", truncate(out))
 		}
 	})
 
 	t.Run("GET is not a query", func(t *testing.T) {
-		status, out := providerGetWithHeaders(t, runPath(cluster, "any-view"), map[string]string{
-			"Authorization":      "Bearer " + staticToken,
-			"X-Railgrid-Cluster": cluster,
+		// kcp checks the HTTP method as the RBAC verb and the grant is "*", so
+		// the method discipline is the provider's: dataplane.Serve refuses a
+		// GET with 405. A kcp that refuses it first (403/404) is equally fine;
+		// what must not happen is a query running on a GET.
+		status, out := hubGet(t, runPath(cluster, "any-view"))
+		if status == http.StatusOK {
+			t.Errorf("GET on the run verb = 200, want a refusal; body=%s", truncate(out))
+		}
+		if status != http.StatusMethodNotAllowed && status != http.StatusNotFound && status != http.StatusForbidden {
+			t.Errorf("GET on the run verb = %d, want 405, 404 or 403; body=%s", status, truncate(out))
+		}
+	})
+
+	t.Run("straight at the pod a bearer is not a caller", func(t *testing.T) {
+		// The kube path exists on the pod (the shard forwards to it), but the
+		// caller is the identity kcp stamps, never a bearer. Anonymous is not
+		// a fallback and the provider's own identity is never a substitute.
+		status, out := providerPost(t, runPath(cluster, "any-view"), body, map[string]string{
+			"Authorization": "Bearer " + staticToken,
 		})
-		// Either the gates refuse it first (404) or Serve does (405); what must
-		// not happen is a query running on a GET.
-		if status != http.StatusMethodNotAllowed && status != http.StatusNotFound {
-			t.Errorf("GET on the run verb = %d, want 405 or 404; body=%s", status, truncate(out))
+		if status != http.StatusUnauthorized {
+			t.Errorf("bearer with no stamped caller = %d, want 401; body=%s", status, truncate(out))
+		}
+	})
+
+	t.Run("the hub-proxied grammar does not exist", func(t *testing.T) {
+		// Neither the hub nor the provider serves a verb under
+		// /services/providers/kuery/dataplane/… any more. The hub refuses it
+		// outright; the pod has no such route and falls through to the portal
+		// bundle. Whatever the status, no JSON envelope may come back.
+		legacy := "/dataplane/clusters/" + cluster + "/savedviews/any-view/run"
+		status, out := hubPost(t, "/services/providers/kuery"+legacy, body, staticToken)
+		if status == http.StatusOK {
+			t.Errorf("hub still answers the legacy grammar with 200: %s", truncate(out))
+		}
+		status, out = providerPost(t, legacy, body, map[string]string{"Authorization": "Bearer " + staticToken})
+		if status == http.StatusOK && bytes.Contains(out, []byte(`"requestID"`)) {
+			t.Errorf("provider still answers the legacy grammar with an envelope: %s", truncate(out))
 		}
 	})
 }

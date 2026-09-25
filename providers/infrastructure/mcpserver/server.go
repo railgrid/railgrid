@@ -7,10 +7,13 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // Package mcpserver exposes the infrastructure provider's MCP
-// surface. The hub backend proxy forwards /services/providers/kro-
-// multicluster/mcp to this handler, so MCP-capable clients (Claude,
-// Cursor, etc.) can drive the broker without going through the
-// browser-only catalog UI.
+// surface. The hub backend proxy forwards
+// /services/providers/infrastructure/mcp to this handler (and the hub's MCP
+// aggregate federates it), so MCP-capable clients (Claude, Cursor, etc.) can
+// drive the broker without going through the browser-only catalog UI. MCP is
+// the one route class that still carries the caller's bearer; the dev_* tools
+// spend it on the hub front door, where the provider's data-plane verbs live
+// as kcp custom subresources.
 //
 // External providers can NOT plug into the in-tree aggregator
 // (providers/mcp/aggregate/registry.go is init()-only). We therefore
@@ -24,6 +27,8 @@
 package mcpserver
 
 import (
+	"context"
+	"io"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,17 +36,29 @@ import (
 	"github.com/railgrid/provider-infrastructure/tenant"
 )
 
+// VerbCaller reaches this provider's own data-plane verbs the one way they
+// exist: as kcp custom subresources on the hub front door
+// (provider-sdk/dataplane.SubresourcePath), as the caller, with the bearer the
+// hub's MCP aggregate forwarded. kcp authorizes the verb with the caller's
+// RBAC and forwards it to the serving provider with the caller's identity
+// stamped — the same gate every other consumer of the verb goes through.
+// *tenant.ClientFactory implements it.
+type VerbCaller interface {
+	DoVerb(ctx context.Context, token, method, path string, body io.Reader, headers http.Header) (*http.Response, error)
+}
+
 // Deps is what the MCP transport needs. Templates + instances are CRD-based
 // against the tenant workspace (see catalog.go), so the per-tenant kcp client
 // factory is the main dependency — no RGD/kro-cluster client.
 type Deps struct {
 	Tenant *tenant.ClientFactory
-	// DataPlane is the provider's own /dataplane/* subresource handler
-	// (serve_dataplane.go), shared so the dev_* tools can drive sync/log/
-	// restart verbs in-process — same caller auth, contract resolution, and
-	// runtime proxying as the hub HTTP route. nil (REST-only/dev, or no
-	// runtime cluster) disables the dev tools with a clear error.
-	DataPlane http.Handler
+	// Verbs is how the dev_* tools drive sync/log/restart/exec on an
+	// instance: over the hub front door, as the caller. It is the same
+	// authorization, contract resolution and runtime proxying every consumer
+	// of the verb gets, because it IS the verb. nil (no runtime cluster on
+	// this deployment, so no data plane) disables the dev tools with a clear
+	// error.
+	Verbs VerbCaller
 }
 
 // NewHandler returns the streamable-HTTP MCP handler to mount at /mcp.

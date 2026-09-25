@@ -75,7 +75,7 @@ what make internal traffic impossible today.
 ### 1. No production data-plane verb reaches a workload's own port
 
 No shipped template declares a `proxy` verb. `application.yaml`,
-`simple-webapp.yaml`, and `worker.yaml` declare `status` + per-component
+`simple-webapp.yaml`, and `worker.yaml` declare `runtime-status` + per-component
 `sync/restart/env/log`, all pointed at a **`control`** Service that exists only
 in development mode (`backend/kro/devoverlay.go:243-268`); the template says so
 outright: "in production mode these verbs answer 409 instance-not-ready — the
@@ -334,8 +334,11 @@ pointing at the instance's own Service (not a dev control sidecar), so a caller
 can reach:
 
 ```
-{hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/searxngs/{name}/proxy/search?q=…
+{hub}/clusters/{clusterID}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/proxy/search?q=…
 ```
+
+(the `proxy` verb as a kcp custom subresource on `instances`; the flattened
+Instance API replaced the per-template `searxngs` plural)
 
 The agents provider's `websearch` connection then takes an **instance
 reference** instead of a URL, and the search client calls the data-plane path.

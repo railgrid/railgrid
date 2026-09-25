@@ -265,7 +265,7 @@ Data-plane verbs (through the hub, as you; production instances answer 409).
 `railgrid sandbox` ([cli.md](cli.md)) wraps them:
 
 ```
-GET  /services/providers/infrastructure/dataplane/clusters/{cluster}/instances/{name}/status
+GET  /services/providers/infrastructure/dataplane/clusters/{cluster}/instances/{name}/runtime-status
 GET  …/instances/{name}/components/{c}/log        (stream; bound it with timeout)
 GET  …/instances/{name}/components/{c}/process    → {running, port, portReachable, sourceRevision, sourceDigest, syncEncodings[], …}
 POST …/instances/{name}/components/{c}/sync       {files[{path,content,encoding?}], deletePaths[], restart ""|auto|always, sourceRevision?, sourceDigest?}

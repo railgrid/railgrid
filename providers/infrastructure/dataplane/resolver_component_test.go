@@ -42,8 +42,8 @@ func applicationContract() *infrav1alpha1.TemplateDataPlane {
 		RuntimeNamespacePath: "status.runtimeNamespace",
 		TokenSecretPath:      "status.controlSecretRef",
 		Endpoints: map[string]infrav1alpha1.TemplateDataPlaneEndpoint{
-			"status": {FromStatus: true},
-			"proxy":  {ServicePath: "status.previewServiceRef", Port: "preview", UpstreamPath: "/", Methods: []string{"GET", "POST", "HEAD"}, Upgrade: true},
+			"runtime-status": {FromStatus: true},
+			"proxy":          {ServicePath: "status.previewServiceRef", Port: "preview", UpstreamPath: "/", Methods: []string{"GET", "POST", "HEAD"}, Upgrade: true},
 		},
 		Components: map[string]infrav1alpha1.TemplateDataPlaneComponent{
 			"frontend": {Endpoints: map[string]infrav1alpha1.TemplateDataPlaneEndpoint{

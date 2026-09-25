@@ -65,11 +65,17 @@ type codeCommitHub struct {
 func (h *codeCommitHub) serve(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The kube path of the claimed verb on App Studio's export virtual
+		// workspace: …/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb},
+		// no contract version, and the provider's own credential.
 		segments := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(segments) < 2 {
-			t.Fatalf("unexpected action path %q", r.URL.Path)
+		if len(segments) != 8 || segments[0] != "clusters" || segments[2] != "apis" || segments[3] != "code.railgrid.ai" || segments[5] != "repositories" {
+			t.Fatalf("unexpected verb path %q", r.URL.Path)
 		}
-		call := codeCommitActionCall{Verb: segments[len(segments)-2]}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("verb call carried Authorization %q; the provider HTTP client authenticates", got)
+		}
+		call := codeCommitActionCall{Verb: segments[len(segments)-1]}
 		var body struct {
 			Input json.RawMessage `json:"input"`
 		}
@@ -132,9 +138,10 @@ func testCodeRepository(name, uid string) *unstructured.Unstructured {
 	return object
 }
 
-// newCommitActionServer wires a Server whose commit tool reaches hub: the Code
-// provider is resolved from the workspace binding (faked), the Repository is
-// readable as the caller, and the action route answers on hub.
+// newCommitActionServer wires a Server whose commit tool reaches hub as the
+// provider: hub stands in for App Studio's export virtual workspace, the
+// Repository is readable through the (faked) provider client, and the claimed
+// verb answers on hub.
 func newCommitActionServer(t *testing.T, workspaces *workspace.FileStore, hub string, objects ...runtime.Object) *Server {
 	t.Helper()
 	if len(objects) == 0 {
@@ -146,6 +153,7 @@ func newCommitActionServer(t *testing.T, workspaces *workspace.FileStore, hub st
 		objects...,
 	)
 	server := NewWithWorkspace(nil, nil, workspaces, hub, false)
+	server.callers = newTestCallers(nil, hub)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
 	server.tenantProviders = testProviders(testCommitProvider)
@@ -154,13 +162,14 @@ func newCommitActionServer(t *testing.T, workspaces *workspace.FileStore, hub st
 }
 
 func testCommitIdentity() identity {
-	return identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", token: "caller-token"}
+	return identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
 }
 
-// TestCommitToolCallsTheActionAsTheCaller is the shape of Cut D.1 on the
-// assistant side: the human's bearer, the action route, the Repository pinned
-// by UID, and a RepositoryCommit name to follow rather than a landed SHA.
-func TestCommitToolCallsTheActionAsTheCaller(t *testing.T) {
+// TestCommitToolCallsTheVerbAsTheProvider is the shape of Cut D.1 on the
+// assistant side: the claimed verb through this provider's export, the
+// Repository pinned by UID, and a RepositoryCommit name to follow rather than
+// a landed SHA.
+func TestCommitToolCallsTheVerbAsTheProvider(t *testing.T) {
 	ctx := context.Background()
 	hub := &codeCommitHub{}
 	upstream := hub.serve(t)

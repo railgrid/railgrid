@@ -10,16 +10,26 @@
 #
 # Written by provider-sdk/cmd/apiexportgen from two inputs:
 #   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
-#   spec.resources                        <- kcp apigen (hack/apigen.sh)
-# Regenerate with: make codegen-<provider>-provider. spec.permissionClaims
-# carries no identityHash: provider-sdk/install stamps one per installation for
-# first-party (*.railgrid.ai) claim groups.
+#   spec.resources                        <- kcp apigen (hack/apigen.sh), plus
+#                                            one "<resource>/<verb>" custom
+#                                            subresource per manifest.yaml
+#                                            spec.dataPlane.verbs[] entry and
+#                                            spec.actions[] entry, naming the
+#                                            schema apigen minted for the verb's
+#                                            "<Verb>Request" kind
+# Regenerate with: make codegen-<provider>-provider. No claim carries an
+# identityHash: kcp resolves a first-party claim per consumer workspace against
+# whatever export that workspace bound (PermissionClaimPolicy admits it).
 apiVersion: apis.kcp.io/v1alpha2
 kind: APIExport
 metadata:
   name: code.providers.railgrid.ai
 spec:
   permissionClaims:
+  - group: authorization.k8s.io
+    resource: subjectaccessreviews
+    verbs:
+    - create
   - defaultSelector:
       matchLabels:
         railgrid.ai/owner: code
@@ -73,3 +83,156 @@ spec:
     schema: v260802-8d0bfc17.repositorycommits.code.railgrid.ai
     storage:
       crd: {}
+  - group: code.railgrid.ai
+    name: connections/mint-registry-token
+    schema: v260924-87f1980f.mint-registry-token.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/add-comment
+    schema: v260924-87f1980f.add-comment.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/branch-head
+    schema: v260924-87f1980f.branch-head.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/branches
+    schema: v260924-87f1980f.branches.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/comments
+    schema: v260924-87f1980f.comments.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/commit
+    schema: v260924-87f1980f.commit.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/create-pull-request
+    schema: v260924-87f1980f.create-pull-request.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/feedback
+    schema: v260924-87f1980f.feedback.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/find-pull-request
+    schema: v260924-87f1980f.find-pull-request.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/mint-clone-token
+    schema: v260924-87f1980f.mint-clone-token.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/prepare-snapshot
+    schema: v260924-87f1980f.prepare-snapshot.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/publish-snapshot
+    schema: v260924-87f1980f.publish-snapshot.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/pull-request
+    schema: v260924-87f1980f.pull-request.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/reply-to-review
+    schema: v260924-87f1980f.reply-to-review.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/stage-commit-bundle
+    schema: v260924-87f1980f.stage-commit-bundle.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/stage-snapshot
+    schema: v260924-87f1980f.stage-snapshot.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/update-pull-request
+    schema: v260924-87f1980f.update-pull-request.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai

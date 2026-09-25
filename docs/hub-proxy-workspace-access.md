@@ -6,6 +6,14 @@
 **Reads as a delta on:** [organizations.md](./organizations.md) (decision O-10), [provider-connectivity-contract.md](./provider-connectivity-contract.md)
 **Companion:** [app-studio-sandbox-runtime.md](./app-studio-sandbox-runtime.md) (the provider that hit this first)
 
+> **Note (2026-09-25).** The `X-Railgrid-Cluster` header the backend proxy
+> injects now reaches a provider only on the non-kube routes (MCP, OAuth,
+> webhooks, health). Every provider verb is a kcp custom subresource served
+> through this kcp proxy at `/clusters/{id}/apis/…`, so the membership gate
+> described here is the one gate in front of provider data planes as well as
+> CR traffic. Browser WebSocket upgrades present the bearer as the
+> `base64url.bearer.authorization.k8s.io.<token>` subprotocol (`websocketBearer`).
+
 ---
 
 ## Why this doc exists

@@ -63,11 +63,13 @@ const TokenTTL = 24 * 60 * 60 // seconds; converted where the request is built
 // DataPlaneVerbs are the data-plane verbs an edge's own agent is granted
 // on its own edge object, expressed the way the contract spells a verb:
 // "create" on the virtual subresource {resource}/{verb}, never a
-// provider-invented verb string. The hub materializes every data-plane grant
-// as exactly that rule (pkg/hub/serviceaccounts/workload_identity.go), and its
-// identity policy will only mint one for a verb the owning provider declares
-// (clause C), so this list and manifest.yaml's spec.dataPlane.verbs are the
-// same list seen from two sides.
+// provider-invented verb string. The hub materializes a grant on a verb
+// coordinate as the wildcard verb (pkg/hub/identity/policy.go): kcp maps the
+// HTTP method onto the RBAC verb when it authorizes the custom subresource, so
+// the coordinate is the capability and the method is transport detail. The
+// policy will only mint one for a verb the owning provider declares (clause
+// C), so this list and manifest.yaml's spec.dataPlane.verbs are the same list
+// seen from two sides.
 //
 //   - proxy            the agent presents it on every reconnect (class (f))
 //   - agent-token      the agent refreshes its own credential with it
@@ -116,16 +118,17 @@ func Rules(gvr schema.GroupVersionResource, edgeName string) []rbacv1.PolicyRule
 		subresources = append(subresources, gvr.Resource+"/"+verb)
 	}
 	return []rbacv1.PolicyRule{
-		// Gate 1 of every data-plane call the agent makes is a real GET of its
-		// own edge, so the identity must be able to read exactly that object
-		// and no other.
+		// The gate of every data-plane call the agent makes reviews whether
+		// the caller may GET its own edge, so the identity must be able to
+		// read exactly that object and no other.
 		{
 			APIGroups:     []string{gvr.Group},
 			Resources:     []string{gvr.Resource},
 			ResourceNames: []string{edgeName},
 			Verbs:         []string{"get"},
 		},
-		// Gate 2: the declared verbs, name-scoped.
+		// The declared verbs, name-scoped; kcp authorizes each call on the
+		// coordinate before forwarding it.
 		{
 			APIGroups:     []string{gvr.Group},
 			Resources:     subresources,

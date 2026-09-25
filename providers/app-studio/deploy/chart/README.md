@@ -46,9 +46,7 @@ first-party kinds instead, which meant pinning the serving APIExport's
 every consuming workspace at once, a single install could not serve a workspace
 that had bound its own copy of a dependency. Acting inside the workspace
 through the workspace's own `APIBinding`s has no such limit: it reaches
-whichever copy the tenant enabled, platform or self-hosted. If you are
-upgrading from a release that took `apiExport.identityHashes`, drop the value —
-it no longer exists.
+whichever copy the tenant enabled, platform or self-hosted.
 
 ## Values
 

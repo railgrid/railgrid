@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-sdk/dataplane"
 	"sigs.k8s.io/yaml"
 )
@@ -78,9 +79,10 @@ func missing(a, b []string) []string {
 	return out
 }
 
-// Every declared verb has to survive a round trip through the grammar: the
-// hub renders a consumer's coordinate with dataplane.ProviderPath, and a verb
-// that does not round-trip is one no consumer can call however it is granted.
+// Every declared verb has to survive a round trip through the grammar: a
+// consumer renders the coordinate with dataplane.SubresourcePath, kcp routes
+// it as the custom subresource "{resource}/{verb}", and a verb that does not
+// round-trip is one no consumer can call however it is granted.
 func TestEveryVerbIsAddressable(t *testing.T) {
 	const cluster = "rgl3jcl2cfl3xa5p"
 	for resource, byVerb := range verbIndex {
@@ -89,14 +91,14 @@ func TestEveryVerbIsAddressable(t *testing.T) {
 				t.Errorf("%s/%s has no handler", resource, verb)
 			}
 			request := dataplane.Request{ClusterID: cluster, Resource: resource, Name: "demo", Verb: verb}
-			path, err := request.Path(dataplane.DataplaneRoot)
+			path, err := verbPath(request)
 			if err != nil {
 				t.Errorf("%s/%s is not addressable: %v", resource, verb, err)
 				continue
 			}
-			parsed, ok := dataplane.ParsePath(dataplane.DataplaneRoot, path)
-			if !ok || parsed != request {
-				t.Errorf("%s/%s does not round-trip: %q -> %+v (ok=%v)", resource, verb, path, parsed, ok)
+			parsed, err := dataplane.ParseSubresourcePath(path)
+			if err != nil || parsed.Request != request || parsed.Group != aiv1alpha1.GroupName || parsed.APIVersion != aiv1alpha1.Version {
+				t.Errorf("%s/%s does not round-trip: %q -> %+v (%v)", resource, verb, path, parsed, err)
 			}
 		}
 	}

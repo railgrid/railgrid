@@ -204,8 +204,8 @@ type Dependency struct {
 	// Composes mirrors CatalogEntry.spec.dependencies[].composes: the
 	// dependency's kinds this provider's reconcilers create and manage in the
 	// tenant workspace. Declaring one grants nothing — it is what the Enable
-	// dialog asks an admin to consent to, and what the scoped-identity policy
-	// measures a requested rule against (clause E).
+	// dialog asks an admin to consent to, and that consent accepts the
+	// identity-agnostic claim on the provider's own APIExport.
 	Composes []Composition
 }
 
@@ -236,9 +236,6 @@ type SelfHosting struct {
 type SelfHostingValue struct {
 	Name        string
 	Description string
-	// IdentityFor names an APIExport whose identity hash is this value; the hub
-	// resolves it so the installer never has to copy one by hand.
-	IdentityFor string
 	Value       string
 }
 

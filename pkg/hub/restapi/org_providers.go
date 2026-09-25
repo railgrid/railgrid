@@ -537,46 +537,8 @@ func (h *Handler) installInstructions(ctx context.Context, orgUUID, name, source
 		ProviderName:  name,
 		WorkspacePath: kcppaths.OrgProviderPath(orgUUID, name),
 		HubURL:        h.mgr.kubeconfig.HubExternalURL,
-		Identities:    h.identityResolver(ctx),
-		OrgUUID:       orgUUID,
 	})
 	return &rendered
-}
-
-// identityResolver adapts the provider registry + kcp to the renderer's
-// identity lookup. Returns nil when the hub cannot resolve identities, which
-// the renderer reports as an explicit warning rather than a silent blank.
-func (h *Handler) identityResolver(ctx context.Context) providers.IdentityResolver {
-	if h.mgr.providerCreds == nil || h.mgr.providers == nil {
-		return nil
-	}
-	resolver, ok := h.mgr.providerCreds.(providers.APIExportIdentityReader)
-	if !ok {
-		return nil
-	}
-	return identityResolverFunc(func(orgUUID, exportName string) string {
-		// Find the provider that owns this APIExport, preferring the Org's own
-		// copy: if an Org self-hosts both kuery and edges, kuery must claim
-		// against the identity of the edges instance its workspaces actually
-		// bind, not the platform one.
-		for _, candidate := range h.mgr.providers.ListForOrg(orgUUID) {
-			if candidate.APIExportName != exportName || candidate.APIExportPath == "" {
-				continue
-			}
-			hash, err := resolver.ResolveAPIExportIdentityHash(ctx, candidate.APIExportPath, exportName)
-			if err != nil {
-				return ""
-			}
-			return hash
-		}
-		return ""
-	})
-}
-
-type identityResolverFunc func(orgUUID, exportName string) string
-
-func (f identityResolverFunc) ResolveIdentityHash(orgUUID, exportName string) string {
-	return f(orgUUID, exportName)
 }
 
 // validateOrgProviderName rejects structurally invalid names.

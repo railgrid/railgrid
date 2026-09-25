@@ -667,12 +667,12 @@ func TestProjectAssistantRunSandboxFreshFollowUpClaimsAndRebasesProjectCache(t *
 	fake := &sandboxClientFake{response: projectAssistantSandboxWorkspaceResponse{SourceRevision: 9, SourceDigest: seedDigest}}
 	server := &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		workspaces:              files,
-		hubBase:                 "https://hub.test",
+		workspaces: files,
+		hubBase:    "https://hub.test", callers: newTestCallers(nil, ""),
 		runSandboxClientFactory: func(*Server) projectAssistantSandboxClient { return fake },
 	}
 	req := projectAssistantRunRequest{
-		Identity:       identity{orgUUID: "org", workspaceUUID: "ws", clusterID: "cluster", token: "token"},
+		Identity:       identity{orgUUID: "org", workspaceUUID: "ws", clusterID: "cluster"},
 		Client:         client,
 		Project:        project,
 		Workspace:      files,
@@ -738,13 +738,13 @@ func TestProjectAssistantRunSandboxColdMultiMutationWarmFollowUpKeepsRemoteRevis
 	remote := &sandboxRevisionDomainFake{files: map[string]string{}}
 	server := &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		workspaces: files, hubBase: "https://hub.test",
+		workspaces: files, hubBase: "https://hub.test", callers: newTestCallers(nil, ""),
 		projectClientFor:        func(identity) (*asclient.Client, error) { return client, nil },
 		runSandboxClientFactory: func(*Server) projectAssistantSandboxClient { return remote },
 	}
 	request := func(runID string) projectAssistantRunRequest {
 		return projectAssistantRunRequest{
-			Identity: identity{orgUUID: "org", workspaceUUID: "ws", clusterID: "cluster", token: "token"}, Client: client, Project: project,
+			Identity: identity{orgUUID: "org", workspaceUUID: "ws", clusterID: "cluster"}, Client: client, Project: project,
 			Workspace: files, WorkspaceScope: scope, AssistantRun: &store.AssistantRun{ID: runID},
 		}
 	}
@@ -1992,7 +1992,7 @@ func TestProjectAssistantDataPlaneSandboxClientUsesWorkerWorkspaceWire(t *testin
 	})
 	client := projectAssistantDataPlaneSandboxClient{server: &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		hubBase: "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
+		hubBase: "http://sandbox.test", callers: newTestCallers(nil, ""), mcpInsecureSkipTLSVerify: true,
 		sandboxDataPlaneClientFactory: func(time.Duration) *http.Client {
 			return &http.Client{Transport: sandboxRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				recorder := httptest.NewRecorder()
@@ -2001,7 +2001,7 @@ func TestProjectAssistantDataPlaneSandboxClientUsesWorkerWorkspaceWire(t *testin
 			})}
 		},
 	}}
-	id := identity{clusterID: "cluster", token: "token"}
+	id := identity{clusterID: "cluster"}
 	ref := dataPlaneRef{Resource: "instances", Name: "as-run-shop-123", Component: "workspace"}
 	if response, err := client.Workspace(context.Background(), id, ref, projectAssistantSandboxWorkspaceRequest{Action: "list", Limit: workspace.MaxListLimit}); err != nil || len(response.Entries) != 1 {
 		t.Fatalf("list response = %#v, err=%v", response, err)
@@ -2091,7 +2091,7 @@ func TestProjectAssistantDataPlaneSandboxClientGrepSupportsFileAndDirectoryPaths
 	})
 	client := projectAssistantDataPlaneSandboxClient{server: &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		hubBase: "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
+		hubBase: "http://sandbox.test", callers: newTestCallers(nil, ""), mcpInsecureSkipTLSVerify: true,
 		sandboxDataPlaneClientFactory: func(time.Duration) *http.Client {
 			return &http.Client{Transport: sandboxRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				recorder := httptest.NewRecorder()
@@ -2100,7 +2100,7 @@ func TestProjectAssistantDataPlaneSandboxClientGrepSupportsFileAndDirectoryPaths
 			})}
 		},
 	}}
-	id := identity{clusterID: "cluster", token: "token"}
+	id := identity{clusterID: "cluster"}
 	ref := dataPlaneRef{Resource: "instances", Name: "as-run-shop-123", Component: "workspace"}
 
 	for _, searchPath := range []string{"src/style.css", "src"} {
@@ -2143,7 +2143,7 @@ func TestProjectAssistantDataPlaneSandboxCheckpointWithNoChangesUsesDiffFence(t 
 	})
 	client := projectAssistantDataPlaneSandboxClient{server: &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		hubBase: "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
+		hubBase: "http://sandbox.test", callers: newTestCallers(nil, ""), mcpInsecureSkipTLSVerify: true,
 		sandboxDataPlaneClientFactory: func(time.Duration) *http.Client {
 			return &http.Client{Transport: sandboxRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				recorder := httptest.NewRecorder()
@@ -2152,7 +2152,7 @@ func TestProjectAssistantDataPlaneSandboxCheckpointWithNoChangesUsesDiffFence(t 
 			})}
 		},
 	}}
-	response, err := client.Workspace(context.Background(), identity{clusterID: "cluster", token: "token"}, dataPlaneRef{Resource: "instances", Name: "cache", Component: "workspace"}, projectAssistantSandboxWorkspaceRequest{
+	response, err := client.Workspace(context.Background(), identity{clusterID: "cluster"}, dataPlaneRef{Resource: "instances", Name: "cache", Component: "workspace"}, projectAssistantSandboxWorkspaceRequest{
 		Action: "checkpoint", CheckpointID: "base-1", SourceRevision: 4, SourceDigest: "seed",
 	})
 	if err != nil {

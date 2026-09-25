@@ -43,10 +43,10 @@ const (
 
 var projectActionSchemaDigestRE = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
-// providerActionCatalogResolver is deliberately caller-scoped: a production
-// resolver receives the identity whose bearer token must authorize the hub
-// catalog request. Tests may inject a deterministic resolver without opening
-// a second HTTP server, while production always uses fetchProviderActionCatalog.
+// providerActionCatalogResolver receives the identity whose workspace
+// selection scopes the hub catalog request (made as the provider). Tests may
+// inject a deterministic resolver without opening a second HTTP server, while
+// production always uses fetchProviderActionCatalog.
 type providerActionCatalogResolver func(context.Context, identity) ([]providerCatalogEntry, error)
 
 // These structs mirror the hub's /api/providers action metadata contract. The
@@ -218,7 +218,7 @@ type errProjectActionDigestDrift struct{ message string }
 func (e errProjectActionDigestDrift) Error() string { return e.message }
 
 // verifyProjectActionDigestForInvoke re-checks the persisted grant against
-// the caller-scoped live catalog at invocation time. With invocations riding
+// the workspace's live catalog at invocation time. With invocations riding
 // the provider data plane directly, this is where schema drift is caught —
 // the grant-time digest pin alone would let a provider schema bump go
 // unnoticed until the generated app breaks on changed output.
@@ -246,10 +246,10 @@ func (s *Server) providerAssistantSkillSource(ctx context.Context, id identity) 
 	if s == nil {
 		return nil, errors.New("provider assistant skill catalog is not configured")
 	}
-	if s.providerActionCatalogResolver == nil && strings.TrimSpace(id.token) == "" {
-		// Provider skills are optional guidance. A request without a caller
-		// bearer cannot fetch the hub catalog, but that must not block bundled
-		// or project skills (or an otherwise actionless assistant turn).
+	if s.providerActionCatalogResolver == nil && (strings.TrimSpace(s.hubBase) == "" || strings.TrimSpace(s.hubToken) == "") {
+		// Provider skills are optional guidance. A process with no hub, or no
+		// hub credential to fetch the catalog with, must not block bundled or
+		// project skills (or an otherwise actionless assistant turn).
 		return appskills.NewProviderSkillSource(nil)
 	}
 	catalog, err := s.providerActionCatalog(ctx, id)
@@ -303,26 +303,9 @@ func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (provide
 		return providerCatalogFetchResponse{}, fmt.Errorf("new provider catalog request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	if id.token != "" {
-		req.Header.Set("Authorization", "Bearer "+id.token)
-	}
-	if id.tenant != "" {
-		req.Header.Set("X-Railgrid-Tenant", id.tenant)
-	}
-	if id.clusterID != "" {
-		req.Header.Set("X-Railgrid-Cluster", id.clusterID)
-	}
-	if id.orgUUID != "" {
-		req.Header.Set("X-Railgrid-Org", id.orgUUID)
-	}
-	if id.workspaceUUID != "" {
-		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
-	}
-	if id.user != "" {
-		// A display label for the downstream provider's logs. The identity
-		// that authorizes the call is the bearer this request carries.
-		req.Header.Set("X-Railgrid-User", id.user)
-	}
+	// A hub REST call, made as the provider; the caller's workspace selection
+	// and name travel as headers the hub resolves the scope from.
+	s.setHubCallerHeaders(req.Header, id)
 	client := &http.Client{
 		Timeout: providerCatalogCallTimeout,
 		// Catalog lookup uses the same explicitly configured local-hub TLS

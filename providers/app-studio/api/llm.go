@@ -928,13 +928,10 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if err != nil {
 		return "", err
 	}
-	provider, err := s.providerFor(ctx, id, codeAPIExportName)
-	if err != nil {
-		return "", err
+	if s.callers == nil {
+		return "", errors.New("no provider credential configured; cannot reach the Code provider to commit")
 	}
-	created, err := (&codecommit.Client{HubBase: s.hubBase, Insecure: s.mcpInsecureSkipTLSVerify}).Commit(ctx, codecommit.Request{
-		Provider:      provider,
-		Token:         id.token,
+	created, err := (&codecommit.Client{Callers: s.callers}).Commit(ctx, codecommit.Request{
 		Cluster:       id.clusterID,
 		RepositoryRef: projectRepositoryRef,
 		RepositoryUID: repositoryUID,
@@ -1718,7 +1715,7 @@ func (s *Server) loadProjectMCPAssistantTools(r *http.Request, id identity, _ pr
 		return nil, false, errors.New("no workspace cluster on request (X-Railgrid-Cluster missing) — cannot address the tenant MCP endpoint")
 	}
 	mcpEndpoint := s.mcpEndpoint(id.clusterID)
-	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenant, s.mcpInsecureSkipTLSVerify)
+	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, s.hubRequest(r, id), id.tenant, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
 		return nil, false, err
 	}

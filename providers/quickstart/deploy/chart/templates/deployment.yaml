@@ -93,14 +93,29 @@ spec:
             # The serve container needs the same kubeconfig the init container
             # used, for two things: the multicluster controller manager watches
             # tenant workspaces through the APIExport virtual workspace, and the
-            # data-plane verb borrows this config's host + CA (never its bearer)
-            # to build per-request clients that authenticate as the CALLER.
+            # data-plane verb acts as the provider through that same virtual
+            # workspace — kcp forwards a verb with the caller's identity
+            # stamped and no bearer, so the gate reviews and reads as itself.
             - name: RAILGRID_PROVIDER_KUBECONFIG
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
+            {{- if .Values.catalogEntry.enabled }}
+            # The same CatalogEntry the init container applies. serve reads it
+            # too: spec.dataPlane.verbs is the declaration of which
+            # "<resource>/<verb>" coordinates this provider answers on the path
+            # a kcp shard forwards for a custom subresource, so the routes
+            # cannot drift from what the APIExport declares.
+            - name: RAILGRID_CATALOGENTRY_FILE
+              value: /etc/railgrid/catalogentry/catalogentry.yaml
+            {{- end }}
           volumeMounts:
             - name: railgrid-provider-kubeconfig
               mountPath: /var/run/secrets/railgrid
               readOnly: true
+            {{- if .Values.catalogEntry.enabled }}
+            - name: catalogentry
+              mountPath: /etc/railgrid/catalogentry
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:

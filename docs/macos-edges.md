@@ -157,7 +157,7 @@ kubectl apply -f hack/edges-macos/macos-service.yaml
 The authenticated Service URL has this shape:
 
 ```text
-https://<hub-host>/services/providers/edges/dataplane/clusters/<tenant-cluster>/services/macos-runner-stub/proxy/healthz
+https://<hub-host>/clusters/<tenant-cluster>/apis/edges.railgrid.ai/v1alpha1/services/macos-runner-stub/proxy/healthz
 ```
 
 Use the portal's Edges Service view or an authenticated tenant request to call

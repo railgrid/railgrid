@@ -168,7 +168,7 @@ test('builds a kube REST list request from validated Provider Action identifiers
     resource: 'instances',
   }, 'root:org:ws')
   assert.deepEqual(built.ref, { group: 'infrastructure.railgrid.ai', version: 'v1alpha1', resource: 'instances' })
-  assert.equal(built.path, '/clusters/root%3Aorg%3Aws/apis/infrastructure.railgrid.ai/v1alpha1/instances')
+  assert.equal(built.path, '/clusters/root:org:ws/apis/infrastructure.railgrid.ai/v1alpha1/instances')
 
   const requests = []
   const fetcher = async (url, init) => {
@@ -262,8 +262,8 @@ test('retains successful resource groups when another type fails and sanitizes w
   }
   const result = await discoverAssistantResources({ tenant: 'root:org:ws', token: 'secret' }, types, fetcher)
   assert.deepEqual(requests.sort(), [
-    '/clusters/root%3Aorg%3Aws/apis/demo.example.io/v1/gadgets',
-    '/clusters/root%3Aorg%3Aws/apis/demo.example.io/v1/widgets',
+    '/clusters/root:org:ws/apis/demo.example.io/v1/gadgets',
+    '/clusters/root:org:ws/apis/demo.example.io/v1/widgets',
   ])
   assert.deepEqual(result.groups.map(({ type }) => type.kind), ['Widget'])
   assert.deepEqual(result.groups[0].items.map(({ resourceRef }) => resourceRef.name), ['alpha', 'zulu'])

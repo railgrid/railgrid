@@ -14,13 +14,16 @@
 //
 //   - /, /main.js, /icon.svg, /assets/*  — embedded Vite bundle
 //   - /healthz, /readyz                  — liveness and readiness
-//   - /mcp, /mcp/sse                     — MCP transport
-//   - /actions/…                         — repository-bound Provider Actions
+//   - /mcp, /mcp/sse                     — MCP transport (hub aggregate, bearer)
+//   - /clusters/{id}/apis/code.railgrid.ai/v1alpha1/{resource}/{name}/{verb}
+//     — the repository- and connection-bound Provider Actions, as kcp custom
+//     subresources forwarded by the serving shard with the caller stamped in
+//     requestheader headers; the only way a verb is reached
 //   - /oauth/github/…                    — the GitHub "Connect" popup flow
 //
 // The layout is assembled by provider-sdk/serve from the closed list of
-// Pillar 2 route classes; there is no /api/*, and serve.New refuses to
-// register one.
+// Pillar 2 route classes; there is no /api/*, no /actions/* and no
+// /dataplane/*, and serve.New refuses to register any of them.
 //
 // Connection / Repository / RepositoryCommit / DeployKey / Collaborator are NOT
 // served as REST here: the portal and tenants drive them as CRDs directly
@@ -46,6 +49,7 @@ import (
 	githubbackend "github.com/railgrid/provider-code/backend/github"
 	"github.com/railgrid/provider-code/commitbundle"
 	"github.com/railgrid/provider-code/controller/shared"
+	"github.com/railgrid/provider-code/install"
 	"github.com/railgrid/provider-code/mcpserver"
 	"github.com/railgrid/provider-code/oauthgithub"
 	"github.com/railgrid/provider-code/tenant"
@@ -135,22 +139,33 @@ func runServe() {
 	}
 	log.Printf("commit bundle store: %s", bundles.Dir())
 
-	// Caller-token client factory for the MCP tools and the action gates: both
-	// act on the caller's behalf, never as the provider. NewCallerFactory
-	// keeps only the host and TLS of the provider's own connection and drops
-	// every credential on it, so a request without a bearer fails instead of
+	// One client factory, two halves. The MCP tools act with the CALLER's own
+	// bearer, which the hub aggregate forwards with each tool call:
+	// NewCallerFactory keeps only the host and TLS of the provider's own
+	// connection for those, so a tool call without a bearer fails instead of
 	// falling back to the provider identity.
-	var callers dataplane.CallerFactory
+	//
+	// The actions have no bearer at all: kcp authenticates the caller itself,
+	// authorizes the verb and stamps requestheader identity onto the request
+	// it forwards. There the gate is a SubjectAccessReview the PROVIDER runs on
+	// the caller's behalf, and the action then acts as the provider through
+	// its export virtual workspace — so WithProviderConfig gives the factory
+	// the provider's own authenticated config, the same one the controllers
+	// use, nothing newly minted (dataplane.ProviderCallerFactory.AsProvider).
+	var (
+		tenantCallers   dataplane.CallerFactory
+		providerCallers dataplane.ProviderCallerFactory
+	)
 	if kcpConfig != nil {
-		factory, err := dataplane.NewCallerFactory(kcpConfig)
+		factory, err := dataplane.NewCallerFactory(kcpConfig, dataplane.WithProviderConfig(kcpConfig, install.APIExportName))
 		if err != nil {
 			log.Fatalf("caller factory: %v", err)
 		}
-		callers = factory
+		tenantCallers, providerCallers = factory, factory
 	}
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Tenant:  callers,
+		Tenant:  tenantCallers,
 		Bundles: bundles,
 	})
 
@@ -178,7 +193,7 @@ func runServe() {
 	}
 	shared.Credentials = credentials
 
-	codeActions := actions.New(callers, actions.ExportClient(kcpConfig), backends)
+	codeActions := actions.New(providerCallers, backends)
 	codeActions.Credentials = credentials
 	codeActions.Bundles = bundles
 	codeActions.SnapshotDir = filepath.Join(bundles.Dir(), "git-snapshots")
@@ -187,13 +202,25 @@ func runServe() {
 	oauthRoutes := http.NewServeMux()
 	oauthHandler.Mount(oauthRoutes)
 
+	// The verbs, reachable the one way there is: the path a kcp shard
+	// forwards for a custom subresource. The table is derived from this
+	// provider's own CatalogEntry manifest (catalogentry.go), so what kcp
+	// routes and what serve answers are one declaration — and a provider
+	// without the manifest does not start, because it would have no data
+	// plane to start with.
+	subresources, err := subresourceRoutes()
+	if err != nil {
+		log.Fatalf("subresource routes: %v", err)
+	}
+
 	srv, err := serve.New(serve.Options{
-		Name:      "code",
-		Readiness: vwhealth.Handler(vwState),
-		Portal:    dist,
-		MCP:       mcpHandler,
-		Actions:   codeActions,
-		OAuth:     oauthRoutes,
+		Name:         "code",
+		Readiness:    vwhealth.Handler(vwState),
+		Portal:       dist,
+		MCP:          mcpHandler,
+		Actions:      codeActions,
+		OAuth:        oauthRoutes,
+		Subresources: subresources,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)

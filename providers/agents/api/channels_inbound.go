@@ -540,7 +540,7 @@ func (s *Server) enableInbound(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// connectionToken reads a connection's stored secret token as the caller.
+// connectionToken reads a connection's stored secret token through c.
 func (s *Server) connectionToken(r *http.Request, c *agentsclient.Client, name string) string {
 	return s.connectionTokenCtx(r.Context(), c, name)
 }

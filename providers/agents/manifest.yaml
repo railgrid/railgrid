@@ -1,11 +1,12 @@
 # Agents provider — register with the railgrid hub.
 #
 # The agents provider hosts long-running personal AI agents: chat, scheduled
-# and heartbeat runs, tool use, and durable memory. It is standalone — its only
-# hard dependencies are the hub and Postgres. Compute- and storage-backed
-# features (the claude-code runner, the file workspace) light up only when the
-# infrastructure provider is present, so infrastructure is an OPTIONAL
-# dependency and is intentionally not listed under spec.dependencies.
+# and heartbeat runs, tool use, and durable memory. Its runtime dependencies
+# are the hub and Postgres. Instance-backed tools (a self-hosted search engine,
+# a browser instance) reach tenant workloads through the infrastructure
+# provider's instances/proxy verb, which this provider CLAIMS under
+# spec.dependencies below and calls through its own APIExport virtual
+# workspace as itself.
 #
 # Apply this against the kcp workspace where the railgrid.ai APIExport is
 # bound (typically root:railgrid:providers when running embedded kcp for dev):
@@ -13,9 +14,10 @@
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
 #
 # For local dev the provider binary runs on the host (PORT=8087, Tiltfile
-# run-provider-agents target) and the hub reverse-proxies both the portal
-# bundle and the /api backend to the loopback URLs below. In-cluster, the Helm
-# chart renders the Service DNS instead, e.g.
+# run-provider-agents target) and the hub reverse-proxies the portal bundle,
+# MCP, the OAuth flow and the webhooks to the loopback URLs below; the verbs
+# are kcp custom subresources the shard forwards to the same address. In-
+# cluster, the Helm chart renders the Service DNS instead, e.g.
 #   url: http://agents.agents.svc.cluster.local:8087
 #
 # This CatalogEntry registers routing and references apiExport.name. The
@@ -59,11 +61,40 @@ spec:
       - displayName: Connections
         builtinRoute: connections
   backend:
-    # The hub backend proxy forwards /services/providers/agents/* here,
-    # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the
-    # caller's bearer token. The provider serves /api/* + /healthz.
+    # The hub backend proxy forwards /services/providers/agents/* here for the
+    # route classes that are not kcp API traffic: /mcp (with the caller's
+    # bearer), the browser OAuth flow under /oauth/, the signed webhooks under
+    # /webhooks/ and /healthz. Data-plane verbs are NOT reached this way: each
+    # is a kcp custom subresource on the APIExport below, and the shard
+    # reverse-proxies it to the same address with the caller stamped in
+    # requestheader headers.
     url: "http://localhost:8087"
     healthPath: "/healthz"
+
+  # Another provider's verb this one calls. A composition is claimed on THIS
+  # export (provider-sdk/apiexportgen turns each composes[] entry into a
+  # permission claim; the platform PermissionClaimPolicy admits it), resolved
+  # per workspace to whichever copy of the dependency that workspace bound,
+  # and served on this provider's own virtual workspace, where kcp forwards it
+  # to the owning provider under this provider's identity. Cross-provider work
+  # is done as the provider, never on a user's behalf.
+  dependencies:
+    - name: infrastructure
+      composes:
+        # See the instances an agent's Connections name.
+        - group: infrastructure.railgrid.ai
+          resource: instances
+          verbs: ["get", "list", "watch"]
+        # The verb: an instance's HTTP data plane (a searxng instance's
+        # /search, a browser instance's /mcp), served by the infrastructure
+        # provider as the custom subresource instances/proxy. A claim on the
+        # resource does not carry its subresources; each is claimed as its
+        # own entry. kcp authorizes the HTTP method as the RBAC verb on the
+        # subresource, so a proxy that is GET, POST and everything in between
+        # is claimed with "*".
+        - group: infrastructure.railgrid.ai
+          resource: instances/proxy
+          verbs: ["*"]
 
   apiExport:
     name: "agents.railgrid.ai"
@@ -79,6 +110,18 @@ spec:
     # claims either: service callers use the same data-plane verb and gates as
     # everyone else, so the provider no longer runs its own reviews.
     permissionClaims:
+      # Every provider that serves a custom subresource needs this one claim:
+      # on the shard-forwarded path there is no caller bearer, so the provider
+      # runs a SubjectAccessReview for the stamped caller through its own
+      # APIExport virtual workspace, and kcp serves that builtin there only for
+      # an export that claims it (hack/verify-provider-contract.mjs
+      # subresource-access-claim). Built-in review API: no identityHash, verb
+      # create only; tenantScoped because the VW confines each review to the
+      # tenant's OWN workspace.
+      - group: authorization.k8s.io
+        resource: subjectaccessreviews
+        verbs: [create]
+        tenantScoped: true
       # Secrets, and ONLY the ones labelled railgrid.ai/owner: agents. Two
       # kinds of Secret in the tenant workspace:
       #
@@ -113,13 +156,20 @@ spec:
         selector:
           matchLabels:
             railgrid.ai/owner: agents
-  # Data-plane verbs this provider serves, declared so the coordinate is
-  # machine-readable. Declaring one grants and serves nothing: every call is
-  # still authorized by this provider's own caller-scoped SSAR on
-  # {resource}/{verb}. What the declaration buys is that the hub
-  # scoped-identity service can mint a capability for a verb it can verify
-  # exists (pkg/hub/identity/policy.go clause C), instead of consumers
-  # hardcoding a coordinate nobody validates.
+  # Data-plane verbs this provider serves. Each one IS the kcp custom
+  # subresource "<resource>/<verb>": codegen emits it on the generated
+  # APIExport (the shard routes it to this provider through its
+  # DataPlaneEndpointSlice) together with the "<Verb>Request" schema the entry
+  # names, and provider-sdk/serve derives from the same list the coordinates it
+  # dispatches. Declaring one grants nothing: kcp authorizes the call with
+  # ordinary RBAC on {resource}/{verb} before it forwards it, and this
+  # provider's gate then settles the caller's visibility of the object. A
+  # consumer provider can compose the coordinate under
+  # spec.dependencies[].composes[] and have it claimed on ITS export; the hub
+  # scoped-identity service (pkg/hub/identity/policy.go clause C) can mint a
+  # capability only for a verb it can verify exists. None of this is a
+  # permission claim of this provider: a claim names another export's
+  # resources, never one's own verbs.
   dataPlane:
     verbs:
       - resource: agents

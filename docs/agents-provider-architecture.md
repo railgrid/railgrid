@@ -427,10 +427,11 @@ by provider limits to keep a delegation tree from runaway spend.
 
 ## The route surface
 
-Everything a tenant can ask this provider to DO is one shape:
+Everything a tenant can ask this provider to DO is one shape — a kcp custom
+subresource on the agents APIExport, reached on the hub's kcp front door:
 
 ```
-/services/providers/agents/dataplane/clusters/{clusterID}/{resource}/{name}/{verb}[/{tail}]
+/clusters/{clusterID}/apis/agents.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail}]
 ```
 
 `provider-sdk/serve` assembles the server from the closed list of Pillar 2
@@ -440,7 +441,7 @@ route classes, so the layout is not this provider's to invent:
 |---|---|---|
 | `/healthz`, `/readyz` | (c) | liveness; virtual-workspace readiness |
 | `/mcp`, `/mcp/sse` | (b) | the MCP projection the hub's aggregate federates |
-| `/dataplane/…` | (a) | every tenant verb, gated as the caller |
+| `/clusters/{id}/apis/…/{resource}/{name}/{verb}` | (a) | every tenant verb, as the shard forwards it; kcp authorized the verb, the gate reviews visibility for the stamped caller |
 | `/oauth/callback`, `/oauth/providers` | (d) | the browser OAuth popup flow |
 | `/webhooks/triggers/…`, `/webhooks/channels/…` | (g) | signed inbound hooks |
 | everything else | — | the portal bundle |
@@ -491,9 +492,10 @@ subresource), a cluster→workspace map in Postgres to find the tenant, and a
 review client built from the provider's own kubeconfig.
 
 None of that is needed once the route carries the cluster in the PATH. A
-ServiceAccount presenting its own bearer passes the same two gates a human
-does — `get` on the agent, `create` on `agents/run` — evaluated by the tenant's
-own RBAC in the tenant's own workspace. So the bespoke route, the
+ServiceAccount presenting its own bearer to the kcp front door passes the same
+checks a human does — kcp's RBAC on the `agents/run` subresource, then the
+gate's `get` review on the agent — evaluated by the tenant's own RBAC in the
+tenant's own workspace. So the bespoke route, the
 `agents/delegate` SAR, the `agents_tenants` lookup and the review client were
 all deleted, and the `tokenreviews` / `subjectaccessreviews` permission claims
 exist only until §8 PR 6 finishes retiring the last user of them.
@@ -532,15 +534,15 @@ Two things follow that are worth stating:
   it. It reads `MCPServer.status.URL` now.
 - **The hardcoded infrastructure data-plane path.** `tools/tools.go` built
   `/services/providers/infrastructure/dataplane/clusters/…` by hand, which
-  hardcodes both another provider's name and the grammar. It now derives a
-  candidate provider name from the Instance API group (its first label — the
-  convention the hub follows when naming a provider's APIBinding), GETs that
-  one named binding in the tenant's workspace, checks it really exports the
-  group, and builds the URL with `dataplane.ProviderPath`. The candidate is a
-  guess; the binding is the answer, and a mismatch is refused rather than
-  turned into a URL for the wrong provider. A named `get` rather than a list on
-  purpose: it is a grant an agent's own scoped identity can hold, so an
-  unattended run resolves this for itself.
+  hardcodes both another provider's name and a grammar that no longer exists.
+  It now calls the instance's `proxy` verb **as this provider**, through its
+  own APIExport virtual workspace, at the URL `Callers.ExportVerbURL` renders
+  (`{vw}/clusters/{cluster}/apis/infrastructure.railgrid.ai/v1alpha1/{resource}/{name}/proxy[/{tail}]`)
+  with `Callers.ProviderHTTPClient()` — the claimed custom subresource kcp
+  forwards to infrastructure under agents' identity. No provider name, no
+  hub path, and no caller credential is involved: the claim
+  (`spec.dependencies[].composes[]`, resource `"{resource}/proxy"`,
+  `verbs: ["*"]`) is what authorizes the hop.
 
 ## Storage (own, Postgres)
 
@@ -758,9 +760,10 @@ successor to the deprecated `sandbox-runner`:
   (`read`, `write`, `list`, `stat`, `archive`) following the Template-declared
   data-plane contract from the app-studio runtime decoupling work.
 - The agents provider provisions one instance per agent on demand (via the
-  infrastructure API as the calling user) and reaches files through
-  `{hub}/services/providers/infrastructure/dataplane/clusters/{cluster}/
-  agentworkspaces/{name}/{verb}` — never a direct kube client.
+  infrastructure API as the calling user) and reaches files through the
+  instance's declared verbs as custom subresources
+  (`…/clusters/{cluster}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/{verb}`),
+  addressed with `Callers.ExportVerbURL` — never a direct kube client.
 - Exposed to the agent as the `files` tool family (`file_read`, `file_write`,
   `file_list`, `file_delete`), and to the user in the portal (browse +
   download).
@@ -812,10 +815,12 @@ through portalkit's kube client (`portal/src/resources.ts`,
 `createKubeClient({ fetch: providerFetch(ctx), cluster: ctx.tenant })`):
 creates are a plain `create` so a duplicate name is still a 409, edits are JSON
 merge patches — which replace list and map fields wholesale, matching what the
-Go patch helpers did — and Secrets are server-side applied. Verbs go to
-`/services/providers/agents/dataplane/clusters/{cluster}/…`, addressed by the
-same `ctx.tenant` cluster ID the kube half uses, so both halves move together
-on a workspace switch. The read shapes did not change in the move: the deleted
+Go patch helpers did — and Secrets are server-side applied. Verbs go to the
+same front door as custom subresources,
+`/clusters/{cluster}/apis/agents.railgrid.ai/v1alpha1/{resource}/{name}/{verb}`
+(portalkit `kubeVerbPath`), addressed by the same `ctx.tenant` cluster ID the
+kube half uses, so both halves move together on a workspace switch. The read
+shapes did not change in the move: the deleted
 CRUD handlers returned the raw CRs, so the portal's `Agent`, `Schedule`,
 `Connection`, `Toolset` and `Trigger` types were already the Kubernetes
 objects.

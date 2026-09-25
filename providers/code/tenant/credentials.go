@@ -13,9 +13,10 @@ You may obtain a copy of the License at
 // refreshed OAuth token) from a Secret in the tenant's own workspace, and
 // writing a renewed one back.
 //
-// It holds no client factory: every caller-scoped kcp client in this provider
-// comes from provider-sdk/dataplane, which drops the provider's own
-// credential and authenticates with the caller's bearer alone.
+// It holds no client factory: every kcp client in this provider comes from
+// provider-sdk/dataplane — a caller-scoped one for MCP tools, authenticating
+// with the caller's bearer alone, and one acting as the provider through its
+// export virtual workspace for actions, which carry no bearer at all.
 package tenant
 
 import (

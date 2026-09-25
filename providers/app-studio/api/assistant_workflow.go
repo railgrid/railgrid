@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 
@@ -1404,19 +1403,6 @@ func formatProjectAssistantPreviewURLResult(ctx context.Context, input projectAs
 	return projectAssistantRuntimeNotConfiguredResult("Preview URL is unavailable because no runtime deployment is recorded.")
 }
 
-func isInternalAppStudioPreviewURL(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	previewPath := value
-	if parsed, err := url.Parse(value); err == nil && parsed.Path != "" {
-		previewPath = parsed.Path
-	}
-	return strings.HasPrefix(previewPath, "/services/providers/app-studio/api/projects/") &&
-		strings.Contains(previewPath, "/preview/")
-}
-
 func projectAssistantRuntimePreviewURL(p *aiv1alpha1.Project) string {
 	if p == nil {
 		return ""
@@ -1449,11 +1435,7 @@ func projectAssistantRuntimePreviewURL(p *aiv1alpha1.Project) string {
 }
 
 func projectAssistantPreviewCandidate(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || isInternalAppStudioPreviewURL(value) {
-		return ""
-	}
-	return value
+	return strings.TrimSpace(value)
 }
 
 func projectEnvironmentPreviewURL(environments []aiv1alpha1.ProjectEnvironmentStatus, envName, bindingName string) string {

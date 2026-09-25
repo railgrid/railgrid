@@ -61,6 +61,10 @@ Examples:
 
   # Run a single command (non-interactive)
   railgrid ssh my-server -- echo hello
+
+  # When a cluster edge shares the name, the server is used; qualify it
+  # explicitly with server/<name> if you prefer
+  railgrid ssh server/minis
 `,
 		Args:              cobra.MinimumNArgs(1),
 		ValidArgsFunction: completeServerEdgeNames,
@@ -89,21 +93,28 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
-	// Fetch the Edge resource to get the proxy URL from status. The Edge type
-	// now lives in the edges-connectivity provider (edges.railgrid.ai), so we
-	// read it via the dynamic client and pull status.URL out of the unstructured.
+	// Fetch the edge to get its ssh verb URL from status. The kinds live in
+	// the edges provider (edges.railgrid.ai), so read it via the dynamic
+	// client and pull status.URL out of the unstructured.
 	client, err := railgridclient.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("creating railgrid client: %w", err)
 	}
 
-	edge, gvr, err := getEdgeByName(ctx, client.Dynamic(), name)
+	// A name can belong to both a cluster and a server ("minis" as a
+	// KubernetesCluster and as a LinuxServer); SSH is about the server, so the
+	// server kinds win the tie rather than the lookup failing on the cluster.
+	edge, gvr, err := getEdgeByNamePreferring(ctx, client.Dynamic(), name,
+		railgridclient.LinuxServerGVR, railgridclient.MacOSServerGVR)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("edge %q not found in this workspace (railgrid edge list)", name)
 		}
 		return fmt.Errorf("fetching edge %q: %w", name, err)
 	}
+	// The reference may have been qualified ("server/minis"); every message and
+	// URL from here on wants the plain edge name.
+	name = edge.GetName()
 	switch gvr {
 	case railgridclient.LinuxServerGVR:
 	case railgridclient.KubernetesClusterGVR:
@@ -156,16 +167,20 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	return runSSHInteractive(ctx, conn)
 }
 
-// buildSSHWebSocketURL constructs the WebSocket URL for the hub SSH subresource
-// using the edge's full proxy URL from status.URL.
+// buildSSHWebSocketURL constructs the WebSocket URL for the edge's ssh verb
+// from status.URL.
 //
-// Edge.Status.URL for server-type edges is the edges-provider proxy path
-// (externalized against the current kubeconfig host by the caller):
+// Status.URL for a LinuxServer is the kube path of its "ssh" data-plane verb
+// — a custom subresource on the edges provider's APIExport, reached through
+// the hub's kcp front door (externalized against the current kubeconfig host
+// by the caller):
 //
-//	https://<hub>/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/linuxservers/{name}/ssh
+//	https://<hub>/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/linuxservers/{name}/ssh
 //
-// This function simply converts the scheme to WebSocket (https→wss, http→ws)
-// and optionally appends the "cmd" query parameter for non-interactive SSH exec.
+// The dial carries the kubeconfig's bearer in the Authorization header, which
+// the hub front door and kcp both accept. This function simply converts the
+// scheme to WebSocket (https→wss, http→ws) and optionally appends the "cmd"
+// query parameter for non-interactive SSH exec.
 func buildSSHWebSocketURL(_ *rest.Config, edgeURL, remoteCmd string) (string, error) {
 	u, err := url.Parse(edgeURL)
 	if err != nil {

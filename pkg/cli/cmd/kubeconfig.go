@@ -26,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 // edgeContextPrefix prefixes the kubeconfig context, cluster and user entries
@@ -43,7 +45,10 @@ func isEdgeContext(name string) bool {
 }
 
 // edgeAccess is what the CLI needs to reach a Kubernetes edge through the hub:
-// the edge object and its externalized proxy URL.
+// the edge object and its externalized "k8s" verb URL
+// (https://<hub>/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}/k8s).
+// Used as a kubeconfig server, kubectl appends /api/v1/... as the verb's tail
+// and kcp forwards the whole request to the edges provider.
 type edgeAccess struct {
 	edge *unstructured.Unstructured
 	url  string
@@ -57,10 +62,15 @@ func resolveKubernetesEdge(ctx context.Context, name string, raw *clientcmdapi.C
 	if err != nil {
 		return nil, err
 	}
-	edge, _, err := getEdgeByName(ctx, dynClient, name)
+	// A cluster and a server may share a name ("minis"); kubectl access is
+	// about the cluster, so it wins the tie here.
+	edge, _, err := getEdgeByNamePreferring(ctx, dynClient, name, railgridclient.KubernetesClusterGVR)
 	if err != nil {
 		return nil, err
 	}
+	// The reference may have been qualified ("kubernetes/minis"); context names
+	// and messages want the plain edge name.
+	name = edge.GetName()
 	switch edgeTypeOf(edge) {
 	case edgeTypeKubernetes:
 	case edgeTypeServer:
@@ -102,8 +112,8 @@ func railgridClusterAndAuth(raw *clientcmdapi.Config) (ctxName string, cluster *
 	return ctxName, cluster, kctx.AuthInfo, auth, nil
 }
 
-// edgeClusterEntry builds the cluster entry for an edge: the proxy URL with
-// the hub's TLS settings, since the proxy is served by the hub itself.
+// edgeClusterEntry builds the cluster entry for an edge: the k8s verb URL with
+// the hub's TLS settings, since the verb is served through the hub itself.
 func edgeClusterEntry(hub *clientcmdapi.Cluster, edgeURL string) *clientcmdapi.Cluster {
 	c := &clientcmdapi.Cluster{
 		Server:                   edgeURL,
@@ -181,6 +191,9 @@ Examples:
 			if err != nil {
 				return err
 			}
+			// A qualified reference ("kubernetes/minis") named the edge; the
+			// context and file are named after the edge itself.
+			name = access.edge.GetName()
 
 			if merge {
 				ctxName, err := mergeEdgeContext(raw, name, access.url)

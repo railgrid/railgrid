@@ -45,7 +45,7 @@ Prints single-quoted `export` lines, in this order:
 | `CLUSTER` | kcp cluster of the workspace |
 | `ORG`, `WS` | org and workspace UUIDs (the `X-Railgrid-Org` / `X-Railgrid-Workspace` values) |
 | `TOKEN` | your bearer (static token, or the OIDC id_token captured from the exec plugin; OIDC tokens expire, re-run to refresh) |
-| `AS` | `$HUB/services/providers/app-studio` |
+| `AS` | `$HUB/clusters/$CLUSTER/apis/ai.railgrid.ai/v1alpha1` (App Studio kinds; a verb is `$AS/projects/<name>/<verb>`) |
 | `MCP_URL`, `MCP_TOKEN` | aggregate endpoint and long-lived token from the connect endpoint |
 
 - `--json`: one object `{hub, cluster, org, workspace, token, appStudioURL, mcpURL?, mcpToken?}`.
@@ -113,8 +113,8 @@ App Studio REST ([app-studio.md](app-studio.md)) as you.
 
 | Command | Flags | Behavior |
 |---|---|---|
-| `app list` (alias `ls`) | `-o json` | `GET /api/projects`; table `NAME DISPLAY NAME PHASE TEMPLATE REPOSITORY AGE` |
-| `app create <name>` | `--template`, `--display-name`, `--description`, `--prompt`, `--existing-repository <ref>`, `--wait`, `--timeout` (5m), `-o json` | `POST /api/projects` with `name`. `--template` is required unless `--prompt` is given (then `inferDevelopmentTemplate: true`; the prompt does not start an assistant turn). `--existing-repository <ref>` sends `existingRepositoryRef`: it adopts a code `Repository` you created first instead of creating one ([app-studio.md](app-studio.md)). `--wait` polls every 5 s until `repository.ready` and at least one `Succeeded` commit (the point from which clone and `railgrid commit` work); timeout error `project <n>: repository not ready with a succeeded commit after <t>; check 'railgrid app status <n>'`. |
+| `app list` (alias `ls`) | `-o json` | `GET $AS/projects` (the Project CRs); table `NAME DISPLAY NAME PHASE TEMPLATE REPOSITORY AGE` |
+| `app create <name>` | `--template`, `--display-name`, `--description`, `--prompt`, `--existing-repository <ref>`, `--wait`, `--timeout` (5m), `-o json` | `POST $AS/studios/studio/create-project` with `name` (the Studio singleton is created first if missing). `--template` is required unless `--prompt` is given (then `inferDevelopmentTemplate: true`; the prompt does not start an assistant turn). `--existing-repository <ref>` sends `existingRepositoryRef`: it adopts a code `Repository` you created first instead of creating one ([app-studio.md](app-studio.md)). `--wait` polls every 5 s until `repository.ready` and at least one `Succeeded` commit (the point from which clone and `railgrid commit` work); timeout error `project <n>: repository not ready with a succeeded commit after <t>; check 'railgrid app status <n>'`. |
 | `app status <name>` | `-o json` | `GET` project, `promotion`, `publishing`; prints project/phase/template, repository ref + ready + URL (+ message when not ready; after 2 min with no status and no commit it adds `not ready for <age> with no status: the code provider is not reconciling …`), last 3 commits, dev URL, `promotable`/build status/commit/missing, production phase+URL (`- (never promoted)` before the first promote; `- (promoted; the production instance has not reported yet, …)` for a few seconds after one), publishing mode/URL/grants. `-o json` = `{project, promotion, promotionError?, publishing, publishingError?}`. |
 | `app sync <name>` | `-o json` | `POST hydrate-workspace {}` then `POST sync-development`; prints the ref and short SHA loaded (written/skipped counts), one line per component (`Synced, N changed, M deleted, restarted, revision R`), and each skipped file with its reason; a `binary-unsupported` skip adds a hint. Use it instead of `railgrid sandbox sync` for App Studio dev instances. |
 | `app promote <name>` | `--hostname-prefix`, `--commit <sha>`, `-o json` | `POST promote` with `values.expose.hostnamePrefix` and/or `commitSHA`; prints instance, commit, rollout, per-component image. The prefix is locked after the first production deploy: pass it on the first promote, later the same value or nothing. Every promote rolls pods. |
@@ -168,7 +168,7 @@ the message, without calling the hub.
 ## 6. `railgrid sandbox` (alias `sbx`)
 
 Data plane of a development-mode Instance (`<project>-dev` for App Studio),
-`$HUB/services/providers/infrastructure/dataplane/clusters/<cluster>/instances/<i>/…`
+`$HUB/clusters/<cluster>/apis/infrastructure.railgrid.ai/v1alpha1/instances/<i>/<verb>[?component=<c>]`
 ([infrastructure.md](infrastructure.md) section 8). Production instances
 answer 409. Component paths are relative to the component's
 `workspacePath` (application template: `api/` → component `api`,

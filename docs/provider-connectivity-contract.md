@@ -23,16 +23,32 @@ scoping), and [`security.md`](./security.md) (auth setup).
 
 - There are **three** legitimate data paths. UI data flows through the
   hub's **kcp proxy** at `/clusters/{cluster}` as plain Kubernetes REST
-  (contract 1); backend/controller code reaches kcp
-  either as a **non-privileged provider ServiceAccount via an
-  APIExportEndpointSlice** *or* as the **caller using their forwarded bearer
-  token**, scoped to the tenant workspace (contract 2); and one provider
-  reaches **another** provider only through that provider's **published
-  APIExport resources + VW subresources, as the caller** — never into its
-  backend (contract 3).
+  (contract 1); backend/controller code reaches kcp as a **non-privileged
+  provider ServiceAccount via an APIExportEndpointSlice**, and a verb handler
+  answers **for the identity kcp stamped** — a SubjectAccessReview on the
+  caller's behalf, then acting as the provider through its export virtual
+  workspace — with the caller's forwarded bearer left only on the MCP
+  projection (contract 2); and one provider reaches **another** provider only
+  through that provider's **published APIExport resources + custom
+  subresources** — never into its backend (contract 3).
+- **Every declared verb and action is a kcp custom subresource** named
+  `{resource}/{verb}` on the owning provider's APIExport, so it is an ordinary
+  API path a shard reverse-proxies to the provider:
+  `/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}`. **That is
+  the only transport.** The hub-proxied grammar
+  (`/services/providers/{name}/{dataplane,actions}/clusters/…`) is gone — not
+  aliased, not deprecated — and the hub's backend proxy carries no verbs.
+- **A composed kind is reached by a permission claim again** — one with **no
+  `identityHash`**, generated from `spec.dependencies[].composes[]`, admitted
+  by a cluster-scoped `PermissionClaimPolicy` the hub applies at bootstrap.
+  A verb on a composed kind is a claimed **custom subresource** reached the
+  same way. The hub-minted scoped identity remains only for the calls a claim
+  does not (yet) carry.
 - The hub exposes providers through **two different proxies** with **different
   token handling**: the UI proxy forwards **no token**, the backend proxy
-  forwards the caller's `Authorization` header **as-is**.
+  forwards the caller's `Authorization` header **as-is** — and serves only
+  MCP, browser OAuth, signed webhooks, the agent tunnel, health and the
+  hub-only routes. A verb never goes through it.
 - "Token not known to the provider" means the **provider's backend server**.
   The provider's **in-browser micro-frontend** runs in the user's browser and
   calls the hub's kcp proxy directly through the host-owned `railgridContext.fetch`,
@@ -65,10 +81,17 @@ API **without any admin/root client**. It uses one of two scoped mechanisms:
   workspace, bounded by the APIExport's `tenantScoped` permission claims —
   and, for a core-group claim on `secrets`, by that claim's **label selector**
   (see "Label-scoped claims" below).
-- **(2b) Per-request** — the provider drops its own credential and acts **as
-  the caller**, using the bearer token forwarded by the hub, scoped to the
-  workspace whose kcp logical-cluster ID arrives in `X-Railgrid-Tenant` /
-  `X-Railgrid-Cluster` (both carry the ID; the workspace path is never sent).
+- **(2b) Per-request** — on a **verb**, the provider holds no caller
+  credential at all: kcp authenticated the caller and stamped their identity
+  in requestheader headers, the provider asks a `SubjectAccessReview` on that
+  identity's behalf and then acts **as itself** through its export virtual
+  workspace, scoped to the logical cluster **in the path**
+  (`provider-sdk/dataplane.Gate`, then `dataplane.Authorize` for any further
+  question about the caller). On the **MCP projection** — the one class that
+  still carries a bearer — the provider drops its own credential and acts **as
+  the caller** with the token the hub forwarded, scoped to the workspace whose
+  kcp logical-cluster ID arrives in `X-Railgrid-Tenant` / `X-Railgrid-Cluster`
+  (both carry the ID; the workspace path is never sent).
 
 Both 2a and 2b are admin-free. New providers should pick one (or use 2a for
 controllers and 2b for request-driven endpoints, like `code` and
@@ -81,14 +104,28 @@ provider B owns, A goes through **B's published API**, not B's backend:
   in the tenant workspace) and reads/writes B's CRs over the normal
   `/clusters/...` path. This is the control-plane channel (spec/status).
 - **B's published data-plane subresources** on those resources (for example
-  `{template-resource}/{name}/log`, `…/proxy/{path}`, or a
+  `instances/log`, `instances/proxy`, `repositories/mint-clone-token`, or a
   component-scoped `…/{name}/components/{component}/sync`) — for streams,
-  proxies, and other verbs that aren't plain CRUD. B serves them against
-  *its* backend; A never sees it.
+  proxies, and other verbs that aren't plain CRUD. Each is a real kcp custom
+  subresource on B's APIExport, so A addresses it as
+  `/apis/{group}/{version}/{resource}/{name}/{verb}` on a kcp front door and
+  lets the shard reach B. B serves them against *its* backend; A never sees
+  it.
 
-Both are invoked **as the caller** (forwarded bearer token, scoped to the
-workspace — same identity as 2b) and **routed by binding, never by a
-backend URL**. A must never hold a credential into B's runtime cluster /
+A third shape exists for the narrow case where A does not merely *read* B's
+kind but **composes** it — creates and manages it as part of A's own product.
+That is an identity-agnostic permission claim on A's own APIExport, generated
+from `spec.dependencies[].composes[]`; see
+[`providers.md` §"Composition"](./providers.md#composition--one-provider-building-on-anothers-kinds).
+It is still B's published API: the claim resolves against whatever export that
+workspace bound for B's group, and the tenant accepts it.
+
+The first two are invoked **as the identity kcp stamps on the kube path** —
+the tenant user or ServiceAccount on the hub's `/clusters/{id}`, or provider A
+itself through **its own** export virtual workspace when the verb is one it
+composes (`Callers.ExportVerbURL` + `ProviderHTTPClient`; end-user identity is
+not carried across providers) — and **routed by binding, never by a backend
+URL**. A must never hold a credential into B's runtime cluster /
 database / internal Service, call B's internal endpoints directly, or encode
 B's backend topology in its own config. The owning provider is the single
 holder of its backend credential. This is the access mechanics behind
@@ -101,15 +138,17 @@ decoupling ([`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling
 ## Pillar 2 route classes
 
 The three contracts above say *how* a provider authenticates. This section
-says *what may exist* on the one backend origin the hub gives every provider
-behind `/services/providers/{name}/*` (`pkg/hub/providers/proxy.go`). The list
-is **closed**: a route that is not one of these classes is a deviation, even
-when it authorizes correctly.
+says *what may exist* on a provider's one backend origin. Two doors open onto
+it: the **kcp shard**, which reverse-proxies every declared verb to it as a
+custom subresource, and the hub's **backend proxy** behind
+`/services/providers/{name}/*` (`pkg/hub/providers/proxy.go`), which carries
+the non-kube classes and nothing else. The list is **closed**: a route that is
+not one of these classes is a deviation, even when it authorizes correctly.
 
 | Class | Shape | Auth | Reference |
 |---|---|---|---|
-| **(a) Data-plane verb** | `/{root}/clusters/{clusterID}/{resource}/{name}/{verb}[/{tail}]` and `.../{name}/components/{c}/{verb}[/{tail}]` | caller bearer; two gates | infrastructure `dataplane/handler.go` |
-| **(a′) Action** | `/actions/clusters/{clusterID}/{resource}/{name}/{action}/{version}`; body `{"input":{}}`; `actionwire` envelope | caller bearer; two gates | code `actions/server.go`, databricks |
+| **(a) Data-plane verb** | `/clusters/{clusterID}/apis/{group}/{version}/{resource}/{name}/{verb}[/{tail}][?component={c}]`, as the shard forwards it | kcp-stamped requestheader identity; **no bearer**; kcp authorized the `{resource}/{verb}` noun, the gate runs a SAR for `get` on the parent | `provider-sdk/serve.Options.Subresources`, `dataplane.ParseSubresourceRequest`, `dataplane.Gate` |
+| **(a′) Action** | the same path (`{verb}` is the action's name; its `/v<n>` is **not** in the path); body `{"input":{}}`; `actionwire` envelope | same as (a) | `serve.SubresourceRoute{Action: true, Version}`, `dataplane.Serve` |
 | **(b) MCP projection** | `/mcp`, `/mcp/sse` | caller bearer + `X-Railgrid-Cluster` for addressing | `pkg/hub/mcpaggregate/enumerator.go` federates exactly this path |
 | **(c) Health** | `/healthz`, `/readyz` | none | `provider-sdk/vwhealth.Handler` |
 | **(d) Browser OAuth** | `/oauth/{provider}/{start,callback,config}` | signed state; the popup may `postMessage` to its opener | code `oauthgithub/oauth.go` |
@@ -123,43 +162,68 @@ Rules:
    thing, the thing is a bound CR and the UI reads it over `/clusters/{id}`
    (contract 1). A backend route that mirrors a CR is a deviation even when
    it is authorized correctly.
-2. **The bearer is the only trust root.** The hub strips inbound
-   `X-Railgrid-*` and re-injects `X-Railgrid-User` plus the cluster ID as
-   both `X-Railgrid-Tenant` and `X-Railgrid-Cluster`. A provider may read
-   those headers for **addressing** and **labels**; it must never derive
-   authorization from them. Where the path carries the cluster ID, **the path
-   wins and must equal the header** — a request whose header disagrees is
-   refused before any gate runs.
+2. **On the backend proxy the bearer is the only trust root.** The hub
+   strips inbound `X-Railgrid-*` and re-injects `X-Railgrid-User` plus the
+   caller's resolved workspace's cluster ID as both `X-Railgrid-Tenant` and
+   `X-Railgrid-Cluster` (the sidebar's `X-Railgrid-Org` / `X-Railgrid-Workspace`
+   selection steers which). A provider may read those headers for
+   **addressing** and **labels**; it must never derive authorization from
+   them. No route on the proxy names a cluster in its path any more, so there
+   is no path-cluster authorization at the hub and no path-versus-header
+   comparison in the provider. An anonymous request is unchanged: no identity
+   headers, no hub-side refusal.
 
-   Which cluster the hub injects therefore follows the path. On a route that
-   names one — `/{root}/clusters/{id}/…`, the grammar of contract 4 — the hub
-   injects **that** ID, after authorizing the caller for it with the same
-   membership check the kcp proxy applies to `/clusters/{id}`; a caller who is
-   not a member is refused with **403 at the hub**, before the provider is
-   dialled. An `X-Railgrid-Org` / `X-Railgrid-Workspace` selection (the
-   portal's sidebar) **loses to the path** on such a route: it steers the
-   default, and the default is not what is being addressed. Every other route
-   — MCP, OAuth callbacks, webhooks, `/healthz` — names no cluster and keeps
-   the caller's resolved workspace, selection headers included. An anonymous
-   request is unchanged: no identity headers, no hub-side refusal.
-3. **Two gates, as the caller, on every verb.** Gate 1: a **real GET** of the
-   addressed resource with the caller's token, which proves visibility
-   against the live object *and* yields the object, so the handler can pin
-   its UID and spec. Gate 2: a `SelfSubjectAccessReview` for **`create`** on
-   the virtual subresource `{resource}/{verb}`, name-scoped. The hub
-   materializes grants as exactly that rule
-   (`pkg/hub/serviceaccounts/workload_identity.go`), so any other verb string
-   breaks workload identities. See
-   [provider-actions.md](./provider-actions.md).
-4. **Per-request tenant client, credential dropped.** Build the client for
-   `<hub>/clusters/{clusterID}` from the provider kubeconfig's host and CA
-   **only**, with the caller's bearer (`providers/*/tenant/client.go`). Cache
-   per (cluster, token hash). This is contract 2b, stated as a route rule.
+   On a verb the trust root is different, not weaker: there is no bearer, and
+   the caller is the identity **kcp itself** authenticated and stamped into
+   `X-Remote-User`, `X-Remote-Group` and `X-Remote-Extra-*`, exactly as kcp's
+   front proxy does when it reaches a shard, together with a hop counter
+   (`X-Kcp-Internal-Proxy-Hops`). A provider believes those headers only
+   because the connection is one it already trusts, refuses a request that
+   carries none (401 — anonymous is not a fallback, and the provider's own
+   identity is never a substitute), and refuses one over `dataplane.MaxHops`.
+   **The URL published in the provider's `DataPlaneEndpointSlice` must
+   therefore be its shard-facing address**: anyone who can reach it directly
+   can claim any identity. The hub's backend proxy strips those headers from
+   everything it forwards for the same reason, so the two doors cannot be
+   confused. The cluster a verb acts in is the one **in the path**, and kcp
+   already authorized the caller for it before proxying.
+3. **The caller is authorized for every verb — by kcp, then by the gate.**
+   kcp authorizes the `{resource}/{verb}` noun with ordinary RBAC before it
+   proxies the request at all. It maps the HTTP method onto the RBAC verb, so
+   the hub materializes every data-plane grant with verbs **`*`**
+   (`pkg/hub/serviceaccounts/workload_identity.go`; clause C in §"Scoped
+   identities" mints the same), and a composition claim on a
+   `{resource}/{verb}` is spelled `verbs: ["*"]`. Then `dataplane.Gate`
+   runs with what the provider holds — a caller's name and groups, and no
+   credential. **Visibility keeps its meaning and changes its mechanism:** the
+   gate creates a `SubjectAccessReview` — not the *Self* variant — for `get`
+   on `{resource}/{name}` on the caller's behalf, and only then reads the
+   object as itself, through its own APIExport virtual workspace, so the
+   handler can pin its UID and spec. A `deletionTimestamp` denies. **The verb
+   grant is not repeated:** asking again would only prove the shard did its
+   job. A **foreign provider** — another provider's ServiceAccount forwarded
+   through its own export virtual workspace on a `composes[]` claim — is
+   authorized by the claim kcp enforced; the gate reads the parent as the
+   provider and asks no review, which would refuse an identity with no RBAC
+   in the tenant workspace. See [provider-actions.md](./provider-actions.md).
+4. **After the gate a handler acts as the provider, not as the caller.**
+   There is no caller credential to act with. Any further question about the
+   caller — may they read a second object the verb touches, may they perform
+   the write the verb performs on their behalf — is `dataplane.Authorize`, a
+   SubjectAccessReview run on the caller's behalf through the same client the
+   gate returned. The bearer-credentialed tenant client
+   (`Callers.For`, `providers/*/tenant/client.go`, built from the provider
+   kubeconfig's host and CA **only**, cached per (cluster, token hash)) is
+   for the MCP projection alone. This is contract 2b, stated as a route rule.
 5. **Cross-provider access is by binding, not by string.** Provider A reaches
-   provider B only through B's bound CRs and B's data-plane verbs, as the
-   caller, resolving the target from the binding or from a `status` field B
-   publishes. No foreign credential, no foreign Secret read, no hardcoded
-   `/services/providers/<b>/...` format string. This is contract 3.
+   provider B only through B's bound CRs and B's data-plane verbs — as
+   **itself**, through its own export virtual workspace, on a
+   `spec.dependencies[].composes[]` claim naming `"{resource}/{verb}"` with
+   `verbs: ["*"]` (`Callers.ExportVerbURL`, `ProviderHTTPClient`) — resolving
+   the target from the binding or from a `status` field B publishes. No
+   foreign credential, no foreign Secret read, no hardcoded
+   `/services/providers/<b>/...` format string, and no end-user bearer
+   carried across. This is contract 3.
 6. **No dev bypass in release binaries.** A switch such as
    `RAILGRID_DEV_ALLOW_TENANT_QUERY`, which takes the bearer or the tenant
    from the query string, must be compiled out of shipped binaries.
@@ -179,17 +243,58 @@ spec:
         readOnly: false         # does not mutate the resource or what it fronts
 ```
 
-Declaring a verb **grants nothing and serves nothing**. The provider still
-enforces it with the two gates above, exactly as before. What the declaration
-buys is that the coordinate is machine-readable:
+Declaring a verb **grants nothing**. The provider still authorizes every
+call. What the declaration does is **publish** the coordinate: `apiexportgen`
+turns every `spec.dataPlane.verbs[]` entry and every `spec.actions[]` entry
+into a `spec.resources[]` entry on the provider's APIExport named
+`"<resource>/<verb>"` — a kcp **custom subresource** — so the verb becomes an
+ordinary API path:
 
-- The hub scoped-identity service will only mint a `create` capability on
-  `{resource}/{verb}` for a verb the owning provider declares. Before this
+```
+/apis/{group}/{version}/{resource}/{name}/{verb}
+```
+
+discoverable with `kubectl`, authorized by kcp as RBAC on the
+`{resource}/{verb}` noun, and reverse-proxied by the serving shard to the
+provider. Two further consequences of the same declaration:
+
+- The hub scoped-identity service will only mint a capability on
+  `{resource}/{verb}` (verbs `*`) for a verb the owning provider declares. Before this
   field existed, `exec`, `proxy`, `ssh` and `delegate` lived only in provider
   code, so no cross-provider capability for any of them could be minted at all
   — see §"Scoped identities", clause C.
 - Consumers read `dataPlaneVerbs` off `/api/providers` instead of hardcoding a
   coordinate nobody validates (rule 5, and review X-8).
+
+**The name is a kcp resource name, and a bad one is fatal to the whole
+export.** `"<resource>/<verb>"` must match
+`^[a-z][-a-z0-9]*[a-z0-9](/[a-z][-a-z0-9]*[a-z0-9])?$` — lower-case letters,
+digits and hyphens, **no underscores** — and may not be `status` or `scale`,
+which describe the object's own shape, are declared on the APIResourceSchema,
+and are refused by kcp's APIExport admission. One rejected name makes the
+export unappliable, not just its entry, so `hack/verify-provider-contract.mjs`
+checks every declared coordinate (`subresource-name`) at review time and
+`apiexportgen` refuses to generate. Underscored verbs are gone
+(`mint_clone_token` is now `mint-clone-token`), and infrastructure's status
+verb is `instances/runtime-status`.
+
+**What the generated entry looks like.** `{name, group, schema, storage}`,
+where `group` is read off the parent resource's own entry (kcp refuses a
+subresource whose parent the same export does not serve), `storage.virtual.
+reference` points at the provider's `DataPlaneEndpointSlice`
+(`dataplane.railgrid.ai/v1alpha1`, one per provider, named after the APIExport,
+whose `status.endpoints[].url` is `spec.backend.url`), and `schema` names the
+APIResourceSchema of the verb's own kind — the `<Verb>Request` type every
+provider declares per verb in its API package (`apis/.../subresources.go`),
+minted by controller-gen and `apigen` like any stored kind, shipped by
+`apiexportgen` into `deploy/chart/files/schemas/` as `<verb>.<group>.yaml`, and
+kept out of `spec.resources` since nothing is stored under it. The shard never
+resolves it (the request is routed from the storage reference); a claimer's
+APIExport virtual workspace does, to learn the kind before building the claimed
+subresource. A verb without a type fails codegen. `provider-sdk/install` applies
+the CRD and the slice, and waits for the CRD to be **Established**, before the
+APIExport: a reference to a kind that is not established is never replicated
+to the shards, and the subresource would then route nowhere, silently.
 
 A verb is on a resource of the provider's **own** API group — declaring
 `dataPlane.verbs` without `spec.apiExport` is rejected — and a standard
@@ -199,24 +304,69 @@ malformed declaration fails closed: the provider leaves the registry rather
 than keeping a stale, wider verb surface.
 
 Actions (`spec.actions`) and data-plane verbs (`spec.dataPlane.verbs`) are two
-declarations of the same RBAC coordinate. An action is versioned, schema'd and
-request/response; a data-plane verb is unversioned and streaming or proxying.
-Declare each capability as exactly one of them. A verb served on the *actions*
-grammar whose body is too large to describe under `limits.maxInputBytes` —
+declarations of the same RBAC coordinate, and now of the same subresource. An
+action is versioned, schema'd and request/response, and its id's `/v<n>`
+suffix is **not** part of the coordinate — `mint-clone-token/v1` publishes
+`repositories/mint-clone-token`. A data-plane verb is unversioned and
+streaming or proxying. Declare each capability as exactly one of them. A verb served with the *action*
+envelope whose body is too large to describe under `limits.maxInputBytes` —
 an uncatalogued large-upload verb, like the code provider's
-`repositories/stage_snapshot` and `repositories/stage_commit_bundle` — is
+`repositories/stage-snapshot` and `repositories/stage-commit-bundle` — is
 still declared, as a data-plane verb, because clause C mints nothing for a
 coordinate that appears in neither list (see
 [provider-actions.md](./provider-actions.md) §"Uncatalogued large-upload
 verbs").
 
-The shared server-kit that parses these paths, runs the two gates, enforces
-declared limits and writes the envelope is `provider-sdk/dataplane`, landing
-under
-[roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
-§0.2. Write a new provider against it rather than hand-rolling a parser and
-gates — four incompatible dialects exist because every provider wrote its
-own.
+**Serving them.** The shared server-kit that parses the path, runs the gate,
+enforces declared limits and writes the envelope is `provider-sdk/dataplane`;
+`provider-sdk/serve` owns the server layout. Write a new provider against them
+rather than hand-rolling a parser and gates — four incompatible dialects once
+existed because every provider wrote its own, and `serve.New` no longer mounts
+a `/dataplane/` or `/actions/` prefix at all. Three things wire a verb:
+
+- `serve.Options.Subresources`, a `"<resource>/<verb>"` → `SubresourceRoute`
+  table saying which coordinates exist and whether each is a data-plane verb
+  or an action (and at which version). Build it with
+  `serve.SubresourcesFromCatalogEntryFile(manifestPath)` so it cannot disagree
+  with what `apiexportgen` published; a coordinate absent from the table is a
+  404 even when a handler would have answered, because the declaration is the
+  contract. `serve.New` mounts one adapter at the raw prefix `/clusters/`,
+  dispatches to `Options.DataPlane` or `Options.Actions` with the URL
+  **untouched**, and hands the parsed route (`dataplane.RouteFrom`, an
+  action's version restored from the table) and the stamped identity
+  (`dataplane.ProxiedIdentityFrom`) to the handler through the request
+  context — **the only place those context values are ever set**, so nothing
+  else in the process can forge them.
+- `dataplane.ParseSubresourceRequest`, `dataplane.ProxiedCaller` and
+  `dataplane.CheckHops`, which parse the path (the component of a
+  multi-component object arrives as `?component=`), read the stamped identity
+  and bound the hop count.
+- `dataplane.WithProviderConfig(cfg, exportName)` on `NewCallerFactory`,
+  which makes the factory a `ProviderCallerFactory`. With no caller bearer
+  there is no caller client to build, so the gate needs
+  `AsProvider(clusterID)`, which acts through the export's virtual workspace
+  (read from the provider's `APIExportEndpointSlice`, or pinned with
+  `WithProviderEndpoint`) — the shard's own `/clusters/<id>` refuses the
+  provider identity, verified against kcp-dev/kcp#4388. `Gate` fails loudly
+  rather than silently acting as the provider when the factory is not one.
+- The hub's backend proxy strips `X-Remote-User`, `X-Remote-Group`,
+  `X-Remote-Extra-*` and `X-Kcp-Internal-Proxy-Hops` from everything it
+  forwards (`pkg/hub/providers`), so nothing routed through the hub can carry
+  a forged shard identity to a provider's `/clusters/…` route.
+
+**Streaming verbs and the shard deadline.** A verb that streams (SSE, a log
+tail, exec, a WebSocket upgrade) passes through kcp's reverse proxy like any
+other, and the shard's request deadline is the ceiling on one streamed
+response. The embedded kcp sets it to one hour
+(`pkg/hub/kcp/embedded.go`, `providerVerbRequestTimeout`); an external kcp
+needs the equivalent `--request-timeout` on its shards, or anything but the
+verbs kube-apiserver knows to be long-running is cut at the 60s default. A
+browser cannot set `Authorization` on a WebSocket upgrade, so it presents the
+bearer as the Kubernetes subprotocol
+`base64url.bearer.authorization.k8s.io.<base64url token>`; the hub's kcp proxy
+reads it for the membership check and forwards the upgrade untouched
+(`pkg/server/proxy/proxy.go`, `websocketBearer`), and kcp authenticates it
+natively.
 
 ---
 
@@ -268,7 +418,8 @@ Two proxies back every provider, defined in
 | Proxy | Path | Token handling |
 |-------|------|----------------|
 | **UI proxy** (`NewUIProxy`, `proxy.go:52`) | `/ui/providers/{name}/*` | Static assets only. Injects `X-Railgrid-Base-Path`. **No token forwarded.** First-party providers are served from an embedded FS (`LocalUIAssets`). |
-| **Backend proxy** (`NewBackendProxy`, `proxy.go:90`) | `/services/providers/{name}/*` | **Forwards the caller's `Authorization` header as-is**, and additionally injects `X-Railgrid-User` plus a kcp logical-cluster ID as both `X-Railgrid-Tenant` and `X-Railgrid-Cluster`. On a data-plane route (`/{root}/clusters/{id}/…`) that ID is the one **in the path**, injected only after the caller is authorized for it (403 otherwise); on any other route it is the workspace resolved from the token. Inbound `X-Railgrid-*` headers are **always stripped** first (anti-spoofing, `proxy.go:114`). |
+| **Backend proxy** (`NewBackendProxy`, `proxy.go:92`) | `/services/providers/{name}/*` — MCP, browser OAuth, signed webhooks, the agent tunnel, health and the hub-only `/workload-identities/*`; **no verbs** | **Forwards the caller's `Authorization` header as-is** for a platform provider (a delegated ServiceAccount token replaces it for an org-owned one, or when the delegation policy selects it), and additionally injects `X-Railgrid-User` plus the caller's resolved workspace's kcp logical-cluster ID as both `X-Railgrid-Tenant` and `X-Railgrid-Cluster`. Inbound `X-Railgrid-*` and `X-Remote-*` headers are **always stripped** first (anti-spoofing). |
+| **kcp proxy** (`pkg/server/proxy`) | `/clusters/{id}/…` | Membership-gated, forwarded to kcp **as the caller**. Every declared verb is reached here as `/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}`; the shard authorizes it and reverse-proxies it to the provider with the caller's identity stamped. The hub never sees the verb as such. |
 
 The identity injected by the backend proxy is resolved by the
 **TenantResolver** ([`pkg/hub/provider_tenant_resolver.go`](../pkg/hub/provider_tenant_resolver.go),
@@ -290,9 +441,11 @@ workspace they are a member of, not only their `DefaultCluster`. The provider's
 backend server is never in this loop.
 
 > The key consequence: the only way the user's token reaches a provider's
-> **backend** is via the backend proxy (`/services/providers/{name}/*`). A
-> provider that does all UI data through the kcp proxy keeps its backend off
-> the token path entirely.
+> **backend** is via the backend proxy (`/services/providers/{name}/*`), and
+> the only class that still needs it there is MCP. A verb never carries a
+> bearer: kcp holds the token, the provider gets an identity. A provider that
+> does all UI data through the kcp proxy and serves no MCP keeps its backend
+> off the token path entirely.
 
 ---
 
@@ -379,8 +532,8 @@ the host, not by the bundle.
 | `infrastructure` | kube REST through `/clusters/{cluster}` only; backend serves no template/instance REST | ✅ Conforms |
 | `edges` | kube REST through `/clusters/{cluster}` for its CRs; the edge data plane (kubectl proxy, SSH, per-edge MCP) is its own backend, called as the caller | ✅ Conforms |
 | `databricks` | kube REST through `/clusters/{cluster}` for its CRs | ✅ Conforms |
-| `kuery` | **REST** to `/services/providers/kuery/api/{edges,query}` — token reaches backend | ❌ Diverges |
-| `app-studio` | **REST** to `/services/providers/app-studio/api/projects/*` — token reaches backend; only its resource picker reads bound CRs through the kcp proxy | ❌ Diverges |
+| `kuery` | kube REST through `/clusters/{cluster}` for SavedViews and Engagements; a query runs as the declared verb `savedviews/run`, invoked as the caller | ✅ Conforms |
+| `app-studio` | kube REST through `/clusters/{cluster}` for Projects, Sessions and Threads; every other operation is a declared verb or action on those kinds, invoked as the caller | ✅ Conforms |
 
 The former in-process built-ins (`mcp`, `kubernetesedges`, `serveredges`) no
 longer ship a provider UI; the hub portal's own MCP page is hub REST under
@@ -405,8 +558,8 @@ MCP servers receive the token by design.
 |----------|-----------|---------|
 | `code` | (2a) `apiexport.New(...)` multicluster mgr off the endpointslice + (2b) caller-token tenant client for MCP | ✅ Conforms |
 | `infrastructure` | init/serve split: admin kubeconfig only in one-shot `init`, then a **minted SA** + endpointslice for serve; (2b) caller-token factory for MCP; KRO writes go to a separate runtime cluster | ✅ Conforms |
-| `kuery` | (2a) minted provider SA + APIExportEndpointSlice for edge discovery; `[get,list,watch] edges`, `tenantScoped` | ✅ Conforms |
-| `app-studio` | (2b) clears the provider credential, builds the tenant client from the forwarded caller token; `tenantScoped` secret claims | ✅ Conforms |
+| `kuery` | (2a) minted provider SA + APIExportEndpointSlice; edges `kubernetesclusters` arrive on the same multicluster manager through the identity-agnostic claim its `composes[]` entry generates | ✅ Conforms |
+| `app-studio` | (2a) for infrastructure `instances` and code `repositories`/`repositorycommits`, through the claims its `composes[]` entries generate, on the endpointslice manager; (2b) clears the provider credential and builds the tenant client from the forwarded caller token for request-driven work; label-scoped `secrets` claim | ✅ Conforms |
 
 ### How the hub provisions a conforming (2a) provider
 
@@ -434,9 +587,9 @@ keeps only the CA, and authenticates with the **caller's** bearer token against
 
 | Interaction | Mechanism | Verdict |
 |----------|-----------|---------|
-| `app-studio` → `infrastructure` (Template development data plane) | Selected Template instance (control plane) + infrastructure provider data-plane subresources at `/dataplane/clusters/{workspace}/{resource}/{name}/…`, including component-scoped verbs, called as the tenant user | ✅ Conforms |
+| `app-studio` → `infrastructure` (Template development data plane) | Selected Template instance (control plane) + infrastructure's declared verbs on `instances` as claimed custom subresources, called through app-studio's own export virtual workspace as itself on the claim its `composes[]` declaration generates (`Callers.ExportVerbURL`), `?component=` for a component-scoped verb | ✅ Conforms |
 | `app-studio` → runtime cluster (historical) | Formerly held `APP_STUDIO_RUNTIME_KUBECONFIG`, a direct second credential into infrastructure's runtime cluster | ❌ Removed anti-pattern; retained only as historical context in [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md) |
-| `kuery` → `Edge`s | reads bound `Edge` CRs / engages clusters through the hub's edges-proxy as the caller, never the edge provider's backend | ✅ Conforms |
+| `kuery` → `Edge`s | watches edges `KubernetesCluster`s through its own APIExport virtual workspace (the claim generated from its `composes[]` entry) and engages a cluster through the edges provider's published `kubernetesclusters/k8s` verb at the URL that object's `status` publishes, as a hub-minted identity scoped to that workspace — never the edge provider's backend | ✅ Conforms |
 
 The shape that conforms: address a **bound resource** (or a subresource on
 it), authenticate as the **caller**, and let the binding decide which
@@ -522,7 +675,11 @@ refuses a core-group `secrets` claim with no `selector.matchLabels` at review
 time, and `provider-sdk/install.ValidateClaimScopes` refuses the same export at
 provider init. `claims-parity` compares the scope on both copies, so a manifest
 that narrows a claim and an APIExport that does not is a violation, not a
-silent blanket grant.
+silent blanket grant. A generated claim is declared if **either** source backs
+it — `spec.apiExport.permissionClaims` or `spec.dependencies[].composes[]` —
+and a composition that reaches no claim at all is a violation in the other
+direction. A label selector is a hand-written claim's business: a composition
+carries none, so a composed kind is claimed whole.
 
 **Upgrades.** kcp makes an accepted claim's selector **immutable**, and the hub
 only ever creates a tenant `APIBinding` (it no-ops on AlreadyExists). A
@@ -609,7 +766,7 @@ the whole request. Five shapes are admitted:
 |---|---|---|
 | A — own group | any verb on resources of an API group the **requesting provider serves** | optional |
 | B — foreign read | `get` on resources of another provider's group, where that provider is **bound in the tenant workspace** | **required** |
-| C — foreign verb | `create` on `{resource}/{verb}`, where `{verb}` is **declared by that provider** for that resource — as a catalog action (`spec.actions`) or a data-plane verb (`spec.dataPlane.verbs`) | **required** |
+| C — foreign verb | `{resource}/{verb}`, where `{verb}` is **declared by that provider** for that resource — as a catalog action (`spec.actions`) or a data-plane verb (`spec.dataPlane.verbs`). Whatever verbs the request spells, the rule minted is `*`: kcp maps the HTTP method onto the RBAC verb on a custom subresource, so the coordinate is the grant | **required** |
 | D — platform | a fixed, closed allowlist every workspace-scoped identity needs to function at all | where the API allows it |
 | E — composition | CRUD on a kind of another provider that the requester **declares it composes** (`spec.dependencies[].composes`) and a workspace or org **admin accepted** in this workspace | `create`/`list`/`watch` **no**; `get`/`update`/`patch`/`delete` **required** |
 
@@ -658,13 +815,6 @@ registered. A read that fails *after* one succeeded does not retract anything:
 `status.apiGroups` carries the last successful read across replicas and
 restarts.
 
-Clause E is evaluated **after D and before B/C**, so a rule on a kind the
-requester declared as a composition is always measured against that
-composition's verbs and the tenant's acceptance, never admitted by the weaker
-foreign-read clause because it happened to ask for `get`. A rule that mixes a
-composed kind with an ordinary foreign read is left to clause B: declaring a
-composition must never cost a provider access it already had.
-
 Clause D is a closed list, identical for every provider, checked **before**
 clause A so owning a group cannot widen it:
 
@@ -693,73 +843,29 @@ identity the full inventory of what a tenant has enabled.
 Everything else is refused with a code the caller sees: the core API group
 (Secrets above all — review X-4), every wildcard, any unnamed rule outside the
 caller's own group, any verb the owning provider has not declared, and any
-write on another provider's objects **except** through clause E below, which a
-tenant admin has to accept first.
+write on another provider's objects.
 
-Outside clause E, `list` and `watch` on a **foreign** group are refused
-outright. Kubernetes RBAC does not apply `resourceNames` to collection
+`list` and `watch` on a **foreign** group are refused outright. Kubernetes RBAC does not apply `resourceNames` to collection
 requests, so "get/list/watch on named resources" cannot be expressed: the rule
 either authorizes nothing or authorizes reading every object of that kind in
 the workspace. A consumer that needs a collection reads it by name, or the
 owning provider publishes a list API of its own — or declares a composition and
 is granted one.
 
-#### Clause E — composition
+#### Composition is a claim, not a clause
 
 A product is rarely one provider: an App Studio project IS an infrastructure
-`Instance` plus a code `Repository`, and App Studio's reconciler has to create
-and manage those objects in the tenant's workspace. Clause E is the only shape
-in this policy that writes another provider's objects, and every condition is
-re-checked on every mint:
+`Instance` plus a code `Repository`. The requester's CatalogEntry declares
+`composes {group, resource, verbs}` on a dependency (`spec.dependencies[].composes`),
+the generator turns each entry into an identity-agnostic permission claim on the
+requester's own APIExport and a `PermissionClaimPolicy` entry, and the tenant's
+acceptance at Enable is what accepts that claim on its `APIBinding`. From then on
+the requester reads, watches and writes the composed kinds through its own
+export virtual workspace, as itself — and calls a dependency's verb on them as a
+claimed custom subresource, which kcp forwards under the requester's identity
+and the owning provider's gate trusts. There is nothing for the identity policy
+to mint here, and no policy clause for it.
 
-1. The requester's CatalogEntry declares `composes {group, resource}` on a
-   dependency **Q** (`spec.dependencies[].composes`, validated fail-closed by
-   the catalog controller: no wildcards, ordinary Kubernetes verbs only, and
-   the group must be one Q serves — checked against Q's `status.apiGroups`, and
-   skipped while Q is unregistered or its groups are still unknown, since
-   charts reconcile in no particular order).
-2. `group` really is a group Q serves, per the registry, right now.
-3. Q's export is **bound** in this tenant workspace.
-4. A workspace or org admin **accepted** the composition here — recorded as
-   `compose:<group>/<resource>` at `workspace` scope in the provider's `Grant`
-   (`pkg/hub/hubaccess`), written by the Enable dialog.
-5. Every requested verb is in the **declared** verb list.
-
-Refusals: `composition_not_declared`, `composition_not_granted`,
-`composition_verb_not_declared`, `composition_rule_shape`, plus
-`provider_not_bound` when Q is not enabled here.
-
-The shapes, and why they are what they are:
-
-| Verbs | `resourceNames` | Why |
-|---|---|---|
-| `create` | **must be absent** | a create request has no name yet, so a name-scoped `create` rule authorizes *nothing* |
-| `list`, `watch` | **must be absent** | RBAC does not apply `resourceNames` to collection requests |
-| `get`, `update`, `patch`, `delete` | **required** | the object exists and has a name, and a composing reconciler knows it — it created it |
-
-`list` and `watch` are refused outright on a foreign group under clause B and
-admitted here, and the difference is the whole argument for the clause. The
-holder is a ServiceAccount **inside one tenant workspace**, with a ClusterRole
-the hub wrote and reconciles; a list it authorizes returns the objects of that
-one workspace — the workspace whose admin accepted the composition, of a kind
-they accepted. Bounding a reconciler to a workspace is precisely what a scoped
-identity is for, so "every Instance in this workspace" is the intended scope,
-not an escape from one. A reconciler cannot work without a watch, and refusing
-it would push providers to poll by name or to take a permission claim, which is
-worse on every axis.
-
-**Why not a permission claim.** The other way a provider could reach a
-first-party group is an APIExport permission claim, and it is the wrong tool
-here. A claim on a `*.railgrid.ai` group pins to **one export's
-`identityHash`** (AGENTS.md §5.7), which is per-installation and stamped at
-`init`; the moment an Org self-hosts the dependency, every claim-holder is
-still pinned to the platform copy and kcp reports the binding as healthy while
-serving none of the claimed resources (this is what
-`GET …/providers/enabled` surfaces as `staleClaims`). A composition names the
-dependency by NAME and resolves through whatever export is bound in that
-workspace, so it survives a BYO swap. It is also revocable by the party who
-should hold that power: a claim lives in the consumer's own APIExport, a
-composition in the tenant's `Grant`, which Disable deletes.
 
 Compositions follow `--provider-hub-access-platform-default` exactly as hub
 access does — a platform provider composes what it declares where nobody
@@ -818,15 +924,32 @@ is not.
 
 ## Known divergences (and why)
 
-1. **`kuery` / `app-studio` (and `agents`, `quickstart`) drive their UI
-   through their own REST, not the kcp proxy.** Contract-2-clean — every call
-   is made as the caller — but the routes mirror CRs, which Pillar 2 rule 1
-   forbids, and the token reaches their backend. This is a **deviation being
-   migrated**, not a sanctioned second model; see
-   [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md).
-   A non-kcp store (kuery's SQL index) or a streaming surface (app-studio's
-   chat) justifies a *backend*, but the backend must then serve Pillar 2
-   classes — verbs on bound resources — not CRUD facades.
+1. **The CRUD-facade REST routes (`/services/providers/{name}/api/*`) are
+   gone.** `kuery`, `app-studio`, `agents` and `quickstart` used to drive their
+   UIs through their own REST, mirroring CRs. `serve.New` now refuses anything
+   under `/api/*`, the UIs read and write their kinds through `/clusters/{cluster}`
+   kube REST, and every remaining backend operation is a declared verb or
+   action on a bound resource — a custom subresource reached through the API
+   path itself. `make verify-provider-contract` reports zero `adhoc-rest`
+   violations with no exceptions. A non-kcp store (kuery's SQL index) or a
+   streaming surface (app-studio's chat) still justifies a *backend*; it
+   serves Pillar 2 classes, never a CRUD facade.
+2. **The hub-proxied verb grammar is gone (2026-09-25).** Verbs and actions
+   were once reachable twice — as
+   `/services/providers/{name}/{dataplane,actions}/clusters/{id}/{resource}/{name}/{verb}`
+   through the hub's backend proxy with the caller's bearer and two
+   provider-side gates, and as the custom subresource. The second entry point
+   is now the only one. `provider-sdk/dataplane` no longer has
+   `ParsePath`/`ParseRequest`/`DataplaneRoot`/`ActionsRoot`/`ProviderPath`,
+   `provider-sdk/serve` mounts no `/dataplane/` or `/actions/` prefix, the hub
+   proxy performs no path-cluster authorization and injects no path-derived
+   `X-Railgrid-Cluster`, and the edges `ticket` verb (the short-lived
+   WebSocket ticket the browser terminal used to mint) is removed: the browser
+   presents its bearer as the WebSocket subprotocol instead. Portals
+   build verb URLs with `kubeVerbPath` (`provider-sdk/portalkit/kube.ts`);
+   `serviceBase()` remains only for `/oauth` and `/mcp`. The `railgrid` CLI
+   addresses verbs on the hub's `/clusters/{id}/apis/…` — an edge
+   kubeconfig's `server` URL and `status.URL` are kube paths.
 
 ---
 
@@ -835,16 +958,41 @@ is not.
 - [ ] UI reads/writes go through `/clusters/{cluster}` kube REST via the
       `portalkit` kube client (contract 1). The backend is **not** a data
       path; there is no `/api/*`.
-- [ ] **Every backend route is one of the eight classes** in §"Pillar 2 route
-      classes" — (a) data-plane verb, (a′) action, (b) `/mcp`, (c) health,
-      (d) browser OAuth, (e) hub-only, (f) agent tunnel, (g) signed webhook.
-      Name the class for each route you add. If you cannot, the route does
-      not belong on the backend.
-- [ ] Verbs are served on the grammar
-      `/{root}/clusters/{clusterID}/{resource}/{name}/{verb}` through
-      `provider-sdk/dataplane`, with **gate 1 a real GET** as the caller and
-      **gate 2 an SSAR for `create`** on `{resource}/{verb}`, name-scoped.
-      Path cluster must equal `X-Railgrid-Cluster`.
+- [ ] **Every backend route is one of the classes** in §"Pillar 2 route
+      classes" — (a) data-plane verb and (a′) action, both shard-forwarded
+      custom subresources, (b) `/mcp`, (c) health, (d) browser OAuth, (e)
+      hub-only, (f) agent tunnel, (g) signed webhook. Name the class for each
+      route you add. If you cannot, the route does not belong on the backend.
+- [ ] Every verb and action is **declared** in `manifest.yaml`
+      (`spec.dataPlane.verbs`, `spec.actions`), and every `{resource}/{verb}`
+      it produces passes kcp's name rule — lower-case, digits and hyphens, no
+      underscores, never `status` or `scale`. `make verify-provider-contract`
+      (`subresource-name`) is the check.
+- [ ] Verbs are served through `provider-sdk/dataplane`, reachable **one**
+      way: the shard-forwarded kube path
+      `/clusters/{clusterID}/apis/{group}/{version}/{resource}/{name}/{verb}`,
+      where kcp has already authorized the `{resource}/{verb}` noun and the
+      gate runs a `SubjectAccessReview` for `get` on the parent on the
+      caller's behalf, then acts as the provider. No `/dataplane/` or
+      `/actions/` prefix, no bearer, no `X-Railgrid-Cluster` on a verb.
+- [ ] The manifest claims `authorization.k8s.io/subjectaccessreviews`
+      (`create`, tenantScoped). The gate runs its SubjectAccessReview
+      through the export virtual workspace, and kcp serves that builtin there
+      only for an export that claims it and a binding that accepted it —
+      without the claim every verb is a 500 (verified against
+      kcp-dev/kcp#4388). `hack/verify-provider-contract.mjs`
+      `subresource-access-claim` refuses an export with a `<resource>/<verb>`
+      entry and no such claim.
+- [ ] `serve.Options.Subresources` is set — from
+      `serve.SubresourcesFromCatalogEntryFile`, not by hand — and the caller
+      factory is built with `dataplane.WithProviderConfig(cfg, exportName)`. The URL the
+      `DataPlaneEndpointSlice` publishes (from `spec.backend.url`) is the
+      **shard-facing** address.
+- [ ] A kind of **another** provider that this provider creates and manages is
+      declared in `spec.dependencies[].composes[]`, and nowhere else: the
+      identity-agnostic permission claim, the tenant's consent and the
+      `PermissionClaimPolicy` entry are all generated from it. Re-run
+      `make permission-claim-policy` when it changes.
 - [ ] No kcp-admin / root client anywhere in the provider (contract 2); the
       admin credential appears only in the one-shot `init`.
 - [ ] Controllers run as the **minted provider SA** off the
@@ -853,19 +1001,23 @@ is not.
       `tenantScoped` permission claims for exactly the resources/verbs you
       need. `RequeueAfter` only for the three sanctioned uses in §"Pillar 1
       carve-outs".
-- [ ] Request-driven endpoints act as the **caller** via the forwarded token
-      (2b): build the tenant client from `Authorization` + the cluster ID in
-      `X-Railgrid-Cluster` (`X-Railgrid-Tenant` carries the same ID), drop the
-      provider's own credential. Never parse a workspace path out of a header.
+- [ ] The MCP projection — the one route that still carries a bearer — acts
+      as the **caller** via the forwarded token (2b): build the tenant client
+      from `Authorization` + the cluster ID in `X-Railgrid-Cluster`
+      (`X-Railgrid-Tenant` carries the same ID), drop the provider's own
+      credential. Never parse a workspace path out of a header. A verb
+      handler never does this; it asks `dataplane.Authorize` instead.
 - [ ] Never trust inbound `X-Railgrid-*` headers in the provider — the backend
       proxy strips and re-injects them; treat them as hub-asserted only.
 - [ ] Durable tenant state is on the CR. If it is not, it is one of the two
       carve-outs (transient artifact, or projection kind with a purge
       finalizer) and the architecture doc says so.
 - [ ] To reach **another provider**, bind its `APIExport` and call its CRs /
-      data-plane verbs as the caller (contract 3). Never hold a credential
-      into another provider's backend (runtime cluster, DB, internal
-      Service) or hardcode its backend URL.
+      data-plane verbs as yourself through your own export virtual workspace,
+      on a `composes[]` claim naming `"{resource}/{verb}"` with
+      `verbs: ["*"]` (contract 3). Never hold a credential into another
+      provider's backend (runtime cluster, DB, internal Service) or hardcode
+      its backend URL.
 
 ---
 
@@ -874,7 +1026,11 @@ is not.
 | Concern | Anchor |
 |---------|--------|
 | UI proxy (no token) | `pkg/hub/providers/proxy.go:52` |
-| Backend proxy (forwards token + injects identity) | `pkg/hub/providers/proxy.go:90` |
+| Backend proxy (non-kube classes only; forwards token + injects identity) | `pkg/hub/providers/proxy.go` `NewBackendProxy` |
+| Org-owned provider hop (through kcp at the edges `services/{name}/proxy` verb, delegated token in `X-Railgrid-Upstream-Authorization`) | `pkg/hub/providers/proxy_edge.go` |
+| Verb URL construction (the one spelling) | `pkg/apiurl/urls.go` `ProviderVerbPath`, `EdgeVerbPath`; `provider-sdk/portalkit/kube.ts` `kubeVerbPath` |
+| WebSocket bearer subprotocol | `pkg/server/proxy/proxy.go` `websocketBearer` |
+| Shard request deadline for streaming verbs | `pkg/hub/kcp/embedded.go` `providerVerbRequestTimeout` |
 | Tenant resolution (token → workspace path) | `pkg/hub/provider_tenant_resolver.go:104` |
 | kcp proxy (membership-gated, caller-scoped) | `pkg/server/proxy/proxy.go`, `pkg/server/proxy/authorizer.go` |
 | Provider provisioning (workspace, SA, kubeconfig) | `pkg/hub/providers/provision.go` |
@@ -893,4 +1049,13 @@ is not.
 | Scoped identity record | `apis/tenancy/v1alpha1/types_scoped_identity.go` |
 | Scoped identity routes | `pkg/hub/restapi/identities.go` |
 | Scoped identity client | `provider-sdk/identityclient/` |
+| Subresource entries on the APIExport | `provider-sdk/apiexportgen/subresources.go` |
+| Composition → identity-agnostic claim | `provider-sdk/apiexportgen/apiexportgen.go` `MergeCompositionClaims` |
+| Endpoint object kcp routes a verb through | `provider-sdk/dataplaneendpoints/`, `provider-sdk/install/dataplaneendpoints.go` |
+| Verb path, stamped identity, hops | `provider-sdk/dataplane/subresource.go`, `provider-sdk/dataplane/identity.go` |
+| Gate (SAR as the caller, then act as the provider), `Authorize` | `provider-sdk/dataplane/gate.go` |
+| Provider callers: `AsProvider`, `ExportVerbURL`, `ProviderHTTPClient` | `provider-sdk/dataplane/caller.go` |
+| Subresource route table and adapter | `provider-sdk/serve/subresource.go`, `provider-sdk/serve/subresource_table.go` |
+| PermissionClaimPolicy generator | `hack/generate-permission-claim-policy.mjs` → `config/kcp/permissionclaimpolicy.yaml` |
+| PermissionClaimPolicy bootstrap (admin VW) | `pkg/hub/bootstrap/permissionclaimpolicy.go` |
 

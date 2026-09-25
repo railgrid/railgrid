@@ -142,7 +142,7 @@ func TestBrowserMCPParseConsole(t *testing.T) {
 }
 
 func TestBrowserMCPSessionSendsProtocolVersionAfterInitialize(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	seen := map[string]string{}
 	var traceMu sync.Mutex
 	var trace []projectAssistantBrowserTraceEvent
@@ -239,7 +239,7 @@ func TestBrowserMCPSessionRejectsInvalidNegotiatedProtocolVersion(t *testing.T) 
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 			server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
 				return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 					recorder := httptest.NewRecorder()
@@ -300,7 +300,7 @@ func (body *testBrowserEventStreamErrorBody) Read([]byte) (int, error) {
 func (body *testBrowserEventStreamErrorBody) Close() error { return nil }
 
 func TestBrowserMCPSessionInvalidatesUnexpectedEventStreamReadFailure(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	streamBody := &testBrowserEventStreamErrorBody{started: make(chan struct{})}
 	deleteCalls := 0
 	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
@@ -366,7 +366,7 @@ func TestBrowserMCPSessionInvalidatesUnexpectedEventStreamReadFailure(t *testing
 
 func TestBrowserMCPSessionKeepsEventStreamAliveAndClosesAfterDelete(t *testing.T) {
 	const negotiatedProtocol = "2025-06-18"
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	streamBody := &testBrowserEventStreamBody{
 		payload: []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"ping\",\"params\":{}}\n\n"),
 		closed:  make(chan struct{}),
@@ -608,9 +608,9 @@ func TestPrivatePreviewUnconfiguredHubOriginIsActionableForModelAndFeed(t *testi
 	}
 }
 
-func TestBrowserSessionHandoffURLMintsWithCallerBearer(t *testing.T) {
+func TestBrowserSessionHandoffURLMintsAsTheProvider(t *testing.T) {
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != browserSessionHandoffPath || r.Header.Get("Authorization") != "Bearer caller-token" {
+		if r.Method != http.MethodPost || r.URL.Path != browserSessionHandoffPath || r.Header.Get("Authorization") != "Bearer provider-hub-token" || r.Header.Get("X-Railgrid-User") != "alice" {
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 			return
 		}
@@ -618,15 +618,15 @@ func TestBrowserSessionHandoffURLMintsWithCallerBearer(t *testing.T) {
 	}))
 	defer hub.Close()
 	origin, _ := url.Parse("https://console.example.test")
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: hub.URL, hubPublicURL: origin.String()}
-	handoff, err := server.browserSessionHandoffURL(context.Background(), identity{token: "caller-token"}, origin)
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: hub.URL, hubToken: "provider-hub-token", hubPublicURL: origin.String()}
+	handoff, err := server.browserSessionHandoffURL(context.Background(), identity{user: "alice"}, origin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := handoff, "https://console.example.test/auth/session/handoff?code=one-use"; got != want {
 		t.Fatalf("handoff URL = %q, want %q", got, want)
 	}
-	if strings.Contains(handoff, "caller-token") {
-		t.Fatal("caller bearer leaked into browser handoff URL")
+	if strings.Contains(handoff, "provider-hub-token") {
+		t.Fatal("provider bearer leaked into browser handoff URL")
 	}
 }

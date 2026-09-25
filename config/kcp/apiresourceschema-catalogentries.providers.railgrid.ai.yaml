@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260920-91c16a31.catalogentries.providers.railgrid.ai
+  name: v260924-87f1980f.catalogentries.providers.railgrid.ai
 spec:
   group: providers.railgrid.ai
   names:
@@ -542,10 +542,10 @@ spec:
                       composition is pending until someone accepts it again, so a provider
                       cannot widen itself by shipping a new chart.
 
-                      It is deliberately NOT an APIExport permission claim. A first-party
-                      claim pins to one export's identityHash (AGENTS.md §5.7), so a provider
-                      holding one breaks the moment an Org self-hosts the dependency it
-                      claims — which is exactly the case composition has to keep working.
+                      Each composition is ALSO the identity-agnostic permission claim the
+                      generated APIExport carries (provider-sdk/apiexportgen), resolved by kcp
+                      per consumer workspace against whichever copy of the dependency that
+                      workspace bound — so it keeps working when an Org self-hosts it.
                     items:
                       description: |-
                         ProviderComposition is one composed kind: a (group, resource) of the
@@ -760,20 +760,8 @@ spec:
                           portal.
                         maxLength: 512
                         type: string
-                      identityFor:
-                        description: |-
-                          IdentityFor names an APIExport whose kcp identity hash is the value for
-                          this setting, e.g. "edges.providers.railgrid.ai". When set, the hub resolves
-                          the hash and fills the value in for the installer.
-
-                          This exists because identity hashes are the one required value a person
-                          cannot reasonably produce by hand: today they are copied out of an admin
-                          debug view, and getting one wrong yields a provider that binds
-                          successfully and then silently sees none of the resources it claimed.
-                        maxLength: 253
-                        type: string
                       name:
-                        description: Name is the Helm value path, e.g. "apiExport.edgesIdentityHash".
+                        description: Name is the Helm value path, e.g. "store.databaseURLSecretRef.name".
                         maxLength: 253
                         minLength: 1
                         type: string

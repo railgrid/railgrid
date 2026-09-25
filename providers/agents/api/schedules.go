@@ -136,8 +136,7 @@ func applyScheduleUpdate(ctx context.Context, c *agentsclient.Client, name strin
 	return c.Schedules().Update(ctx, sched, metav1.UpdateOptions{})
 }
 
-// runScheduleNow fires a schedule's task immediately as the calling user,
-// asynchronously: it returns 202 with the runID and the run executes in the
+// runScheduleNow fires a schedule's task immediately, asynchronously: it returns 202 with the runID and the run executes in the
 // background — follow it via GET /api/runs/{id} or the /api/events stream.
 func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
 	c, id, ok := s.requireClient(w, r)

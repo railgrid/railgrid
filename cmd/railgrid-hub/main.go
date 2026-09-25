@@ -78,7 +78,7 @@ func main() {
 		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
 			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
 	cmd.Flags().StringVar(&opts.ProviderDelegatedTokens, "provider-delegated-tokens", opts.ProviderDelegatedTokens,
-		"Which providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on /services/providers/*: "+
+		"Which providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on the hub's backend proxy (/services/providers/{name}/*: MCP, browser OAuth, webhooks; data-plane verbs are kcp custom subresources under /clusters/{id} and never carry this token): "+
 			"off (platform providers get the caller's bearer; org-owned providers are always delegated), "+
 			"platform (also platform providers, except --provider-delegated-tokens-exclude), or all (every platform provider). "+
 			"Default off for this release; the next release defaults to platform.")

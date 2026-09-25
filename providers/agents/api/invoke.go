@@ -90,11 +90,12 @@ type invokeRunResponse struct {
 // client.
 //
 // WHOSE IDENTITY THE RUN THEN USES is a separate question from who was allowed
-// to start it. Tools reach the platform data plane as the AGENT, through the
-// APIExport virtual workspace, exactly as a scheduled run does — so a caller
-// who may start a run does not thereby lend the agent their own reach. Without
-// the background plumbing (no provider kubeconfig; local dev) the run falls
-// back to the caller's own credentials, which is the only identity there is.
+// to start it. There is no caller credential on a verb at all: the run reads
+// its objects as THIS PROVIDER through the APIExport virtual workspace and
+// reaches instance-backed tools the same way, exactly as a scheduled run does
+// — so a caller who may start a run does not thereby lend the agent their own
+// reach. Without the background plumbing (no provider kubeconfig; local dev)
+// the run uses the gate's provider client, which is the only client there is.
 func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 	c, id, ok := s.requireClient(w, r)
 	if !ok {

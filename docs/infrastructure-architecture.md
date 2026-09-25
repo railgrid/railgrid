@@ -488,27 +488,33 @@ Written against the code, 19 September 2026
 ### 12.1 Every verb is gated, not just `exec`
 
 `providers/infrastructure/dataplane/` no longer parses its own paths or runs
-its own gates. `ServeHTTP` is:
+its own gates. Every verb is a kcp custom subresource `instances/{verb}` the
+shard forwards as `/clusters/{id}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/{verb}`
+(`?component=` for one component); the `provider-sdk/serve` adapter parses it
+and `ServeHTTP` is:
 
 ```go
-req, ok := sdk.ParseRequest(sdk.DataplaneRoot, r)          // the one grammar
-instance, _, err := sdk.Gate(ctx, r, h.callers, instancesGVR, req)  // both gates
+route, ok := sdk.RouteFrom(r.Context())                                   // the one grammar
+instance, provider, err := sdk.Gate(ctx, h.callers, instancesGVR, route.Request)  // the gate
 ```
 
-`sdk` is [`provider-sdk/dataplane`](../provider-sdk/dataplane). The gates run
-**as the caller**, from the caller's own bearer and nothing else:
+`sdk` is [`provider-sdk/dataplane`](../provider-sdk/dataplane). There is no
+bearer: kcp authenticated the caller and authorized `instances/{verb}` with
+ordinary RBAC before proxying, and stamped the identity in `X-Remote-*`. The
+gate then:
 
-1. a real `GET instances/{name}` in the path's cluster — visibility, and the
-   authoritative object every later decision is made from;
-2. a `SelfSubjectAccessReview` for `create` on `instances/{verb}`, scoped to
-   `{name}`.
+1. runs a `SubjectAccessReview` for `get` on `instances/{name}` on the
+   caller's behalf — visibility;
+2. reads the Instance **as the provider** through its export virtual
+   workspace — the authoritative object every later decision is made from —
+   and hands back the provider client every later step uses.
 
 Gate 2 used to exist for `exec` alone (`authorizer.go`, now deleted); every
 other verb was gated by the GET, which means a caller who could *see* an
 Instance could `restart` it. Now one grant is one verb.
 
 **A component verb collapses onto the instance-level subresource.**
-`.../instances/{n}/components/{c}/log` asks about `instances/log`, exactly as
+`.../instances/{n}/log?component={c}` asks about `instances/log`, exactly as
 `.../instances/{n}/log` does. A component is an addressing detail of the same
 object, not a separate thing to grant, and splitting them would mean a grant
 per component of every template — a set the platform cannot enumerate ahead of

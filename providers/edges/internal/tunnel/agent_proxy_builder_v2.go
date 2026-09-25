@@ -39,11 +39,13 @@ import (
 
 // buildEdgeAgentProxyHandler serves Pillar 2 class (f), the agent tunnel.
 //
-// Agents connect via WebSocket to the grammar route, on the same shape every
-// other class-(a)/(f) route uses — only the root differs, because the
-// credential is the edge's own rather than a tenant caller's:
+// Agents connect via WebSocket, through the hub backend proxy, to
 //
 //	/agent/clusters/{cluster}/{resource}/{name}/proxy
+//
+// This is the one route that still carries a bearer: an agent's connection
+// never passes through kcp, so the credential is the edge's own and this
+// provider TokenReviews it itself.
 //
 // The provider upgrades the connection, wraps it in a revdial.Dialer, and
 // stores it in p.edgeConnManager keyed by "{resource}/{cluster}/{name}".
@@ -88,15 +90,16 @@ const agentPickupRoute = "/" + AgentRoot + "/proxy"
 // agentTunnelHandler serves /agent/clusters/{cluster}/{resource}/{name}/proxy.
 func (p *Server) agentTunnelHandler(upgrader websocket.Upgrader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 0. Parse the grammar. The same parser the consumer plane uses, so a
-		// malformed or traversal-carrying path is refused identically on both
-		// classes; the verb is pinned to "proxy" because class (f) has one.
-		req, ok := dataplane.ParseRequest(AgentRoot, r)
-		if !ok || req.Verb != AgentVerb || req.Tail != "" {
+		// 0. Parse the route, exactly as sent: a malformed or
+		// traversal-carrying path is refused rather than cleaned, a workspace
+		// path is not a cluster ID, and the verb is pinned to "proxy" because
+		// class (f) has one. A percent-encoded path (URL.RawPath set) is
+		// refused outright so an encoded separator cannot shift a segment.
+		cluster, resource, name, ok := parseAgentPath(r.URL.Path)
+		if !ok || r.URL.RawPath != "" {
 			http.Error(w, "invalid path: expected /"+AgentRoot+"/clusters/{cluster}/{resource}/{name}/"+AgentVerb, http.StatusBadRequest)
 			return
 		}
-		cluster, resource, name := req.ClusterID, req.Resource, req.Name
 		gvr, kind, known := p.gvrForResource(resource)
 		if !known {
 			http.Error(w, "invalid path: unknown resource", http.StatusBadRequest)

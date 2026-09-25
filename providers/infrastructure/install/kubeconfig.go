@@ -43,8 +43,8 @@ import (
 const RuntimeKubeconfigSecretKey = "kubeconfig"
 
 // buildRuntimeKubeconfig assembles the clientcmd Config both writers share.
-// TLS verification stays on; the admin config's CA is propagated through so
-// the minted kubeconfig uses the same trust store.
+// The admin config's trust is propagated as-is: its CA when it has one, its
+// insecure-skip-tls-verify when that is what the bootstrap itself ran with.
 func buildRuntimeKubeconfig(id *RuntimeIdentity) *clientcmdapi.Config {
 	return &clientcmdapi.Config{
 		Kind:       "Config",
@@ -53,6 +53,7 @@ func buildRuntimeKubeconfig(id *RuntimeIdentity) *clientcmdapi.Config {
 			"provider-workspace": {
 				Server:                   id.Server,
 				CertificateAuthorityData: id.CAData,
+				InsecureSkipTLSVerify:    id.Insecure,
 			},
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{

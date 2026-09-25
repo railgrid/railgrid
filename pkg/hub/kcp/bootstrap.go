@@ -81,8 +81,7 @@ func NewBootstrapper(config *rest.Config) *Bootstrapper {
 	// The hub admin client fans out across many kcp workspaces (every org, every
 	// child workspace, every provider export) and polls during provider Enable.
 	// client-go's default 5 QPS / 10 burst throttles that fan-out and surfaces as
-	// "client rate limiter Wait ... would exceed context deadline" mid-Enable
-	// (e.g. while waiting for a provider's APIExport in exportClaimIdentities).
+	// "client rate limiter Wait ... would exceed context deadline" mid-Enable.
 	// Give it generous headroom — matching the kuery controller's 50/100 — and
 	// force RateLimiter to nil so each per-path client (configForPath copies this
 	// config) builds its own limiter rather than sharing a single contended
@@ -1893,38 +1892,17 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	if err != nil {
 		return fmt.Errorf("creating child workspace client: %w", err)
 	}
+	return ensureProviderAPIBinding(ctx, wsClient, bindingName, exportPath, exportName, claims)
+}
 
-	// kcp marks the binding's PermissionClaimsValid=False (and refuses to
-	// surface the claimed resource through the export's virtual workspace)
-	// unless a claim on a non-built-in type carries the SAME identityHash the
-	// export it binds to declares for that claim. Rather than re-derive the
-	// hash by scanning sibling APIExports — which races core.railgrid.ai
-	// regeneration and previously left edges claims with an empty hash, so the
-	// bound provider saw zero claimed objects (e.g. kuery engaged no edges) —
-	// read it straight from the export we're binding to. That value is the one
-	// kcp validates against, and the provisioner (ApplyAPIExport) has already
-	// resolved and stamped it; we wait for it below if provisioning is still in
-	// flight.
-	identities, err := b.exportClaimIdentities(ctx, exportPath, exportName, claims)
-	if err != nil {
-		return err
-	}
-
-	// Those identities are whatever this export pins, which is only correct if
-	// the workspace binds the same copy of the dependency the export was built
-	// against. Resolve them against what this workspace actually binds before
-	// creating anything: a stale pin produces a binding kcp reports as perfectly
-	// healthy while serving none of the claimed resources, whose only downstream
-	// symptom is a 404 the dependent provider retries forever.
-	//
-	// For a self-hosted (single-tenant) export this repoints it and returns the
-	// updated identities, which is what lets "swap the dependency, then
-	// Disable/Enable" work unattended. For a platform export it refuses.
-	identities, err = b.verifyClaimIdentities(ctx, orgUUID, wsUUID, bindingName, exportPath, exportName, claims, identities)
-	if err != nil {
-		return err
-	}
-
+// ensureProviderAPIBinding creates the binding, or — when the tenant already
+// holds one — brings its spec.permissionClaims to exactly what the caller
+// decided this time. Enable is the consent dialog: re-running it with a
+// different set of ticks must reach kcp, since a claim the binding does not
+// accept is a kind the provider's virtual workspace does not serve in that
+// workspace. The reference is left alone; a binding pointing at another export
+// is not this binding.
+func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, bindingName, exportPath, exportName string, claims []ProviderClaim) error {
 	specClaims := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
 	for _, c := range claims {
 		state := apisv1alpha2.ClaimRejected
@@ -1938,8 +1916,7 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 						Group:    c.Group,
 						Resource: c.Resource,
 					},
-					Verbs:        c.Verbs,
-					IdentityHash: identities[c.Group+"/"+c.Resource],
+					Verbs: c.Verbs,
 				},
 				Selector: claimSelector(c),
 			},
@@ -1967,31 +1944,60 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	if err != nil {
 		return fmt.Errorf("converting APIBinding to unstructured: %w", err)
 	}
-	if _, err := wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating APIBinding %q in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
+	_, err = wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{})
+	switch {
+	case errors.IsAlreadyExists(err):
+		if err := updateAPIBindingClaims(ctx, wsClient, bindingName, specClaims); err != nil {
+			return err
+		}
+	case err != nil:
+		return fmt.Errorf("creating APIBinding %q: %w", bindingName, err)
 	}
 	if err := waitForAPIBindingBound(ctx, wsClient, bindingName); err != nil {
-		return fmt.Errorf("waiting for APIBinding %q to bind in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
+		return fmt.Errorf("waiting for APIBinding %q to bind: %w", bindingName, err)
 	}
 	return nil
 }
 
-// claimSelector renders a declared claim's scope as the kcp selector written
-// onto the accepted claim in the tenant's APIBinding.
-//
-// A claim with no declared scope becomes matchAll, which is what every claim
-// was before X-4 and what a claim on a resource only the provider ever creates
-// still legitimately is. A claim WITH a scope becomes a label selector, and
-// from that point kcp serves the provider only the matching objects.
-//
-// Note for upgrades: the selector on an accepted claim is IMMUTABLE in kcp
-// (apis.kcp.io_apibindings.yaml, "Permission claim selector is immutable"), and
-// EnsureProviderAPIBinding only ever creates the binding — it no-ops on
-// AlreadyExists. A workspace that enabled the provider before the claim was
-// narrowed therefore keeps its matchAll binding, wider than the provider now
-// asks for, until the provider is disabled and re-enabled there. kcp surfaces
-// the gap as PermissionClaimsValid=False / PermissionClaimsMismatch on the
-// binding; it does not stop the binding from being Bound.
+// updateAPIBindingClaims sets spec.permissionClaims of an existing binding to
+// desired, retrying on conflict. A no-op when they already match.
+func updateAPIBindingClaims(ctx context.Context, wsClient dynamic.Interface, bindingName string, desired []apisv1alpha2.AcceptablePermissionClaim) error {
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		u, err := wsClient.Resource(apiBindingGVR).Get(ctx, bindingName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("getting APIBinding %q: %w", bindingName, err)
+		}
+		var current apisv1alpha2.APIBinding
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &current); err != nil {
+			return fmt.Errorf("decoding APIBinding %q: %w", bindingName, err)
+		}
+		if reflect.DeepEqual(current.Spec.PermissionClaims, desired) {
+			return nil
+		}
+		items := make([]any, 0, len(desired))
+		for i := range desired {
+			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desired[i])
+			if err != nil {
+				return fmt.Errorf("encoding permission claim: %w", err)
+			}
+			items = append(items, raw)
+		}
+		if err := unstructured.SetNestedSlice(u.Object, items, "spec", "permissionClaims"); err != nil {
+			return fmt.Errorf("setting spec.permissionClaims: %w", err)
+		}
+		if _, err := wsClient.Resource(apiBindingGVR).Update(ctx, u, metav1.UpdateOptions{}); err == nil {
+			return nil
+		} else if !errors.IsConflict(err) {
+			return fmt.Errorf("updating APIBinding %q: %w", bindingName, err)
+		} else {
+			lastErr = err
+		}
+	}
+	return fmt.Errorf("updating APIBinding %q: gave up after %d conflicts: %w", bindingName, maxAttempts, lastErr)
+}
+
 func claimSelector(c ProviderClaim) apisv1alpha2.PermissionClaimSelector {
 	if len(c.MatchLabels) == 0 {
 		return apisv1alpha2.PermissionClaimSelector{MatchAll: true}
@@ -2003,72 +2009,6 @@ func claimSelector(c ProviderClaim) apisv1alpha2.PermissionClaimSelector {
 	return apisv1alpha2.PermissionClaimSelector{
 		LabelSelector: metav1.LabelSelector{MatchLabels: matchLabels},
 	}
-}
-
-// exportClaimIdentities returns, per claim, the identityHash the bound
-// APIExport (exportPath/exportName) declares for it — keyed "group/resource".
-// This is the value kcp validates the binding's claim against, so sourcing it
-// from the export (rather than re-deriving it by scanning sibling APIExports'
-// spec.resources, which races core.railgrid.ai regeneration and silently yielded
-// an empty hash → PermissionClaimsValid=False → the provider sees zero claimed
-// objects) keeps the two in lockstep by construction.
-//
-// The provisioner (ApplyAPIExport) resolves and stamps these identities on the
-// export. A first-party railgrid claim (*.railgrid.ai) MUST end up with a non-empty
-// hash; if the export does not carry one yet, provisioning is still in flight
-// (it races the Enable call), so we poll rather than write an empty hash.
-// Built-in / kcp-system claims (core k8s, apis.kcp.io, empty group) legitimately
-// carry no identity, so a missing/empty entry for those is the terminal answer.
-func (b *Bootstrapper) exportClaimIdentities(ctx context.Context, exportPath, exportName string, claims []ProviderClaim) (map[string]string, error) {
-	exportConfig := configForPath(b.config, exportPath)
-	exportClient, err := dynamic.NewForConfig(exportConfig)
-	if err != nil {
-		return nil, fmt.Errorf("creating export workspace client for %s: %w", exportPath, err)
-	}
-
-	key := func(group, resource string) string { return group + "/" + resource }
-
-	out := map[string]string{}
-	lookup := func(ctx context.Context) (bool, error) {
-		ex, err := exportClient.Resource(apiExportGVR).Get(ctx, exportName, metav1.GetOptions{})
-		if errors.IsNotFound(err) {
-			// The export itself doesn't exist yet. After the bootstrap split the
-			// provider's own init (Helm init-container) creates the APIExport, and
-			// that races a tenant clicking Enable — so keep polling until it
-			// appears rather than hard-failing the whole Enable on the first miss.
-			return false, nil
-		}
-		if err != nil {
-			return false, fmt.Errorf("getting APIExport %q in %s: %w", exportName, exportPath, err)
-		}
-		pcs, _, _ := unstructured.NestedSlice(ex.Object, "spec", "permissionClaims")
-		got := map[string]string{}
-		for _, pc := range pcs {
-			m, ok := pc.(map[string]any)
-			if !ok {
-				continue
-			}
-			g, _ := m["group"].(string)
-			r, _ := m["resource"].(string)
-			h, _, _ := unstructured.NestedString(m, "identityHash")
-			got[key(g, r)] = h
-		}
-		// Wait for the provisioner to stamp every first-party claim's identity.
-		for _, c := range claims {
-			if strings.HasSuffix(c.Group, ".railgrid.ai") && got[key(c.Group, c.Resource)] == "" {
-				return false, nil
-			}
-		}
-		out = got
-		return true, nil
-	}
-
-	// immediate=true returns on the first hit in the common case where the
-	// export is already fully provisioned; otherwise poll until it is.
-	if err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true, lookup); err != nil {
-		return nil, fmt.Errorf("APIExport %q (%s) not yet created, or its permissionClaims not yet stamped with identityHashes, by the provider init: %w", exportName, exportPath, err)
-	}
-	return out, nil
 }
 
 // ListProviderAPIBindings returns the set of Bound provider APIBindings
@@ -2293,12 +2233,8 @@ func (b *Bootstrapper) ListProviderAPIBindingsForExport(ctx context.Context, exp
 //   - A claim the tenant EXPLICITLY REJECTED stays Rejected. Rejecting is a
 //     decision the tenant made about their own workspace; a migration
 //     propagates the provider's claim set, it does not overturn consent.
-//   - A claim already on the binding keeps its identityHash and selector.
-//     Those were resolved against what this workspace binds when it was
-//     enabled (see verifyClaimIdentities); re-deriving them from the export
-//     here could re-pin a workspace to a stale copy of a dependency. Only
-//     genuinely new claims take their identity from the export — and only they
-//     take their scope from it, because kcp makes an accepted claim's selector
+//   - A claim already on the binding keeps its selector. Only genuinely new
+//     claims take their scope from the export, because kcp makes an accepted claim's selector
 //     immutable, so a claim narrowed after a workspace enabled the provider
 //     keeps that workspace's original (wider) scope until the provider is
 //     disabled and re-enabled there.
@@ -2325,11 +2261,6 @@ func (b *Bootstrapper) ReacceptProviderAPIBindingClaims(
 	}
 
 	key := func(group, resource string) string { return group + "/" + resource }
-	// Resolved at most once, and only when some claim is new to this binding:
-	// exportClaimIdentities polls for the provisioner to stamp a first-party
-	// claim's hash, which is wasted latency per binding when (as in the common
-	// migration) every new claim is a built-in type that carries none.
-	var identities map[string]string
 
 	const maxAttempts = 5
 	var lastErr error
@@ -2346,19 +2277,6 @@ func (b *Bootstrapper) ReacceptProviderAPIBindingClaims(
 		for _, pc := range binding.Spec.PermissionClaims {
 			existing[key(pc.Group, pc.Resource)] = pc
 		}
-		if identities == nil {
-			for _, c := range claims {
-				if _, ok := existing[key(c.Group, c.Resource)]; ok {
-					continue
-				}
-				identities, err = b.exportClaimIdentities(ctx, exportPath, exportName, claims)
-				if err != nil {
-					return false, err
-				}
-				break
-			}
-		}
-
 		desired := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
 		for _, c := range claims {
 			entry := apisv1alpha2.AcceptablePermissionClaim{
@@ -2366,14 +2284,12 @@ func (b *Bootstrapper) ReacceptProviderAPIBindingClaims(
 					PermissionClaim: apisv1alpha2.PermissionClaim{
 						GroupResource: apisv1alpha2.GroupResource{Group: c.Group, Resource: c.Resource},
 						Verbs:         c.Verbs,
-						IdentityHash:  identities[key(c.Group, c.Resource)],
 					},
 					Selector: claimSelector(c),
 				},
 				State: apisv1alpha2.ClaimAccepted,
 			}
 			if prev, ok := existing[key(c.Group, c.Resource)]; ok {
-				entry.IdentityHash = prev.IdentityHash
 				entry.Selector = prev.Selector
 				if prev.State == apisv1alpha2.ClaimRejected {
 					entry.State = apisv1alpha2.ClaimRejected

@@ -15,10 +15,6 @@ import (
 	"testing"
 )
 
-type fakeIdentities map[string]string
-
-func (f fakeIdentities) ResolveIdentityHash(_ string, exportName string) string { return f[exportName] }
-
 func baseSelfHosting() *SelfHosting {
 	return &SelfHosting{
 		Supported:    true,
@@ -110,57 +106,6 @@ func TestRenderInstallInstructionsUpgradeCommand(t *testing.T) {
 	}
 }
 
-func TestRenderInstallInstructionsResolvesIdentityHash(t *testing.T) {
-	sh := baseSelfHosting()
-	sh.RequiredValues = []SelfHostingValue{
-		{Name: "apiExport.edgesIdentityHash", IdentityFor: "edges.providers.railgrid.ai"},
-	}
-	opts := baseOptions()
-	opts.Identities = fakeIdentities{"edges.providers.railgrid.ai": "abc123"}
-
-	got := RenderInstallInstructions(sh, opts)
-	if !strings.Contains(got.Steps[2].Command, "--set apiExport.edgesIdentityHash=abc123") {
-		t.Errorf("identity hash not substituted:\n%s", got.Steps[2].Command)
-	}
-	if len(got.Warnings) != 0 {
-		t.Errorf("resolved identity should not warn: %v", got.Warnings)
-	}
-	for _, v := range got.Values {
-		if v.Name == "apiExport.edgesIdentityHash" && v.Unresolved {
-			t.Error("resolved identity marked Unresolved")
-		}
-	}
-}
-
-// An unresolved identity hash must be loud: it produces a provider that binds
-// successfully and then silently sees none of the resources it claimed.
-func TestRenderInstallInstructionsWarnsOnUnresolvedIdentity(t *testing.T) {
-	sh := baseSelfHosting()
-	sh.RequiredValues = []SelfHostingValue{
-		{Name: "apiExport.edgesIdentityHash", IdentityFor: "edges.providers.railgrid.ai"},
-	}
-	// No resolver wired at all — the hub could not look it up.
-	got := RenderInstallInstructions(sh, baseOptions())
-
-	if len(got.Warnings) == 0 {
-		t.Fatal("unresolved identity hash produced no warning")
-	}
-	var found bool
-	for _, v := range got.Values {
-		if v.Name == "apiExport.edgesIdentityHash" {
-			found = true
-			if !v.Unresolved {
-				t.Error("unresolved identity not marked Unresolved")
-			}
-		}
-	}
-	if !found {
-		t.Error("declared value missing from rendered values")
-	}
-}
-
-// Incomplete metadata must still produce instructions: the alternative leaves
-// the user with a live credential and nothing telling them what to do next.
 func TestRenderInstallInstructionsWithoutChartStillRenders(t *testing.T) {
 	got := RenderInstallInstructions(&SelfHosting{Supported: true}, baseOptions())
 

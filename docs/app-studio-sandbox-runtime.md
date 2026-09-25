@@ -68,16 +68,21 @@ installing the runtime and its RuntimeClass on the nodes is cluster-dependent.
 For a Project with `spec.template`, App Studio reads the Template and resolves
 the instance resource (`spec.instanceCRD`) plus its development components.
 Each workspace file is routed by the component's `workspacePath`; a component
-sync is sent to the infrastructure provider through the hub backend proxy:
+sync is a call to the infrastructure provider's declared `sync` verb — a kcp
+custom subresource on `instances` — made by App Studio **as itself** through
+its own APIExport virtual workspace, on the claim its `composes[]` declaration
+generates (`Callers.ExportVerbURL`):
 
 ```text
-POST /services/providers/infrastructure/dataplane/clusters/{workspace}/{resource}/{name}/sync
-POST /services/providers/infrastructure/dataplane/clusters/{workspace}/{resource}/{name}/components/{component}/sync
+POST {vw}/clusters/{workspace}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/sync
+POST {vw}/clusters/{workspace}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/sync?component={component}
 ```
 
-The same caller-authenticated data-plane boundary serves `restart`, `log`,
-`env`, and `process` operations. The provider authorizes the caller against
-the published instance before reaching its private runtime services. Deleting
+The same data-plane boundary serves `restart`, `log`, `env`, and `process`
+operations. kcp forwards the request to infrastructure under App Studio's
+identity; the provider's gate recognises the foreign provider the claim
+authorized, reads the published instance as itself, and only then reaches its
+private runtime services. End-user identity is not carried across. Deleting
 or switching a Template deletes the old instance; the provider's resource
 graph owns runtime cleanup.
 

@@ -13,19 +13,11 @@ You may obtain a copy of the License at
 // workspace's real API surface — NOT the provider's claimed virtual
 // workspace.
 //
-// Why this exists: a permission claim on another provider's resources must
-// pin that provider's APIExport identityHash, and an export can pin exactly
-// one identity per claimed resource — for every consumer at once. The moment
-// one workspace binds a self-hosted copy of a dependency while another binds
-// the platform copy, no single pin is correct, and kcp silently stops serving
-// the claimed resources to whoever mismatches. Acting as a workspace-local
-// ServiceAccount through the workspace's own bindings sidesteps identity
-// entirely: the workspace serves whichever copy it binds, and RBAC — not
-// claim identity — authorizes the access.
-//
-// The ServiceAccount, its RBAC, and its token Secret are still provisioned
-// over the claimed VW: those are built-in types (no identityHash), so their
-// claims work in every deployment mix.
+// Why this exists: some work has to happen as an identity that lives IN the
+// tenant workspace and is authorized by that workspace's own RBAC through its
+// own bindings, rather than as the provider through its export's virtual
+// workspace. The ServiceAccount, its RBAC and its token Secret are provisioned
+// over the claimed VW (built-in types).
 package tenantaccess
 
 import (

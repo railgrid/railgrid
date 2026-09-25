@@ -38,7 +38,6 @@ require (
 	k8s.io/cli-runtime v0.35.1
 	k8s.io/client-go v0.36.2
 	k8s.io/klog/v2 v2.140.0
-	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/e2e-framework v0.6.0
 	sigs.k8s.io/kind v0.31.0
@@ -54,7 +53,7 @@ replace cloud.google.com/go => cloud.google.com/go v0.116.0
 
 // kcp pkg/cache/server imports apimachinery/v2/pkg/util/crypto, which only
 // exists from v2.32.0. Keep this in lock-step with the kcp release.
-replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.33.0
+replace github.com/kcp-dev/apimachinery/v2 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20260924070258-ba9e0a6a4c61
 
 // KCP kubernetes forks - required for cluster-aware API machinery
 replace (
@@ -310,6 +309,7 @@ require (
 	k8s.io/mount-utils v0.0.0 // indirect
 	k8s.io/pod-security-admission v0.0.0 // indirect
 	k8s.io/streaming v0.36.0 // indirect
+	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2 // indirect
 	oras.land/oras-go/v2 v2.6.1 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.34.0 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
@@ -323,4 +323,14 @@ replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/mu
 
 // kcp v0.33.0 requires code-generator/v3 at a placeholder version (it is a
 // staging module replaced locally upstream); pin the matching release.
-replace github.com/kcp-dev/code-generator/v3 => github.com/kcp-dev/code-generator/v3 v3.33.0
+replace github.com/kcp-dev/code-generator/v3 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/code-generator/v3 v3.0.0-20260924070258-ba9e0a6a4c61
+
+replace github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260924070258-ba9e0a6a4c61
+
+replace github.com/kcp-dev/sdk => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/sdk v0.0.0-20260924070258-ba9e0a6a4c61
+
+replace github.com/kcp-dev/cli => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/cli v0.0.0-20260924070258-ba9e0a6a4c61
+
+replace github.com/kcp-dev/client-go => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/client-go v0.0.0-20260924070258-ba9e0a6a4c61
+
+replace github.com/kcp-dev/virtual-workspace-framework => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260924070258-ba9e0a6a4c61

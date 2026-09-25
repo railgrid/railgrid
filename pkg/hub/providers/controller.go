@@ -390,10 +390,10 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
-	// Compositions gate what the scoped-identity service will mint on ANOTHER
-	// provider's kinds (clause E), so a malformed declaration fails closed the
-	// same way: the provider leaves the registry rather than keeping a stale,
-	// wider composition surface that an admin already consented to.
+	// Compositions become the claims a tenant accepts on ANOTHER provider's
+	// kinds, so a malformed declaration fails closed the same way: the
+	// provider leaves the registry rather than keeping a stale, wider
+	// composition surface that an admin already consented to.
 	if compositionErr := r.validateCompositionDeclaration(orgUUID, &entry); compositionErr != nil {
 		r.reg.DeleteScoped(orgUUID, entry.Name)
 		now := metav1.NewTime(time.Now())
@@ -488,7 +488,6 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			mapped.RequiredValues = append(mapped.RequiredValues, SelfHostingValue{
 				Name:        v.Name,
 				Description: v.Description,
-				IdentityFor: v.IdentityFor,
 				Value:       v.Value,
 			})
 		}

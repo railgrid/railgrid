@@ -233,16 +233,21 @@ spec:
                   repositories:
                     additionalProperties:
                       description: |-
-                        AddonRepository enrolls one local Git source for the runner add-on. The
-                        source is read-only from the runner's point of view; attempts are cloned
-                        into task-owned worktrees. Mirrors runner.RepositoryConfig — the agent
-                        re-validates every field with the runner's own rules before writing
+                        AddonRepository enrolls one Git source for the runner add-on. Either half is
+                        enough: a local checkout the machine owner already has, a remote the runner
+                        may clone and fetch from, or both. Mirrors runner.RepositoryConfig — the
+                        agent re-validates every field with the runner's own rules before writing
                         runner.json, so these markers are an admission guard, not the authority.
+
+                        An entry that names neither is refused: it would give the runner nothing to
+                        check out and nowhere to fetch from.
                       properties:
                         fetchRemoteURL:
                           description: |-
-                            FetchRemoteURL optionally permits the runner to fetch a missing approved
-                            commit into the isolated task clone. Operator-only enrollment data: a
+                            FetchRemoteURL is the remote the runner clones and fetches from. Without a
+                            source it is where the runner's own clone comes from; with one it permits
+                            fetching a missing approved commit into the isolated task clone.
+                            Operator-only enrollment data: a
                             start request can neither supply nor change it. Allowed forms are an
                             absolute path, file://, https://, ssh://, or an scp-style user@host:path.
                           maxLength: 2048
@@ -257,20 +262,34 @@ spec:
                               options
                             rule: '!self.contains(''?'') && !self.contains(''#'')'
                         source:
-                          description: Source is an absolute path to a local Git checkout
-                            on the edge host.
+                          description: |-
+                            Source is an absolute path to a local Git checkout on the edge host.
+                            Optional: without it the runner keeps its own clone under its state
+                            directory, cloned from fetchRemoteURL or from the URL the control plane
+                            hands it with each attempt.
                           maxLength: 4096
                           minLength: 1
                           type: string
                           x-kubernetes-validations:
                           - message: source must be an absolute path on the edge host
                             rule: self.startsWith('/')
-                      required:
-                      - source
                       type: object
+                      x-kubernetes-validations:
+                      - message: a repository must name a source, a fetchRemoteURL,
+                          or both
+                        rule: has(self.source) || has(self.fetchRemoteURL)
                     description: |-
-                      Repositories enrolls the local Git sources this runner may clone from,
-                      keyed by repository ID. A start request may only name an enrolled ID.
+                      Repositories enrols Git sources for this runner, keyed by repository ID.
+
+                      Normally EMPTY, and that is the intended configuration: the runner clones
+                      for itself, from the URL and short-lived credential the control plane
+                      hands it with each attempt, into a clone under its own state directory.
+                      Nothing has to exist on the machine beforehand.
+
+                      An entry is for the exceptions — a checkout the machine owner already
+                      maintains, or a fixed remote the runner may fetch from without being told
+                      per attempt. An entry with no source names no local checkout; the runner
+                      clones it itself from fetchRemoteURL.
                     maxProperties: 64
                     type: object
                   toolchains:

@@ -170,7 +170,7 @@ func (s *Server) checkoutProjectRepository(r *http.Request, id identity, reposit
 	raw, err := callProjectMCPTool(
 		r.Context(),
 		s.mcpEndpoint(id.clusterID),
-		r,
+		s.hubRequest(r, id),
 		id.tenant,
 		s.mcpInsecureSkipTLSVerify,
 		projectToolCodeCheckoutRepository,

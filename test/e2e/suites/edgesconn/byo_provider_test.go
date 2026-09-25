@@ -30,6 +30,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // The BYO-provider data plane, proven against a real tunnel.
@@ -115,8 +118,9 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 		_ = tenantAdmin.Resource(edgeServiceGVR).Delete(context.Background(), svcName, metav1.DeleteOptions{})
 	})
 
-	base := fmt.Sprintf("%s/services/providers/edges/dataplane/clusters/%s/services/%s/proxy",
-		hubURL, tenantWS, svcName)
+	// The Service's proxy verb is a kcp custom subresource on the edges
+	// APIExport, addressed on the hub's kcp front door like any kube path.
+	base := apiurl.EdgeServiceProxyURL(hubURL, tenantWS, svcName, "proxy")
 
 	t.Run("identity and passthrough auth survive the tunnel", func(t *testing.T) {
 		var seen probeIdentity
@@ -136,13 +140,17 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 		if seen.TenantHeader == "" {
 			t.Error("X-Railgrid-Tenant did not survive the tunnel; the provider cannot scope the call")
 		}
-		// E-5: the caller's own bearer must arrive, not the Service's. Presence
-		// or a length check would accept a substituted token, so compare the
-		// fingerprint of exactly what we sent.
+		// E-5: the credential meant for the far end must arrive, not the
+		// Service's. On the kube path the request's Authorization is the
+		// caller's kcp credential and never reaches the provider, so the
+		// far-end credential travels in X-Railgrid-Upstream-Authorization and
+		// auth=passthrough forwards it as the upstream Authorization.
+		// Presence or a length check would accept a substituted token, so
+		// compare the fingerprint of exactly what we sent.
 		if !seen.AuthorizationPresent {
-			t.Error("no Authorization reached the far end; auth=passthrough stripped the caller's credential")
+			t.Error("no Authorization reached the far end; auth=passthrough dropped the upstream credential")
 		}
-		want := fingerprint("Bearer " + staticToken)
+		want := fingerprint(upstreamAuthorization)
 		if seen.TokenFingerprint != want {
 			t.Errorf("Authorization was not passed through: fingerprint %q, want %q (length seen %d) — "+
 				"a substituted token means per-user RBAC collapsed into 'anyone who can reach the tunnel'",
@@ -162,6 +170,7 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 			t.Fatalf("build stream request: %v", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+staticToken)
+		req.Header.Set(dataplane.HeaderUpstreamAuthorization, upstreamAuthorization)
 		resp, err := insecureClient(90 * time.Second).Do(req)
 		if err != nil {
 			t.Fatalf("stream request: %v", err)
@@ -200,6 +209,12 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 
 // getThroughTunnel issues one authenticated GET through the hub and returns the
 // body, failing the test on any non-200.
+// upstreamAuthorization is the credential the far-end backend is meant to see:
+// what a caller puts in X-Railgrid-Upstream-Authorization, and what the hub's
+// edge hop puts there for an org-owned provider (the delegated token). The
+// request's own Authorization authenticates the caller to kcp and stops there.
+const upstreamAuthorization = "Bearer far-end-credential-for-the-probe"
+
 func getThroughTunnel(t *testing.T, url string) []byte {
 	t.Helper()
 	req, err := http.NewRequestWithContext(ctxWithTimeout(t, 60*time.Second), http.MethodGet, url, nil)
@@ -207,6 +222,7 @@ func getThroughTunnel(t *testing.T, url string) []byte {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+staticToken)
+	req.Header.Set(dataplane.HeaderUpstreamAuthorization, upstreamAuthorization)
 	resp, err := insecureClient(90 * time.Second).Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)

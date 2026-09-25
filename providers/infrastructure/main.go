@@ -14,8 +14,11 @@
 // Routes on a single port ($PORT, default 8081):
 //
 //   - /, /main.js, /icon.svg, /assets/*  — embedded Vite bundle
-//   - /healthz                           — liveness; gates BackendHealthy
-//   - /mcp, /mcp/sse                     — MCP transport
+//   - /healthz, /readyz                  — liveness and readiness
+//   - /mcp, /mcp/sse                     — MCP transport (via the hub proxy)
+//   - /clusters/{id}/apis/…/instances/{name}/{verb}
+//     — data-plane verbs, reached only as kcp custom subresources the
+//     serving shard forwards (provider-sdk/serve)
 //
 // Templates and instances are NOT served as REST here: the portal and
 // tenants drive them as CRDs directly against kcp
@@ -168,19 +171,25 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 		port = "8081"
 	}
 
-	// Data-plane subresource proxy (logs/sync/restart/preview proxy/status).
-	// nil in REST-only/dev (no kcp or runtime cluster); the handler then reports
-	// 503 so the route exists but is clearly unavailable. Shared with the MCP
-	// server so the dev_* tools can drive the same verbs in-process.
+	// Data-plane verbs (logs/sync/restart/preview proxy/status), served as
+	// kcp custom subresources. nil in dev with no runtime cluster; the data
+	// plane is then absent rather than stubbed.
 	var dataPlaneHandler http.Handler
 	if h := buildDataPlaneHandler(kcpConfig); h != nil {
 		dataPlaneHandler = h
 	}
 
-	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Tenant:    tenant.NewClientFactory(kcpConfig),
-		DataPlane: dataPlaneHandler,
-	})
+	// The MCP dev_* tools drive the same verbs the one way they exist: on the
+	// hub front door, as the caller, with the bearer the hub's MCP aggregate
+	// forwarded. The tenant client factory already holds that door's host and
+	// CA; it is handed over as the verb caller only when this process serves
+	// a data plane at all, so the tools fail with a clear reason otherwise.
+	tenants := tenant.NewClientFactory(kcpConfig)
+	mcpDeps := mcpserver.Deps{Tenant: tenants}
+	if dataPlaneHandler != nil {
+		mcpDeps.Verbs = tenants
+	}
+	mcpHandler := mcpserver.NewHandler(mcpDeps)
 
 	dist, err := portalFS()
 	if err != nil {
@@ -202,12 +211,30 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 	// callers by the hub's backend proxy. serve.New checks the path against
 	// the prefixes that proxy actually denies, so a "hub-only" route cannot
 	// quietly become tenant-reachable.
+	// The verbs, on the only path they have: the one a kcp shard forwards
+	// for a custom subresource. The table is derived from this provider's own
+	// CatalogEntry manifest (catalogentry.go), so what kcp routes and what
+	// serve answers are one declaration; a missing manifest is a startup
+	// error.
+	subresources, err := subresourceRoutes()
+	if err != nil {
+		log.Fatalf("subresource routes: %v", err)
+	}
+	if dataPlaneHandler == nil {
+		// Nothing to dispatch to: without a data-plane handler the declared
+		// coordinates cannot be served, and serve.New refuses a table it
+		// cannot route rather than mounting a dead prefix.
+		log.Printf("infrastructure: data plane disabled; the kcp custom-subresource path is disabled with it")
+		subresources = nil
+	}
+
 	srv, err := serve.New(serve.Options{
-		Name:      "infrastructure",
-		Readiness: vwhealth.Handler(vwState),
-		Portal:    dist,
-		MCP:       mcpHandler,
-		DataPlane: dataPlaneHandler,
+		Name:         "infrastructure",
+		Readiness:    vwhealth.Handler(vwState),
+		Portal:       dist,
+		MCP:          mcpHandler,
+		DataPlane:    dataPlaneHandler,
+		Subresources: subresources,
 		HubOnly: map[string]http.Handler{
 			workloadIdentityReviewPath: buildWorkloadIdentityReviewHandler(),
 		},

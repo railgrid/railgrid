@@ -99,12 +99,6 @@ func platformPolicy(t *testing.T) *Policy {
 			"edges": true, "infrastructure": true, "code": true,
 			"kuery": true, "app-studio": true,
 		}},
-		fakeCompositions{granted: map[string]bool{
-			"cluster-1|kuery|edges.railgrid.ai/kubernetesclusters":      true,
-			"cluster-1|app-studio|infrastructure.railgrid.ai/instances": true,
-			"cluster-1|app-studio|code.railgrid.ai/repositories":        true,
-			"cluster-1|app-studio|code.railgrid.ai/repositorycommits":   true,
-		}},
 	)
 }
 
@@ -209,40 +203,6 @@ func TestRegistryCatalogClauseC(t *testing.T) {
 	var refusal Refusal
 	if !errors.As(err, &refusal) || refusal.Code != CodeUndeclaredVerb {
 		t.Fatalf("want %s, got %v", CodeUndeclaredVerb, err)
-	}
-}
-
-// Clause E over the real registry: the two `composes` declarations the
-// platform actually ships. Both name a dependency whose export is named
-// differently from the group they compose, which is what used to make
-// composition.Dependency != owner and refuse the rule.
-func TestRegistryCatalogClauseE(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		requester string
-		rule      rbacv1.PolicyRule
-	}{{
-		name:      "kuery watches the edges it engages",
-		requester: "kuery",
-		rule:      rule("edges.railgrid.ai", []string{"kubernetesclusters"}, []string{"list", "watch"}, nil),
-	}, {
-		name:      "app-studio creates the infrastructure Instance a project is",
-		requester: "app-studio",
-		rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, nil),
-	}, {
-		name:      "app-studio updates the code Repository it created",
-		requester: "app-studio",
-		rule:      rule("code.railgrid.ai", []string{"repositories"}, []string{"get", "update"}, []string{"proj-1"}),
-	}} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := platformPolicy(t).Authorize(tc.requester, "cluster-1", []rbacv1.PolicyRule{tc.rule})
-			if err != nil {
-				t.Fatalf("a shipped composition was refused: %v", err)
-			}
-			if len(got) != 1 {
-				t.Fatalf("got %d rules, want 1", len(got))
-			}
-		})
 	}
 }
 

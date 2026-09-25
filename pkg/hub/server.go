@@ -33,6 +33,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/railgrid/provider-sdk/apiexportprovider"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
@@ -347,6 +348,15 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		logger.Info("kcp bootstrap complete")
 
+		// The generated PermissionClaimPolicy (config/kcp/permissionclaimpolicy.yaml)
+		// is the kcp-side expression of the provider manifests'
+		// spec.dependencies[].composes[]. kcp-dev/kcp#4385 is unmerged, so this
+		// is a no-op — one info log — on every kcp that does not serve
+		// admin.kcp.io, which is today's.
+		if err := installPermissionClaimPolicy(ctx, kcpConfig); err != nil {
+			return fmt.Errorf("installing PermissionClaimPolicy: %w", err)
+		}
+
 		// The legacy per-tenant BackfillDefaultMCPs walk (which iterated
 		// root:railgrid:tenants) was removed when the new multi-org model
 		// retired tenant workspaces. The organization bootstrap controller
@@ -428,10 +438,12 @@ func (s *Server) Run(ctx context.Context) error {
 	// (wired below alongside other multicluster controllers) keeps in sync
 	// with ProviderCatalogEntry resources.
 	providerRegistry := providers.NewRegistry()
-	// Provider action invocations ride the backend proxy like every other
-	// data-plane verb (/services/providers/{name}/actions/clusters/...): the
-	// owning provider authorizes them with caller-scoped SSAR gates and kcp
-	// RBAC carries the grants, so no hub-side action router exists.
+	// Provider data-plane verbs and actions are kcp custom subresources on
+	// each provider's APIExport, reached through the kcp front door
+	// (/clusters/{id}/apis/...) and authorized by kcp RBAC; the backend proxy
+	// below carries only the classes that are not kcp API traffic (MCP,
+	// OAuth, webhooks, the agent tunnel, health), so no hub-side verb or
+	// action router exists.
 	// Keep the UI proxy reference around so we can install the portal SPA as
 	// its fallback once the portal handler is built later in this function.
 	// Without that fallback, a hard refresh of /ui/providers/{name} would
@@ -786,6 +798,21 @@ func (s *Server) Run(ctx context.Context) error {
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the kcp proxy at /clusters/{id}.
 			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
+			// The one data-plane hop the hub still makes on a caller's behalf
+			// — an org-owned provider's backend behind its edge — goes through
+			// kcp like every other verb, at the edges provider's
+			// services/{name}/proxy custom subresource, authenticated as the
+			// hub (pkg/hub/providers/proxy_edge.go).
+			if kcpFrontDoor, err := url.Parse(kcpConfig.Host); err != nil {
+				return fmt.Errorf("parsing kcp host %q for the provider edge hop: %w", kcpConfig.Host, err)
+			} else if kcpTransport, err := rest.TransportFor(kcpConfig); err != nil {
+				return fmt.Errorf("building the kcp transport for the provider edge hop: %w", err)
+			} else {
+				backendProxy.SetKCPFrontDoor(kcpFrontDoor, kcpTransport)
+				// An org-owned provider's UI bundle is fetched over the same
+				// hop (pkg/hub/providers/ui_grant.go).
+				uiProxy.SetKCPFrontDoor(kcpFrontDoor, kcpTransport)
+			}
 			// Org-owned providers never see the caller's hub bearer: the
 			// proxy swaps it for a short-lived ServiceAccount token minted in
 			// the caller's workspace (pkg/hub/serviceaccounts
@@ -869,18 +896,10 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("creating scoped identity binding checker: %w", err)
 			}
-			// Clause E reads the SAME Grant the Enable dialog writes, so a
-			// composition a tenant accepted (or declined) takes effect on the
-			// composing provider's next token refresh with nothing else to
-			// reconcile.
-			identityCompositions, err := identity.NewGrantCompositionChecker(kcpConfig, hubAccessGrants, providerRegistry, s.opts.ProviderHubAccessPlatformDefault)
-			if err != nil {
-				return fmt.Errorf("creating scoped identity composition checker: %w", err)
-			}
 			identityService := identity.New(identity.Options{
 				Records: userClient.ScopedIdentities(),
 				Clients: identityClients,
-				Policy:  identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings, identityCompositions),
+				Policy:  identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings),
 				Owners:  identityOwners,
 			})
 			// The sweep is what collects an identity whose holder stopped
@@ -1366,4 +1385,27 @@ func isKCPAPIPath(path string) bool {
 		strings.HasPrefix(path, "/apis/") ||
 		strings.HasPrefix(path, "/api/") ||
 		strings.HasPrefix(path, apiurl.PathPrefixAPIExportVW+"/")
+}
+
+// installPermissionClaimPolicy builds the discovery and dynamic clients the
+// PermissionClaimPolicy apply needs and hands them to the bootstrap package.
+//
+// The target workspace is NOT settled (kcp-dev/kcp#4385 keeps the object in a
+// shard-local system workspace reached through the admin virtual workspace), so
+// the config comes from bootstrap.PermissionClaimPolicyTargetConfig — the one
+// documented place that decision has to be made once the API exists.
+func installPermissionClaimPolicy(ctx context.Context, kcpConfig *rest.Config) error {
+	config := bootstrap.PermissionClaimPolicyTargetConfig(kcpConfig)
+	if config == nil {
+		return nil
+	}
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
+	if err != nil {
+		return fmt.Errorf("creating discovery client: %w", err)
+	}
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("creating dynamic client: %w", err)
+	}
+	return bootstrap.InstallPermissionClaimPolicy(ctx, discoveryClient, dynamicClient)
 }

@@ -10,19 +10,38 @@
 #
 # Written by provider-sdk/cmd/apiexportgen from two inputs:
 #   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
-#   spec.resources                        <- kcp apigen (hack/apigen.sh)
-# Regenerate with: make codegen-<provider>-provider. spec.permissionClaims
-# carries no identityHash: provider-sdk/install stamps one per installation for
-# first-party (*.railgrid.ai) claim groups.
+#   spec.resources                        <- kcp apigen (hack/apigen.sh), plus
+#                                            one "<resource>/<verb>" custom
+#                                            subresource per manifest.yaml
+#                                            spec.dataPlane.verbs[] entry and
+#                                            spec.actions[] entry, naming the
+#                                            schema apigen minted for the verb's
+#                                            "<Verb>Request" kind
+# Regenerate with: make codegen-<provider>-provider. No claim carries an
+# identityHash: kcp resolves a first-party claim per consumer workspace against
+# whatever export that workspace bound (PermissionClaimPolicy admits it).
 apiVersion: apis.kcp.io/v1alpha2
 kind: APIExport
 metadata:
   name: quickstart.providers.railgrid.ai
 spec:
-  permissionClaims: []
+  permissionClaims:
+  - group: authorization.k8s.io
+    resource: subjectaccessreviews
+    verbs:
+    - create
   resources:
   - group: quickstart.providers.railgrid.ai
     name: greetings
-    schema: v260919-b1e9b5e6.greetings.quickstart.providers.railgrid.ai
+    schema: v260925-98850485.greetings.quickstart.providers.railgrid.ai
     storage:
       crd: {}
+  - group: quickstart.providers.railgrid.ai
+    name: greetings/greet
+    schema: v260924-87f1980f.greet.quickstart.providers.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: quickstart.providers.railgrid.ai

@@ -44,27 +44,34 @@ func widget(name, colour string) *unstructured.Unstructured {
 
 func scopeFor(t *testing.T, proxy *tenanttest.Server) *tenant.Scope {
 	t.Helper()
-	scope, err := proxy.Client().For("cluster-a", "caller-token")
+	scope, err := proxy.Client().For("cluster-a")
 	if err != nil {
 		t.Fatalf("For: %v", err)
 	}
 	return scope
 }
 
-func TestForRequiresClusterAndToken(t *testing.T) {
-	c := tenant.NewClient("https://hub.example/", false)
-	if _, err := c.For("", "token"); err == nil || !strings.Contains(err.Error(), "X-Railgrid-Cluster") {
+func TestForRequiresClusterAndProviderCredential(t *testing.T) {
+	c := tenant.NewClient(tenanttest.Callers("https://hub.example/"))
+	if _, err := c.For(""); err == nil || !strings.Contains(err.Error(), "no cluster id") {
 		t.Fatalf("For with empty cluster = %v, want missing-cluster error", err)
 	}
-	if _, err := c.For("cluster-a", ""); err == nil || !strings.Contains(err.Error(), "bearer token") {
-		t.Fatalf("For with empty token = %v, want missing-token error", err)
+	// A workspace path is not a cluster ID: the factory refuses to mint it
+	// into a URL rather than letting the virtual workspace answer 403.
+	if _, err := c.For("root:railgrid:tenants:acme"); err == nil {
+		t.Fatal("For with a workspace path = nil, want an error")
 	}
-	if _, err := c.For("cluster-a", "token"); err != nil {
+	if _, err := tenant.NewClient(nil).For("cluster-a"); err == nil || !strings.Contains(err.Error(), "no provider credential") {
+		t.Fatalf("For without a caller factory = %v, want missing-credential error", err)
+	}
+	if _, err := c.For("cluster-a"); err != nil {
 		t.Fatalf("For: %v", err)
 	}
 }
 
-func TestScopeTargetsClusterProxyAsCaller(t *testing.T) {
+// The scope acts AS THE PROVIDER under /clusters/{id} of the export virtual
+// workspace: the bearer on every request is the provider's, never a caller's.
+func TestScopeTargetsClusterAsProvider(t *testing.T) {
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(widgetsGVR, widget("w1", "red"))
 	scope := scopeFor(t, proxy)
@@ -76,8 +83,8 @@ func TestScopeTargetsClusterProxyAsCaller(t *testing.T) {
 		t.Fatalf("Get = %#v, want stored w1 with a resourceVersion", got.Object)
 	}
 	reqs := proxy.Requests()
-	if len(reqs) != 1 || reqs[0].Path != "/clusters/cluster-a/apis/example.test/v1/widgets/w1" || reqs[0].Bearer != "caller-token" {
-		t.Fatalf("requests = %#v, want one GET under /clusters/cluster-a as the caller", reqs)
+	if len(reqs) != 1 || reqs[0].Path != "/clusters/cluster-a/apis/example.test/v1/widgets/w1" || reqs[0].Bearer != tenanttest.ProviderBearer {
+		t.Fatalf("requests = %#v, want one GET under /clusters/cluster-a as the provider", reqs)
 	}
 }
 

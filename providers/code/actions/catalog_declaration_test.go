@@ -82,7 +82,7 @@ func catalogued(entry catalogEntrySpec) map[string]map[string]struct{} {
 }
 
 // TestServedButUncataloguedVerbsAreDeclaredAsDataPlaneVerbs closes the gap that
-// made stage_snapshot and stage_commit_bundle ungrantable.
+// made stage-snapshot and stage-commit-bundle ungrantable.
 //
 // Both are served on the actions grammar and gated exactly like a catalogued
 // action, but they are deliberately absent from spec.actions: their bodies

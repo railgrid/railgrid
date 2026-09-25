@@ -12,6 +12,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -622,30 +623,51 @@ type projectProviderActionInvokeRequest struct {
 	Input json.RawMessage `json:"input"`
 }
 
-// providerActionInvokeURL composes the action route on the target provider,
-// reached through the hub backend proxy. The URL is the resource reference —
-// cluster ID, resource, name, action and contract version all live in the
-// path, so the provider authorizes exactly what was addressed and no identity
-// travels in the body.
-//
-// provider is the name the tenant's own providerReference binding carries:
-// the integration was declared against a provider this workspace enabled, so
-// the coordinate comes from the Project CR, never from a constant here. The
-// path itself is rendered by dataplane.ProviderPath, the inverse of the
-// parser the serving provider uses, which is what keeps one spelling of the
-// grammar in the tree (cross-provider-simplification X-8).
-func providerActionInvokeURL(hubBase, provider, clusterID string, ref *aiv1alpha1.ProjectProviderResourceReference, action, version string) (string, error) {
-	route, err := dataplane.ProviderPath(provider, dataplane.ActionsRoot, dataplane.Request{
+// providerActionGVR is the kube coordinate of a bound provider resource: the
+// group and version from the reference's apiVersion, the plural from its
+// resource. An action on it is the custom subresource {resource}/{action} the
+// owning provider publishes, which App Studio reaches through its own export
+// virtual workspace — so the integration's provider must be one whose
+// coordinate this export CLAIMS; kcp refuses the call otherwise.
+func providerActionGVR(ref *aiv1alpha1.ProjectProviderResourceReference) (schema.GroupVersionResource, error) {
+	if ref == nil {
+		return schema.GroupVersionResource{}, errors.New("provider action has no resource reference")
+	}
+	gv, err := schema.ParseGroupVersion(strings.TrimSpace(ref.APIVersion))
+	if err != nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("provider action resource apiVersion %q: %w", ref.APIVersion, err)
+	}
+	if gv.Group == "" || gv.Version == "" || strings.TrimSpace(ref.Resource) == "" {
+		return schema.GroupVersionResource{}, fmt.Errorf("provider action resource %q/%q is not addressable as a kube coordinate", ref.APIVersion, ref.Resource)
+	}
+	return gv.WithResource(strings.TrimSpace(ref.Resource)), nil
+}
+
+// providerActionInvokeURL composes the URL of an action on the bound resource:
+// the kcp custom subresource {resource}/{action}, on App Studio's export
+// virtual workspace. The URL is the resource reference — cluster ID, group,
+// resource, name and action all live in the path, so the provider authorizes
+// exactly what was addressed and no identity travels in the body. The
+// contract version is not part of the path (the serving provider restores it
+// from its declaration); provider is the integration's label, for messages.
+func (s *Server) providerActionInvokeURL(ctx context.Context, provider, clusterID string, ref *aiv1alpha1.ProjectProviderResourceReference, action, version string) (string, error) {
+	if s == nil || s.callers == nil {
+		return "", fmt.Errorf("provider action %s/%s on %s is not addressable: no provider credential configured", action, version, provider)
+	}
+	gvr, err := providerActionGVR(ref)
+	if err != nil {
+		return "", err
+	}
+	endpoint, err := s.callers.ExportVerbURL(ctx, gvr, dataplane.Request{
 		ClusterID: clusterID,
-		Resource:  strings.TrimSpace(ref.Resource),
+		Resource:  gvr.Resource,
 		Name:      strings.TrimSpace(ref.Name),
 		Verb:      strings.TrimSpace(action),
-		Version:   strings.TrimSpace(version),
 	})
 	if err != nil {
 		return "", fmt.Errorf("provider action %s/%s on %s/%s is not addressable: %w", action, version, ref.Resource, ref.Name, err)
 	}
-	return strings.TrimRight(hubBase, "/") + route, nil
+	return endpoint, nil
 }
 
 func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, provider, action, version, schemaDigest string, ref *aiv1alpha1.ProjectProviderResourceReference, input json.RawMessage) (int, projectProviderActionEnvelope, error) {
@@ -656,7 +678,7 @@ func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, prov
 	if err != nil {
 		return http.StatusBadGateway, projectProviderActionEnvelope{}, fmt.Errorf("encode provider action request: %w", err)
 	}
-	endpoint, err := providerActionInvokeURL(s.hubBase, provider, id.clusterID, ref, action, version)
+	endpoint, err := s.providerActionInvokeURL(r.Context(), provider, id.clusterID, ref, action, version)
 	if err != nil {
 		return http.StatusBadGateway, providerActionUnavailableEnvelope(provider, action, version, ref), err
 	}
@@ -666,20 +688,11 @@ func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, prov
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	if authorization := strings.TrimSpace(r.Header.Get("Authorization")); authorization != "" {
-		req.Header.Set("Authorization", authorization)
-	}
-	if id.tenant != "" {
-		req.Header.Set("X-Railgrid-Tenant", id.tenant)
-	}
-	if id.clusterID != "" {
-		req.Header.Set("X-Railgrid-Cluster", id.clusterID)
-	}
-	if id.orgUUID != "" {
-		req.Header.Set("X-Railgrid-Org", id.orgUUID)
-	}
-	if id.workspaceUUID != "" {
-		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
+	// The call is made AS APP STUDIO, under its claim; the caller's name is a
+	// label for the far end's logs and authorizes nothing there. Correlation
+	// and deadline headers travel as before.
+	if id.user != "" {
+		req.Header.Set(dataplane.HeaderUser, id.user)
 	}
 	for _, header := range []string{"Idempotency-Key", "X-Request-ID", "X-Railgrid-Action-Deadline-Ms"} {
 		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
@@ -687,13 +700,16 @@ func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, prov
 		}
 	}
 
-	transport, err := projectProviderActionTransport(s.actionsCABundle)
+	// The provider's own credential and TLS, bounded and never following a
+	// redirect: a redirect would carry that credential somewhere the export
+	// virtual workspace did not name.
+	base, err := s.callers.ProviderHTTPClient()
 	if err != nil {
 		return http.StatusBadGateway, providerActionUnavailableEnvelope(provider, action, version, ref), fmt.Errorf("configure provider action transport: %w", err)
 	}
 	client := &http.Client{
 		Timeout:   projectProviderActionCallTimeout,
-		Transport: transport,
+		Transport: base.Transport,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("provider action redirect rejected")
 		},

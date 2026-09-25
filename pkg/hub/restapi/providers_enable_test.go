@@ -78,7 +78,7 @@ func enabledListing(t *testing.T, url string) ListEnabledProvidersResponse {
 // lifecycle: accept two of three, see the third reported pending, decline
 // everything by re-enabling, and have Disable take the grant with it.
 func TestEnableProvider_RecordsAcceptedCompositions(t *testing.T) {
-	mgr, _ := compositionTestManager(t)
+	mgr, ops := compositionTestManager(t)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
 	defer srv.Close()
 
@@ -88,6 +88,24 @@ func TestEnableProvider_RecordsAcceptedCompositions(t *testing.T) {
 	}})
 	if status != http.StatusOK {
 		t.Fatalf("enable: %d %s", status, payload)
+	}
+
+	// The decision reaches the APIBinding: a composition is a permission claim
+	// on the provider's export, and kcp serves the dependency's kind on the
+	// provider's virtual workspace only where the binding accepts it. Every
+	// declared composition is listed; the unticked one is Rejected, not absent.
+	ops.mu.Lock()
+	written := ops.enableClaims[wsKey{"org-a", "ws-1"}]
+	ops.mu.Unlock()
+	for key, want := range map[string]bool{
+		"infrastructure.railgrid.ai/instances": true,
+		"code.railgrid.ai/repositories":        true,
+		"code.railgrid.ai/repositorycommits":   false,
+	} {
+		got, listed := written[key]
+		if !listed || got != want {
+			t.Fatalf("binding claim %s: listed=%v accepted=%v, want listed with accepted=%v (all: %v)", key, listed, got, want, written)
+		}
 	}
 	var resp EnableProviderResponse
 	_ = json.Unmarshal(payload, &resp)

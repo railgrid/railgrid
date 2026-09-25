@@ -750,7 +750,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	var selectedSkills []projectAssistantSkillReceipt
 	var selectedContextResources []projectAssistantContextResourceReceipt
 	if !replay {
-		// Discover provider resources once. The same caller-scoped snapshot both
+		// Discover provider resources once. The same per-request snapshot both
 		// validates structured context hints and drives temporary automatic grants.
 		project, selectedContextResources, err = s.prepareProjectAssistantContextResources(r.Context(), c, id, project, contextResources, request.contextResourceReceipts)
 		if err != nil {

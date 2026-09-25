@@ -4,7 +4,7 @@ import { Play } from 'lucide-vue-next'
 
 import type { RailgridContext } from '../element'
 import type { QuerySpec } from '../api'
-import { errorMessage, serviceBase, useKueryApi } from '../kuery'
+import { errorMessage, useKueryApi } from '../kuery'
 import { collectSchemaWords, createEditor, EXAMPLES, loadCodeMirror, type EditorHandle } from '../playground'
 import FormSelect from '../portalkit/FormSelect.vue'
 
@@ -75,6 +75,6 @@ onBeforeUnmount(() => { controller?.abort(); schemaController?.abort(); generati
       <section aria-labelledby="query-editor-label"><h3 id="query-editor-label" class="kuery-workbench-title">QuerySpec editor</h3><div v-if="editorError" class="kuery-inline-error" role="status">{{ editorError }}</div><textarea v-if="fallback" v-model="documentText" class="pg-fallback" aria-labelledby="query-editor-label" spellcheck="false" /><div v-else ref="editorHost" class="pg-editor" role="group" aria-labelledby="query-editor-label" /></section>
       <section aria-labelledby="query-results-label"><h3 id="query-results-label" class="kuery-workbench-title">Query results</h3><p class="kuery-sr-only" role="status" aria-live="polite">{{ resultStatus }}</p><pre class="pg-result" :class="{ error: !!error }">{{ error || result || '// Results appear here after you run a query.' }}</pre></section>
     </div>
-    <details class="pg-docs"><summary>API and access</summary><p>A query is the <code>run</code> verb on a SavedView. This editor runs your own scratch view, <code>{{ savedView || '…' }}</code>; programmatic clients POST <code>{"input": {"query": …}}</code> to <code>{{ serviceBase(context) }}/dataplane/clusters/&lt;workspace&gt;/savedviews/&lt;name&gt;/run</code> with an OIDC bearer token. You must be able to see the view and be granted <code>run</code> on it, so what you can query is exactly what your workspace RBAC allows.</p></details>
+    <details class="pg-docs"><summary>API and access</summary><p>A query is the <code>run</code> verb on a SavedView. This editor runs your own scratch view, <code>{{ savedView || '…' }}</code>; programmatic clients POST <code>{"input": {"query": …}}</code> to <code>/clusters/&lt;workspace&gt;/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/&lt;name&gt;/run</code> on the hub with an OIDC bearer token — the same kube path <code>kubectl</code> would use. You must be able to see the view and be granted <code>run</code> on it, so what you can query is exactly what your workspace RBAC allows.</p></details>
   </section>
 </template>

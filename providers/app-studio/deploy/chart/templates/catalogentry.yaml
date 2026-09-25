@@ -15,10 +15,10 @@ spec:
   # Dependencies, and what this provider COMPOSES from each of them. `name` is
   # the enable-time guard; `composes` is the (group, resource, verbs) this
   # provider's reconcilers need on that dependency's objects inside the tenant
-  # workspace, accepted at Enable and admitted into the hub-minted scoped
-  # identities the reconcilers act as. Deliberately NOT a permission claim: a
-  # first-party claim pins one serving APIExport identityHash for every
-  # consumer at once and breaks a workspace bound to an org-owned copy.
+  # workspace, accepted at Enable. Each entry is ALSO the identity-agnostic
+  # permission claim the generated APIExport carries (provider-sdk/apiexportgen
+  # derives it; the platform PermissionClaimPolicy admits it), resolved per
+  # workspace to whichever copy of the dependency that workspace bound.
   # Identical to manifest.yaml, which is the source of truth.
   dependencies:
     - name: infrastructure
@@ -26,6 +26,39 @@ spec:
         - group: infrastructure.railgrid.ai
           resource: instances
           verbs: ["get", "list", "watch", "create", "update", "delete"]
+        # The verbs App Studio calls on a workload Instance — the development
+        # data plane (logs, sync, restart, exec, env, process, the sandbox
+        # workspace protocol, the open proxy). Each is a custom subresource the
+        # infrastructure provider publishes; a claim on the resource does not
+        # carry its subresources, so each is claimed as its own entry and kcp
+        # serves it on App Studio's virtual workspace, forwarding it to
+        # infrastructure under App Studio's identity. "*", not "create": kcp
+        # authorizes the HTTP METHOD as the RBAC verb on a custom subresource
+        # (GET for log, POST for sync, DELETE for a proxied session).
+        - group: infrastructure.railgrid.ai
+          resource: instances/log
+          verbs: ["*"]
+        - group: infrastructure.railgrid.ai
+          resource: instances/sync
+          verbs: ["*"]
+        - group: infrastructure.railgrid.ai
+          resource: instances/restart
+          verbs: ["*"]
+        - group: infrastructure.railgrid.ai
+          resource: instances/proxy
+          verbs: ["*"]
+        - group: infrastructure.railgrid.ai
+          resource: instances/env
+          verbs: ["*"]
+        - group: infrastructure.railgrid.ai
+          resource: instances/process
+          verbs: ["*"]
+        - group: infrastructure.railgrid.ai
+          resource: instances/exec
+          verbs: ["*"]
+        - group: infrastructure.railgrid.ai
+          resource: instances/workspace
+          verbs: ["*"]
     - name: code
       composes:
         - group: code.railgrid.ai
@@ -34,15 +67,32 @@ spec:
         - group: code.railgrid.ai
           resource: repositorycommits
           verbs: ["get", "list", "watch"]
+        # The Code verbs App Studio calls as itself: the commit action (and its
+        # large-upload staging verb) on a project's Repository, from both the
+        # Project reconciler and the assistant's commit tool
+        # (internal/codecommit), and the registry pull-token mint on a
+        # Connection when a project is promoted (api/project_promote.go).
+        - group: code.railgrid.ai
+          resource: repositories/commit
+          verbs: ["*"]
+        - group: code.railgrid.ai
+          resource: repositories/stage-commit-bundle
+          verbs: ["*"]
+        - group: code.railgrid.ai
+          resource: connections/mint-registry-token
+          verbs: ["*"]
   ui:
     url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
     indexPath: "/"
   backend:
-    # The hub backend proxy forwards /services/providers/app-studio/* here,
-    # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the
-    # caller's bearer token. The provider serves /dataplane/* (the verbs
-    # below), /healthz (liveness) and /readyz (controller-aware readiness).
-    # There is no /api/* surface: provider-sdk/serve refuses to register one.
+    # The hub backend proxy reaches this address for /healthz (liveness) and
+    # /readyz (controller-aware readiness). The verbs below are NOT reached
+    # this way: each is a kcp custom subresource on the APIExport, forwarded
+    # by the kcp shard to the DataPlaneEndpointSlice's address as
+    # /clusters/{id}/apis/ai.railgrid.ai/v1alpha1/{resource}/{name}/{verb}
+    # with the caller's identity stamped in X-Remote-* headers and no bearer.
+    # There is no /api/* or /dataplane/* surface: provider-sdk/serve refuses
+    # to register one.
     url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
     healthPath: "/readyz"
   # Reference-only: the APIExport, schemas, slice, and bind grant are created by
@@ -53,12 +103,21 @@ spec:
     # APIBinding at Enable time; a claim missing here is silently denied at
     # reconcile.
     permissionClaims:
-      # Built-in types ONLY — deliberately no first-party (*.railgrid.ai)
-      # claims: those pin one APIExport identityHash for every consumer at
-      # once and break mixed platform/self-hosted dependency deployments.
-      # What the reconcilers need on a dependency is the composition declared
-      # above, reached through per-project/per-studio identities minted by the
-      # hub and acting through each workspace's own bindings.
+      # Every provider that serves a custom subresource needs this one claim:
+      # on the shard-forwarded path there is no caller bearer, so the provider
+      # runs a SubjectAccessReview for the stamped caller through its own
+      # APIExport virtual workspace, and kcp serves that builtin there only for
+      # an export that claims it (hack/verify-provider-contract.mjs
+      # subresource-access-claim). Built-in review API: no identityHash, verb
+      # create only; tenantScoped because the VW confines each review to the
+      # tenant's OWN workspace.
+      - group: authorization.k8s.io
+        resource: subjectaccessreviews
+        verbs: [create]
+        tenantScoped: true
+      # Built-in types ONLY — the first-party (*.railgrid.ai) claims are
+      # derived from the compositions declared above and must not be repeated
+      # here (claims-parity in hack/verify-provider-contract.mjs).
       #
       # No serviceaccounts / clusterroles / clusterrolebindings: a provider
       # does not mint identities, it asks the hub
@@ -349,6 +408,6 @@ data:
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
         # No requiredValues: app-studio pins no APIExport identity hashes —
-        # the reconcilers reach infrastructure/code through each workspace's
-        # own bindings, whichever copy that is.
+        # its composition claims are identity-agnostic and resolve per
+        # workspace to whichever infrastructure/code copy it bound.
 {{- end }}
