@@ -327,6 +327,12 @@ func startKueryProvider(t *testing.T, workDir string) {
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"KUERY_WORKSPACE_PATH="+kueryWorkspacePath,
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "kuery", "deploy", "chart", "files"),
+		// A verb exists only as a declared kcp custom subresource, so init
+		// reads the manifest for the coordinates the export publishes, and the
+		// DataPlaneEndpointSlice those coordinates route through needs the
+		// address this suite actually serves on.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "kuery", "manifest.yaml"),
+		"RAILGRID_DATAPLANE_URL=http://127.0.0.1:"+kueryPort,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -353,6 +359,9 @@ func startKueryProvider(t *testing.T, workDir string) {
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		// Scratch store so the suite never writes kuery.db into the repo.
 		"KUERY_STORE_DRIVER=sqlite",
+		// serve refuses to start without the manifest: it is where the
+		// "<resource>/<verb>" coordinates it answers come from.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "kuery", "manifest.yaml"),
 		"KUERY_STORE_DSN="+filepath.Join(workDir, "kuery.db"),
 	)
 	cmd.Stdout = provLog

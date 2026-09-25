@@ -221,6 +221,12 @@ func TestMain(m *testing.M) {
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"EDGES_WORKSPACE_PATH="+edgesWorkspacePath,
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files"),
+		// A verb exists only as a declared kcp custom subresource, so init
+		// reads the manifest for the coordinates the export publishes, and the
+		// DataPlaneEndpointSlice those coordinates route through needs the
+		// address this suite actually serves on.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "edges", "manifest.yaml"),
+		"RAILGRID_DATAPLANE_URL=http://127.0.0.1:"+providerPort,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -239,6 +245,9 @@ func TestMain(m *testing.M) {
 		"RAILGRID_PROVIDER_NAME=edges",
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"RAILGRID_DEV_MODE=true",
+		// serve refuses to start without the manifest: it is where the
+		// "<resource>/<verb>" coordinates it answers come from.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "edges", "manifest.yaml"),
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog

@@ -19,7 +19,8 @@ COPY providers/quickstart/go.mod providers/quickstart/go.sum ./
 COPY provider-sdk/ /provider-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY providers/quickstart/main.go providers/quickstart/assets.go \
-     providers/quickstart/init_cmd.go providers/quickstart/controller_manager.go ./
+     providers/quickstart/init_cmd.go providers/quickstart/controller_manager.go \
+     providers/quickstart/catalogentry.go ./
 COPY providers/quickstart/apis/ ./apis/
 COPY providers/quickstart/controller/ ./controller/
 COPY providers/quickstart/scheme/ ./scheme/

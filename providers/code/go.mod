@@ -107,7 +107,7 @@ replace (
 	k8s.io/kms => github.com/kcp-dev/kubernetes/staging/src/k8s.io/kms v0.0.0-20260602065202-e006560fc76a
 )
 
-replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.33.0
+replace github.com/kcp-dev/apimachinery/v2 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20260924070258-ba9e0a6a4c61
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0
 
