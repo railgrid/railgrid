@@ -53,7 +53,7 @@ replace cloud.google.com/go => cloud.google.com/go v0.116.0
 
 // kcp pkg/cache/server imports apimachinery/v2/pkg/util/crypto, which only
 // exists from v2.32.0. Keep this in lock-step with the kcp release.
-replace github.com/kcp-dev/apimachinery/v2 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20260924070258-ba9e0a6a4c61
+replace github.com/kcp-dev/apimachinery/v2 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20260925181034-3b4bd7a70ff0
 
 // KCP kubernetes forks - required for cluster-aware API machinery
 replace (
@@ -323,14 +323,14 @@ replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/mu
 
 // kcp v0.33.0 requires code-generator/v3 at a placeholder version (it is a
 // staging module replaced locally upstream); pin the matching release.
-replace github.com/kcp-dev/code-generator/v3 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/code-generator/v3 v3.0.0-20260924070258-ba9e0a6a4c61
+replace github.com/kcp-dev/code-generator/v3 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/code-generator/v3 v3.0.0-20260925181034-3b4bd7a70ff0
 
-replace github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260924070258-ba9e0a6a4c61
+replace github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260925181034-3b4bd7a70ff0
 
-replace github.com/kcp-dev/sdk => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/sdk v0.0.0-20260924070258-ba9e0a6a4c61
+replace github.com/kcp-dev/sdk => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/sdk v0.0.0-20260925181034-3b4bd7a70ff0
 
-replace github.com/kcp-dev/cli => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/cli v0.0.0-20260924070258-ba9e0a6a4c61
+replace github.com/kcp-dev/cli => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/cli v0.0.0-20260925181034-3b4bd7a70ff0
 
-replace github.com/kcp-dev/client-go => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/client-go v0.0.0-20260924070258-ba9e0a6a4c61
+replace github.com/kcp-dev/client-go => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/client-go v0.0.0-20260925181034-3b4bd7a70ff0
 
-replace github.com/kcp-dev/virtual-workspace-framework => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260924070258-ba9e0a6a4c61
+replace github.com/kcp-dev/virtual-workspace-framework => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260925181034-3b4bd7a70ff0
