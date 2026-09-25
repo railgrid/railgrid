@@ -506,11 +506,16 @@ func enableKueryViaHub(t *testing.T, tenant dynamic.Interface, tenantWS string) 
 		t.Fatalf("tenant workspace %s has path %q, want root:railgrid:tenants:<org>:<ws>", tenantWS, wsPath)
 	}
 
+	// Accept everything kuery declares, read from the catalog rather than
+	// hardcoded: an Enable that ticks only some of spec.requires leaves the rest
+	// Rejected, and a claim the binding does not accept is a coordinate kcp's
+	// virtual workspace does not serve. A hardcoded list silently stops matching
+	// the declaration the moment a requirement is added, which is how this test
+	// came to enable kubernetesclusters without kubernetesclusters/k8s.
+	claims, compositions := declaredRequirements(t, orgUUID, workspaceUUID, "kuery")
 	body, _ := json.Marshal(map[string]any{
-		"acceptedClaims": []any{},
-		"acceptedCompositions": []map[string]string{{
-			"provider": "edges", "group": "edges.railgrid.ai", "resource": "kubernetesclusters",
-		}},
+		"acceptedClaims":       claims,
+		"acceptedCompositions": compositions,
 	})
 	path := fmt.Sprintf("/api/orgs/%s/workspaces/%s/providers/kuery/enable", orgUUID, workspaceUUID)
 	var status int
@@ -604,4 +609,77 @@ func trunc(b []byte) string {
 		return string(b)
 	}
 	return string(b[:max]) + "...(truncated)"
+}
+
+// declaredRequirements reads one provider's spec.requires from the hub catalog
+// and splits it the way Enable expects: a requirement that NAMES a provider is
+// a composition, one that does not is a permission claim on a platform builtin.
+// Every declared coordinate is returned, verb coordinates included, because the
+// verbs come from the declaration and the caller only says yes.
+func declaredRequirements(t *testing.T, orgUUID, workspaceUUID, provider string) (claims, compositions []map[string]string) {
+	t.Helper()
+	var catalog struct {
+		Items []struct {
+			Name     string `json:"name"`
+			Requires []struct {
+				Provider  string `json:"provider,omitempty"`
+				Group     string `json:"group,omitempty"`
+				Resources []struct {
+					Name string `json:"name"`
+				} `json:"resources,omitempty"`
+			} `json:"requires,omitempty"`
+		} `json:"items"`
+	}
+	if !waitFor(t, 2*time.Minute, func() (bool, string) {
+		req, err := http.NewRequestWithContext(ctxWithTimeout(t, 30*time.Second), http.MethodGet, hubURL+"/api/providers", nil)
+		if err != nil {
+			return false, err.Error()
+		}
+		req.Header.Set("Authorization", "Bearer "+staticToken)
+		req.Header.Set("X-Railgrid-Org", orgUUID)
+		req.Header.Set("X-Railgrid-Workspace", workspaceUUID)
+		resp, err := insecureClient(30 * time.Second).Do(req)
+		if err != nil {
+			return false, err.Error()
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return false, fmt.Sprintf("list providers %d: %s", resp.StatusCode, trunc(raw))
+		}
+		catalog.Items = nil
+		if err := json.Unmarshal(raw, &catalog); err != nil {
+			return false, err.Error()
+		}
+		for _, item := range catalog.Items {
+			if item.Name == provider {
+				return true, ""
+			}
+		}
+		return false, provider + " is not in the catalog yet"
+	}) {
+		t.Fatalf("provider %s never appeared in the hub catalog", provider)
+	}
+	claims, compositions = []map[string]string{}, []map[string]string{}
+	for _, item := range catalog.Items {
+		if item.Name != provider {
+			continue
+		}
+		for _, requirement := range item.Requires {
+			for _, resource := range requirement.Resources {
+				if requirement.Provider != "" {
+					compositions = append(compositions, map[string]string{
+						"provider": requirement.Provider, "group": requirement.Group, "resource": resource.Name,
+					})
+					continue
+				}
+				claims = append(claims, map[string]string{"group": requirement.Group, "resource": resource.Name})
+			}
+		}
+	}
+	if len(claims)+len(compositions) == 0 {
+		t.Fatalf("provider %s declares no requirements; the catalog entry did not load", provider)
+	}
+	t.Logf("accepting %s requirements: %d claim(s), %d composition(s)", provider, len(claims), len(compositions))
+	return claims, compositions
 }
