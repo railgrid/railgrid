@@ -189,7 +189,9 @@ func TestMain(m *testing.M) {
 	initCmd.Stderr = initLog
 	if err := initCmd.Run(); err != nil {
 		cleanup()
-		fmt.Fprintf(os.Stderr, "provider init failed: %v (log: %s)\n", err, initLog.Name())
+		// The log file lives in a temp dir CI does not upload, so the tail has
+		// to reach stderr or the failure says only "exit status 1".
+		fmt.Fprintf(os.Stderr, "provider init failed: %v (log: %s)\n%s\n", err, initLog.Name(), tailFile(initLog.Name(), 60))
 		os.Exit(1)
 	}
 
@@ -298,4 +300,18 @@ func ctxWithTimeout(t *testing.T, d time.Duration) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// tailFile returns the last n lines of a log file, so a bootstrap failure
+// reports what went wrong instead of only an exit status.
+func tailFile(path string, n int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(" + err.Error() + ")"
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

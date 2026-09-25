@@ -32,7 +32,9 @@ func appStudioRequirements() []ProviderRequirement {
 		Resources: []ProviderRequiredResource{
 			{Name: "repositories", Verbs: []ProviderRequiredVerb{"get", "list", "watch", "create", "update"}},
 			{Name: "repositorycommits", Verbs: []ProviderRequiredVerb{"get", "list", "watch"}},
+			{Name: "connections", Verbs: []ProviderRequiredVerb{"get", "list", "watch"}},
 			{Name: "repositories/commit"},
+			{Name: "connections/mint-registry-token"},
 		},
 	}, {
 		Group: "authorization.k8s.io",
@@ -103,6 +105,27 @@ func TestValidateProviderRequirementsRejectsWhatItMust(t *testing.T) {
 			Resources: []ProviderRequiredResource{{Name: "secrets", Verbs: []ProviderRequiredVerb{"get"}}}},
 		want: "must carry a selector",
 	}, {
+		// kcp refuses an APIExport whose claim on a custom subresource has no
+		// claim on the kind that serves it, so the contract refuses it first.
+		name: "a verb coordinate without its parent kind",
+		requirement: ProviderRequirement{Provider: "code", Group: "code.railgrid.ai",
+			Resources: []ProviderRequiredResource{
+				{Name: "repositories", Verbs: []ProviderRequiredVerb{"get"}},
+				{Name: "connections/mint-registry-token"},
+			}},
+		want: "needs its parent",
+	}, {
+		// Declaration order is not the author's problem: the parent may come
+		// after the coordinate that needs it.
+		name: "a verb coordinate declared before its parent is fine",
+		requirement: ProviderRequirement{Provider: "code", Group: "code.railgrid.ai",
+			Resources: []ProviderRequiredResource{
+				{Name: "connections/mint-registry-token"},
+				{Name: "connections", Verbs: []ProviderRequiredVerb{"get"}},
+				{Name: "repositories/commit"},
+			}},
+		want: "needs its parent",
+	}, {
 		name: "duplicate coordinate",
 		requirement: ProviderRequirement{Provider: "code", Group: "code.railgrid.ai",
 			Resources: []ProviderRequiredResource{
@@ -156,8 +179,8 @@ func TestDependenciesAreTheProvidersNamed(t *testing.T) {
 
 func TestRequiredCoordinatesFlattensEveryClaim(t *testing.T) {
 	got := RequiredCoordinates(appStudioRequirements())
-	if len(got) != 8 {
-		t.Fatalf("RequiredCoordinates() returned %d claims, want 8: %+v", len(got), got)
+	if len(got) != 10 {
+		t.Fatalf("RequiredCoordinates() returned %d claims, want 10: %+v", len(got), got)
 	}
 	var verbCoordinates, selectors int
 	for _, claim := range got {
@@ -171,8 +194,8 @@ func TestRequiredCoordinatesFlattensEveryClaim(t *testing.T) {
 			selectors++
 		}
 	}
-	if verbCoordinates != 3 {
-		t.Fatalf("flattened %d verb coordinates, want 3", verbCoordinates)
+	if verbCoordinates != 4 {
+		t.Fatalf("flattened %d verb coordinates, want 4", verbCoordinates)
 	}
 	if selectors != 1 {
 		t.Fatalf("flattened %d selectors, want the one on core secrets", selectors)

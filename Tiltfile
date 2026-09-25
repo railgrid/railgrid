@@ -449,6 +449,12 @@ local_resource(
     labels=['providers-agents'],
 )
 
+# serve needs the provider's OWN kubeconfig (.kcp/agents-provider.kubeconfig),
+# minted by ▶ agents-init AFTER ▶ agents-register has been applied and
+# reconciled: a data-plane verb runs as the provider, so no other identity will
+# do. The file is in deps, so Tilt restarts the serve process once init writes
+# it; until then the Makefile target refuses to start and names the target to
+# run.
 local_resource(
     'agents',
     cmd='make build-agents-provider',
@@ -473,6 +479,7 @@ local_resource(
         'providers/agents/portal/package.json',
         'providers/agents/portal/vite.config.ts',
         'providers/agents/.env',
+        '.kcp/agents-provider.kubeconfig',
     ],
     resource_deps=['hub', 'agents-db'],
     readiness_probe=probe(

@@ -296,11 +296,19 @@ spec:
           verbs: ["get", "list", "watch", "create", "update", "delete"]
         - name: repositorycommits
           verbs: ["get", "list", "watch"]
+        # Git connections: listed when a project picks one to create its
+        # repository from, read back when a view resolves its connectionRef
+        # (api/code_repository.go). Read-only — a connection is the tenant's to
+        # create, and its credential never reaches this provider.
+        - name: connections
+          verbs: ["get", "list", "watch"]
         # The Code coordinates App Studio calls as itself: the commit verb (and
         # its large-upload staging verb) on a project's Repository, from both the
         # Project reconciler and the assistant's commit tool
         # (internal/codecommit), and the registry pull-token mint on a
-        # Connection when a project is promoted (api/project_promote.go).
+        # Connection when a project is promoted (api/project_promote.go). Each
+        # sits under the kind above it: kcp serves a custom subresource only for
+        # an export that also claims the parent.
         - name: repositories/commit
         - name: repositories/stage-commit-bundle
         - name: connections/mint-registry-token

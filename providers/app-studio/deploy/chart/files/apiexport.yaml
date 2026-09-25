@@ -85,6 +85,12 @@ spec:
     - list
     - watch
   - group: code.railgrid.ai
+    resource: connections
+    verbs:
+    - get
+    - list
+    - watch
+  - group: code.railgrid.ai
     resource: repositories/commit
     verbs:
     - '*'

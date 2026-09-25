@@ -82,6 +82,7 @@ func ValidateProviderRequirement(requirement ProviderRequirement) error {
 		return fmt.Errorf("at least one resource is required")
 	}
 	seen := make(map[string]struct{}, len(requirement.Resources))
+	plain := make(map[string]struct{}, len(requirement.Resources))
 	for i, resource := range requirement.Resources {
 		if err := ValidateProviderRequiredResource(requirement.Group, resource); err != nil {
 			return fmt.Errorf("resources[%d] (%s): %w", i, resource.Name, err)
@@ -90,6 +91,23 @@ func ValidateProviderRequirement(requirement ProviderRequirement) error {
 			return fmt.Errorf("resources[%d] (%s): duplicate coordinate", i, resource.Name)
 		}
 		seen[resource.Name] = struct{}{}
+		if !strings.Contains(resource.Name, "/") {
+			plain[resource.Name] = struct{}{}
+		}
+	}
+	// A verb coordinate is served BY its parent kind, so kcp rejects an
+	// APIExport that claims "<resource>/<verb>" without also claiming
+	// "<resource>". Catch it here, where the author reads the error, rather
+	// than at admission time on the provider's own init.
+	for i, resource := range requirement.Resources {
+		parent, _, isCoordinate := strings.Cut(resource.Name, "/")
+		if !isCoordinate {
+			continue
+		}
+		if _, ok := plain[parent]; !ok {
+			return fmt.Errorf("resources[%d] (%s): a verb coordinate needs its parent %q declared in the same requirement, with the verbs this provider uses on the kind itself: %q is served by %q, and kcp refuses a claim on a custom subresource whose parent is unclaimed",
+				i, resource.Name, parent, resource.Name, parent)
+		}
 	}
 	return nil
 }

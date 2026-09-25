@@ -2144,8 +2144,14 @@ agents-db-down: ## Stop and remove the agents dev Postgres container
 	-docker rm -f $(AGENTS_POSTGRES_CONTAINER)
 
 run-provider-agents: build-agents-provider agents-db-up ## Run the agents provider (requires: make run-hub-embedded-static + make install-provider-agents + make init-provider-agents)
+	@test -n "$${RAILGRID_PROVIDER_KUBECONFIG:-}" || test -f $(AGENTS_PROVIDER_KUBECONFIG) || { \
+		echo "provider kubeconfig not found at $(AGENTS_PROVIDER_KUBECONFIG)"; \
+		echo "bootstrap the provider first with: make init-provider-agents"; \
+		exit 1; \
+	}
 	@echo "Starting agents provider on :$(AGENTS_PORT)"
 	@echo "  hub:   $(AGENTS_HUB_URL)"
+	@echo "  provider: $${RAILGRID_PROVIDER_KUBECONFIG:-$(AGENTS_PROVIDER_KUBECONFIG)}"
 	@# Auto-source providers/agents/.env (gitignored) for local overrides.
 	set -a; [ -f providers/agents/.env ] && . ./providers/agents/.env || true; set +a; \
 	AGENTS_IN_MEMORY_STORE="$${AGENTS_IN_MEMORY_STORE:-$(AGENTS_IN_MEMORY_STORE)}"; \
@@ -2160,7 +2166,7 @@ run-provider-agents: build-agents-provider agents-db-up ## Run the agents provid
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=agents \
 	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/agents/manifest.yaml \
-	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(AGENTS_PROVIDER_KUBECONFIG)} \
 	AGENTS_DATABASE_URL="$$AGENTS_DATABASE_URL" \
 	AGENTS_IN_MEMORY_STORE="$$AGENTS_IN_MEMORY_STORE" \
 		$(BINDIR)/agents-provider
