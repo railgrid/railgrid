@@ -38,6 +38,12 @@ spec:
     - update
     - delete
   - group: infrastructure.railgrid.ai
+    resource: templates
+    verbs:
+    - get
+    - list
+    - watch
+  - group: infrastructure.railgrid.ai
     resource: instances/log
     verbs:
     - '*'

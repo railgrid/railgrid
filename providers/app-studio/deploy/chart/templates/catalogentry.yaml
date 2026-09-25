@@ -242,6 +242,13 @@ spec:
       resources:
         - name: instances
           verbs: ["get", "list", "watch", "create", "update", "delete"]
+        # The catalog of workload shapes an Instance is provisioned from. App
+        # Studio reads it to prepare a project's detail view, to resolve the
+        # template a binding names, and for the assistant's template tool
+        # (api/project_template.go, api/assistant_workflow.go). Read-only: a
+        # Template belongs to the infrastructure provider's catalog.
+        - name: templates
+          verbs: ["get", "list", "watch"]
         # The verbs App Studio calls on a workload Instance — the development
         # data plane (logs, sync, restart, exec, env, process, the sandbox
         # workspace protocol, the open proxy). Each is a custom subresource the
