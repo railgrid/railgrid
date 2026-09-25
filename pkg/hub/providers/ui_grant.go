@@ -225,7 +225,7 @@ func (p *ProviderProxy) SetUIGrantKeys(keys serviceaccounts.ProofKeySource) {
 
 // orgUIOverEdge reports whether prov's UI can be carried by its edge route.
 // The route fronts the Service the provider published as its backend, so the
-// UI has to be served by that same authority: a spec.ui.url on another host
+// UI has to be served by that same authority: a spec.serving.ui.url on another host
 // has nothing to land on. Path prefixes may differ (they are appended per
 // request); only scheme and host must match.
 func orgUIOverEdge(prov Provider) bool {
@@ -234,7 +234,7 @@ func orgUIOverEdge(prov Provider) bool {
 }
 
 // orgUIAssetPath is the provider-relative path of one UI asset: the
-// spec.ui.url path prefix, then the path after /ui/providers/{name} — the same
+// spec.serving.ui.url path prefix, then the path after /ui/providers/{name} — the same
 // join the direct UI proxy makes for a platform provider.
 func orgUIAssetPath(prov Provider, rest string) string {
 	return singleJoiningSlash(prov.UIURL.Path, rest)

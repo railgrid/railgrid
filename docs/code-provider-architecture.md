@@ -1,6 +1,12 @@
 # Code provider: git repository management
 
-Status: **Historical design proposal**, with two current sections. Package
+Status: **Historical design proposal**, with two current sections. The
+manifest shape in §6 is the 2026-06 one: `CatalogEntrySpec` was restructured
+into `export`/`requires`/`serving`/`hub` on 2026-09-25 (inline
+`apiExport.schemas` are gone; claims live in `spec.requires`), mapped in
+[roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§"Status update 2026-09-25 — the CatalogEntry contract is four sections".
+Package
 discovery and retry behavior are documented in
 [the Code provider README](../providers/code/README.md); the
 controller/backend ownership described below still applies, and the
@@ -217,7 +223,7 @@ one-hour sweeper as any other orphan.
 
 `stage-snapshot` and `stage-commit-bundle` are the provider's only
 **uncatalogued** verbs: a 25 MiB or 48 MiB body cannot be declared under
-`CatalogEntry.spec.actions[].limits.maxInputBytes`, which the CatalogEntry API
+`spec.export.resources[].actions[].limits.maxInputBytes`, which the CatalogEntry API
 caps at 1 MiB. Both are declared as data-plane verbs, so they are custom
 subresources `repositories/{verb}` at
 `/clusters/{id}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb}`

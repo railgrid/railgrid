@@ -48,7 +48,7 @@ import (
 // needs (sub-workspace + APIResourceSchemas + APIExport).
 //
 // Scope as of Phase 1B:
-//   - On create/update: parse spec.ui.url and spec.backend.url, set the
+//   - On create/update: parse spec.serving.ui.url and spec.serving.backend.url, set the
 //     registry entry, and apply the inline APIResourceSchemas + APIExport in
 //     the per-provider sub-workspace.
 //   - On delete: drop the registry entry. (Cascade GC of the sub-workspace
@@ -340,109 +340,75 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// goes through updateStatusIfChanged, which writes only a real diff.
 	observedStatus := *entry.Status.DeepCopy()
 
-	// Validate the action map before any endpoint is admitted into the
-	// registry. A malformed declaration must fail closed: keeping a previous
-	// registry record would allow an action whose contract no longer matches
-	// the CatalogEntry observed by the controller.
-	if err := providersv1alpha1.ValidateProviderActions(entry.Spec.Actions); err != nil {
+	// Validate the export before any endpoint is admitted into the registry:
+	// its verbs and actions are the coordinates the scoped-identity service
+	// will mint capabilities on, and its actions carry the contracts the action
+	// transport enforces. A malformed declaration must fail closed — keeping a
+	// previous registry record would leave a stale, wider callable surface than
+	// the CatalogEntry the controller observed.
+	if err := validateExportDeclaration(&entry); err != nil {
 		r.reg.DeleteScoped(orgUUID, entry.Name)
 		now := metav1.NewTime(time.Now())
 		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
 		setCondition(&entry.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
-			Reason:             "InvalidActions",
+			Reason:             "InvalidExport",
 			Message:            err.Error(),
 			LastTransitionTime: now,
 			ObservedGeneration: entry.Generation,
 		})
 		if requeue, statusErr := updateStatusIfChanged(ctx, c, &entry, observedStatus); statusErr != nil {
-			return ctrl.Result{}, fmt.Errorf("updating invalid-action status: %w", statusErr)
+			return ctrl.Result{}, fmt.Errorf("updating invalid-export status: %w", statusErr)
 		} else if requeue {
 			return ctrl.Result{Requeue: true}, nil
 		}
-		logger.Info("Rejected invalid provider action declarations", "error", err.Error())
+		logger.Info("Rejected invalid provider export declaration", "error", err.Error())
 		return ctrl.Result{}, nil
 	}
 
-	// Data-plane verbs gate what the scoped-identity service will mint on this
-	// provider's {resource}/{verb} coordinates, so a malformed declaration
-	// fails closed exactly as a malformed action does: the provider leaves the
-	// registry rather than keeping a stale, wider verb surface.
-	if dataPlaneErr := validateDataPlaneDeclaration(&entry); dataPlaneErr != nil {
-		r.reg.DeleteScoped(orgUUID, entry.Name)
-		now := metav1.NewTime(time.Now())
-		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
-		setCondition(&entry.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionFalse,
-			Reason:             "InvalidDataPlaneVerbs",
-			Message:            dataPlaneErr.Error(),
-			LastTransitionTime: now,
-			ObservedGeneration: entry.Generation,
-		})
-		if requeue, statusErr := updateStatusIfChanged(ctx, c, &entry, observedStatus); statusErr != nil {
-			return ctrl.Result{}, fmt.Errorf("updating invalid-data-plane status: %w", statusErr)
-		} else if requeue {
-			return ctrl.Result{Requeue: true}, nil
-		}
-		logger.Info("Rejected invalid provider data-plane verb declarations", "error", dataPlaneErr.Error())
-		return ctrl.Result{}, nil
-	}
-
-	// Compositions become the claims a tenant accepts on ANOTHER provider's
+	// Requirements become the claims a tenant accepts on ANOTHER provider's
 	// kinds, so a malformed declaration fails closed the same way: the
 	// provider leaves the registry rather than keeping a stale, wider
-	// composition surface that an admin already consented to.
-	if compositionErr := r.validateCompositionDeclaration(orgUUID, &entry); compositionErr != nil {
+	// requirement surface that an admin already consented to.
+	if requiresErr := r.validateRequiresDeclaration(orgUUID, &entry); requiresErr != nil {
 		r.reg.DeleteScoped(orgUUID, entry.Name)
 		now := metav1.NewTime(time.Now())
 		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
 		setCondition(&entry.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
-			Reason:             "InvalidCompositions",
-			Message:            compositionErr.Error(),
+			Reason:             "InvalidRequirements",
+			Message:            requiresErr.Error(),
 			LastTransitionTime: now,
 			ObservedGeneration: entry.Generation,
 		})
 		if requeue, statusErr := updateStatusIfChanged(ctx, c, &entry, observedStatus); statusErr != nil {
-			return ctrl.Result{}, fmt.Errorf("updating invalid-composition status: %w", statusErr)
+			return ctrl.Result{}, fmt.Errorf("updating invalid-requirements status: %w", statusErr)
 		} else if requeue {
 			return ctrl.Result{Requeue: true}, nil
 		}
-		logger.Info("Rejected invalid provider composition declarations", "error", compositionErr.Error())
+		logger.Info("Rejected invalid provider requirement declarations", "error", requiresErr.Error())
 		return ctrl.Result{}, nil
-	}
-
-	dependencies := make([]Dependency, 0, len(entry.Spec.Dependencies))
-	for _, dep := range entry.Spec.Dependencies {
-		dependency := Dependency{Name: dep.Name}
-		for _, composition := range dep.Composes {
-			dependency.Composes = append(dependency.Composes, Composition{
-				Group:    composition.Group,
-				Resource: composition.Resource,
-				Verbs:    providersv1alpha1.CompositionVerbStrings(composition.Verbs),
-			})
-		}
-		dependencies = append(dependencies, dependency)
 	}
 
 	prov := Provider{
-		Name:         entry.Name,
-		OrgUUID:      orgUUID,
-		DisplayName:  entry.Spec.DisplayName,
-		Description:  entry.Spec.Description,
-		IconURL:      entry.Spec.IconURL,
-		Category:     entry.Spec.Category,
-		Dependencies: dependencies,
-		Version:      entry.Spec.Version,
+		Name:        entry.Name,
+		OrgUUID:     orgUUID,
+		DisplayName: entry.Spec.DisplayName,
+		Description: entry.Spec.Description,
+		IconURL:     entry.Spec.IconURL,
+		Category:    entry.Spec.Category,
+		Version:     entry.Spec.Version,
 		// The cluster this entry was observed in is where a heartbeat must be
 		// written back. Providers register their CatalogEntry in their own
 		// workspace, so there is no single path the recorder could assume.
 		CatalogEntryCluster: string(req.ClusterName),
 	}
-	prov.HubAccess = append([]providersv1alpha1.ProviderHubAccess(nil), entry.Spec.HubAccess...)
+	prov.Requires = cloneProviderRequirements(entry.Spec.Requires)
+	if entry.Spec.Hub != nil {
+		prov.HubAccess = append([]providersv1alpha1.ProviderHubAccess(nil), entry.Spec.Hub.Access...)
+	}
 
 	// An org-owned provider runs in the tenant's own cluster, so its data plane
 	// travels the edge tunnel rather than a URL the hub dials. Resolve that
@@ -455,11 +421,21 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// through kcp) is unaffected. It just has no reachable backend, which the
 	// proxy reports as 503 rather than dialling an address inside someone
 	// else's cluster.
+	// Where the hub reaches this provider. Nil for a provider that serves
+	// neither a micro-frontend nor a non-kcp backend, which is the common shape
+	// for an API-only provider.
+	var ui *providersv1alpha1.ProviderUI
+	var backend *providersv1alpha1.ProviderBackend
+	var selfHosting *providersv1alpha1.ProviderSelfHosting
+	if serving := entry.Spec.Serving; serving != nil {
+		ui, backend, selfHosting = serving.UI, serving.Backend, serving.SelfHosting
+	}
+
 	var edgeRouteErr error
-	if orgUUID != "" && entry.Spec.Backend != nil {
+	if orgUUID != "" && backend != nil {
 		if r.edgeRoutes == nil {
 			edgeRouteErr = fmt.Errorf("edge route resolver is unavailable")
-		} else if route, err := r.edgeRoutes.ResolveProviderEdgeRoute(ctx, orgUUID, entry.Name, entry.Spec.Backend.URL); err != nil {
+		} else if route, err := r.edgeRoutes.ResolveProviderEdgeRoute(ctx, orgUUID, entry.Name, backend.URL); err != nil {
 			edgeRouteErr = err
 			logger.Info("Could not resolve edge route for org-owned provider; its backend stays unroutable",
 				"provider", entry.Name, "error", err.Error())
@@ -471,7 +447,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		}
 	}
 
-	if sh := entry.Spec.SelfHosting; sh != nil {
+	if sh := selfHosting; sh != nil {
 		mapped := &SelfHosting{
 			Supported:   sh.Supported,
 			Namespace:   sh.Namespace,
@@ -501,8 +477,9 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		prov.HeartbeatStale = time.Since(prov.LastHeartbeat) > HeartbeatTTL
 		prov.ReportedVersion = entry.Status.ReportedVersion
 	}
-	if entry.Spec.APIExport != nil {
-		prov.APIExportName = entry.Spec.APIExport.Name
+	if entry.Spec.Export != nil {
+		prov.Export = entry.Spec.Export.DeepCopy()
+		prov.APIExportName = entry.Spec.Export.Name
 		// The export lives in the workspace the entry was observed in. For an
 		// org-owned provider that is the Org's own provider workspace, not the
 		// platform parent — binding the platform path would resolve to a
@@ -511,18 +488,6 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			prov.APIExportPath = kcppaths.OrgProviderPath(orgUUID, entry.Name)
 		} else {
 			prov.APIExportPath = providersParentWorkspace + ":" + entry.Name
-		}
-		for _, c := range entry.Spec.APIExport.PermissionClaims {
-			claim := PermissionClaim{
-				Group:        c.Group,
-				Resource:     c.Resource,
-				Verbs:        append([]string(nil), c.Verbs...),
-				TenantScoped: c.TenantScoped,
-			}
-			if c.Selector != nil {
-				claim.MatchLabels = copyLabels(c.Selector.MatchLabels)
-			}
-			prov.PermissionClaims = append(prov.PermissionClaims, claim)
 		}
 	}
 
@@ -565,19 +530,19 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		}
 	}
 
-	// Builtin (first-party) providers declare spec.ui.builtinRoute instead
-	// of a URL. The portal renders the named Vue route in-tree, so there's
-	// no proxy target and no /main.js bundle to load — UIURL stays nil.
-	if entry.Spec.UI != nil {
-		prov.BuiltinRoute = entry.Spec.UI.BuiltinRoute
-		for _, c := range entry.Spec.UI.Children {
+	// Builtin (first-party) providers declare spec.serving.ui.builtinRoute
+	// instead of a URL. The portal renders the named Vue route in-tree, so
+	// there's no proxy target and no /main.js bundle to load — UIURL stays nil.
+	if ui != nil {
+		prov.BuiltinRoute = ui.BuiltinRoute
+		for _, c := range ui.Children {
 			prov.Children = append(prov.Children, NavChild{
 				DisplayName:  c.DisplayName,
 				BuiltinRoute: c.BuiltinRoute,
 			})
 		}
 	}
-	parsedActions, actionSchemaErr := ParseProviderActions(entry.Spec.Actions)
+	parsedActions, actionSchemaErr := ParseProviderActions(entry.Spec.Export)
 	if actionSchemaErr != nil {
 		r.reg.DeleteScoped(orgUUID, entry.Name)
 		now := metav1.NewTime(time.Now())
@@ -599,10 +564,13 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 	prov.Actions = parsedActions
-	prov.DataPlaneVerbs = dataPlaneVerbsFor(entry.Spec.DataPlane)
-	seenSkillPackages := make(map[string]struct{}, len(entry.Spec.AssistantSkills))
+	var assistantSkills []providersv1alpha1.ProviderAssistantSkillSpec
+	if entry.Spec.Hub != nil {
+		assistantSkills = entry.Spec.Hub.AssistantSkills
+	}
+	seenSkillPackages := make(map[string]struct{}, len(assistantSkills))
 	var assistantSkillBytes int64
-	for _, skill := range entry.Spec.AssistantSkills {
+	for _, skill := range assistantSkills {
 		if skillErr := providersv1alpha1.ValidateProviderAssistantSkill(skill); skillErr != nil {
 			// Skill packages are independent of provider routing and action
 			// declarations. Omit only the malformed package so valid sibling
@@ -646,16 +614,16 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 
 	var parseErrs []string
 	var backendHealthErr error
-	if entry.Spec.UI != nil && entry.Spec.UI.URL != "" {
-		u, err := ParseURL(entry.Spec.UI.URL)
+	if ui != nil && ui.URL != "" {
+		u, err := ParseURL(ui.URL)
 		if err != nil {
 			parseErrs = append(parseErrs, "ui.url: "+err.Error())
 		} else {
 			prov.UIURL = u
 		}
 	}
-	if entry.Spec.Backend != nil {
-		u, err := ParseURL(entry.Spec.Backend.URL)
+	if backend != nil {
+		u, err := ParseURL(backend.URL)
 		if err != nil {
 			parseErrs = append(parseErrs, "backend.url: "+err.Error())
 		} else {
@@ -670,7 +638,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 				if healthClient == nil {
 					healthClient = defaultBackendHealthClient()
 				}
-				if err := probeBackendHealth(ctx, healthClient, u, entry.Spec.Backend.HealthPath); err != nil {
+				if err := probeBackendHealth(ctx, healthClient, u, backend.HealthPath); err != nil {
 					backendHealthErr = err
 				} else {
 					prov.BackendHealthy = true
@@ -726,7 +694,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// We only RESOLVE the provider workspace's logical cluster ID (read-only)
 	// so the admin providers API can report where a provider lives.
 	switch {
-	case entry.Spec.APIExport == nil:
+	case entry.Spec.Export == nil:
 		// No export to bind, so nothing needs the RBAC subject.
 	case orgUUID != "":
 		// An org-owned provider always registers its CatalogEntry from inside
@@ -1018,74 +986,63 @@ func removeCondition(conds *[]metav1.Condition, conditionType string) {
 	}
 }
 
-// validateDataPlaneDeclaration checks a CatalogEntry's data-plane verbs.
+// validateExportDeclaration checks a CatalogEntry's declared export surface:
+// its name, and every verb and action hanging off a resource it serves.
 //
-// Beyond shape, it enforces the one structural rule the hub can check here: a
-// provider declares verbs on resources its OWN APIExport serves, so declaring
-// any verb without declaring an APIExport is rejected. The hub cannot go
-// further at this layer — the CatalogEntry names the export but not the
-// resources it serves, and the APIResourceSchemas live in the provider's
-// workspace — so a verb on a resource the export does not actually serve is
-// caught where it matters instead: the coordinate is only ever granted
-// alongside a resourceNames-scoped rule on that same resource, which authorizes
-// nothing if the resource is not real.
-func validateDataPlaneDeclaration(entry *providersv1alpha1.CatalogEntry) error {
-	if err := providersv1alpha1.ValidateProviderDataPlane(entry.Spec.DataPlane); err != nil {
-		return err
-	}
-	if entry.Spec.DataPlane == nil || len(entry.Spec.DataPlane.Verbs) == 0 {
-		return nil
-	}
-	if entry.Spec.APIExport == nil || strings.TrimSpace(entry.Spec.APIExport.Name) == "" {
-		return fmt.Errorf("dataPlane.verbs requires spec.apiExport: a provider declares verbs on resources its own APIExport serves")
-	}
-	return nil
+// The hub cannot check that a listed resource really is one the export serves —
+// the APIResourceSchemas live in the provider's workspace, and the export is
+// read separately for its API groups — so a coordinate on a resource the export
+// does not actually serve is caught where it matters instead: the coordinate is
+// only ever granted alongside a resourceNames-scoped rule on that same
+// resource, which authorizes nothing if the resource is not real.
+func validateExportDeclaration(entry *providersv1alpha1.CatalogEntry) error {
+	return providersv1alpha1.ValidateProviderExport(entry.Spec.Export)
 }
 
-// validateCompositionDeclaration checks a CatalogEntry's composition
-// declarations: shape first, then the one thing the registry can answer —
-// that each composed group really is a group the named dependency SERVES.
+// validateRequiresDeclaration checks a CatalogEntry's requirements: shape
+// first, then the one thing the registry can answer — that a group a
+// requirement attributes to a provider really is a group that provider SERVES.
 //
-// "Serves" is the dependency's APIGroups — read from its APIExport — and not
+// "Serves" is the named provider's APIGroups — read from its APIExport — and not
 // its APIExport NAME. Checking the name would reject every correct declaration
-// the platform ships: App Studio composes `infrastructure.railgrid.ai` and
+// the platform ships: App Studio requires `infrastructure.railgrid.ai` and
 // `code.railgrid.ai`, while those providers' exports are named
 // `infrastructure.providers.railgrid.ai` and `code.providers.railgrid.ai`.
 //
-// A composition on a group somebody else serves would be a consent prompt that
+// A requirement on a group somebody else serves would be a consent prompt that
 // reads "App Studio manages infrastructure Instances" while pointing at a
 // different provider's API, so it is refused outright.
 //
-// When the dependency is not in the registry yet — or is there but its API
+// When the named provider is not in the registry yet — or is there but its API
 // groups have not been read yet — the group check is SKIPPED rather than
 // failed. Provider CatalogEntries arrive in no particular order and the hub
 // must not make a provider's readiness depend on which of two charts
 // reconciled first; nothing is granted by the gap, because the identity policy
-// resolves the group's owner again at mint time and refuses a composition
-// whose group the dependency does not serve.
-func (r *CatalogReconciler) validateCompositionDeclaration(orgUUID string, entry *providersv1alpha1.CatalogEntry) error {
-	if err := providersv1alpha1.ValidateProviderCompositions(entry.Spec.Dependencies); err != nil {
+// resolves the group's owner again at mint time and refuses a requirement whose
+// group the named provider does not serve.
+func (r *CatalogReconciler) validateRequiresDeclaration(orgUUID string, entry *providersv1alpha1.CatalogEntry) error {
+	if err := providersv1alpha1.ValidateProviderRequirements(entry.Spec.Requires); err != nil {
 		return err
 	}
-	for _, dep := range entry.Spec.Dependencies {
-		if len(dep.Composes) == 0 {
+	for _, requirement := range entry.Spec.Requires {
+		if requirement.Provider == "" {
+			// A platform builtin. Nobody serves it, so there is no group
+			// ownership to check and nothing to enable first.
 			continue
 		}
-		if entry.Spec.APIExport == nil || strings.TrimSpace(entry.Spec.APIExport.Name) == "" {
-			return fmt.Errorf("dependencies[%s].composes requires spec.apiExport: only a provider with its own API surface reconciles objects in a tenant workspace", dep.Name)
+		if entry.Spec.Export == nil || strings.TrimSpace(entry.Spec.Export.Name) == "" {
+			return fmt.Errorf("requires[%s] needs spec.export: only a provider with its own API surface reconciles another provider's objects in a tenant workspace", requirement.Provider)
 		}
 		if r.reg == nil {
 			continue
 		}
-		dependency, found := r.reg.GetForOrg(orgUUID, dep.Name)
+		dependency, found := r.reg.GetForOrg(orgUUID, requirement.Provider)
 		if !found || len(dependency.APIGroups) == 0 {
 			continue
 		}
-		for _, composition := range dep.Composes {
-			if !containsString(dependency.APIGroups, composition.Group) {
-				return fmt.Errorf("dependencies[%s].composes: %s is not served by %s (it serves %s)",
-					dep.Name, composition.Group, dep.Name, strings.Join(dependency.APIGroups, ", "))
-			}
+		if !containsString(dependency.APIGroups, requirement.Group) {
+			return fmt.Errorf("requires[%s]: %s is not served by %s (it serves %s)",
+				requirement.Provider, requirement.Group, requirement.Provider, strings.Join(dependency.APIGroups, ", "))
 		}
 	}
 	return nil
@@ -1099,19 +1056,4 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-// dataPlaneVerbsFor projects the declaration into the registry's flat form.
-func dataPlaneVerbsFor(dataPlane *providersv1alpha1.ProviderDataPlane) []ProviderDataPlaneVerb {
-	if dataPlane == nil || len(dataPlane.Verbs) == 0 {
-		return nil
-	}
-	verbs := make([]ProviderDataPlaneVerb, 0, len(dataPlane.Verbs))
-	for _, verb := range dataPlane.Verbs {
-		verbs = append(verbs, ProviderDataPlaneVerb{
-			Resource: verb.Resource, Verb: verb.Verb,
-			Description: verb.Description, Stream: verb.Stream, ReadOnly: verb.ReadOnly,
-		})
-	}
-	return verbs
 }

@@ -47,7 +47,7 @@ import (
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
-// APIExportName must match the provider's CatalogEntry.spec.apiExport.name.
+// APIExportName must match the provider's CatalogEntry.spec.export.name.
 // Hardcoded constant — the hub catalog controller is the canonical writer.
 const APIExportName = "infrastructure.providers.railgrid.ai"
 

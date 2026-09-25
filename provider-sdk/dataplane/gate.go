@@ -39,9 +39,9 @@ const SSARVerb = "create"
 // The hub mints exactly this list wherever it grants a data-plane verb
 // (pkg/hub/serviceaccounts/workload_identity.go, pkg/hub/identity/policy.go,
 // pkg/hub/controllers/mcpserver/rbac.go); it is spelled out rather than "*"
-// so a generated role never carries a wildcard. A composition claim on a verb
-// coordinate (spec.dependencies[].composes[]) is spelled verbs ["*"], which
-// kcp's claim authorizer accepts as the same thing.
+// so a generated role never carries a wildcard. A claim on a verb coordinate
+// (a spec.requires[].resources[] entry carrying a slash) is spelled verbs
+// ["*"], which kcp's claim authorizer accepts as the same thing.
 var SubresourceVerbs = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
 
 // Gate runs the contract's gate for req and returns the addressed object

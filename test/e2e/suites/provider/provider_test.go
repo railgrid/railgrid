@@ -136,11 +136,11 @@ func applyQuickstartManifests() error {
 				// run-provider-quickstart`); the suite runs on :18081 to
 				// keep test ports separate from dev-loop ports.
 				overrideURL := "http://localhost:" + providerPort
-				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url"); err != nil {
-					return fmt.Errorf("%s: override spec.ui.url: %w", file, err)
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "ui", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.serving.ui.url: %w", file, err)
 				}
-				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url"); err != nil {
-					return fmt.Errorf("%s: override spec.backend.url: %w", file, err)
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "backend", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.serving.backend.url: %w", file, err)
 				}
 			}
 			deadline := time.Now().Add(90 * time.Second)
@@ -218,9 +218,10 @@ func TestACatalogProvisioning(t *testing.T) {
 			t.Fatalf("get APIExport: %v", err)
 		}
 		// The export carries the one parent resource plus one custom subresource
-		// entry per declared data-plane verb, named "<resource>/<verb>" in RBAC
-		// style (provider-sdk/apiexportgen). Count them apart: the parent set is
-		// what apigen produced, the subresource set is what the manifest declares.
+		// entry per verb declared under spec.export.resources[].verbs, named
+		// "<resource>/<verb>" in RBAC style (provider-sdk/apiexportgen). Count
+		// them apart: the parent set is what apigen produced, the subresource
+		// set is what the manifest declares.
 		resources, _, _ := unstructured.NestedSlice(got.Object, "spec", "resources")
 		var parents, subresources []string
 		for _, entry := range resources {
@@ -235,7 +236,7 @@ func TestACatalogProvisioning(t *testing.T) {
 			t.Fatalf("expected 1 parent resource in APIExport spec, got %d (%v)", len(parents), parents)
 		}
 		if len(subresources) == 0 {
-			t.Fatal("expected the declared data-plane verb to appear as a custom subresource entry, got none")
+			t.Fatal("expected the declared verb to appear as a custom subresource entry, got none")
 		}
 		for _, name := range subresources {
 			if !strings.HasPrefix(name, parents[0]+"/") {
@@ -331,9 +332,12 @@ func TestBAPIProvidersDTO(t *testing.T) {
 		if qs == nil {
 			t.Fatalf("quickstart not in /api/providers: keys=%v", keysOf(byName))
 		}
-		// permissionClaims is NOT in this list: it is asserted separately
-		// below, because the DTO omits an empty claim list.
-		for _, k := range []string{"displayName", "ready", "hasUI", "hasBackend", "apiExportPath", "apiExportName"} {
+		// The DTO mirrors CatalogEntry.spec one section for one: export,
+		// requires, serving, hub — with the same JSON names, so the portal and
+		// `kubectl get catalogentry -o yaml` see the same shape. `requires` is
+		// asserted separately below; `hub` is absent because quickstart asks
+		// nothing of the hub itself.
+		for _, k := range []string{"displayName", "ready", "export", "serving"} {
 			if _, ok := qs[k]; !ok {
 				t.Errorf("expected key %q in DTO, got: %v", k, qs)
 			}
@@ -341,16 +345,84 @@ func TestBAPIProvidersDTO(t *testing.T) {
 		if qs["ready"] != true {
 			t.Errorf("expected ready=true, got %v", qs["ready"])
 		}
-		if qs["apiExportPath"] != "root:railgrid:providers:quickstart" {
-			t.Errorf("apiExportPath = %v", qs["apiExportPath"])
+		if _, ok := qs["hub"]; ok {
+			t.Errorf("quickstart asks nothing of the hub; DTO carries a hub section: %v", qs["hub"])
 		}
-		// The one claim quickstart declares (the subjectaccessreviews review
-		// API its subresource gate runs through) reaches the Enable dialog.
-		if claims, _ := qs["permissionClaims"].([]any); len(claims) != 1 {
-			t.Errorf("quickstart declares one permission claim; DTO carries %d: %v", len(claims), claims)
+
+		export, _ := qs["export"].(map[string]any)
+		if export == nil {
+			t.Fatalf("DTO carries no export section: %v", qs)
+		}
+		if export["name"] != "quickstart.providers.railgrid.ai" {
+			t.Errorf("export.name = %v", export["name"])
+		}
+		if export["path"] != "root:railgrid:providers:quickstart" {
+			t.Errorf("export.path = %v", export["path"])
+		}
+		// The greet verb hangs off the resource it is served on, and carries
+		// the apiVersion/kind a consumer needs to address the coordinate
+		// without knowing quickstart's group.
+		resources, _ := export["resources"].([]any)
+		if len(resources) != 1 {
+			t.Fatalf("export.resources = %d entries, want the one greetings entry: %v", len(resources), resources)
+		}
+		greetings, _ := resources[0].(map[string]any)
+		if greetings["name"] != "greetings" || greetings["kind"] != "Greeting" {
+			t.Errorf("export.resources[0] = %v, want greetings/Greeting", greetings)
+		}
+		if greetings["apiVersion"] != "quickstart.providers.railgrid.ai/v1alpha1" {
+			t.Errorf("export.resources[0].apiVersion = %v", greetings["apiVersion"])
+		}
+		verbs, _ := greetings["verbs"].([]any)
+		if len(verbs) != 1 {
+			t.Fatalf("greetings carries %d verbs, want the one greet verb: %v", len(verbs), verbs)
+		}
+		if verb, _ := verbs[0].(map[string]any); verb["name"] != "greet" || verb["readOnly"] != true {
+			t.Errorf("greetings.verbs[0] = %v, want the read-only greet verb", verbs[0])
+		}
+
+		// The one requirement quickstart declares — the subjectaccessreviews
+		// review API its subresource gate runs through — reaches the Enable
+		// dialog. It names no provider: authorization.k8s.io is a platform
+		// builtin, so it is a claim and not a dependency edge.
+		requires, _ := qs["requires"].([]any)
+		if len(requires) != 1 {
+			t.Fatalf("quickstart declares one requirement; DTO carries %d: %v", len(requires), requires)
+		}
+		requirement, _ := requires[0].(map[string]any)
+		if requirement["group"] != "authorization.k8s.io" {
+			t.Errorf("requires[0].group = %v, want authorization.k8s.io", requirement["group"])
+		}
+		if p, ok := requirement["provider"]; ok && p != "" {
+			t.Errorf("requires[0].provider = %v; a platform builtin is nobody's dependency", p)
+		}
+		required, _ := requirement["resources"].([]any)
+		if len(required) != 1 {
+			t.Fatalf("requires[0].resources = %d entries: %v", len(required), required)
+		}
+		if res, _ := required[0].(map[string]any); res["name"] != "subjectaccessreviews" {
+			t.Errorf("requires[0].resources[0] = %v, want subjectaccessreviews", required[0])
+		}
+
+		// serving.ui and serving.backend are present-or-absent, as in the spec,
+		// and neither publishes the declared URL: it names an in-cluster address
+		// the browser cannot reach and must not learn.
+		serving, _ := qs["serving"].(map[string]any)
+		if serving == nil {
+			t.Fatalf("DTO carries no serving section: %v", qs)
+		}
+		ui, hasUI := serving["ui"].(map[string]any)
+		if !hasUI {
+			t.Errorf("serving.ui absent; quickstart declares a micro-frontend: %v", serving)
+		}
+		if _, hasBackend := serving["backend"]; !hasBackend {
+			t.Errorf("serving.backend absent; quickstart declares a backend: %v", serving)
+		}
+		if raw, _ := json.Marshal(serving); strings.Contains(string(raw), providerPort) {
+			t.Errorf("serving leaks the provider's in-cluster address: %s", raw)
 		}
 		// Third-party provider should NOT carry a builtinRoute.
-		if br, ok := qs["builtinRoute"]; ok && br != "" {
+		if br, ok := ui["builtinRoute"]; ok && br != "" {
 			t.Errorf("third-party provider should not have builtinRoute, got %v", br)
 		}
 	})
@@ -402,7 +474,7 @@ func keysOf(m map[string]map[string]any) []string {
 
 // TestCBackendProxy exercises the only non-verb routes the provider is allowed
 // to serve (Pillar 2 class (c)), through the hub's backend proxy. /readyz is
-// what the CatalogEntry's spec.backend.healthPath points at, so a 200 here is
+// what the CatalogEntry's spec.serving.backend.healthPath points at, so a 200 here is
 // what keeps the hub's BackendHealthy green.
 func TestCBackendProxy(t *testing.T) {
 	for _, path := range []string{"/healthz", "/readyz"} {

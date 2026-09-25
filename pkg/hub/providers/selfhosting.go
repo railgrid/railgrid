@@ -18,7 +18,8 @@ package providers
 
 // Rendering self-hosting install instructions.
 //
-// A provider declares how it is deployed once, in CatalogEntry.spec.selfHosting,
+// A provider declares how it is deployed once, in
+// CatalogEntry.spec.serving.selfHosting,
 // and the hub turns that into the exact commands one organization needs to run
 // its own copy against the workspace the hub just created for it. The provider
 // is the only party that knows its chart; the hub is the only party that knows

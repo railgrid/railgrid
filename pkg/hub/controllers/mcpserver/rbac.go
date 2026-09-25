@@ -82,7 +82,8 @@ type dataPlaneGrant struct {
 // data-plane verb is an RBAC subresource granted with "create": the owning
 // provider runs a SelfSubjectAccessReview for exactly {resource}/{verb} as the
 // caller before serving it (provider-sdk/dataplane.Gate), so each entry mirrors
-// the verbs that provider declares in CatalogEntry.spec.dataPlane.verbs.
+// the verbs that provider declares on the resource under
+// CatalogEntry.spec.export.resources[].verbs.
 var dataPlaneGrants = map[string][]dataPlaneGrant{
 	// providers/edges/internal/tunnel/grammar.go dataPlaneVerbs. The tunnel
 	// serves kubectl (including delete and exec), an SSH shell and MCP under
@@ -454,45 +455,52 @@ func catalogActionGrants(kcpConfig *rest.Config) ActionGrantSource {
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.Items[i].Object, &entry); err != nil {
 				return nil, fmt.Errorf("decoding CatalogEntry %s: %w", list.Items[i].GetName(), err)
 			}
-			out = append(out, actionGrantsFromSpec(entry.Spec.Actions)...)
+			out = append(out, actionGrantsFromExport(entry.Spec.Export)...)
 		}
 		return out, nil
 	}
 }
 
-// actionIDPattern is the documented action ID shape, "<name>/vN". It mirrors
-// the kubebuilder Pattern on ProviderActionSpec.ID character for character;
-// keep the two in step. The CRD rejects new objects that break it, but pattern
-// validation never retro-validates objects that predate the marker, so the
-// parser enforces the shape itself rather than trusting what is in storage.
-var actionIDPattern = regexp.MustCompile(`^([a-z][a-z0-9_-]{0,62})/v[1-9][0-9]{0,7}$`)
+// actionNamePattern is the documented shape of an action's name, which is the
+// subresource half of the {resource}/{action} coordinate. It mirrors the
+// kubebuilder Pattern on ProviderAction.Name character for character; keep the
+// two in step. The CRD rejects new objects that break it, but pattern validation
+// never retro-validates objects that predate the marker, so the parser enforces
+// the shape itself rather than trusting what is in storage.
+var actionNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
 
-// actionGrantsFromSpec maps catalog action declarations to RBAC coordinates.
-// Action IDs are "<name>/vN"; the provider reviews the unversioned name as the
-// subresource. An ID that does not match the documented shape is skipped
-// rather than granted: a malformed catalog entry must not widen the role, and
-// "has a slash" is not the documented shape.
-func actionGrantsFromSpec(actions []providersv1alpha1.ProviderActionSpec) []ActionGrant {
-	out := make([]ActionGrant, 0, len(actions))
-	for _, a := range actions {
-		m := actionIDPattern.FindStringSubmatch(strings.TrimSpace(a.ID))
-		if m == nil {
+// actionGrantsFromExport maps an export's catalogued actions to RBAC
+// coordinates. An action is declared ON the resource it is served on, so the
+// coordinate is (that resource, this action's name) and the group comes from the
+// resource's apiVersion — the version of the action's contract is not in any
+// path and is irrelevant here.
+//
+// A name or apiVersion that does not match the documented shape is skipped
+// rather than granted: a malformed catalog entry must not widen the role.
+func actionGrantsFromExport(export *providersv1alpha1.ProviderExport) []ActionGrant {
+	if export == nil {
+		return nil
+	}
+	out := make([]ActionGrant, 0, len(export.Resources))
+	for _, resource := range export.Resources {
+		if resource.Name == "" {
 			continue
 		}
-		name := m[1]
-		if a.BoundResource.Resource == "" {
+		gv, err := schema.ParseGroupVersion(resource.APIVersion)
+		if err != nil || gv.Group == "" {
 			continue
 		}
-		gv, err := schema.ParseGroupVersion(a.BoundResource.APIVersion)
-		if err != nil {
-			continue
+		for _, action := range resource.Actions {
+			if !actionNamePattern.MatchString(strings.TrimSpace(action.Name)) {
+				continue
+			}
+			out = append(out, ActionGrant{
+				Group:    gv.Group,
+				Resource: resource.Name,
+				Name:     action.Name,
+				ReadOnly: action.ReadOnly,
+			})
 		}
-		out = append(out, ActionGrant{
-			Group:    gv.Group,
-			Resource: a.BoundResource.Resource,
-			Name:     name,
-			ReadOnly: a.ReadOnly,
-		})
 	}
 	return out
 }

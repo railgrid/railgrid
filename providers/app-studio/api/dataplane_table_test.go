@@ -33,14 +33,21 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Coordinates hang off the resource they are served on, so a declared
+	// verb is read as {resource}/{verb} from its parent entry.
 	var manifest struct {
 		Spec struct {
-			DataPlane struct {
-				Verbs []struct {
-					Resource string `json:"resource"`
-					Verb     string `json:"verb"`
-				} `json:"verbs"`
-			} `json:"dataPlane"`
+			Export struct {
+				Resources []struct {
+					Name  string `json:"name"`
+					Verbs []struct {
+						Name string `json:"name"`
+					} `json:"verbs"`
+					Actions []struct {
+						Name string `json:"name"`
+					} `json:"actions"`
+				} `json:"resources"`
+			} `json:"export"`
 		} `json:"spec"`
 	}
 	if err := yaml.Unmarshal(raw, &manifest); err != nil {
@@ -48,8 +55,15 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 	}
 
 	declared := []string{}
-	for _, v := range manifest.Spec.DataPlane.Verbs {
-		declared = append(declared, v.Resource+"/"+v.Verb)
+	for _, resource := range manifest.Spec.Export.Resources {
+		for _, verb := range resource.Verbs {
+			declared = append(declared, resource.Name+"/"+verb.Name)
+		}
+		// An action is a coordinate too: it is served on the same path and
+		// routed by the same table, so it belongs in this comparison.
+		for _, action := range resource.Actions {
+			declared = append(declared, resource.Name+"/"+action.Name)
+		}
 	}
 	served := []string{}
 	for resource, byVerb := range verbIndex {

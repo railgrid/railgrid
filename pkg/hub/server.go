@@ -350,7 +350,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 		// The generated PermissionClaimPolicy (config/kcp/permissionclaimpolicy.yaml)
 		// is the kcp-side expression of the provider manifests'
-		// spec.dependencies[].composes[]. kcp-dev/kcp#4385 is unmerged, so this
+		// spec.requires[]. kcp-dev/kcp#4385 is unmerged, so this
 		// is a no-op — one info log — on every kcp that does not serve
 		// admin.kcp.io, which is today's.
 		if err := installPermissionClaimPolicy(ctx, kcpConfig); err != nil {
@@ -771,7 +771,7 @@ func (s *Server) Run(ctx context.Context) error {
 			))
 			// A provider holding a delegated token in place of the caller's
 			// bearer may call only the hub REST capabilities its catalog entry
-			// declares (spec.hubAccess) and the tenant accepted for it
+			// declares (spec.hub.access) and the tenant accepted for it
 			// (ProviderAccessGrant) — see pkg/hub/hubaccess. The gate admits
 			// such a call and marks it; the tenant middleware then resolves it
 			// to the person the token stands for, whose own role still applies.
@@ -1027,7 +1027,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("setting up provider catalog controller: %w", err)
 		}
-		// A provider bundle can change behind spec.ui.url without its version
+		// A provider bundle can change behind spec.serving.ui.url without its version
 		// changing (any image rebuild at the same chart version), and until the
 		// next reconcile notices, the pin the portal holds refuses the bundle in
 		// every browser. The UI proxy is the only component that sees the bytes

@@ -137,7 +137,7 @@ type Options struct {
 	// on the APIExport resolves through.
 	//
 	// OPTIONAL, and normally best left empty: empty means "whatever
-	// CatalogEntryFile says in spec.backend.url", which is the same address,
+	// CatalogEntryFile says in spec.serving.backend.url", which is the same address,
 	// already rendered per environment by the provider's own chart (the
 	// in-cluster Service DNS in a cluster, the loopback port in dev). Set it
 	// only when the provider's server is reachable at a DIFFERENT address than
@@ -382,8 +382,8 @@ var ScopedCoreResources = map[string]bool{"secrets": true}
 // for us: an unscoped claim is perfectly valid to kcp and simply grants more
 // than the provider needs, silently, in every workspace that binds the export.
 // The generated file is an output of the manifest, so the fix is always the
-// same — add spec.apiExport.permissionClaims[].selector.matchLabels to
-// manifest.yaml and re-run codegen.
+// same — add spec.requires[].resources[].selector.matchLabels to manifest.yaml
+// and re-run codegen.
 func ValidateClaimScopes(export *unstructured.Unstructured) error {
 	claims, found, err := unstructured.NestedSlice(export.Object, "spec", "permissionClaims")
 	if err != nil {
@@ -404,7 +404,7 @@ func ValidateClaimScopes(export *unstructured.Unstructured) error {
 		}
 		matchLabels, _, _ := unstructured.NestedStringMap(entry, "defaultSelector", "matchLabels")
 		if len(matchLabels) == 0 {
-			return fmt.Errorf("APIExport %s claims the core resource %q with no defaultSelector.matchLabels: a claim on %s must be narrowed to the objects this provider owns (add spec.apiExport.permissionClaims[].selector.matchLabels to manifest.yaml and re-run codegen)", export.GetName(), resource, resource)
+			return fmt.Errorf("APIExport %s claims the core resource %q with no defaultSelector.matchLabels: a claim on %s must be narrowed to the objects this provider owns (add spec.requires[].resources[].selector.matchLabels to manifest.yaml and re-run codegen)", export.GetName(), resource, resource)
 		}
 	}
 	return nil

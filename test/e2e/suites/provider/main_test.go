@@ -37,7 +37,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
-	"github.com/railgrid/railgrid/pkg/util/identity"
 	"io"
 	"net"
 	"net/http"
@@ -52,6 +51,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // Suite-shared state populated by TestMain.

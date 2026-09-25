@@ -122,10 +122,13 @@ surfacing unchanged. `RAILGRID_HUB_INSECURE` relaxes TLS for in-cluster hub
 certificates.
 
 Compute- and storage-backed features — the claude-code runner and the file
-workspace — light up only when the `infrastructure` provider is present.
-Infrastructure is therefore an *optional* dependency, and is intentionally not
-listed under `spec.dependencies`: declaring it would gate enablement on a
-provider most installs do not need.
+workspace — light up only when the `infrastructure` provider is present. What
+the CatalogEntry declares about it is one entry under `spec.requires` naming
+`provider: infrastructure` and `group: infrastructure.railgrid.ai`: the
+`instances` kind (`get`, `list`, `watch`) and the `instances/proxy` verb
+coordinate, which carries no verbs of its own because the verb *is* the
+capability. Naming the provider there is also the dependency edge the hub
+orders enablement by.
 
 Configure storage with `store.databaseURLSecretRef`. See
 [deploy/chart/README.md](deploy/chart/README.md) for every value.

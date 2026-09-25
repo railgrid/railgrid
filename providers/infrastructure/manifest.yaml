@@ -6,10 +6,9 @@
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
 #
-# Phase 1 ships the skeleton only — schemas: [] keeps tenant workspaces
-# free of provider CRDs while still creating the APIExport tenants
-# APIBind to. Adding a TemplateInstance CRD here later is a non-breaking
-# change.
+# Phase 1 ships the skeleton only — the provider's own `init` installs the
+# Template and Instance schemas, so no CRD of this provider's leaks into a
+# tenant workspace while the APIExport tenants APIBind to still exists.
 #
 # ════════════════════════════════════════════════════════════════════════
 # Provider object reference — kind: CatalogEntry (providers.railgrid.ai)
@@ -20,6 +19,10 @@
 # APIExport tenants APIBind to, and a routing entry backing
 # /ui/providers/<name>/* and /services/providers/<name>/*.
 #
+# The spec answers four questions, one section each: what is it, what does it
+# EXPORT, what does it REQUIRE that it does not own, and where is it SERVING
+# (plus what it asks of the HUB itself).
+#
 # spec:
 #   displayName              Title on the portal catalog card + side nav. [required]
 #   description              Short blurb on the catalog card.
@@ -27,30 +30,54 @@
 #   version                  Provider/chart version (informational).
 #   category                 Groups the entry under a portal nav heading.
 #   iconURL                  Portal-relative icon path (served via the UI proxy).
-#   serviceAccountNamespace  Host namespace the provider Deployment runs in;
-#                            the hub writes railgrid-provider-kubeconfig here.
-#   ui:                      Micro-frontend (omit for a UI-less provider).
-#     url                      Address the hub reverse-proxies for
-#                              /ui/providers/<name>/* (exclusive with builtinRoute).
-#     indexPath                Default landing path within the UI (default "/").
-#     builtinRoute             Portal renders an in-tree route by this name
-#                              instead of loading a bundle (first-party providers).
-#     children[]               Sub-nav entries: {displayName, builtinRoute}.
-#   backend:                 Custom HTTP backend (omit for CR-only providers).
-#     url                      Address proxied at /services/providers/<name>/*
-#                              (NOT for CRD traffic — CRs flow through kcp).
-#     healthPath               GET path that gates the BackendHealthy status.
-#                              Reserved hub-only prefixes on this origin
-#                              (/actions data plane is public; /workload-identities
-#                              is refused by the backend proxy and dialed only
-#                              by the hub).
-#   apiExport:               The provider's kcp APIExport.
+#   export:                  The provider's kcp APIExport: everything a tenant
+#                            may call once it enables this provider, and nowhere
+#                            else.
 #     name                     Fully-qualified APIExport name tenants APIBind to.
-#     permissionClaims[]       Access the provider needs in tenant workspaces:
-#                              {resource, group, verbs, tenantScoped}. tenantScoped:
-#                              true auto-accepts on Enable.
-#     schemas[]                Inline APIResourceSchemas to install ({groupResource,
-#                              body}); [] = pure broker, no CRDs leak to tenants.
+#                              NOT an API group — each resource names its own.
+#     resources[]              The kinds that carry a verb or an action:
+#                              {name, apiVersion, kind, verbs[], actions[]}. A
+#                              kind with neither needs NO entry: it is an
+#                              ordinary CR tenants read and write through kcp.
+#       verbs[]                  Unversioned calls: {name, description, stream,
+#                                readOnly}. Each is published as the kcp custom
+#                                subresource "<resource>/<name>".
+#       actions[]                Versioned, schema'd calls: {name, version,
+#                                inputSchema, outputSchema, …}. This provider
+#                                catalogues none.
+#   requires[]               Everything the provider needs that it does not own,
+#                            ONE entry per API group: {provider?, group?,
+#                            resources[{name, verbs[], selector?}]}. No
+#                            `provider` is a platform builtin (nothing to enable
+#                            first); no `group` is the core group. A
+#                            "<resource>/<verb>" coordinate carries no verbs —
+#                            the verb IS the capability. Everything here is
+#                            tenant-scoped by definition, and declaring it
+#                            grants nothing: a workspace or org admin accepts it
+#                            in the Enable dialog.
+#   serving:                 Where the hub reaches this provider.
+#     ui:                      Micro-frontend (omit for a UI-less provider).
+#       url                      Address the hub reverse-proxies for
+#                                /ui/providers/<name>/* (exclusive with builtinRoute).
+#       indexPath                Default landing path within the UI (default "/").
+#       builtinRoute             Portal renders an in-tree route by this name
+#                                instead of loading a bundle (first-party providers).
+#       children[]               Sub-nav entries: {displayName, builtinRoute}.
+#     backend:                 Custom HTTP backend (omit for CR-only providers).
+#       url                      Address proxied at /services/providers/<name>/*
+#                                (NOT for CRD traffic — CRs flow through kcp, and
+#                                a verb is a custom subresource on the APIExport).
+#       healthPath               GET path that gates the BackendHealthy status.
+#                                Reserved hub-only prefixes on this origin
+#                                (/workload-identities is refused by the backend
+#                                proxy and dialed only by the hub).
+#     selfHosting:             Helm coordinates an organization needs to run its
+#                              own copy; absent means platform-operated only.
+#   hub:                     What the provider asks of the HUB rather than of
+#                            kcp: access[] (REST capabilities exercised with a
+#                            delegated token) and assistantSkills[]. This
+#                            provider asks for neither, so the section is
+#                            omitted.
 # ════════════════════════════════════════════════════════════════════════
 ---
 apiVersion: providers.railgrid.ai/v1alpha1
@@ -64,30 +91,75 @@ spec:
   version: "0.1.0"
   category: "Workloads"
   iconURL: "/ui/providers/infrastructure/icon.svg"
-  # Local dev (Tilt / Makefile): the provider binary runs on the host
-  # at PORT=8082 — distinct from the quickstart provider's :8081 so
-  # both can run side-by-side. For in-cluster deployment, change to
-  # the Service DNS, e.g.
-  # http://infrastructure.infrastructure.svc.cluster.local:8081.
-  ui:
-    url: "http://localhost:8082"
-    indexPath: "/"
-    # Sub-nav entries shown indented under "Application Templates" in
-    # the portal side menu. The portal composes each child URL as
-    # /providers/infrastructure/{builtinRoute}; the micro-frontend
-    # reads the trailing segment off railgridContext.subPath and routes
-    # to the matching internal page. Mirrors kubernetes-edges → Workloads.
-    children:
-      - displayName: Templates
-        builtinRoute: templates
-      - displayName: Instances
-        builtinRoute: instances
-  backend:
-    url: "http://localhost:8082"
-    healthPath: "/readyz"
-  apiExport:
+  # Everything a tenant can call, declared so the coordinate is
+  # machine-readable. Declaring a verb grants nothing: every call is still
+  # authorized on {resource}/{verb}, as the caller, by this provider's own
+  # gates. What the declaration buys, per verb: codegen emits the kcp custom
+  # subresource "<resource>/<verb>" on the generated APIExport (the shard routes
+  # it to this provider through its DataPlaneEndpointSlice) together with the
+  # "<Verb>Request" schema the entry names; a consumer provider can claim the
+  # coordinate under ITS spec.requires[].resources[] as "instances/<verb>"; and
+  # the hub scoped-identity service (pkg/hub/identity/policy.go clause C) can
+  # mint a capability only for a verb it can verify exists. None of this is a
+  # requirement of this provider: spec.requires names another export's
+  # resources, never one's own verbs.
+  #
+  # `templates` is served by this export too but carries neither a verb nor an
+  # action, so it needs no entry here — tenants read it as an ordinary projected
+  # kind. There are no static schemas either: the provider's own `init` installs
+  # the Template and Instance schemas and upserts the APIExport. The Template
+  # controller does NOT touch the APIExport: tenants author the single flattened
+  # Instance kind, so adding or changing a Template never changes the export's
+  # resource list (controller/template/controller.go).
+  export:
     name: "infrastructure.providers.railgrid.ai"
-    # Secrets, read-only, and ONLY the ones labelled
+    resources:
+      - name: instances
+        apiVersion: infrastructure.railgrid.ai/v1alpha1
+        kind: Instance
+        verbs:
+          - name: env
+            description: "Set or read the instance's runtime environment."
+          - name: exec
+            description: "Open an interactive shell or run a command in the instance."
+            stream: true
+          - name: log
+            description: "Stream the instance's logs."
+            stream: true
+            readOnly: true
+          - name: process
+            description: "List the processes running in the instance."
+            readOnly: true
+          - name: proxy
+            description: "Proxy HTTP to the instance's own service."
+            stream: true
+          - name: restart
+            description: "Restart the instance's workload."
+          - name: runtime-status
+            description: "Read the instance's live runtime status."
+            readOnly: true
+          - name: sync
+            description: "Trigger a reconcile of the instance's desired state."
+          - name: workspace
+            description: "Read and write files in the instance's workspace."
+  # What this provider needs that it does not own. One entry per API group, each
+  # becoming one permission claim on the generated APIExport. Everything here is
+  # tenant-scoped by definition and reaches a workspace only once a tenant
+  # accepted it on Enable. This provider depends on no OTHER provider, so no
+  # entry names one — both groups below are platform builtins.
+  requires:
+    # Every provider that serves a custom subresource needs this one claim:
+    # on the shard-forwarded path there is no caller bearer, so the provider
+    # runs a SubjectAccessReview for the stamped caller through its own
+    # APIExport virtual workspace, and kcp serves that builtin there only for
+    # an export that claims it (hack/verify-provider-contract.mjs
+    # subresource-access-claim). Built-in review API: no identityHash, verb
+    # create only; the VW confines each review to the tenant's OWN workspace.
+    - group: authorization.k8s.io
+      resources:
+        - name: subjectaccessreviews
+          verbs: [create]
+    # The core group. Secrets, read-only, and ONLY the ones labelled
     # railgrid.ai/owner: infrastructure. This provider writes no Secret in a
     # tenant workspace at all — every Secret it creates lives in its own
     # runtime cluster — so here the owner label does not mean "written by
@@ -111,167 +183,122 @@ spec:
     # The `cloud-credentials` Secret is NOT in this claim and never was in
     # practice: tenant/credentials.go reads it as the CALLER through the hub
     # kcp proxy, so kcp's own RBAC decides, and no claim is involved.
+    - resources:
+        - name: secrets
+          verbs: [get, list, watch]
+          selector:
+            matchLabels:
+              railgrid.ai/owner: infrastructure
+  # Where the hub reaches this provider.
+  serving:
+    # Local dev (Tilt / Makefile): the provider binary runs on the host
+    # at PORT=8082 — distinct from the quickstart provider's :8081 so
+    # both can run side-by-side. For in-cluster deployment, change to
+    # the Service DNS, e.g.
+    # http://infrastructure.infrastructure.svc.cluster.local:8081.
+    ui:
+      url: "http://localhost:8082"
+      indexPath: "/"
+      # Sub-nav entries shown indented under "Application Templates" in
+      # the portal side menu. The portal composes each child URL as
+      # /providers/infrastructure/{builtinRoute}; the micro-frontend
+      # reads the trailing segment off railgridContext.subPath and routes
+      # to the matching internal page. Mirrors kubernetes-edges → Workloads.
+      children:
+        - displayName: Templates
+          builtinRoute: templates
+        - displayName: Instances
+          builtinRoute: instances
+    backend:
+      url: "http://localhost:8082"
+      healthPath: "/readyz"
+    # Self-hosting: run Application Templates in your own cluster, so provisioned
+    # workloads land there rather than on the platform. See docs/byo-providers.md.
     #
-    # tenantScoped: true triggers auto-accept per docs/providers.md
-    # decision #9.
-    permissionClaims:
-      # Every provider that serves a custom subresource needs this one claim:
-      # on the shard-forwarded path there is no caller bearer, so the provider
-      # runs a SubjectAccessReview for the stamped caller through its own
-      # APIExport virtual workspace, and kcp serves that builtin there only for
-      # an export that claims it (hack/verify-provider-contract.mjs
-      # subresource-access-claim). Built-in review API: no identityHash, verb
-      # create only; tenantScoped because the VW confines each review to the
-      # tenant's OWN workspace.
-      - group: authorization.k8s.io
-        resource: subjectaccessreviews
-        verbs: [create]
-        tenantScoped: true
-      - resource: secrets
-        verbs: [get, list, watch]
-        tenantScoped: true
-        selector:
-          matchLabels:
-            railgrid.ai/owner: infrastructure
-    # No static schemas. The provider's own `init` installs the Template and
-    # Instance schemas and upserts the APIExport. The Template controller does
-    # NOT touch the APIExport: tenants author the single flattened Instance
-    # kind, so adding or changing a Template never changes the export's
-    # resource list (controller/template/controller.go).
-  # Data-plane verbs this provider serves, declared so the coordinate is
-  # machine-readable. Declaring one grants nothing: every call is still
-  # authorized on {resource}/{verb}, as the caller, by this provider's own
-  # gates. What the declaration buys, per verb: codegen emits the kcp custom
-  # subresource "<resource>/<verb>" on the generated APIExport (the shard routes
-  # it to this provider through its DataPlaneEndpointSlice) together with the
-  # "<Verb>Request" schema the entry names; a consumer provider can compose the
-  # coordinate under spec.dependencies[].composes[] and have it claimed on ITS
-  # export; and the hub scoped-identity service (pkg/hub/identity/policy.go
-  # clause C) can mint a capability only for a verb it can verify exists. None
-  # of this is a permission claim of this provider: a claim names another
-  # export's resources, never one's own verbs.
-  dataPlane:
-    verbs:
-      - resource: instances
-        verb: env
-        description: "Set or read the instance's runtime environment."
-      - resource: instances
-        verb: exec
-        description: "Open an interactive shell or run a command in the instance."
-        stream: true
-      - resource: instances
-        verb: log
-        description: "Stream the instance's logs."
-        stream: true
-        readOnly: true
-      - resource: instances
-        verb: process
-        description: "List the processes running in the instance."
-        readOnly: true
-      - resource: instances
-        verb: proxy
-        description: "Proxy HTTP to the instance's own service."
-        stream: true
-      - resource: instances
-        verb: restart
-        description: "Restart the instance's workload."
-      - resource: instances
-        verb: runtime-status
-        description: "Read the instance's live runtime status."
-        readOnly: true
-      - resource: instances
-        verb: sync
-        description: "Trigger a reconcile of the instance's desired state."
-      - resource: instances
-        verb: workspace
-        description: "Read and write files in the instance's workspace."
-  # Self-hosting: run Application Templates in your own cluster, so provisioned
-  # workloads land there rather than on the platform. See docs/byo-providers.md.
-  #
-  # This provider self-bootstraps rather than waiting for a hub-delivered
-  # credential, so the install must point it at the Secret you created and at
-  # your organization's own workspace. {{workspacePath}} is substituted by the
-  # hub when it renders the instructions. Keep in lockstep with
-  # deploy/chart/templates/catalogentry.yaml.
-  selfHosting:
-    supported: true
-    chart:
-      repository: "oci://ghcr.io/railgrid/charts"
-      name: "railgrid-infrastructure-provider"
-    namespace: "railgrid-provider-infrastructure"
-    releaseName: "infrastructure"
-    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/deploy/chart/README.md"
-    # Operator mode — the same mode the production install runs in, and the only
-    # one that stands a provider up unattended. It bootstraps your workspace,
-    # installs kro, and owns the serve Deployment together with the
-    # runtime-cluster RBAC that Deployment needs. The superseded bootstrap.*
-    # init-container flow does none of the last two, so a self-hoster following
-    # it lands a serve pod with no permissions on its own runtime cluster.
-    requiredValues:
-      - name: operator.enabled
-        value: "true"
-        description: >-
-          Installs the provider's operator, which bootstraps your workspace,
-          installs kro, and runs the provider itself.
-      - name: operator.providerKubeconfigSecret.name
-        value: "{{kubeconfigSecret}}"
-        description: Secret holding the workspace credential.
-      - name: operator.providerKubeconfigSecret.key
-        value: "{{kubeconfigSecretKey}}"
-        description: Data key inside that Secret.
-      - name: catalogEntry.enabled
-        value: "false"
-        description: >-
-          The operator registers the provider from its own embedded manifest, so
-          the chart must not also render a CatalogEntry ConfigMap — that copy is
-          applied by the init container this mode does not run.
-      - name: hub.url
-        value: "{{hubURL}}"
-        description: Where the provider reports its health.
-      - name: codingSandbox.enabled
-        value: "true"
-        description: >-
-          Opts into the platform-owned universal coding sandbox on this BYO
-          installation. Hosted platform defaults keep this feature disabled.
-      - name: development.images.universal
-        description: >-
-          Required immutable universal toolchain image for tenant code. Use a
-          complete name@sha256:<64 lowercase hex digits> reference; mutable
-          tags are rejected by chart/operator validation.
-      - name: development.agentImage
-        description: >-
-          Required immutable railgrid-dev-agent injector/bootstrap image for the
-          universal sandbox. Use a complete
-          name@sha256:<64 lowercase hex digits> reference; mutable tags are
-          rejected by chart/operator validation.
-      # Exposure. Published apps are reached through YOUR ingress — the platform
-      # has no route into your cluster and cannot supply any of this. Declared
-      # with no value so the hub renders them as <value> and says so, rather
-      # than emitting a command that looks complete and silently disables
-      # publishing. Omit all three and templates that publish an app fail their
-      # reconcile with a clear message; everything else still provisions.
-      - name: operator.application.baseDomain
-        description: >-
-          DNS zone your published apps are served under, e.g. apps.example.com.
-          Each app gets <name>-<hash>.<zone>, so this zone must resolve to your
-          Gateway. Required for app publishing; without it that feature stays
-          off.
-      - name: operator.application.gateway.name
-        description: >-
-          Name of the Gateway API Gateway the generated HTTPRoutes attach to.
-          It must already exist in your cluster — the provider attaches routes,
-          it does not create the Gateway or its listeners.
-      - name: operator.application.gateway.namespace
-        description: Namespace holding that Gateway.
-      - name: operator.publishing.hubPublicURL
-        value: "{{hubURL}}"
-        description: >-
-          Browser-reachable hub address a visitor is redirected to when signing
-          in to a private app. Must be the public URL, not an in-cluster one —
-          it ends up in a redirect the user's browser follows.
-      - name: operator.publishing.accessProxyImage
-        value: ghcr.io/railgrid/railgrid-access-proxy:latest
-        description: >-
-          Access gate every published app's traffic enters through. It speaks
-          the hub's app-access protocol, so pin it to the build your platform
-          runs rather than letting it float.
+    # This provider self-bootstraps rather than waiting for a hub-delivered
+    # credential, so the install must point it at the Secret you created and at
+    # your organization's own workspace. {{workspacePath}} is substituted by the
+    # hub when it renders the instructions. Keep in lockstep with
+    # deploy/chart/templates/catalogentry.yaml.
+    selfHosting:
+      supported: true
+      chart:
+        repository: "oci://ghcr.io/railgrid/charts"
+        name: "railgrid-infrastructure-provider"
+      namespace: "railgrid-provider-infrastructure"
+      releaseName: "infrastructure"
+      docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/deploy/chart/README.md"
+      # Operator mode — the same mode the production install runs in, and the only
+      # one that stands a provider up unattended. It bootstraps your workspace,
+      # installs kro, and owns the serve Deployment together with the
+      # runtime-cluster RBAC that Deployment needs. The superseded bootstrap.*
+      # init-container flow does none of the last two, so a self-hoster following
+      # it lands a serve pod with no permissions on its own runtime cluster.
+      requiredValues:
+        - name: operator.enabled
+          value: "true"
+          description: >-
+            Installs the provider's operator, which bootstraps your workspace,
+            installs kro, and runs the provider itself.
+        - name: operator.providerKubeconfigSecret.name
+          value: "{{kubeconfigSecret}}"
+          description: Secret holding the workspace credential.
+        - name: operator.providerKubeconfigSecret.key
+          value: "{{kubeconfigSecretKey}}"
+          description: Data key inside that Secret.
+        - name: catalogEntry.enabled
+          value: "false"
+          description: >-
+            The operator registers the provider from its own embedded manifest, so
+            the chart must not also render a CatalogEntry ConfigMap — that copy is
+            applied by the init container this mode does not run.
+        - name: hub.url
+          value: "{{hubURL}}"
+          description: Where the provider reports its health.
+        - name: codingSandbox.enabled
+          value: "true"
+          description: >-
+            Opts into the platform-owned universal coding sandbox on this BYO
+            installation. Hosted platform defaults keep this feature disabled.
+        - name: development.images.universal
+          description: >-
+            Required immutable universal toolchain image for tenant code. Use a
+            complete name@sha256:<64 lowercase hex digits> reference; mutable
+            tags are rejected by chart/operator validation.
+        - name: development.agentImage
+          description: >-
+            Required immutable railgrid-dev-agent injector/bootstrap image for the
+            universal sandbox. Use a complete
+            name@sha256:<64 lowercase hex digits> reference; mutable tags are
+            rejected by chart/operator validation.
+        # Exposure. Published apps are reached through YOUR ingress — the platform
+        # has no route into your cluster and cannot supply any of this. Declared
+        # with no value so the hub renders them as <value> and says so, rather
+        # than emitting a command that looks complete and silently disables
+        # publishing. Omit all three and templates that publish an app fail their
+        # reconcile with a clear message; everything else still provisions.
+        - name: operator.application.baseDomain
+          description: >-
+            DNS zone your published apps are served under, e.g. apps.example.com.
+            Each app gets <name>-<hash>.<zone>, so this zone must resolve to your
+            Gateway. Required for app publishing; without it that feature stays
+            off.
+        - name: operator.application.gateway.name
+          description: >-
+            Name of the Gateway API Gateway the generated HTTPRoutes attach to.
+            It must already exist in your cluster — the provider attaches routes,
+            it does not create the Gateway or its listeners.
+        - name: operator.application.gateway.namespace
+          description: Namespace holding that Gateway.
+        - name: operator.publishing.hubPublicURL
+          value: "{{hubURL}}"
+          description: >-
+            Browser-reachable hub address a visitor is redirected to when signing
+            in to a private app. Must be the public URL, not an in-cluster one —
+            it ends up in a redirect the user's browser follows.
+        - name: operator.publishing.accessProxyImage
+          value: ghcr.io/railgrid/railgrid-access-proxy:latest
+          description: >-
+            Access gate every published app's traffic enters through. It speaks
+            the hub's app-access protocol, so pin it to the build your platform
+            runs rather than letting it float.

@@ -194,28 +194,27 @@ func automaticProviderCatalogResources(catalog []providerCatalogEntry) []automat
 		if providerName == "" || !provider.Ready {
 			continue
 		}
-		for _, action := range provider.Actions {
-			name, version, ok := automaticCatalogActionIdentity(action)
+		// The coordinate an action is discovered at is its PARENT resource's,
+		// so the export is flattened once and every action arrives already
+		// paired with the apiVersion, kind and plural it hangs off.
+		for _, bound := range providerCatalogBoundActions(provider) {
+			name, version, ok := automaticCatalogActionIdentity(bound.Action)
 			if !ok {
 				continue
 			}
-			bound := action.BoundResource
-			apiVersion := strings.TrimSpace(bound.APIVersion)
-			kind := strings.TrimSpace(bound.Kind)
-			resource := strings.TrimSpace(bound.Resource)
-			gv, err := schema.ParseGroupVersion(apiVersion)
-			if err != nil || apiVersion == "" || kind == "" || resource == "" {
+			gv, err := schema.ParseGroupVersion(bound.APIVersion)
+			if err != nil || gv.Group == "" || gv.Version == "" {
 				continue
 			}
-			key := automaticProviderCatalogResourceKey(providerName, gv.WithResource(resource), kind, resource)
+			key := automaticProviderCatalogResourceKey(providerName, gv.WithResource(bound.Resource), bound.Kind, bound.Resource)
 			group := byKey[key]
 			if group.provider == "" {
 				group = automaticProviderCatalogResource{
-					provider: providerName, apiVersion: apiVersion, kind: kind, resource: resource,
-					gvr: gv.WithResource(resource),
+					provider: providerName, apiVersion: bound.APIVersion, kind: bound.Kind, resource: bound.Resource,
+					gvr: gv.WithResource(bound.Resource),
 				}
 			}
-			group.actions = append(group.actions, automaticProviderCatalogAction{name: name, version: version, schemaDigest: strings.TrimSpace(action.SchemaDigest)})
+			group.actions = append(group.actions, automaticProviderCatalogAction{name: name, version: version, schemaDigest: strings.TrimSpace(bound.Action.SchemaDigest)})
 			byKey[key] = group
 		}
 	}
@@ -253,11 +252,7 @@ func automaticProviderCatalogResources(catalog []providerCatalogEntry) []automat
 }
 
 func automaticCatalogActionIdentity(action providerCatalogAction) (string, string, bool) {
-	name, version, ok := splitProviderCatalogActionID(action.ID)
-	if !ok {
-		return "", "", false
-	}
-	name, version, err := normalizeIntegrationAction(name, version)
+	name, version, err := normalizeIntegrationAction(action.Name, action.Version)
 	if err != nil || !projectActionSchemaDigestRE.MatchString(strings.TrimSpace(action.SchemaDigest)) {
 		return "", "", false
 	}

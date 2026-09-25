@@ -150,7 +150,9 @@ func TestACatalogProvisioning(t *testing.T) {
 }
 
 // TestBAPIProvidersDTO asserts the edges provider surfaces on the hub's
-// /api/providers DTO with the Edges category and its apiExport path.
+// /api/providers DTO with the Edges category and its export section — the
+// APIExport name a tenant binds, the workspace path hosting it, and the API
+// groups the hub read off the export itself.
 func TestBAPIProvidersDTO(t *testing.T) {
 	body := httpGetJSON(t, hubURL+"/api/providers", staticToken)
 	items, _ := body["items"].([]any)
@@ -170,8 +172,23 @@ func TestBAPIProvidersDTO(t *testing.T) {
 	if e["ready"] != true {
 		t.Errorf("edges ready = %v, want true", e["ready"])
 	}
-	if e["apiExportPath"] != edgesWorkspacePath {
-		t.Errorf("apiExportPath = %v, want %s", e["apiExportPath"], edgesWorkspacePath)
+	export, _ := e["export"].(map[string]any)
+	if export == nil {
+		t.Fatalf("DTO carries no export section; edges exports an API: %v", e)
+	}
+	if export["name"] != edgesAPIExportName {
+		t.Errorf("export.name = %v, want %s", export["name"], edgesAPIExportName)
+	}
+	if export["path"] != edgesWorkspacePath {
+		t.Errorf("export.path = %v, want %s", export["path"], edgesWorkspacePath)
+	}
+	// export.apiGroups is what the hub read off the APIExport itself, and it
+	// differs from the export name: `edges.providers.railgrid.ai` serves
+	// `edges.railgrid.ai`. Empty means the hub never managed to read it, which
+	// is the fail-closed state the scoped-identity policy refuses on.
+	groups, _ := export["apiGroups"].([]any)
+	if len(groups) == 0 {
+		t.Errorf("export.apiGroups is empty; the hub never resolved the groups edges serves: %v", export)
 	}
 	if e["category"] != "Edges" {
 		t.Errorf("category = %v, want Edges", e["category"])

@@ -55,7 +55,8 @@ import (
 //
 // {resource} is kubernetesclusters, linuxservers, macosservers or services and
 // {verb} is one of the coordinates in dataPlaneVerbs — the same set
-// manifest.yaml declares under spec.dataPlane.verbs. provider-sdk/serve has
+// manifest.yaml declares under spec.export.resources[].verbs. provider-sdk/serve
+// has
 // already parsed the path (so ".." , "//" and a percent-encoded separator were
 // refused before this ran), checked the coordinate against the declaration,
 // and put the route and the caller kcp stamped on the request context. The

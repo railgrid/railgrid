@@ -41,6 +41,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	ktesting "k8s.io/client-go/testing"
 
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
@@ -1386,7 +1387,13 @@ func TestEnableProvider_BlocksMissingDependencies(t *testing.T) {
 		Name:          "app-studio",
 		APIExportPath: "root:providers:app-studio",
 		APIExportName: "app-studio",
-		Dependencies:  []hubproviders.Dependency{{Name: "code"}},
+		Requires: []providersv1alpha1.ProviderRequirement{{
+			Provider: "code",
+			Group:    "code.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderRequiredResource{{
+				Name: "repositories", Verbs: []providersv1alpha1.ProviderRequiredVerb{"get"},
+			}},
+		}},
 	})
 	mgr.WithProviderRegistry(reg)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
@@ -1420,7 +1427,13 @@ func TestEnableProvider_AllowsSatisfiedDependencies(t *testing.T) {
 		Name:          "app-studio",
 		APIExportPath: "root:providers:app-studio",
 		APIExportName: "app-studio",
-		Dependencies:  []hubproviders.Dependency{{Name: "code"}},
+		Requires: []providersv1alpha1.ProviderRequirement{{
+			Provider: "code",
+			Group:    "code.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderRequiredResource{{
+				Name: "repositories", Verbs: []providersv1alpha1.ProviderRequiredVerb{"get"},
+			}},
+		}},
 	})
 	mgr.WithProviderRegistry(reg)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))

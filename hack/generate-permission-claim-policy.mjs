@@ -6,13 +6,19 @@
  * Every cross-provider relationship on this platform is already declared once,
  * in the declaring provider's manifest.yaml:
  *
- *   spec.dependencies[].composes[] = {group, resource, verbs}
+ *   spec.requires[] = {provider, group, resources[]}
  *
- * Those declarations already drive tenant consent at Enable and the claims on
- * the provider's own APIExport. This generator makes them drive the kcp
- * policy too, so there is exactly ONE place a new edge is
- * written down: a `composes` entry nobody whitelisted becomes a `--check`
- * failure rather than a runtime 403 nobody can explain.
+ * Those declarations already drive tenant consent at Enable, the dependency
+ * ordering the hub enforces, and the claims on the provider's own APIExport.
+ * This generator makes them drive the kcp policy too, so there is exactly ONE
+ * place a new edge is written down: a `requires` entry nobody whitelisted
+ * becomes a `--check` failure rather than a runtime 403 nobody can explain.
+ *
+ * Only an entry that names a `provider` is a cross-provider claim. A
+ * requirement with no provider is a platform builtin -- authorization.k8s.io,
+ * authentication.k8s.io, the core group -- which no provider exports, which
+ * nothing has to enable first, and which therefore needs no policy rule
+ * admitting it.
  *
  * The output is a kcp `PermissionClaimPolicy` (group admin.kcp.io, see
  * kcp-dev/kcp#4385). Its spec has two fields:
@@ -25,19 +31,25 @@
  *
  * Two inputs, from two different files:
  *
- *   the CLAIMED groups  manifest.yaml spec.dependencies[].composes[].group.
- *   the CLAIMER group   NOT in the manifest. A provider's manifest names its
- *                       APIExport (spec.apiExport.name) but not the api groups
- *                       that export serves, and the two differ for most
- *                       providers (`edges.providers.railgrid.ai` exports
+ *   the CLAIMED groups  manifest.yaml spec.requires[].group, for the entries
+ *                       that name a provider.
+ *   the CLAIMER group   NOT reliably in the manifest. A provider's manifest
+ *                       names its APIExport (spec.export.name) and the
+ *                       apiVersion of each resource it hangs a verb or an action
+ *                       off, but a resource with neither needs no entry at all,
+ *                       so the manifest is not the full list of api groups that
+ *                       export serves -- and the export name differs from the
+ *                       group for most providers
+ *                       (`edges.providers.railgrid.ai` exports
  *                       `edges.railgrid.ai`). The one authoritative answer is
  *                       spec.resources[].group on the export itself -- the same
  *                       projection pkg/hub/providers.APIExportGroups makes off
  *                       the live object. Here it is read off the GENERATED
  *                       export, providers/<name>/config/kcp/apiexport-<export
- *                       name>.yaml. A provider that composes something but whose
- *                       exported group cannot be read is an error, never a
- *                       guess: guessing it wrong whitelists the wrong claimer.
+ *                       name>.yaml. A provider that requires another provider's
+ *                       group but whose own exported group cannot be read is an
+ *                       error, never a guess: guessing it wrong whitelists the
+ *                       wrong claimer.
  *
  * Provider discovery matches hack/verify-provider-contract.mjs (a directory
  * under providers/ with a manifest.yaml), plus the same optional external
@@ -187,14 +199,14 @@ function catalogEntrySpec(file) {
  * The api groups a provider's GENERATED APIExport serves, off
  * spec.resources[].group. Empty is a legitimate answer for a provider that
  * mints its resources at runtime (the infrastructure provider ships
- * `resources: []`); it only becomes an error when such a provider also
- * composes, because then its claimer group is load-bearing.
+ * `resources: []`); it only becomes an error when such a provider also requires
+ * another provider's group, because then its claimer group is load-bearing.
  */
 export function exportedGroups(provider) {
   const spec = catalogEntrySpec(path.join(provider.dir, 'manifest.yaml'))
-  const exportName = spec?.apiExport?.name
+  const exportName = spec?.export?.name
   if (typeof exportName !== 'string' || !exportName) {
-    return { groups: [], why: `${provider.label}/manifest.yaml declares no spec.apiExport.name` }
+    return { groups: [], why: `${provider.label}/manifest.yaml declares no spec.export.name` }
   }
   const exportPath = path.join(provider.dir, 'config', 'kcp', `apiexport-${exportName}.yaml`)
   if (!fs.existsSync(exportPath)) {
@@ -218,20 +230,27 @@ export function exportedGroups(provider) {
   return { groups, why: null }
 }
 
-/** The api groups a provider composes, off spec.dependencies[].composes[].group. */
-export function composedGroups(provider) {
+/**
+ * The api groups a provider requires from ANOTHER PROVIDER, off
+ * spec.requires[].group, in manifest order.
+ *
+ * Only the entries that name a `provider` count. A requirement with no provider
+ * is a platform builtin (authorization.k8s.io, authentication.k8s.io, the core
+ * group): nobody exports it, so no policy rule admits a claim on it and one
+ * here would reserve a Kubernetes builtin group for the platform's providers.
+ */
+export function requiredGroups(provider) {
   const spec = catalogEntrySpec(path.join(provider.dir, 'manifest.yaml'))
-  const dependencies = Array.isArray(spec?.dependencies) ? spec.dependencies : []
+  const requirements = Array.isArray(spec?.requires) ? spec.requires : []
   const groups = []
-  for (const dependency of dependencies) {
-    const composes = Array.isArray(dependency?.composes) ? dependency.composes : []
-    for (const composition of composes) {
-      const group = String(composition?.group ?? '').trim()
-      if (!group) {
-        fail(`${provider.label}/manifest.yaml spec.dependencies[name=${dependency?.name ?? '?'}].composes[] has an entry with no group`)
-      }
-      groups.push(group)
+  for (const requirement of requirements) {
+    const owner = String(requirement?.provider ?? '').trim()
+    if (!owner) continue
+    const group = String(requirement?.group ?? '').trim()
+    if (!group) {
+      fail(`${provider.label}/manifest.yaml spec.requires[] names provider ${owner} with no group; a requirement on a provider must name the api group that provider serves`)
     }
+    groups.push(group)
   }
   return groups
 }
@@ -258,21 +277,21 @@ export function generate(options = {}) {
   let relationships = 0
 
   for (const provider of providers) {
-    const composed = composedGroups(provider)
+    const required = requiredGroups(provider)
     const { groups, why } = exportedGroups(provider)
     for (const group of groups) claimerGroups.add(group)
-    if (!composed.length) continue
-    relationships += composed.length
+    if (!required.length) continue
+    relationships += required.length
     // Only now is the claimer group load-bearing, so only now is failing to
     // derive it fatal.
     if (!groups.length) {
-      fail(`${provider.name} composes ${composed.length} api group(s) but the api group it exports is unknown: ${why}`)
+      fail(`${provider.name} requires ${required.length} api group(s) from other providers but the api group it exports is unknown: ${why}`)
     }
     for (const claimer of groups) {
       const claimed = rulesByClaimer.get(claimer) ?? new Set()
       // A provider claiming its own group needs no whitelisting: an APIExport
       // always has its own identity.
-      for (const group of composed) if (group !== claimer) claimed.add(group)
+      for (const group of required) if (group !== claimer) claimed.add(group)
       rulesByClaimer.set(claimer, claimed)
     }
   }
@@ -319,14 +338,17 @@ function header({ providers, relationships }) {
 # manifests. Regenerate with:
 #   make permission-claim-policy [EXTERNAL_PROVIDERS_DIR=../providers]
 # \`make verify-provider-contract\` re-runs it with --check, so a new
-# spec.dependencies[].composes[] entry that nobody whitelisted fails there.
+# spec.requires[] entry that nobody whitelisted fails there.
 #
 # spec.claims[].groups  comes from each provider's manifest.yaml
-#                       spec.dependencies[].composes[].group.
+#                       spec.requires[].group, for the entries that name a
+#                       provider. A requirement with no provider is a platform
+#                       builtin (authorization.k8s.io, the core group): no
+#                       provider exports it, so no rule here admits it.
 # spec.claims[].claimer comes from spec.resources[].group on that provider's
 #                       generated APIExport (config/kcp/apiexport-*.yaml) — the
-#                       manifest names the export, not the group it serves, and
-#                       the two differ for most providers.
+#                       manifest names the export (spec.export.name), not every
+#                       group it serves, and the two differ for most providers.
 # spec.providers        is the identity the hub mints for every provider:
 #                       ServiceAccount default/provider in the provider's own
 #                       workspace root:railgrid:providers/<name> (see
@@ -347,7 +369,7 @@ function header({ providers, relationships }) {
 #                       admission check already scopes the match to the
 #                       exporting workspace.
 #
-# Generated from ${providers.length} provider manifest(s), ${relationships} composes entr${relationships === 1 ? 'y' : 'ies'}:
+# Generated from ${providers.length} provider manifest(s), ${relationships} cross-provider requirement(s):
 ${scanned}
 `
 }
@@ -437,18 +459,18 @@ export function check(options = {}) {
 
   for (const [claimer, groups] of want) {
     if (!have.has(claimer)) {
-      violations.push(violation(CHECKS.MISSING_RULE, `has no rule for claimer ${claimer}; a composes entry declares ${groups.join(', ')} but nothing whitelists it. Run make permission-claim-policy`))
+      violations.push(violation(CHECKS.MISSING_RULE, `has no rule for claimer ${claimer}; a spec.requires entry declares ${groups.join(', ')} but nothing whitelists it. Run make permission-claim-policy`))
       continue
     }
     const current = have.get(claimer)
     if (current.join(',') !== groups.join(',')) {
-      violations.push(violation(CHECKS.DRIFTED_RULE, `claimer ${claimer} whitelists [${current.join(' ')}] but the manifests compose [${groups.join(' ')}]. Run make permission-claim-policy`))
+      violations.push(violation(CHECKS.DRIFTED_RULE, `claimer ${claimer} whitelists [${current.join(' ')}] but the manifests require [${groups.join(' ')}]. Run make permission-claim-policy`))
     }
   }
   for (const claimer of have.keys()) {
     if (want.has(claimer)) continue
     if (result.claimerGroups.has(claimer)) {
-      violations.push(violation(CHECKS.STALE_RULE, `claimer ${claimer} is exported by a scanned provider that composes nothing; the rule is stale. Run make permission-claim-policy`))
+      violations.push(violation(CHECKS.STALE_RULE, `claimer ${claimer} is exported by a scanned provider that requires nothing from another provider; the rule is stale. Run make permission-claim-policy`))
       continue
     }
     unscanned.push(claimer)
@@ -508,8 +530,8 @@ function usage() {
     `Usage: node ${GENERATOR} [options]`,
     '',
     `Generates ${POLICY_PATH} from every providers/*/manifest.yaml:`,
-    '  spec.dependencies[].composes[].group  -> the groups a provider may claim',
-    '  the provider\'s generated APIExport    -> the claimer group it exports',
+    '  spec.requires[].group (provider entries)  -> the groups a provider may claim',
+    '  the provider\'s generated APIExport        -> the claimer group it exports',
     '',
     'Options:',
     '  --check                         Fail if the committed file is stale',
@@ -535,7 +557,7 @@ function main() {
       if (options.json) {
         console.log(JSON.stringify({ violations: result.violations, unscanned: result.unscanned, providers: result.providers.map((p) => p.label), relationships: result.relationships, claims: result.policy.spec.claims }, null, 2))
       } else {
-        console.log(`Permission claim policy scanned ${result.providers.length} provider(s), ${result.relationships} composes entr${result.relationships === 1 ? 'y' : 'ies'}: ${result.violations.length} violation(s), ${result.unscanned.length} unscanned rule(s) left alone.`)
+        console.log(`Permission claim policy scanned ${result.providers.length} provider(s), ${result.relationships} cross-provider requirement(s): ${result.violations.length} violation(s), ${result.unscanned.length} unscanned rule(s) left alone.`)
         for (const item of result.violations) console.log(formatViolation(item))
         if (result.unscanned.length) console.log(`Permission claim policy unscanned claimers (no provider in this checkout exports them): ${result.unscanned.join(' ')}`)
       }
@@ -546,7 +568,7 @@ function main() {
     if (options.json) {
       console.log(JSON.stringify({ file: POLICY_PATH, changed: result.changed, providers: result.providers.map((p) => p.label), claims: result.policy.spec.claims }, null, 2))
     } else {
-      console.log(`Permission claim policy wrote ${POLICY_PATH} (${result.changed ? 'changed' : 'unchanged'}) from ${result.providers.length} provider(s): ${result.policy.spec.claims.length} claimer(s), ${result.relationships} composes entr${result.relationships === 1 ? 'y' : 'ies'}.`)
+      console.log(`Permission claim policy wrote ${POLICY_PATH} (${result.changed ? 'changed' : 'unchanged'}) from ${result.providers.length} provider(s): ${result.policy.spec.claims.length} claimer(s), ${result.relationships} cross-provider requirement(s).`)
     }
   } catch (error) {
     if (!(error instanceof PolicyError)) throw error

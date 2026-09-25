@@ -3,6 +3,15 @@
 Status: **Phases 1–4 code complete** (2026-08-06); remaining: live dev-loop
 verification (2.9) and the tenant claim rollout (operating rule below)
 
+> **2026-09-25.** `CatalogEntrySpec` was restructured into
+> `export`/`requires`/`serving`/`hub`: the claims and compositions this plan
+> writes as `spec.apiExport.permissionClaims` and
+> `spec.dependencies[].composes` are now one list, `spec.requires`, keyed by
+> API group. The plan's field paths are left as written — it is a dated record
+> — and the mapping is in
+> [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+> §"Status update 2026-09-25 — the CatalogEntry contract is four sections".
+
 Add permission-claim parity, deterministic reconcilers, and a real controller
 substrate to App Studio. Bootstrap is already shared through provider-sdk
 `init`; lifecycle actions should converge from durable desired state instead

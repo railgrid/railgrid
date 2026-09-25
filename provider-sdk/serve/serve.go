@@ -144,7 +144,7 @@ type Options struct {
 	Actions http.Handler
 	// Subresources declares which "<resource>/<verb>" coordinates exist and
 	// how each maps onto DataPlane or Actions. It is the provider's
-	// spec.dataPlane.verbs and spec.actions in Go form
+	// spec.export.resources[].verbs and .actions in Go form
 	// (SubresourcesFromCatalogEntryFile), and it is REQUIRED whenever
 	// DataPlane or Actions is set: a handler with no declared coordinates is
 	// unreachable, and New refuses to build a server that silently has no

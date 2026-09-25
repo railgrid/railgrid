@@ -201,9 +201,10 @@ Develop with 'railgrid sandbox' against <project>-dev and record commits with
 
 // App Studio's API coordinates. Every operation below is either a read or
 // write of a Project CR through the hub's kcp proxy (list, the existence check
-// behind `sandbox exec`), or one of the provider's data-plane verbs — kcp
-// custom subresources "projects/{verb}" and "studios/{verb}" on its APIExport,
-// declared in providers/app-studio/manifest.yaml spec.dataPlane.verbs and
+// behind `sandbox exec`), or one of the provider's declared verbs — kcp custom
+// subresources "projects/{verb}" and "studios/{verb}" on its APIExport,
+// declared in providers/app-studio/manifest.yaml under
+// spec.export.resources[].verbs and
 // served by providers/app-studio/api/dataplane_table.go. There is no
 // /services/providers/app-studio/api/... facade any more.
 const (

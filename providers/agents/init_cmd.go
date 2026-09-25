@@ -56,7 +56,7 @@ func runInitCmd(ctx context.Context) error {
 	// declaration. Empty → skip.
 	catalogEntryFile := catalogEntryPath()
 	// Where kcp reverse-proxies a custom subresource request to. Empty means
-	// "spec.backend.url of the CatalogEntry above", which is right whenever the
+	// "spec.serving.backend.url of the CatalogEntry above", which is right whenever the
 	// chart runs init; a harness that registers the CatalogEntry itself (the
 	// Makefile's install-provider-* target, the provider e2e) has no file to
 	// read it from and sets this instead.

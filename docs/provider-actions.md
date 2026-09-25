@@ -20,7 +20,7 @@ POST /clusters/{clusterID}/apis/{group}/{version}/{resource}/{name}/{action}
 
 The URL is the resource reference — cluster ID, resource, name, and verb are
 all addressed in the path; the body carries only `{"input": {...}}`. The
-action's contract version (`/v<n>` in its catalog id) is **not** in the path:
+action's contract `version` is **not** in the path:
 `provider-sdk/serve` restores it from the provider's declaration before
 dispatching. Authentication is kcp's — the caller presents a bearer to the
 kcp front door (the hub's `/clusters/{id}`), never to the provider — and
@@ -29,15 +29,19 @@ binaries without any consumer change.
 
 ## Catalog contract
 
-`CatalogEntry.spec.actions` is the provider's public action catalog. Each
-entry is keyed by an ID such as `query-table/v1` and declares all policy and
+An action is declared on the resource it is served on, under
+`CatalogEntry.spec.export.resources[].actions[]`. That parent entry — its
+`name` (the plural resource), `apiVersion` and `kind` — *is* the bound
+resource; an action carries no `boundResource` of its own, and cannot name a
+resource its provider does not export. Each action declares all policy and
 validation data needed by callers without exposing a provider URL or
 credential model:
 
 | Field | Meaning |
 |---|---|
-| `id`, `displayName`, `description` | Stable name/version plus human-facing metadata. IDs are `name/vN`. |
-| `boundResource` | Exact API version, kind, and resource whose identity is supplied by the Project binding. |
+| `name` | The action, and the subresource half of the `{resource}/{action}` coordinate kcp routes on. It carries no version and no slash. |
+| `version` | The contract revision, `v` followed by a positive integer. It is a separate field because the coordinate a grant names and the revision a caller asks for are different things. Together they render the catalogued identity `name/version` (`query-table/v1`), which is what grants, consent records and the assistant catalog key on. |
+| `displayName`, `description` | Human-facing metadata. |
 | `inputSchema`, `outputSchema` | JSON Schemas for caller input and provider result. Schemas are local, bounded, and compiled by the hub. |
 | `schemaDigest` | `sha256:` digest over the canonical input/output schema envelope. The hub recomputes it at catalog admission; App Studio pins it at grant time and re-verifies it on every invoke. |
 | `executionMode` | `sync` (the result is the effect) or `async` (the call records intent and a controller applies it later, e.g. code's `commit/v1` creates a `RepositoryCommit` the controller then pushes). The transport is the same for both; the mode tells the caller whether to poll the bound object for the outcome. |
@@ -54,8 +58,10 @@ catalog state fails closed before it can enter the action router. The
 portal-facing `/api/providers` projection exposes discovery and consent
 metadata, but not transport URLs.
 
-Databricks publishes `query-table/v1` bound to
-`databricks.railgrid.ai/v1alpha1 / Table / tables`. Its catalog declaration
+Databricks publishes `query-table` v1 under its `tables` resource
+(`apiVersion: databricks.railgrid.ai/v1alpha1`, `kind: Table`), so the
+coordinate is `tables/query-table` and the catalogued identity is
+`query-table/v1`. Its catalog declaration
 is `sync`, `readOnly: true`, `risk: low`, `idempotency: inherent`, with a
 45-second timeout, 8 KiB input cap, 64 KiB output cap, and 100 result-item
 cap. Consent is not required. Its input schema permits only optional exact
@@ -93,7 +99,8 @@ The exception is narrow. A verb qualifies only when all four hold:
 
 1. it exists to carry a bounded artifact larger than the catalog's input
    ceiling, and it returns a handle rather than the artifact;
-2. it is declared as a data-plane verb (`spec.dataPlane.verbs`) so it is
+2. it is declared as a data-plane verb (under its resource's
+   `spec.export.resources[].verbs`) so it is
    published as a custom subresource and gated exactly like an action — kcp
    authorizes `{resource}/{verb}`, the provider's gate reviews `get` on the
    bound resource as the caller — so RBAC still authorizes it per verb and
@@ -189,8 +196,9 @@ with verbs `*`, name-scoped to the addressed object. That is what the hub
 writes when it materializes a workload-identity grant
 (`pkg/hub/serviceaccounts/workload_identity.go`) and what clause C of the
 scoped-identity policy mints whatever verbs a requester spells
-(`pkg/hub/identity/policy.go`); a `composes[]` claim on a `{resource}/{verb}`
-is written `verbs: ["*"]` for the same reason. The coordinate is the grant;
+(`pkg/hub/identity/policy.go`); a `spec.requires` entry on a `{resource}/{verb}`
+coordinate carries no verbs in the manifest at all and generates a claim
+spelling `verbs: ["*"]` for the same reason. The coordinate is the grant;
 the method is not something a caller chooses.
 
 `invoke` is **not** a verb anywhere. It was a bug — a dialect that grew up in
@@ -210,8 +218,8 @@ virtual workspace (`dataplane.Gate`). It still has to read: a review can pass
 for an object that does not exist or is being deleted, and the handler needs
 the object to pin the UID and the spec it is about to act on. A
 `deletionTimestamp` denies. Every probe-shaped failure is a `404`. The
-export must claim `authorization.k8s.io/subjectaccessreviews` (`create`,
-tenantScoped) for kcp to serve the review through the virtual workspace.
+export must require `authorization.k8s.io/subjectaccessreviews` (`create`, in
+`spec.requires`) for kcp to serve the review through the virtual workspace.
 
 ### The cluster is in the path, and only there
 

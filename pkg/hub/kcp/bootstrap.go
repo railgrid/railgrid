@@ -238,7 +238,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 
 	// 5c. First-party CatalogEntries — the portal's MCP / Edges /
 	//     Workloads tabs surface as ordinary entries in the providers
-	//     list. They declare spec.ui.builtinRoute (not URL) so the portal
+	//     list. They declare spec.serving.ui.builtinRoute (not URL) so the portal
 	//     renders an in-tree Vue route instead of loading a custom
 	//     element bundle. They live in system:providers alongside the
 	//     admin-applied Provider/CatalogEntry objects.

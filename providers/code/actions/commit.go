@@ -33,7 +33,7 @@ const Commit = "commit"
 
 // StageCommitBundle is the second uncatalogued large-upload verb, alongside
 // StageSnapshot and for the same reason: a repository's worth of generated
-// files does not fit in the 1 MiB CatalogEntry.spec.actions[].limits
+// files does not fit in the 1 MiB a catalogued action's limits
 // .maxInputBytes ceiling (apis/providers/v1alpha1/actions.go), and inventing
 // a catalogue that lies about its own bounds would be worse than declaring
 // the exception. A caller with more than one mebibyte of files uploads them

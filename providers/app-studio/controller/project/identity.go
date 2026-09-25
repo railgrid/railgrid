@@ -47,7 +47,7 @@ package project
 //     where the serving provider re-reads the addressed object AS THE CALLER
 //     (gate 1) before it will run anything (gate 2).
 //
-// The COMPOSITION rules (spec.dependencies[].composes) are still minted with
+// The REQUIREMENT rules (spec.requires) are still minted with
 // it, and for two reasons that outlive the move: gate 1 on every action above
 // is a real GET of the addressed object as this subject, so the name-scoped
 // reads have to be there for the verbs to be usable at all; and the
@@ -134,7 +134,7 @@ const (
 //	workspace assistant sandbox file read/write
 //
 // The infrastructure provider declares all eight in its CatalogEntry
-// (providers/infrastructure/manifest.yaml spec.dataPlane.verbs); the hub's
+// (providers/infrastructure/manifest.yaml spec.export.resources[].verbs); the hub's
 // policy (clause C) will only mint a capability for a verb it can verify
 // exists there. `runtime-status` is declared there too and is deliberately
 // absent here: nothing in this provider calls it.

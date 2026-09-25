@@ -67,7 +67,7 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 			continue
 		}
 		if route.Action {
-			t.Errorf("%s came out as an action; this provider declares no spec.actions", coordinate)
+			t.Errorf("%s came out as an action; this provider declares no actions", coordinate)
 		}
 	}
 	for _, coordinate := range []string{"kubernetesclusters/status", "linuxservers/scale"} {

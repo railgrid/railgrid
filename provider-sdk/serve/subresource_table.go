@@ -34,32 +34,34 @@ import (
 // half: lowercase, digits, hyphens, no leading or trailing hyphen.
 var subresourceName = regexp.MustCompile(`^[a-z][-a-z0-9]*[a-z0-9]$`)
 
-// actionVersion strips the "/v<n>" suffix an action id carries; the coordinate
-// kcp routes on is the action name alone, and the version goes back onto the
-// rewritten path from the table.
-var actionVersion = regexp.MustCompile(`/(v[0-9]+)$`)
+// actionVersion is an action's contract revision, "v<n>". It is a declared
+// field, not a suffix of the coordinate: the coordinate kcp routes on is the
+// action name alone, and this goes back onto the rewritten path from the table.
+var actionVersion = regexp.MustCompile(`^v[0-9]+$`)
 
 type catalogEntryDoc struct {
 	Spec struct {
-		DataPlane struct {
-			Verbs []struct {
-				Resource string `json:"resource"`
-				Verb     string `json:"verb"`
-			} `json:"verbs"`
-		} `json:"dataPlane"`
-		Actions []struct {
-			ID            string `json:"id"`
-			BoundResource struct {
-				Resource string `json:"resource"`
-			} `json:"boundResource"`
-		} `json:"actions"`
+		Export struct {
+			Resources []struct {
+				Name  string `json:"name"`
+				Verbs []struct {
+					Name string `json:"name"`
+				} `json:"verbs"`
+				Actions []struct {
+					Name    string `json:"name"`
+					Version string `json:"version"`
+				} `json:"actions"`
+			} `json:"resources"`
+		} `json:"export"`
 	} `json:"spec"`
 }
 
 // SubresourcesFromCatalogEntry derives the Subresources table from a
-// CatalogEntry manifest's bytes. A verb or action whose name kcp would refuse
-// is an error here too, so a provider fails at startup with the coordinate
-// named rather than serving an export that cannot be applied.
+// CatalogEntry manifest's bytes, walking spec.export.resources[]: each verb
+// becomes a plain route and each action a versioned one, on the coordinate
+// "<resource>/<name>". A verb or action whose name kcp would refuse is an error
+// here too, so a provider fails at startup with the coordinate named rather
+// than serving an export that cannot be applied.
 func SubresourcesFromCatalogEntry(manifest []byte) (map[string]SubresourceRoute, error) {
 	var doc catalogEntryDoc
 	if err := yaml.Unmarshal(manifest, &doc); err != nil {
@@ -78,26 +80,30 @@ func SubresourcesFromCatalogEntry(manifest []byte) (map[string]SubresourceRoute,
 			return fmt.Errorf("serve: %s/%s is not a valid kcp subresource name (lowercase letters, digits and hyphens)", resource, verb)
 		}
 		key := resource + "/" + verb
-		if existing, dup := table[key]; dup && existing != route {
-			return fmt.Errorf("serve: %s is declared twice with different routes", key)
+		if _, dup := table[key]; dup {
+			return fmt.Errorf("serve: %s is declared twice; a verb and an action share one coordinate namespace on a resource", key)
 		}
 		table[key] = route
 		return nil
 	}
-	for _, v := range doc.Spec.DataPlane.Verbs {
-		if err := add(v.Resource, v.Verb, SubresourceRoute{}); err != nil {
-			return nil, err
+	for _, resource := range doc.Spec.Export.Resources {
+		for _, verb := range resource.Verbs {
+			if err := add(resource.Name, verb.Name, SubresourceRoute{}); err != nil {
+				return nil, err
+			}
 		}
-	}
-	for _, a := range doc.Spec.Actions {
-		id := strings.TrimSpace(a.ID)
-		m := actionVersion.FindStringSubmatch(id)
-		if m == nil {
-			return nil, fmt.Errorf("serve: action %q has no /v<n> version suffix", id)
-		}
-		name := strings.TrimSuffix(id, m[0])
-		if err := add(a.BoundResource.Resource, name, SubresourceRoute{Action: true, Version: m[1]}); err != nil {
-			return nil, err
+		for _, action := range resource.Actions {
+			// The version is the action's own field. It is not in the
+			// coordinate, and the provider restores it onto the rewritten path
+			// from this table, so a missing one is an unroutable action rather
+			// than a cosmetic omission.
+			version := strings.TrimSpace(action.Version)
+			if !actionVersion.MatchString(version) {
+				return nil, fmt.Errorf("serve: action %s/%s declares version %q, which is not a v<n> contract revision", strings.TrimSpace(resource.Name), strings.TrimSpace(action.Name), action.Version)
+			}
+			if err := add(resource.Name, action.Name, SubresourceRoute{Action: true, Version: version}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return table, nil

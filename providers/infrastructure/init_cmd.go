@@ -43,7 +43,7 @@ import (
 )
 
 // apiExportName is the infrastructure provider's APIExport (manifest.yaml
-// spec.apiExport.name).
+// spec.export.name).
 const apiExportName = "infrastructure.providers.railgrid.ai"
 
 // runInitCmd drives the bootstrap chain. Reads admin credentials from

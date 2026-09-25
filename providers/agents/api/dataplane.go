@@ -82,9 +82,10 @@ type verbRoute struct {
 	methods []string
 	tail    tailPolicy
 	handler http.HandlerFunc
-	// stream and readOnly mirror dataPlane.verbs[].stream / .readOnly in the
-	// CatalogEntry. They are carried here so the declaration and the
-	// implementation are one edit apart and a test can prove they agree.
+	// stream and readOnly mirror the verb's .stream / .readOnly in the
+	// CatalogEntry's spec.export.resources[].verbs[]. They are carried here so
+	// the declaration and the implementation are one edit apart and a test can
+	// prove they agree.
 	stream   bool
 	readOnly bool
 }
@@ -96,11 +97,13 @@ type resourceRoutes struct {
 }
 
 // routes is the complete table. It is the single source of truth for what this
-// provider serves, and it must stay identical to spec.dataPlane.verbs in
-// manifest.yaml and deploy/chart/templates/catalogentry.yaml — TestDataPlaneVerbsMatchManifest
-// fails the build when they drift. The manifest is ALSO what serve's adapter
-// dispatches from (serve.SubresourcesFromCatalogEntryFile), so a verb missing
-// from either side is never reached.
+// provider serves, and it must stay identical to spec.export.resources[].verbs
+// in manifest.yaml and deploy/chart/templates/catalogentry.yaml —
+// TestDataPlaneVerbsMatchManifest fails the build when they drift, on the verbs
+// and on the apiVersion/kind each resource binds them to. The manifest is ALSO
+// what serve's adapter dispatches from
+// (serve.SubresourcesFromCatalogEntryFile), so a verb missing from either side
+// is never reached.
 func (s *Server) routes() map[string]resourceRoutes {
 	get := []string{http.MethodGet}
 	post := []string{http.MethodPost}

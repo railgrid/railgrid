@@ -2,6 +2,16 @@
 
 **Status:** Review, 2026-09-19. Describes the tree as it is; nothing here is a
 plan unless the section says so.
+
+> **2026-09-25.** `CatalogEntrySpec` has since been restructured into four
+> sections — `export` (the APIExport's name plus its resources, each carrying
+> the `verbs[]` and `actions[]` served on it), `requires` (ONE list keyed by API
+> group, replacing both `spec.apiExport.permissionClaims` and
+> `spec.dependencies[].composes[]`), `serving` and `hub`. The field paths in
+> this review are the ones that existed when it was written and are kept as
+> written; the mapping is in
+> [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+> §"Status update 2026-09-25 — the CatalogEntry contract is four sections".
 **Reads as a delta on:** [providers.md](./providers.md),
 [provider-connectivity-contract.md](./provider-connectivity-contract.md),
 [provider-actions.md](./provider-actions.md),

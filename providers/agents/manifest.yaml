@@ -4,9 +4,9 @@
 # and heartbeat runs, tool use, and durable memory. Its runtime dependencies
 # are the hub and Postgres. Instance-backed tools (a self-hosted search engine,
 # a browser instance) reach tenant workloads through the infrastructure
-# provider's instances/proxy verb, which this provider CLAIMS under
-# spec.dependencies below and calls through its own APIExport virtual
-# workspace as itself.
+# provider's instances/proxy verb, which this provider REQUIRES under
+# spec.requires below and calls through its own APIExport virtual workspace as
+# itself.
 #
 # Apply this against the kcp workspace where the railgrid.ai APIExport is
 # bound (typically root:railgrid:providers when running embedded kcp for dev):
@@ -20,9 +20,12 @@
 # cluster, the Helm chart renders the Service DNS instead, e.g.
 #   url: http://agents.agents.svc.cluster.local:8087
 #
-# This CatalogEntry registers routing and references apiExport.name. The
-# provider's init command creates the APIExport, schemas, endpoint slice, and
-# bind grant from deploy/chart/files/schemas.
+# The spec answers four questions, one section each: export (what a tenant may
+# call), requires (what this provider needs that it does not own), serving
+# (where the hub reaches it) and hub (what it asks of the hub itself — nothing,
+# for this provider, so the section is absent). The provider's init command
+# creates the APIExport, schemas, endpoint slice, and bind grant from
+# deploy/chart/files/schemas.
 ---
 apiVersion: providers.railgrid.ai/v1alpha1
 kind: CatalogEntry
@@ -37,221 +40,240 @@ spec:
   version: "0.1.0"
   category: "AI"
   iconURL: "/ui/providers/agents/icon.svg"
-  ui:
-    # Dev loopback port (PORT / Tiltfile run-provider-agents). 8087 to avoid
-    # colliding with quickstart (8081), kuery (8084), and app-studio (8085).
-    url: "http://localhost:8087"
-    indexPath: "/"
-    # Sub-nav entries shown indented under "Agents" in the portal side menu.
-    # The portal composes each child URL as /providers/agents/{builtinRoute}
-    # and pushes the trailing segment back as railgridContext.subPath; the
-    # micro-frontend maps it onto its own route in portal/src/router.ts
-    # (routeForSubPath). Every builtinRoute here MUST name a real top-level
-    # route in that file — an entry with no route renders a sidebar item that
-    # lands on a blank page.
-    #
-    # Schedules and triggers are deliberately absent: they are edited on an
-    # agent's Automation tab, not as a workspace-level collection, so there is
-    # no route to point at.
-    children:
-      - displayName: Agents
-        builtinRoute: agents
-      - displayName: Activity
-        builtinRoute: activity
-      - displayName: Connections
-        builtinRoute: connections
-  backend:
-    # The hub backend proxy forwards /services/providers/agents/* here for the
-    # route classes that are not kcp API traffic: /mcp (with the caller's
-    # bearer), the browser OAuth flow under /oauth/, the signed webhooks under
-    # /webhooks/ and /healthz. Data-plane verbs are NOT reached this way: each
-    # is a kcp custom subresource on the APIExport below, and the shard
-    # reverse-proxies it to the same address with the caller stamped in
-    # requestheader headers.
-    url: "http://localhost:8087"
-    healthPath: "/healthz"
 
-  # Another provider's verb this one calls. A composition is claimed on THIS
-  # export (provider-sdk/apiexportgen turns each composes[] entry into a
-  # permission claim; the platform PermissionClaimPolicy admits it), resolved
-  # per workspace to whichever copy of the dependency that workspace bound,
-  # and served on this provider's own virtual workspace, where kcp forwards it
-  # to the owning provider under this provider's identity. Cross-provider work
-  # is done as the provider, never on a user's behalf.
-  dependencies:
-    - name: infrastructure
-      composes:
+  # Everything a tenant can call, and nowhere else. Each resource names its own
+  # apiVersion and kind once, and the verbs it serves hang off it: a verb IS the
+  # kcp custom subresource "<resource>/<verb>". codegen emits it on the
+  # generated APIExport (the shard routes it to this provider through its
+  # DataPlaneEndpointSlice) together with the "<Verb>Request" schema, and
+  # provider-sdk/serve derives from the same list the coordinates it dispatches.
+  #
+  # Declaring one grants nothing: kcp authorizes the call with ordinary RBAC on
+  # {resource}/{verb} before it forwards it, and this provider's gate then
+  # settles the caller's visibility of the object. A consumer provider can name
+  # the coordinate under its own spec.requires and have it claimed on ITS
+  # export; the hub scoped-identity service (pkg/hub/identity/policy.go clause
+  # C) can mint a capability only for a verb it can verify exists here.
+  #
+  # Toolsets are an ordinary CR kind with no verbs and no actions, so they need
+  # no entry: the APIExport serves them from the schema the chart ships.
+  #
+  # This provider declares no actions — every call below is an unversioned verb.
+  export:
+    name: "agents.railgrid.ai"
+    resources:
+      - name: agents
+        apiVersion: agents.railgrid.ai/v1alpha1
+        kind: Agent
+        verbs:
+          - name: chat
+            description: "Hold an interactive conversation with the agent."
+            stream: true
+          - name: run
+            description: "Start an unattended run of the agent."
+          - name: sessions
+            description: "List the agent's chat sessions."
+            readOnly: true
+          - name: session
+            description: "Delete one chat session's transcript."
+          - name: messages
+            description: "Read one chat session's transcript."
+            readOnly: true
+          - name: usage
+            description: "Read the agent's cost, token and latency rollups."
+            readOnly: true
+          - name: inbox
+            description: "List the agent's pending approvals and questions."
+            readOnly: true
+          - name: inbox-resolve
+            description: "Approve, deny or answer one of the agent's inbox items."
+          - name: events
+            description: "Follow the agent's run and inbox activity as it happens."
+            stream: true
+            readOnly: true
+      # A model credential is an object, so its probes are verbs on IT rather
+      # than on some agent that happens to use it. That is what makes first-run
+      # work: a workspace with no agent yet can still save a credential and ask
+      # whether it answers.
+      - name: modelcredentials
+        apiVersion: agents.railgrid.ai/v1alpha1
+        kind: ModelCredential
+        verbs:
+          - name: test
+            description: "Probe the model credential with a real chat round-trip. Optionally POST {\"model\": \"<id>\"} to probe a chat-capable model id instead of the saved one."
+          - name: discover
+            description: "List the chat-capable model ids the credential's endpoint serves, and refresh its status."
+            readOnly: true
+      # Runs are objects, so listing them, reading one and watching one are done
+      # with a kube client and this provider serves no verb for it. What is left
+      # is the half that is NOT on the object: the Postgres-backed trace, and
+      # the two things that need the executor.
+      - name: runs
+        apiVersion: agents.railgrid.ai/v1alpha1
+        kind: Run
+        verbs:
+          - name: trace
+            description: "Read one run's step-level tool trace and answer."
+            readOnly: true
+          - name: wait
+            description: "Block until the run reaches a settled phase."
+            readOnly: true
+          - name: cancel
+            description: "Ask a run in flight to stop."
+      - name: connections
+        apiVersion: agents.railgrid.ai/v1alpha1
+        kind: Connection
+        verbs:
+          - name: test
+            description: "Send a test message through the connection."
+          - name: enable-inbound
+            description: "Register the connection's inbound webhook."
+          - name: authorize
+            description: "Start the connection's OAuth authorization flow."
+      - name: schedules
+        apiVersion: agents.railgrid.ai/v1alpha1
+        kind: Schedule
+        verbs:
+          - name: run
+            description: "Fire the schedule now, without waiting for its next tick."
+      - name: triggers
+        apiVersion: agents.railgrid.ai/v1alpha1
+        kind: Trigger
+        verbs:
+          - name: run
+            description: "Fire the trigger now with an empty event."
+
+  # Everything this provider needs that it does not own, keyed by API group:
+  # another provider's kinds and verbs, and the platform builtins its own
+  # machinery depends on. Each entry becomes one permission claim on the
+  # generated APIExport (provider-sdk/apiexportgen), resolved by kcp per
+  # consumer workspace against whichever copy of that provider the workspace
+  # bound — so it keeps working when an org self-hosts the dependency.
+  #
+  # Declaring grants nothing: a requirement reaches a workspace only once a
+  # workspace or org admin accepted it in the Enable dialog. Everything here is
+  # tenant-scoped by definition, so there is no per-entry scope field.
+  #
+  # There are no serviceaccounts / clusterroles / clusterrolebindings entries:
+  # an agent's unattended identity is MINTED BY THE HUB, scoped to the exact
+  # Instances that agent references and TTL'd (api/agentidentity.go,
+  # provider-sdk/identityclient). The provider never writes RBAC into a
+  # tenant's workspace. There is no tokenreviews entry either: service callers
+  # use the same verbs and gates as everyone else.
+  requires:
+    # Naming a provider makes this a dependency edge as well as a claim: the hub
+    # refuses to enable agents in a workspace where infrastructure is not
+    # enabled yet.
+    - provider: infrastructure
+      group: infrastructure.railgrid.ai
+      resources:
         # See the instances an agent's Connections name.
-        - group: infrastructure.railgrid.ai
-          resource: instances
+        - name: instances
           verbs: ["get", "list", "watch"]
         # The verb: an instance's HTTP data plane (a searxng instance's
         # /search, a browser instance's /mcp), served by the infrastructure
         # provider as the custom subresource instances/proxy. A claim on the
-        # resource does not carry its subresources; each is claimed as its
-        # own entry. kcp authorizes the HTTP method as the RBAC verb on the
-        # subresource, so a proxy that is GET, POST and everything in between
-        # is claimed with "*".
-        - group: infrastructure.railgrid.ai
-          resource: instances/proxy
-          verbs: ["*"]
-
-  apiExport:
-    name: "agents.railgrid.ai"
-    # The provider stores per-workspace model credentials and per-connection
-    # secrets in Secrets in the tenant workspace; the claim lets it read/write
-    # them as the calling user.
+        # resource does not carry its verbs; each is its own entry, and a verb
+        # coordinate carries NO verbs of its own — the verb IS the capability,
+        # and the generated claim spells every verb, because kcp authorizes the
+        # HTTP method as the RBAC verb on a custom subresource.
+        - name: instances/proxy
+    # Every provider that serves a custom subresource needs this one claim: on
+    # the shard-forwarded path there is no caller bearer, so the provider runs a
+    # SubjectAccessReview for the stamped caller through its own APIExport
+    # virtual workspace, and kcp serves that builtin there only for an export
+    # that claims it (hack/verify-provider-contract.mjs
+    # subresource-access-claim). Built-in review API: no identityHash, verb
+    # create only. No provider serves authorization.k8s.io, so there is nothing
+    # to enable first and no provider is named.
+    - group: authorization.k8s.io
+      resources:
+        - name: subjectaccessreviews
+          verbs: ["create"]
+    # The core group (no group at all): Secrets, and ONLY the ones labelled
+    # railgrid.ai/owner: agents. Two kinds of Secret in the tenant workspace:
     #
-    # There are no serviceaccounts / clusterroles / clusterrolebindings claims:
-    # an agent's unattended identity is MINTED BY THE HUB, scoped to the exact
-    # Instances that agent references and TTL'd (api/agentidentity.go,
-    # provider-sdk/identityclient). The provider never writes RBAC into a
-    # tenant's workspace. There are no tokenreviews / subjectaccessreviews
-    # claims either: service callers use the same data-plane verb and gates as
-    # everyone else, so the provider no longer runs its own reviews.
-    permissionClaims:
-      # Every provider that serves a custom subresource needs this one claim:
-      # on the shard-forwarded path there is no caller bearer, so the provider
-      # runs a SubjectAccessReview for the stamped caller through its own
-      # APIExport virtual workspace, and kcp serves that builtin there only for
-      # an export that claims it (hack/verify-provider-contract.mjs
-      # subresource-access-claim). Built-in review API: no identityHash, verb
-      # create only; tenantScoped because the VW confines each review to the
-      # tenant's OWN workspace.
-      - group: authorization.k8s.io
-        resource: subjectaccessreviews
-        verbs: [create]
-        tenantScoped: true
-      # Secrets, and ONLY the ones labelled railgrid.ai/owner: agents. Two
-      # kinds of Secret in the tenant workspace:
+    #   a ModelCredential's spec.secretRef target — the model API key. This
+    #     provider's own writers default the name to
+    #     railgrid-agents-model-<name>, but the object says where its key is,
+    #     so a hand-written credential may point anywhere. TENANT-WRITTEN
+    #     (this provider's portal, or its MCP tools, both AS THE CALLER) and
+    #     read by the provider: by the ModelCredential reconciler, which
+    #     decides SecretResolved / Reachable / Ready, and by unattended runs,
+    #     which have no caller to borrow. So it stays inside the claim, and
+    #     every writer stamps the owner label (portal/src/resources.ts,
+    #     api/settings.go) — a credential whose Secret lacks it is reported
+    #     as SecretResolved=False rather than failing at run time. The
+    #     modelcredentials test and discover verbs read it as the caller and
+    #     need no claim at all.
+    #   railgrid-agents-conn-<name> — one per Connection. PROVIDER-WRITTEN:
+    #     the OAuth callback stores the access and refresh tokens here
+    #     (api/oauth.go), and the Connection reconciler generates the
+    #     Telegram secret_token / Slack signing secret that make an inbound
+    #     webhook verifiable.
+    #
+    # kcp claims are per resource, not per name, so the label is what stands
+    # in for the name prefixes above: without the selector this claim is
+    # read-write on EVERY Secret in EVERY workspace that enables this
+    # provider, which is the side-door docs/cross-provider-simplification.md
+    # X-4 closes. kcp stamps the label on anything this provider writes
+    # through the export and hides anything that does not carry it. A claim on
+    # core secrets without a selector is a contract violation
+    # (hack/verify-provider-contract.mjs claim-selector).
+    - resources:
+        - name: secrets
+          verbs: ["get", "list", "watch", "create", "update", "delete"]
+          selector:
+            matchLabels:
+              railgrid.ai/owner: agents
+
+  # Where the hub reaches this provider.
+  serving:
+    ui:
+      # Dev loopback port (PORT / Tiltfile run-provider-agents). 8087 to avoid
+      # colliding with quickstart (8081), kuery (8084), and app-studio (8085).
+      url: "http://localhost:8087"
+      indexPath: "/"
+      # Sub-nav entries shown indented under "Agents" in the portal side menu.
+      # The portal composes each child URL as /providers/agents/{builtinRoute}
+      # and pushes the trailing segment back as railgridContext.subPath; the
+      # micro-frontend maps it onto its own route in portal/src/router.ts
+      # (routeForSubPath). Every builtinRoute here MUST name a real top-level
+      # route in that file — an entry with no route renders a sidebar item that
+      # lands on a blank page.
       #
-      #   a ModelCredential's spec.secretRef target — the model API key. This
-      #     provider's own writers default the name to
-      #     railgrid-agents-model-<name>, but the object says where its key is,
-      #     so a hand-written credential may point anywhere. TENANT-WRITTEN
-      #     (this provider's portal, or its MCP tools, both AS THE CALLER) and
-      #     read by the provider: by the ModelCredential reconciler, which
-      #     decides SecretResolved / Reachable / Ready, and by unattended runs,
-      #     which have no caller to borrow. So it stays inside the claim, and
-      #     every writer stamps the owner label (portal/src/resources.ts,
-      #     api/settings.go) — a credential whose Secret lacks it is reported
-      #     as SecretResolved=False rather than failing at run time. The
-      #     modelcredentials test and discover verbs read it as the caller and
-      #     need no claim at all.
-      #   railgrid-agents-conn-<name> — one per Connection. PROVIDER-WRITTEN:
-      #     the OAuth callback stores the access and refresh tokens here
-      #     (api/oauth.go), and the Connection reconciler generates the
-      #     Telegram secret_token / Slack signing secret that make an inbound
-      #     webhook verifiable.
-      #
-      # kcp claims are per resource, not per name, so the label is what stands
-      # in for the name prefixes above: without the selector this claim is
-      # read-write on EVERY Secret in EVERY workspace that enables this
-      # provider, which is the side-door docs/cross-provider-simplification.md
-      # X-4 closes. kcp stamps the label on anything this provider writes
-      # through the export and hides anything that does not carry it.
-      - resource: secrets
-        verbs: ["get", "list", "watch", "create", "update", "delete"]
-        tenantScoped: true
-        selector:
-          matchLabels:
-            railgrid.ai/owner: agents
-  # Data-plane verbs this provider serves. Each one IS the kcp custom
-  # subresource "<resource>/<verb>": codegen emits it on the generated
-  # APIExport (the shard routes it to this provider through its
-  # DataPlaneEndpointSlice) together with the "<Verb>Request" schema the entry
-  # names, and provider-sdk/serve derives from the same list the coordinates it
-  # dispatches. Declaring one grants nothing: kcp authorizes the call with
-  # ordinary RBAC on {resource}/{verb} before it forwards it, and this
-  # provider's gate then settles the caller's visibility of the object. A
-  # consumer provider can compose the coordinate under
-  # spec.dependencies[].composes[] and have it claimed on ITS export; the hub
-  # scoped-identity service (pkg/hub/identity/policy.go clause C) can mint a
-  # capability only for a verb it can verify exists. None of this is a
-  # permission claim of this provider: a claim names another export's
-  # resources, never one's own verbs.
-  dataPlane:
-    verbs:
-      - resource: agents
-        verb: chat
-        description: "Hold an interactive conversation with the agent."
-        stream: true
-      - resource: agents
-        verb: run
-        description: "Start an unattended run of the agent."
-      - resource: agents
-        verb: sessions
-        description: "List the agent's chat sessions."
-        readOnly: true
-      - resource: agents
-        verb: session
-        description: "Delete one chat session's transcript."
-      - resource: agents
-        verb: messages
-        description: "Read one chat session's transcript."
-        readOnly: true
-      - resource: agents
-        verb: usage
-        description: "Read the agent's cost, token and latency rollups."
-        readOnly: true
-      - resource: agents
-        verb: inbox
-        description: "List the agent's pending approvals and questions."
-        readOnly: true
-      - resource: agents
-        verb: inbox-resolve
-        description: "Approve, deny or answer one of the agent's inbox items."
-      - resource: agents
-        verb: events
-        description: "Follow the agent's run and inbox activity as it happens."
-        stream: true
-        readOnly: true
-      - resource: modelcredentials
-        verb: test
-        description: "Probe the model credential with a real chat round-trip. Optionally POST {\"model\": \"<id>\"} to probe a chat-capable model id instead of the saved one."
-      - resource: modelcredentials
-        verb: discover
-        description: "List the chat-capable model ids the credential's endpoint serves, and refresh its status."
-        readOnly: true
-      - resource: runs
-        verb: trace
-        description: "Read one run's step-level tool trace and answer."
-        readOnly: true
-      - resource: runs
-        verb: wait
-        description: "Block until the run reaches a settled phase."
-        readOnly: true
-      - resource: runs
-        verb: cancel
-        description: "Ask a run in flight to stop."
-      - resource: connections
-        verb: test
-        description: "Send a test message through the connection."
-      - resource: connections
-        verb: enable-inbound
-        description: "Register the connection's inbound webhook."
-      - resource: connections
-        verb: authorize
-        description: "Start the connection's OAuth authorization flow."
-      - resource: schedules
-        verb: run
-        description: "Fire the schedule now, without waiting for its next tick."
-      - resource: triggers
-        verb: run
-        description: "Fire the trigger now with an empty event."
-  # Lets an organization run this provider in its own cluster
-  # (docs/byo-providers.md). Keep manifest.yaml and
-  # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
-  # one that reaches production.
-  selfHosting:
-    supported: true
-    chart:
-      repository: "oci://ghcr.io/railgrid/charts"
-      name: "railgrid-agents-provider"
-    namespace: "railgrid-provider-agents"
-    releaseName: "agents"
-    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/agents/deploy/chart/README.md"
-    requiredValues:
-      - name: store.databaseURLSecretRef.name
-        description: >-
-          Secret holding the Postgres connection URL. Postgres is this provider's only hard dependency beyond the hub — create the Secret before installing.
+      # Schedules and triggers are deliberately absent: they are edited on an
+      # agent's Automation tab, not as a workspace-level collection, so there is
+      # no route to point at.
+      children:
+        - displayName: Agents
+          builtinRoute: agents
+        - displayName: Activity
+          builtinRoute: activity
+        - displayName: Connections
+          builtinRoute: connections
+    backend:
+      # The hub backend proxy forwards /services/providers/agents/* here for the
+      # route classes that are not kcp API traffic: /mcp (with the caller's
+      # bearer), the browser OAuth flow under /oauth/, the signed webhooks under
+      # /webhooks/ and /healthz. Verbs are NOT reached this way: each is a kcp
+      # custom subresource on the export above, and the shard reverse-proxies it
+      # to the same address with the caller stamped in requestheader headers.
+      url: "http://localhost:8087"
+      healthPath: "/healthz"
+    # Lets an organization run this provider in its own cluster
+    # (docs/byo-providers.md). Keep manifest.yaml and
+    # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
+    # one that reaches production.
+    selfHosting:
+      supported: true
+      chart:
+        repository: "oci://ghcr.io/railgrid/charts"
+        name: "railgrid-agents-provider"
+      namespace: "railgrid-provider-agents"
+      releaseName: "agents"
+      docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/agents/deploy/chart/README.md"
+      requiredValues:
+        - name: store.databaseURLSecretRef.name
+          description: >-
+            Secret holding the Postgres connection URL. Postgres is this provider's only hard dependency beyond the hub — create the Secret before installing.

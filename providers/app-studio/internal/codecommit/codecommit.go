@@ -22,7 +22,7 @@ You may obtain a copy of the License at
 // Both make the call AS THIS PROVIDER. `repositories/commit` and
 // `repositories/stage-commit-bundle` are kcp custom subresources the Code
 // provider publishes on its export; App Studio CLAIMS them (manifest.yaml
-// spec.dependencies[].composes[]), the tenant accepts the claim at Enable,
+// spec.requires[].resources[]), the tenant accepts the claim at Enable,
 // and kcp serves each on App Studio's virtual workspace at
 //
 //	<export VW>/clusters/{tenant}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb}
@@ -73,7 +73,7 @@ import (
 
 const (
 	// Action and StageBundleAction are the two verbs this package invokes on a
-	// Repository. They are named here, in manifest.yaml's composes[] claims
+	// Repository. They are named here, in manifest.yaml's spec.requires entries
 	// (repositories/commit, repositories/stage-commit-bundle) and in the
 	// project identity's clause-C rules (controller/project/identity.go), and
 	// nowhere else.

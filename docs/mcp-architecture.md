@@ -103,7 +103,8 @@ federates `infrastructure` or `code`. Its tools surface as `edges__*`.
 
   where `{resource}` is `kubernetesclusters` or `services`
   (`providers/edges/internal/tunnel/grammar.go`, `VerbMCP`; declared in
-  `providers/edges/manifest.yaml` under `spec.dataPlane.verbs`). It is
+  `providers/edges/manifest.yaml` under that resource's
+  `spec.export.resources[].verbs`). It is
   authorized like every other verb: a real `GET` of the object as the caller,
   then a `SelfSubjectAccessReview` for **`create` on `{resource}/mcp`**,
   name-scoped. The old `/agent`-mounted per-edge MCP route and the wildcard
@@ -171,8 +172,10 @@ railgrid://providers/capabilities      application/json
 
 Its scope is exactly federation's scope: one entry per **Ready** provider
 **visible to the verified caller's Org**, in the same sorted enumeration order,
-projected by `RegistryEnumerator` from `spec.actions` and
-`spec.dataPlane.verbs`. A provider that declares neither is omitted rather than
+projected by `RegistryEnumerator` from `spec.export.resources[]` — the
+`verbs[]` and `actions[]` on each. Each projected action still carries a
+`boundResource`, derived from the resource entry it hangs off rather than
+declared on the action. A provider that declares neither is omitted rather than
 listed empty.
 
 ```json

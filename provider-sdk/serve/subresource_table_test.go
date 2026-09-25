@@ -27,17 +27,31 @@ apiVersion: providers.railgrid.ai/v1alpha1
 kind: CatalogEntry
 metadata: {name: fixture}
 spec:
-  dataPlane:
-    verbs:
-    - resource: linuxservers
-      verb: addon-credentials
-    - resource: services
-      verb: proxy
-  actions:
-  - id: mint-clone-token/v1
-    boundResource: {resource: repositories}
-  - id: preview/v2
-    boundResource: {resource: factorylines}
+  export:
+    name: fixture.providers.railgrid.ai
+    resources:
+    - name: linuxservers
+      apiVersion: edges.railgrid.ai/v1alpha1
+      kind: LinuxServer
+      verbs:
+      - name: addon-credentials
+    - name: services
+      apiVersion: edges.railgrid.ai/v1alpha1
+      kind: Service
+      verbs:
+      - name: proxy
+    - name: repositories
+      apiVersion: code.railgrid.ai/v1alpha1
+      kind: Repository
+      actions:
+      - name: mint-clone-token
+        version: v1
+    - name: factorylines
+      apiVersion: example.railgrid.ai/v1alpha1
+      kind: FactoryLine
+      actions:
+      - name: preview
+        version: v2
 `
 
 func TestSubresourcesFromCatalogEntryMirrorsTheDeclaration(t *testing.T) {
@@ -57,6 +71,13 @@ func TestSubresourcesFromCatalogEntryMirrorsTheDeclaration(t *testing.T) {
 	if r := table["factorylines/preview"]; !r.Action || r.Version != "v2" {
 		t.Fatalf("versioned action route = %+v", r)
 	}
+	// An action's version is carried by the ROUTE, never by the coordinate: it
+	// is in no path, and the provider restores it onto the rewritten one.
+	for coordinate := range table {
+		if strings.Contains(coordinate, "/v1") || strings.Contains(coordinate, "/v2") {
+			t.Fatalf("an action's version reached the coordinate %q", coordinate)
+		}
+	}
 	// The table is what New accepts, unchanged.
 	if _, err := New(Options{Readiness: okHandler(), DataPlane: okHandler(), Actions: okHandler(), Subresources: table}); err != nil {
 		t.Fatalf("New rejected the derived table: %v", err)
@@ -65,10 +86,13 @@ func TestSubresourcesFromCatalogEntryMirrorsTheDeclaration(t *testing.T) {
 
 func TestSubresourcesFromCatalogEntryRefusesWhatKcpWouldRefuse(t *testing.T) {
 	for name, manifest := range map[string]string{
-		"underscore in a verb":    "spec:\n  dataPlane:\n    verbs:\n    - {resource: repositories, verb: mint_token}\n",
-		"status as a verb":        "spec:\n  dataPlane:\n    verbs:\n    - {resource: instances, verb: status}\n",
-		"action with no version":  "spec:\n  actions:\n  - id: preview\n    boundResource: {resource: factorylines}\n",
-		"underscore in an action": "spec:\n  actions:\n  - id: update_thing/v1\n    boundResource: {resource: boards}\n",
+		"underscore in a verb":    "spec:\n  export:\n    resources:\n    - name: repositories\n      verbs: [{name: mint_token}]\n",
+		"status as a verb":        "spec:\n  export:\n    resources:\n    - name: instances\n      verbs: [{name: status}]\n",
+		"scale as a verb":         "spec:\n  export:\n    resources:\n    - name: instances\n      verbs: [{name: scale}]\n",
+		"action with no version":  "spec:\n  export:\n    resources:\n    - name: factorylines\n      actions: [{name: preview}]\n",
+		"underscore in an action": "spec:\n  export:\n    resources:\n    - name: boards\n      actions: [{name: update_thing, version: v1}]\n",
+		"a coordinate declared twice": "spec:\n  export:\n    resources:\n    - name: widgets\n      verbs: [{name: rebuild}]\n" +
+			"      actions: [{name: rebuild, version: v1}]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := SubresourcesFromCatalogEntry([]byte(manifest))

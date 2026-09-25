@@ -10,8 +10,16 @@ proposal alternative only. The `/services/providers/infrastructure/dataplane/…
 paths and the "as the tenant user" data-plane model below are superseded too
 (2026-09-25): infrastructure's verbs are kcp custom subresources on
 `instances`, which App Studio calls **as itself** through its own APIExport
-virtual workspace on the claim its `composes[]` declaration generates — see
+virtual workspace on the claim its `spec.requires` declaration generates — see
 [provider-connectivity-contract.md](./provider-connectivity-contract.md).
+The CatalogEntry field paths used below — `spec.apiExport`,
+`spec.dependencies[].composes` — are the old ones and are kept as written:
+`CatalogEntrySpec` was restructured into `export`/`requires`/`serving`/`hub` on
+2026-09-25, with the mapping in
+[roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§"Status update 2026-09-25 — the CatalogEntry contract is four sections".
+(`Template.spec.dataPlane`, which most of this doc is about, is an
+infrastructure **Template** field and is unaffected.)
 Author: 2026-06-27
 Related: [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) (current runtime contract), [`infrastructure-architecture.md`](./infrastructure-architecture.md) (the kcp-native infra provider this builds on), [`provider-connectivity-contract.md`](./provider-connectivity-contract.md) (the two data paths), `providers/infrastructure/apis/v1alpha1/types_template.go`, `providers/infrastructure/dataplane/`, `pkg/virtual/builder/edges_proxy_builder.go` (the proven VW-proxy pattern).
 

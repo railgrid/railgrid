@@ -24,8 +24,8 @@ chart mounts it into **both** containers as `RAILGRID_PROVIDER_KUBECONFIG`:
 Without the Secret the pod still serves the portal, but no `Greeting` is ever
 reconciled and the verb fails closed. The rendered CatalogEntry is mounted on
 both containers as `RAILGRID_CATALOGENTRY_FILE`: `init` applies it, and `serve`
-reads `spec.dataPlane.verbs` from it to know which custom subresources exist —
-without it there is no data plane and `serve` refuses to start. The readiness
+reads `spec.export.resources[].verbs` from it to know which custom subresources
+exist — without it there is no data plane and `serve` refuses to start. The readiness
 probe is `/readyz` (watches are live), separate from the `/healthz` liveness
 probe (the process is up).
 

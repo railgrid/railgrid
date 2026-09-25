@@ -45,7 +45,7 @@ var SystemWorkspaceFS embed.FS
 
 // PermissionClaimPolicyFS contains the generated kcp PermissionClaimPolicy
 // (group admin.kcp.io), written by hack/generate-permission-claim-policy.mjs
-// from every provider manifest's spec.dependencies[].composes[].
+// from every provider manifest's spec.requires[] entries that name a provider.
 //
 // It is applied only when the cluster actually serves the API — see
 // pkg/hub/bootstrap.InstallPermissionClaimPolicy. The type is unmerged in kcp

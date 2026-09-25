@@ -46,23 +46,23 @@ import (
 
 // infraAPIExportName / codeAPIExportName are the APIExports the dependencies
 // serve. App Studio's dependencies on them are declared in manifest.yaml
-// (spec.dependencies); these name what a workspace binds when it enables each
-// one, whichever copy of the provider it enabled.
+// (the spec.requires entries that name a provider); these name what a workspace
+// binds when it enables each one, whichever copy of the provider it enabled.
 const (
 	infraAPIExportName = crossprovider.InfrastructureAPIExport
 	codeAPIExportName  = crossprovider.CodeAPIExport
 )
 
 // infraDependencyName is the dependency App Studio declares on the
-// infrastructure provider in manifest.yaml (spec.dependencies). It is a
+// infrastructure provider in manifest.yaml (spec.requires). It is a
 // LABEL — it names the dependency in the project view — and is never a URL
 // segment.
 const infraDependencyName = "infrastructure"
 
 // dependencyProbe is the kind a LIST through the export proves each
 // dependency is served with. Both are claimed kinds (manifest.yaml
-// spec.dependencies[].composes), so the workspace serving them is the
-// workspace that accepted the dependency's claims.
+// spec.requires), so the workspace serving them is the workspace that accepted
+// the dependency's claims.
 var dependencyProbe = map[string]schema.GroupVersionResource{
 	infraAPIExportName: {Group: crossprovider.InfrastructureAPIGroup, Version: "v1alpha1", Resource: crossprovider.InstancesResource},
 	codeAPIExportName:  {Group: crossprovider.CodeAPIGroup, Version: "v1alpha1", Resource: crossprovider.RepositoriesResource},

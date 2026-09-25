@@ -132,8 +132,9 @@ func TestShardForwardedPathReachesTheActionsHandler(t *testing.T) {
 	}{
 		{name: "catalogued action", path: apis + "/repositories/app/branches", resource: "repositories", objectName: "app", verb: "branches"},
 		{
-			// Declared as a data-plane verb (its body is past the catalogue's
-			// 1 MiB input ceiling) and served by the actions handler.
+			// Declared as a plain verb on repositories (its body is past the
+			// catalogue's 1 MiB input ceiling) and served by the actions
+			// handler all the same.
 			name: "uncatalogued upload verb", path: apis + "/repositories/app/stage-commit-bundle", resource: "repositories", objectName: "app", verb: "stage-commit-bundle",
 		},
 		{name: "connection-bound action", path: apis + "/connections/github/mint-registry-token", resource: "connections", objectName: "github", verb: "mint-registry-token"},

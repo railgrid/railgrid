@@ -60,7 +60,7 @@ mid-push.
 ## Publishing inline assistant skill packages
 
 A provider may publish App Studio guidance in
-`CatalogEntry.spec.assistantSkills`. This is package distribution, not provider
+`CatalogEntry.spec.hub.assistantSkills`. This is package distribution, not provider
 enablement or authority: the authenticated hub catalog distributes the
 validated inline bytes into App Studio's read-only system-skill source. Like
 other system skills, a provider package is enabled by default and each project
@@ -78,8 +78,8 @@ For each package:
    and the 32 KiB document / 64 KiB resource / 512 KiB per-provider bounds.
 3. Compute the canonical `sha256:` digest over `packageName`, `version`, raw
    `SKILL.md`, and resources sorted by path. Update the digest and version in
-   the provider's checked-in `manifest.yaml` and mirror the complete
-   `assistantSkills` entry in `deploy/chart/templates/catalogentry.yaml`.
+   the provider's checked-in `manifest.yaml` (under `spec.hub.assistantSkills`)
+   and mirror the complete entry in `deploy/chart/templates/catalogentry.yaml`.
 4. If the API contract changes, run the provider code-generation target and
    commit generated schemas. Test that the manifest and Helm CatalogEntry
    render equivalent package name, version, digest, document, and resources;

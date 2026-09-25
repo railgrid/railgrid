@@ -10,14 +10,15 @@ package engagement
 
 // Edges are CLAIMED, not dialled.
 //
-// kuery's APIExport carries exactly one permission claim —
-// edges.railgrid.ai/kubernetesclusters with verbs get, list, watch — and that
-// claim carries NO identityHash. kcp accepts an unpinned claim on a
+// kuery's APIExport carries a permission claim on
+// edges.railgrid.ai/kubernetesclusters with verbs get, list, watch — declared as
+// manifest.yaml spec.requires[provider: edges] — and that claim carries NO
+// identityHash. kcp accepts an unpinned claim on a
 // first-party group when a cluster-scoped PermissionClaimPolicy pairs the
 // claiming export's own API group with the claimed group, and resolves the
 // identity per CONSUMER workspace against whatever edges APIExport that
 // workspace is actually bound to. This repository generates that policy from
-// every manifest's spec.dependencies[].composes[]
+// every manifest's spec.requires[].resources[]
 // (hack/generate-permission-claim-policy.mjs, config/kcp/
 // permissionclaimpolicy.yaml) and the hub applies it at bootstrap
 // (pkg/hub/bootstrap/permissionclaimpolicy.go).
@@ -26,7 +27,7 @@ package engagement
 // a pinned claim fixes one identity for every consuming workspace at once, and
 // that breaks the moment one org self-hosts the edges provider while others use
 // the platform copy (docs/byo-providers.md). An unpinned claim under the policy
-// has the property the composition was invented to get.
+// has the property the requirement declaration was invented to get.
 //
 // The consequence for this file: a claimed resource is served through the
 // CLAIMING provider's own APIExport virtual workspace, in every consumer
@@ -97,7 +98,7 @@ type edgeObservation struct {
 const noStatusURLMessage = "waiting for the edge to publish status.url"
 
 // edgesAPIGroup and edgesResource name the edges provider's kind kuery
-// composes: what its claim, its watch and the k8s verb all address.
+// requires: what its claim, its watch and the k8s verb all address.
 const (
 	edgesAPIGroup = "edges.railgrid.ai"
 	edgesResource = "kubernetesclusters"

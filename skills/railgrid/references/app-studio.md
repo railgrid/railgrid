@@ -4,7 +4,7 @@
 > `/services/providers/app-studio/api/...`. Every operation below is a kcp custom
 > subresource (a *verb*) on a Project, Session or Studio, reached on the hub as
 > `https://<hub>/clusters/<cluster>/apis/ai.railgrid.ai/v1alpha1/{projects|sessions|studios}/<name>/<verb>`
-> with the caller's bearer; the verb names are `spec.dataPlane.verbs` in
+> with the caller's bearer; the verb names are `spec.export.resources[].verbs` in
 > `providers/app-studio/manifest.yaml`, and `railgrid app`/`railgrid sandbox` call them.
 > The `/api/...` paths in this file are kept only as a map of the request/response
 > bodies until it is rewritten.
@@ -512,7 +512,7 @@ POST /api/projects/{p}/assistant/skills/activation       {id,enabled}
 ```
 
 Scopes: bundled (embedded, read-only), provider
-(`CatalogEntry.spec.assistantSkills`, qualified `providers/<provider>/<package>`),
+(`CatalogEntry.spec.hub.assistantSkills`, qualified `providers/<provider>/<package>`),
 project (`.agents/skills/<package>/SKILL.md` with activation state in
 `.agents/skills/.railgrid-catalog.json`). Frontmatter supports `name` (≤ 64 B)
 and `description` (≤ 1024 B) only; `context`, `agent`, `model` are rejected.

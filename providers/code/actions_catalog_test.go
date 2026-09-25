@@ -18,6 +18,15 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// TestCodeActionsCatalogParityAndDigests holds manifest.yaml and the chart's
+// rendered copy to one declaration, and re-derives every schemaDigest from the
+// schemas it covers.
+//
+// Parity is asserted over the whole of spec.export — the export's name, its
+// resources, and the verbs and actions hanging off each — because a coordinate
+// is now declared by where it sits, so a resource that drifted (a different
+// apiVersion, an action moved to another kind) would change what kcp routes
+// without changing any action's own fields.
 func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 	source, err := os.ReadFile("manifest.yaml")
 	if err != nil {
@@ -27,7 +36,8 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 	if err = yaml.Unmarshal(source, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	expected := manifest["spec"].(map[string]any)["actions"]
+	spec := manifest["spec"].(map[string]any)
+	expected := spec["export"]
 	rendered, err := exec.Command("helm", "template", "code", "deploy/chart", "--set", "catalogEntry.enabled=true").CombinedOutput()
 	if err != nil {
 		t.Fatalf("helm: %v %s", err, rendered)
@@ -47,39 +57,80 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 		if err = yaml.Unmarshal([]byte(raw), &catalog); err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(expected, catalog["spec"].(map[string]any)["actions"]) {
-			t.Fatal("Code manifest/chart actions differ")
+		chartSpec := catalog["spec"].(map[string]any)
+		if !reflect.DeepEqual(expected, chartSpec["export"]) {
+			t.Fatal("Code manifest/chart spec.export differ")
+		}
+		// The claims the export is generated with travel with it.
+		if !reflect.DeepEqual(spec["requires"], chartSpec["requires"]) {
+			t.Fatal("Code manifest/chart spec.requires differ")
 		}
 		found = true
 	}
 	if !found {
 		t.Fatal("rendered Code catalog missing")
 	}
-	actions, ok := expected.([]any)
-	if !ok || len(actions) != 15 {
-		t.Fatalf("unexpected Code actions: %#v", expected)
+
+	export := expected.(map[string]any)
+	if name := export["name"]; name != "code.providers.railgrid.ai" {
+		t.Fatalf("unexpected export name %v", name)
 	}
-	for _, raw := range actions {
-		action := raw.(map[string]any)
-		schemas, err := json.Marshal(map[string]any{"input": action["inputSchema"], "output": action["outputSchema"]})
-		if err != nil {
-			t.Fatal(err)
-		}
-		digest := sha256.Sum256(schemas)
-		if action["schemaDigest"] != "sha256:"+hex.EncodeToString(digest[:]) {
-			t.Fatalf("schema digest mismatch for %s", action["id"])
-		}
-		// Every action is bound to one of this provider's own kinds. The
+	resources, ok := export["resources"].([]any)
+	if !ok || len(resources) != 2 {
+		t.Fatalf("unexpected Code export resources: %#v", export["resources"])
+	}
+
+	total := 0
+	for _, rawResource := range resources {
+		resource := rawResource.(map[string]any)
+		// Every coordinate is bound to one of this provider's own kinds. The
 		// resource decides which object gate 1 reads and which subresource
-		// gate 2 asks about, so an action bound to anything else would be
-		// served under a grant nobody can be given.
-		switch action["boundResource"].(map[string]any)["resource"] {
-		case "repositories", "connections":
+		// gate 2 asks about, so a coordinate on anything else would be served
+		// under a grant nobody can be given. The apiVersion and kind are
+		// declared once, here, for every verb and action below.
+		switch resource["name"] {
+		case "repositories":
+			if resource["kind"] != "Repository" {
+				t.Fatalf("repositories is bound to kind %v", resource["kind"])
+			}
+		case "connections":
+			if resource["kind"] != "Connection" {
+				t.Fatalf("connections is bound to kind %v", resource["kind"])
+			}
 		default:
-			t.Fatalf("Code action %v is bound to a kind this provider does not serve", action["id"])
+			t.Fatalf("Code declares coordinates on %v, a kind this provider does not serve", resource["name"])
 		}
-		if action["limits"].(map[string]any)["maxInputBytes"].(float64) > 1048576 {
-			t.Fatal("large artifact leaked into action input contract")
+		if resource["apiVersion"] != "code.railgrid.ai/v1alpha1" {
+			t.Fatalf("%v declares apiVersion %v", resource["name"], resource["apiVersion"])
 		}
+
+		actions, _ := resource["actions"].([]any)
+		total += len(actions)
+		for _, raw := range actions {
+			action := raw.(map[string]any)
+			id := action["name"]
+			// The digest covers the two schemas and nothing else, so it is
+			// unaffected by where the action is declared: the values predate
+			// this reshape and must keep validating.
+			schemas, err := json.Marshal(map[string]any{"input": action["inputSchema"], "output": action["outputSchema"]})
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(schemas)
+			if action["schemaDigest"] != "sha256:"+hex.EncodeToString(digest[:]) {
+				t.Fatalf("schema digest mismatch for %v", id)
+			}
+			// An action's id is derived, "<name>/<version>", and the version is
+			// a field of its own rather than a suffix of a declared string.
+			if action["version"] != "v1" {
+				t.Fatalf("Code action %v is declared at version %v", id, action["version"])
+			}
+			if action["limits"].(map[string]any)["maxInputBytes"].(float64) > 1048576 {
+				t.Fatal("large artifact leaked into action input contract")
+			}
+		}
+	}
+	if total != 15 {
+		t.Fatalf("Code declares %d actions, want 15", total)
 	}
 }

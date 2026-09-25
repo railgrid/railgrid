@@ -34,8 +34,8 @@ helm upgrade --install app-studio oci://ghcr.io/railgrid/charts/railgrid-app-stu
 App Studio needs the Infrastructure and Code providers enabled in a workspace
 before it can be enabled there, and its reconcilers act on their objects —
 `Instance`, `Repository`, `RepositoryCommit` — inside that workspace. What it
-does to each is declared as a **composition** on the CatalogEntry
-(`spec.dependencies[].composes`), the tenant accepts it at Enable, and the hub
+does to each is declared as a **requirement** on the CatalogEntry
+(`spec.requires`, one entry per API group), the tenant accepts it at Enable, and the hub
 mints a short-lived, per-Project/per-Studio identity carrying exactly those
 rules.
 

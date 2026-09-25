@@ -23,11 +23,11 @@ test.after(() => vite.close())
 test('provider cards distinguish unavailable providers from pending work', () => {
   assert.match(source, /!p\.ready \? 'Not ready'/)
   assert.match(source, /p\.readinessMessage \|\| 'Provider is unavailable\.'/)
-  assert.match(source, /<template v-if="p\.apiExportName">/)
+  assert.match(source, /<template v-if="p\.export\?\.name">/)
   assert.match(source, /v-else-if="bindingAction\(p\) === 'enable'"/)
   assert.match(source, /v-else-if="bindingAction\(p\) === 'disable'"[\s\S]*@click="onDisable\(p\)"/)
   assert.doesNotMatch(source, /Provider is starting/)
-  assert.match(source, /p\.hasUI && p\.ready && \(!p\.apiExportName \|\| providers\.isEnabled\(p\.name\)\)/)
+  assert.match(source, /p\.serving\?\.ui && p\.ready && \(!p\.export\?\.name \|\| providers\.isEnabled\(p\.name\)\)/)
 })
 
 test('first-consumer providers remain available in onboarding while dependencies stay gated', () => {
@@ -36,12 +36,15 @@ test('first-consumer providers remain available in onboarding while dependencies
   try {
     const store = useProvidersStore()
     store.items = [
-      { name: 'code', displayName: 'Code', apiExportName: 'code.providers.railgrid.ai', ready: false },
-      { name: 'infrastructure', displayName: 'Infrastructure', apiExportName: 'infrastructure.providers.railgrid.ai', ready: false },
+      { name: 'code', displayName: 'Code', export: { name: 'code.providers.railgrid.ai' }, ready: false },
+      { name: 'infrastructure', displayName: 'Infrastructure', export: { name: 'infrastructure.providers.railgrid.ai' }, ready: false },
       { name: 'builtin', displayName: 'Builtin', ready: true },
     ]
     assert.deepEqual(store.enableable.map(p => p.name), ['code', 'infrastructure'])
-    assert.equal(store.hasMissingDependencies({ dependencies: [{ name: 'infrastructure' }] }), true)
+    // A requires[] entry that names a provider is the dependency edge.
+    assert.equal(store.hasMissingDependencies({
+      requires: [{ provider: 'infrastructure', group: 'infrastructure.railgrid.ai', resources: [{ name: 'instances', verbs: ['get'] }] }],
+    }), true)
     store.items[0].ready = true
     assert.deepEqual(store.enableable.map(p => p.name), ['code', 'infrastructure'])
   } finally {

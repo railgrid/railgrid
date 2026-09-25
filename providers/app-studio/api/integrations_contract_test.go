@@ -521,21 +521,36 @@ func developmentApplicationObject() *unstructured.Unstructured {
 	}}
 }
 
+// testDatabricksTableExport is the export a catalog fixture publishes: the
+// Databricks Table kind with the given actions on it. The coordinate an action
+// is addressed at belongs to the resource it hangs off and is declared once
+// there, so every fixture goes through this rather than repeating an
+// apiVersion/kind/resource triple per action.
+func testDatabricksTableExport(actions []providerCatalogAction) *providerCatalogExport {
+	return &providerCatalogExport{
+		Name: "databricks.providers.railgrid.ai",
+		Resources: []providerCatalogExportResource{{
+			Name:       databricksTableResource,
+			APIVersion: databricksTableAPIVersion,
+			Kind:       databricksTableKind,
+			Actions:    actions,
+		}},
+	}
+}
+
 func integrationTestCatalogResolver(context.Context, identity) ([]providerCatalogEntry, error) {
 	return []providerCatalogEntry{
 		{
 			Name: "databricks", Ready: true,
-			Actions: []providerCatalogAction{{
-				ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest,
-				BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-			}},
+			Export: testDatabricksTableExport([]providerCatalogAction{{
+				Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
+			}}),
 		},
 		{
 			Name: "other", Ready: true,
-			Actions: []providerCatalogAction{{
-				ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest,
-				BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-			}},
+			Export: testDatabricksTableExport([]providerCatalogAction{{
+				Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
+			}}),
 		},
 	}, nil
 }

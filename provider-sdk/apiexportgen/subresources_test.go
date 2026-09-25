@@ -25,31 +25,32 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// subresourceManifest declares both halves of a data plane on two resources,
-// one of which the export does not carry, plus an action whose id has to lose
-// its version suffix.
+// subresourceManifest declares verbs and actions on two resources, one of which
+// the export does not carry, plus an action whose version must stay out of its
+// coordinate.
 const subresourceManifest = `apiVersion: providers.railgrid.ai/v1alpha1
 kind: CatalogEntry
 metadata:
   name: fixture
 spec:
-  apiExport:
+  export:
     name: fixture.providers.railgrid.ai
-  dataPlane:
-    verbs:
-      - resource: widgets
-        verb: proxy
-        stream: true
-      - resource: widgets
-        verb: exec
-      - resource: runtimeonly
-        verb: restart
-  actions:
-    - id: rebuild/v2
-      boundResource:
+    resources:
+      - name: widgets
         apiVersion: fixture.railgrid.ai/v1alpha1
         kind: Widget
-        resource: widgets
+        verbs:
+          - name: proxy
+            stream: true
+          - name: exec
+        actions:
+          - name: rebuild
+            version: v2
+      - name: runtimeonly
+        apiVersion: fixture.railgrid.ai/v1alpha1
+        kind: RuntimeOnly
+        verbs:
+          - name: restart
 `
 
 // apigenExport is what apigen leaves behind: every kind of the group listed as
@@ -157,41 +158,51 @@ func TestParseSubresourcesCollectsVerbsAndActionsSorted(t *testing.T) {
 	}
 }
 
-// An action id is "<verb>/v<n>"; the version belongs to the action's schema
-// contract, which the APIExport says nothing about.
-func TestParseSubresourcesStripsTheActionVersion(t *testing.T) {
+// An action's coordinate is its NAME. The version qualifies the action's schema
+// contract, appears in no path, and the APIExport says nothing about it: the
+// declaration `{name: rebuild, version: v2}` publishes widgets/rebuild and
+// nothing that spells v2.
+func TestParseSubresourcesUsesTheActionNameWithoutItsVersion(t *testing.T) {
 	subresources, err := ParseSubresources([]byte(subresourceManifest))
 	if err != nil {
 		t.Fatalf("ParseSubresources: %v", err)
 	}
+	var found bool
 	for _, sub := range subresources {
-		if sub.Verb == "rebuild" {
-			return
+		if strings.Contains(sub.Name(), "v2") {
+			t.Errorf("the action's version reached the coordinate %q", sub.Name())
+		}
+		if sub.Name() == "widgets/rebuild" {
+			found = true
 		}
 	}
-	t.Errorf("no widgets/rebuild among %+v", subresources)
+	if !found {
+		t.Errorf("no widgets/rebuild among %+v", subresources)
+	}
 }
 
-// A verb and an action may name the same coordinate. kcp's spec.resources is a
-// list keyed by name, so writing it twice is not a duplicate declaration, it is
-// an invalid object.
-func TestParseSubresourcesDeduplicates(t *testing.T) {
+// A verb and an action share one coordinate namespace on a resource. kcp's
+// spec.resources is a list keyed by name, so declaring one twice is not a
+// duplicate statement but a lost one: the second declaration would silently
+// never be published.
+func TestParseSubresourcesRefusesACoordinateDeclaredTwice(t *testing.T) {
 	manifest := `kind: CatalogEntry
 spec:
-  apiExport: {name: fixture.providers.railgrid.ai}
-  dataPlane:
-    verbs:
-      - {resource: widgets, verb: rebuild}
-  actions:
-    - id: rebuild/v1
-      boundResource: {resource: widgets}
+  export:
+    name: fixture.providers.railgrid.ai
+    resources:
+      - name: widgets
+        apiVersion: fixture.railgrid.ai/v1alpha1
+        kind: Widget
+        verbs:
+          - name: rebuild
+        actions:
+          - name: rebuild
+            version: v1
 `
-	subresources, err := ParseSubresources([]byte(manifest))
-	if err != nil {
-		t.Fatalf("ParseSubresources: %v", err)
-	}
-	if len(subresources) != 1 {
-		t.Fatalf("subresources = %+v, want one", subresources)
+	_, err := ParseSubresources([]byte(manifest))
+	if err == nil || !strings.Contains(err.Error(), "widgets/rebuild") {
+		t.Fatalf("err = %v, want a refusal naming the coordinate", err)
 	}
 }
 
@@ -201,7 +212,7 @@ spec:
 // unroutable the day it is written.
 func TestValidateSubresourceNamesRefusesStatusAndScale(t *testing.T) {
 	for _, verb := range []string{"status", "scale"} {
-		err := ValidateSubresourceNames([]Subresource{{Resource: "runtimeonly", Verb: verb, Source: "spec.dataPlane.verbs"}})
+		err := ValidateSubresourceNames([]Subresource{{Resource: "runtimeonly", Verb: verb, Source: "spec.export.resources[runtimeonly].verbs"}})
 		if err == nil || !strings.Contains(err.Error(), "runtimeonly/"+verb) {
 			t.Errorf("verb %q: err = %v, want a refusal naming it", verb, err)
 		}
@@ -212,8 +223,8 @@ func TestValidateSubresourceNamesRefusesStatusAndScale(t *testing.T) {
 // rather than surfacing at init as a kcp admission error on an unrelated field.
 func TestValidateSubresourceNamesRefusesNamesKCPRejects(t *testing.T) {
 	err := ValidateSubresourceNames([]Subresource{
-		{Resource: "repositories", Verb: "stage_upload", Source: "spec.dataPlane.verbs"},
-		{Resource: "repositories", Verb: "mint_token", Source: "spec.actions"},
+		{Resource: "repositories", Verb: "stage_upload", Source: "spec.export.resources[repositories].verbs"},
+		{Resource: "repositories", Verb: "mint_token", Source: "spec.export.resources[repositories].actions"},
 	})
 	if err == nil {
 		t.Fatal("an underscore was accepted; kcp's spec.resources[].name pattern rejects it")
@@ -333,9 +344,9 @@ func TestGenerateIsIdempotentWhenItsOwnOutputIsFedBackIn(t *testing.T) {
 	}
 }
 
-// A manifest that declares no data plane at all keeps producing exactly what it
-// produced before.
-func TestGenerateAddsNothingWithoutADataPlane(t *testing.T) {
+// A manifest whose export declares no verb and no action at all keeps producing
+// exactly what it produced before.
+func TestGenerateAddsNothingWithoutAnyCoordinate(t *testing.T) {
 	content, err := Generate(Options{
 		ManifestPath:     filepath.Join("testdata", "manifest.yaml"),
 		APIGenExportPath: writeAPIGenDir(t, apigenExport, nil),
@@ -400,12 +411,14 @@ kind: CatalogEntry
 metadata:
   name: fixture
 spec:
-  apiExport:
+  export:
     name: fixture.providers.railgrid.ai
-  dataPlane:
-    verbs:
-      - resource: widgets
-        verb: gadgets
+    resources:
+      - name: widgets
+        apiVersion: fixture.railgrid.ai/v1alpha1
+        kind: Widget
+        verbs:
+          - name: gadgets
 `
 	export := `apiVersion: apis.kcp.io/v1alpha2
 kind: APIExport

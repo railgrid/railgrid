@@ -193,11 +193,11 @@ func TestExportDeclaresSubresources(t *testing.T) {
 	}
 }
 
-// The URL is not a new flag: spec.backend.url IS the address the hub already
-// proxies to, rendered per environment by the provider's own chart.
+// The URL is not a new flag: spec.serving.backend.url IS the address the hub
+// already proxies to, rendered per environment by the provider's own chart.
 func TestCatalogEntryBackendURLReadsTheAddressTheHubProxiesTo(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "catalogentry.yaml")
-	body := "apiVersion: providers.railgrid.ai/v1alpha1\nkind: CatalogEntry\nmetadata:\n  name: edges\nspec:\n  backend:\n    url: " + testDataPlaneURL + "\n    healthPath: /readyz\n"
+	body := "apiVersion: providers.railgrid.ai/v1alpha1\nkind: CatalogEntry\nmetadata:\n  name: edges\nspec:\n  serving:\n    backend:\n      url: " + testDataPlaneURL + "\n      healthPath: /readyz\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}

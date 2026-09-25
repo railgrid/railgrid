@@ -8,7 +8,7 @@
 # CatalogEntries in every workspace bound to providers.railgrid.ai, including
 # the provider's own, so a self-registered entry is seen.
 #
-# It only REFERENCES the APIExport (apiExport.name); the APIExport, its
+# It only REFERENCES the APIExport (spec.export.name); the APIExport, its
 # APIResourceSchemas, the APIExportEndpointSlice, and the bind grant are created
 # by the same init container. The hub no longer provisions anything from this
 # CatalogEntry.
@@ -31,63 +31,69 @@ data:
       version: {{ .Chart.AppVersion | quote }}
       category: "Demo"
       iconURL: "/ui/providers/quickstart/icon.svg"
-      ui:
-        url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-        indexPath: "/"
-      backend:
-        url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-        healthPath: "/readyz"
-      # The provider reconciles only the Greetings its own APIExport serves;
-      # the single claim below is the subresource gate, not data. Mirrors
-      # manifest.yaml — both must change together.
-      apiExport:
-        name: "quickstart.providers.railgrid.ai"
-        permissionClaims:
-          # Every provider that serves a custom subresource needs this one claim:
-          # on the shard-forwarded path there is no caller bearer, so the provider
-          # runs a SubjectAccessReview for the stamped caller through its own
-          # APIExport virtual workspace, and kcp serves that builtin there only for
-          # an export that claims it (hack/verify-provider-contract.mjs
-          # subresource-access-claim). Built-in review API: no identityHash, verb
-          # create only; tenantScoped because the VW confines each review to the
-          # tenant's OWN workspace.
-          - group: authorization.k8s.io
-            resource: subjectaccessreviews
-            verbs: [create]
-            tenantScoped: true
-      # Data-plane verbs this provider serves, declared so the coordinate is
-      # machine-readable. Declaring one grants nothing: every call is still
+      # Provider-owned APIExport. `greetings` is listed only to hang the greet
+      # verb off it — the kind itself is an ordinary CR tenants read and write
+      # through kcp. Declaring the verb grants nothing: every call is still
       # authorized by kcp as `create` on {resource}/{verb} with ordinary RBAC,
       # then gated for visibility by this provider. What the declaration buys,
       # per verb: codegen emits the kcp custom subresource "<resource>/<verb>"
-      # on the generated APIExport (the shard routes
-      # it to this provider through its DataPlaneEndpointSlice) together with the
-      # "<Verb>Request" schema the entry names; a consumer provider can compose the
-      # coordinate under spec.dependencies[].composes[] and have it claimed on ITS
-      # export; and the hub scoped-identity service (pkg/hub/identity/policy.go
-      # clause C) can mint a capability only for a verb it can verify exists. None
-      # of this is a permission claim of this provider: a claim names another
-      # export's resources, never one's own verbs.
-      dataPlane:
-        verbs:
-          - resource: greetings
-            verb: greet
-            description: "Return the greeting this Greeting describes."
-            readOnly: true
-      # Lets an organization run its own copy of this provider (see
-      # docs/byo-providers.md). The chart version is stamped from the release so
-      # the instructions the hub generates pin the same version that published
-      # this entry. Mirrors manifest.yaml — keep both in sync.
-      selfHosting:
-        supported: true
-        chart:
-          repository: "oci://ghcr.io/railgrid/charts"
-          name: "railgrid-quickstart-provider"
-          version: {{ .Chart.Version | quote }}
-        namespace: "railgrid-provider-quickstart"
-        releaseName: "quickstart"
-        docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/quickstart/deploy/chart/README.md"
-        # The chart carries its own values reference, so the portal can show it
-        # offline and for the version actually installed.
-        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
+      # on the generated APIExport (the shard routes it to this provider through
+      # its DataPlaneEndpointSlice) together with the "<Verb>Request" schema the
+      # entry names; a consumer provider can require the coordinate under
+      # spec.requires[].resources[] and have it claimed on ITS export; and the
+      # hub scoped-identity service (pkg/hub/identity/policy.go clause C) can
+      # mint a capability only for a verb it can verify exists. Mirrors
+      # manifest.yaml — both must change together.
+      export:
+        name: "quickstart.providers.railgrid.ai"
+        resources:
+          - name: greetings
+            apiVersion: "quickstart.providers.railgrid.ai/v1alpha1"
+            kind: Greeting
+            verbs:
+              - name: greet
+                description: "Return the greeting this Greeting describes."
+                readOnly: true
+      # The provider reconciles only the Greetings its own APIExport serves, so
+      # the single entry below is the subresource gate, not data. Every provider
+      # that serves a custom subresource needs this one claim: on the
+      # shard-forwarded path there is no caller bearer, so the provider runs a
+      # SubjectAccessReview for the stamped caller through its own APIExport
+      # virtual workspace, and kcp serves that builtin there only for an export
+      # that claims it (hack/verify-provider-contract.mjs
+      # subresource-access-claim). Built-in review API: no identityHash, verb
+      # create only, and no `provider` because authorization.k8s.io is a platform
+      # builtin nothing has to enable first. The claim is tenant-scoped like
+      # every requirement — the VW confines each review to the tenant's OWN
+      # workspace. Mirrors manifest.yaml — both must change together.
+      requires:
+        - group: authorization.k8s.io
+          resources:
+            - name: subjectaccessreviews
+              verbs: [create]
+      # Where the hub reaches this provider. The urls are the in-cluster Service
+      # DNS here, against the manifest's dev loopback.
+      serving:
+        ui:
+          url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+          indexPath: "/"
+        backend:
+          url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+          healthPath: "/readyz"
+        # Lets an organization run its own copy of this provider (see
+        # docs/byo-providers.md). The chart version is stamped from the release
+        # so the instructions the hub generates pin the same version that
+        # published this entry. Mirrors manifest.yaml — keep both in sync.
+        selfHosting:
+          supported: true
+          chart:
+            repository: "oci://ghcr.io/railgrid/charts"
+            name: "railgrid-quickstart-provider"
+            version: {{ .Chart.Version | quote }}
+          namespace: "railgrid-provider-quickstart"
+          releaseName: "quickstart"
+          docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/quickstart/deploy/chart/README.md"
+          # The chart carries its own values reference, so the portal can show
+          # it offline and for the version actually installed.
+          valuesDoc: |{{ .Files.Get "README.md" | nindent 12 }}
 {{- end }}

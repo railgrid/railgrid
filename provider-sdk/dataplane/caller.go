@@ -373,8 +373,9 @@ func (c *Callers) ProviderRESTConfig(target string) (*rest.Config, error) {
 
 // ExportVerbURL is the URL at which this provider calls a verb another
 // provider serves — a custom subresource it has CLAIMED (a
-// spec.dependencies[].composes[] entry naming "{resource}/{verb}" with verbs
-// ["*"], because kcp checks the HTTP method as the verb) — through its own
+// spec.requires[].resources[] entry naming "{resource}/{verb}", whose
+// generated claim spells verbs ["*"] because kcp checks the HTTP method as the
+// verb) — through its own
 // export virtual workspace:
 //
 //	<endpoint>/clusters/{tenant}/apis/{group}/{version}/{resource}/{name}/{verb}[/{tail}]

@@ -53,10 +53,10 @@ func runInitCmd(ctx context.Context) error {
 	// which derives its custom-subresource routes from the same document.
 	catalogEntryFile := catalogEntryPath()
 	// Where kcp reverse-proxies a custom subresource request to. Empty means
-	// "spec.backend.url of the CatalogEntry above", which is right whenever the
-	// chart runs init; a harness that registers the CatalogEntry itself (the
-	// Makefile's install-provider-* target, the provider e2e) has no file to
-	// read it from and sets this instead.
+	// "spec.serving.backend.url of the CatalogEntry above", which is right
+	// whenever the chart runs init; a harness that registers the CatalogEntry
+	// itself (the Makefile's install-provider-* target, the provider e2e) has no
+	// file to read it from and sets this instead.
 	dataPlaneURL := strings.TrimSpace(os.Getenv("RAILGRID_DATAPLANE_URL"))
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{

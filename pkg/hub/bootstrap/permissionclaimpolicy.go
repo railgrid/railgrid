@@ -127,7 +127,7 @@ func PermissionClaimPolicyServed(discoveryClient discovery.DiscoveryInterface) (
 // — and only when — the cluster serves the API.
 //
 // The policy is config/kcp/permissionclaimpolicy.yaml, generated from every
-// provider manifest's spec.dependencies[].composes[] by
+// provider manifest's spec.requires[] by
 // hack/generate-permission-claim-policy.mjs. It whitelists, per claiming API
 // group, the groups that claimer may claim without an identityHash, which is
 // the kcp-side expression of the same relationships that already drive tenant

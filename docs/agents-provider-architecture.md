@@ -474,7 +474,8 @@ part.
 | `schedules` | `run` | POST | fire now |
 | `triggers` | `run` | POST | fire now |
 
-Every one of them is declared in `spec.dataPlane.verbs` on the CatalogEntry, in
+Every one of them is declared under `spec.export.resources[].verbs` on the
+CatalogEntry — on the resource it is served on — in
 `manifest.yaml` and the chart's copy. A Go test compares the two files
 textually and both against the route table, because a verb that is served but
 not declared cannot be granted to a workload identity, and one that is declared
@@ -541,7 +542,8 @@ Two things follow that are worth stating:
   with `Callers.ProviderHTTPClient()` — the claimed custom subresource kcp
   forwards to infrastructure under agents' identity. No provider name, no
   hub path, and no caller credential is involved: the claim
-  (`spec.dependencies[].composes[]`, resource `"{resource}/proxy"`,
+  (`spec.requires[]` on `infrastructure.railgrid.ai`, resource
+  `"{resource}/proxy"` with no verbs of its own; the generated claim spells
   `verbs: ["*"]`) is what authorizes the hop.
 
 ## Storage (own, Postgres)
@@ -840,7 +842,7 @@ ever sees it. And a `Trigger`'s `status.webhookPath` is minted by the Trigger
 reconciler rather than by whoever created the object, because the token is an
 HMAC the provider keys and the browser must never hold.
 
-**Sidebar sub-nav.** `CatalogEntry.spec.ui.children` declares Agents, Activity
+**Sidebar sub-nav.** `CatalogEntry.spec.serving.ui.children` declares Agents, Activity
 and Connections. The portal composes each as `/providers/agents/<builtinRoute>`
 and pushes the trailing segment back as `railgridContext.subPath`, which
 `portal/src/router.ts` (`routeForSubPath`) maps onto this element's own hash

@@ -17,7 +17,8 @@ limitations under the License.
 package v1alpha1
 
 // Custom subresource kinds: one per verb this provider declares in
-// manifest.yaml (spec.dataPlane.verbs[] and spec.actions[]).
+// manifest.yaml, under the resource it is served on
+// (spec.export.resources[].verbs[] and spec.export.resources[].actions[]).
 //
 // A verb is served by the provider's own HTTP server; kcp routes it as the
 // APIExport entry "<resource>/<verb>" (storage.virtual → the provider's

@@ -339,11 +339,11 @@ workspace, bounded to the one workspace whose admin accepted it, not a minted ru
 `manifest.yaml` and the chart's `catalogentry.yaml`:
 
 ```yaml
-dependencies:
-  - name: edges
-    composes:
-      - group: edges.railgrid.ai
-        resource: kubernetesclusters
+requires:
+  - provider: edges                 # also the Enable-ordering dependency edge
+    group: edges.railgrid.ai        # the group edges SERVES, not its export name
+    resources:
+      - name: kubernetesclusters
         verbs: ["get", "list", "watch"]
 ```
 
@@ -352,7 +352,8 @@ every mint: the declaration bounds the verbs, the dependency must be the provide
 actually exports the group, its export must be bound in that workspace, and the consent
 must still be there. `create` on `kubernetesclusters/k8s` is clause C, which the hub will
 only mint because the **edges provider itself declares** that verb on that resource
-(`providers/edges/manifest.yaml` `spec.dataPlane.verbs`) — a coordinate the hub can
+(`providers/edges/manifest.yaml`, under that resource's
+`spec.export.resources[].verbs`) — a coordinate the hub can
 verify exists rather than one a consumer invented. Only `kubernetesclusters` is composed:
 `LinuxServer` and `MacOSServer` carry no Kubernetes API to sync and kuery does not engage
 them.

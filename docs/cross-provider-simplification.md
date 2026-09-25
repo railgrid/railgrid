@@ -3,7 +3,20 @@
 **Status:** Largely implemented — see "Status after remediation" below. The
 August 2026 audit body is retained as history.
 **Owner:** TBD
-**Last updated:** 2026-09-19 (status section); audit body 2026-08-08
+**Last updated:** 2026-09-25 (CatalogEntry contract note); 2026-09-19 (status
+section); audit body 2026-08-08
+
+> **2026-09-25 — the CatalogEntry contract was restructured.** `CatalogEntrySpec`
+> is now four sections: `export` (the APIExport's name plus its resources, each
+> carrying the `verbs[]` and `actions[]` served on it), `requires` (one list,
+> keyed by API group, for everything the provider does not own — it replaced
+> both `spec.apiExport.permissionClaims` and `spec.dependencies[].composes[]`),
+> `serving` and `hub`. Field paths named in the audit body below are the old
+> ones and are kept as written; the mapping is in
+> [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+> §"Status update 2026-09-25 — the CatalogEntry contract is four sections".
+> The audit's "verbs exist nowhere machine-readable" gap (§ below) is closed:
+> both verbs and actions are declared per resource under `spec.export`.
 **Reads as a delta on:** [providers.md](./providers.md),
 [provider-connectivity-contract.md](./provider-connectivity-contract.md),
 [provider-actions.md](./provider-actions.md)
@@ -36,7 +49,7 @@ August 2026 audit body is retained as history.
 |---|---|---|---|
 | M1 | Bound CRs via APIBinding | **unchanged** — still the healthy core | — |
 | M2 | Provider SA + endpoint slice + claims | **unchanged in mechanics, single-sourced in declaration.** A claim is written once, in `manifest.yaml`; `provider-sdk/cmd/apiexportgen` stamps the APIExport; `init` applies schemas + export from `RAILGRID_KCP_DIR` and adds only `identityHash` at runtime | `hack/verify-provider-contract.mjs` (`claims-parity`, `export-copy`), `providers/*/init_cmd.go` |
-| M3 | Blanket `secrets` claims as a credential side-door | **closed (2026-09-20).** Every surviving `secrets` claim is label-scoped to `railgrid.ai/owner: <provider>` via kcp's `defaultSelector`; kuery and factory claim nothing; every Secret writer stamps the label; `verify-provider-contract` refuses an unscoped core claim | `providers/*/manifest.yaml` `permissionClaims[].selector`, `provider-sdk/claimscope`, `hack/verify-provider-contract.mjs` (`claim-selector`) |
+| M3 | Blanket `secrets` claims as a credential side-door | **closed (2026-09-20).** Every surviving `secrets` claim is label-scoped to `railgrid.ai/owner: <provider>` via kcp's `defaultSelector`; kuery and factory claim nothing; every Secret writer stamps the label; `verify-provider-contract` refuses an unscoped core claim | `providers/*/manifest.yaml` `requires[].resources[].selector`, `provider-sdk/claimscope`, `hack/verify-provider-contract.mjs` (`claim-selector`) |
 | M4 | Hub backend-proxy data-plane paths, in four dialects | **collapsed to one.** `provider-sdk/dataplane` owns the grammar, the two gates and the limits; `provider-sdk/serve` owns the server layout and refuses anything outside it. Every in-tree provider serves through `serve.New`. `/edgeproxy/…/apis/…`, `/s2s/*` and the ad-hoc `/api/*` surfaces are gone, not aliased | `provider-sdk/dataplane/{path,gate,serve}.go`, `provider-sdk/serve/serve.go`, `providers/*/main.go` |
 | M5 | MCP as a third access path | **demoted to a projection.** The aggregate verifies the bearer and its right to the addressed cluster *before* fan-out, and enumerates for that verified caller; per-edge MCP is now an ordinary data-plane verb, not its own mount | `pkg/hub/mcpaggregate/verifier.go`, `pkg/hub/mcpaggregate/enumerator.go`, `providers/edges/internal/tunnel/grammar.go` (`VerbMCP`) |
 | M6 | Provider Actions as a hub router | **deleted.** `pkg/hub/provideractions` no longer exists; an action is a verb under `dataplane.ActionsRoot` on the ordinary backend proxy, authorized by the same two gates. `spec.virtualWorkspace` is retired from the CatalogEntry type | `pkg/hub/server.go:431-434`, `provider-sdk/dataplane/path.go` (`ActionsRoot`) |
@@ -316,7 +329,7 @@ dedicated hub routers, no second URL field, no reserved-path denials needed
 - Streaming/proxy verbs: on the resource contract, as today
   (`Template.spec.dataPlane.endpoints{}` —
   [types_template.go:459](../providers/infrastructure/apis/v1alpha1/types_template.go)).
-- Typed request/response verbs ("actions"): in `CatalogEntry.spec.actions`
+- Typed request/response verbs ("actions"): in `CatalogEntry.spec.export.resources[].actions`
   exactly as PR #499 built it — schemas, canonical digest, limits, consent,
   deprecation, validated fail-closed by the hub registry
   ([apis/providers/v1alpha1/actions.go](../apis/providers/v1alpha1/actions.go)).

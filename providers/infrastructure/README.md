@@ -145,10 +145,15 @@ helm CLI.
 | Per-cloud credential convention | [docs/credentials.md](docs/credentials.md) |
 | Template-defined instance rendering | [docs/instance-views.md](docs/instance-views.md) |
 
-The CatalogEntry ships with `apiExport.schemas: []` (pure broker, no
-CRDs leak into tenant workspaces). The single `permissionClaim` is
-`secrets get/list/watch` with `tenantScoped: true` so the provider
-can read `cloud-credentials` after a tenant Enables it.
+The CatalogEntry declares no inline schemas (pure broker, no CRDs leak into
+tenant workspaces — `init` installs the Template and Instance schemas into the
+provider workspace itself). `spec.requires` holds two entries, both platform
+builtins: `authorization.k8s.io/subjectaccessreviews` `create` (every provider
+serving a custom subresource needs it) and core `secrets` `get/list/watch`,
+narrowed by `selector.matchLabels: {railgrid.ai/owner: infrastructure}` so only
+Secrets explicitly handed to this provider are reachable. Everything under
+`requires` is tenant-scoped by definition and reaches a workspace only once a
+tenant accepts it on Enable.
 
 ## Architecture
 
@@ -182,9 +187,10 @@ this provider pod (provider-sdk/serve)
 
 There is no hub-proxied spelling of a verb (no `/services/providers/…/dataplane/…`):
 the kube path above is the only one, and `manifest.yaml`'s
-`spec.dataPlane.verbs` is what publishes it (`provider-sdk/apiexportgen`) and
-what `serve` answers (`serve.SubresourcesFromCatalogEntryFile`). A missing
-manifest is a startup error.
+`spec.export.resources[].verbs` is what publishes it
+(`provider-sdk/apiexportgen`) and what `serve` answers
+(`serve.SubresourcesFromCatalogEntryFile`). A missing manifest is a startup
+error.
 
 kro runs in **`kcp-apiexport`** mode: the provider creates instance CRs in the
 tenant's kcp workspace through its APIExport

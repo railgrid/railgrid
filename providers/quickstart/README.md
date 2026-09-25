@@ -47,16 +47,17 @@ Exactly one route carries tenant traffic, and it is a Kubernetes API path:
 POST /clusters/{clusterID}/apis/quickstart.providers.railgrid.ai/v1alpha1/greetings/{name}/greet
 ```
 
-The manifest declares `greetings/greet` under `spec.dataPlane.verbs`; codegen
-publishes it on the APIExport as a custom subresource whose storage points at
-this provider's `DataPlaneEndpointSlice`. A caller addresses it on whichever kcp
-front door they hold a credential for — the hub's `/clusters/{id}` for a user
-or a tenant ServiceAccount, `kubectl` included — and kcp authorizes `create` on
-`greetings/greet` with ordinary RBAC, then reverse-proxies the request to this
-binary with the caller's identity stamped in `X-Remote-User` / `X-Remote-Group`
-headers. There is **no hub-proxied spelling** of a verb: nothing under
-`/services/providers/quickstart/` carries tenant data, and the provider refuses
-a verb request that arrives with a bearer instead of a stamped caller (401).
+The manifest declares `greet` on the `greetings` resource under
+`spec.export.resources[]`; codegen publishes it on the APIExport as a custom
+subresource whose storage points at this provider's `DataPlaneEndpointSlice`. A
+caller addresses it on whichever kcp front door they hold a credential for — the
+hub's `/clusters/{id}` for a user or a tenant ServiceAccount, `kubectl` included
+— and kcp authorizes `create` on `greetings/greet` with ordinary RBAC, then
+reverse-proxies the request to this binary with the caller's identity stamped in
+`X-Remote-User` / `X-Remote-Group` headers. There is **no hub-proxied spelling**
+of a verb: nothing under `/services/providers/quickstart/` carries tenant data,
+and the provider refuses a verb request that arrives with a bearer instead of a
+stamped caller (401).
 
 Plus `/healthz` and `/readyz`. The layout is not hand-built: [`main.go`](main.go)
 passes one handler per route class to `provider-sdk/serve`, which refuses
@@ -81,7 +82,7 @@ runs the one gate through `provider-sdk/dataplane`, **as the provider**:
    the object back so the verb reads `spec` from what the caller was entitled to
    see. kcp serves `SubjectAccessReview` there only for an export that claims
    `authorization.k8s.io/subjectaccessreviews`, which is the one permission
-   claim in [`manifest.yaml`](manifest.yaml).
+   requirement in [`manifest.yaml`](manifest.yaml) (`spec.requires`).
 2. **The verb grant is not repeated.** kcp already authorized `create` on
    `greetings/greet` before it forwarded the request. `create` is not
    negotiable: the hub materializes every data-plane grant as exactly that rule.
@@ -129,19 +130,24 @@ The provider is described by two objects, both applied by an admin into
   The hub's Provider controller creates the workspace
   `root:railgrid:providers:quickstart`, the `provider` ServiceAccount and the
   kubeconfig Secret. Nothing else.
-- [`manifest.yaml`](manifest.yaml), kind **`CatalogEntry`** — routing, the
-  portal entry, the APIExport name, permission claims, and the self-hosting
-  coordinates. `spec.backend.healthPath` points at `/readyz`, so the hub calls
-  this provider unhealthy when its watches are dead, not only when the process
-  is gone.
+- [`manifest.yaml`](manifest.yaml), kind **`CatalogEntry`** — the four
+  questions, one section each: `spec.export` (the APIExport name and the verbs
+  and actions served on each resource), `spec.requires` (everything needed from
+  a group this provider does not own, which is where permission claims are
+  written), `spec.serving` (routing, the portal entry, self-hosting) and
+  `spec.hub` (what it asks of the hub itself — nothing, here).
+  `spec.serving.backend.healthPath` points at `/readyz`, so the hub calls this
+  provider unhealthy when its watches are dead, not only when the process is
+  gone.
 
-The CatalogEntry exists three times — `manifest.yaml`,
-`deploy/chart/templates/catalogentry.yaml` (the copy that reaches production,
-self-applied by the init container) and, for its claims,
-[`init_cmd.go`](init_cmd.go). They are one promise written down three times and
+The CatalogEntry exists twice — `manifest.yaml`, which a reviewer reads, and
+`deploy/chart/templates/catalogentry.yaml`, the copy that reaches production
+(self-applied by the init container). There is no third copy in Go:
+[`init_cmd.go`](init_cmd.go) applies the generated APIExport as it stands and
+adds no requirement of its own. The two are one promise written down twice and
 must change together; `node hack/verify-provider-contract.mjs` fails the build
-when they drift. This provider declares **no** permission claims: it reconciles
-only the Greetings its own APIExport serves.
+when they drift. Past the subresource gate this provider requires **nothing**:
+it reconciles only the Greetings its own APIExport serves.
 
 `init` and `serve` are the two subcommands, and the split matters: `init` is the
 only admin-credentialed step. It applies schemas, the APIExport, the endpoint

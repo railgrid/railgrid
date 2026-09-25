@@ -106,7 +106,7 @@ type commitOutcome struct {
 // name, which this loop then follows over the RepositoryCommit watch — which
 // is why the declared composition on repositorycommits still carries no
 // create, and why the verb itself is claimed instead (repositories/commit in
-// manifest.yaml composes[]; commitaction.go).
+// manifest.yaml spec.requires; commitaction.go).
 func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
 	if r.Workspace == nil || r.Callers == nil {
 		return commitOutcome{}, nil // commit convergence not wired (REST-only dev)

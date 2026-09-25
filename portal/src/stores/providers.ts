@@ -13,9 +13,9 @@ export type ProviderScope = 'global' | 'org'
 
 export interface ProviderDTO {
   name: string
-  // Absent on responses from an older hub; treat a missing value as
-  // 'global' so the catalog still renders during a rolling upgrade.
-  scope?: ProviderScope
+  // 'global' for a platform provider, 'org' for one this organization
+  // registered and runs itself.
+  scope: ProviderScope
   // UUID of the owning organization when scope === 'org'.
   ownerOrg?: string
   // True when this org-owned provider has the same name as a platform
@@ -28,72 +28,219 @@ export interface ProviderDTO {
   // on entries that declare none.
   description?: string
   version?: string
+  // Optional grouping key. Matched against CategoryDTO[].name to render
+  // a section header in the side nav and catalog page. Empty/missing →
+  // entry appears at the top level under "Providers".
+  category?: string
+  iconURL?: string
   ready: boolean
   // Present only when ready is false. The hub owns and sanitizes these
   // explanations so provider transport details never reach the browser.
   readinessReason?: string
   readinessMessage?: string
-  hasUI: boolean
-  hasBackend: boolean
-  iconURL?: string
-  // Subresource Integrity pin ("sha384-...") the hub computed for
-  // /ui/providers/{name}/main.js at registration. The loader sets it as the
-  // script's integrity attribute; absent (older hub or a failed hash fetch)
-  // means the bundle loads unpinned with a console warning. Always absent for
-  // an org-owned provider: its bundle URL and pin come from the grant the
-  // portal requests at load time (providers/providerBundle.ts).
-  mainJSIntegrity?: string
-  // When set, the portal renders this Vue Router route name in-tree
-  // instead of loading /main.js. First-party providers (mcp, kubernetes-
-  // edges, server-edges) use this to surface their existing SPA pages
-  // through the uniform providers list.
+  // Builtin = true for first-party providers shipped with the hub
+  // binary, regardless of how they surface UI (an in-tree route or a
+  // custom-element via embedded assets). Side-nav skips the
+  // APIBinding-required gate for these.
+  builtin?: boolean
+
+  // The four sections below mirror CatalogEntry.spec one for one, with the
+  // same JSON names, so this store and `kubectl get catalogentry -o yaml`
+  // describe a provider in the same words.
+
+  // What a workspace may call once it enables this provider. Absent for a
+  // provider that exports no API of its own — which is what the portal reads
+  // as "there is nothing here to enable".
+  export?: ProviderExportDTO
+  // Everything the provider needs that it does not own, exactly as declared.
+  // One consent line per resource in the Enable dialog; an entry naming a
+  // provider is also a dependency edge. Nothing here is granted by being
+  // declared.
+  requires?: ProviderRequirement[]
+  // Where the hub reaches the provider. Presence is the signal: `serving.ui`
+  // present means it ships a portal UI, `serving.backend` present (even as an
+  // empty object) means the hub proxies a backend for it.
+  serving?: ProviderServingDTO
+  // What the provider asks of the hub itself. Absent when it asks nothing.
+  hub?: ProviderHubDTO
+}
+
+// ProviderExportDTO mirrors CatalogEntry.spec.export: the APIExport a
+// workspace binds, plus the resources it serves and the coordinates on them.
+export interface ProviderExportDTO {
+  // APIExport name a workspace's APIBinding references. Not an API group.
+  name: string
+  // kcp workspace path hosting the export — hub-derived, and what the Enable
+  // flow needs to bind it.
+  path?: string
+  // API groups the provider actually serves, as read off the APIExport.
+  // Usually different from `name`. Empty while the hub has not read it yet.
+  apiGroups?: string[]
+  // The kinds carrying a verb or an action. A kind with neither is an
+  // ordinary CR reached through kcp and is not listed here.
+  resources?: ProviderExportResourceDTO[]
+}
+
+// ProviderExportResourceDTO is one exported kind with the coordinates on it.
+// apiVersion and kind are declared once here rather than on every action, so
+// an action's bound resource IS this entry's {apiVersion, kind, name}.
+export interface ProviderExportResourceDTO {
+  // Plural resource name, as it appears in the path.
+  name: string
+  apiVersion: string
+  kind: string
+  // The unversioned calls: streaming, proxying, anything whose request and
+  // response are the verb's own business.
+  verbs?: ProviderVerbDTO[]
+  // The versioned, schema'd calls.
+  actions?: ProviderActionDTO[]
+}
+
+export interface ProviderVerbDTO {
+  name: string
+  description?: string
+  stream?: boolean
+  readOnly?: boolean
+}
+
+// ProviderActionDTO mirrors pkg/hub/providers/api.go:providerActionDTO. It
+// carries discovery and consent metadata only — never a provider transport URL
+// or credential.
+export interface ProviderActionDTO {
+  // "<name>/<version>" — the string grants, consent records and the assistant
+  // catalog key on. Derived from name and version, which are published too.
+  id: string
+  name: string
+  version: string
+  displayName: string
+  description?: string
+  inputSchema: unknown
+  outputSchema: unknown
+  schemaDigest: string
+  executionMode: string
+  readOnly: boolean
+  risk: string
+  idempotency: string
+  limits: ProviderActionLimits
+  consent: ProviderActionConsent
+  deprecation?: ProviderActionDeprecation
+}
+
+export interface ProviderActionLimits {
+  timeoutSeconds?: number
+  maxInputBytes?: number
+  maxOutputBytes?: number
+  maxResultItems?: number
+}
+
+export interface ProviderActionConsent {
+  required: boolean
+  prompt?: string
+  scope?: string
+}
+
+export interface ProviderActionDeprecation {
+  deprecated: boolean
+  message?: string
+  replacementID?: string
+  sunset?: string
+}
+
+// ProviderRequirement mirrors providersv1alpha1.ProviderRequirement: one group
+// the provider needs and does not own, with everything it needs from it.
+//
+// `provider` is what splits the two kinds of consent the Enable dialog
+// collects: an entry that NAMES a provider is a composition (kinds of that
+// provider this one creates and manages here, recorded in the workspace's
+// Grant and requiring a workspace or org admin), and an entry that names none
+// is a platform or core-group claim accepted on the APIBinding itself.
+// Everything here is tenant-scoped by definition.
+export interface ProviderRequirement {
+  // The provider owning `group`, when a provider owns it. Also a dependency
+  // edge: it must be enabled in this workspace first.
+  provider?: string
+  // API group. Absent means the core group.
+  group?: string
+  resources: ProviderRequiredResource[]
+}
+
+// ProviderRequiredResource is one kind — or one "<resource>/<verb>"
+// coordinate — the requirement asks for.
+export interface ProviderRequiredResource {
+  name: string
+  // Kubernetes verbs needed on the kind. Always absent for a
+  // "<resource>/<verb>" coordinate: the verb IS the capability there, and the
+  // generated claim spells every verb.
+  verbs?: string[]
+  // Narrows the claim from every object of this resource in the workspace to
+  // the ones carrying these labels.
+  selector?: ProviderLabelSelector
+}
+
+export interface ProviderLabelSelector {
+  matchLabels?: Record<string, string>
+}
+
+// ProviderServingDTO mirrors CatalogEntry.spec.serving. A section the provider
+// does not offer is omitted; the declared addresses are deliberately never
+// published, because they name in-cluster hosts the browser cannot reach.
+export interface ProviderServingDTO {
+  ui?: ProviderUIDTO
+  // Present exactly when the hub reverse-proxies this provider's backend. It
+  // carries no fields: presence IS the answer, so an empty object here means
+  // "has a backend", never "missing".
+  backend?: ProviderBackendDTO
+  selfHosting?: ProviderSelfHostingDTO
+}
+
+// ProviderUIDTO is present exactly when the provider has a micro-frontend the
+// portal can render.
+export interface ProviderUIDTO {
+  // When set, the portal renders this Vue Router route in-tree instead of
+  // loading /main.js. First-party providers (mcp, kubernetes-edges,
+  // server-edges) surface their existing SPA pages this way.
   builtinRoute?: string
   // Sub-nav entries the side nav renders indented under this provider.
   // Used by providers that span multiple SPA pages (e.g. Kubernetes →
   // Workloads).
   children?: NavChildDTO[]
-  // Optional grouping key. Matched against CategoryDTO[].name to render
-  // a section header in the side nav and catalog page. Empty/missing →
-  // entry appears at the top level under "Providers".
-  category?: string
-  // Providers that must be enabled in the current workspace before this
-  // provider can be enabled.
-  dependencies?: ProviderDependencyDTO[]
-  // Populated when the provider declares spec.apiExport. The portal uses
-  // these coordinates to build the APIBinding it POSTs into the tenant
-  // workspace on Enable.
-  apiExportPath?: string
-  apiExportName?: string
-  permissionClaims?: PermissionClaim[]
-  // Hub REST capabilities the provider requests (CatalogEntry.spec.hubAccess).
-  // Shown in the Enable dialog; none applies until a user accepts it there.
-  hubAccess?: HubAccessRequest[]
-  // Builtin = true for first-party providers shipped with the hub
-  // binary, regardless of how they surface UI (legacy builtinRoute or
-  // new custom-element via embedded assets). Side-nav skips the
-  // APIBinding-required gate for these.
-  builtin?: boolean
+  // Subresource Integrity pin ("sha384-...") the hub computed for
+  // /ui/providers/{name}/main.js at registration. The loader sets it as the
+  // script's integrity attribute; absent (no pin, or a failed hash fetch)
+  // means the bundle loads unpinned with a console warning. Always absent for
+  // an org-owned provider: its bundle URL and pin come from the grant the
+  // portal requests at load time (providers/providerBundle.ts).
+  mainJSIntegrity?: string
+}
+
+// ProviderBackendDTO is intentionally empty — see ProviderServingDTO.backend.
+export type ProviderBackendDTO = Record<string, never>
+
+export interface ProviderSelfHostingDTO {
   // True when the provider publishes enough deployment metadata for an
   // organization to run its own copy. Drives the Self-Hosting tab.
-  selfHostable?: boolean
-  // Provider-specific setup guidance for self-hosting.
-  selfHostingDocsURL?: string
+  supported: boolean
+  // Provider-specific setup guidance, shown next to the self-host action.
+  docsURL?: string
 }
 
-export interface ProviderDependencyDTO {
-  name: string
-  // Kinds of this dependency the provider creates and manages in the tenant
-  // workspace. Shown in the Enable dialog as its own consent line; nothing
-  // applies until a workspace or org admin accepts it there.
-  composes?: CompositionRequest[]
+// ProviderHubDTO mirrors CatalogEntry.spec.hub: what the provider asks of the
+// hub itself, as opposed to of kcp.
+export interface ProviderHubDTO {
+  // Hub REST capabilities the provider requests, each with the reason the
+  // Enable dialog shows. None applies until a user accepts it there.
+  access?: HubAccessRequest[]
+  // Inline assistant skill packages the provider publishes. The portal does
+  // not render these; App Studio consumes them.
+  assistantSkills?: ProviderAssistantSkillDTO[]
 }
 
-// CompositionRequest mirrors providersv1alpha1.ProviderComposition: one kind
-// of a dependency provider that this provider's reconcilers manage.
-export interface CompositionRequest {
-  group: string
-  resource: string
-  verbs?: string[]
+export interface ProviderAssistantSkillDTO {
+  packageName: string
+  version: string
+  digest: string
+  skill: string
+  resources?: { path: string; content: string }[]
 }
 
 // AcceptedComposition mirrors pkg/hub/restapi.AcceptedComposition. `provider`
@@ -152,11 +299,13 @@ export interface NavChildDTO {
   builtinRoute: string
 }
 
-export interface PermissionClaim {
+// AcceptedClaim mirrors pkg/hub/restapi.AcceptedClaim: one platform claim the
+// user accepted in the Enable dialog, named by the (group, resource) the
+// provider declared in spec.requires. Verbs are never sent — the hub reads them
+// from the declaration, so a caller cannot widen one by asking.
+export interface AcceptedClaim {
   group?: string
   resource: string
-  verbs?: string[]
-  tenantScoped?: boolean
 }
 
 // HubAccessRequest mirrors providersv1alpha1.ProviderHubAccess: one hub
@@ -273,7 +422,7 @@ export const useProvidersStore = defineStore('providers', () => {
 
   // enabledNavItems is the list of providers that should show up in the
   // side nav. Two paths to inclusion:
-  //  - Built-in providers (spec.ui.builtinRoute set) always appear — they
+  //  - Built-in providers (serving.ui.builtinRoute set) always appear — they
   //    ship as part of the portal and don't need a per-user APIBinding.
   //  - Third-party providers appear only when ready, with a UI, AND the
   //    current user has bound their APIExport.
@@ -285,33 +434,35 @@ export const useProvidersStore = defineStore('providers', () => {
         // Provider destinations need a workspace. Organization-only settings
         // must not turn every provider link into the same active fallback.
         if (!useTenantStore().workspaceUUID) return false
-        if (!p.ready || !p.hasUI) return false
+        // serving.ui present IS "this provider has a portal UI".
+        if (!p.ready || !p.serving?.ui) return false
         // Legacy in-tree route OR new-style first-party provider:
         // always shown, no binding required.
-        if (p.builtinRoute || p.builtin) return true
+        if (p.serving.ui.builtinRoute || p.builtin) return true
         return !!bindingNamesByProvider.value[p.name]
       })
       .map((p) => {
         // builtinRoute → in-tree SPA route (legacy).
         // builtin (no route) → ProviderFrame at /providers/{name}.
         // third-party → ProviderFrame at /providers/{name}.
-        const parentTo = scopedPath(p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`, useTenantStore())
+        const builtinRoute = p.serving?.ui?.builtinRoute ?? ''
+        const parentTo = scopedPath(builtinRoute ? `/${builtinRoute}` : `/providers/${p.name}`, useTenantStore())
         return {
           name: p.name,
           label: p.displayName,
           to: parentTo,
           iconURL: p.iconURL ?? null,
           version: p.version ?? '',
-          builtin: !!p.builtinRoute || !!p.builtin,
+          builtin: !!builtinRoute || !!p.builtin,
           category: p.category ?? '',
           // Child routes nest UNDER the parent for new-style providers
           // (so kubernetes-edges' Workloads child lands at
           // /providers/kubernetes-edges/workloads), while legacy
           // builtinRoute providers keep their top-level child URLs
           // (/workloads).
-          children: (p.children ?? []).map((c) => ({
+          children: (p.serving?.ui?.children ?? []).map((c) => ({
             label: c.displayName,
-            to: p.builtinRoute ? scopedPath(`/${c.builtinRoute}`, useTenantStore()) : `${parentTo}/${c.builtinRoute}`,
+            to: builtinRoute ? scopedPath(`/${c.builtinRoute}`, useTenantStore()) : `${parentTo}/${c.builtinRoute}`,
           })),
         }
       }),
@@ -368,8 +519,7 @@ export const useProvidersStore = defineStore('providers', () => {
   }
 
   // isSelfManaged distinguishes providers this organization registered and runs
-  // itself from the platform catalog. A hub that predates provider scoping omits
-  // `scope` entirely, so anything unset counts as platform-managed.
+  // itself from the platform catalog.
   function isSelfManaged(p: ProviderDTO): boolean {
     return p.scope === 'org'
   }
@@ -390,7 +540,7 @@ export const useProvidersStore = defineStore('providers', () => {
   // deployment recipe — what the Self-Hosting tab offers to run yourself.
   const selfHostable = computed<ProviderDTO[]>(() =>
     items.value
-      .filter((p) => p.selfHostable && !isSelfManaged(p))
+      .filter((p) => p.serving?.selfHosting?.supported && !isSelfManaged(p))
       .slice()
       .sort((a, b) => a.displayName.localeCompare(b.displayName)),
   )
@@ -413,7 +563,7 @@ export const useProvidersStore = defineStore('providers', () => {
       return c ? (c.order ?? 0) : Number.MAX_SAFE_INTEGER - 1
     }
     return items.value
-      .filter((p) => !!p.apiExportName)
+      .filter((p) => !!p.export?.name)
       .slice()
       .sort((a, b) => {
         const ca = a.category ?? ''
@@ -434,14 +584,24 @@ export const useProvidersStore = defineStore('providers', () => {
     const p = byName(name)
     if (!p) return isEnabled(name)
     if (!p.ready) return false
-    if (!p.apiExportName || p.builtinRoute || p.builtin) return true
+    if (!p.export?.name || p.serving?.ui?.builtinRoute || p.builtin) return true
     return isEnabled(p.name)
   }
 
+  // The providers this one depends on: every spec.requires entry that names
+  // one. A group belongs to a single provider, so the same name can appear on
+  // several entries and is reported once.
+  function providerDependencies(p: ProviderDTO): string[] {
+    const names: string[] = []
+    for (const requirement of p.requires ?? []) {
+      const name = requirement.provider?.trim()
+      if (name && !names.includes(name)) names.push(name)
+    }
+    return names
+  }
+
   function missingDependencies(p: ProviderDTO): string[] {
-    return (p.dependencies ?? [])
-      .map((dep) => dep.name.trim())
-      .filter((name) => name && !isDependencySatisfied(name))
+    return providerDependencies(p).filter((name) => !isDependencySatisfied(name))
   }
 
   function hasMissingDependencies(p: ProviderDTO): boolean {
@@ -674,11 +834,11 @@ export const useProvidersStore = defineStore('providers', () => {
   // going Bound and surfaces the mismatch cleanly).
   async function enable(
     p: ProviderDTO,
-    accept: PermissionClaim[],
+    accept: AcceptedClaim[],
     acceptHubAccess: AcceptedHubAccess[] = [],
     acceptCompositions: AcceptedComposition[] = [],
   ): Promise<void> {
-    if (!p.apiExportPath || !p.apiExportName) {
+    if (!p.export?.path || !p.export?.name) {
       throw new Error(`${p.name}: provider declares no APIExport to bind`)
     }
 
@@ -856,7 +1016,7 @@ export const useProvidersStore = defineStore('providers', () => {
       items.value = fresh
       categories.value = body.categories ?? []
     }
-    return fresh.find((p) => p.name === name)?.mainJSIntegrity ?? null
+    return fresh.find((p) => p.name === name)?.serving?.ui?.mainJSIntegrity ?? null
   }
 
   return {

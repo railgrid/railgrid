@@ -336,47 +336,54 @@ func TestBuildRules_EmptyBindingsStillYieldsRole(t *testing.T) {
 	}
 }
 
-func TestActionGrantsFromSpec(t *testing.T) {
-	got := actionGrantsFromSpec([]providersv1alpha1.ProviderActionSpec{
-		{ID: "query_table/v1", ReadOnly: true, BoundResource: providersv1alpha1.ProviderActionBoundResource{APIVersion: "databricks.railgrid.ai/v1alpha1", Resource: "tables"}},
-		{ID: "bad", BoundResource: providersv1alpha1.ProviderActionBoundResource{APIVersion: "x/v1"}}, // no resource
+func TestActionGrantsFromExport(t *testing.T) {
+	got := actionGrantsFromExport(&providersv1alpha1.ProviderExport{
+		Name: "databricks.providers.railgrid.ai",
+		Resources: []providersv1alpha1.ProviderExportResource{{
+			Name: "tables", APIVersion: "databricks.railgrid.ai/v1alpha1", Kind: "Table",
+			Actions: []providersv1alpha1.ProviderAction{{Name: "query_table", Version: "v1", ReadOnly: true}},
+		}, {
+			// No group in the apiVersion: nothing to key a grant on.
+			Name: "broken", APIVersion: "v1", Kind: "Broken",
+			Actions: []providersv1alpha1.ProviderAction{{Name: "poke", Version: "v1"}},
+		}},
 	})
 	want := []ActionGrant{{Group: "databricks.railgrid.ai", Resource: "tables", Name: "query_table", ReadOnly: true}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("grants = %+v, want %+v", got, want)
 	}
+	if got := actionGrantsFromExport(nil); len(got) != 0 {
+		t.Fatalf("a provider with no export granted %+v", got)
+	}
 }
 
-// Action IDs are documented as "<name>/<version>". An ID without a version
-// segment is malformed, and granting it would put a subresource in the role
-// that no provider ever reviews.
-// The parser enforces the documented "<name>/vN" shape itself, mirroring the
-// CRD pattern, because pattern validation does not retro-validate objects
-// that predate the marker: a legacy entry must not be granted just because
-// it is stored.
-func TestActionGrantsFromSpec_SkipsIDsWithoutAVersion(t *testing.T) {
-	res := providersv1alpha1.ProviderActionBoundResource{APIVersion: "infrastructure.railgrid.ai/v1alpha1", Resource: "instances"}
-	for _, id := range []string{
-		"restart", "restart/", "  restart  ", "/v1", "",
-		// A slash with something after it is not enough: the version must be
-		// v followed by a non-zero-led number, exactly as the CRD requires.
-		"restart/latest", "restart/1", "restart/v0", "restart/v01", "restart/v1alpha1",
-		"restart/v123456789", // nine digits, one past the CRD bound
-		"Restart/v1",         // name must be lowercase
-		"restart/v1/v2",
+// The coordinate a provider reviews is the action's NAME — the version is not
+// in any path. The parser enforces the documented name shape itself, mirroring
+// the CRD pattern, because pattern validation does not retro-validate objects
+// that predate the marker: a legacy entry must not be granted just because it
+// is stored.
+func TestActionGrantsFromExport_SkipsMalformedNames(t *testing.T) {
+	grantsFor := func(name string) []ActionGrant {
+		return actionGrantsFromExport(&providersv1alpha1.ProviderExport{
+			Name: "infrastructure.providers.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderExportResource{{
+				Name: "instances", APIVersion: "infrastructure.railgrid.ai/v1alpha1", Kind: "Instance",
+				Actions: []providersv1alpha1.ProviderAction{{Name: name, Version: "v1"}},
+			}},
+		})
+	}
+	for _, name := range []string{
+		"", "restart/v1", "restart/", "/restart", "Restart", "1restart", "restart.now",
+		strings.Repeat("a", 64),
 	} {
-		got := actionGrantsFromSpec([]providersv1alpha1.ProviderActionSpec{{ID: id, BoundResource: res}})
-		if len(got) != 0 {
-			t.Fatalf("ID %q granted %+v, want skipped", id, got)
+		if got := grantsFor(name); len(got) != 0 {
+			t.Fatalf("name %q granted %+v, want skipped", name, got)
 		}
 	}
-	for _, id := range []string{"restart/v1", "restart/v12345678", "query_table/v2", "a/v1", "  restart/v1  "} {
-		got := actionGrantsFromSpec([]providersv1alpha1.ProviderActionSpec{{ID: id, BoundResource: res}})
-		if len(got) != 1 {
-			t.Fatalf("well-formed ID %q = %+v, want exactly one grant", id, got)
-		}
-		if want := strings.TrimSpace(id)[:strings.Index(strings.TrimSpace(id), "/")]; got[0].Name != want {
-			t.Fatalf("ID %q granted name %q, want %q", id, got[0].Name, want)
+	for _, name := range []string{"restart", "query_table", "a", "development-logs", strings.Repeat("a", 63)} {
+		got := grantsFor(name)
+		if len(got) != 1 || got[0].Name != name {
+			t.Fatalf("well-formed name %q = %+v, want exactly one grant on it", name, got)
 		}
 	}
 }

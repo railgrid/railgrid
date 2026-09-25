@@ -28,12 +28,12 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// A provider's data plane is declared twice in manifest.yaml and served once.
+// A provider's callable surface hangs off the resource it is served on, in
+// manifest.yaml spec.export.resources[]:
 //
-//   - spec.dataPlane.verbs[] — {resource, verb}: unversioned, often streaming
-//     (exec, log, proxy);
-//   - spec.actions[] — a versioned, schema'd request/response call, whose id is
-//     "<verb>/v<n>" and whose boundResource names the resource it hangs off.
+//   - verbs[] — unversioned, often streaming (exec, log, proxy);
+//   - actions[] — a versioned, schema'd request/response call, whose `version`
+//     qualifies the contract and is NOT part of the coordinate.
 //
 // Both land on ONE coordinate, `{resource}/{verb}`, which is already how the
 // hub's scoped-identity policy grants them (pkg/hub/identity/policy.go, clause
@@ -46,9 +46,9 @@ import (
 type Subresource struct {
 	// Resource is the plural parent resource, e.g. "projects".
 	Resource string
-	// Verb is the bare verb, e.g. "promote". For an action it is the id with
-	// its "/v<n>" version suffix removed, which is the same string the hub
-	// registry keeps as ProviderAction.Name.
+	// Verb is the bare verb, e.g. "promote". For an action it is the action's
+	// name, which carries no version: the version qualifies the action's
+	// schema contract, which the APIExport says nothing about.
 	Verb string
 	// Source says which declaration this came from, for error messages only.
 	Source string
@@ -57,25 +57,20 @@ type Subresource struct {
 // Name is the RBAC-style entry name kcp wants: "<resource>/<verb>".
 func (s Subresource) Name() string { return s.Resource + "/" + s.Verb }
 
-// DataPlaneVerb mirrors CatalogEntry spec.dataPlane.verbs[]. Only the two
-// fields that make a coordinate are parsed; description, stream and readOnly
-// are the portal's business and have no counterpart on an APIExport.
-type DataPlaneVerb struct {
-	Resource string `json:"resource"`
-	Verb     string `json:"verb"`
+// Verb mirrors CatalogEntry spec.export.resources[].verbs[]. Only the name
+// makes a coordinate; description, stream and readOnly are the portal's
+// business and have no counterpart on an APIExport.
+type Verb struct {
+	Name string `json:"name"`
 }
 
-// ActionBoundResource mirrors CatalogEntry spec.actions[].boundResource.
-type ActionBoundResource struct {
-	Resource string `json:"resource"`
-}
-
-// Action mirrors the part of CatalogEntry spec.actions[] that makes a
-// coordinate: the id, whose leading segment is the verb, and the resource it is
-// bound to.
+// Action mirrors the part of CatalogEntry spec.export.resources[].actions[]
+// that makes a coordinate: its name. The version is parsed because the serving
+// provider's route table needs it (provider-sdk/serve), never to build a
+// coordinate.
 type Action struct {
-	ID            string              `json:"id"`
-	BoundResource ActionBoundResource `json:"boundResource"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 // schemaOwnedSubresources are the two names kcp refuses as custom
@@ -92,12 +87,20 @@ var schemaOwnedSubresources = map[string]bool{"status": true, "scale": true}
 var kcpResourceName = regexp.MustCompile(`^[a-z][-a-z0-9]*[a-z0-9](/[a-z][-a-z0-9]*[a-z0-9])?$`)
 
 // ParseSubresources returns every {resource, verb} coordinate the CatalogEntry
-// document in raw declares, from spec.dataPlane.verbs[] and spec.actions[],
-// deduplicated and sorted by (resource, verb).
+// document in raw declares, walking spec.export.resources[] and taking each
+// resource's verbs then its actions, sorted by (resource, verb).
 //
-// Sorted rather than manifest-ordered, deliberately: the two lists are
-// independent and either may grow, so file order would shuffle unrelated
+// Sorted rather than manifest-ordered, deliberately: verbs and actions are
+// independent lists and either may grow, so file order would shuffle unrelated
 // entries into the diff every time an action is added next to a verb.
+//
+// An action's coordinate is its NAME. The version qualifies the action's
+// schema contract and appears in no path, so it never reaches the APIExport.
+//
+// A coordinate declared twice on one resource is refused rather than silently
+// deduplicated: kcp's spec.resources is a list keyed by name, so the second
+// declaration is not a duplicate statement but a lost one, and a verb and an
+// action fighting over one coordinate is a manifest bug either way.
 func ParseSubresources(raw []byte) ([]Subresource, error) {
 	entry, err := parseCatalogEntry(raw)
 	if err != nil {
@@ -111,26 +114,24 @@ func ParseSubresources(raw []byte) ([]Subresource, error) {
 		}
 		sub := Subresource{Resource: resource, Verb: verb, Source: source}
 		if _, ok := seen[sub.Name()]; ok {
-			return nil
+			return fmt.Errorf("%s: the coordinate %s is declared twice; kcp's spec.resources is keyed by name, so one of the two declarations would be lost", source, sub.Name())
 		}
 		seen[sub.Name()] = struct{}{}
 		out = append(out, sub)
 		return nil
 	}
-	if entry.Spec.DataPlane != nil {
-		for _, verb := range entry.Spec.DataPlane.Verbs {
-			if err := add(verb.Resource, verb.Verb, "spec.dataPlane.verbs"); err != nil {
-				return nil, err
+	if entry.Spec.Export != nil {
+		for _, resource := range entry.Spec.Export.Resources {
+			for _, verb := range resource.Verbs {
+				if err := add(resource.Name, verb.Name, "spec.export.resources["+resource.Name+"].verbs"); err != nil {
+					return nil, err
+				}
 			}
-		}
-	}
-	for _, action := range entry.Spec.Actions {
-		// An action id is "<verb>/v<n>". The verb is the coordinate; the
-		// version belongs to the action's schema contract, which the APIExport
-		// says nothing about.
-		verb, _, _ := strings.Cut(action.ID, "/")
-		if err := add(action.BoundResource.Resource, verb, "spec.actions"); err != nil {
-			return nil, err
+			for _, action := range resource.Actions {
+				if err := add(resource.Name, action.Name, "spec.export.resources["+resource.Name+"].actions"); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {

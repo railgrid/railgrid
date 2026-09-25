@@ -9,13 +9,15 @@
 # GENERATED FILE — DO NOT EDIT.
 #
 # Written by provider-sdk/cmd/apiexportgen from two inputs:
-#   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
+#   metadata.name                         <- manifest.yaml spec.export.name
+#   spec.permissionClaims                 <- manifest.yaml spec.requires
 #   spec.resources                        <- kcp apigen (hack/apigen.sh), plus
 #                                            one "<resource>/<verb>" custom
 #                                            subresource per manifest.yaml
-#                                            spec.dataPlane.verbs[] entry and
-#                                            spec.actions[] entry, naming the
-#                                            schema apigen minted for the verb's
+#                                            spec.export.resources[].verbs[] and
+#                                            spec.export.resources[].actions[]
+#                                            entry, naming the schema apigen
+#                                            minted for the verb's
 #                                            "<Verb>Request" kind
 # Regenerate with: make codegen-<provider>-provider. No claim carries an
 # identityHash: kcp resolves a first-party claim per consumer workspace against

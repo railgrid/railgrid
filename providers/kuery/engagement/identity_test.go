@@ -12,38 +12,38 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
 )
 
-// fakeIdentityHub stands in for the hub identity service: it records every
-// request and hands back a numbered token, so a test can tell a refresh from
-// a re-mint and read back the rules that were asked for.
+// catalogEntry is the slice of kuery's CatalogEntry these tests reason about:
+// spec.requires, the ONE list of everything kuery needs that it does not own.
+// It replaced spec.apiExport.permissionClaims and spec.dependencies[].composes,
+// which could disagree with each other, so there is exactly one declaration to
+// assert against.
 type catalogEntry struct {
 	Spec struct {
-		APIExport *struct {
-			PermissionClaims []map[string]any `json:"permissionClaims"`
-		} `json:"apiExport"`
-		Dependencies []struct {
-			Name     string `json:"name"`
-			Composes []struct {
-				Group    string   `json:"group"`
-				Resource string   `json:"resource"`
-				Verbs    []string `json:"verbs"`
-			} `json:"composes"`
-		} `json:"dependencies"`
+		Requires []requirement `json:"requires"`
 	} `json:"spec"`
+}
+
+type requirement struct {
+	Provider  string `json:"provider"`
+	Group     string `json:"group"`
+	Resources []struct {
+		Name  string   `json:"name"`
+		Verbs []string `json:"verbs"`
+	} `json:"resources"`
 }
 
 // Where the list and the watch went: kuery's generated APIExport carries a
 // permission claim on the edges provider's clusters, and that claim carries NO
 // identityHash. kcp resolves an unpinned first-party claim per CONSUMER
 // workspace when a cluster-scoped PermissionClaimPolicy pairs the claiming
-// export's group with the claimed one — which is the property the composition
-// was invented for, and the reason reading edges no longer needs a credential.
+// export's group with the claimed one — which is the property spec.requires was
+// invented for, and the reason reading edges no longer needs a credential.
 //
 // A hash appearing here would silently pin every consumer to ONE edges
 // provider, so its absence is asserted rather than assumed.
@@ -87,118 +87,157 @@ func TestGeneratedAPIExportClaimsTheEdgesClusters(t *testing.T) {
 }
 
 // The manifest and the chart's copy are two renderings of one declaration, and
-// the chart's is the one that reaches production. A composition that drifts
-// between them is a consent prompt that does not match what the hub will mint.
-func TestChartDeclaresTheSameComposition(t *testing.T) {
+// the chart's is the one that reaches production. A requirement that drifts
+// between them is a consent prompt that does not match what the hub will mint,
+// and an export that drifts is a coordinate kcp routes in one deployment and
+// not the other.
+//
+// Both sections are compared as text rather than decoded, because the chart is
+// a Helm template: neither spec.export nor spec.requires carries a Helm
+// expression, so the two blocks must be character-identical once comments,
+// blank lines and the leading indentation are removed. Comparing the whole
+// block (rather than probing for substrings) is what makes an EXTRA entry a
+// failure too.
+func TestChartDeclaresTheSameExportAndRequirements(t *testing.T) {
+	manifest := readFixture(t, "manifest.yaml")
 	chart := readFixture(t, "deploy", "chart", "templates", "catalogentry.yaml")
-	for _, want := range []string{
-		"      dependencies:",
-		"        - name: edges",
-		"          composes:",
-		"            - group: edges.railgrid.ai",
-		"              resource: kubernetesclusters",
-		`              verbs: ["get", "list", "watch"]`,
+
+	for _, section := range []struct {
+		key  string
+		want string
+	}{
+		{
+			key: "export:",
+			want: strings.Join([]string{
+				`export:`,
+				`  name: "kuery.providers.railgrid.ai"`,
+				`  resources:`,
+				`    - name: savedviews`,
+				`      apiVersion: "kuery.providers.railgrid.ai/v1alpha1"`,
+				`      kind: SavedView`,
+				`      verbs:`,
+				`        - name: run`,
+				`          description: "Run the saved view's query and return its result."`,
+				`          readOnly: true`,
+			}, "\n"),
+		},
+		{
+			// Exactly two entries, and no more: the edges requirement the
+			// engagement controller lives on (read-only on the kind, and the
+			// kubernetesclusters/k8s coordinate with NO verbs, because the verb
+			// is the capability and the generated claim spells every verb), plus
+			// the built-in review API the proxied subresource gate runs through
+			// the export virtual workspace. Anything else here — above all
+			// serviceaccounts, secrets, clusterroles or clusterrolebindings — is
+			// a contract violation rather than a design choice
+			// (docs/provider-connectivity-contract.md §"Scoped identities"): a
+			// provider asks the hub for an identity, it does not mint one.
+			key: "requires:",
+			want: strings.Join([]string{
+				`requires:`,
+				`  - provider: edges`,
+				`    group: edges.railgrid.ai`,
+				`    resources:`,
+				`      - name: kubernetesclusters`,
+				`        verbs: [get, list, watch]`,
+				`      - name: kubernetesclusters/k8s`,
+				`  - group: authorization.k8s.io`,
+				`    resources:`,
+				`      - name: subjectaccessreviews`,
+				`        verbs: [create]`,
+			}, "\n"),
+		},
 	} {
-		if !strings.Contains(chart, want) {
-			t.Fatalf("the chart's CatalogEntry is missing %q; it must declare the same composition as manifest.yaml", want)
+		for _, source := range []struct {
+			where string
+			text  string
+		}{{"manifest.yaml", manifest}, {"deploy/chart/templates/catalogentry.yaml", chart}} {
+			got := yamlBlock(t, source.where, source.text, section.key)
+			if got != section.want {
+				t.Errorf("%s spec.%s reads\n%s\n\nwant\n%s", source.where, section.key, got, section.want)
+			}
 		}
 	}
-	// And neither may grow a hand-written DATA claim: the one data claim kuery
-	// carries is DERIVED from the composition above by apiexportgen and lands
-	// in the generated APIExport. The single claim the chart may declare is the
-	// review API the proxied subresource gate runs through the export virtual
-	// workspace (authorization.k8s.io/subjectaccessreviews, create), which kcp
-	// serves there only for an export that claims it. Comments are stripped
-	// first — the ones explaining the claim naturally name the types involved.
-	// The chart is a Helm template, so it is scanned line by line rather than
-	// decoded.
-	// Only the permissionClaims block is inspected: the data-plane verbs name
-	// kuery's own resources and the composition is asserted above.
-	sawReview := false
-	claimsIndent := -1
-	for _, line := range strings.Split(chart, "\n") {
+}
+
+// The declaration decodes, and what it declares is what the engagement
+// controller needs: the edges requirement is a dependency edge (it names the
+// provider), it is on the group edges providers SERVE rather than an APIExport
+// name, and it carries no core-group entry — kuery claims no core type at all.
+func TestManifestRequiresOnlyEdgesAndTheReviewAPI(t *testing.T) {
+	var entry catalogEntry
+	if err := yaml.Unmarshal([]byte(readFixture(t, "manifest.yaml")), &entry); err != nil {
+		t.Fatalf("decode manifest.yaml: %v", err)
+	}
+	if len(entry.Spec.Requires) != 2 {
+		t.Fatalf("manifest.yaml declares %d requirement(s): %+v; want exactly the edges entry and the review API", len(entry.Spec.Requires), entry.Spec.Requires)
+	}
+	edges, review := entry.Spec.Requires[0], entry.Spec.Requires[1]
+
+	if edges.Provider != "edges" {
+		t.Errorf("the %s requirement names provider %q; without it the hub would enable kuery in a workspace with no edges provider", edgesAPIGroup, edges.Provider)
+	}
+	if edges.Group != edgesAPIGroup {
+		t.Errorf("the edges requirement is on group %q, want %q — the group the provider SERVES, not its APIExport name", edges.Group, edgesAPIGroup)
+	}
+	wantResources := map[string][]string{
+		edgesResource:               {"get", "list", "watch"},
+		edgesResource + "/" + "k8s": nil,
+	}
+	if len(edges.Resources) != len(wantResources) {
+		t.Fatalf("the edges requirement claims %+v; want %v", edges.Resources, wantResources)
+	}
+	for _, resource := range edges.Resources {
+		want, ok := wantResources[resource.Name]
+		if !ok {
+			t.Errorf("the edges requirement claims %q, which the engagement controller does not use", resource.Name)
+			continue
+		}
+		if !slices.Equal(resource.Verbs, want) {
+			// A "<resource>/<verb>" coordinate must carry no verbs at all: the
+			// verb IS the capability, and the generated claim spells every one.
+			t.Errorf("the edges requirement claims %s with verbs %v, want %v", resource.Name, resource.Verbs, want)
+		}
+	}
+
+	if review.Provider != "" {
+		t.Errorf("the %s requirement names provider %q; no provider serves a platform builtin and nothing has to be enabled first", review.Group, review.Provider)
+	}
+	if review.Group != "authorization.k8s.io" || len(review.Resources) != 1 ||
+		review.Resources[0].Name != "subjectaccessreviews" || !slices.Equal(review.Resources[0].Verbs, []string{"create"}) {
+		t.Errorf("manifest.yaml declares %+v; want exactly authorization.k8s.io subjectaccessreviews [create], the review API the proxied subresource gate needs", review)
+	}
+}
+
+// yamlBlock returns the block introduced by key, with comment-only lines, blank
+// lines and key's own indentation removed, so a manifest section and the chart's
+// deeper-indented copy of it compare as the same text.
+func yamlBlock(t *testing.T, where, text, key string) string {
+	t.Helper()
+	var out []string
+	indent := -1
+	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
+		at := len(line) - len(strings.TrimLeft(line, " "))
+		if indent < 0 {
+			if trimmed == key {
+				indent = at
+				out = append(out, key)
+			}
+			continue
+		}
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		indent := len(line) - len(strings.TrimLeft(line, " "))
-		switch {
-		case trimmed == "permissionClaims:":
-			claimsIndent = indent
-			continue
-		case claimsIndent >= 0 && indent <= claimsIndent:
-			claimsIndent = -1
+		if at <= indent {
+			break
 		}
-		if claimsIndent < 0 {
-			continue
-		}
-		if resource, ok := strings.CutPrefix(strings.TrimPrefix(trimmed, "- "), "resource: "); ok {
-			if resource = strings.Trim(resource, `"`); resource != "subjectaccessreviews" {
-				t.Fatalf("the chart's CatalogEntry hand-writes a claim on %q; kuery's only hand-written claim is the subjectaccessreviews review API", resource)
-			}
-			sawReview = true
-		}
+		out = append(out, line[indent:])
 	}
-	if !sawReview {
-		t.Fatal("the chart's CatalogEntry lacks the subjectaccessreviews claim the subresource gate needs")
+	if indent < 0 {
+		t.Fatalf("%s declares no spec.%s", where, key)
 	}
-}
-
-// assertOnlyTheReviewClaim fails unless claims is exactly the one claim a
-// provider with custom subresources must hold: create on
-// authorization.k8s.io/subjectaccessreviews. Anything else — above all a claim
-// on serviceaccounts, secrets, clusterroles or clusterrolebindings — is a
-// contract violation for kuery.
-func assertOnlyTheReviewClaim(t *testing.T, where string, claims []map[string]any) {
-	t.Helper()
-	if len(claims) != 1 {
-		t.Fatalf("%s hand-writes claims %v; kuery's only hand-written claim is the subjectaccessreviews review API, its data claim is derived from its composition", where, claims)
-	}
-	c := claims[0]
-	verbs, _ := c["verbs"].([]any)
-	if c["group"] != "authorization.k8s.io" || c["resource"] != "subjectaccessreviews" || len(verbs) != 1 || verbs[0] != "create" || c["tenantScoped"] != true {
-		t.Fatalf("%s hand-writes claim %v; want exactly {authorization.k8s.io subjectaccessreviews [create] tenantScoped}", where, c)
-	}
-}
-
-// The manifest hand-writes exactly one claim, and it is not about data: the
-// review API the proxied subresource gate runs through the export virtual
-// workspace. The edges claim in the generated APIExport is derived from the
-// composition (see the test above); what must never appear here is a claim on
-// serviceaccounts, secrets, clusterroles or clusterrolebindings, which is a
-// contract violation rather than a design choice
-// (docs/provider-connectivity-contract.md §"Scoped identities") — a provider
-// asks the hub for an identity, it does not mint one.
-func TestManifestClaimsOnlyTheReviewAPI(t *testing.T) {
-	var entry catalogEntry
-	if err := yaml.Unmarshal([]byte(readFixture(t, "manifest.yaml")), &entry); err != nil {
-		t.Fatalf("decode manifest.yaml: %v", err)
-	}
-	if entry.Spec.APIExport == nil {
-		t.Fatal("manifest.yaml declares no apiExport")
-	}
-	assertOnlyTheReviewClaim(t, "manifest.yaml", entry.Spec.APIExport.PermissionClaims)
-}
-
-func declaredComposition(t *testing.T) map[string]string {
-	t.Helper()
-	var entry catalogEntry
-	if err := yaml.Unmarshal([]byte(readFixture(t, "manifest.yaml")), &entry); err != nil {
-		t.Fatalf("decode manifest.yaml: %v", err)
-	}
-	out := map[string]string{}
-	for _, dependency := range entry.Spec.Dependencies {
-		for _, composed := range dependency.Composes {
-			if composed.Group == "" {
-				t.Fatalf("dependency %q composes a core-group resource: %+v", dependency.Name, composed)
-			}
-			out[composed.Group+"/"+composed.Resource] = normalizeVerbs(composed.Verbs)
-		}
-	}
-	if len(out) == 0 {
-		t.Fatal("manifest.yaml declares no composition; the engagement identity would be refused in every workspace")
-	}
-	return out
+	return strings.Join(out, "\n")
 }
 
 func readFixture(t *testing.T, parts ...string) string {
@@ -208,16 +247,4 @@ func readFixture(t *testing.T, parts ...string) string {
 		t.Fatalf("read %v: %v", parts, err)
 	}
 	return string(raw)
-}
-
-func normalizeVerbs(verbs []string) string {
-	copied := append([]string(nil), verbs...)
-	sort.Strings(copied)
-	out := copied[:0]
-	for i, verb := range copied {
-		if i == 0 || verb != copied[i-1] {
-			out = append(out, verb)
-		}
-	}
-	return strings.Join(out, ",")
 }

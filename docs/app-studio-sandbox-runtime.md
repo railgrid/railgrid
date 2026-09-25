@@ -70,8 +70,8 @@ the instance resource (`spec.instanceCRD`) plus its development components.
 Each workspace file is routed by the component's `workspacePath`; a component
 sync is a call to the infrastructure provider's declared `sync` verb — a kcp
 custom subresource on `instances` — made by App Studio **as itself** through
-its own APIExport virtual workspace, on the claim its `composes[]` declaration
-generates (`Callers.ExportVerbURL`):
+its own APIExport virtual workspace, on the claim its `spec.requires`
+declaration generates (`Callers.ExportVerbURL`):
 
 ```text
 POST {vw}/clusters/{workspace}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/sync

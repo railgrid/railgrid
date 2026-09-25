@@ -50,15 +50,18 @@ export { acceptedHub, canAcceptHub, hubLabel, onConfirm, toggleHub, emitted }
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
 }
 
+// CatalogEntry.spec.hub.access, as the catalog publishes it.
+const hubAccess = [
+  { capability: 'memberships.read', scope: 'org', reason: 'r1' },
+  { capability: 'memberships.read', scope: 'workspace', reason: 'r2' },
+  { capability: 'memberships.invite', scope: 'org', maxRole: 'member', allowInvite: true, reason: 'r3' },
+]
+
 const provider = {
   name: 'app-studio',
   displayName: 'App Studio',
-  permissionClaims: [],
-  hubAccess: [
-    { capability: 'memberships.read', scope: 'org', reason: 'r1' },
-    { capability: 'memberships.read', scope: 'workspace', reason: 'r2' },
-    { capability: 'memberships.invite', scope: 'org', maxRole: 'member', allowInvite: true, reason: 'r3' },
-  ],
+  requires: [],
+  hub: { access: hubAccess },
 }
 
 test('an org admin accepts every requested capability by default', async () => {
@@ -76,17 +79,17 @@ test('an org admin accepts every requested capability by default', async () => {
 
 test('a workspace admin can only accept workspace-scoped capabilities', async () => {
   const d = await loadDialog({ provider, orgRole: 'member', workspaceRole: 'admin' })
-  assert.equal(d.canAcceptHub(provider.hubAccess[0]), false)
-  assert.equal(d.canAcceptHub(provider.hubAccess[1]), true)
+  assert.equal(d.canAcceptHub(hubAccess[0]), false)
+  assert.equal(d.canAcceptHub(hubAccess[1]), true)
   // Toggling an org-scoped capability is a no-op for them.
-  d.toggleHub(provider.hubAccess[2])
+  d.toggleHub(hubAccess[2])
   d.onConfirm()
   assert.deepEqual(d.emitted.at(-1)[2], [{ capability: 'memberships.read', scope: 'workspace' }])
 })
 
 test('unchecking a capability leaves it out', async () => {
   const d = await loadDialog({ provider, orgRole: 'admin', workspaceRole: 'admin' })
-  d.toggleHub(provider.hubAccess[2])
+  d.toggleHub(hubAccess[2])
   d.onConfirm()
   assert.deepEqual(d.emitted.at(-1)[2].map((h) => h.capability + '/' + h.scope), ['memberships.read/org', 'memberships.read/workspace'])
 })
@@ -99,6 +102,6 @@ test('a member accepts nothing but can still enable', async () => {
 
 test('capabilities read as what the provider may do', async () => {
   const d = await loadDialog({ provider, orgRole: 'admin' })
-  assert.match(d.hubLabel(provider.hubAccess[2]), /inviting them by email/)
-  assert.match(d.hubLabel({ ...provider.hubAccess[2], allowInvite: false }), /existing users/)
+  assert.match(d.hubLabel(hubAccess[2]), /inviting them by email/)
+  assert.match(d.hubLabel({ ...hubAccess[2], allowInvite: false }), /existing users/)
 })

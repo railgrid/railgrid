@@ -138,7 +138,8 @@ spec:
 
   # Whether instances of this template are reachable from outside the
   # platform. A statement ABOUT the graph, not a switch that changes it:
-  #   internal  no hostname, ever. Reached through spec.dataPlane verbs
+  #   internal  no hostname, ever. Reached through the verbs the CatalogEntry
+  #             declares on `instances` (spec.export.resources[].verbs)
   #             (authorized per caller) or, like a database, pod-to-pod on
   #             the runtime cluster. Callers must not wait for status.url.
   #   optional  the graph's exposure resources sit behind an includeWhen,

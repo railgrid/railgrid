@@ -39,7 +39,7 @@ type BootstrapOptions struct {
 	// CatalogEntryFile, when set, self-registers the CatalogEntry from this path.
 	CatalogEntryFile string
 	// DataPlaneURL is where kcp reverse-proxies an instances/<verb> request to.
-	// Empty means spec.backend.url of CatalogEntryFile, which is right whenever
+	// Empty means spec.serving.backend.url of CatalogEntryFile, which is right whenever
 	// the chart runs the operator.
 	DataPlaneURL string
 	// SkipSeedTemplates leaves the catalog empty (GitOps-managed clusters).

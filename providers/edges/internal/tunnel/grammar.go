@@ -50,12 +50,14 @@ const (
 )
 
 // The verbs this provider serves, and the only ones it will gate. This table
-// is the code half of spec.dataPlane.verbs in manifest.yaml: a verb the
-// manifest declares but this table omits is served by nobody, and a verb here
-// that the manifest omits is never reached (serve's adapter refuses a
+// is the code half of spec.export.resources[].verbs in manifest.yaml: a verb
+// the manifest declares but this table omits is served by nobody, and a verb
+// here that the manifest omits is never reached (serve's adapter refuses a
 // coordinate the declaration lacks) and cannot have a cross-provider
 // capability minted for it (docs/provider-connectivity-contract.md §"Scoped
-// identities", clause C). Keep the two in lockstep.
+// identities", clause C). The two are pinned to each other by
+// TestDeclaredDataPlaneVerbsMatchWhatIsServed, which reads the manifest and
+// compares it with DataPlaneVerbs() below, so they cannot drift silently.
 const (
 	// VerbK8s proxies the edge's Kubernetes API through its tunnel.
 	VerbK8s = "k8s"
@@ -116,7 +118,8 @@ func verbServed(resource, verb string) bool {
 
 // DataPlaneVerbs returns the served {resource}/{verb} coordinates, sorted by
 // neither — callers that need an order impose one. It exists so a test can
-// assert the manifest and this table agree.
+// assert that this table and the manifest's spec.export.resources[].verbs
+// declare the same set.
 func DataPlaneVerbs() map[string][]string {
 	out := make(map[string][]string, len(dataPlaneVerbs))
 	for resource, verbs := range dataPlaneVerbs {

@@ -37,7 +37,7 @@ import (
 // portal pins each bundle with Subresource Integrity so the browser refuses a
 // /main.js that differs from the one the hub hashed here — the pin is computed
 // from the same source the UI proxy serves, so a bundle swapped behind
-// spec.ui.url after registration cannot execute until the hub has re-admitted
+// spec.serving.ui.url after registration cannot execute until the hub has re-admitted
 // it by re-hashing.
 
 const (
@@ -251,7 +251,7 @@ type uiBundleRead struct {
 
 // hashProviderMainJS reads the bundle exactly as the UI proxy would serve it —
 // from the embedded assets of a first-party provider, or from
-// <spec.ui.url>/main.js — and returns its SRI metadata.
+// <spec.serving.ui.url>/main.js — and returns its SRI metadata.
 func hashProviderMainJS(ctx context.Context, client httpDoer, prov Provider) (string, error) {
 	read, err := readProviderMainJS(ctx, client, prov, "")
 	if err != nil {

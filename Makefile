@@ -219,7 +219,8 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 		   providers/edges/deploy/chart/files/schemas/$$r.edges.railgrid.ai.yaml; \
 	done
 	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
-	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# supplies metadata.name (spec.export.name) and spec.permissionClaims (from
+	@# spec.requires). The group-named file
 	@# apigen leaves behind is deleted by the generator (it is not the export's
 	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
 	cd provider-sdk && go run ./cmd/apiexportgen \
@@ -393,7 +394,8 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen 
 		   providers/infrastructure/deploy/chart/files/schemas/$$r.infrastructure.railgrid.ai.yaml; \
 	done
 	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
-	@# supplies metadata.name and spec.permissionClaims. --schemas-dir pins the
+	@# supplies metadata.name (spec.export.name) and spec.permissionClaims (from
+	@# spec.requires). --schemas-dir pins the
 	@# resource list to the schemas the chart ships (the host-cluster
 	@# InfrastructureProvider CRD is not one of them). At init the provider
 	@# re-points the templates entry at CachedResource virtual storage; the
@@ -422,7 +424,8 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 		   providers/code/deploy/chart/files/schemas/$$r.code.railgrid.ai.yaml; \
 	done
 	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
-	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# supplies metadata.name (spec.export.name) and spec.permissionClaims (from
+	@# spec.requires). The group-named file
 	@# apigen leaves behind is deleted by the generator (it is not the export's
 	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
 	cd provider-sdk && go run ./cmd/apiexportgen \
@@ -445,7 +448,8 @@ codegen-quickstart-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 		   providers/quickstart/deploy/chart/files/schemas/$$r.quickstart.providers.railgrid.ai.yaml; \
 	done
 	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
-	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# supplies metadata.name (spec.export.name) and spec.permissionClaims (from
+	@# spec.requires). The group-named file
 	@# apigen leaves behind is deleted by the generator (it is not the export's
 	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
 	cd provider-sdk && go run ./cmd/apiexportgen \
@@ -468,7 +472,8 @@ codegen-kuery-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the k
 		   providers/kuery/deploy/chart/files/schemas/$$r.kuery.providers.railgrid.ai.yaml; \
 	done
 	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
-	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# supplies metadata.name (spec.export.name) and spec.permissionClaims (from
+	@# spec.requires). The group-named file
 	@# apigen leaves behind is deleted by the generator (it is not the export's
 	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
 	cd provider-sdk && go run ./cmd/apiexportgen \
@@ -491,7 +496,8 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.railgrid.ai.yaml; \
 	done
 	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
-	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# supplies metadata.name (spec.export.name) and spec.permissionClaims (from
+	@# spec.requires). The group-named file
 	@# apigen leaves behind is deleted by the generator (it is not the export's
 	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
 	cd provider-sdk && go run ./cmd/apiexportgen \
@@ -516,7 +522,8 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 	cp providers/app-studio/config/kcp/apiresourceschema-studios.ai.railgrid.ai.yaml \
 	   providers/app-studio/deploy/chart/files/schemas/studios.ai.railgrid.ai.yaml
 	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
-	@# supplies metadata.name and spec.permissionClaims. The group-named file
+	@# supplies metadata.name (spec.export.name) and spec.permissionClaims (from
+	@# spec.requires). The group-named file
 	@# apigen leaves behind is deleted by the generator (it is not the export's
 	@# name). --schemas-dir pins the resource list to the schemas the chart ships.
 	cd provider-sdk && go run ./cmd/apiexportgen \
@@ -646,9 +653,10 @@ verify-portalkit: ## Verify vendored portalkit copies are in sync with the canon
 	@$(MAKE) verify-agentkit
 
 # EXTERNAL_PROVIDERS_DIR (the same variable `make tilt` takes) is passed to the
-# permission-claim-policy generator so an out-of-tree provider's composes edges
-# are checked too. Without it CI still checks every in-tree edge exactly and
-# leaves the out-of-tree rules alone -- see the generator's header.
+# permission-claim-policy generator so an out-of-tree provider's cross-provider
+# requirements are checked too. Without it CI still checks every in-tree
+# requirement exactly and leaves the out-of-tree rules alone -- see the
+# generator's header.
 CLAIM_POLICY_ARGS = $(if $(EXTERNAL_PROVIDERS_DIR),--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)",)
 
 verify-provider-contract: ## Verify provider manifests, claims and route classes match the provider contract

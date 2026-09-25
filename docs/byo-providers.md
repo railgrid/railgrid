@@ -207,7 +207,7 @@ address, self-hosted providers will install and then sit idle.
 The flow above covers a provider an org wrote itself. The more common case is an
 org wanting to run **the platform's own provider** in its cluster — its own
 edges, its own Application Templates. A provider declares how it is deployed in
-`CatalogEntry.spec.selfHosting`, and the hub renders per-organization install
+`CatalogEntry.spec.serving.selfHosting`, and the hub renders per-organization install
 instructions from it:
 
 ```yaml
@@ -247,7 +247,7 @@ For the full reference, the chart **embeds its own README**:
 valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
 ```
 
-which lands in `spec.selfHosting.valuesDoc` and renders inline in the portal.
+which lands in `spec.serving.selfHosting.valuesDoc` and renders inline in the portal.
 Embedding rather than linking buys three things:
 
 - it works in an air-gapped or private-repo install;
@@ -486,7 +486,7 @@ What an Org gets is deliberately narrow.
   below.
 - **Hub REST access needs explicit consent.** The delegated token reaches no
   hub REST route except the capabilities the provider declares in
-  `spec.hubAccess` (today: reading member lists, adding members) and an org
+  `spec.hub.access` (today: reading member lists, adding members) and an org
   admin accepted in the Enable dialog for that workspace. Unlike platform
   providers, an org-owned provider never gets these by default. The grant is
   keyed by the provider's owner org as well as its name, so a self-hosted copy

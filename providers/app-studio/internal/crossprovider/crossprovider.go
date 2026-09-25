@@ -9,13 +9,13 @@ You may obtain a copy of the License at
 */
 
 // Package crossprovider names App Studio's dependencies: the APIExports they
-// serve, the API groups and kinds App Studio composes, and the one error
-// distinction the teardown paths turn on.
+// serve, the API groups and kinds App Studio requires from them, and the one
+// error distinction the teardown paths turn on.
 //
 // A cross-provider call no longer needs to know which PROVIDER serves a
 // dependency in a workspace. App Studio reaches a dependency's kinds and verbs
 // through its OWN APIExport virtual workspace, under the claims declared in
-// manifest.yaml spec.dependencies[].composes[]; kcp resolves each claim per
+// manifest.yaml spec.requires[].resources[]; kcp resolves each claim per
 // consumer workspace against whichever copy of the dependency that workspace
 // bound. The /services/providers/{name}/ segment that once had to be read off
 // the tenant's APIBinding is gone with the grammar that carried it.
@@ -31,8 +31,8 @@ import (
 
 const (
 	// InfrastructureAPIExport is the APIExport the infrastructure provider
-	// serves. App Studio's dependency on it is declared in manifest.yaml
-	// (spec.dependencies); this is the name of the export a workspace binds
+	// serves. App Studio's dependency on it is the manifest.yaml spec.requires
+	// entry naming `provider: infrastructure`; this is the name of the export a workspace binds
 	// when it enables that dependency, whichever copy of the provider it is.
 	InfrastructureAPIExport = "infrastructure.providers.railgrid.ai"
 	// CodeAPIExport is the APIExport the code provider serves.

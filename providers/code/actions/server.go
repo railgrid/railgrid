@@ -49,10 +49,11 @@ import (
 
 // StageSnapshot is the one served verb that is not in the CatalogEntry: its
 // body carries a base64 git bundle far past the 1 MiB ceiling
-// CatalogEntry.spec.actions[].limits.maxInputBytes allows
+// an action's limits.maxInputBytes allows
 // (apis/providers/v1alpha1/actions.go). It is documented as the single
 // catalogue exception in docs/provider-actions.md, "Uncatalogued large-upload
-// verbs", declared as a data-plane verb so its coordinate stays grantable, and
+// verbs", declared as a plain verb on repositories so its coordinate stays
+// grantable, and
 // gated exactly like every catalogued action.
 const StageSnapshot = "stage-snapshot"
 
@@ -72,7 +73,8 @@ const MaxOutputBytes = 512 << 10
 const actionTimeout = 180 * time.Second
 
 // ContractVersion is the contract version every action here is declared at
-// (spec.actions[].id ends in "/v1"). The path does not carry it; serve's
+// (every spec.export.resources[].actions[] entry declares version: v1, and an
+// action's id is that name/version pair). The path does not carry it; serve's
 // adapter restores it from the declaration onto the route.
 const ContractVersion = "v1"
 

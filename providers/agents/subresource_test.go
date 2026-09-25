@@ -53,7 +53,7 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 			continue
 		}
 		if route.Action {
-			t.Errorf("%s came out as an action; this provider declares no spec.actions", coordinate)
+			t.Errorf("%s came out as an action; this provider declares no actions under spec.export.resources[].actions[]", coordinate)
 		}
 	}
 	// status and scale belong to the object's own shape; the helper refuses

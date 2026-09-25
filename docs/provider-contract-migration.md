@@ -26,6 +26,28 @@ The contract itself is in [providers.md](./providers.md) and
 > (the embedded shard uses one hour) for streaming verbs. See
 > [provider-connectivity-contract.md](./provider-connectivity-contract.md)
 > §"Known divergences" item 2.
+>
+> **Also superseded (2026-09-25): the CatalogEntry's own shape.** `CatalogEntrySpec`
+> is now four sections — `export` (the APIExport's `name` plus `resources[]`,
+> each `{name, apiVersion, kind}` carrying the `verbs[]` and `actions[]` served
+> **on it**), `requires` (ONE list keyed by API group, replacing both
+> `spec.apiExport.permissionClaims` and `spec.dependencies[].composes[]`),
+> `serving` (`ui`/`backend`/`selfHosting`) and `hub`
+> (`access`/`assistantSkills`). The field paths named below are the old ones and
+> are kept as written; the full mapping is in
+> [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+> §"Status update 2026-09-25 — the CatalogEntry contract is four sections".
+>
+> **One extra operator step.** The change is in place on `v1alpha1` with no
+> conversion and no dual-read, so an old-shape CatalogEntry does not validate
+> and its provider drops out of the hub registry. **Every provider must
+> re-apply its CatalogEntry** — `helm upgrade` for a chart-installed provider,
+> a re-apply of `manifest.yaml` for the `install-provider-<name>` path. Nothing
+> rewrites stored objects and `schemaDigest` values are unchanged, so this is a
+> redeploy rather than a data migration. Tenant `APIBinding`s are unaffected:
+> `spec.requires` generates the same claims the old two lists did, so the
+> re-accept step in §4 below is still needed only where a provider actually
+> widened or narrowed what it requires.
 
 ---
 

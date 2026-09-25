@@ -73,7 +73,7 @@ const registryPullSecretOwner = "infrastructure"
 // codeRegistryTokenAction is the Code provider action that issues an
 // image-pull credential for a Connection's registry.
 // It is a kcp custom subresource on the Code export, connections/mint-registry-token,
-// which App Studio claims (manifest.yaml composes[]) and calls through its own
+// which App Studio requires (manifest.yaml spec.requires) and calls through its own
 // export virtual workspace as itself; the action's contract version is not in
 // the path (the Code provider restores it from its declaration).
 const codeRegistryTokenAction = "mint-registry-token"

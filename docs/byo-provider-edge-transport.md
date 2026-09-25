@@ -26,7 +26,7 @@ objects through its APIExport virtual workspace — is **outbound**: the provide
 dials the hub. A self-hosted provider behind NAT does that fine.
 
 The data half is not. `/services/providers/{name}/**` is the hub reverse-proxying
-to `CatalogEntry.spec.backend.url`, and the hub **dials out** to that URL
+to `CatalogEntry.spec.serving.backend.url`, and the hub **dials out** to that URL
 ([pkg/hub/providers/proxy.go](../pkg/hub/providers/proxy.go)). Every provider in
 the tree registers a `.svc.cluster.local` name, which resolves only inside the
 platform cluster. [platform-internal-networking.md](./platform-internal-networking.md)
@@ -83,7 +83,7 @@ upgrade is handled.
 
 ### E-1 — An org-owned provider backend is reached over an edge, never over a URL
 
-`CatalogEntry.spec.backend.url` stays what it is for platform providers. For an
+`CatalogEntry.spec.serving.backend.url` stays what it is for platform providers. For an
 org-owned provider the hub **ignores** it: whatever the chart wrote there is a
 name in the tenant's cluster, meaningful to the tenant and not to the hub.
 Routing comes from the edge binding the hub recorded at registration, not from

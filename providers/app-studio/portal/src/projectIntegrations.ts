@@ -8,9 +8,39 @@ import type {
 
 const schemaDigestPattern = /^sha256:[a-f0-9]{64}$/
 
-export interface ReadyProviderAction {
-  provider: ProviderItem
+// BoundProviderAction is one action paired with the exported resource it hangs
+// off. The catalog publishes the coordinate on the parent resource entry only,
+// so everything that needs an action's kind walks these instead of reading the
+// action. Mirrors providerCatalogBoundAction on the gateway side.
+export interface BoundProviderAction {
+  apiVersion: string
+  kind: string
+  resource: string
   action: ProviderAction
+}
+
+export interface ReadyProviderAction extends BoundProviderAction {
+  provider: ProviderItem
+}
+
+/**
+ * Flatten one catalog entry's export into every action it publishes, in
+ * declaration order, each paired with its parent's coordinate. A resource
+ * missing any of that triple is skipped: the catalog is external data, and an
+ * action nothing can be addressed on is not a grantable action.
+ */
+export function providerBoundActions(provider: ProviderItem): BoundProviderAction[] {
+  const out: BoundProviderAction[] = []
+  for (const resource of provider.export?.resources ?? []) {
+    const apiVersion = typeof resource.apiVersion === 'string' ? resource.apiVersion.trim() : ''
+    const kind = typeof resource.kind === 'string' ? resource.kind.trim() : ''
+    const name = typeof resource.name === 'string' ? resource.name.trim() : ''
+    if (!apiVersion || !kind || !name) continue
+    for (const action of resource.actions ?? []) {
+      out.push({ apiVersion, kind, resource: name, action })
+    }
+  }
+  return out
 }
 
 export interface ProjectIntegrationCreatePayload {
@@ -60,9 +90,9 @@ export function projectIntegrationsRequestIsCurrent(
 export function readyProviderActions(providers: ProviderItem[]): ReadyProviderAction[] {
   return providers
     .filter((provider) => provider.ready)
-    .flatMap((provider) => (provider.actions ?? [])
-      .filter((action) => !action.deprecation?.deprecated && schemaDigestPattern.test(action.schemaDigest))
-      .map((action) => ({ provider, action })))
+    .flatMap((provider) => providerBoundActions(provider)
+      .filter(({ action }) => !action.deprecation?.deprecated && schemaDigestPattern.test(action.schemaDigest))
+      .map((bound) => ({ provider, ...bound })))
     .sort((left, right) => {
       const providerOrder = (left.provider.displayName || left.provider.name).localeCompare(right.provider.displayName || right.provider.name)
       if (providerOrder !== 0) return providerOrder
@@ -78,11 +108,12 @@ export function splitProviderActionID(id: string): { name: string; version: stri
 
 export function buildProjectIntegrationCreatePayload(
   provider: ProviderItem,
-  action: ProviderAction,
+  bound: BoundProviderAction,
   alias: string,
   resourceName: string,
   consentAccepted: boolean,
 ): ProjectIntegrationCreatePayload | null {
+  const action = bound.action
   const actionID = splitProviderActionID(action.id)
   const normalizedAlias = alias.trim()
   const normalizedResourceName = resourceName.trim()
@@ -92,11 +123,13 @@ export function buildProjectIntegrationCreatePayload(
     alias: normalizedAlias,
     provider: provider.name,
     kind: 'providerReference',
+    // The grant names the kind the catalog publishes on the action's parent
+    // resource, never anything the caller typed.
     resourceRef: {
       name: normalizedResourceName,
-      apiVersion: action.boundResource.apiVersion,
-      kind: action.boundResource.kind,
-      resource: action.boundResource.resource,
+      apiVersion: bound.apiVersion,
+      kind: bound.kind,
+      resource: bound.resource,
     },
     allowedActions: [{ name: actionID.name, version: actionID.version, schemaDigest: action.schemaDigest }],
     consentAccepted,

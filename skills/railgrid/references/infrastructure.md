@@ -374,7 +374,7 @@ digest pinning, naming, sharing, and the sandbox loop.
 ## 11. Self-hosting
 
 The chart supports `operator.enabled=true` to run the operator and runtime in
-your own cluster (`selfHosting` block in the CatalogEntry); required value
+your own cluster (`spec.serving.selfHosting` block in the CatalogEntry); required value
 `operator.application.baseDomain`. The kcp shard's virtual workspace URL must
 be reachable from that cluster or Instances never reconcile. Edge clusters
 are **not** targets for this provider; edge placement is the edges

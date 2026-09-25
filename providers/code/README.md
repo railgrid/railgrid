@@ -150,8 +150,9 @@ provider's own export virtual workspace for a claimed verb:
 /clusters/{cluster}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{action}
 ```
 
-The contract version is not in the path; the CatalogEntry pins it
-(`{action}/v1`). Every input includes `repository` (canonical owner/name),
+The contract version is not in the path; the CatalogEntry pins it as the
+action's own `version` field, and the action's id is the derived
+`{name}/{version}`. Every input includes `repository` (canonical owner/name),
 `repositoryUID`, and `connectionUID`. kcp authorizes `create` on the
 `repositories/<action>` subresource with ordinary RBAC before forwarding, and
 Code then asks a SubjectAccessReview whether the stamped caller may `get` that
@@ -160,7 +161,7 @@ provider through its own export virtual workspace, pins the input's UIDs and
 owner/name against what it read, and rejects replacement or redirection before
 opening any credential Secret. Tenant callers need no Secret access, and a
 consumer provider (App Studio) reaches these verbs as a foreign provider whose
-accepted `composes` claim is the authorization. Responses use the shared Provider Action
+accepted `requires` claim on `code.railgrid.ai` is the authorization. Responses use the shared Provider Action
 envelope: `requestID`, provider/action identity, `resourceRef`, and exactly one
 of `result` or `error`. `X-Request-ID` supplies the correlation ID.
 The CatalogEntry advertises the fifteen bounded
@@ -216,8 +217,10 @@ inline bundle. Source trees use the second: `stage-commit-bundle`, gated on
 `repositories/stage-commit-bundle`, which stores a file list (48 MiB decoded,
 500 files) and returns the `bundleRef`/`bundleDigest` pair `commit` names.
 These two are the provider's only **uncatalogued** verbs: a body that
-large cannot be declared under `CatalogEntry.spec.actions[].limits`, which caps
-`maxInputBytes` at 1 MiB. The exception and the four conditions a verb must
+large cannot be declared under a catalogued action's `limits`, which caps
+`maxInputBytes` at 1 MiB, so they are declared as plain `verbs` on
+`repositories` instead (`spec.export.resources[]`) — which keeps their
+coordinate grantable without pretending a schema exists. The exception and the four conditions a verb must
 meet to claim it are in
 [docs/provider-actions.md](../../docs/provider-actions.md) §"Uncatalogued
 large-upload verbs"; the handle's scoping, TTL and quotas, and why the store is
@@ -383,12 +386,13 @@ Notes:
   a self-signed cert and no static heartbeat token. For a real heartbeat token,
   create a Secret and set `hub.tokenSecretRef.name`/`.key` instead.
 - `catalogEntry.enabled=false` means the chart does **not** manage the
-  CatalogEntry — the hub uses whatever `backend.url` the existing CatalogEntry
-  declares. **Make sure that `backend.url` points at this deployment's Service**
+  CatalogEntry — the hub uses whatever `spec.serving.backend.url` the existing
+  CatalogEntry declares. **Make sure that it points at this deployment's Service**
   (`http://code-railgrid-code-provider.<namespace>.svc.cluster.local:8083`); a stale
   namespace there makes the hub→provider proxy return **502** (and the OAuth
   button stays hidden). Leaving `catalogEntry.enabled=true` lets the init
-  container keep `backend.url` in sync with the release namespace automatically.
+  container keep `spec.serving.backend.url` in sync with the release namespace
+  automatically.
 - After install, verify the OAuth probe returns `{"enabled":true}`:
   ```sh
   curl -s https://railgrid.example.com/services/providers/code/oauth/github/config

@@ -38,7 +38,7 @@ import (
 )
 
 // NewUIProxy returns an http.Handler serving /ui/providers/{name}/* by reverse
-// proxying to the provider's spec.ui.url. The handler is mounted in the hub
+// proxying to the provider's spec.serving.ui.url. The handler is mounted in the hub
 // router WITHOUT http.StripPrefix; this proxy strips the /ui/providers/{name}
 // segment itself so it can inject X-Railgrid-Base-Path before forwarding.
 //
@@ -90,7 +90,7 @@ func (f TenantResolverFunc) Resolve(r *http.Request) (string, string, error) {
 }
 
 // NewBackendProxy returns an http.Handler serving /services/providers/{name}/*
-// by reverse proxying to the provider's spec.backend.url, for the route
+// by reverse proxying to the provider's spec.serving.backend.url, for the route
 // classes that are not kcp API traffic: MCP, browser OAuth, signed webhooks,
 // the agent tunnel and health. Data-plane verbs and actions are not routes
 // here at all — they are kcp custom subresources on the provider's APIExport,

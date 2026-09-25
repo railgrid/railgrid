@@ -37,7 +37,6 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
-	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // EnableProviderRequest is the body of POST .../providers/{name}/enable.
@@ -47,16 +46,16 @@ import (
 // and surfaces the mismatch to the user.
 type EnableProviderRequest struct {
 	AcceptedClaims []AcceptedClaim `json:"acceptedClaims"`
-	// AcceptedHubAccess lists the hub capabilities (CatalogEntry.spec.hubAccess)
+	// AcceptedHubAccess lists the hub capabilities (CatalogEntry.spec.hub.access)
 	// the user accepted. Each must be declared by the provider. Accepting an
 	// org-scoped capability requires an org admin; a workspace-scoped one, an
 	// admin of this workspace or of the org. Omitted capabilities are not
 	// granted, and the decision is recorded either way.
 	AcceptedHubAccess []AcceptedHubAccess `json:"acceptedHubAccess,omitempty"`
-	// AcceptedCompositions lists the compositions
-	// (CatalogEntry.spec.dependencies[].composes) the user accepted: kinds of
-	// another provider this provider's reconcilers will create and manage in
-	// this workspace. Each must be declared, on the dependency it names.
+	// AcceptedCompositions lists the compositions — the entries of
+	// CatalogEntry.spec.requires that NAME a provider — the user accepted: kinds
+	// of another provider this provider's reconcilers will create and manage in
+	// this workspace. Each must be declared, on the provider it names.
 	// Accepting is a workspace decision, so a workspace or org admin makes
 	// it. Omitted compositions are declined, and the decision is recorded
 	// either way — the same rules hub access follows, in the same Grant.
@@ -147,7 +146,7 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "provider "+providerName+" declares no APIExport to bind")
 		return
 	}
-	missing, err := h.missingProviderDependencies(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, prov.Dependencies)
+	missing, err := h.missingProviderDependencies(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providersv1alpha1.Dependencies(prov.Requires))
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "checking provider dependencies: "+err.Error())
 		return
@@ -184,25 +183,11 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	// declared on the dependency it names, and the caller must be entitled to
 	// decide it. Checked before anything is created so a refused acceptance
 	// leaves the workspace untouched.
-	declaredCompositions := hubaccess.DeclaredCompositions(prov.Dependencies)
+	declaredCompositions := hubaccess.DeclaredCompositions(prov.Requires)
 	acceptedCompositions, status, msg := resolveAcceptedCompositions(declaredCompositions, req.AcceptedCompositions, tc.Role, tc.OrgRole)
 	if status != 0 {
 		writeStatus(w, status, http.StatusText(status), msg)
 		return
-	}
-
-	claims := make([]kcp.ProviderClaim, 0, len(prov.PermissionClaims)+len(declaredCompositions))
-	for _, declared := range prov.PermissionClaims {
-		claims = append(claims, kcp.ProviderClaim{
-			Group:    declared.Group,
-			Resource: declared.Resource,
-			Verbs:    declared.Verbs,
-			Accepted: accepted[acceptedKey(declared.Group, declared.Resource)],
-			// The scope travels with the claim: what the tenant accepts is the
-			// narrowed claim the provider declared, not a blanket one the hub
-			// would then have to walk back.
-			MatchLabels: declared.MatchLabels,
-		})
 	}
 
 	// Record the hub-access decisions this caller is entitled to make: each
@@ -213,7 +198,7 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	//
 	// The compositions are settled here, BEFORE the binding is written, because
 	// they are permission claims on the provider's APIExport
-	// (provider-sdk/cmd/apiexportgen derives one per composes[] entry) and the
+	// (provider-sdk/cmd/apiexportgen derives one per requires[] entry) and the
 	// tenant's decision has to reach the APIBinding: an accepted composition is
 	// an Accepted claim, a declined or undecided one a Rejected claim. Without
 	// the claim on the binding kcp does not serve the dependency's kind on the
@@ -258,7 +243,19 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	claims = appendCompositionClaims(claims, prov.Dependencies, composedAccepted)
+
+	// One declaration, one claim list. spec.requires is the only place a
+	// provider states what it needs from a group it does not own, so there is
+	// nothing to merge: each entry becomes exactly one claim on the binding, and
+	// which of the two consent records answers for it is decided by whether the
+	// requirement names a provider.
+	claims := requiredClaims(prov.Requires, func(coordinate providersv1alpha1.RequiredCoordinate) bool {
+		key := acceptedKey(coordinate.Group, coordinate.Resource)
+		if coordinate.Provider != "" {
+			return composedAccepted[key]
+		}
+		return accepted[key]
+	})
 
 	if err := h.mgr.bootstrapper.EnsureProviderAPIBinding(
 		r.Context(),
@@ -278,32 +275,35 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// appendCompositionClaims renders the provider's spec.dependencies[].composes[]
-// as binding claims, Accepted when accepted[acceptedKey(group, resource)] holds.
-// These are the same claims provider-sdk/cmd/apiexportgen puts on the generated
-// APIExport, so the binding lists exactly what the export declares. A
-// composition the manifest also lists under spec.apiExport.permissionClaims is
-// already in claims and is not repeated — the generator resolves that duplicate
-// in the manifest's favour too.
-func appendCompositionClaims(claims []kcp.ProviderClaim, dependencies []providers.Dependency, accepted map[string]bool) []kcp.ProviderClaim {
-	seen := make(map[string]bool, len(claims))
-	for _, c := range claims {
-		seen[acceptedKey(c.Group, c.Resource)] = true
-	}
-	for _, dependency := range dependencies {
-		for _, composition := range dependency.Composes {
-			key := acceptedKey(composition.Group, composition.Resource)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			claims = append(claims, kcp.ProviderClaim{
-				Group:    composition.Group,
-				Resource: composition.Resource,
-				Verbs:    append([]string(nil), composition.Verbs...),
-				Accepted: accepted[key],
-			})
+// requiredClaims renders spec.requires as the binding's permission claims, one
+// per declared coordinate, Accepted as isAccepted says. These are the same
+// claims provider-sdk/cmd/apiexportgen puts on the generated APIExport, so the
+// binding lists exactly what the export declares.
+//
+// A verb coordinate ("instances/exec") is claimed whole: the verb IS the
+// capability, and which HTTP method it uses — which is what kcp maps onto an
+// RBAC verb — is the serving provider's transport detail, so the claim spells
+// every verb.
+func requiredClaims(requires []providersv1alpha1.ProviderRequirement, isAccepted func(providersv1alpha1.RequiredCoordinate) bool) []kcp.ProviderClaim {
+	coordinates := providersv1alpha1.RequiredCoordinates(requires)
+	claims := make([]kcp.ProviderClaim, 0, len(coordinates))
+	for _, coordinate := range coordinates {
+		claim := kcp.ProviderClaim{
+			Group:    coordinate.Group,
+			Resource: coordinate.Resource,
+			Verbs:    providersv1alpha1.RequiredVerbStrings(coordinate.Verbs),
+			Accepted: isAccepted(coordinate),
 		}
+		if coordinate.Coordinate {
+			claim.Verbs = []string{"*"}
+		}
+		if coordinate.Selector != nil {
+			// The scope travels with the claim: what the tenant accepts is the
+			// narrowed claim the provider declared, not a blanket one the hub
+			// would then have to walk back.
+			claim.MatchLabels = coordinate.Selector.MatchLabels
+		}
+		claims = append(claims, claim)
 	}
 	return claims
 }
@@ -433,7 +433,7 @@ func dependencyFor(declared []hubaccess.CompositionRequirement, group, resource 
 	return ""
 }
 
-func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUUID string, dependencies []providers.Dependency) ([]string, error) {
+func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUUID string, dependencies []string) ([]string, error) {
 	if len(dependencies) == 0 {
 		return nil, nil
 	}
@@ -443,7 +443,7 @@ func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUU
 	}
 	missingSet := map[string]struct{}{}
 	for _, dep := range dependencies {
-		depName := strings.TrimSpace(dep.Name)
+		depName := strings.TrimSpace(dep)
 		if depName == "" {
 			continue
 		}
@@ -662,7 +662,7 @@ func (h *Handler) compositionState(ctx context.Context, orgUUID, wsUUID, name st
 	if !ok {
 		return nil
 	}
-	declared := hubaccess.DeclaredCompositions(prov.Dependencies)
+	declared := hubaccess.DeclaredCompositions(prov.Requires)
 	if len(declared) == 0 {
 		return nil
 	}

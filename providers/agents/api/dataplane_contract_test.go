@@ -253,14 +253,24 @@ func agentObject(name string) *unstructured.Unstructured {
 // refuses to mint a capability for a coordinate no CatalogEntry claims. A verb
 // that is declared but not served is worse: kcp routes it here and the call
 // 404s.
+//
+// spec.export and spec.requires are the two sections a chart never templates,
+// so they are compared as TEXT: "identical" is the rule the contract states,
+// and a textual comparison also catches a difference in description, apiVersion,
+// kind or ordering that a parse would normalise away.
 func TestDataPlaneVerbsMatchManifest(t *testing.T) {
-	manifest := readVerbBlock(t, "../manifest.yaml")
-	chart := readVerbBlock(t, "../deploy/chart/templates/catalogentry.yaml")
-	if manifest != chart {
-		t.Fatalf("manifest.yaml and the chart's catalogentry.yaml declare different verbs.\nmanifest:\n%s\nchart:\n%s", manifest, chart)
+	for _, section := range []string{"export", "requires"} {
+		manifest := readSpecBlock(t, "../manifest.yaml", section)
+		chart := readSpecBlock(t, "../deploy/chart/templates/catalogentry.yaml", section)
+		if manifest != chart {
+			t.Fatalf("manifest.yaml and the chart's catalogentry.yaml declare a different spec.%s.\nmanifest:\n%s\nchart:\n%s", section, manifest, chart)
+		}
 	}
 
-	declared := parseVerbBlock(manifest)
+	declared := parseExportBlock(readSpecBlock(t, "../manifest.yaml", "export"))
+	if len(declared) == 0 {
+		t.Fatal("manifest.yaml declares no coordinates under spec.export.resources[].verbs")
+	}
 	served := map[string]verbFacts{}
 	for resource, routes := range (&Server{}).routes() {
 		for verb, route := range routes.verbs {
@@ -285,31 +295,70 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 	}
 }
 
+// TestExportResourcesBindEveryVerbToItsKind: a verb hangs off the resource it is
+// served on, and that resource declares its apiVersion and kind once. A verb
+// grouped under the wrong kind would generate an APIExport entry naming the
+// wrong schema, so the binding is checked against the GVRs this package routes
+// to rather than taken on trust.
+func TestExportResourcesBindEveryVerbToItsKind(t *testing.T) {
+	wantKind := map[string]string{
+		"agents": "Agent", "connections": "Connection", "modelcredentials": "ModelCredential",
+		"runs": "Run", "schedules": "Schedule", "triggers": "Trigger",
+	}
+	declared := parseExportResources(readSpecBlock(t, "../manifest.yaml", "export"))
+	if len(declared) != len(wantKind) {
+		t.Fatalf("spec.export declares %d resources (%v), want %d", len(declared), declared, len(wantKind))
+	}
+	table := (&Server{}).routes()
+	for name, resource := range declared {
+		kind, ok := wantKind[name]
+		if !ok {
+			t.Errorf("spec.export declares the resource %q, which this provider serves no verb on", name)
+			continue
+		}
+		if resource.kind != kind {
+			t.Errorf("spec.export.resources[%s].kind = %q, want %q", name, resource.kind, kind)
+		}
+		routes, ok := table[name]
+		if !ok {
+			t.Errorf("spec.export declares %q but the route table has no such resource", name)
+			continue
+		}
+		if want := routes.gvr.GroupVersion().String(); resource.apiVersion != want {
+			t.Errorf("spec.export.resources[%s].apiVersion = %q, want %q", name, resource.apiVersion, want)
+		}
+	}
+}
+
 type verbFacts struct {
 	stream   bool
 	readOnly bool
 }
 
-// readVerbBlock returns the spec.dataPlane.verbs block of a CatalogEntry
-// verbatim. Comparing the two files as TEXT is deliberate: "identical" is the
-// rule the contract states, and a textual comparison also catches a difference
-// in description or ordering that a parse would normalise away.
-func readVerbBlock(t *testing.T, path string) string {
+// exportResource is one spec.export.resources[] entry's identity.
+type exportResource struct {
+	apiVersion string
+	kind       string
+}
+
+// readSpecBlock returns one top-level member of a CatalogEntry's spec verbatim:
+// everything under "  <name>:" up to the next line at spec-member indentation.
+func readSpecBlock(t *testing.T, path, name string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const marker = "  dataPlane:\n    verbs:\n"
+	marker := "\n  " + name + ":\n"
 	start := strings.Index(string(raw), marker)
 	if start < 0 {
-		t.Fatalf("%s has no spec.dataPlane.verbs block", path)
+		t.Fatalf("%s has no spec.%s block", path, name)
 	}
 	rest := string(raw)[start+len(marker):]
 	var block []string
 	for line := range strings.SplitSeq(rest, "\n") {
 		// The block ends at the next key or comment at spec-member indentation.
-		if line != "" && !strings.HasPrefix(line, "      ") {
+		if line != "" && !strings.HasPrefix(line, "    ") {
 			break
 		}
 		block = append(block, line)
@@ -317,10 +366,17 @@ func readVerbBlock(t *testing.T, path string) string {
 	return strings.TrimRight(strings.Join(block, "\n"), "\n")
 }
 
-// parseVerbBlock reads the fixed shape writeVerbBlock produces. It is a hand
-// parser rather than a YAML unmarshal so this test adds no dependency to a
-// provider binary's module graph for the sake of nine lines of structure.
-func parseVerbBlock(block string) map[string]verbFacts {
+// parseExportBlock reads spec.export's fixed shape into the coordinates it
+// declares. It is a hand parser rather than a YAML unmarshal so this test adds
+// no dependency to a provider binary's module graph for the sake of a nesting
+// level; the indentation it keys on is the one the manifest is written at:
+//
+//	resources:
+//	  - name: agents            # 6 spaces
+//	    verbs:
+//	      - name: chat          # 10 spaces
+//	        stream: true        # 12 spaces
+func parseExportBlock(block string) map[string]verbFacts {
 	out := map[string]verbFacts{}
 	var resource, verb string
 	facts := verbFacts{}
@@ -328,23 +384,53 @@ func parseVerbBlock(block string) map[string]verbFacts {
 		if resource != "" && verb != "" {
 			out[resource+"/"+verb] = facts
 		}
-		resource, verb, facts = "", "", verbFacts{}
+		verb, facts = "", verbFacts{}
 	}
 	for line := range strings.SplitSeq(block, "\n") {
 		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " "))
 		switch {
-		case strings.HasPrefix(trimmed, "- resource:"):
+		case indent == 6 && strings.HasPrefix(trimmed, "- name:"):
 			flush()
-			resource = strings.TrimSpace(strings.TrimPrefix(trimmed, "- resource:"))
-		case strings.HasPrefix(trimmed, "verb:"):
-			verb = strings.TrimSpace(strings.TrimPrefix(trimmed, "verb:"))
-		case trimmed == "stream: true":
+			resource = strings.TrimSpace(strings.TrimPrefix(trimmed, "- name:"))
+		case indent == 10 && strings.HasPrefix(trimmed, "- name:"):
+			flush()
+			verb = strings.TrimSpace(strings.TrimPrefix(trimmed, "- name:"))
+		case indent == 12 && trimmed == "stream: true":
 			facts.stream = true
-		case trimmed == "readOnly: true":
+		case indent == 12 && trimmed == "readOnly: true":
 			facts.readOnly = true
 		}
 	}
 	flush()
+	return out
+}
+
+// parseExportResources reads the same block into each resource's apiVersion and
+// kind, which is where a verb's binding to a kind now lives.
+func parseExportResources(block string) map[string]exportResource {
+	out := map[string]exportResource{}
+	name := ""
+	for line := range strings.SplitSeq(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent == 6 && strings.HasPrefix(trimmed, "- name:") {
+			name = strings.TrimSpace(strings.TrimPrefix(trimmed, "- name:"))
+			out[name] = exportResource{}
+			continue
+		}
+		if indent != 8 || name == "" {
+			continue
+		}
+		entry := out[name]
+		if value, ok := strings.CutPrefix(trimmed, "apiVersion:"); ok {
+			entry.apiVersion = strings.TrimSpace(value)
+		}
+		if value, ok := strings.CutPrefix(trimmed, "kind:"); ok {
+			entry.kind = strings.TrimSpace(value)
+		}
+		out[name] = entry
+	}
 	return out
 }
 

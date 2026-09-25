@@ -36,8 +36,8 @@ import (
 //	<export VW>/clusters/{cluster}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/{verb}[/{tail}][?component={component}]
 //
 // Each verb is a claim on this provider's export (manifest.yaml
-// spec.dependencies[].composes[], "instances/<verb>" with verbs ["*"]) that
-// the tenant accepted at Enable. kcp authorizes the call against that claim,
+// spec.requires[].resources[], the "instances/<verb>" coordinate, whose
+// generated claim spells every verb) that the tenant accepted at Enable. kcp authorizes the call against that claim,
 // resolves it to whichever infrastructure copy the workspace bound, and
 // forwards it there impersonating App Studio; the infrastructure gate sees a
 // foreign provider whose claim is the authorization. The caller's identity

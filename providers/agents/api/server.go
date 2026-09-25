@@ -93,7 +93,7 @@ type Server struct {
 	callers dataplane.ProviderCallerFactory
 	// verbCallers addresses a verb ANOTHER provider serves (the infrastructure
 	// provider's instances/proxy, claimed under manifest.yaml
-	// spec.dependencies) through this provider's own export virtual workspace
+	// spec.requires) through this provider's own export virtual workspace
 	// with its own credential. Nil without a provider kubeconfig; instance-
 	// backed tools then report that. See tools.DataPlane.
 	verbCallers tools.VerbCaller

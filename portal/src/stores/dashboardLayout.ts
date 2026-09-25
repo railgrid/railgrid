@@ -31,7 +31,7 @@ limitations under the License.
 //
 // The persisted layout is ADVISORY. The set of providers that may appear
 // on the dashboard is decided upstream (DashboardPage gates on
-// ready/hasUI/enabled); this store only remembers geometry, the hidden set,
+// ready/serving.ui/enabled); this store only remembers geometry, the hidden set,
 // and the column count, then reconciles that against whatever providers are live
 // right now. A provider that was removed from the catalog, lost its
 // binding, or exposes no dashboard tile simply drops out; a newly-enabled

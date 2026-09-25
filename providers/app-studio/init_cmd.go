@@ -26,16 +26,16 @@ const (
 	providerName = "app-studio"
 )
 
-// No claim carries an identityHash: the first-party claims derived from the
-// compositions are identity-agnostic, resolved by kcp per consuming workspace
+// No claim carries an identityHash: the first-party claims derived from
+// spec.requires are identity-agnostic, resolved by kcp per consuming workspace
 // against whichever copy of infrastructure or code that workspace bound.
 // kcp now resolves an unpinned claim per consuming workspace, against a
 // cluster-scoped PermissionClaimPolicy that pairs this export's group with the
 // claimed group, so each workspace is served the copy it enabled.
 //
 // What may be claimed is still declared, not assumed: manifest.yaml
-// spec.dependencies[].composes, accepted by the tenant at Enable, is what both
-// the claims and the identity rules are generated from. The per-project and
+// spec.requires, accepted by the tenant at Enable, is what both the claims and
+// the identity rules are generated from. The per-project and
 // per-Studio identities MINTED BY THE HUB (controller/project/identity.go,
 // controller/studio/identity.go) remain for what a claim cannot grant — a
 // bearer another provider's data plane accepts — and for the per-workspace
@@ -63,7 +63,7 @@ func runInitCmd(ctx context.Context) error {
 	// custom-subresource routes from the same document.
 	catalogEntryFile := catalogEntryPath()
 	// Where kcp reverse-proxies a custom subresource request to. Empty means
-	// "spec.backend.url of the CatalogEntry above", which is right whenever the
+	// "spec.serving.backend.url of the CatalogEntry above", which is right whenever the
 	// chart runs init; a harness that registers the CatalogEntry itself (the
 	// Makefile's install-provider-* target, the provider e2e) has no file to
 	// read it from and sets this instead.
@@ -72,7 +72,7 @@ func runInitCmd(ctx context.Context) error {
 	// The APIExport this applies claims Secrets — the credential material this
 	// provider writes itself — plus the three dependency kinds the reconcilers
 	// converge: instances, repositories and repositorycommits. All four are
-	// declared in manifest.yaml (spec.apiExport and spec.dependencies[].composes)
+	// declared in manifest.yaml spec.requires — one list, keyed by API group —
 	// and stamped onto the APIExport by codegen; none carries an identityHash,
 	// for the reason above.
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{

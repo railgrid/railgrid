@@ -155,7 +155,7 @@ func EnsureDataPlaneEndpointSlice(ctx context.Context, cl dynamic.Interface, exp
 		return fmt.Errorf("DataPlaneEndpointSlice: export name is required")
 	}
 	if baseURL == "" {
-		return fmt.Errorf("DataPlaneEndpointSlice: no data-plane base URL (set Options.DataPlaneURL, or point Options.CatalogEntryFile at a CatalogEntry with spec.backend.url)")
+		return fmt.Errorf("DataPlaneEndpointSlice: no data-plane base URL (set Options.DataPlaneURL, or point Options.CatalogEntryFile at a CatalogEntry with spec.serving.backend.url)")
 	}
 	name := dataplaneendpoints.SliceName(exportName)
 	desired := &unstructured.Unstructured{Object: map[string]any{
@@ -207,10 +207,12 @@ func EnsureDataPlaneEndpointSlice(ctx context.Context, cl dynamic.Interface, exp
 	return nil
 }
 
-// CatalogEntryBackendURL reads spec.backend.url out of a CatalogEntry file.
+// CatalogEntryBackendURL reads spec.serving.backend.url out of a CatalogEntry
+// file.
 //
 // This is where the data-plane URL comes from, and it is deliberately not a new
-// flag. spec.backend.url IS the provider's externally reachable base address:
+// flag. spec.serving.backend.url IS the provider's externally reachable base
+// address:
 // it is what the hub's backend proxy forwards /services/providers/<name>/* to,
 // it is already rendered per environment by each chart (the in-cluster Service
 // DNS in a cluster, the loopback port in dev), and install already reads and
@@ -223,13 +225,15 @@ func CatalogEntryBackendURL(path string) (string, error) {
 	}
 	var entry struct {
 		Spec struct {
-			Backend struct {
-				URL string `json:"url"`
-			} `json:"backend"`
+			Serving struct {
+				Backend struct {
+					URL string `json:"url"`
+				} `json:"backend"`
+			} `json:"serving"`
 		} `json:"spec"`
 	}
 	if err := yaml.Unmarshal(raw, &entry); err != nil {
 		return "", fmt.Errorf("parsing CatalogEntry file %s: %w", path, err)
 	}
-	return entry.Spec.Backend.URL, nil
+	return entry.Spec.Serving.Backend.URL, nil
 }

@@ -22,7 +22,7 @@ package mcpaggregate
 // does this platform declare it can do". The second question is the contract
 // question, and its answer is the validated provider registry — the same
 // CatalogEntry declarations the hub already admits, validates and enforces
-// against (spec.actions and spec.dataPlane.verbs). This resource serves that
+// against (spec.export.resources[].actions and .verbs). This resource serves that
 // declaration, per Ready provider visible to the caller's Org.
 //
 // What it is NOT: a directory of endpoints. It carries no provider URL, no
@@ -85,7 +85,7 @@ type DeclaredAction struct {
 	SchemaDigest string `json:"schemaDigest,omitempty"`
 }
 
-// DeclaredVerb is one validated CatalogEntry data-plane verb, projected for
+// DeclaredVerb is one validated CatalogEntry export verb, projected for
 // discovery. A verb is a coordinate and a transport, not a request/response
 // contract, so it carries no schema and no digest.
 type DeclaredVerb struct {

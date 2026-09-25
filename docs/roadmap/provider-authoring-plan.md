@@ -86,8 +86,8 @@ Two of the three copies are gone as *hand-written* sources:
   two declarative objects, and `init` applies them verbatim. The APIExport is
   **generated**: `provider-sdk/cmd/apiexportgen` runs after kcp's `apigen` in
   every `codegen-<name>-provider` target, reads `manifest.yaml`, renames the
-  export to `spec.apiExport.name`, and stamps `spec.permissionClaims` from the
-  manifest. `provider-sdk/install.Bootstrap` reads that file and applies it as
+  export to `spec.export.name`, and stamps the APIExport's
+  `spec.permissionClaims` from the manifest's `spec.requires`. `provider-sdk/install.Bootstrap` reads that file and applies it as
   generated. The manifest is now the only place a claim is written by hand.
 - **The chart copy is an output, checked.**
   `hack/verify-provider-contract.mjs` (in `make verify`) asserts
@@ -183,7 +183,7 @@ ergonomics and a laptop story:
   A plain `go run .` on a laptop is unreachable. There is no macOS or server
   edge route for providers today.
 - **No instructions for a custom provider.** `Instructions` is nil unless the
-  name matches a platform provider with a `selfHosting` recipe. Someone who
+  name matches a platform provider with a `serving.selfHosting` recipe. Someone who
   scaffolded their own provider gets a kubeconfig and silence.
 - **A platform prerequisite is invisible until it bites.** A provider that
   reconciles tenant objects needs the shard's virtual-workspace URL to be
@@ -215,8 +215,8 @@ it from there.
 - The chart passes only what it knows and the manifest cannot: the in-cluster
   URLs and the version. Two env vars on the init container, `RAILGRID_UI_URL` and
   `RAILGRID_BACKEND_URL`, plus `RAILGRID_PROVIDER_VERSION` which already exists.
-  `init` patches `spec.ui.url`, `spec.backend.url`, `spec.version` and
-  `spec.selfHosting.chart.version` before applying. These are precisely the
+  `init` patches `spec.serving.ui.url`, `spec.serving.backend.url`,
+  `spec.version` and `spec.serving.selfHosting.chart.version` before applying. These are precisely the
   fields `manifest-chart-parity` already has to skip because their chart value
   is a Helm expression — so the split is the one the verifier discovered
   empirically.
@@ -225,7 +225,7 @@ it from there.
   generated. Identity hashes for first-party claim groups, which the
   CatalogEntry type deliberately does not carry, come from env
   (`RAILGRID_CLAIM_IDENTITY_HASH_<GROUP>`), which the chart sets from values
-  exactly as `selfHosting.requiredValues[].identityFor` already describes.
+  exactly as `serving.selfHosting.requiredValues[].identityFor` already describes.
 - Infrastructure has already proved the pattern in the other direction: its
   chart renders its CatalogEntry from `deploy/chart/files/manifest.yaml`, a
   copy of `manifest.yaml` that the verifier holds identical.
@@ -324,12 +324,12 @@ A new `groupProviders` in `pkg/cli/cmd/root.go`, files under
 | `dev` | The iteration loop, section 3.5. Default: ephemeral in-process edge against the hub you are logged into. `--local` runs an embedded hub instead. `--edge` reuses a persistent edge. | org register (default) or admin |
 | `quickstart [name]` | `init` + `dev` in one command: scaffold, register, run, open the portal. The first-run experience. | as `dev` |
 | `register <name>` | Create the provider on the hub and print the credential and instructions. Org-scoped by default (the SaaS case); `--platform` for hub admins. `--edge ws/name` picks the tunnel; with one connected edge it is chosen automatically. `-o kubeconfig-file`. | `POST /api/orgs/{org}/providers`; `POST /api/admin/providers` + `GET .../kubeconfig` |
-| `install <name>` | `register`, then preflight (§3.6), then namespace + Secret + `helm upgrade --install` in-process (the CLI already links `helm.sh/helm/v3` for `railgrid dev`), then wait for `CatalogEntry` Ready. `--chart`, `--version`, `--set`, `--namespace`, `--kubeconfig`, `--enable` to enable in the current workspace. For a custom provider the instructions are rendered locally from the scaffolded manifest's `selfHosting` block (§3.6). | as above + enable |
+| `install <name>` | `register`, then preflight (§3.6), then namespace + Secret + `helm upgrade --install` in-process (the CLI already links `helm.sh/helm/v3` for `railgrid dev`), then wait for `CatalogEntry` Ready. `--chart`, `--version`, `--set`, `--namespace`, `--kubeconfig`, `--enable` to enable in the current workspace. For a custom provider the instructions are rendered locally from the scaffolded manifest's `serving.selfHosting` block (§3.6). | as above + enable |
 | `list`, `get`, `status` | Catalog view, endpoints, last heartbeat, Ready conditions. | `GET /api/providers`, `GET /api/orgs/{org}/providers` |
 | `enable`, `disable` | Per-workspace enable with claim consent shown in the terminal. | `POST .../workspaces/{ws}/providers/{name}/enable` |
 | `credentials rotate` | Replaces the curl snippet in providers.md. | `POST .../credentials/rotate` |
 | `delete` | Full teardown. | `DELETE` |
-| `validate` | Lint `manifest.yaml` (required fields, `tenantScoped` on every claim, selfHosting coordinates, health path), `helm lint`, chart README vs values drift. Runs in the scaffolded CI. | none |
+| `validate` | Lint `manifest.yaml` (required fields, a `selector` on every core-`secrets` requirement, `serving.selfHosting` coordinates, health path), `helm lint`, chart README vs values drift. Runs in the scaffolded CI. | none |
 
 `install` is the `helm install` moment: one command, no credential copied by
 hand, idempotent because both register endpoints already are.
@@ -462,12 +462,12 @@ This is the path for everyone who is not a hub operator, so `register`,
 platform path.
 
 **Instructions for custom providers.** The hub can only render instructions
-for a recipe it knows. The scaffold writes a `selfHosting` block into the
+for a recipe it knows. The scaffold writes a `serving.selfHosting` block into the
 manifest (chart repository, name, namespace, release), so the CLI has the
 recipe and the register response has the kubeconfig and hub URL. `install`
 renders the steps locally with the same `RenderInstallInstructions` the hub
 uses (same Go module, so no duplication), then executes them. Optionally the
-register request grows an inline `selfHosting` field so the portal's
+register request grows an inline `serving.selfHosting` field so the portal's
 Self-Hosting panel can show the same steps for a custom provider; that is a
 small hub change and not on the critical path.
 
@@ -508,7 +508,7 @@ Each phase is one or two PRs and leaves `make e2e-provider` green.
 | 1 | `provider-sdk/runtime` + `ClaimsFromCatalogEntry` + embedded manifest and schemas. Quickstart adopts; `init_cmd.go` and the chart ConfigMap go. | P1, P4 |
 | 2 | `railgrid provider init` with embedded template and `make sync-scaffold`/`verify-scaffold`. CI job scaffolds `acme` into a temp dir, builds it, runs it under the provider e2e suite. `railgrid provider dev --local`. | P3, P5 |
 | 3 | `railgrid provider register/install/list/status/enable/disable/delete/credentials rotate/validate`, org-scoped by default with edge selection, local instruction rendering and the §3.6 preflight. `dev` with an ephemeral in-process host edge (three small hub changes plus a sweeper, §3.5.1) and `railgrid provider quickstart`. Admin create returns kubeconfig and instructions; portal `/bonkers` uses it. Docs and `skills/railgrid` updated; `verify-docs-cli` regenerates the CLI reference. | P2, SaaS gap |
-| 4 | `railgrid-provider` library chart published; quickstart chart shrinks to four files; `helm-build.sh` covers it. Optional: register request accepts an inline `selfHosting` recipe so the portal shows steps for custom providers. | P4 (chart half) |
+| 4 | `railgrid-provider` library chart published; quickstart chart shrinks to four files; `helm-build.sh` covers it. Optional: register request accepts an inline `serving.selfHosting` recipe so the portal shows steps for custom providers. | P4 (chart half) |
 | 5 | Standalone-repo story: `init` emits a GitHub workflow that builds image and chart on `v*` tags (a generalised `provider-release.yaml`); `railgrid provider publish` cuts the tag. | P6 |
 
 Phases 1 and 2 are where most of the smoothness comes from and they do not
@@ -535,7 +535,7 @@ depend on any hub change. Phase 3 is the one that touches the hub and is the
   `--platform`. A SaaS tenant can never take the platform path, and a hub
   admin who wants it says so. Recommended: org-scoped default.
 - **Where custom-provider instructions are rendered.** CLI-side from the
-  manifest's `selfHosting` block needs no hub change and ships in phase 3.
+  manifest's `serving.selfHosting` block needs no hub change and ships in phase 3.
   Accepting the recipe in the register request additionally lights up the
   portal panel, and can follow in phase 4.
 - **Laptop dev against SaaS.** An ephemeral host edge run in-process by the

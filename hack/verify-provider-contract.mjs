@@ -12,76 +12,91 @@
  *                          Fields whose chart value is a Helm expression, and
  *                          the per-release coordinates (urls, versions, the
  *                          embedded values doc), are skipped.
- *   claims-parity          every claim on the GENERATED APIExport
- *                          (config/kcp/apiexport-<exportName>.yaml) is declared
- *                          in manifest.yaml, and every declaration reaches the
- *                          export; metadata.name must be spec.apiExport.name. A
- *                          provider ships exactly two declarative objects and
- *                          `init` applies them verbatim; a claim in only one of
- *                          the two is a tenant asked to accept access the
- *                          provider never gets, or given access nobody was
- *                          asked about.
+ *   claims-parity          what manifest.yaml spec.requires DECLARES is exactly
+ *                          what the GENERATED APIExport
+ *                          (config/kcp/apiexport-<exportName>.yaml) CLAIMS, in
+ *                          both directions; metadata.name must be
+ *                          spec.export.name. A provider ships exactly two
+ *                          declarative objects and `init` applies them
+ *                          verbatim, so a claim in only one of the two is a
+ *                          tenant asked to accept access the provider never
+ *                          gets, or given access nobody was asked about.
  *
- *                          A manifest declares a claim in either of two places,
- *                          and the generator emits both: spec.apiExport.
- *                          permissionClaims (the hand-written kcp claim) and
- *                          spec.dependencies[].composes[] (a kind of a
- *                          DEPENDENCY this provider creates and manages in the
- *                          tenant workspace, claimed with no identityHash so it
- *                          resolves per consumer workspace). Either source
- *                          backs a generated claim, on group + resource +
- *                          verbs; a claim matching neither, or whose verbs
- *                          drifted from both, is still a violation. Where both
- *                          name the same (group, resource) the manifest claim
- *                          wins and nothing extra is appended, which is why a
- *                          composition only has to be claimed, not matched verb
- *                          for verb.
- *   claim-selector         a claim on a core-group resource that carries
- *                          credentials -- today `secrets` -- must be narrowed
- *                          by selector.matchLabels. A claim is per RESOURCE,
- *                          not per name, so an unscoped `secrets` claim hands
- *                          the provider every Secret in every workspace that
- *                          enables it, including the tenant's own and other
- *                          providers'. That is the side-door
+ *                          spec.requires is ONE list -- it replaced
+ *                          spec.apiExport.permissionClaims and
+ *                          spec.dependencies[].composes[], which could disagree
+ *                          with each other -- so this is a plain equality on
+ *                          group + resource + verbs + scope. A `<resource>/
+ *                          <verb>` coordinate carries no verbs in the manifest
+ *                          and every verb in the generated claim (the verb IS
+ *                          the capability), which is the one asymmetry.
+ *   claim-selector         a spec.requires entry on a core-group resource that
+ *                          carries credentials -- today `secrets` -- must be
+ *                          narrowed by selector.matchLabels. A claim is per
+ *                          RESOURCE, not per name, so an unscoped `secrets`
+ *                          requirement hands the provider every Secret in every
+ *                          workspace that enables it, including the tenant's own
+ *                          and other providers'. That is the side-door
  *                          docs/cross-provider-simplification.md X-4 closes,
  *                          and it is invisible in review precisely because the
- *                          claim looks the same either way.
+ *                          entry looks the same either way.
  *   export-copy            deploy/chart/files/apiexport.yaml is byte-identical
  *                          to the generated APIExport. The chart copy is what
  *                          reaches production, and it is an OUTPUT: a
  *                          difference means codegen was not re-run (or the copy
  *                          was hand-edited).
  *   readme-missing         README.md and deploy/chart/README.md both exist.
- *   reserved-verb          no spec.dataPlane.verbs entry named after a standard
- *                          Kubernetes verb (get, list, watch, create, update,
- *                          patch, delete, deletecollection); the hub's catalog
- *                          admission refuses such a CatalogEntry outright.
- *   subresource-name       every declared coordinate -- a spec.dataPlane.verbs
- *                          entry, and every spec.actions[] id paired with its
- *                          boundResource.resource -- makes a name kcp accepts
- *                          as a CUSTOM SUBRESOURCE on the APIExport. Both
- *                          lists are published that way by
- *                          provider-sdk/apiexportgen, and kcp holds
- *                          spec.resources[].name to
+ *   reserved-verb          no coordinate under spec.export.resources[] --
+ *                          neither a verb nor an action -- is named after a
+ *                          standard Kubernetes verb (get, list, watch, create,
+ *                          update, patch, delete, deletecollection); the hub's
+ *                          catalog admission refuses such a CatalogEntry
+ *                          outright (ValidateProviderExport).
+ *   subresource-name       every declared coordinate -- every
+ *                          spec.export.resources[].verbs[].name and every
+ *                          spec.export.resources[].actions[].name, paired with
+ *                          the resource it hangs off -- makes a name kcp accepts
+ *                          as a CUSTOM SUBRESOURCE on the APIExport. Both lists
+ *                          are published that way by provider-sdk/apiexportgen,
+ *                          and kcp holds spec.resources[].name to
  *                          ^[a-z][-a-z0-9]*[a-z0-9](/[a-z][-a-z0-9]*[a-z0-9])?$
  *                          (no underscores) and refuses `status` and `scale`
  *                          outright, because those belong to the object's own
- *                          shape. ONE bad name makes the WHOLE export
- *                          unappliable, not just its entry, so it is caught
- *                          here rather than at a tenant's Enable.
+ *                          shape. An action's version is NOT part of the
+ *                          coordinate: `branches` v1 publishes
+ *                          `repositories/branches`. ONE bad name makes the WHOLE
+ *                          export unappliable, not just its entry, so it is
+ *                          caught here rather than at a tenant's Enable.
  *   subresource-access-claim
- *                          an APIExport that declares a custom subresource
- *                          ("<resource>/<verb>" entry) claims
- *                          authorization.k8s.io/subjectaccessreviews with
- *                          verb create. On the shard-forwarded path there is
- *                          no caller bearer: the provider runs a
+ *                          an export that publishes ANY coordinate requires
+ *                          authorization.k8s.io/subjectaccessreviews with verb
+ *                          create. On the shard-forwarded path there is no
+ *                          caller bearer: the provider runs a
  *                          SubjectAccessReview for the stamped caller through
  *                          its export virtual workspace, and kcp serves that
  *                          builtin there ONLY for an export that claims it
  *                          (verified against kcp-dev/kcp#4388: without the
  *                          claim every forwarded verb is a 500). Declare it in
- *                          manifest.yaml spec.apiExport.permissionClaims,
- *                          tenantScoped, as edges does.
+ *                          manifest.yaml spec.requires, as edges does.
+ *   export-group           every spec.export.resources[].apiVersion names a
+ *                          group the generated APIExport actually SERVES
+ *                          (spec.resources[].group). The apiVersion is what
+ *                          lets a consumer address the coordinate without
+ *                          knowing the provider's group, so a typo there sends
+ *                          every caller to a group nothing answers on.
+ *   requires-group         a spec.requires entry naming a `provider` names a
+ *                          group that provider SERVES, cross-checked against
+ *                          that provider's own manifest and generated export.
+ *                          The usual mistake is naming the APIExport instead:
+ *                          `code.providers.railgrid.ai` is the export,
+ *                          `code.railgrid.ai` is the group it serves.
+ *   requires-verb          a spec.requires `<resource>/<verb>` coordinate names
+ *                          a verb or action the OWNING provider declares in its
+ *                          own spec.export. Claiming a coordinate nobody
+ *                          publishes is a claim kcp resolves to nothing, and it
+ *                          is exactly what the old shape could not see: the
+ *                          claim lived in one manifest and the declaration in
+ *                          another.
  *   adhoc-rest             no `"/api/` route literal in main.go, server/ or
  *                          api/. Tenant traffic belongs on kcp resources or a
  *                          cluster-scoped data-plane path, not a flat REST
@@ -122,10 +137,19 @@ export const CHECKS = Object.freeze({
   RESERVED_VERB: 'reserved-verb',
   SUBRESOURCE_NAME: 'subresource-name',
   SUBRESOURCE_ACCESS_CLAIM: 'subresource-access-claim',
+  EXPORT_GROUP: 'export-group',
+  REQUIRES_GROUP: 'requires-group',
+  REQUIRES_VERB: 'requires-verb',
   STALE_EXCEPTION: 'stale-exception',
 })
 
 // Exceptions may silence a real check, never the stale-exception report.
+//
+// The three cross-reference checks are exceptable because their other side may
+// legitimately be out of this checkout (a provider that depends on one shipped
+// from the external provider repo); the name and access-claim checks are not,
+// because what they catch makes an APIExport unappliable or every forwarded
+// verb a 500 and no reason excuses that.
 const EXCEPTABLE_CHECKS = new Set([
   CHECKS.MANIFEST_CHART_PARITY,
   CHECKS.CLAIMS_PARITY,
@@ -133,6 +157,9 @@ const EXCEPTABLE_CHECKS = new Set([
   CHECKS.EXPORT_COPY,
   CHECKS.README_MISSING,
   CHECKS.ADHOC_REST,
+  CHECKS.EXPORT_GROUP,
+  CHECKS.REQUIRES_GROUP,
+  CHECKS.REQUIRES_VERB,
 ])
 
 const EXCEPTION_KEYS = new Set(['provider', 'check', 'reason'])
@@ -142,10 +169,10 @@ const EXCEPTION_KEYS = new Set(['provider', 'check', 'reason'])
 // from the release, and valuesDoc is the chart's own README inlined.
 export const SKIPPED_SPEC_PATHS = Object.freeze(new Set([
   'version',
-  'ui.url',
-  'backend.url',
-  'selfHosting.chart.version',
-  'selfHosting.valuesDoc',
+  'serving.ui.url',
+  'serving.backend.url',
+  'serving.selfHosting.chart.version',
+  'serving.selfHosting.valuesDoc',
 ]))
 
 // The value a Helm expression collapses to. Comparison skips it: the chart
@@ -715,46 +742,56 @@ function describeClaim(claim) {
   return `${claim.resource}${claim.group ? `.${claim.group}` : ''} [${[...claim.verbs].sort().join(' ')}] scoped ${scope}`
 }
 
-function manifestClaims(spec) {
-  return normalizeClaims(spec?.apiExport?.permissionClaims)
-}
-
 /**
- * The manifest's OTHER way of declaring a claim: every
- * spec.dependencies[].composes[] entry, flattened in manifest order.
+ * The verb set a generated claim carries for a `<resource>/<verb>` coordinate.
  *
- * A composition says this provider's reconcilers create and manage that
- * (group, resource) of a dependency inside the tenant workspace, which is a
- * permission claim by another name -- provider-sdk/apiexportgen turns each one
- * into a claim with no identityHash, so it resolves against whatever APIExport
- * the consumer workspace bound for that group. Normalizing them into the same
- * claim shape as spec.apiExport.permissionClaims is what lets one comparison
- * accept either source. A composition carries no selector, so its scope is
- * always unscoped (`*`): a composed claim narrowed by a selector in the export
- * matches nothing here and is reported, which is correct -- nothing declared
- * it.
+ * A coordinate is claimed whole: the verb IS the capability, and which HTTP
+ * method it uses -- which is what kcp maps onto an RBAC verb -- is the serving
+ * provider's transport detail. So the manifest entry carries no verbs
+ * (ValidateProviderRequiredResource refuses any) and the generated claim spells
+ * every verb.
  */
-function manifestCompositions(spec) {
-  const dependencies = Array.isArray(spec?.dependencies) ? spec.dependencies : []
-  const composes = []
-  for (const dependency of dependencies) {
-    if (Array.isArray(dependency?.composes)) composes.push(...dependency.composes)
-  }
-  return normalizeClaims(composes)
-}
+const COORDINATE_VERBS = Object.freeze(['*'])
 
-/** `group|resource`: the pair the generator deduplicates claims on. */
-function claimPair(claim) {
-  return `${claim.group || ''}|${claim.resource}`
+/**
+ * Every claim manifest.yaml spec.requires declares, flattened one per resource
+ * entry and normalized into the same shape as a generated kcp claim.
+ *
+ * spec.requires is the ONE place a provider says what it needs that it does not
+ * own: another provider's kinds and verbs, and the platform builtins its own
+ * machinery depends on. provider-sdk/apiexportgen emits exactly one permission
+ * claim per entry here, with no identityHash, so it resolves per consumer
+ * workspace against whichever copy of that provider the workspace bound.
+ *
+ * `provider` and the old `tenantScoped` are not part of a claim: the first is a
+ * dependency edge the hub reads at Enable, and the second is gone -- everything
+ * under requires is tenant-scoped by definition.
+ */
+function requiredClaims(spec) {
+  const requirements = Array.isArray(spec?.requires) ? spec.requires : []
+  const claims = []
+  for (const requirement of requirements) {
+    const group = requirement?.group ?? ''
+    const resources = Array.isArray(requirement?.resources) ? requirement.resources : []
+    for (const resource of resources) {
+      const name = String(resource?.name ?? '')
+      claims.push({
+        group,
+        resource: name,
+        verbs: name.includes('/') ? [...COORDINATE_VERBS] : Array.isArray(resource?.verbs) ? resource.verbs.map(String) : [],
+        matchLabels: claimMatchLabels(resource),
+      })
+    }
+  }
+  return claims
 }
 
 /**
- * Reads a claim list from either copy. Two fields differ by design:
- * tenantScoped is a CatalogEntry/Enable concept with no kcp counterpart, and
- * the scope is spelled `selector` on the manifest claim but `defaultSelector`
- * on the kcp APIExport claim (kcp's name for the scope an export SUGGESTS;
- * what binds is the selector the hub writes on each tenant's accepted claim).
- * Both spellings normalize to matchLabels here, so the comparison is on
+ * Reads a claim list off the generated APIExport. The scope is spelled
+ * `selector` on a manifest requirement but `defaultSelector` on the kcp
+ * APIExport claim (kcp's name for the scope an export SUGGESTS; what binds is
+ * the selector the hub writes on each tenant's accepted claim). Both spellings
+ * normalize to matchLabels, so the comparison is on
  * group + resource + verbs + scope.
  */
 function normalizeClaims(raw) {
@@ -786,16 +823,16 @@ function claimMatchLabels(claim) {
 export const SCOPED_CORE_RESOURCES = Object.freeze(new Set(['secrets']))
 
 /**
- * Check 2b: a core-group credential resource must be claimed with a selector.
+ * Check 2b: a core-group credential resource must be required with a selector.
  */
 function checkClaimSelectors(repoRoot, provider, providerDir, violations) {
-  const declared = manifestExport(repoRoot, provider, providerDir, violations, CHECKS.CLAIM_SELECTOR)
-  if (!declared) return
+  const spec = readManifestSpec(repoRoot, providerDir)
+  if (!spec) return // manifest-chart-parity already reports an unreadable manifest
   const manifestPath = path.relative(repoRoot, path.join(providerDir, 'manifest.yaml'))
-  for (const claim of manifestClaims(declared.spec)) {
+  for (const claim of requiredClaims(spec)) {
     if (claim.group || !SCOPED_CORE_RESOURCES.has(claim.resource)) continue
     if (claim.matchLabels) continue
-    violations.push(violation(provider, CHECKS.CLAIM_SELECTOR, `claims the core resource ${claim.resource} with no selector.matchLabels: a claim is per resource, not per name, so this reaches every ${claim.resource} in every workspace that enables ${provider}. Narrow it to the objects this provider owns, e.g. selector.matchLabels["railgrid.ai/owner"]: ${provider}`, { path: manifestPath }))
+    violations.push(violation(provider, CHECKS.CLAIM_SELECTOR, `requires the core resource ${claim.resource} with no selector.matchLabels: a claim is per resource, not per name, so this reaches every ${claim.resource} in every workspace that enables ${provider}. Narrow it to the objects this provider owns, e.g. selector.matchLabels["railgrid.ai/owner"]: ${provider}`, { path: manifestPath }))
   }
 }
 
@@ -967,20 +1004,29 @@ function checkManifestChartParity(repoRoot, provider, providerDir, violations) {
 }
 
 /**
- * Reads the manifest's spec.apiExport, or reports why it cannot. Returns null
- * when the manifest itself is the problem (already reported elsewhere).
+ * The manifest's CatalogEntry spec, or null when the manifest itself is the
+ * problem (already reported by the manifest/chart parity check).
+ */
+function readManifestSpec(repoRoot, providerDir) {
+  const manifestPath = path.join(providerDir, 'manifest.yaml')
+  try {
+    return catalogEntrySpec(fs.readFileSync(manifestPath, 'utf8'), path.relative(repoRoot, manifestPath))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Reads the manifest's spec.export, or reports why it cannot. Returns null when
+ * the manifest itself is the problem (already reported elsewhere).
  */
 function manifestExport(repoRoot, provider, providerDir, violations, check) {
+  const spec = readManifestSpec(repoRoot, providerDir)
+  if (!spec) return null
   const manifestPath = path.join(providerDir, 'manifest.yaml')
-  let spec
-  try {
-    spec = catalogEntrySpec(fs.readFileSync(manifestPath, 'utf8'), path.relative(repoRoot, manifestPath))
-  } catch {
-    return null // already reported by the manifest/chart parity check
-  }
-  const name = spec?.apiExport?.name
+  const name = spec?.export?.name
   if (typeof name !== 'string' || !name) {
-    violations.push(violation(provider, check, 'manifest.yaml declares no spec.apiExport.name, so no APIExport can be generated', { path: path.relative(repoRoot, manifestPath) }))
+    violations.push(violation(provider, check, 'manifest.yaml declares no spec.export.name, so no APIExport can be generated', { path: path.relative(repoRoot, manifestPath) }))
     return null
   }
   return { spec, name }
@@ -1004,42 +1050,23 @@ function checkClaimsParity(repoRoot, provider, providerDir, violations) {
   }
   const generatedName = generated.metadata?.name
   if (generatedName !== declared.name) {
-    violations.push(violation(provider, CHECKS.CLAIMS_PARITY, `generated APIExport is named ${JSON.stringify(generatedName ?? null)} but manifest.yaml declares spec.apiExport.name ${JSON.stringify(declared.name)}`, { path: relativeGenerated }))
+    violations.push(violation(provider, CHECKS.CLAIMS_PARITY, `generated APIExport is named ${JSON.stringify(generatedName ?? null)} but manifest.yaml declares spec.export.name ${JSON.stringify(declared.name)}`, { path: relativeGenerated }))
   }
 
-  const manifestSide = manifestClaims(declared.spec)
-  const compositionSide = manifestCompositions(declared.spec)
-  const exportSide = normalizeClaims(generated.spec?.permissionClaims)
-  const exportByKey = new Map(exportSide.map((claim) => [claimKey(claim), claim]))
-  const exportPairs = new Set(exportSide.map(claimPair))
-  const manifestByKey = new Map(manifestSide.map((claim) => [claimKey(claim), claim]))
-  const compositionByKey = new Map(compositionSide.map((claim) => [claimKey(claim), claim]))
+  // One list on each side, so this is a plain equality on
+  // group + resource + verbs + scope. It used to accept either of two manifest
+  // sources, because a claim could be written twice and disagree with itself;
+  // spec.requires is one list and that whole class of drift is gone with it.
+  const requiredByKey = new Map(requiredClaims(declared.spec).map((claim) => [claimKey(claim), claim]))
+  const exportByKey = new Map(normalizeClaims(generated.spec?.permissionClaims).map((claim) => [claimKey(claim), claim]))
 
-  // A hand-written claim must reach the export exactly: same verbs, same scope.
-  for (const [key, claim] of manifestByKey) {
-    if (!exportByKey.has(key)) {
-      violations.push(violation(provider, CHECKS.CLAIMS_PARITY, `manifest.yaml claims ${describeClaim(claim)} but the generated APIExport does not; run make codegen-${provider}-provider`, { path: relativeGenerated }))
-    }
+  for (const [key, claim] of requiredByKey) {
+    if (exportByKey.has(key)) continue
+    violations.push(violation(provider, CHECKS.CLAIMS_PARITY, `manifest.yaml requires ${describeClaim(claim)} but the generated APIExport does not claim it; run make codegen-${provider}-provider`, { path: relativeGenerated }))
   }
-
-  // A composition must reach the export as SOME claim on its (group, resource).
-  // Not verb for verb: when spec.apiExport.permissionClaims names the same pair
-  // the generator keeps the hand-written claim and appends nothing, and the
-  // loop above already holds that claim to its own verbs. A composition whose
-  // pair is claimed with drifted verbs and nothing else to back it is caught
-  // below, from the export's side.
-  const reportedPairs = new Set()
-  for (const claim of compositionSide) {
-    const pair = claimPair(claim)
-    if (exportPairs.has(pair) || reportedPairs.has(pair)) continue
-    reportedPairs.add(pair)
-    violations.push(violation(provider, CHECKS.CLAIMS_PARITY, `manifest.yaml composes ${describeClaim(claim)} but the generated APIExport claims no ${claim.resource}${claim.group ? `.${claim.group}` : ''}; run make codegen-${provider}-provider`, { path: relativeGenerated }))
-  }
-
-  // Every generated claim must be backed by one of the two declarations.
   for (const [key, claim] of exportByKey) {
-    if (manifestByKey.has(key) || compositionByKey.has(key)) continue
-    violations.push(violation(provider, CHECKS.CLAIMS_PARITY, `the generated APIExport claims ${describeClaim(claim)} but manifest.yaml does not declare it, neither in spec.apiExport.permissionClaims nor as a spec.dependencies[].composes[] entry`, { path: relativeGenerated }))
+    if (requiredByKey.has(key)) continue
+    violations.push(violation(provider, CHECKS.CLAIMS_PARITY, `the generated APIExport claims ${describeClaim(claim)} but manifest.yaml spec.requires does not declare it`, { path: relativeGenerated }))
   }
 }
 
@@ -1073,27 +1100,21 @@ function checkReadmes(repoRoot, provider, providerDir, violations) {
   }
 }
 
-// The standard Kubernetes verbs, as apis/providers/v1alpha1/dataplane.go
-// reserves them. A data-plane verb with one of these names would read as the
+// The standard Kubernetes verbs, as apis/providers/v1alpha1/export.go reserves
+// them. A declared coordinate with one of these names would read as the
 // object's own update or delete in an RBAC rule; the hub refuses the whole
-// CatalogEntry (condition InvalidDataPlaneVerbs) and the provider never
-// becomes Ready, so this belongs in `make verify`, not in a running hub.
-const RESERVED_DATA_PLANE_VERBS = new Set(['get', 'list', 'watch', 'create', 'update', 'patch', 'delete', 'deletecollection'])
+// CatalogEntry (ValidateProviderExport) and the provider never becomes Ready,
+// so this belongs in `make verify`, not in a running hub.
+const RESERVED_COORDINATE_VERBS = new Set(['get', 'list', 'watch', 'create', 'update', 'patch', 'delete', 'deletecollection'])
 
 function checkReservedVerbs(repoRoot, provider, providerDir, violations) {
+  const spec = readManifestSpec(repoRoot, providerDir)
+  if (!spec) return // manifest-chart-parity already reports an unreadable manifest
   const manifestPath = path.join(providerDir, 'manifest.yaml')
-  let spec
-  try {
-    spec = catalogEntrySpec(fs.readFileSync(manifestPath, 'utf8'), 'manifest.yaml')
-  } catch {
-    return // manifest-chart-parity already reports an unreadable manifest
+  for (const { resource, verb, source } of declaredCoordinates(spec)) {
+    if (!RESERVED_COORDINATE_VERBS.has(verb.toLowerCase())) continue
+    violations.push(violation(provider, CHECKS.RESERVED_VERB, `${source} (${resource || '?'}/${verb}) is named after the standard Kubernetes verb "${verb}"; the hub refuses the CatalogEntry (ValidateProviderExport). Name it after what it does (edit, discard, ...)`, { path: path.relative(repoRoot, manifestPath) }))
   }
-  const verbs = Array.isArray(spec?.dataPlane?.verbs) ? spec.dataPlane.verbs : []
-  verbs.forEach((entry, index) => {
-    const verb = String(entry?.verb ?? '').trim().toLowerCase()
-    if (!RESERVED_DATA_PLANE_VERBS.has(verb)) return
-    violations.push(violation(provider, CHECKS.RESERVED_VERB, `spec.dataPlane.verbs[${index}] (${entry?.resource ?? '?'}/${verb}) is named after the standard Kubernetes verb "${verb}"; the hub refuses the CatalogEntry (InvalidDataPlaneVerbs). Name the verb after what it does (edit, discard, ...)`, { path: path.relative(repoRoot, manifestPath) }))
-  })
 }
 
 // The pattern kcp puts on APIExport spec.resources[].name (a kubebuilder
@@ -1107,43 +1128,48 @@ const KCP_SUBRESOURCE_NAME = /^[a-z][-a-z0-9]*[a-z0-9](\/[a-z][-a-z0-9]*[a-z0-9]
 const SCHEMA_OWNED_SUBRESOURCES = new Set(['status', 'scale'])
 
 /**
- * Every {resource, verb} coordinate the manifest declares, from both lists, in
- * declaration order: `{resource, verb, source}` where source is the spec path a
- * reader can go look at.
+ * Every {resource, verb} coordinate the manifest declares, walking
+ * spec.export.resources[] in declaration order -- each resource's verbs, then
+ * its actions, exactly as ProviderExport.Coordinates() does. `source` is the
+ * spec path a reader can go look at.
+ *
+ * An action contributes its NAME only: the coordinate is
+ * `<resource>/<action name>` and the action's version is nowhere in any path
+ * (the serving provider restores it from its own declaration), so `branches`
+ * v1 on `repositories` publishes `repositories/branches`.
  */
 function declaredCoordinates(spec) {
   const out = []
-  const verbs = Array.isArray(spec?.dataPlane?.verbs) ? spec.dataPlane.verbs : []
-  verbs.forEach((entry, index) => {
-    out.push({
-      resource: String(entry?.resource ?? '').trim(),
-      verb: String(entry?.verb ?? '').trim(),
-      source: `spec.dataPlane.verbs[${index}]`,
+  const resources = Array.isArray(spec?.export?.resources) ? spec.export.resources : []
+  resources.forEach((entry, index) => {
+    const resource = String(entry?.name ?? '').trim()
+    const verbs = Array.isArray(entry?.verbs) ? entry.verbs : []
+    verbs.forEach((verb, verbIndex) => {
+      out.push({
+        resource,
+        verb: String(verb?.name ?? '').trim(),
+        source: `spec.export.resources[${index}].verbs[${verbIndex}]`,
+      })
     })
-  })
-  const actions = Array.isArray(spec?.actions) ? spec.actions : []
-  actions.forEach((entry, index) => {
-    // An action id is "<verb>/v<n>"; the verb is the coordinate and the
-    // version belongs to the schema contract, which the APIExport says
-    // nothing about.
-    const id = String(entry?.id ?? '').trim()
-    out.push({
-      resource: String(entry?.boundResource?.resource ?? '').trim(),
-      verb: id.split('/')[0],
-      source: `spec.actions[${index}] (${id || '?'})`,
+    const actions = Array.isArray(entry?.actions) ? entry.actions : []
+    actions.forEach((action, actionIndex) => {
+      const name = String(action?.name ?? '').trim()
+      const version = String(action?.version ?? '').trim()
+      out.push({
+        resource,
+        verb: name,
+        action: true,
+        source: `spec.export.resources[${index}].actions[${actionIndex}] (${name || '?'}${version ? `/${version}` : ''})`,
+      })
     })
   })
   return out
 }
 
 function checkSubresourceNames(repoRoot, provider, providerDir, violations) {
+  const spec = readManifestSpec(repoRoot, providerDir)
+  if (!spec) return // manifest-chart-parity already reports an unreadable manifest
   const manifestPath = path.join(providerDir, 'manifest.yaml')
-  let spec
-  try {
-    spec = catalogEntrySpec(fs.readFileSync(manifestPath, 'utf8'), 'manifest.yaml')
-  } catch {
-    return // manifest-chart-parity already reports an unreadable manifest
-  }
   const relative = path.relative(repoRoot, manifestPath)
   for (const { resource, verb, source } of declaredCoordinates(spec)) {
     if (!resource || !verb) continue // an incomplete coordinate is the generator's own error
@@ -1161,10 +1187,107 @@ function checkSubresourceNames(repoRoot, provider, providerDir, violations) {
 /** The builtin review API a proxied gate needs through the export VW. */
 const SUBRESOURCE_ACCESS_CLAIM = { group: 'authorization.k8s.io', resource: 'subjectaccessreviews', verb: 'create' }
 
+/**
+ * An export that publishes ANY coordinate must require the review API.
+ *
+ * It reads the declaration, not the generated export: spec.export is where the
+ * coordinates now live and spec.requires is where the claim now lives, so the
+ * whole check is answerable from manifest.yaml and holds even before codegen
+ * has run.
+ */
 function checkSubresourceAccessClaim(repoRoot, provider, providerDir, violations) {
-  const declared = manifestExport(repoRoot, provider, providerDir, [], CHECKS.SUBRESOURCE_ACCESS_CLAIM)
-  if (!declared) return // reported by claims-parity
-  const generatedPath = generatedExportPath(providerDir, declared.name)
+  const spec = readManifestSpec(repoRoot, providerDir)
+  if (!spec) return // manifest-chart-parity already reports an unreadable manifest
+  const published = declaredCoordinates(spec)
+    .filter(({ resource, verb }) => resource && verb)
+    .map(({ resource, verb }) => `${resource}/${verb}`)
+  if (published.length === 0) return
+  const required = requiredClaims(spec).some((claim) =>
+    claim.group === SUBRESOURCE_ACCESS_CLAIM.group && claim.resource === SUBRESOURCE_ACCESS_CLAIM.resource && claim.verbs.includes(SUBRESOURCE_ACCESS_CLAIM.verb))
+  if (required) return
+  const shown = published.slice(0, 3).map((name) => JSON.stringify(name)).join(', ') + (published.length > 3 ? `, … (${published.length})` : '')
+  violations.push(violation(provider, CHECKS.SUBRESOURCE_ACCESS_CLAIM, `publishes coordinate(s) ${shown} but spec.requires has no ${SUBRESOURCE_ACCESS_CLAIM.group} ${SUBRESOURCE_ACCESS_CLAIM.resource} entry with verb create; the proxied gate runs its SubjectAccessReview through the export virtual workspace, which kcp serves only for an export that claims it. Add it to manifest.yaml spec.requires and re-run make codegen-${provider}-provider`, { path: path.relative(repoRoot, path.join(providerDir, 'manifest.yaml')) }))
+}
+
+/**
+ * The api groups a provider SERVES, for the cross-reference checks below.
+ *
+ * Two sources, because neither alone is complete: the generated APIExport's
+ * spec.resources[].group is authoritative (it is the same projection
+ * pkg/hub/providers.APIExportGroups makes off the live object) but is absent for
+ * a provider that mints its schemas at runtime, and the manifest's
+ * spec.export.resources[].apiVersion only lists the resources that hang a verb
+ * or an action off themselves. The union is what a requirement is checked
+ * against, so this errs towards accepting rather than towards a false report.
+ */
+function servedGroups(providerDir, spec) {
+  const groups = new Set()
+  const resources = Array.isArray(spec?.export?.resources) ? spec.export.resources : []
+  for (const resource of resources) {
+    const group = String(resource?.apiVersion ?? '').split('/')[0]
+    if (group && String(resource?.apiVersion ?? '').includes('/')) groups.add(group)
+  }
+  const exportName = spec?.export?.name
+  if (typeof exportName === 'string' && exportName) {
+    const generatedPath = generatedExportPath(providerDir, exportName)
+    if (fs.existsSync(generatedPath)) {
+      try {
+        const generated = readAPIExport(fs.readFileSync(generatedPath, 'utf8'), generatedPath)
+        for (const resource of Array.isArray(generated.spec?.resources) ? generated.spec.resources : []) {
+          const group = String(resource?.group ?? '')
+          if (group) groups.add(group)
+        }
+      } catch {
+        // an unreadable generated export is reported by claims-parity
+      }
+    }
+  }
+  return groups
+}
+
+/**
+ * What every provider in the tree serves and publishes, keyed by CatalogEntry
+ * name (which is the directory name, and what a requirement's `provider` field
+ * holds). Built once per scan: a requirement is checked against its OWNER's
+ * declaration, so every check below needs every provider's.
+ */
+function buildRegistry(repoRoot, providers) {
+  const registry = new Map()
+  for (const provider of providers) {
+    const providerDir = path.join(repoRoot, 'providers', provider)
+    const spec = readManifestSpec(repoRoot, providerDir)
+    if (!spec) continue
+    registry.set(provider, {
+      spec,
+      groups: servedGroups(providerDir, spec),
+      coordinates: new Set(declaredCoordinates(spec).filter(({ resource, verb }) => resource && verb).map(({ resource, verb }) => `${resource}/${verb}`)),
+    })
+  }
+  return registry
+}
+
+function shownSet(values) {
+  const sorted = [...values].sort()
+  return sorted.length ? sorted.join(', ') : 'none'
+}
+
+/**
+ * Check: every spec.export.resources[].apiVersion names a group the generated
+ * APIExport actually serves.
+ *
+ * A provider whose export serves nothing yet (`resources: []`, what a provider
+ * that mints its schemas at runtime ships) is skipped: there is no served-group
+ * list to hold the apiVersion to, and inventing one would report every entry.
+ */
+function checkExportGroups(repoRoot, provider, providerDir, violations) {
+  const spec = readManifestSpec(repoRoot, providerDir)
+  if (!spec) return
+  const relative = path.relative(repoRoot, path.join(providerDir, 'manifest.yaml'))
+  const resources = Array.isArray(spec?.export?.resources) ? spec.export.resources : []
+  if (!resources.length) return
+  const exportName = spec?.export?.name
+  if (typeof exportName !== 'string' || !exportName) return // reported by claims-parity
+  const generatedPath = generatedExportPath(providerDir, exportName)
   if (!fs.existsSync(generatedPath)) return // reported by claims-parity
   let generated
   try {
@@ -1172,14 +1295,63 @@ function checkSubresourceAccessClaim(repoRoot, provider, providerDir, violations
   } catch {
     return // reported by claims-parity
   }
-  const resources = Array.isArray(generated.spec?.resources) ? generated.spec.resources : []
-  const custom = resources.map((entry) => entry?.name).filter((name) => typeof name === 'string' && name.includes('/'))
-  if (custom.length === 0) return
-  const claimed = normalizeClaims(generated.spec?.permissionClaims).some((claim) =>
-    claim.group === SUBRESOURCE_ACCESS_CLAIM.group && claim.resource === SUBRESOURCE_ACCESS_CLAIM.resource && claim.verbs.includes(SUBRESOURCE_ACCESS_CLAIM.verb))
-  if (claimed) return
-  const shown = custom.slice(0, 3).map((name) => JSON.stringify(name)).join(', ') + (custom.length > 3 ? `, … (${custom.length})` : '')
-  violations.push(violation(provider, CHECKS.SUBRESOURCE_ACCESS_CLAIM, `declares custom subresource(s) ${shown} but no claim on ${SUBRESOURCE_ACCESS_CLAIM.group}/${SUBRESOURCE_ACCESS_CLAIM.resource} (verb create); the proxied gate runs its SubjectAccessReview through the export virtual workspace, which kcp serves only for an export that claims it. Add the claim (tenantScoped) to manifest.yaml spec.apiExport.permissionClaims and re-run make codegen-${provider}-provider`, { path: path.relative(repoRoot, generatedPath) }))
+  const served = new Set(
+    (Array.isArray(generated.spec?.resources) ? generated.spec.resources : [])
+      .map((resource) => String(resource?.group ?? ''))
+      .filter(Boolean),
+  )
+  if (!served.size) return
+  resources.forEach((resource, index) => {
+    const apiVersion = String(resource?.apiVersion ?? '').trim()
+    const name = String(resource?.name ?? '?')
+    if (!apiVersion.includes('/')) {
+      violations.push(violation(provider, CHECKS.EXPORT_GROUP, `spec.export.resources[${index}] (${name}) declares apiVersion ${JSON.stringify(apiVersion)}, which is not "group/version"; a provider exports no core kinds, so the group is never empty`, { path: relative }))
+      return
+    }
+    const group = apiVersion.split('/')[0]
+    if (served.has(group)) return
+    violations.push(violation(provider, CHECKS.EXPORT_GROUP, `spec.export.resources[${index}] (${name}) declares apiVersion ${JSON.stringify(apiVersion)} but the generated APIExport serves no ${group}; it serves ${shownSet(served)}. The apiVersion is how a consumer addresses the coordinate without knowing this provider's group`, { path: relative }))
+  })
+}
+
+/**
+ * Check: a spec.requires entry naming a provider names a group that provider
+ * serves, and every `<resource>/<verb>` coordinate it claims is one that
+ * provider declares in its own spec.export.
+ *
+ * An entry with no `provider` is a platform builtin (authorization.k8s.io, the
+ * core group) which no provider serves and nothing cross-checks.
+ */
+function checkRequirements(repoRoot, provider, providerDir, violations, registry) {
+  const spec = readManifestSpec(repoRoot, providerDir)
+  if (!spec) return
+  const relative = path.relative(repoRoot, path.join(providerDir, 'manifest.yaml'))
+  const requirements = Array.isArray(spec?.requires) ? spec.requires : []
+  requirements.forEach((requirement, index) => {
+    const owner = String(requirement?.provider ?? '').trim()
+    if (!owner) return
+    const group = String(requirement?.group ?? '').trim()
+    const declared = registry.get(owner)
+    if (!declared) {
+      violations.push(violation(provider, CHECKS.REQUIRES_GROUP, `spec.requires[${index}] names provider ${JSON.stringify(owner)}, which is no provider in this tree (there is no providers/${owner}/manifest.yaml). A requirement's provider is a CatalogEntry metadata.name and it is also the dependency the hub refuses to enable without`, { path: relative }))
+      return
+    }
+    if (!group) {
+      violations.push(violation(provider, CHECKS.REQUIRES_GROUP, `spec.requires[${index}] names provider ${owner} but no group; a requirement on a provider must name the API group that provider serves, not the core group`, { path: relative }))
+      return
+    }
+    if (declared.groups.size && !declared.groups.has(group)) {
+      violations.push(violation(provider, CHECKS.REQUIRES_GROUP, `spec.requires[${index}] asks provider ${owner} for group ${group}, which ${owner} does not serve; it serves ${shownSet(declared.groups)}. The group is what the provider SERVES, not the name of its APIExport`, { path: relative }))
+      return
+    }
+    const resources = Array.isArray(requirement?.resources) ? requirement.resources : []
+    resources.forEach((resource, resourceIndex) => {
+      const name = String(resource?.name ?? '').trim()
+      if (!name.includes('/')) return
+      if (declared.coordinates.has(name)) return
+      violations.push(violation(provider, CHECKS.REQUIRES_VERB, `spec.requires[${index}].resources[${resourceIndex}] claims the coordinate ${name} in ${group}, but ${owner} declares no such verb or action on it (spec.export publishes ${shownSet(declared.coordinates)}). A claim on a coordinate nobody publishes resolves to nothing`, { path: relative }))
+    })
+  })
 }
 
 function checkAdHocREST(repoRoot, provider, providerDir, violations) {
@@ -1200,6 +1372,9 @@ export function verify(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? REPO_ROOT)
   const exceptions = readExceptions({ ...options, repoRoot })
   const providers = options.providers ?? listProviders(repoRoot)
+  // Every provider in the tree, not just the ones being reported on: a
+  // requirement is checked against its OWNER's declaration.
+  const registry = buildRegistry(repoRoot, listProviders(repoRoot))
   const raw = []
   for (const provider of providers) {
     const providerDir = path.join(repoRoot, 'providers', provider)
@@ -1212,6 +1387,8 @@ export function verify(options = {}) {
     checkReservedVerbs(repoRoot, provider, providerDir, raw)
     checkSubresourceNames(repoRoot, provider, providerDir, raw)
     checkSubresourceAccessClaim(repoRoot, provider, providerDir, raw)
+    checkExportGroups(repoRoot, provider, providerDir, raw)
+    checkRequirements(repoRoot, provider, providerDir, raw, registry)
   }
   raw.sort((a, b) => a.provider.localeCompare(b.provider) || a.check.localeCompare(b.check) || (a.path ?? '').localeCompare(b.path ?? '') || (a.line ?? 0) - (b.line ?? 0) || a.message.localeCompare(b.message))
 
@@ -1260,12 +1437,17 @@ function usage() {
     '',
     'Checks every providers/*/ with a manifest.yaml against the provider contract:',
     '  manifest-chart-parity  manifest.yaml spec == the chart CatalogEntry',
-    '  claims-parity          every generated claim is declared (permissionClaims or composes[])',
-    '  claim-selector         a core-group secrets claim is narrowed by selector.matchLabels',
+    '  claims-parity          spec.requires == the generated APIExport\'s permissionClaims',
+    '  claim-selector         a core-group secrets requirement is narrowed by selector.matchLabels',
     '  export-copy            deploy/chart/files/apiexport.yaml == the generated APIExport',
     '  readme-missing         README.md and deploy/chart/README.md exist',
     '  adhoc-rest             no "/api/ route literal in main.go, server/, api/',
-    '  reserved-verb          no dataPlane verb named after a standard Kubernetes verb',
+    '  reserved-verb          no export coordinate named after a standard Kubernetes verb',
+    '  subresource-name       every <resource>/<verb> coordinate is a name kcp accepts',
+    '  subresource-access-claim  an export publishing a coordinate requires subjectaccessreviews',
+    '  export-group           every export resource apiVersion names a group the export serves',
+    '  requires-group         a requirement on a provider names a group that provider serves',
+    '  requires-verb          a required <resource>/<verb> is one its owner declares',
     '',
     'Options:',
     '  --exceptions PATH  JSON registry (default hack/provider-contract-exceptions.json)',

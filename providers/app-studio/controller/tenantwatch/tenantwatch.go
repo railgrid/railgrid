@@ -30,7 +30,7 @@ You may obtain a copy of the License at
 //
 // The identity's own rules are what make that watch legal: the composition
 // the CatalogEntry declares on each dependency (manifest.yaml
-// spec.dependencies[].composes) carries UNNAMED list and watch on the
+// spec.requires) carries UNNAMED list and watch on the
 // dependency kinds, which is the one shape a collection request can be
 // authorized by — RBAC does not apply resourceNames to a list or a watch.
 // The reconcilers reach the workspace at {hub}/clusters/{cluster} as a

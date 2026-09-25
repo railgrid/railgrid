@@ -6,7 +6,7 @@ import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
 import { confirmDialog } from '@/portalkit/confirm'
 import { toast } from '@/portalkit/toast'
-import { useProvidersStore, type ProviderDTO, type PermissionClaim, type AcceptedHubAccess, type AcceptedComposition } from '@/stores/providers'
+import { useProvidersStore, type ProviderDTO, type AcceptedClaim, type AcceptedHubAccess, type AcceptedComposition } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -75,7 +75,7 @@ const edgesProvider = computed(() => providers.byName('edges'))
 const edgesSelfHostState = computed<EdgesSelfHostState>(() => {
   const edges = edgesProvider.value
   if (!edges) return 'absent'
-  return edges.ready && edges.hasUI ? 'ready' : 'unready'
+  return edges.ready && !!edges.serving?.ui ? 'ready' : 'unready'
 })
 
 function showEdgesCatalogEntry() {
@@ -86,7 +86,7 @@ function showEdgesCatalogEntry() {
 
 function bindingAction(p: ProviderDTO) {
   return providerBindingAction({
-    hasAPIExport: !!p.apiExportName,
+    hasAPIExport: !!p.export?.name,
     enabled: providers.isEnabled(p.name),
     disabling: providers.isDisabling(p.name),
   })
@@ -375,7 +375,7 @@ watch(selectedEdgeKey, () => {
 })
 
 async function onDialogConfirm(
-  accept: PermissionClaim[],
+  accept: AcceptedClaim[],
   acceptHubAccess: AcceptedHubAccess[] = [],
   acceptCompositions: AcceptedComposition[] = [],
 ) {
@@ -749,8 +749,8 @@ function dependencyNotice(p: ProviderDTO): string {
                   Self-host
                 </button>
                 <a
-                  v-if="p.selfHostingDocsURL"
-                  :href="p.selfHostingDocsURL"
+                  v-if="p.serving?.selfHosting?.docsURL"
+                  :href="p.serving?.selfHosting?.docsURL"
                   target="_blank"
                   rel="noreferrer noopener"
                   class="inline-flex items-center gap-1 text-[11px] text-text-muted hover:text-accent"
@@ -848,7 +848,7 @@ function dependencyNotice(p: ProviderDTO): string {
                   :class="
                     !p.ready
                       ? 'border border-warning/30 bg-warning-subtle text-warning'
-                      : p.builtinRoute
+                      : p.serving?.ui?.builtinRoute
                         ? 'border border-border-default bg-surface-overlay text-text-secondary'
                         : providers.isDisabling(p.name)
                           ? 'border border-warning/30 bg-warning-subtle text-warning'
@@ -859,7 +859,7 @@ function dependencyNotice(p: ProviderDTO): string {
                                 : 'border border-success/30 bg-success-subtle text-success'
                   "
                 >
-                  {{ !p.ready ? 'Not ready' : p.builtinRoute ? 'Built-in' : providers.isDisabling(p.name) ? 'Disabling' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
+                  {{ !p.ready ? 'Not ready' : p.serving?.ui?.builtinRoute ? 'Built-in' : providers.isDisabling(p.name) ? 'Disabling' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
                 </span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">{{ p.name }}<span v-if="p.version"> · {{ p.version }}</span></p>
@@ -963,9 +963,11 @@ function dependencyNotice(p: ProviderDTO): string {
             >
               Overrides platform provider
             </span>
-            <span v-if="p.hasUI" class="rounded-md border border-border-subtle px-1.5 py-0.5">UI</span>
-            <span v-if="p.hasBackend" class="rounded-md border border-border-subtle px-1.5 py-0.5">Backend</span>
-            <span v-if="p.apiExportName" class="rounded-md border border-border-subtle px-1.5 py-0.5">API</span>
+            <span v-if="p.serving?.ui" class="rounded-md border border-border-subtle px-1.5 py-0.5">UI</span>
+            <!-- serving.backend is published as an empty object: its presence is
+                 the whole answer, so test for the section, not its contents. -->
+            <span v-if="p.serving?.backend" class="rounded-md border border-border-subtle px-1.5 py-0.5">Backend</span>
+            <span v-if="p.export?.name" class="rounded-md border border-border-subtle px-1.5 py-0.5">API</span>
           </div>
 
           <div
@@ -982,8 +984,8 @@ function dependencyNotice(p: ProviderDTO): string {
                  route; third-party load via /providers/{name} →
                  ProviderFrame. -->
             <router-link
-              v-if="p.hasUI && p.ready && (!p.apiExportName || providers.isEnabled(p.name))"
-              :to="scopePath(p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`)"
+              v-if="p.serving?.ui && p.ready && (!p.export?.name || providers.isEnabled(p.name))"
+              :to="scopePath(p.serving?.ui?.builtinRoute ? `/${p.serving.ui.builtinRoute}` : `/providers/${p.name}`)"
               class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent-subtle"
             >
               Open
@@ -992,7 +994,7 @@ function dependencyNotice(p: ProviderDTO): string {
 
             <!-- Readiness gates new bindings, but never removal of an existing
                  binding: an outage is exactly when Disable may be needed. -->
-            <template v-if="p.apiExportName">
+            <template v-if="p.export?.name">
               <!-- Mid-deletion: neither Enable (name still taken) nor Disable
                    (already deleting) is actionable, so say what's happening. -->
               <span

@@ -46,13 +46,6 @@ import (
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
-// exportsWorkspace is where the platform APIExports live (system:controllers).
-const exportsWorkspace = kcppaths.SystemControllers
-
-var apiExportGVR = schema.GroupVersionResource{
-	Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports",
-}
-
 // providerGVR is the declarative Provider provisioning record. Provider objects
 // live in root:railgrid:system:providers; creating one drives the Provider
 // reconciler (pkg/hub/providers/provider_controller.go) to provision the

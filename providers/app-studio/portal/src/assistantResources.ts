@@ -1,7 +1,7 @@
 import type {
   RailgridContext,
   ProjectAssistantContextResource,
-  ProviderActionBoundResource,
+  ProviderResourceCoordinate,
   ProviderItem,
 } from './types'
 import { providerFetch } from './portalkit/tenant'
@@ -48,7 +48,7 @@ function resourceTypeKey(type: Pick<AssistantResourceType, 'provider' | 'apiVers
   return [type.provider, type.apiVersion, type.kind, type.resource].join('\u0000')
 }
 
-export function parseAssistantBoundResource(bound: ProviderActionBoundResource | null | undefined): Omit<AssistantResourceType, 'provider' | 'providerDisplayName'> | null {
+export function parseAssistantBoundResource(bound: ProviderResourceCoordinate | null | undefined): Omit<AssistantResourceType, 'provider' | 'providerDisplayName'> | null {
   if (!bound) return null
   const apiVersion = typeof bound.apiVersion === 'string' ? bound.apiVersion.trim() : ''
   const separator = apiVersion.indexOf('/')
@@ -70,10 +70,14 @@ export function assistantResourceProviders(providers: ProviderItem[]): Array<Pro
       const providerDisplayName = typeof provider.displayName === 'string' && provider.displayName.trim() ? provider.displayName.trim() : providerName
       const seen = new Set<string>()
       const resourceTypes: AssistantResourceType[] = []
-      for (const action of Array.isArray(provider.actions) ? provider.actions : []) {
-        if (!action || typeof action !== 'object') continue
-        if (action.deprecation?.deprecated) continue
-        const parsed = parseAssistantBoundResource(action.boundResource)
+      // An action's bound resource is its PARENT export resource entry: the
+      // catalog declares apiVersion and kind once there, next to the plural
+      // name, so a type is read off that entry and not off the action.
+      for (const resource of Array.isArray(provider.export?.resources) ? provider.export.resources : []) {
+        if (!resource || typeof resource !== 'object') continue
+        const actions = Array.isArray(resource.actions) ? resource.actions : []
+        if (!actions.some((action) => action && typeof action === 'object' && !action.deprecation?.deprecated)) continue
+        const parsed = parseAssistantBoundResource({ apiVersion: resource.apiVersion, kind: resource.kind, resource: resource.name })
         if (!parsed) continue
         const type = { provider: providerName, providerDisplayName, ...parsed }
         const key = resourceTypeKey(type)

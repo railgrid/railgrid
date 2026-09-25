@@ -24,6 +24,7 @@ import (
 	"github.com/railgrid/provider-sdk/dataplane"
 	rbacv1 "k8s.io/api/rbac/v1"
 
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
@@ -39,9 +40,9 @@ import (
 //	B. FOREIGN READ  — get on NAMED resources of another provider's group,
 //	                   where that provider is bound in the tenant workspace.
 //	C. FOREIGN VERB  — {resource}/{verb} of another provider's group, where
-//	                   {verb} is DECLARED by that provider for that resource —
-//	                   either as a catalog action (spec.actions) or as a
-//	                   data-plane verb (spec.dataPlane.verbs) — name-scoped.
+//	                   {verb} is DECLARED by that provider on that resource —
+//	                   as a verb or as an action under
+//	                   spec.export.resources[] — name-scoped.
 //	                   The coordinate is the capability, so it is minted with
 //	                   dataplane.SubresourceVerbs: kcp authorizes a verb call
 //	                   by mapping the HTTP method onto the RBAC verb, and the
@@ -52,7 +53,7 @@ import (
 //	                   name-scoped wherever the API allows it.
 //
 // There is no composition clause. A kind of another provider that the
-// requester DECLARES it composes (spec.dependencies[].composes) is an
+// requester DECLARES it requires (spec.requires[] naming that provider) is an
 // identity-agnostic permission claim on the requester's own APIExport, accepted
 // by the tenant at Enable and served by kcp on the requester's virtual
 // workspace — read, watched and written as the provider itself. Nothing is
@@ -67,7 +68,7 @@ import (
 // export's identityHash, which broke the moment an Org self-hosted the
 // dependency; kcp now resolves a claim with no identityHash per consumer
 // workspace, admitted by the platform's PermissionClaimPolicy, and the
-// dependencies[].composes[] declaration generates both that claim
+// spec.requires[] declaration generates both that claim
 // (provider-sdk/apiexportgen) and the policy entry
 // (hack/generate-permission-claim-policy.mjs).
 
@@ -136,8 +137,8 @@ type ProviderCatalog interface {
 	GroupOwner(apiGroup string) (string, bool)
 	// ExportedGroups returns the API groups provider exports.
 	ExportedGroups(provider string) []string
-	// DeclaredVerbs returns every verb provider declares on resource — catalog
-	// action names and data-plane verbs together. They are the only
+	// DeclaredVerbs returns every coordinate provider declares on resource —
+	// its verbs and its action names together. They are the only
 	// {resource}/{verb} subresources anybody may be granted create on.
 	DeclaredVerbs(provider, resource string) []string
 }
@@ -285,13 +286,14 @@ func (p *Policy) authorizeRule(requester, clusterID string, own map[string]bool,
 			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 				return refuse(CodeUndeclaredVerb, fmt.Sprintf("%q is not a {resource}/{verb} subresource", resource))
 			}
-			// The owning provider must DECLARE the coordinate, as an action
-			// or as a data-plane verb. Before spec.dataPlane.verbs existed,
-			// exec/proxy/delegate lived only in provider code and no
-			// cross-provider capability for them could be minted at all.
+			// The owning provider must DECLARE the coordinate, as a verb or
+			// as an action on the resource it serves it on. Before
+			// spec.export.resources[].verbs existed, exec/proxy/delegate
+			// lived only in provider code and no cross-provider capability
+			// for them could be minted at all.
 			declared := p.catalog.DeclaredVerbs(owner, parts[0])
 			if !containsAny(declared, parts[1]) {
-				return refuse(CodeUndeclaredVerb, fmt.Sprintf("%s declares no action or data-plane verb %q on %s", owner, parts[1], parts[0]))
+				return refuse(CodeUndeclaredVerb, fmt.Sprintf("%s declares no verb or action %q on %s", owner, parts[1], parts[0]))
 			}
 		}
 		return rbacv1.PolicyRule{
@@ -383,13 +385,13 @@ func containsAny(values []string, want string) bool {
 // unknown_group. That is the fail-closed direction: a guess would hand one
 // provider's group to another provider's identity.
 //
-// Declared verbs come from the entry's actions: an action's ID is {name}/v{n}
-// and its boundResource names the resource it applies to, which is exactly the
-// {resource}/{verb} coordinate clause C mints.
+// Declared verbs come from the export: every verb and action is declared ON the
+// resource it is served on, which is exactly the {resource}/{verb} coordinate
+// clause C mints.
 //
 // Declared verbs are the union of two declarations that land on the same RBAC
-// coordinate: catalog ACTIONS (spec.actions — versioned, schema'd,
-// request/response) and DATA-PLANE VERBS (spec.dataPlane.verbs — unversioned,
+// coordinate: ACTIONS (spec.export.resources[].actions — versioned, schema'd,
+// request/response) and VERBS (spec.export.resources[].verbs — unversioned,
 // streaming or proxying: exec, ssh, proxy, delegate). Both are enforced
 // provider-side by a caller-scoped SSAR on {resource}/{verb}; the declaration
 // is what makes the coordinate machine-readable so the hub can tell a real
@@ -452,18 +454,10 @@ func (c *RegistryCatalog) DeclaredVerbs(provider, resource string) []string {
 	if !ok {
 		return nil
 	}
-	verbs := make([]string, 0, len(entry.Actions)+len(entry.DataPlaneVerbs))
-	for _, action := range entry.Actions {
-		if action.Resource.Resource == resource && action.Name != "" {
-			verbs = append(verbs, action.Name)
-		}
-	}
-	for _, verb := range entry.DataPlaneVerbs {
-		if verb.Resource == resource && verb.Verb != "" {
-			verbs = append(verbs, verb.Verb)
-		}
-	}
-	return dedupeSorted(verbs)
+	// ProviderDeclaredVerbs answers for verbs and actions together: the policy
+	// draws no distinction between them, because both are one coordinate
+	// somebody may be granted.
+	return dedupeSorted(providersv1alpha1.ProviderDeclaredVerbs(entry.Export, resource))
 }
 
 // Clause D — the platform allowlist.

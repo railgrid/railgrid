@@ -20,32 +20,32 @@ limitations under the License.
 // A provider declares exactly two objects:
 //
 //   - the CatalogEntry (`manifest.yaml`), hand-written, the single source for
-//     the export's NAME and its PERMISSION CLAIMS (plus everything the portal
-//     shows);
+//     the export's NAME, its PERMISSION CLAIMS and its custom subresources
+//     (plus everything the portal shows);
 //   - the APIExport (`config/kcp/apiexport-<exportName>.yaml`), generated, the
-//     single source for the export's RESOURCES.
+//     single source for the export's stored RESOURCES.
 //
 // kcp's apigen already emits the correct spec.resources — every kind with its
 // immutable, versioned APIResourceSchema name — but it names the export after
 // the API GROUP and knows nothing about claims. This package takes apigen's
-// output, renames the export to the manifest's spec.apiExport.name, stamps
+// output, renames the export to the manifest's spec.export.name, stamps
 // spec.permissionClaims from the manifest, and writes deterministic YAML.
 //
-// spec.permissionClaims has two sources in the manifest, and always both:
-// spec.apiExport.permissionClaims verbatim, then one claim per
-// spec.dependencies[].composes[] entry the first list does not already cover
-// (see MergeCompositionClaims). A composition is the provider saying it creates
-// and manages a dependency's kind inside the tenant workspace, so it IS a
-// permission claim; writing it twice would let the two drift.
+// spec.permissionClaims has exactly ONE source: spec.requires, the list of
+// everything the provider needs from groups it does not own. It is keyed by API
+// group — a group belongs to one provider, so a repeated group is invalid input
+// rather than something to merge — and each of its resources becomes one claim
+// (see ExportClaims). There is no second place to write a claim, so there is
+// nothing for two lists to drift apart about.
 //
 // No claim carries an identityHash: a first-party claim is identity-agnostic,
 // resolved by kcp per consumer workspace against whatever export that
 // workspace bound and admitted by the platform's PermissionClaimPolicy.
 //
 // The same parser serves runtime callers: a provider whose resources are minted
-// at runtime rather than by apigen still reads its claims from
-// the manifest through LoadManifest, so a claim is written in exactly one place
-// no matter how the provider gets its schemas.
+// at runtime rather than by apigen still reads its claims from the manifest
+// through LoadRequirements, so a claim is written in exactly one place no
+// matter how the provider gets its schemas.
 package apiexportgen
 
 import (
@@ -74,97 +74,100 @@ const Header = `# Copyright 2026 The Railgrid Authors.
 # GENERATED FILE — DO NOT EDIT.
 #
 # Written by provider-sdk/cmd/apiexportgen from two inputs:
-#   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
+#   metadata.name                         <- manifest.yaml spec.export.name
+#   spec.permissionClaims                 <- manifest.yaml spec.requires
 #   spec.resources                        <- kcp apigen (hack/apigen.sh), plus
 #                                            one "<resource>/<verb>" custom
 #                                            subresource per manifest.yaml
-#                                            spec.dataPlane.verbs[] entry and
-#                                            spec.actions[] entry, naming the
-#                                            schema apigen minted for the verb's
+#                                            spec.export.resources[].verbs[] and
+#                                            spec.export.resources[].actions[]
+#                                            entry, naming the schema apigen
+#                                            minted for the verb's
 #                                            "<Verb>Request" kind
 # Regenerate with: make codegen-<provider>-provider. No claim carries an
 # identityHash: kcp resolves a first-party claim per consumer workspace against
 # whatever export that workspace bound (PermissionClaimPolicy admits it).
 `
 
-// PermissionClaim mirrors apis/providers/v1alpha1.ProviderPermissionClaim.
+// coordinateClaimVerbs is what a claim on a VERB coordinate ("instances/exec")
+// spells. The verb is the capability; which HTTP method reaches it — which is
+// what kcp maps onto an RBAC verb on a custom subresource — is the serving
+// provider's transport detail, so the claim covers every verb rather than
+// guessing one.
+var coordinateClaimVerbs = []any{"*"}
+
+// LabelSelector mirrors apis/providers/v1alpha1.ProviderLabelSelector, and is
+// rendered into the generated APIExport as kcp's PermissionClaimSelector.
 //
 // It is duplicated here rather than imported because provider-sdk is a module
 // of its own with no dependency on the railgrid monorepo — that independence is
 // what lets a provider be built outside this repository. The JSON tags MUST
 // stay identical to the CatalogEntry type's, since that is what makes a
 // manifest parse the same way here and in the hub.
-type PermissionClaim struct {
-	// Group is the API group, empty for core kubernetes types.
-	Group string `json:"group,omitempty"`
-	// Resource is the plural resource name.
-	Resource string `json:"resource"`
-	// Verbs are the claimed verbs.
-	Verbs []string `json:"verbs,omitempty"`
-	// TenantScoped is a CatalogEntry/Enable concept (it drives auto-accept in
-	// the portal) and is deliberately NOT part of the kcp APIExport spec. It is
-	// parsed so a manifest round-trips, and dropped when the export is built.
-	TenantScoped bool `json:"tenantScoped,omitempty"`
-	// Selector narrows the claim to the objects carrying a label set. It is
-	// rendered into the export as kcp's spec.permissionClaims[].defaultSelector.
-	Selector *PermissionClaimSelector `json:"selector,omitempty"`
-}
-
-// PermissionClaimSelector mirrors
-// apis/providers/v1alpha1.ProviderPermissionClaimSelector, and is rendered into
-// the generated APIExport as kcp's PermissionClaimSelector.
 //
 // Only matchLabels is offered. kcp's virtual-workspace admission stamps a
 // claim's matchLabels onto objects the provider writes through the export, but
 // deliberately does not try to synthesize labels for a matchExpressions
 // selector — a provider declaring one could not create the objects it claims.
-type PermissionClaimSelector struct {
+type LabelSelector struct {
 	// MatchLabels is the label set a claimed object must carry, ANDed.
 	MatchLabels map[string]string `json:"matchLabels,omitempty"`
 }
 
-// APIExportDecl is a CatalogEntry's spec.apiExport: everything the manifest
-// says about the provider's APIExport.
-type APIExportDecl struct {
-	Name             string            `json:"name"`
-	PermissionClaims []PermissionClaim `json:"permissionClaims,omitempty"`
+// ExportDecl is a CatalogEntry's spec.export: everything the manifest says
+// about the provider's APIExport.
+type ExportDecl struct {
+	// Name is the APIExport name, which is NOT an API group: each resource
+	// below names its own apiVersion.
+	Name string `json:"name"`
+	// Resources are the kinds the export serves that carry a verb or an
+	// action. A kind with neither needs no entry at all.
+	Resources []ExportResource `json:"resources,omitempty"`
 }
 
-// Composition mirrors apis/providers/v1alpha1.ProviderComposition: one
-// (group, resource) of a DEPENDENCY provider that this provider's reconcilers
-// create and manage inside the tenant workspace, with the verbs they need.
-//
-// It is duplicated here for the same reason PermissionClaim is — provider-sdk
-// is its own module — and the JSON tags must stay identical to the
-// CatalogEntry type's.
-type Composition struct {
-	Group    string   `json:"group"`
-	Resource string   `json:"resource"`
-	Verbs    []string `json:"verbs,omitempty"`
+// ExportResource is one entry of spec.export.resources[]: one of the
+// provider's own kinds with the verbs and actions it serves on it. The
+// apiVersion is declared once, here, for every coordinate hanging off it.
+type ExportResource struct {
+	Name       string   `json:"name"`
+	APIVersion string   `json:"apiVersion"`
+	Kind       string   `json:"kind"`
+	Verbs      []Verb   `json:"verbs,omitempty"`
+	Actions    []Action `json:"actions,omitempty"`
 }
 
-// Dependency mirrors apis/providers/v1alpha1.ProviderDependency.
-type Dependency struct {
-	Name     string        `json:"name"`
-	Composes []Composition `json:"composes,omitempty"`
+// Requirement mirrors apis/providers/v1alpha1.ProviderRequirement: everything
+// this provider needs from ONE API group it does not own — another provider's
+// kinds and verbs, or a platform builtin.
+type Requirement struct {
+	// Provider is the CatalogEntry name of the provider serving Group, empty
+	// for a platform builtin. It drives the hub's Enable ordering and has no
+	// counterpart on an APIExport.
+	Provider string `json:"provider,omitempty"`
+	// Group is the API group claimed, empty for the core group.
+	Group string `json:"group,omitempty"`
+	// Resources are the coordinates claimed in Group.
+	Resources []RequiredResource `json:"resources,omitempty"`
+}
+
+// RequiredResource is one claimed coordinate: a kind with the verbs needed on
+// it, or "<resource>/<verb>" to claim one of that provider's declared verbs.
+type RequiredResource struct {
+	Name     string         `json:"name"`
+	Verbs    []string       `json:"verbs,omitempty"`
+	Selector *LabelSelector `json:"selector,omitempty"`
 }
 
 type catalogEntryDoc struct {
 	Kind string `json:"kind"`
 	Spec struct {
-		APIExport    *APIExportDecl `json:"apiExport,omitempty"`
-		Dependencies []Dependency   `json:"dependencies,omitempty"`
-		// DataPlane and Actions are the two places a provider declares a
-		// {resource, verb} coordinate. Both become kcp custom subresources;
-		// see subresources.go.
-		DataPlane *DataPlaneDecl `json:"dataPlane,omitempty"`
-		Actions   []Action       `json:"actions,omitempty"`
+		// Export is where every coordinate the provider publishes is
+		// declared: the verbs and the actions of each resource it serves.
+		// Both become kcp custom subresources; see subresources.go.
+		Export *ExportDecl `json:"export,omitempty"`
+		// Requires is the single source of the export's permission claims.
+		Requires []Requirement `json:"requires,omitempty"`
 	} `json:"spec"`
-}
-
-// DataPlaneDecl is a CatalogEntry's spec.dataPlane.
-type DataPlaneDecl struct {
-	Verbs []DataPlaneVerb `json:"verbs,omitempty"`
 }
 
 // documentSeparator matches a YAML document break on its own line. The
@@ -188,41 +191,32 @@ func parseCatalogEntry(raw []byte) (*catalogEntryDoc, error) {
 		if entry.Kind != "CatalogEntry" {
 			continue
 		}
-		if entry.Spec.APIExport == nil || entry.Spec.APIExport.Name == "" {
-			return nil, fmt.Errorf("CatalogEntry has no spec.apiExport.name")
+		if entry.Spec.Export == nil || entry.Spec.Export.Name == "" {
+			return nil, fmt.Errorf("CatalogEntry has no spec.export.name")
 		}
 		return &entry, nil
 	}
 	return nil, fmt.Errorf("no kind: CatalogEntry document")
 }
 
-// ParseManifest returns the spec.apiExport of the CatalogEntry document in raw.
-func ParseManifest(raw []byte) (*APIExportDecl, error) {
+// ParseExport returns the spec.export of the CatalogEntry document in raw.
+func ParseExport(raw []byte) (*ExportDecl, error) {
 	entry, err := parseCatalogEntry(raw)
 	if err != nil {
 		return nil, err
 	}
-	return entry.Spec.APIExport, nil
+	return entry.Spec.Export, nil
 }
 
-// ParseCompositions returns every spec.dependencies[].composes[] entry of the
-// CatalogEntry document in raw, flattened in manifest order (dependencies in
-// the order written, each dependency's compositions in the order written).
-// File order is what makes the generated claim list deterministic.
-func ParseCompositions(raw []byte) ([]Composition, error) {
+// ParseRequirements returns the spec.requires of the CatalogEntry document in
+// raw, in manifest order. File order is what makes the generated claim list
+// deterministic.
+func ParseRequirements(raw []byte) ([]Requirement, error) {
 	entry, err := parseCatalogEntry(raw)
 	if err != nil {
 		return nil, err
 	}
-	return flattenCompositions(entry.Spec.Dependencies), nil
-}
-
-func flattenCompositions(dependencies []Dependency) []Composition {
-	out := []Composition{}
-	for _, dependency := range dependencies {
-		out = append(out, dependency.Composes...)
-	}
-	return out
+	return entry.Spec.Requires, nil
 }
 
 // readFile reads a manifest, wrapping the error the way every Load* here does.
@@ -234,42 +228,53 @@ func readFile(path string) ([]byte, error) {
 	return raw, nil
 }
 
-// LoadManifest reads a CatalogEntry manifest and returns its spec.apiExport.
-func LoadManifest(path string) (*APIExportDecl, error) {
+// LoadExport reads a CatalogEntry manifest and returns its spec.export.
+func LoadExport(path string) (*ExportDecl, error) {
 	raw, err := readFile(path)
 	if err != nil {
 		return nil, err
 	}
-	decl, err := ParseManifest(raw)
+	decl, err := ParseExport(raw)
 	if err != nil {
 		return nil, fmt.Errorf("manifest %s: %w", path, err)
 	}
 	return decl, nil
 }
 
-// LoadCompositions reads a CatalogEntry manifest and returns its flattened
-// spec.dependencies[].composes[].
-func LoadCompositions(path string) ([]Composition, error) {
-	raw, err := os.ReadFile(path)
+// LoadRequirements reads a CatalogEntry manifest and returns its spec.requires.
+func LoadRequirements(path string) ([]Requirement, error) {
+	raw, err := readFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading manifest %s: %w", path, err)
+		return nil, err
 	}
-	compositions, err := ParseCompositions(raw)
+	requirements, err := ParseRequirements(raw)
 	if err != nil {
 		return nil, fmt.Errorf("manifest %s: %w", path, err)
 	}
-	return compositions, nil
+	return requirements, nil
 }
 
-// ExportClaims renders manifest claims in the kcp apis.kcp.io/v1alpha2 APIExport
-// shape: {group?, resource, verbs, defaultSelector?}. Three deliberate
-// omissions:
+// ExportClaims renders spec.requires as the export's spec.permissionClaims, in
+// the kcp apis.kcp.io/v1alpha2 shape: {group?, resource, verbs,
+// defaultSelector?}.
 //
-//   - an empty group is left out entirely (core types), which is what kcp's own
-//     serialization does and what install.ApplyAPIExport wrote before the
-//     export became a file;
-//   - tenantScoped is a CatalogEntry concept with no kcp counterpart;
-//   - identityHash never appears: claims are identity-agnostic.
+// One requires entry is one API GROUP, and each of its resources is one claim:
+//
+//   - a plain resource claims exactly the verbs it declares;
+//   - a "<resource>/<verb>" coordinate claims every verb ("*"), because kcp
+//     authorizes the HTTP METHOD as the RBAC verb on a custom subresource (GET
+//     for a log, POST for a sync, DELETE for a proxied session) and which one a
+//     verb uses is the serving provider's business;
+//   - an omitted group is the core group, and is left out of the claim
+//     entirely, which is what kcp's own serialization does.
+//
+// Two further omissions are deliberate. Tenant scope is no longer a field:
+// everything under spec.requires is tenant-scoped by definition, and the kcp
+// claim has no counterpart for it, so nothing is emitted. And identityHash
+// never appears: claims are identity-agnostic, resolved by kcp per consumer
+// workspace against whichever copy of the serving provider that workspace
+// bound — which is exactly what keeps working when an organization self-hosts
+// the dependency.
 //
 // The manifest's `selector` becomes the export claim's `defaultSelector`,
 // kcp's name for the scope an APIExport SUGGESTS. It is advisory on the export
@@ -280,79 +285,70 @@ func LoadCompositions(path string) ([]Composition, error) {
 // the provider asks for (condition PermissionClaimsValid, reason
 // PermissionClaimsMismatch), and it is the scope kcp uses for WorkspaceType
 // default bindings, which never pass through the hub at all.
-func ExportClaims(claims []PermissionClaim) []any {
-	out := make([]any, 0, len(claims))
-	for _, claim := range claims {
-		entry := map[string]any{"resource": claim.Resource}
-		if claim.Group != "" {
-			entry["group"] = claim.Group
+//
+// It fails closed on input the CatalogEntry contract forbids, rather than
+// generating an export kcp would refuse or one that says more than its author
+// did: a repeated group (there is one entry per group, so the second is a lost
+// edit, not something to merge), a resource claimed twice in one group (kcp
+// refuses an export claiming one group/resource more than once), a plain
+// resource with no verbs, and verbs or a selector on a verb coordinate.
+func ExportClaims(requirements []Requirement) ([]any, error) {
+	out := make([]any, 0, len(requirements)*2)
+	seenGroup := make(map[string]struct{}, len(requirements))
+	for _, requirement := range requirements {
+		if _, dup := seenGroup[requirement.Group]; dup {
+			return nil, fmt.Errorf("spec.requires declares the group %s twice: one group belongs to one provider, so state everything needed from it in a single entry", groupLabel(requirement.Group))
 		}
-		if len(claim.Verbs) > 0 {
-			verbs := make([]any, 0, len(claim.Verbs))
-			for _, verb := range claim.Verbs {
+		seenGroup[requirement.Group] = struct{}{}
+		seen := make(map[string]struct{}, len(requirement.Resources))
+		for _, resource := range requirement.Resources {
+			if _, dup := seen[resource.Name]; dup {
+				return nil, fmt.Errorf("spec.requires[%s] claims %q twice: kcp refuses an APIExport that claims one group/resource more than once", groupLabel(requirement.Group), resource.Name)
+			}
+			seen[resource.Name] = struct{}{}
+			entry := map[string]any{"resource": resource.Name}
+			if requirement.Group != "" {
+				entry["group"] = requirement.Group
+			}
+			if strings.Contains(resource.Name, "/") {
+				if len(resource.Verbs) > 0 {
+					return nil, fmt.Errorf("spec.requires[%s] claims %q with verbs: the verb IS the capability, and which HTTP method reaches it is the serving provider's business, so the generated claim spells every verb — drop the verbs", groupLabel(requirement.Group), resource.Name)
+				}
+				if resource.Selector != nil {
+					return nil, fmt.Errorf("spec.requires[%s] claims %q with a selector: a selector narrows which objects a claim covers, and a verb is invoked on an object the parent claim already covers", groupLabel(requirement.Group), resource.Name)
+				}
+				entry["verbs"] = append([]any(nil), coordinateClaimVerbs...)
+				out = append(out, entry)
+				continue
+			}
+			if len(resource.Verbs) == 0 {
+				return nil, fmt.Errorf("spec.requires[%s] claims %q with no verbs: a claim on a kind has to say what it needs on it", groupLabel(requirement.Group), resource.Name)
+			}
+			verbs := make([]any, 0, len(resource.Verbs))
+			for _, verb := range resource.Verbs {
 				verbs = append(verbs, verb)
 			}
 			entry["verbs"] = verbs
+			if selector := exportSelector(resource.Selector); selector != nil {
+				entry["defaultSelector"] = selector
+			}
+			out = append(out, entry)
 		}
-		if selector := exportSelector(claim.Selector); selector != nil {
-			entry["defaultSelector"] = selector
-		}
-		out = append(out, entry)
 	}
-	return out
+	return out, nil
 }
 
-// MergeCompositionClaims appends one permission claim per composition that the
-// manifest's own spec.apiExport.permissionClaims does not already cover, and
-// returns the combined list. The manifest's claims keep their order and their
-// contents; composition claims follow, in manifest order.
-//
-// IDENTITY-AGNOSTIC: the appended claims carry no identityHash, deliberately.
-// A composition is resolved per consumer workspace — against whatever APIExport
-// that workspace bound for the claimed group — which is exactly what keeps
-// working when an organization runs its own copy of the dependency provider. A
-// claim with no identityHash is admitted by a kcp that serves admin.kcp.io
-// PermissionClaimPolicy (kcp-dev/kcp#4388) when its cluster-scoped policy pairs
-// this export's own API group (the claimer) with the claimed group; see
-// hack/generate-permission-claim-policy.mjs and config/kcp/permissionclaimpolicy.yaml,
-// which are generated from these same composes[] entries. That is the normal
-// behaviour: every generated export carries its compositions as claims.
-//
-// Duplicates are decided on (group, resource) alone: if the manifest already
-// claims that pair, its entry is left EXACTLY as written — same verbs, same
-// selector, same identityHash policy — and no second claim is appended. A verb
-// disagreement therefore resolves in the manifest's favour, silently and by
-// design: an explicit spec.apiExport.permissionClaims entry is a deliberate,
-// hand-written statement about kcp's wire contract, while a composition is a
-// statement about what the hub will mint; letting a composition widen a
-// hand-written claim would make the generated export say more than its author
-// did. The narrower or wider composition verb set is simply not used.
-func MergeCompositionClaims(claims []PermissionClaim, compositions []Composition) []PermissionClaim {
-	declared := make(map[string]struct{}, len(claims))
-	for _, claim := range claims {
-		declared[claim.Group+"/"+claim.Resource] = struct{}{}
+// groupLabel names a group in an error the way its author wrote it.
+func groupLabel(group string) string {
+	if group == "" {
+		return "core"
 	}
-	merged := make([]PermissionClaim, 0, len(claims)+len(compositions))
-	merged = append(merged, claims...)
-	for _, composition := range compositions {
-		key := composition.Group + "/" + composition.Resource
-		if _, ok := declared[key]; ok {
-			continue
-		}
-		declared[key] = struct{}{}
-		verbs := append([]string(nil), composition.Verbs...)
-		merged = append(merged, PermissionClaim{
-			Group:    composition.Group,
-			Resource: composition.Resource,
-			Verbs:    verbs,
-		})
-	}
-	return merged
+	return group
 }
 
 // exportSelector renders a manifest selector as kcp's PermissionClaimSelector,
 // or nil when the claim carries none (which kcp reads as matchAll).
-func exportSelector(selector *PermissionClaimSelector) map[string]any {
+func exportSelector(selector *LabelSelector) map[string]any {
 	if selector == nil || len(selector.MatchLabels) == 0 {
 		return nil
 	}
@@ -364,18 +360,21 @@ func exportSelector(selector *PermissionClaimSelector) map[string]any {
 }
 
 // BuildExport assembles the APIExport object. resources is apigen's
-// spec.resources verbatim (nil for a provider whose resources are minted at
-// runtime); claims come from the manifest.
-func BuildExport(name string, resources []any, claims []PermissionClaim) map[string]any {
+// spec.resources plus this generator's subresource entries (nil for a provider
+// whose resources are minted at runtime); claims are ExportClaims' output.
+func BuildExport(name string, resources, claims []any) map[string]any {
 	if resources == nil {
 		resources = []any{}
+	}
+	if claims == nil {
+		claims = []any{}
 	}
 	return map[string]any{
 		"apiVersion": "apis.kcp.io/v1alpha2",
 		"kind":       "APIExport",
 		"metadata":   map[string]any{"name": name},
 		"spec": map[string]any{
-			"permissionClaims": ExportClaims(claims),
+			"permissionClaims": claims,
 			"resources":        resources,
 		},
 	}
@@ -432,7 +431,7 @@ func Generate(opts Options) ([]byte, error) {
 
 // GenerateAll produces the APIExport and the verb schemas it references.
 func GenerateAll(opts Options) (*Output, error) {
-	decl, err := LoadManifest(opts.ManifestPath)
+	decl, err := LoadExport(opts.ManifestPath)
 	if err != nil {
 		return nil, err
 	}
@@ -460,7 +459,7 @@ func GenerateAll(opts Options) (*Output, error) {
 			return nil, err
 		}
 	}
-	// Every declared data-plane verb and catalogued action is a kcp custom
+	// Every declared verb and every catalogued action is a kcp custom
 	// subresource: one more spec.resources[] entry named "<resource>/<verb>",
 	// routed to the provider's own server through the endpoint object
 	// provider-sdk/install publishes, naming the schema apigen minted for the
@@ -480,15 +479,17 @@ func GenerateAll(opts Options) (*Output, error) {
 			return nil, fmt.Errorf("manifest %s: %w", opts.ManifestPath, err)
 		}
 	}
-	// Every spec.dependencies[].composes[] entry is a permission claim, always:
-	// the composition declaration is the single place a provider says it
-	// manages a dependency's kind, and the kcp claim, the hub's minted RBAC and
-	// config/kcp/permissionclaimpolicy.yaml all come from it.
-	compositions, err := LoadCompositions(opts.ManifestPath)
+	// spec.requires is the ONE source of the export's claims: the single place
+	// a provider says what it reaches on a group it does not own, which also
+	// drives the hub's minted RBAC and config/kcp/permissionclaimpolicy.yaml.
+	requirements, err := LoadRequirements(opts.ManifestPath)
 	if err != nil {
 		return nil, err
 	}
-	claims := MergeCompositionClaims(decl.PermissionClaims, compositions)
+	claims, err := ExportClaims(requirements)
+	if err != nil {
+		return nil, fmt.Errorf("manifest %s: %w", opts.ManifestPath, err)
+	}
 	resources = append(resources, entries...)
 	export, err := Marshal(BuildExport(decl.Name, resources, claims))
 	if err != nil {

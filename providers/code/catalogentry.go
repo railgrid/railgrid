@@ -59,30 +59,25 @@ func catalogEntryPath() string {
 	return p
 }
 
-// actionsRouteVerbs are this provider's two coordinates that are DECLARED as
-// data-plane verbs and SERVED by the actions handler.
-//
-// stage-snapshot and stage-commit-bundle carry bodies (a 25 MiB git bundle, a
-// 48 MiB source tree) that CatalogEntry.spec.actions cannot describe, because
-// limits.maxInputBytes is capped at 1 MiB — so they are declared under
-// spec.dataPlane.verbs to keep their coordinate grantable, and documented as
-// the catalogue's one exception (docs/provider-actions.md §"Uncatalogued
-// large-upload verbs"). What actually serves them is actions/server.go,
-// exactly like a catalogued action at the same contract version — this
-// provider registers no separate data-plane handler at all.
-//
-// The derived table's route for these two is therefore corrected to the
-// actions handler. The SET of coordinates still comes only from the manifest,
-// and a coordinate that has disappeared from it is an error rather than a
-// silent no-op.
-var actionsRouteVerbs = map[string]string{
-	"repositories/" + actions.StageSnapshot:     actions.ContractVersion,
-	"repositories/" + actions.StageCommitBundle: actions.ContractVersion,
-}
-
 // subresourceRoutes derives serve.Options.Subresources from the CatalogEntry
 // manifest, so the coordinates this provider answers on the shard-forwarded
 // path can never drift from the ones it declares.
+//
+// Each of spec.export.resources[] carries both halves of the declaration — its
+// actions[] with the contract version each is served at, and its verbs[] —
+// so the SET of coordinates and the version of every catalogued one come
+// straight out of the manifest; there is no table here naming either.
+//
+// The one correction: this provider registers no data-plane handler at all, so
+// its declared verbs are served by actions/server.go too, exactly like a
+// catalogued action at the one contract version. That is the whole reason
+// stage-snapshot and stage-commit-bundle are verbs rather than actions — their
+// bodies (a 25 MiB git bundle, a 48 MiB source tree) are past the 1 MiB
+// limits.maxInputBytes ceiling an action may declare, so no honest action
+// declaration exists, but the coordinate still has to be declared to be
+// grantable (docs/provider-actions.md §"Uncatalogued large-upload verbs").
+// actions/catalog_declaration_test.go is what pins those two by name; nothing
+// here needs to know which verbs they are.
 //
 // There is no fallback: a verb is reached only as a kcp custom subresource, so
 // a provider with no manifest has no data plane at all, and starting anyway
@@ -97,11 +92,11 @@ func subresourceRoutes() (map[string]serve.SubresourceRoute, error) {
 	if err != nil {
 		return nil, err
 	}
-	for coordinate, version := range actionsRouteVerbs {
-		if _, declared := routes[coordinate]; !declared {
-			return nil, fmt.Errorf("code: %s is served by the actions handler but %s no longer declares it; the coordinate must stay declared (as a data-plane verb) or stop being served", coordinate, path)
+	for coordinate, route := range routes {
+		if route.Action {
+			continue
 		}
-		routes[coordinate] = serve.SubresourceRoute{Action: true, Version: version}
+		routes[coordinate] = serve.SubresourceRoute{Action: true, Version: actions.ContractVersion}
 	}
 	log.Printf("code: serving %d declared coordinate(s) on the kcp custom-subresource path (from %s)", len(routes), path)
 	return routes, nil

@@ -68,8 +68,8 @@ const TokenTTL = 24 * 60 * 60 // seconds; converted where the request is built
 // HTTP method onto the RBAC verb when it authorizes the custom subresource, so
 // the coordinate is the capability and the method is transport detail. The
 // policy will only mint one for a verb the owning provider declares (clause
-// C), so this list and manifest.yaml's spec.dataPlane.verbs are the same list
-// seen from two sides.
+// C), so this list and manifest.yaml's spec.export.resources[].verbs are the
+// same list seen from two sides.
 //
 //   - proxy            the agent presents it on every reconnect (class (f))
 //   - agent-token      the agent refreshes its own credential with it

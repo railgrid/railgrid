@@ -230,10 +230,8 @@ test('enable keeps the current projection until its post-write refresh completes
     name: 'edges',
     displayName: 'Edges',
     ready: true,
-    hasUI: true,
-    hasBackend: true,
-    apiExportPath: 'root:railgrid:providers:edges',
-    apiExportName: 'edges.providers.railgrid.ai',
+    serving: { ui: {}, backend: {} },
+    export: { name: 'edges.providers.railgrid.ai', path: 'root:railgrid:providers:edges' },
   }, [])
   for (let i = 0; i < 10 && store.bindingsLoadState !== 'loading'; i++) await Promise.resolve()
   assert.equal(store.bindingsLoadState, 'loading')

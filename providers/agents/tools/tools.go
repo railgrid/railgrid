@@ -108,7 +108,7 @@ type SpawnPolicy struct {
 }
 
 // VerbCaller addresses a verb ANOTHER provider serves — a custom subresource
-// this provider has claimed under spec.dependencies[].composes[] — through
+// this provider has claimed under spec.requires[].resources[] — through
 // this provider's own APIExport virtual workspace, with this provider's own
 // credential. *dataplane.Callers implements it; tests substitute a fake.
 type VerbCaller interface {
@@ -122,7 +122,7 @@ type VerbCaller interface {
 //
 // The call is made AS THIS PROVIDER: the infrastructure provider's
 // instances/proxy verb is a custom subresource the agents APIExport claims
-// (manifest.yaml spec.dependencies), so kcp serves it on this provider's own
+// (manifest.yaml spec.requires), so kcp serves it on this provider's own
 // virtual workspace, authorizes it against the claim the tenant accepted, and
 // forwards it to infrastructure impersonating this provider. No caller
 // credential travels: an interactive run and an unattended one reach an
@@ -144,7 +144,7 @@ func (d DataPlane) Available() bool {
 // InstanceAPIGroup is the API group a Connection's instance reference lives in.
 // This IS a legitimate constant: it is the API contract between the two
 // providers, not a routing detail — an agent's Connection names an instance of
-// this group, and the composition claim in manifest.yaml names the same group.
+// this group, and the requirement in manifest.yaml names the same group.
 const InstanceAPIGroup = "infrastructure.railgrid.ai"
 
 // InstanceAPIVersion is the version the instances resource is served at.

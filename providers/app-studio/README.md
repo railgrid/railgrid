@@ -69,11 +69,11 @@ can proceed independently. `PUT /api/projects/{project}/repository` accepts
 | API types | `apis/ai/v1alpha1/` — the `Project`, `Session`, and `Studio` CRD types (deepcopy generated) |
 | Typed client | `client/` — trimmed dynamic client for the Project resource |
 | Tenant client | `tenant/` — token-forwarding `ClientFactory` (host+TLS from the provider kubeconfig, caller token per request) |
-| Cross-provider reach | `internal/crossprovider/` — the dependency coordinates and the composition the reconcilers are granted; `controller/{project,studio}/identity.go` mint it, `controller/tenantwatch/` watches with it |
+| Cross-provider reach | `internal/crossprovider/` — the dependency coordinates and the requirements the reconcilers are granted; `controller/{project,studio}/identity.go` mint it, `controller/tenantwatch/` watches with it |
 | Message store | `store/` — Postgres + in-memory + envelope-encryption implementations |
 | Development runtime | `api/development_*` + `api/dataplane_client.go` — template-selected development instances, component-aware sync, restart/log/status calls, and edge-checked preview authorization |
 | Portal | `portal/` — the Vue micro-frontend (`<railgrid-provider-app-studio>`), embedded via `assets.go` |
-| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.railgrid.ai`) + Project/Session/Studio schemas + the Code and Infrastructure dependencies with what this provider composes from each + exactly one tenant-scoped permission claim, on `secrets` |
+| Registration | `manifest.yaml` — CatalogEntry: `spec.export` (the `ai.railgrid.ai` APIExport with `projects`, `sessions` and `studios` and the verbs on each), `spec.requires` (one entry per API group: Infrastructure, Code, `authorization.k8s.io`, and the label-selected core `secrets`), `spec.serving` and `spec.hub` |
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
 | CI (mirror) | `.github/workflows/{image,chart}.yaml` — publish the image + chart to GHCR (run only in the mirror) |
 
@@ -96,7 +96,7 @@ remote skill registry. Provider packages are read-only system skills qualified
 as `providers/<provider>/<packageName>`.
 
 Provider package distribution and provider/action enablement are separate. A
-validated `CatalogEntry.spec.assistantSkills` entry is distributed through the
+validated `CatalogEntry.spec.hub.assistantSkills` entry is distributed through the
 authenticated hub `/api/providers` catalog. It follows the system-skill default
 of enabled, and each project may disable or re-enable it. The package's version
 and canonical `sha256:` digest are retained in the same catalog snapshot used
@@ -530,8 +530,10 @@ kube path of the custom subresource
 contract version is the serving provider's declaration, not a path segment).
 kcp authorizes the call against the claim App Studio's export carries on that
 coordinate, so an integration's action must be one App Studio has claimed
-(`manifest.yaml` `spec.dependencies[].composes[]`); the caller's identity
-travels as a label only. The route is composed from the grant's bound resource;
+(`manifest.yaml` `spec.requires[].resources[]`); the caller's identity
+travels as a label only. The route is composed from the coordinate the catalog
+publishes the action on — its parent `spec.export.resources[]` entry's
+`apiVersion`, `kind` and plural name;
 App Studio never learns a provider URL or embeds provider transport logic.
 Caller credentials, provider backend URLs, resource overrides, and raw SQL
 are rejected.

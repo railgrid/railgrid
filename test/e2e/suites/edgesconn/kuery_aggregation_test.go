@@ -402,8 +402,8 @@ func applyKueryManifests() error {
 			}
 			if obj.GetKind() == "CatalogEntry" {
 				overrideURL := "http://localhost:" + kueryPort
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url")
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url")
+				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "ui", "url")
+				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "backend", "url")
 			}
 			deadline := time.Now().Add(90 * time.Second)
 			for {

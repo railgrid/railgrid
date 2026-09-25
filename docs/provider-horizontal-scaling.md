@@ -104,7 +104,7 @@ load-bearing findings:
 
 **The hub deliberately has no affinity, and nothing can address a specific
 provider pod.** Every request to a provider goes hub backend proxy →
-`CatalogEntry.spec.backend.url` → a plain ClusterIP Service
+`CatalogEntry.spec.serving.backend.url` → a plain ClusterIP Service
 (`pkg/hub/providers/proxy.go:293-326`, `docs/helm.md:190-192`: "no request is
 pinned to a pod"). There is no headless Service, no `sessionAffinity`, no
 pod-DNS use anywhere in the platform charts. Any per-pod routing scheme is

@@ -874,7 +874,7 @@ func (c *Controller) dropLocal(ctx context.Context, storeName string, releaseCla
 //	<endpoint>/clusters/<tenant>/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/<edge>/k8s
 //
 // kcp serves kubernetesclusters/k8s there because the tenant accepted kuery's
-// claim on it (spec.dependencies[].composes), authorizes each call against
+// claim on it (spec.requires), authorizes each call against
 // that claim, and forwards it to the edges provider under kuery's identity;
 // the edges gate trusts the claim. No per-workspace identity is minted: the
 // credential is the provider's own, and the claim is the authorization.

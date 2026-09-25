@@ -103,7 +103,8 @@ GET {vw}/clusters/<cluster>/apis/infrastructure.railgrid.ai/v1alpha1/instances/<
 ```
 
 The hop is authorized by the claim the agents provider declares
-(`spec.dependencies[].composes[]`, `instances/proxy`, `verbs: ["*"]`) and the
+(`spec.requires[]`, resource `instances/proxy` with no verbs of its own —
+the generated claim spells `verbs: ["*"]`) and the
 tenant accepted; kcp forwards it to infrastructure under the agents identity,
 and infrastructure's gate reads the instance as itself. No user credential is
 carried, and nothing is minted, stored or rotated for the instance.
