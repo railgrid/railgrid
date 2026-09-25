@@ -188,10 +188,13 @@ func TestMain(m *testing.M) {
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
 	if err := initCmd.Run(); err != nil {
+		// Read the log BEFORE cleanup: it removes the whole data dir, so a tail
+		// taken afterwards reports only that the file is gone. CI does not
+		// upload this directory either, so stderr is the only place the reason
+		// survives — without it the failure says just "exit status 1".
+		tail := tailFile(initLog.Name(), 60)
 		cleanup()
-		// The log file lives in a temp dir CI does not upload, so the tail has
-		// to reach stderr or the failure says only "exit status 1".
-		fmt.Fprintf(os.Stderr, "provider init failed: %v (log: %s)\n%s\n", err, initLog.Name(), tailFile(initLog.Name(), 60))
+		fmt.Fprintf(os.Stderr, "provider init failed: %v (log: %s)\n%s\n", err, initLog.Name(), tail)
 		os.Exit(1)
 	}
 
@@ -228,8 +231,9 @@ func TestMain(m *testing.M) {
 	fmt.Fprintf(os.Stderr, "infrastructure-provider started (pid=%d, port=:%s)\n", provCmd.Process.Pid, providerPort)
 
 	if err := waitReady("http://127.0.0.1:"+providerPort+"/healthz", 30*time.Second); err != nil {
+		tail := tailFile(provLog.Name(), 60)
 		cleanup()
-		fmt.Fprintln(os.Stderr, "provider never ready:", err)
+		fmt.Fprintf(os.Stderr, "provider never ready: %v (log: %s)\n%s\n", err, provLog.Name(), tail)
 		os.Exit(1)
 	}
 
