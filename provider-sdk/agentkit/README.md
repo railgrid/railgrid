@@ -52,7 +52,7 @@ when unused Vue components can be eliminated by the bundler.
 `--railgrid-agent-ui-canonical: 1` and `--railgrid-agent-ui-version`. Its fallback uses
 `k-agent-ui` or a versioned ID and never rewrites an existing style element.
 
-Core PortalKit uses `--railgrid-ui-core-version: 29` (the
+Core PortalKit uses `--railgrid-ui-core-version: 30` (the
 `RAILGRID_UI_CORE_VERSION` constant in `../portalkit/styles.ts`); the current
 AgentKit presentation style/runtime version is 6 (the `AGENT_UI_VERSION`
 constant in `styles.ts`), and the versioning remains independent. PortalKit
