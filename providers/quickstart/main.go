@@ -13,10 +13,11 @@
 //	Pillar 1  One kcp API (Greeting, apis/v1alpha1), applied by this binary's
 //	          `init`, reconciled by one multicluster reconciler running under
 //	          leader election (controller_manager.go).
-//	Pillar 2  One data-plane verb,
-//	          POST /dataplane/clusters/{id}/greetings/{name}/greet, gated as the
-//	          caller through provider-sdk/dataplane (server/greet.go). Plus
-//	          /healthz and /readyz. Nothing else — no /api/*.
+//	Pillar 2  One data-plane verb, the kcp custom subresource greetings/greet
+//	          (POST /clusters/{id}/apis/quickstart.providers.railgrid.ai/v1alpha1/greetings/{name}/greet),
+//	          authorized by kcp and gated for visibility through
+//	          provider-sdk/dataplane (server/greet.go). Plus /healthz and
+//	          /readyz. Nothing else — no /api/*, no hub-proxied verb.
 //	Pillar 3  One custom element, <railgrid-provider-quickstart>, built by Vite
 //	          from portal/ and embedded here (assets.go).
 package main
@@ -81,8 +82,8 @@ func runServe() {
 	// The provider's own kcp credential, mounted by the chart from the Secret
 	// the hub minted. It is used for exactly two things: watching tenant
 	// workspaces through the APIExport virtual workspace (the controller
-	// manager), and lending its host + CA — never its bearer — to the
-	// per-request caller clients the data-plane verb acts through.
+	// manager), and acting as the provider through that same virtual
+	// workspace when the greet verb decides visibility and reads its object.
 	//
 	// `init` is the only admin-credentialed step; serve never holds one.
 	providerConfig, configErr := loadProviderConfig()
@@ -96,16 +97,31 @@ func runServe() {
 	// heartbeat — a provider must not report alive over dead watches.
 	vwState := &vwhealth.Readiness{}
 
-	// Credentials dropped: what survives is which server to talk to and how to
-	// verify it. Every data-plane request then authenticates with the CALLER's
-	// bearer, so the provider can never act as itself on that path by accident.
-	var callers dataplane.CallerFactory
+	// The verb path carries no bearer: a kcp shard authenticates the caller,
+	// authorizes `create` on greetings/greet with ordinary RBAC, and forwards
+	// the request with the caller's identity stamped in requestheader headers.
+	// The factory therefore acts AS THE PROVIDER — WithProviderConfig hands it
+	// the provider's own config and export name, and AsProvider reaches a
+	// tenant workspace only through the export's virtual workspace, the one
+	// door where the provider identity has standing. Gate decides visibility
+	// with a SubjectAccessReview on the caller's behalf and then reads as the
+	// provider; without the factory the verb fails closed.
+	var callers dataplane.ProviderCallerFactory
 	if providerConfig != nil {
-		factory, err := dataplane.NewCallerFactory(providerConfig)
+		factory, err := dataplane.NewCallerFactory(providerConfig, dataplane.WithProviderConfig(providerConfig, apiExportName))
 		if err != nil {
 			log.Fatalf("data-plane caller factory: %v", err)
 		}
 		callers = factory
+	}
+
+	// Which "<resource>/<verb>" coordinates exist, read from the CatalogEntry
+	// manifest this image ships so the routes cannot drift from the
+	// declaration. A verb is reached only as a kcp custom subresource, so no
+	// manifest means no data plane: that is a startup failure, not a mode.
+	subresources, err := subresourceRoutes()
+	if err != nil {
+		log.Fatalf("custom subresource routes: %v", err)
 	}
 
 	dist, err := portalFS()
@@ -115,9 +131,10 @@ func runServe() {
 
 	// The whole HTTP surface, assembled from the closed list of Pillar 2 route
 	// classes by provider-sdk/serve: this provider serves exactly one
-	// data-plane verb, the two health routes and its portal. serve.New refuses
-	// a route that is not one of the classes, so the /api/* this provider once
-	// taught cannot come back by accident.
+	// data-plane verb (dispatched by serve's subresource adapter off the
+	// shard-forwarded /clusters/ path), the two health routes and its portal.
+	// serve.New refuses a route that is not one of the classes, so the /api/*
+	// this provider once taught cannot come back by accident.
 	handler, err := serve.New(serve.Options{
 		Name:      "quickstart",
 		Readiness: vwhealth.Handler(vwState),
@@ -126,6 +143,7 @@ func runServe() {
 			Callers:   callers,
 			Greetings: quickstartv1alpha1.GreetingsResource,
 		}),
+		Subresources: subresources,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)

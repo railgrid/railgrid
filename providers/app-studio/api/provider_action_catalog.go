@@ -43,20 +43,56 @@ const (
 
 var projectActionSchemaDigestRE = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
-// providerActionCatalogResolver is deliberately caller-scoped: a production
-// resolver receives the identity whose bearer token must authorize the hub
-// catalog request. Tests may inject a deterministic resolver without opening
-// a second HTTP server, while production always uses fetchProviderActionCatalog.
+// providerActionCatalogResolver receives the identity whose workspace
+// selection scopes the hub catalog request (made as the provider). Tests may
+// inject a deterministic resolver without opening a second HTTP server, while
+// production always uses fetchProviderActionCatalog.
 type providerActionCatalogResolver func(context.Context, identity) ([]providerCatalogEntry, error)
 
-// These structs mirror the hub's /api/providers action metadata contract. The
-// App Studio gateway only needs a subset for grant verification, but retaining
-// the published fields makes decoding forward-compatible and keeps fixtures
-// representative of the catalog wire shape.
+// These structs mirror the hub's /api/providers contract, whose four sections
+// follow CatalogEntry.spec one for one. The App Studio gateway only needs a
+// subset for grant verification, but retaining the published fields makes
+// decoding forward-compatible and keeps fixtures representative of the catalog
+// wire shape.
 type providerCatalogEntry struct {
-	Name            string                          `json:"name"`
-	Ready           bool                            `json:"ready"`
-	Actions         []providerCatalogAction         `json:"actions"`
+	Name  string `json:"name"`
+	Ready bool   `json:"ready"`
+	// Export is what a tenant may call once it enables the provider: the
+	// APIExport and the resources it serves, with the verbs and actions on
+	// each. An action's apiVersion, kind and resource are the PARENT
+	// resource's, declared once there — there is no per-action bound resource
+	// any more.
+	Export *providerCatalogExport `json:"export,omitempty"`
+	// Hub is what the provider asks of the hub itself, and where its inline
+	// assistant skill packages are published.
+	Hub *providerCatalogHub `json:"hub,omitempty"`
+}
+
+type providerCatalogExport struct {
+	Name      string                          `json:"name"`
+	Resources []providerCatalogExportResource `json:"resources"`
+}
+
+// providerCatalogExportResource is one exported kind with the coordinates on
+// it. It is the only place an action's resource coordinate is published, so a
+// grant is verified against this triple rather than against anything the
+// action itself carries.
+type providerCatalogExportResource struct {
+	Name       string                  `json:"name"`
+	APIVersion string                  `json:"apiVersion"`
+	Kind       string                  `json:"kind"`
+	Verbs      []providerCatalogVerb   `json:"verbs"`
+	Actions    []providerCatalogAction `json:"actions"`
+}
+
+type providerCatalogVerb struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Stream      bool   `json:"stream"`
+	ReadOnly    bool   `json:"readOnly"`
+}
+
+type providerCatalogHub struct {
 	AssistantSkills []providerCatalogAssistantSkill `json:"assistantSkills"`
 }
 
@@ -73,11 +109,16 @@ type providerCatalogAssistantResource struct {
 	Content string `json:"content"`
 }
 
+// providerCatalogAction is one versioned action. Name and Version are two
+// fields, not one id: the coordinate kcp routes on is the name alone, and the
+// "<name>/<version>" string a grant and a consent record key on is derived
+// from the pair (providerCatalogActionID). The hub also publishes the derived
+// id, which is deliberately not decoded here — one source beats two.
 type providerCatalogAction struct {
-	ID            string                       `json:"id"`
+	Name          string                       `json:"name"`
+	Version       string                       `json:"version"`
 	DisplayName   string                       `json:"displayName"`
 	Description   string                       `json:"description"`
-	BoundResource providerCatalogBoundResource `json:"boundResource"`
 	InputSchema   json.RawMessage              `json:"inputSchema"`
 	OutputSchema  json.RawMessage              `json:"outputSchema"`
 	SchemaDigest  string                       `json:"schemaDigest"`
@@ -90,10 +131,48 @@ type providerCatalogAction struct {
 	Deprecation   *providerCatalogDeprecation  `json:"deprecation,omitempty"`
 }
 
-type providerCatalogBoundResource struct {
-	APIVersion string `json:"apiVersion"`
-	Kind       string `json:"kind"`
-	Resource   string `json:"resource"`
+// providerCatalogActionID renders the action's catalogued identity, the
+// "<name>/<version>" string grants, consent records and the assistant catalog
+// key on. It is derived from the two declared fields, so a stored grant's value
+// is unchanged by the catalog's shape.
+func providerCatalogActionID(action providerCatalogAction) string {
+	return strings.TrimSpace(action.Name) + "/" + strings.TrimSpace(action.Version)
+}
+
+// providerCatalogBoundAction is one action paired with the exported resource it
+// hangs off. Everything that used to read an action's own boundResource walks
+// these instead: the coordinate is a property of the parent resource, and
+// flattening it once here keeps the nested walk out of every caller.
+type providerCatalogBoundAction struct {
+	APIVersion string
+	Kind       string
+	Resource   string
+	Action     providerCatalogAction
+}
+
+// providerCatalogBoundActions flattens one catalog entry's export into every
+// action it publishes, in declaration order. A resource missing any of its
+// coordinate triple is skipped: the catalog is external data, and an action
+// nothing can be addressed on is not a grantable action.
+func providerCatalogBoundActions(entry providerCatalogEntry) []providerCatalogBoundAction {
+	if entry.Export == nil {
+		return nil
+	}
+	out := make([]providerCatalogBoundAction, 0, len(entry.Export.Resources))
+	for _, resource := range entry.Export.Resources {
+		apiVersion := strings.TrimSpace(resource.APIVersion)
+		kind := strings.TrimSpace(resource.Kind)
+		name := strings.TrimSpace(resource.Name)
+		if apiVersion == "" || kind == "" || name == "" {
+			continue
+		}
+		for _, action := range resource.Actions {
+			out = append(out, providerCatalogBoundAction{
+				APIVersion: apiVersion, Kind: kind, Resource: name, Action: action,
+			})
+		}
+	}
+	return out
 }
 
 type providerCatalogActionLimits struct {
@@ -170,14 +249,16 @@ func findProviderCatalogAction(catalog []providerCatalogEntry, provider string, 
 	if err != nil {
 		return providerCatalogAction{}, err
 	}
-	for _, action := range entry.Actions {
-		catalogName, catalogVersion, ok := splitProviderCatalogActionID(action.ID)
-		if !ok || catalogName != name || catalogVersion != version {
+	for _, bound := range providerCatalogBoundActions(*entry) {
+		action := bound.Action
+		if strings.TrimSpace(action.Name) != name || strings.TrimSpace(action.Version) != version {
 			continue
 		}
-		if action.BoundResource.APIVersion != strings.TrimSpace(ref.APIVersion) ||
-			action.BoundResource.Kind != strings.TrimSpace(ref.Kind) ||
-			action.BoundResource.Resource != strings.TrimSpace(ref.Resource) {
+		// The coordinate comes off the PARENT resource the action is declared
+		// on, which is the only place the catalog publishes it.
+		if bound.APIVersion != strings.TrimSpace(ref.APIVersion) ||
+			bound.Kind != strings.TrimSpace(ref.Kind) ||
+			bound.Resource != strings.TrimSpace(ref.Resource) {
 			return providerCatalogAction{}, newValidationError(fmt.Sprintf("provider action %s/%s is not bound to resource %s/%s/%s", name, version, ref.APIVersion, ref.Kind, ref.Resource))
 		}
 		if action.SchemaDigest == "" || !projectActionSchemaDigestRE.MatchString(action.SchemaDigest) {
@@ -192,14 +273,6 @@ func findProviderCatalogAction(catalog []providerCatalogEntry, provider string, 
 		return action, nil
 	}
 	return providerCatalogAction{}, newValidationError(fmt.Sprintf("provider action %s/%s is not available for the bound resource", name, version))
-}
-
-func splitProviderCatalogActionID(id string) (string, string, bool) {
-	parts := strings.Split(strings.TrimSpace(id), "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
 }
 
 func (s *Server) providerActionCatalog(ctx context.Context, id identity) ([]providerCatalogEntry, error) {
@@ -218,7 +291,7 @@ type errProjectActionDigestDrift struct{ message string }
 func (e errProjectActionDigestDrift) Error() string { return e.message }
 
 // verifyProjectActionDigestForInvoke re-checks the persisted grant against
-// the caller-scoped live catalog at invocation time. With invocations riding
+// the workspace's live catalog at invocation time. With invocations riding
 // the provider data plane directly, this is where schema drift is caught —
 // the grant-time digest pin alone would let a provider schema bump go
 // unnoticed until the generated app breaks on changed output.
@@ -246,10 +319,10 @@ func (s *Server) providerAssistantSkillSource(ctx context.Context, id identity) 
 	if s == nil {
 		return nil, errors.New("provider assistant skill catalog is not configured")
 	}
-	if s.providerActionCatalogResolver == nil && strings.TrimSpace(id.token) == "" {
-		// Provider skills are optional guidance. A request without a caller
-		// bearer cannot fetch the hub catalog, but that must not block bundled
-		// or project skills (or an otherwise actionless assistant turn).
+	if s.providerActionCatalogResolver == nil && (strings.TrimSpace(s.hubBase) == "" || strings.TrimSpace(s.hubToken) == "") {
+		// Provider skills are optional guidance. A process with no hub, or no
+		// hub credential to fetch the catalog with, must not block bundled or
+		// project skills (or an otherwise actionless assistant turn).
 		return appskills.NewProviderSkillSource(nil)
 	}
 	catalog, err := s.providerActionCatalog(ctx, id)
@@ -262,7 +335,10 @@ func (s *Server) providerAssistantSkillSource(ctx context.Context, id identity) 
 	}
 	packages := make([]appskills.ProviderSkillPackage, 0)
 	for _, provider := range catalog {
-		for _, skill := range provider.AssistantSkills {
+		if provider.Hub == nil {
+			continue
+		}
+		for _, skill := range provider.Hub.AssistantSkills {
 			resources := make([]appskills.ProviderSkillResource, 0, len(skill.Resources))
 			for _, resource := range skill.Resources {
 				resources = append(resources, appskills.ProviderSkillResource{Path: resource.Path, Content: resource.Content})
@@ -303,26 +379,9 @@ func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (provide
 		return providerCatalogFetchResponse{}, fmt.Errorf("new provider catalog request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	if id.token != "" {
-		req.Header.Set("Authorization", "Bearer "+id.token)
-	}
-	if id.tenant != "" {
-		req.Header.Set("X-Railgrid-Tenant", id.tenant)
-	}
-	if id.clusterID != "" {
-		req.Header.Set("X-Railgrid-Cluster", id.clusterID)
-	}
-	if id.orgUUID != "" {
-		req.Header.Set("X-Railgrid-Org", id.orgUUID)
-	}
-	if id.workspaceUUID != "" {
-		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
-	}
-	if id.user != "" {
-		// A display label for the downstream provider's logs. The identity
-		// that authorizes the call is the bearer this request carries.
-		req.Header.Set("X-Railgrid-User", id.user)
-	}
+	// A hub REST call, made as the provider; the caller's workspace selection
+	// and name travel as headers the hub resolves the scope from.
+	s.setHubCallerHeaders(req.Header, id)
 	client := &http.Client{
 		Timeout: providerCatalogCallTimeout,
 		// Catalog lookup uses the same explicitly configured local-hub TLS

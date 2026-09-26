@@ -22,8 +22,10 @@ limitations under the License.
 // the provider workspace + ServiceAccount + legacy-token kubeconfig, and the
 // provider's `init` (driven by this package) applies everything that lives
 // INSIDE the workspace — APIResourceSchemas, the APIExport, the
-// APIExportEndpointSlice the multicluster manager watches, and the bind RBAC
-// grant that lets tenants APIBind. The hub no longer provisions any of this.
+// APIExportEndpointSlice the multicluster manager watches, the
+// DataPlaneEndpointSlice through which kcp routes the provider's custom
+// subresources, and the bind RBAC grant that lets tenants APIBind. The hub no
+// longer provisions any of this.
 //
 // A provider declares exactly two objects and this package applies them
 // verbatim: the CatalogEntry (manifest.yaml, hand-written) and the APIExport
@@ -34,13 +36,10 @@ limitations under the License.
 // Nothing about the export is assembled in Go: what a reviewer reads in the
 // diff is what lands in the workspace.
 //
-// Every step is idempotent. The logic is ported from the former hub
-// provisioner (pkg/hub/providers/provision.go) so the resulting objects are
-// byte-for-byte compatible with what the hub used to create — with one
-// deliberate change: identityHash for first-party permission claims is supplied
-// by the caller (a Helm value the admin copies from the /bonkers root-identities
-// view) instead of being resolved from the parent workspace, which this
-// workspace-scoped kubeconfig cannot read. See Options.IdentityHashes.
+// Every step is idempotent. No claim carries an identityHash: a first-party
+// claim is identity-agnostic and kcp resolves it per consumer workspace against
+// whatever export that workspace bound, admitted by the platform's
+// PermissionClaimPolicy; built-in types never needed one.
 package install
 
 import (
@@ -123,32 +122,37 @@ type Options struct {
 	// image at /etc/railgrid/kcp and pointed at by RAILGRID_KCP_DIR. Required.
 	KCPDir string
 
-	// IdentityHashes supplies the APIExport identityHash for first-party
-	// (*.railgrid.ai) permission-claim groups, keyed by API group.
-	//
-	// kcp rejects a permissionClaim on a non-built-in type unless it carries
-	// the identityHash of the APIExport that serves it — and that hash is a
-	// property of the INSTALLATION, not of the provider: the same claim points
-	// at a different export in the platform deployment and in an org's
-	// self-hosted copy. So it cannot live in the generated file, and the
-	// platform admin supplies it instead (the /bonkers root-identities view →
-	// a Helm value → RAILGRID_IDENTITY_HASHES). Bootstrap stamps it onto every
-	// matching claim and FAILS when one is missing, rather than applying an
-	// export kcp will reject with a message about an unrelated field.
-	//
-	// Built-in types (empty group, or any non-railgrid group) need no hash.
-	IdentityHashes map[string]string
-
 	// CatalogEntryFile, when set, is the path to a CatalogEntry YAML the
 	// provider self-registers into its OWN workspace (which the platform's
 	// Provider controller bound to providers.railgrid.ai). Empty → skip
 	// (e.g. providers whose CatalogEntry is applied to root:railgrid:providers by
 	// an admin instead). Applied last, after the APIExport exists.
 	CatalogEntryFile string
+
+	// DataPlaneURL is the provider's externally reachable base URL — the one
+	// the hub's backend proxy already forwards /services/providers/<name>/* to,
+	// and the one kcp will reverse-proxy a custom subresource request to. It is
+	// written into status.endpoints[0].url of the provider's
+	// DataPlaneEndpointSlice, which every generated "<resource>/<verb>" entry
+	// on the APIExport resolves through.
+	//
+	// OPTIONAL, and normally best left empty: empty means "whatever
+	// CatalogEntryFile says in spec.serving.backend.url", which is the same address,
+	// already rendered per environment by the provider's own chart (the
+	// in-cluster Service DNS in a cluster, the loopback port in dev). Set it
+	// only when the provider's server is reachable at a DIFFERENT address than
+	// the one its catalog entry advertises, or when no CatalogEntryFile is
+	// supplied at all.
+	//
+	// Bootstrap needs it only when the generated APIExport actually declares a
+	// custom subresource; a provider that declares none publishes no slice and
+	// is never asked for a URL.
+	DataPlaneURL string
 }
 
 // Bootstrap runs the full provider workspace bootstrap idempotently:
-// schemas → APIExport → APIExportEndpointSlice → bind grant. Safe to re-run.
+// schemas → DataPlaneEndpointSlice → APIExport → APIExportEndpointSlice → bind
+// grant. Safe to re-run.
 func Bootstrap(ctx context.Context, opts Options) error {
 	if opts.Config == nil {
 		return fmt.Errorf("install: Config is required")
@@ -183,8 +187,24 @@ func Bootstrap(ctx context.Context, opts Options) error {
 	if err := ValidateClaimScopes(export); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
-	if err := StampIdentityHashes(export, opts.IdentityHashes); err != nil {
-		return fmt.Errorf("install: %w", err)
+	// Before the export, not after. Every "<resource>/<verb>" entry on it
+	// resolves through this object, and kcp replicates a referenced object to
+	// the shards through a ClusterCachedResource it creates for the referenced
+	// KIND — so an export pointing at a kind that is not established yet is
+	// never replicated, and the subresource is routed nowhere, silently.
+	if ExportDeclaresSubresources(export) {
+		dataPlaneURL := opts.DataPlaneURL
+		if dataPlaneURL == "" && opts.CatalogEntryFile != "" {
+			if dataPlaneURL, err = CatalogEntryBackendURL(opts.CatalogEntryFile); err != nil {
+				return fmt.Errorf("install: %w", err)
+			}
+		}
+		if err := ApplyDataPlaneEndpointCRD(ctx, cl); err != nil {
+			return fmt.Errorf("install: %w", err)
+		}
+		if err := EnsureDataPlaneEndpointSlice(ctx, cl, opts.ExportName, dataPlaneURL); err != nil {
+			return fmt.Errorf("install: %w", err)
+		}
 	}
 	if err := ApplyAPIExport(ctx, cl, export); err != nil {
 		return fmt.Errorf("install: apply APIExport: %w", err)
@@ -343,17 +363,6 @@ func LoadAPIExport(path string) (*unstructured.Unstructured, error) {
 	return u, nil
 }
 
-// firstPartyGroupSuffix marks the API groups railgrid itself serves. A claim on
-// one of those is a claim on another APIExport's types, which kcp will only
-// honor when the claim pins that export's identity.
-const firstPartyGroupSuffix = ".railgrid.ai"
-
-// IsFirstPartyGroup reports whether an API group is served by a railgrid
-// APIExport (and therefore needs an identityHash on any claim against it).
-func IsFirstPartyGroup(group string) bool {
-	return group == "railgrid.ai" || strings.HasSuffix(group, firstPartyGroupSuffix)
-}
-
 // ScopedCoreResources are the core-group (built-in Kubernetes) resources a
 // provider may only claim with a defaultSelector.
 //
@@ -373,8 +382,8 @@ var ScopedCoreResources = map[string]bool{"secrets": true}
 // for us: an unscoped claim is perfectly valid to kcp and simply grants more
 // than the provider needs, silently, in every workspace that binds the export.
 // The generated file is an output of the manifest, so the fix is always the
-// same — add spec.apiExport.permissionClaims[].selector.matchLabels to
-// manifest.yaml and re-run codegen.
+// same — add spec.requires[].resources[].selector.matchLabels to manifest.yaml
+// and re-run codegen.
 func ValidateClaimScopes(export *unstructured.Unstructured) error {
 	claims, found, err := unstructured.NestedSlice(export.Object, "spec", "permissionClaims")
 	if err != nil {
@@ -395,74 +404,14 @@ func ValidateClaimScopes(export *unstructured.Unstructured) error {
 		}
 		matchLabels, _, _ := unstructured.NestedStringMap(entry, "defaultSelector", "matchLabels")
 		if len(matchLabels) == 0 {
-			return fmt.Errorf("APIExport %s claims the core resource %q with no defaultSelector.matchLabels: a claim on %s must be narrowed to the objects this provider owns (add spec.apiExport.permissionClaims[].selector.matchLabels to manifest.yaml and re-run codegen)", export.GetName(), resource, resource)
+			return fmt.Errorf("APIExport %s claims the core resource %q with no defaultSelector.matchLabels: a claim on %s must be narrowed to the objects this provider owns (add spec.requires[].resources[].selector.matchLabels to manifest.yaml and re-run codegen)", export.GetName(), resource, resource)
 		}
 	}
 	return nil
-}
-
-// StampIdentityHashes writes the per-installation identityHash onto every
-// first-party permission claim on export, and fails when one is missing.
-//
-// Failing here is the point. kcp does not reject an unpinned claim with
-// "identityHash required"; it accepts the export and then quietly refuses the
-// claim at bind time, so the provider comes up, reconciles nothing in tenant
-// workspaces, and the only symptom is an informer that cannot find a kind.
-func StampIdentityHashes(export *unstructured.Unstructured, hashes map[string]string) error {
-	claims, found, err := unstructured.NestedSlice(export.Object, "spec", "permissionClaims")
-	if err != nil {
-		return fmt.Errorf("reading spec.permissionClaims on APIExport %s: %w", export.GetName(), err)
-	}
-	if !found || len(claims) == 0 {
-		return nil
-	}
-	for _, claim := range claims {
-		entry, ok := claim.(map[string]any)
-		if !ok {
-			return fmt.Errorf("APIExport %s: spec.permissionClaims entry is not a mapping", export.GetName())
-		}
-		group, _ := entry["group"].(string)
-		if !IsFirstPartyGroup(group) {
-			continue
-		}
-		hash := hashes[group]
-		if hash == "" {
-			resource, _ := entry["resource"].(string)
-			return fmt.Errorf("APIExport %s claims %s.%s but no identityHash was supplied for group %s (set RAILGRID_IDENTITY_HASHES / the chart's identityHashes value from the admin root-identities view)", export.GetName(), resource, group, group)
-		}
-		entry["identityHash"] = hash
-	}
-	if err := unstructured.SetNestedSlice(export.Object, claims, "spec", "permissionClaims"); err != nil {
-		return fmt.Errorf("writing spec.permissionClaims on APIExport %s: %w", export.GetName(), err)
-	}
-	return nil
-}
-
-// ParseIdentityHashes reads a "group=hash,group=hash" list, the form every
-// provider's init takes from RAILGRID_IDENTITY_HASHES. Empty yields no hashes,
-// which is correct for every in-tree provider today: none claims a first-party
-// group, deliberately (one export can pin only one identity per resource for
-// every consumer at once, which breaks as soon as one org self-hosts a
-// dependency).
-func ParseIdentityHashes(spec string) (map[string]string, error) {
-	hashes := map[string]string{}
-	for _, pair := range strings.Split(spec, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		group, hash, ok := strings.Cut(pair, "=")
-		group, hash = strings.TrimSpace(group), strings.TrimSpace(hash)
-		if !ok || group == "" || hash == "" {
-			return nil, fmt.Errorf("identity hashes: %q is not group=hash", pair)
-		}
-		hashes[group] = hash
-	}
-	return hashes, nil
 }
 
 // ApplyAPIExport applies the provider's generated APIExport: the object read
-// from KCPDir/apiexport.yaml, with identityHashes already stamped. Nothing
+// from KCPDir/apiexport.yaml, as codegen wrote it. Nothing
 // about it is assembled here — the name, the claims and the resources are all
 // decided at codegen time and reviewed in the diff.
 //
@@ -490,6 +439,11 @@ func ApplyAPIExport(ctx context.Context, cl dynamic.Interface, export *unstructu
 		if !ok {
 			return fmt.Errorf("APIExport %s: spec.resources entry is not a mapping", exportName)
 		}
+		// A custom subresource entry names a schema too: the "<Verb>Request"
+		// kind's, shipped beside the stored kinds' so that a claimer's virtual
+		// workspace can resolve it (kcp-dev/kcp#4388). It is waited for like
+		// any other; an export whose verb schema is missing is a half-run
+		// codegen.
 		name, _ := entry["schema"].(string)
 		if name == "" {
 			continue // a virtual-storage entry references no APIResourceSchema

@@ -75,16 +75,26 @@ const selectableProviders = computed(() => {
     })
 })
 const selectedProvider = computed(() => selectableProviders.value.find((provider) => provider.name === providerName.value))
-const selectedAction = computed<ProviderAction | undefined>(() =>
-  selectedProvider.value?.actions?.find((action) => action.id === actionID.value && !action.deprecation?.deprecated),
+// Selectable actions of the chosen provider, each still carrying the exported
+// resource it hangs off — the catalog's only publication of that coordinate.
+const selectedProviderBoundActions = computed(() =>
+  selectableActions.value.filter(({ provider }) => provider.name === selectedProvider.value?.name),
 )
-const selectedActionResource = computed(() => selectedAction.value?.boundResource)
+const selectedProviderActions = computed(() => selectedProviderBoundActions.value.map(({ action }) => action))
+const selectedBoundAction = computed(() =>
+  selectedProviderBoundActions.value.find(({ action }) => action.id === actionID.value),
+)
+const selectedAction = computed<ProviderAction | undefined>(() => selectedBoundAction.value?.action)
+const selectedActionResource = computed(() => {
+  const bound = selectedBoundAction.value
+  return bound ? { apiVersion: bound.apiVersion, kind: bound.kind, resource: bound.resource } : undefined
+})
 const selectedActionRequiresConsent = computed(() => selectedAction.value?.consent?.required === true)
 const canCreate = computed(() => {
-  const payload = selectedProvider.value && selectedAction.value
+  const payload = selectedProvider.value && selectedBoundAction.value
     ? buildProjectIntegrationCreatePayload(
       selectedProvider.value,
-      selectedAction.value,
+      selectedBoundAction.value,
       alias.value,
       resourceName.value,
       consentAccepted.value,
@@ -133,8 +143,8 @@ watch(
 
 watch(
   selectedProvider,
-  (provider) => {
-    const actions = provider?.actions?.filter((action) => !action.deprecation?.deprecated && action.schemaDigest) ?? []
+  () => {
+    const actions = selectedProviderActions.value
     if (!actions.some((action) => action.id === actionID.value)) actionID.value = actions[0]?.id ?? ''
     consentAccepted.value = false
   },
@@ -145,10 +155,6 @@ watch(actionID, () => {
   consentAccepted.value = false
   formError.value = null
 })
-
-const selectedProviderActions = computed(() => selectedProvider.value?.actions?.filter((action) =>
-  !action.deprecation?.deprecated && /^sha256:[a-f0-9]{64}$/.test(action.schemaDigest),
-) ?? [])
 
 async function loadIntegrations(requestAuthority = integrationsAuthority.value) {
   const projectName = props.projectName
@@ -189,14 +195,14 @@ async function createIntegration() {
   clearNotice()
   formError.value = null
   const provider = selectedProvider.value
-  const action = selectedAction.value
-  if (!provider || !action) {
+  const bound = selectedBoundAction.value
+  if (!provider || !bound) {
     formError.value = 'Select a Ready provider and versioned action.'
     return
   }
   const payload = buildProjectIntegrationCreatePayload(
     provider,
-    action,
+    bound,
     alias.value,
     resourceName.value,
     consentAccepted.value,

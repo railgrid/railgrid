@@ -33,14 +33,12 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/railgrid/provider-sdk/dataplane"
-
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 // NewUIProxy returns an http.Handler serving /ui/providers/{name}/* by reverse
-// proxying to the provider's spec.ui.url. The handler is mounted in the hub
+// proxying to the provider's spec.serving.ui.url. The handler is mounted in the hub
 // router WITHOUT http.StripPrefix; this proxy strips the /ui/providers/{name}
 // segment itself so it can inject X-Railgrid-Base-Path before forwarding.
 //
@@ -92,21 +90,25 @@ func (f TenantResolverFunc) Resolve(r *http.Request) (string, string, error) {
 }
 
 // NewBackendProxy returns an http.Handler serving /services/providers/{name}/*
-// by reverse proxying to the provider's spec.backend.url. An org-owned
-// provider always has the user's Authorization header replaced with a
-// short-lived delegated token (see serveOverEdge and SetDelegatedTokenIssuer);
-// a platform provider gets the same treatment when the DelegationPolicy
-// selects it (SetDelegationPolicy) and the caller's bearer as-is otherwise.
-// If a TenantResolver is
-// installed via SetTenantResolver (and a cluster resolver via
-// SetClusterResolver), the proxy resolves the caller's identity and injects
-// X-Railgrid-User plus a kcp logical-cluster ID as both
-// X-Railgrid-Tenant and X-Railgrid-Cluster, so the provider can scope work without
-// re-parsing the bearer token. Which cluster depends on the route: a
-// data-plane route names one in its path (/{root}/clusters/{id}/…) and that
-// one is used, after the caller is authorized for it; any other route falls
-// back to the workspace the resolver picks for the caller. Incoming
-// X-Railgrid-User / X-Railgrid-Tenant /
+// by reverse proxying to the provider's spec.serving.backend.url, for the route
+// classes that are not kcp API traffic: MCP, browser OAuth, signed webhooks,
+// the agent tunnel and health. Data-plane verbs and actions are not routes
+// here at all — they are kcp custom subresources on the provider's APIExport,
+// reached through the kcp front door at /clusters/{id}/apis/…. The proxy
+// strips the requestheader identity a kcp shard would stamp
+// (stripShardIdentityHeaders), so the provider's shard-facing route cannot be
+// reached through the hub wearing an identity of the caller's choosing.
+//
+// An org-owned provider always has the user's Authorization header replaced
+// with a short-lived delegated token (see serveOverEdge and
+// SetDelegatedTokenIssuer); a platform provider gets the same treatment when
+// the DelegationPolicy selects it (SetDelegationPolicy) and the caller's
+// bearer as-is otherwise. If a TenantResolver is installed via
+// SetTenantResolver (and a cluster resolver via SetClusterResolver), the proxy
+// resolves the caller's identity and injects X-Railgrid-User plus the caller's
+// default workspace's kcp logical-cluster ID as both X-Railgrid-Tenant and
+// X-Railgrid-Cluster, so the provider can scope work without re-parsing the
+// bearer token. Incoming X-Railgrid-User / X-Railgrid-Tenant /
 // X-Railgrid-Cluster headers are ALWAYS stripped before the request is
 // forwarded — a third-party caller can't forge identity by setting those
 // headers directly.
@@ -130,6 +132,7 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		req.Header.Del("X-Railgrid-User")
 		req.Header.Del("X-Railgrid-Tenant")
 		req.Header.Del("X-Railgrid-Cluster")
+		stripShardIdentityHeaders(req.Header)
 		if p.tenantResolver == nil {
 			// V(2) so tests / non-bootstrapper hubs don't spam, but
 			// devs can flip on verbosity to see the dropped path.
@@ -160,16 +163,6 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		}
 		if user != "" {
 			req.Header.Set("X-Railgrid-User", user)
-		}
-		// A data-plane route names its own workspace: /{root}/clusters/{id}/…
-		// The path is authoritative there (provider-sdk/dataplane.Gate refuses
-		// a request whose cluster header disagrees with it), and ServeHTTP has
-		// already authorized this caller for that cluster — so the addressed
-		// cluster goes out, not the caller's default workspace.
-		if clusterID, ok := pathClusterFrom(req.Context()); ok {
-			req.Header.Set("X-Railgrid-Tenant", clusterID)
-			req.Header.Set("X-Railgrid-Cluster", clusterID)
-			return
 		}
 		if tenantPath == "" {
 			p.log.Info("tenant resolved but tenantPath empty — forwarding without X-Railgrid-Tenant / X-Railgrid-Cluster", "provider", name, "user", user, "hint", "user may not have a personal Organization workspace bootstrapped yet")
@@ -247,52 +240,11 @@ func (p *ProviderProxy) withResolvedCaller(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{user: user, tenantPath: tenantPath, err: err}))
 }
 
-// SetTenantResolver installs the resolver used to populate X-Railgrid-User on
-// proxied requests and to find the caller's workspace, whose logical-cluster
-// ID then goes out as X-Railgrid-Tenant / X-Railgrid-Cluster (see
-// SetClusterResolver). Wire after the kcpProxy and railgridClient are built (see
-// pkg/hub/server.go around the providerRegistry setup). Calling with nil
-// disables injection but the inbound-header stripping below still runs.
+// SetTenantResolver installs the resolver that names the caller and their
+// default workspace on backend-proxied requests (X-Railgrid-User and, with
+// SetClusterResolver, the tenant headers). The UI proxy has no use for it.
 func (p *ProviderProxy) SetTenantResolver(r TenantResolver) {
 	p.tenantResolver = r
-	// The resolver is already the component that knows the caller's
-	// memberships, so it is also the natural authority on which clusters a
-	// caller may address. Adopting it here keeps the hub's wiring to one call
-	// and keeps the two answers consistent; an explicit SetClusterAuthorizer
-	// still wins.
-	if a, ok := r.(ClusterAuthorizer); ok && p.clusterAuth == nil {
-		p.clusterAuth = a
-	}
-}
-
-// ClusterAuthorizer answers the question the backend proxy has to settle
-// before it tells a provider which workspace a data-plane request is for: may
-// this caller address this logical cluster? It is the same membership question
-// the hub's kcp proxy answers for /clusters/{id} (pkg/server/proxy), asked of
-// the same implementation, so the set of workspaces a caller can reach with
-// kubectl and the set they can reach through a provider cannot drift apart.
-//
-// Failure is closed: an implementation that cannot decide reports false.
-type ClusterAuthorizer interface {
-	AuthorizeCluster(ctx context.Context, user, clusterID string) bool
-}
-
-// ClusterAuthorizerFunc adapts a plain function to ClusterAuthorizer.
-type ClusterAuthorizerFunc func(ctx context.Context, user, clusterID string) bool
-
-// AuthorizeCluster satisfies ClusterAuthorizer.
-func (f ClusterAuthorizerFunc) AuthorizeCluster(ctx context.Context, user, clusterID string) bool {
-	return f(ctx, user, clusterID)
-}
-
-// SetClusterAuthorizer installs the membership check applied to the cluster a
-// data-plane path names. Optional: SetTenantResolver already adopts a resolver
-// that implements ClusterAuthorizer, which is how the hub wires it. Without
-// one, a path-addressed cluster that is not the caller's own resolved tenant
-// is left alone — the request keeps the pre-existing default-workspace
-// headers rather than being refused, and the provider's own gates answer it.
-func (p *ProviderProxy) SetClusterAuthorizer(a ClusterAuthorizer) {
-	p.clusterAuth = a
 }
 
 // SetClusterResolver installs the resolver mapping a tenant workspace path to
@@ -338,12 +290,6 @@ type ProviderProxy struct {
 	// See SetClusterResolver.
 	clusterResolver func(ctx context.Context, tenantPath string) (string, error)
 
-	// clusterAuth authorizes the caller for the cluster a data-plane path
-	// names, before that cluster is injected as the tenant headers. Nil
-	// leaves such a path on the default-workspace resolution (see
-	// SetClusterAuthorizer).
-	clusterAuth ClusterAuthorizer
-
 	// delegatedIssuer mints the token that replaces the caller's bearer on
 	// requests to org-owned providers, and to platform providers when
 	// delegation selects them. Nil means those paths fail closed: the hub
@@ -368,14 +314,29 @@ type ProviderProxy struct {
 	integrityObserver MainJSIntegrityObserver
 
 	// denyHubOnlyEndpoints reserves the hub-only path prefixes on a
-	// provider's backend origin. Provider action routes (/actions/*) are a
-	// public data-plane surface and ride this proxy like any other verb —
-	// authorization is delegated to the provider's caller-scoped SSAR gates.
-	// The attestation endpoint (/workload-identities/*), by contrast, is a
-	// hub→provider internal call: it must never be reachable with a caller's
-	// bearer through /services/providers/{name}, where it would act as a
-	// TokenReview oracle against the provider's runtime cluster.
+	// provider's backend origin. The attestation endpoint
+	// (/workload-identities/*) is a hub→provider internal call: it must never
+	// be reachable with a caller's bearer through /services/providers/{name},
+	// where it would act as a TokenReview oracle against the provider's
+	// runtime cluster.
 	denyHubOnlyEndpoints bool
+
+	// kcpFrontDoor is where the hub reaches kcp itself, for the one hop it
+	// still makes to a provider's data plane on a caller's behalf: an
+	// org-owned provider's backend behind its edge, reached through the edges
+	// provider's services/{name}/proxy custom subresource like any other
+	// verb. kcpTransport authenticates that hop as the hub. See
+	// SetKCPFrontDoor and serveOverEdge.
+	kcpFrontDoor *url.URL
+	kcpTransport http.RoundTripper
+}
+
+// SetKCPFrontDoor tells the backend proxy where kcp is and how to
+// authenticate to it, for the edge hop to org-owned providers. Without it
+// that hop fails closed with a 503.
+func (p *ProviderProxy) SetKCPFrontDoor(target *url.URL, transport http.RoundTripper) {
+	p.kcpFrontDoor = target
+	p.kcpTransport = transport
 }
 
 // SetFallback installs the portal SPA handler invoked for non-asset paths
@@ -453,10 +414,6 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		r = p.withResolvedCaller(r)
-		var allowed bool
-		if r, allowed = p.authorizePathCluster(w, r, name, rest); !allowed {
-			return
-		}
 	}
 	prov, found := p.resolveProvider(r, name)
 	if !found {
@@ -553,120 +510,6 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	rp.ServeHTTP(w, r)
-}
-
-// pathClusterKey carries the logical cluster a data-plane route names, from
-// ServeHTTP (which authorized the caller for it) to the Director (which sends
-// it). It is set only after authorization, so its presence in a request
-// context IS the permission to inject it.
-type pathClusterKey struct{}
-
-func withPathCluster(r *http.Request, clusterID string) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), pathClusterKey{}, clusterID))
-}
-
-func pathClusterFrom(ctx context.Context) (string, bool) {
-	clusterID, ok := ctx.Value(pathClusterKey{}).(string)
-	return clusterID, ok && clusterID != ""
-}
-
-// pathClusterID reports the logical-cluster ID a provider path addresses, for
-// the data-plane routes that name one:
-//
-//	/{root}/clusters/{clusterID}/…
-//
-// It matches the ADDRESSING PREFIX of provider-sdk/dataplane.ParsePath rather
-// than the full grammar. The prefix is the part the hub and the provider must
-// agree on — dataplane.Gate refuses a request whose X-Railgrid-Cluster
-// disagrees with the path it was sent to — while everything after it is the
-// provider's own business, and includes dialects ParsePath deliberately
-// refuses (the edges provider's .../clusters/{id}/apis/... form, which carries
-// kubectl through the tunnel). Matching only the prefix keeps those on the
-// same footing instead of leaving them with a header that contradicts them.
-//
-// Anything else — MCP, OAuth callbacks, webhooks, /healthz — is not a
-// data-plane route and comes back false, so those keep the caller's
-// default-workspace resolution.
-func pathClusterID(rest string) (string, bool) {
-	// Cleaned first, like isHubOnlyProviderPath: a provider's own mux cleans
-	// the path before it parses it, so ".." and "//" must not let the prefix
-	// this reads and the prefix the provider reads come apart.
-	clean := path.Clean("/" + strings.TrimPrefix(rest, "/"))
-	root, after, ok := strings.Cut(strings.TrimPrefix(clean, "/"), "/")
-	if !ok || root == "" {
-		return "", false
-	}
-	after, ok = strings.CutPrefix(after, "clusters/")
-	if !ok {
-		return "", false
-	}
-	clusterID, _, _ := strings.Cut(after, "/")
-	if !dataplane.IsClusterID(clusterID) {
-		// A workspace path (it contains ":") or a malformed segment. The hub
-		// proxy will not serve those either; leave the route alone.
-		return "", false
-	}
-	return clusterID, true
-}
-
-// authorizePathCluster settles which workspace a request is for when its path
-// names one, and refuses the request when the caller may not address it.
-//
-// The path wins over everything else on a data-plane route — over the
-// caller's default workspace, and over an X-Railgrid-Org/Workspace selection
-// that says something different — because the provider at the far end reads
-// the path, and a header that disagrees is a 400 (dataplane.ErrClusterMismatch)
-// rather than a quietly different answer. Winning is not the same as being
-// trusted, so the caller is authorized for that cluster here, with the
-// membership check the hub's kcp proxy applies to /clusters/{id}.
-//
-// Returns the request to continue with (carrying the authorized cluster) and
-// whether to proceed; when it returns false the response has been written.
-func (p *ProviderProxy) authorizePathCluster(w http.ResponseWriter, r *http.Request, name, rest string) (*http.Request, bool) {
-	clusterID, ok := pathClusterID(rest)
-	if !ok {
-		return r, true
-	}
-	user, tenantPath, err := p.resolveCaller(r)
-	if err != nil || user == "" {
-		// Anonymous probes and callers the resolver cannot name keep today's
-		// behaviour exactly: no identity headers at all, and the provider's
-		// own gates decide. There is nothing to authorize and nothing to
-		// inject.
-		return r, true
-	}
-	// The caller's own resolved tenant IS the addressed cluster: they were
-	// authorized for it when it was resolved (workload tokens are verified
-	// against it; a header selection is membership-checked by the resolver),
-	// so no second lookup is needed. This is also the path a workload
-	// ServiceAccount takes, which has no UserMembershipIndex to check.
-	if p.callerClusterMatches(r.Context(), tenantPath, clusterID) {
-		return withPathCluster(r, clusterID), true
-	}
-	if p.clusterAuth == nil {
-		p.log.V(2).Info("no cluster authorizer wired; leaving a path-addressed cluster on default-workspace resolution",
-			"provider", name, "cluster", clusterID, "path", r.URL.Path)
-		return r, true
-	}
-	if !p.clusterAuth.AuthorizeCluster(r.Context(), user, clusterID) {
-		p.log.Info("refusing provider request: caller is not a member of the addressed workspace",
-			"provider", name, "user", user, "cluster", clusterID, "path", r.URL.Path)
-		http.Error(w, "caller is not a member of workspace: "+clusterID, http.StatusForbidden)
-		return r, false
-	}
-	return withPathCluster(r, clusterID), true
-}
-
-// callerClusterMatches reports whether the caller's resolved tenant workspace
-// is the cluster the path names. False whenever that cannot be established —
-// no resolver, no tenant, a lookup failure — which sends the decision to the
-// membership check rather than granting on a missing answer.
-func (p *ProviderProxy) callerClusterMatches(ctx context.Context, tenantPath, clusterID string) bool {
-	if tenantPath == "" || p.clusterResolver == nil {
-		return false
-	}
-	resolved, err := p.clusterResolver(ctx, tenantPath)
-	return err == nil && resolved != "" && resolved == clusterID
 }
 
 // hubOnlyProviderPrefixes are backend paths only the hub itself may dial.
@@ -776,4 +619,21 @@ func singleJoiningSlash(a, b string) string {
 		return a + "/" + b
 	}
 	return a + b
+}
+
+// stripShardIdentityHeaders drops the headers a kcp shard stamps when it
+// forwards a custom subresource to a provider (X-Remote-User, X-Remote-Group,
+// X-Remote-Extra-*, and the hop counter). A provider trusts them as the
+// caller's identity on its /clusters/... route, so they must never survive
+// the hub's front door: a tenant could otherwise reach that route through
+// /services/providers/<name>/clusters/... wearing any identity it likes.
+func stripShardIdentityHeaders(h http.Header) {
+	h.Del("X-Remote-User")
+	h.Del("X-Remote-Group")
+	h.Del("X-Kcp-Internal-Proxy-Hops")
+	for key := range h {
+		if strings.HasPrefix(http.CanonicalHeaderKey(key), "X-Remote-Extra-") {
+			h.Del(key)
+		}
+	}
 }

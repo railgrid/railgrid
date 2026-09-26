@@ -32,44 +32,34 @@ import (
 const maxProviderActionSchemaBytes = 256 << 10
 
 var (
-	providerActionIDPattern         = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}/v[1-9][0-9]{0,7}$`)
-	providerActionAPIVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
-	providerActionKindPattern       = regexp.MustCompile(`^[A-Z][A-Za-z0-9]*$`)
-	providerActionResourcePattern   = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`)
-	providerActionDigestPattern     = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	// providerActionIDPattern is an action's catalogued identity, "name/vN": the
+	// form ID renders and the only place an action still appears as one string.
+	providerActionIDPattern     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}/v[1-9][0-9]{0,7}$`)
+	providerActionDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
 
-// ValidateProviderActions validates the complete action map declared by one
-// CatalogEntry. Kubernetes enforces the list-map shape at admission, and the
-// controller repeats validation so malformed or untrusted catalog state fails
-// closed before entering the provider routing registry.
-func ValidateProviderActions(actions []ProviderActionSpec) error {
-	seen := make(map[string]struct{}, len(actions))
-	for i, action := range actions {
-		if err := ValidateProviderAction(action); err != nil {
-			return fmt.Errorf("actions[%d] (%q): %w", i, action.ID, err)
-		}
-		if _, ok := seen[action.ID]; ok {
-			return fmt.Errorf("actions[%d] (%q): duplicate action ID", i, action.ID)
-		}
-		seen[action.ID] = struct{}{}
-	}
-	return nil
-}
+// ID is the action's catalogued identity, "<name>/<version>". It is derived,
+// never declared: the coordinate kcp routes on is the name alone, and the
+// version qualifies the contract. Grants, consent records and the assistant
+// catalog key on this string.
+func (a ProviderAction) ID() string { return a.Name + "/" + a.Version }
 
 // ValidateProviderAction validates one action independently of its siblings.
-func ValidateProviderAction(action ProviderActionSpec) error {
-	if !providerActionIDPattern.MatchString(action.ID) {
-		return fmt.Errorf("id must match name/vN (lowercase name and numeric version)")
+// The resource it is bound to validates it as part of its own coordinate
+// namespace (ValidateProviderExportResource), which is also where a name
+// colliding with a verb is caught.
+func ValidateProviderAction(action ProviderAction) error {
+	if err := validateCoordinateName(action.Name); err != nil {
+		return err
+	}
+	if !actionVersionPattern.MatchString(action.Version) {
+		return fmt.Errorf("version must be v followed by a positive integer")
 	}
 	if strings.TrimSpace(action.DisplayName) == "" {
 		return fmt.Errorf("displayName is required")
 	}
 	if len(action.Description) > 512 {
 		return fmt.Errorf("description exceeds 512 characters")
-	}
-	if err := validateBoundResource(action.BoundResource); err != nil {
-		return fmt.Errorf("boundResource: %w", err)
 	}
 	if action.InputSchema == nil {
 		return fmt.Errorf("inputSchema is required")
@@ -105,7 +95,7 @@ func ValidateProviderAction(action ProviderActionSpec) error {
 	if err := validateProviderActionConsent(action.Consent); err != nil {
 		return fmt.Errorf("consent: %w", err)
 	}
-	if err := validateProviderActionDeprecation(action.Deprecation, action.ID); err != nil {
+	if err := validateProviderActionDeprecation(action.Deprecation, action.ID()); err != nil {
 		return fmt.Errorf("deprecation: %w", err)
 	}
 
@@ -118,19 +108,6 @@ func ValidateProviderAction(action ProviderActionSpec) error {
 	}
 	if action.SchemaDigest != digest {
 		return fmt.Errorf("schemaDigest %q does not match canonical schemas (want %s)", action.SchemaDigest, digest)
-	}
-	return nil
-}
-
-func validateBoundResource(resource ProviderActionBoundResource) error {
-	if !providerActionAPIVersionPattern.MatchString(resource.APIVersion) || len(resource.APIVersion) > 253 {
-		return fmt.Errorf("apiVersion must be a non-empty API version identifier")
-	}
-	if !providerActionKindPattern.MatchString(resource.Kind) || len(resource.Kind) > 63 {
-		return fmt.Errorf("kind must be a PascalCase identifier")
-	}
-	if !providerActionResourcePattern.MatchString(resource.Resource) || len(resource.Resource) > 63 {
-		return fmt.Errorf("resource must be a lowercase DNS-like name")
 	}
 	return nil
 }
@@ -191,7 +168,7 @@ func validateProviderActionDeprecation(deprecation *ProviderActionDeprecation, a
 			return fmt.Errorf("replacementID must match name/vN")
 		}
 		if deprecation.ReplacementID == actionID {
-			return fmt.Errorf("replacementID must differ from id")
+			return fmt.Errorf("replacementID must differ from this action's own id")
 		}
 	}
 	return nil
@@ -201,7 +178,7 @@ func validateProviderActionDeprecation(deprecation *ProviderActionDeprecation, a
 // canonical JSON object {"input": <schema>, "output": <schema>}. Map keys,
 // insignificant whitespace, and schema extension ordering are normalized by
 // encoding/json; the digest is stable across equivalent YAML declarations.
-func ProviderActionSchemaDigest(action ProviderActionSpec) (string, error) {
+func ProviderActionSchemaDigest(action ProviderAction) (string, error) {
 	input, err := canonicalProviderActionSchema(action.InputSchema)
 	if err != nil {
 		return "", fmt.Errorf("inputSchema: %w", err)

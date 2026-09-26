@@ -298,3 +298,60 @@ func TestEnsureTenancyObjectsBinding_ExistingCustomName(t *testing.T) {
 		t.Fatalf("bootstrap did not check the existing binding and discovery: listed=%v discovered=%v", listed, discovered)
 	}
 }
+
+// Enable is the consent dialog, and a tenant may run it again with different
+// ticks: an existing binding must take the new decisions, or a composition
+// accepted the second time around would never reach kcp and the provider's
+// virtual workspace would keep not serving that kind in the workspace.
+func TestEnsureProviderAPIBindingUpdatesTheClaimsOfAnExistingBinding(t *testing.T) {
+	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{apiBindingGVR: "APIBindingList"})
+	existing := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "apis.kcp.io/v1alpha2",
+		"kind":       "APIBinding",
+		"metadata":   map[string]interface{}{"name": "app-studio"},
+		"spec": map[string]interface{}{
+			"reference": map[string]interface{}{"export": map[string]interface{}{"path": "root:providers:app-studio", "name": "ai.railgrid.ai"}},
+			"permissionClaims": []interface{}{map[string]interface{}{
+				"resource": "secrets", "verbs": []interface{}{"get"}, "selector": map[string]interface{}{"matchAll": true}, "state": "Accepted",
+			}},
+		},
+		"status": map[string]interface{}{"phase": "Bound"},
+	}}
+	if _, err := dyn.Resource(apiBindingGVR).Create(context.Background(), existing, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	claims := []ProviderClaim{
+		{Resource: "secrets", Verbs: []string{"get"}, Accepted: true},
+		{Group: "infrastructure.railgrid.ai", Resource: "instances", Verbs: []string{"get", "create"}, Accepted: true},
+		{Group: "code.railgrid.ai", Resource: "repositorycommits", Verbs: []string{"get"}, Accepted: false},
+	}
+	if err := ensureProviderAPIBinding(context.Background(), dyn, "app-studio", "root:providers:app-studio", "ai.railgrid.ai", claims); err != nil {
+		t.Fatalf("ensureProviderAPIBinding: %v", err)
+	}
+
+	got, err := dyn.Resource(apiBindingGVR).Get(context.Background(), "app-studio", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	specClaims, _, _ := unstructured.NestedSlice(got.Object, "spec", "permissionClaims")
+	states := map[string]string{}
+	for _, raw := range specClaims {
+		c := raw.(map[string]interface{})
+		group, _ := c["group"].(string)
+		states[group+"/"+c["resource"].(string)] = c["state"].(string)
+	}
+	want := map[string]string{"/secrets": "Accepted", "infrastructure.railgrid.ai/instances": "Accepted", "code.railgrid.ai/repositorycommits": "Rejected"}
+	for key, state := range want {
+		if states[key] != state {
+			t.Errorf("claim %s state = %q, want %q (all: %v)", key, states[key], state, states)
+		}
+	}
+	if len(states) != len(want) {
+		t.Errorf("binding carries %d claims, want %d: %v", len(states), len(want), states)
+	}
+	path, _, _ := unstructured.NestedString(got.Object, "spec", "reference", "export", "path")
+	if path != "root:providers:app-studio" {
+		t.Errorf("reference was disturbed: %q", path)
+	}
+}

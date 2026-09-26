@@ -105,6 +105,15 @@ spec:
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
             - name: CODE_COMMIT_BUNDLE_DIR
               value: {{ .Values.bundleStore.path | quote }}
+            {{- if .Values.catalogEntry.enabled }}
+            # The same CatalogEntry the init container applies. serve reads it
+            # too: spec.export.resources[].verbs and .actions are the
+            # declaration of which "<resource>/<verb>" coordinates this provider
+            # answers on the path a kcp shard forwards for a custom subresource,
+            # so the routes cannot drift from what the APIExport declares.
+            - name: RAILGRID_CATALOGENTRY_FILE
+              value: /etc/railgrid/catalogentry/catalogentry.yaml
+            {{- end }}
             {{- if .Values.tenant.credentialsNamespace }}
             - name: RAILGRID_TENANT_CREDENTIALS_NAMESPACE
               value: {{ .Values.tenant.credentialsNamespace | quote }}
@@ -136,6 +145,11 @@ spec:
             - name: railgrid-provider-kubeconfig
               mountPath: /var/run/secrets/railgrid
               readOnly: true
+            {{- if .Values.catalogEntry.enabled }}
+            - name: catalogentry
+              mountPath: /etc/railgrid/catalogentry
+              readOnly: true
+            {{- end }}
             - name: commit-bundles
               mountPath: {{ .Values.bundleStore.path | quote }}
           resources:

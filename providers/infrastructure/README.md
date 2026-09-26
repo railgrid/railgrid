@@ -145,32 +145,52 @@ helm CLI.
 | Per-cloud credential convention | [docs/credentials.md](docs/credentials.md) |
 | Template-defined instance rendering | [docs/instance-views.md](docs/instance-views.md) |
 
-The CatalogEntry ships with `apiExport.schemas: []` (pure broker, no
-CRDs leak into tenant workspaces). The single `permissionClaim` is
-`secrets get/list/watch` with `tenantScoped: true` so the provider
-can read `cloud-credentials` after a tenant Enables it.
+The CatalogEntry declares no inline schemas (pure broker, no CRDs leak into
+tenant workspaces — `init` installs the Template and Instance schemas into the
+provider workspace itself). `spec.requires` holds two entries, both platform
+builtins: `authorization.k8s.io/subjectaccessreviews` `create` (every provider
+serving a custom subresource needs it) and core `secrets` `get/list/watch`,
+narrowed by `selector.matchLabels: {railgrid.ai/owner: infrastructure}` so only
+Secrets explicitly handed to this provider are reachable. Everything under
+`requires` is tenant-scoped by definition and reaches a workspace only once a
+tenant accepts it on Enable.
 
 ## Architecture
 
 ```
-Browser / MCP client
+Browser / MCP client / kubectl
    │  bearer
-   ▼
-hub /services/providers/infrastructure/{api/*, mcp, mcp/sse}
-   │  proxy injects X-Railgrid-Tenant + X-Railgrid-Cluster (the workspace's
-   │  kcp logical-cluster ID, in both) + X-Railgrid-User
-   │  (pkg/hub/providers/proxy.go SetTenantResolver/SetClusterResolver +
-   │   pkg/hub/provider_tenant_resolver.go / provider_cluster_resolver.go)
-   ▼
-this provider pod
+   ├──────────────────────────────────────────────────────────────┐
+   ▼                                                              ▼
+hub /services/providers/infrastructure/{mcp, mcp/sse}      hub /clusters/{id}/apis/infrastructure.railgrid.ai/v1alpha1/
+   │  MCP only: the backend proxy forwards the bearer and        │   instances/{name}/{verb}[/{tail}][?component={c}]
+   │  injects X-Railgrid-Tenant/-Cluster/-User                    │  data-plane verbs are kcp custom subresources on the
+   │  (pkg/hub/providers/proxy.go)                                │  provider's APIExport: kcp authenticates the caller,
+   │                                                              │  authorizes instances/{verb} with RBAC and reverse-proxies
+   │                                                              │  with the identity stamped (no bearer reaches the provider)
+   ▼                                                              ▼
+this provider pod (provider-sdk/serve)
+   │
+   ├── data plane (dataplane/) ── gate: SubjectAccessReview on the caller's
+   │     behalf through the provider's APIExport virtual workspace, then the
+   │     verb is resolved against the Template contract and proxied to the
+   │     runtime Service (dataplane.Gate, provider-sdk/dataplane)
    │
    ├── tenant kcp client ── /var/run/secrets/railgrid/railgrid-provider-kubeconfig
-   │     resolves cloud-credentials Secret in tenant workspace
+   │     MCP tools act as the caller; dev_* tools call the verbs above on
+   │     the hub front door with the caller's bearer
    │
    └── central kro client ── /var/run/secrets/kro/kubeconfig
          discovers RGDs, creates/lists/deletes instances in
          per-tenant namespace railgrid-tenants-<hash>
 ```
+
+There is no hub-proxied spelling of a verb (no `/services/providers/…/dataplane/…`):
+the kube path above is the only one, and `manifest.yaml`'s
+`spec.export.resources[].verbs` is what publishes it
+(`provider-sdk/apiexportgen`) and what `serve` answers
+(`serve.SubresourcesFromCatalogEntryFile`). A missing manifest is a startup
+error.
 
 kro runs in **`kcp-apiexport`** mode: the provider creates instance CRs in the
 tenant's kcp workspace through its APIExport
@@ -186,8 +206,8 @@ kubeconfig (`/var/run/secrets/kro/kubeconfig`), the kro RGDs, and the
 workloads' internal Services are its private backend layer — no other
 provider holds a credential into them. Consumers (e.g. App Studio) operate
 infrastructure-owned workloads only through the instance CRs (control plane)
-and their VW subresources (data plane: `sandboxrunners/{name}/{log,proxy,…}`),
-as the tenant user. See the platform
+and their custom subresources (data plane:
+`…/instances/{name}/{log,proxy,sync,…}[?component=…]`), as the tenant user. See the platform
 [provider-isolation rule](../../docs/providers.md#provider-isolation-the-cross-provider-boundary)
 and [`app-studio-runtime-decoupling.md`](../../docs/app-studio-runtime-decoupling.md).
 

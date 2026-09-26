@@ -4,37 +4,44 @@ Provider Actions is the catalog-backed, synchronous action contract for
 server-side generated applications. Providers publish versioned action
 metadata in their `CatalogEntry`; App Studio grants an exact action and
 resource to a Project and materializes the grant as **kcp RBAC** on the
-workload identity; invocations ride the ordinary hub backend proxy to the
-provider's **embedded virtual workspace** — a resource-addressed data-plane
-route the provider itself serves and authorizes with caller-scoped
-SelfSubjectAccessReviews, exactly like the infrastructure data plane's exec
-verb. There is no dedicated hub action router. The public contract is
-generic, but the only shipped action is Databricks `query_table/v1`.
+workload identity; an invocation is a request to a **kcp custom subresource**
+`{resource}/{action}` published on the provider's APIExport, which kcp
+authorizes with ordinary RBAC and reverse-proxies to the provider with the
+caller's identity stamped, exactly like the infrastructure data plane's exec
+verb. There is no dedicated hub action router and no hub-proxied action
+route. The public contract is generic, but the only shipped action is
+Databricks `query-table/v1`.
 
-The action route grammar is the platform data-plane grammar:
+The action route grammar is the kube path of the custom subresource:
 
 ```text
-POST /services/providers/{provider}/actions/clusters/{clusterID}/{resource}/{name}/{action}/{version}
+POST /clusters/{clusterID}/apis/{group}/{version}/{resource}/{name}/{action}
 ```
 
 The URL is the resource reference — cluster ID, resource, name, and verb are
-all addressed in the path; the body carries only `{"input": {...}}`. Because
-authentication is the caller's bearer validated against kcp (never
-proxy-injected headers) and addressing is by cluster ID, the same handler can
-later be split out of the provider binary or promoted to a real kcp virtual
-workspace without any consumer change.
+all addressed in the path; the body carries only `{"input": {...}}`. The
+action's contract `version` is **not** in the path:
+`provider-sdk/serve` restores it from the provider's declaration before
+dispatching. Authentication is kcp's — the caller presents a bearer to the
+kcp front door (the hub's `/clusters/{id}`), never to the provider — and
+addressing is by cluster ID, so the same handler can be moved between
+binaries without any consumer change.
 
 ## Catalog contract
 
-`CatalogEntry.spec.actions` is the provider's public action catalog. Each
-entry is keyed by an ID such as `query_table/v1` and declares all policy and
+An action is declared on the resource it is served on, under
+`CatalogEntry.spec.export.resources[].actions[]`. That parent entry — its
+`name` (the plural resource), `apiVersion` and `kind` — *is* the bound
+resource; an action carries no `boundResource` of its own, and cannot name a
+resource its provider does not export. Each action declares all policy and
 validation data needed by callers without exposing a provider URL or
 credential model:
 
 | Field | Meaning |
 |---|---|
-| `id`, `displayName`, `description` | Stable name/version plus human-facing metadata. IDs are `name/vN`. |
-| `boundResource` | Exact API version, kind, and resource whose identity is supplied by the Project binding. |
+| `name` | The action, and the subresource half of the `{resource}/{action}` coordinate kcp routes on. It carries no version and no slash. |
+| `version` | The contract revision, `v` followed by a positive integer. It is a separate field because the coordinate a grant names and the revision a caller asks for are different things. Together they render the catalogued identity `name/version` (`query-table/v1`), which is what grants, consent records and the assistant catalog key on. |
+| `displayName`, `description` | Human-facing metadata. |
 | `inputSchema`, `outputSchema` | JSON Schemas for caller input and provider result. Schemas are local, bounded, and compiled by the hub. |
 | `schemaDigest` | `sha256:` digest over the canonical input/output schema envelope. The hub recomputes it at catalog admission; App Studio pins it at grant time and re-verifies it on every invoke. |
 | `executionMode` | `sync` (the result is the effect) or `async` (the call records intent and a controller applies it later, e.g. code's `commit/v1` creates a `RepositoryCommit` the controller then pushes). The transport is the same for both; the mode tells the caller whether to poll the bound object for the outcome. |
@@ -51,8 +58,10 @@ catalog state fails closed before it can enter the action router. The
 portal-facing `/api/providers` projection exposes discovery and consent
 metadata, but not transport URLs.
 
-Databricks publishes `query_table/v1` bound to
-`databricks.railgrid.ai/v1alpha1 / Table / tables`. Its catalog declaration
+Databricks publishes `query-table` v1 under its `tables` resource
+(`apiVersion: databricks.railgrid.ai/v1alpha1`, `kind: Table`), so the
+coordinate is `tables/query-table` and the catalogued identity is
+`query-table/v1`. Its catalog declaration
 is `sync`, `readOnly: true`, `risk: low`, `idempotency: inherent`, with a
 45-second timeout, 8 KiB input cap, 64 KiB output cap, and 100 result-item
 cap. Consent is not required. Its input schema permits only optional exact
@@ -67,10 +76,10 @@ Two verbs in the tree are served on the action grammar and gated exactly like a
 catalogued action, yet appear in no `CatalogEntry`. Both belong to the code
 provider:
 
-- `stage_snapshot` uploads a git bundle (25 MiB decoded, 36 MiB on the wire)
-  and returns an opaque `bundleRef` that the catalogued `prepare_snapshot` and
-  `publish_snapshot` then name in their own small inputs.
-- `stage_commit_bundle` uploads a source tree (48 MiB decoded, 68 MiB on the
+- `stage-snapshot` uploads a git bundle (25 MiB decoded, 36 MiB on the wire)
+  and returns an opaque `bundleRef` that the catalogued `prepare-snapshot` and
+  `publish-snapshot` then name in their own small inputs.
+- `stage-commit-bundle` uploads a source tree (48 MiB decoded, 68 MiB on the
   wire, 500 files) into the provider's commit-bundle store and returns the
   `bundleRef`/`bundleDigest` pair the catalogued `commit` names instead of
   inline `files`. A commit whose files fit the 1 MiB ceiling never touches it;
@@ -90,10 +99,12 @@ The exception is narrow. A verb qualifies only when all four hold:
 
 1. it exists to carry a bounded artifact larger than the catalog's input
    ceiling, and it returns a handle rather than the artifact;
-2. it runs the same two gates as any action — a real caller `GET` of the bound
-   resource, then an SSAR `create` on `{resource}/{verb}` — so RBAC still
-   authorizes it per verb and per object, and the same limits are enforced
-   server-side;
+2. it is declared as a data-plane verb (under its resource's
+   `spec.export.resources[].verbs`) so it is
+   published as a custom subresource and gated exactly like an action — kcp
+   authorizes `{resource}/{verb}`, the provider's gate reviews `get` on the
+   bound resource as the caller — so RBAC still authorizes it per verb and
+   per object, and the same limits are enforced server-side;
 3. what it stores is a transient artifact under the Pillar 1 carve-out in
    [provider-connectivity-contract.md](./provider-connectivity-contract.md):
    consumed-and-deleted or TTL-swept, and nothing is lost if it is gone;
@@ -103,8 +114,8 @@ The exception is narrow. A verb qualifies only when all four hold:
 A verb that misses any of the four is catalogued or removed. The cost of the
 exception is real and intended: because they are not in the catalog, App Studio
 cannot grant them through a project binding, so only a caller whose workspace
-RBAC already allows `create` on `repositories/stage_snapshot` or
-`repositories/stage_commit_bundle` can invoke them. A project identity that
+RBAC already allows `create` on `repositories/stage-snapshot` or
+`repositories/stage-commit-bundle` can invoke them. A project identity that
 needs to commit more than a mebibyte therefore carries the staging verb as an
 explicit clause-C rule next to `repositories/commit`, and a consumer that only
 ever commits small inputs carries neither.
@@ -126,7 +137,7 @@ resourceRef:
   resource: tables
   name: order-history
 allowedActions:
-  - name: query_table
+  - name: query-table
     version: v1
     schemaDigest: sha256:<catalog-digest>
 ```
@@ -153,60 +164,69 @@ generated server application
   -> App Studio integration invoke
        verify persisted grant (non-revoked, complete audit)
        re-verify the grant digest against the live catalog (409 on drift)
-       POST /services/providers/{provider}/actions/clusters/{cluster}/{resource}/{name}/{action}/{version}
-  -> hub backend proxy
-       strip + re-inject X-Railgrid-* identity hints, forward the bearer
-  -> provider action handler (embedded virtual workspace)
-       parse identity from the route; bearer is the only trust root
-       reject when the path cluster differs from X-Railgrid-Cluster
-       gate 1: a real GET of the addressed resource, as the caller
-       gate 2: SSAR create on {resource}/{action} — the verb grant — as the caller
+       POST {hub}/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/{action}
+  -> hub kcp proxy
+       membership check, forward to kcp as the caller
+  -> kcp shard
+       authenticate the caller; RBAC on {resource}/{action} (the verb grant)
+       reverse-proxy to the provider's DataPlaneEndpointSlice URL,
+       caller stamped in X-Remote-User / X-Remote-Group / X-Remote-Extra-*
+  -> provider action handler (provider-sdk/serve adapter → dataplane.Gate)
+       refuse an undeclared coordinate, a request with no stamped caller
+       gate: SubjectAccessReview for get on {resource}/{name} on the caller's
+             behalf, then read the object as the provider (export VW)
        enforce the declared input schema, byte/result/time limits
        return the stable envelope with a bounded JSON result
 ```
 
 Authorization is kcp RBAC, uniform for every caller class. A human invokes an
-action iff their workspace RBAC allows `create` on the action's virtual
-subresource (`tables/query_table`), the same way exec on a sandbox is
-authorized. A workload identity carries exactly the rules App Studio's grants
-materialized — granting an action *is* writing the RBAC rule, revoking it
-removes the rule. The subresource is an RBAC coordinate only; no API server
-serves it.
+action iff their workspace RBAC allows the action's custom subresource
+(`tables/query-table`), the same way exec on a sandbox is authorized. A
+workload identity carries exactly the rules App Studio's grants materialized
+— granting an action *is* writing the RBAC rule, revoking it removes the
+rule. The subresource is served by the shard's reverse proxy; the provider
+never sees a bearer.
 
-### The verb is `create`
+### The rule is spelled `verbs: ["*"]`
 
-Gate 2 is a `SelfSubjectAccessReview` for verb **`create`** on the virtual
-subresource `{resource}/{action}`, name-scoped to the addressed object. That
-one string is normative, in every provider, for every action. It is what the
-hub writes when it materializes a workload-identity grant
-(`pkg/hub/serviceaccounts/workload_identity.go`), so any other verb string
-silently breaks workload identities: the rule the hub wrote will never match
-the review the provider runs.
+kcp maps the **HTTP method** onto the RBAC verb on a custom subresource (a
+POST is `create`, a GET is `get`, a WebSocket upgrade or a proxying verb may
+be any of them), so a grant on the coordinate `{resource}/{action}` is minted
+with verbs `*`, name-scoped to the addressed object. That is what the hub
+writes when it materializes a workload-identity grant
+(`pkg/hub/serviceaccounts/workload_identity.go`) and what clause C of the
+scoped-identity policy mints whatever verbs a requester spells
+(`pkg/hub/identity/policy.go`); a `spec.requires` entry on a `{resource}/{verb}`
+coordinate carries no verbs in the manifest at all and generates a claim
+spelling `verbs: ["*"]` for the same reason. The coordinate is the grant;
+the method is not something a caller chooses.
 
-`invoke` is **not** that string. It was a bug — a dialect that grew up in
+`invoke` is **not** a verb anywhere. It was a bug — a dialect that grew up in
 provider code and in the planner's `examples/consumer-rbac.yaml`, never in
-the hub, where it silently broke every workload identity, because the rule
-the hub wrote (`create`) could never match the review the provider ran
-(`invoke`). It is removed: no provider reviews it, and no RBAC grants it.
+the hub, where it silently broke every workload identity. It is removed: no
+provider reviews it, and no RBAC grants it. (Before the subresource became
+the only transport, the provider itself reviewed `create`; that review is
+gone with the hub-proxied route, and the grant is kcp's alone.)
 
-### Gate 1 is a real GET, not a review
+### The gate is a SubjectAccessReview, then a read as the provider
 
-Gate 1 is an actual `GET {resource}/{name}` issued with the caller's bearer
-against `/clusters/{clusterID}` — not a `SelfSubjectAccessReview` for `get`.
-It has to be, for two reasons: it proves visibility against the live object
-(a review can pass for an object that does not exist or is being deleted),
-and it *returns the object*, so the handler can pin the UID and the spec it
-is about to act on against its own provider-authority read. A handler that
-skips the GET and trusts a review has no object to pin and no way to notice
-a deletion in flight.
+The provider holds the caller's name and groups and **no credential**, so
+visibility is proven with a `SubjectAccessReview` — not the *Self* variant —
+for `get` on `{resource}/{name}` on the caller's behalf, and only then does
+the handler read the object **as the provider**, through its APIExport
+virtual workspace (`dataplane.Gate`). It still has to read: a review can pass
+for an object that does not exist or is being deleted, and the handler needs
+the object to pin the UID and the spec it is about to act on. A
+`deletionTimestamp` denies. Every probe-shaped failure is a `404`. The
+export must require `authorization.k8s.io/subjectaccessreviews` (`create`, in
+`spec.requires`) for kcp to serve the review through the virtual workspace.
 
-### The path cluster must equal the header cluster
+### The cluster is in the path, and only there
 
-The cluster ID appears twice: in the path (`/clusters/{clusterID}/...`) and
-in the `X-Railgrid-Cluster` header the hub re-injects. The **path wins**, and
-a request whose header is present and disagrees with the path is refused
-with `400` before either gate runs. The header is addressing and labelling
-only; authorization is never derived from it.
+The cluster ID appears once, in the path (`/clusters/{clusterID}/...`) — the
+segment kcp routed on. There is no `X-Railgrid-Cluster` on an action: those
+headers belong to the hub's backend proxy, which carries no verbs. A
+component of a multi-component object is the `component` query parameter.
 
 ### Limits and the envelope
 
@@ -230,7 +250,7 @@ envelope identity (`requestID`, provider, action/version, route-derived
 Studio then validates that envelope identity against the bound grant and
 refuses a response whose identity does not match.
 
-For `query_table/v1`, an unknown column in the exact bound Table is
+For `query-table/v1`, an unknown column in the exact bound Table is
 `schema_projection_invalid`, HTTP 400, and non-retryable. A Databricks
 dependency authentication failure is normalized to `backend_failure` at the
 gateway (HTTP 502, non-retryable), rather than being exposed as the caller's
@@ -250,11 +270,11 @@ paths, or backend resource details. Application authors should branch on the
 typed `code` and `retryable` fields, repair permanent input/schema failures,
 and retry only bounded, idempotent transient failures.
 
-There is deliberately no hub invoke route: the action route through the
-backend proxy is the public data-plane surface, and calling it directly is
-legitimate — the provider's caller-scoped SSAR gates are the enforcement, so
-"bypassing App Studio" gains a caller nothing kcp RBAC does not already
-allow. What the proxy does reserve is the **hub-only** prefix
+There is deliberately no hub invoke route: the custom subresource on the kcp
+front door is the public data-plane surface, and calling it directly is
+legitimate — kcp's RBAC on the coordinate and the provider's gate are the
+enforcement, so "bypassing App Studio" gains a caller nothing kcp RBAC does
+not already allow. What the backend proxy does reserve is the **hub-only** prefix
 `/workload-identities/*` on every provider backend: the attestation endpoint
 must never be reachable with a caller bearer, where it would act as a
 TokenReview oracle. App Studio's invoke gateway adds the consumer-side value
@@ -323,7 +343,7 @@ const railgrid = createActionsClient({
 });
 
 const result = await railgrid.integration('sales').invoke(
-  'query_table/v1',
+  'query-table/v1',
   { columns: ['order_id', 'total'], limit: 25 },
   { requestID: 'request-42', timeoutMs: 10_000 },
 );
@@ -349,12 +369,13 @@ SDK or receive its token.
 
 ## Databricks implementation
 
-`POST /actions/clusters/{clusterID}/tables/{name}/query_table/v1` is the
-primary app path, mounted under the provider's `/actions/` data-plane root.
+`POST /clusters/{clusterID}/apis/{group}/{version}/tables/{name}/query-table`
+is the primary app path, the custom subresource kcp forwards to the provider.
 The handler derives the resource reference from the route, then the
-request-scoped executor performs delegated authorization as the caller — an
-SSAR `get` on the exact imported Table (visibility) and an SSAR `create` on
-the `tables/query_table` subresource (the verb grant) — before resolving
+request-scoped executor performs delegated authorization for the stamped
+caller — a SubjectAccessReview for `get` on the exact imported Table
+(visibility), kcp having already authorized the `tables/query-table`
+subresource (the verb grant) — before resolving
 `Table → Warehouse → Connection → Secret` with provider authority. It
 requires current Table/Warehouse `Ready` and Connection `Validated`/`Ready`
 conditions, checks the connection references and PAT auth type, then builds a
@@ -364,7 +385,7 @@ details are sanitized from errors.
 
 The optional `/mcp` and `/mcp/sse` surfaces are controlled by
 `DATABRICKS_MCP_ENABLED` (enabled by default for compatibility). When enabled,
-the MCP `query_table` tool reuses the same request-scoped executor; it is an
+the MCP `query-table` tool reuses the same request-scoped executor; it is an
 optional presentation adapter and is not required by the primary generated-app
 action path. Setting `DATABRICKS_MCP_ENABLED=false` leaves direct actions
 available.
@@ -392,7 +413,7 @@ action transport. Enforcement of declared limits and schemas is per-provider
 (the databricks handler is the reference); extracting that into a shared
 server-kit package is the planned next step in
 [cross-provider-simplification.md](./cross-provider-simplification.md). Only
-`query_table/v1` is shipped today.
+`query-table/v1` is shipped today.
 
 ## Verification commands
 
@@ -439,7 +460,7 @@ deterministic or live run has passed.
 
 Implementation anchors: [CatalogEntry action types](../apis/providers/v1alpha1/types_catalogentry.go),
 [data-plane action handler and route grammar](https://github.com/railgrid/providers/blob/main/providers/databricks/actions/actions.go),
-[two-gate caller authorization (visibility + verb SSAR)](https://github.com/railgrid/providers/blob/main/providers/databricks/tenant/action.go),
+[caller authorization (visibility review as the stamped caller)](https://github.com/railgrid/providers/blob/main/providers/databricks/tenant/action.go),
 [hub-only proxy reservations](../pkg/hub/providers/proxy.go),
 [hub workload exchange](../pkg/hub/workloadidentity/workloadidentity.go),
 [action-grant RBAC materialization](../pkg/hub/serviceaccounts/workload_identity.go),

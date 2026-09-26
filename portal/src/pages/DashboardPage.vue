@@ -50,8 +50,8 @@ onMounted(() => {
 const gated = computed(() =>
   providers.items
     .filter((p) => {
-      if (!p.ready || !p.hasUI) return false
-      if (p.builtinRoute || p.builtin) return true
+      if (!p.ready || !p.serving?.ui) return false
+      if (p.serving.ui.builtinRoute || p.builtin) return true
       return providers.isEnabled(p.name)
     })
     .sort((a, b) => a.displayName.localeCompare(b.displayName)),

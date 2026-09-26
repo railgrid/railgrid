@@ -84,6 +84,9 @@ certs/
 *-ca.crt
 dex.db
 .kcp/
+# hack/kcp-external.sh state for `make tilt KCP_IMAGE=…`: kcp's root directory
+# (admin.kubeconfig, serving key) mounted into the container.
+.kcp-external/
 # hack/install state (kubeconfigs, pidfiles, hub-token); e2e uses .railgrid-install-e2e
 .railgrid-install*/
 .env

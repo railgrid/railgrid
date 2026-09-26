@@ -29,13 +29,16 @@ function allowed(path, { name = 'agents', org = ORG, method = 'GET' } = {}) {
   return isProviderFetchAllowed(new URL(path, ORIGIN), ORIGIN, name, org, method)
 }
 
-test('allows exactly the same-origin paths both provider auth models need', () => {
-  // hub-proxy model: own backend and own assets.
-  assert.ok(allowed('/services/providers/agents/api/agents'))
+test('allows exactly the same-origin paths a provider needs', () => {
+  // The provider's own backend-proxy surface (MCP, OAuth, webhooks) and assets.
+  assert.ok(allowed('/services/providers/agents/mcp'))
   assert.ok(allowed('/ui/providers/agents/icon.svg'))
-  // cluster-in-path model: kcp REST by cluster, reads and writes.
+  // kcp REST by cluster: the provider's kinds, reads and writes ...
   assert.ok(allowed('/clusters/2abc1/apis/code.railgrid.ai/v1alpha1/repositories', { name: 'code' }))
   assert.ok(allowed('/clusters/2abc1/apis/code.railgrid.ai/v1alpha1/repositories', { name: 'code', method: 'POST' }))
+  // ... and its data-plane verbs, which are custom subresources on the same path.
+  assert.ok(allowed('/clusters/2abc1/apis/infrastructure.railgrid.ai/v1alpha1/instances/shop-dev/exec?component=api', { name: 'infrastructure', method: 'POST' }))
+  assert.ok(allowed('/clusters/2abc1/apis/ai.railgrid.ai/v1alpha1/projects/shop/view', { name: 'app-studio' }))
   assert.ok(!allowed('/graphql/2abc1', { name: 'code', method: 'POST' }), 'the removed GraphQL gateway path is no longer allow-listed')
   // shared, as the user: org-scoped hub REST and the read-only catalog.
   assert.ok(allowed(`/api/orgs/${ORG}/workspaces/ws1/providers/enabled`))
@@ -50,8 +53,8 @@ test('allows exactly the same-origin paths both provider auth models need', () =
 })
 
 test('denies other providers, other orgs, hub-only surfaces, and other origins', () => {
-  assert.ok(!allowed('/services/providers/app-studio/api/projects'))
-  assert.ok(!allowed('/services/providers/agents-evil/api/agents'))
+  assert.ok(!allowed('/services/providers/app-studio/mcp'))
+  assert.ok(!allowed('/services/providers/agents-evil/mcp'))
   assert.ok(!allowed('/services/providers/agents'))
   assert.ok(!allowed('/ui/providers/kuery/main.js'))
   assert.ok(!allowed('/api/orgs/another-org/workspaces'))
@@ -62,8 +65,8 @@ test('denies other providers, other orgs, hub-only surfaces, and other origins',
   assert.ok(!allowed('/apis/railgrid.ai/v1alpha1/organizations'))
   assert.ok(!allowed('/services/agent-proxy/x'))
   assert.ok(!allowed('/ui/'))
-  assert.ok(!allowed('https://evil.example/services/providers/agents/api/agents'))
-  assert.ok(!allowed('http://hub.example/services/providers/agents/api/agents'))
+  assert.ok(!allowed('https://evil.example/services/providers/agents/mcp'))
+  assert.ok(!allowed('http://hub.example/services/providers/agents/mcp'))
 })
 
 test('denies path shapes that could resolve differently on the hub', () => {
@@ -73,8 +76,8 @@ test('denies path shapes that could resolve differently on the hub', () => {
   // Percent-encoded dots survive parsing and are refused outright.
   assert.ok(!allowed('/services/providers/agents/%2e%2e/app-studio/api/projects'))
   assert.ok(!allowed('/services/providers/agents/%2E%2E/app-studio/api/projects'))
-  assert.ok(!allowed('/services/providers/agents//api/agents'))
-  assert.ok(!allowed('/services/providers/agents/%2fapi'))
+  assert.ok(!allowed('/services/providers/agents//mcp'))
+  assert.ok(!allowed('/services/providers/agents/%2fmcp'))
 })
 
 test('the host fetch resolves relative URLs and injects the host credentials', async () => {
@@ -90,13 +93,13 @@ test('the host fetch resolves relative URLs and injects the host credentials', a
     },
   })
 
-  await providerFetch('/services/providers/agents/api/agents', {
+  await providerFetch('/services/providers/agents/mcp', {
     method: 'POST',
     headers: { Accept: 'application/json', Authorization: 'Bearer provider-supplied', 'X-Railgrid-Org': 'spoofed' },
     body: '{}',
   })
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].input, `${ORIGIN}/services/providers/agents/api/agents`)
+  assert.equal(calls[0].input, `${ORIGIN}/services/providers/agents/mcp`)
   assert.equal(calls[0].init.method, 'POST')
   assert.equal(calls[0].init.credentials, 'same-origin')
   assert.equal(calls[0].init.body, '{}')
@@ -111,11 +114,11 @@ test('the host fetch resolves relative URLs and injects the host credentials', a
   // Token refresh is allowed within the same context; tenant changes require
   // a new context and must never retarget an old caller's mutation.
   scope.token = 'id-token-2'
-  await providerFetch('/services/providers/agents/api/agents')
+  await providerFetch('/services/providers/agents/mcp')
   assert.equal(calls[1].init.headers.get('Authorization'), 'Bearer id-token-2')
   assert.equal(calls[1].init.headers.get('X-Railgrid-Workspace'), 'ws-1')
   scope.workspaceUUID = null
-  await assert.rejects(providerFetch('/services/providers/agents/api/agents', { method: 'POST' }), { name: 'AbortError' })
+  await assert.rejects(providerFetch('/services/providers/agents/mcp', { method: 'POST' }), { name: 'AbortError' })
   assert.equal(calls.length, 2)
 
 })
@@ -136,7 +139,7 @@ test('the host fetch keeps same-origin credentials whatever the provider passes'
   // request-shaping fields it does not own still pass through.
   for (const credentials of ['include', 'omit', 'same-origin', undefined]) {
     const controller = new AbortController()
-    await providerFetch('/services/providers/agents/api/agents', {
+    await providerFetch('/services/providers/agents/mcp', {
       credentials,
       mode: 'cors',
       redirect: 'manual',
@@ -161,7 +164,7 @@ test('the portalkit token fallback keeps same-origin credentials whatever the ca
   try {
     const fallback = portalkitProviderFetch({ fetch: null, token: 'legacy-token' })
     for (const credentials of ['include', 'omit', 'same-origin', undefined]) {
-      await fallback(`${ORIGIN}/services/providers/agents/api/agents`, { credentials, headers: { Accept: 'text/plain' } })
+      await fallback(`${ORIGIN}/services/providers/agents/mcp`, { credentials, headers: { Accept: 'text/plain' } })
       const { init } = calls.at(-1)
       assert.equal(init.credentials, 'same-origin', `credentials: ${credentials}`)
       assert.equal(init.headers.get('Authorization'), 'Bearer legacy-token')
@@ -184,7 +187,7 @@ test('the host fetch refuses a denied URL before any request is made', async () 
       return new Response()
     },
   })
-  await assert.rejects(providerFetch('/services/providers/app-studio/api/projects'), (error) => {
+  await assert.rejects(providerFetch('/services/providers/app-studio/mcp'), (error) => {
     assert.ok(error instanceof ProviderFetchDeniedError)
     assert.equal(error.code, 'PROVIDER_FETCH_DENIED')
     assert.match(error.message, /provider "agents" may not fetch .*app-studio/)
@@ -229,10 +232,10 @@ test('obsolete context responses and A-B-A context reuse are rejected', async ()
     isCurrent: () => active,
     fetchImpl: () => { calls++; return new Promise((resolve) => { complete = resolve }) },
   })
-  const response = transport('/services/providers/agents/api/agents')
+  const response = transport('/services/providers/agents/mcp')
   active = false
   complete(new Response('{}'))
   await assert.rejects(response, { name: 'AbortError' })
-  await assert.rejects(transport('/services/providers/agents/api/agents', { method: 'POST' }), { name: 'AbortError' })
+  await assert.rejects(transport('/services/providers/agents/mcp', { method: 'POST' }), { name: 'AbortError' })
   assert.equal(calls, 1)
 })

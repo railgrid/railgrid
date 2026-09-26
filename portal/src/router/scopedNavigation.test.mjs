@@ -450,7 +450,7 @@ test('organization-only settings work without a workspace or misleading provider
   assert.equal(tenant.workspaceUUID, null)
   assert.equal(auth.clusterName, null)
   const providers = useProvidersStore()
-  providers.items = [{ name: 'edges', displayName: 'Edges', ready: true, hasUI: true, builtin: true }]
+  providers.items = [{ name: 'edges', displayName: 'Edges', ready: true, serving: { ui: {} }, builtin: true }]
   assert.deepEqual(providers.enabledNavItems, [])
   await tenant.fetchWorkspaces(O)
   assert.equal(tenant.workspaceUUID, null)

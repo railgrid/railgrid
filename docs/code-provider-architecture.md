@@ -1,6 +1,12 @@
 # Code provider: git repository management
 
-Status: **Historical design proposal**, with two current sections. Package
+Status: **Historical design proposal**, with two current sections. The
+manifest shape in §6 is the 2026-06 one: `CatalogEntrySpec` was restructured
+into `export`/`requires`/`serving`/`hub` on 2026-09-25 (inline
+`apiExport.schemas` are gone; claims live in `spec.requires`), mapped in
+[roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§"Status update 2026-09-25 — the CatalogEntry contract is four sections".
+Package
 discovery and retry behavior are documented in
 [the Code provider README](../providers/code/README.md); the
 controller/backend ownership described below still applies, and the
@@ -179,8 +185,9 @@ executor (`commitexec.Create`) writes the files it was handed into a
 content-addressed bundle, then creates a `RepositoryCommit` whose
 `spec.source.bundleRef` carries only the bundle's name and digest — the bytes
 never enter an API object. Two surfaces call it and neither owns it: the
-`repositories/commit/v1` action, which is the contract surface and is
-authorized by the two gates, and the MCP `commit_files` tool, which is a
+`repositories/commit/v1` action, which is the contract surface — kcp
+authorizes the `repositories/commit` subresource, the gate reviews visibility
+for the stamped caller — and the MCP `commit_files` tool, which is a
 projection of the same executor for interactive clients. The store is scoped by
 the tenant's kcp logical-cluster ID (`X-Railgrid-Cluster` on the MCP request,
 the path cluster on an action, `req.ClusterName` in the reconciler: the same
@@ -196,30 +203,31 @@ without shared storage for this directory means a commit can land on a replica
 that cannot see its bundle.
 
 **Git snapshots** (`actions/snapshots.go`, under the same directory). The
-`stage_snapshot` verb accepts a git bundle and returns an opaque `bundleRef`
+`stage-snapshot` verb accepts a git bundle and returns an opaque `bundleRef`
 scoped by tenant cluster, Repository UID, Connection UID and the caller's own
 credential, so a handle is useless to anyone else — and re-uploading after a
 credential rotation is expected, not a bug. Handles expire after an hour, are
 swept lazily on the next upload, and are bounded per tenant (16 artifacts,
-256 MiB). `prepare_snapshot` and `publish_snapshot` take the handle, never an
+256 MiB). `prepare-snapshot` and `publish-snapshot` take the handle, never an
 inline bundle, and re-verify its digest before use.
 
 **Staged commit bundles** (`actions/commit.go`). `commit/v1` is catalogued and
 therefore bounded at the CatalogEntry's 1 MiB input ceiling, which is smaller
 than a generated application. A caller with more than that uploads the file
-list through `stage_commit_bundle`, which writes it into the commit-bundle
+list through `stage-commit-bundle`, which writes it into the commit-bundle
 store above under the request's cluster scope and returns the
 `bundleRef`/`bundleDigest` pair; `commit` then names the handle instead of
 inline `files`, re-reads it digest-verified, and creates the same
 `RepositoryCommit`. A staged bundle nobody commits is reclaimed by the same
 one-hour sweeper as any other orphan.
 
-`stage_snapshot` and `stage_commit_bundle` are the provider's only
+`stage-snapshot` and `stage-commit-bundle` are the provider's only
 **uncatalogued** verbs: a 25 MiB or 48 MiB body cannot be declared under
-`CatalogEntry.spec.actions[].limits.maxInputBytes`, which the CatalogEntry API
-caps at 1 MiB. Both are served on the same
-`/actions/clusters/{id}/repositories/{name}/{verb}/v1` route and run the same
-two gates as every catalogued action. The exception, and the four conditions a
+`spec.export.resources[].actions[].limits.maxInputBytes`, which the CatalogEntry API
+caps at 1 MiB. Both are declared as data-plane verbs, so they are custom
+subresources `repositories/{verb}` at
+`/clusters/{id}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb}`
+and gated exactly like every catalogued action. The exception, and the four conditions a
 verb has to meet to claim it, are written down in
 [provider-actions.md](./provider-actions.md) §"Uncatalogued large-upload
 verbs".
@@ -234,9 +242,12 @@ Added 20 September 2026
 follow-up recorded on that plan).
 
 ```
-POST /actions/clusters/{id}/repositories/{name}/commit/v1
-POST /actions/clusters/{id}/repositories/{name}/stage_commit_bundle/v1   (uncatalogued)
+POST /clusters/{id}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/commit
+POST /clusters/{id}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/stage-commit-bundle   (uncatalogued)
 ```
+
+(The action's `/v1` is its catalog id, not a path segment; `provider-sdk/serve`
+restores it from the declaration.)
 
 **Why it exists.** A consumer that generates code — App Studio, above all —
 needs to put file contents somewhere only this provider can write, and then
@@ -254,8 +265,9 @@ action does — there is simply no Connection and no credential to resolve,
 because the verb never reaches a git host.
 
 **Who writes the CR.** The provider, through its own export client, after the
-two gates have passed. The caller proves it may commit (`get` on the
-Repository, `create` on `repositories/commit`) and does not additionally need
+gate has passed. The caller proves it may commit (kcp's RBAC on the
+`repositories/commit` subresource, then the gate's `get` review on the
+Repository) and does not additionally need
 `create` on `repositorycommits` in its own workspace — which is the point: a
 consumer composes this provider's behaviour through a declared verb, not
 through RBAC on a foreign kind. App Studio's project identity therefore gained
@@ -270,14 +282,14 @@ for every commit.
 
 ---
 
-## `mint_registry_token` — the one Connection-bound action
+## `mint-registry-token` — the one Connection-bound action
 
 Added 19 September 2026
 ([provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
 §9 Cut C.3).
 
 ```
-POST /actions/clusters/{id}/connections/{name}/mint_registry_token/v1
+POST /clusters/{id}/apis/code.railgrid.ai/v1alpha1/connections/{name}/mint-registry-token
 ```
 
 Every other action this provider serves is bound to a `Repository`. This one is
@@ -312,9 +324,10 @@ requires a genuinely scoped pull secret can refuse an unscoped one. The
 credential still never leaves this provider's control path, and the consumer
 still never reads the Secret.
 
-**Authorization** is the ordinary pair: gate 1 GETs the `Connection` as the
-caller, gate 2 asks for `create` on `connections/mint_registry_token` scoped to
-its name. A grant on `repositories/*` does not reach it and vice versa — the
+**Authorization** is the ordinary pair: kcp authorizes the caller for the
+`connections/mint-registry-token` subresource scoped to its name, and the gate
+reviews `get` on the `Connection` for the stamped caller. A grant on
+`repositories/*` does not reach it and vice versa — the
 point of moving the credential behind an action rather than leaving it a Secret
 read (`actions/server_test.go`,
 `TestConnectionActionIsGatedSeparatelyFromRepositoryActions`). The caller then

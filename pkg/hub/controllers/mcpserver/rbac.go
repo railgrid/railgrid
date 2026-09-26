@@ -39,6 +39,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/apiurl"
@@ -68,8 +70,11 @@ type dataPlaneGrant struct {
 	// really does serve all of them. Anything narrower must be listed, or the
 	// grant widens itself as new resources join the group's APIExport.
 	resources []string
-	// subresources are virtual subresources granted with "create". They
-	// invoke something (a shell, a job) and are dropped for readOnly servers.
+	// subresources are the provider's kcp custom subresources (data-plane
+	// verbs) granted with dataplane.SubresourceVerbs: the coordinate is the
+	// capability, and kcp maps the HTTP method a verb uses onto the RBAC
+	// verb. They invoke something (a shell, a job) and are dropped for
+	// readOnly servers.
 	subresources []string
 }
 
@@ -77,7 +82,8 @@ type dataPlaneGrant struct {
 // data-plane verb is an RBAC subresource granted with "create": the owning
 // provider runs a SelfSubjectAccessReview for exactly {resource}/{verb} as the
 // caller before serving it (provider-sdk/dataplane.Gate), so each entry mirrors
-// the verbs that provider declares in CatalogEntry.spec.dataPlane.verbs.
+// the verbs that provider declares on the resource under
+// CatalogEntry.spec.export.resources[].verbs.
 var dataPlaneGrants = map[string][]dataPlaneGrant{
 	// providers/edges/internal/tunnel/grammar.go dataPlaneVerbs. The tunnel
 	// serves kubectl (including delete and exec), an SSH shell and MCP under
@@ -103,10 +109,11 @@ var dataPlaneGrants = map[string][]dataPlaneGrant{
 	// modelcredentials is named explicitly so binding a new resource in the
 	// group never widens this to <newresource>/test.
 	"agents.railgrid.ai": {{resources: []string{"modelcredentials"}, subresources: []string{"test", "discover"}}},
-	// The infrastructure data plane gates "create" on instances/{verb} for
-	// every verb (providers/infrastructure/dataplane/handler.go); exec is the
-	// one an MCP token may hold. instances is the only resource the data plane
-	// serves, so exec is granted on instances alone and never on templates.
+	// The infrastructure data plane serves instances/{verb} as kcp custom
+	// subresources (providers/infrastructure/dataplane/handler.go); exec is
+	// the one an MCP token may hold. instances is the only resource the data
+	// plane serves, so exec is granted on instances alone and never on
+	// templates.
 	"infrastructure.railgrid.ai": {{resources: []string{"instances"}, subresources: []string{"exec"}}},
 }
 
@@ -235,10 +242,10 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 					subs = append(subs, r+"/"+s)
 				}
 			}
-			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: subs, Verbs: []string{"create"}})
+			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: subs, Verbs: append([]string(nil), dataplane.SubresourceVerbs...)})
 		}
 		if subs := actionSubs[g]; len(subs) > 0 {
-			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: sortedKeys(subs), Verbs: []string{"create"}})
+			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: sortedKeys(subs), Verbs: append([]string(nil), dataplane.SubresourceVerbs...)})
 		}
 	}
 
@@ -448,45 +455,52 @@ func catalogActionGrants(kcpConfig *rest.Config) ActionGrantSource {
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.Items[i].Object, &entry); err != nil {
 				return nil, fmt.Errorf("decoding CatalogEntry %s: %w", list.Items[i].GetName(), err)
 			}
-			out = append(out, actionGrantsFromSpec(entry.Spec.Actions)...)
+			out = append(out, actionGrantsFromExport(entry.Spec.Export)...)
 		}
 		return out, nil
 	}
 }
 
-// actionIDPattern is the documented action ID shape, "<name>/vN". It mirrors
-// the kubebuilder Pattern on ProviderActionSpec.ID character for character;
-// keep the two in step. The CRD rejects new objects that break it, but pattern
-// validation never retro-validates objects that predate the marker, so the
-// parser enforces the shape itself rather than trusting what is in storage.
-var actionIDPattern = regexp.MustCompile(`^([a-z][a-z0-9_-]{0,62})/v[1-9][0-9]{0,7}$`)
+// actionNamePattern is the documented shape of an action's name, which is the
+// subresource half of the {resource}/{action} coordinate. It mirrors the
+// kubebuilder Pattern on ProviderAction.Name character for character; keep the
+// two in step. The CRD rejects new objects that break it, but pattern validation
+// never retro-validates objects that predate the marker, so the parser enforces
+// the shape itself rather than trusting what is in storage.
+var actionNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
 
-// actionGrantsFromSpec maps catalog action declarations to RBAC coordinates.
-// Action IDs are "<name>/vN"; the provider reviews the unversioned name as the
-// subresource. An ID that does not match the documented shape is skipped
-// rather than granted: a malformed catalog entry must not widen the role, and
-// "has a slash" is not the documented shape.
-func actionGrantsFromSpec(actions []providersv1alpha1.ProviderActionSpec) []ActionGrant {
-	out := make([]ActionGrant, 0, len(actions))
-	for _, a := range actions {
-		m := actionIDPattern.FindStringSubmatch(strings.TrimSpace(a.ID))
-		if m == nil {
+// actionGrantsFromExport maps an export's catalogued actions to RBAC
+// coordinates. An action is declared ON the resource it is served on, so the
+// coordinate is (that resource, this action's name) and the group comes from the
+// resource's apiVersion — the version of the action's contract is not in any
+// path and is irrelevant here.
+//
+// A name or apiVersion that does not match the documented shape is skipped
+// rather than granted: a malformed catalog entry must not widen the role.
+func actionGrantsFromExport(export *providersv1alpha1.ProviderExport) []ActionGrant {
+	if export == nil {
+		return nil
+	}
+	out := make([]ActionGrant, 0, len(export.Resources))
+	for _, resource := range export.Resources {
+		if resource.Name == "" {
 			continue
 		}
-		name := m[1]
-		if a.BoundResource.Resource == "" {
+		gv, err := schema.ParseGroupVersion(resource.APIVersion)
+		if err != nil || gv.Group == "" {
 			continue
 		}
-		gv, err := schema.ParseGroupVersion(a.BoundResource.APIVersion)
-		if err != nil {
-			continue
+		for _, action := range resource.Actions {
+			if !actionNamePattern.MatchString(strings.TrimSpace(action.Name)) {
+				continue
+			}
+			out = append(out, ActionGrant{
+				Group:    gv.Group,
+				Resource: resource.Name,
+				Name:     action.Name,
+				ReadOnly: action.ReadOnly,
+			})
 		}
-		out = append(out, ActionGrant{
-			Group:    gv.Group,
-			Resource: a.BoundResource.Resource,
-			Name:     name,
-			ReadOnly: a.ReadOnly,
-		})
 	}
 	return out
 }

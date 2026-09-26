@@ -250,7 +250,7 @@ own result in status. "Which revision this project's working copy is at" is not
 a property of a checkout that happened once; it is App Studio's state about a
 project App Studio owns, and putting it on another provider's CRD would have
 meant new fields there, a `repositorycheckouts` entry in
-`dependencies[].composes`, and a clause E — for state that provider never
+`spec.requires`, and a clause E — for state that provider never
 reads. Clause A covers the new fields where they are, and nothing about the
 composition or the Code provider changed.
 

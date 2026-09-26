@@ -1,17 +1,26 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
-import ts from 'typescript'
+import { createServer } from 'vite'
 
-// Keep the adapter framework-neutral and test it with the portal's existing
-// node:test runner. Vite performs the production transpilation; this tiny
-// loader lets the focused contract tests exercise the real TypeScript module
-// without adding a second test framework to the standalone portal package.
-const source = readFileSync(new URL('./src/api.ts', import.meta.url), 'utf8')
-const transpiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-}).outputText
-const api = await import(`data:text/javascript;charset=utf-8,${encodeURIComponent(transpiled)}`)
+// api.ts builds the verb path with portalkit's kubeVerbPath and the SavedView
+// resource ref, so load the real module graph rather than transpiling one file
+// in isolation. Vite performs the production transpilation too; this keeps the
+// focused contract tests on the portal's existing node:test runner.
+const vite = await createServer({
+  appType: 'custom',
+  cacheDir: join(tmpdir(), 'railgrid-vite-kuery-api'),
+  configFile: false,
+  optimizeDeps: { noDiscovery: true },
+  root: new URL('./', import.meta.url).pathname,
+  server: { middlewareMode: true, hmr: false },
+  ssr: { external: ['vue'] },
+})
+const api = await vite.ssrLoadModule('/src/api.ts')
+test.after(() => vite.close())
+
+const verbPath = (cluster, view) => `/clusters/${cluster}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/${view}/run`
 
 test('buildInventoryQuery emits stable order, optional count, and opaque cursor', () => {
   const cursor = 'eyJ2Ijp7ImNsdXN0ZXIiOiJlZGdlLzEiLCJuYW1lIjoicG9kIn19'
@@ -78,7 +87,9 @@ test('mapQueryStatus preserves metadata and derives hasNext only from next curso
 
 // A query is the run verb on a named SavedView, addressed by the workspace's
 // kcp logical-cluster ID, with the spec carried as the request's input
-// override. There is no un-named query route.
+// override. There is no un-named query route, and the route is a kube path on
+// the kcp front door — the custom subresource savedviews/run — not a
+// /services/providers/ spelling.
 test('KueryApi posts the query as a run verb on a SavedView', async () => {
   const controller = new AbortController()
   let capturedInput
@@ -92,7 +103,6 @@ test('KueryApi posts the query as a run verb on a SavedView', async () => {
     })
   }
   const client = api.createKueryApi({
-    basePath: '/services/providers/kuery/',
     cluster: '1ngen6o0so3jwz2h',
     savedView: 'playground-0123456789ab',
     headers: { Authorization: 'Bearer test-token' },
@@ -102,7 +112,7 @@ test('KueryApi posts the query as a run verb on a SavedView', async () => {
   const spec = { limit: 1, cursor: true }
   await client.query(spec, { signal: controller.signal })
 
-  assert.equal(capturedInput, '/services/providers/kuery/dataplane/clusters/1ngen6o0so3jwz2h/savedviews/playground-0123456789ab/run')
+  assert.equal(capturedInput, verbPath('1ngen6o0so3jwz2h', 'playground-0123456789ab'))
   assert.equal(capturedInit.method, 'POST')
   assert.equal(capturedInit.signal, controller.signal)
   assert.equal(new Headers(capturedInit.headers).get('Authorization'), 'Bearer test-token')
@@ -112,15 +122,15 @@ test('KueryApi posts the query as a run verb on a SavedView', async () => {
   // A per-call view overrides the client's default, which is how the shell
   // runs a specific saved view without a second client.
   await client.query(spec, { savedView: 'fleet-deployments' })
-  assert.equal(capturedInput, '/services/providers/kuery/dataplane/clusters/1ngen6o0so3jwz2h/savedviews/fleet-deployments/run')
+  assert.equal(capturedInput, verbPath('1ngen6o0so3jwz2h', 'fleet-deployments'))
 })
 
 // A view name is caller-authored, so it must not be able to escape its path
 // segment.
 test('runPath encodes every caller-supplied segment', () => {
   assert.equal(
-    api.runPath('/services/providers/kuery', 'abc', '../../etc/passwd'),
-    '/services/providers/kuery/dataplane/clusters/abc/savedviews/..%2F..%2Fetc%2Fpasswd/run',
+    api.runPath('abc', '../../etc/passwd'),
+    verbPath('abc', '..%2F..%2Fetc%2Fpasswd'),
   )
 })
 
@@ -128,7 +138,6 @@ test('runPath encodes every caller-supplied segment', () => {
 // is the one that says what to change, so it must win over the status text.
 test('KueryApi surfaces the envelope error over the HTTP status', async () => {
   const client = api.createKueryApi({
-    basePath: '/services/providers/kuery',
     cluster: 'abc',
     savedView: 'view',
     fetch: async () => new Response(
@@ -145,7 +154,6 @@ test('KueryApi surfaces the envelope error over the HTTP status', async () => {
 
 test('KueryApi surfaces HTTP failures with status and bounded response detail', async () => {
   const client = api.createKueryApi({
-    basePath: '/services/providers/kuery',
     cluster: 'abc',
     savedView: 'view',
     fetch: async () => new Response('Unauthorized\n', { status: 401, statusText: 'Unauthorized' }),
@@ -172,8 +180,7 @@ test('KueryApi rejects malformed JSON and invalid QueryStatus shapes', async () 
 
   for (const body of bodies) {
     const client = api.createKueryApi({
-      basePath: '/services/providers/kuery',
-      cluster: 'abc',
+        cluster: 'abc',
       savedView: 'view',
       fetch: async () => new Response(
         body === 'not-json' ? body : JSON.stringify({ requestID: 'r-1', result: JSON.parse(body) }),

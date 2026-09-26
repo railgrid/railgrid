@@ -14,7 +14,6 @@ import (
 	"github.com/railgrid/provider-code/commitexec"
 	"github.com/railgrid/provider-sdk/actionwire"
 	"github.com/railgrid/provider-sdk/dataplane"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 )
@@ -24,9 +23,9 @@ import (
 // It is the grammar's answer to the same question commit_files answers over
 // MCP, and both run the one executor in commitexec: store the source bundle
 // in this provider's own store, then create the RepositoryCommit that points
-// at it. What the action adds is the contract's authorization — gate 1 proves
-// the caller can see the Repository, gate 2 that it holds `create` on
-// repositories/commit — and a result a consumer can follow: the commit's name
+// at it. What the action adds is the contract's authorization — kcp proves the
+// caller holds `create` on repositories/commit, the gate that it can see the
+// Repository — and a result a consumer can follow: the commit's name
 // and UID. It does NOT wait for the commit to land; the CR is the thing to
 // watch, and a consumer that needs the outcome watches it (App Studio's
 // project reconciler does exactly that).
@@ -34,19 +33,19 @@ const Commit = "commit"
 
 // StageCommitBundle is the second uncatalogued large-upload verb, alongside
 // StageSnapshot and for the same reason: a repository's worth of generated
-// files does not fit in the 1 MiB CatalogEntry.spec.actions[].limits
+// files does not fit in the 1 MiB a catalogued action's limits
 // .maxInputBytes ceiling (apis/providers/v1alpha1/actions.go), and inventing
 // a catalogue that lies about its own bounds would be worse than declaring
 // the exception. A caller with more than one mebibyte of files uploads them
 // here, gets an opaque bundle handle back, and passes that handle to Commit
 // as `bundleRef`. Both verbs are gated exactly like a catalogued action, and
-// this one is gated on `create` for repositories/stage_commit_bundle, so the
-// grant to upload is separate from the grant to commit.
+// kcp authorizes this one as `create` on repositories/stage-commit-bundle, so
+// the grant to upload is separate from the grant to commit.
 //
 // See docs/provider-actions.md, "Uncatalogued large-upload verbs".
-const StageCommitBundle = "stage_commit_bundle"
+const StageCommitBundle = "stage-commit-bundle"
 
-// MaxCommitBundleInputBytes bounds a stage_commit_bundle body: the bundle
+// MaxCommitBundleInputBytes bounds a stage-commit-bundle body: the bundle
 // store's 48 MiB of decoded content, expanded by base64 (4/3) and wrapped in
 // JSON.
 const MaxCommitBundleInputBytes = 68 << 20
@@ -54,7 +53,7 @@ const MaxCommitBundleInputBytes = 68 << 20
 // commitInput is the repositories/commit/v1 input.
 //
 // The commit is addressed by the route, so the input carries no repository
-// name — only the UID, which pins what gate 1 returned against the provider's
+// name — only the UID, which pins what the caller saw against the provider's
 // own read, the same pinning every other action here does.
 //
 // One of files or bundleRef is given. What is NOT here is as deliberate: a
@@ -107,16 +106,21 @@ type stageCommitBundleOutput struct {
 	Size         int64  `json:"size"`
 }
 
-// commit runs the commit action. The gates have already passed; visible is
-// the Repository as the caller sees it.
-func (s *Server) commit(ctx context.Context, req dataplane.Request, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
+// commit runs the commit action. The gate has already passed; visible is the
+// provider's read of the Repository and provider acts as this provider in the
+// request's cluster, which is what writes the RepositoryCommit: the caller
+// authorized the commit through kcp and the gate, and does not need `create`
+// on a foreign provider's kind to have one made for it.
+func (s *Server) commit(ctx context.Context, provider dynamic.Interface, req dataplane.Request, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
 	var in commitInput
 	if err := decodeStrict(raw, &in); err != nil {
 		return nil, wireError("invalid_action_input")
 	}
-	provider, aerr := s.pinRepository(ctx, req, visible, in.RepositoryUID)
-	if aerr != nil {
+	if aerr := pinRepository(visible, in.RepositoryUID); aerr != nil {
 		return nil, aerr
+	}
+	if provider == nil {
+		return nil, wireError("action_forbidden")
 	}
 	request := commitexec.Request{
 		RepositoryRef: req.Name,
@@ -149,7 +153,7 @@ func (s *Server) stageCommitBundle(ctx context.Context, req dataplane.Request, v
 	if err := decodeStrict(raw, &in); err != nil {
 		return nil, wireError("invalid_action_input")
 	}
-	if _, aerr := s.pinRepository(ctx, req, visible, in.RepositoryUID); aerr != nil {
+	if aerr := pinRepository(visible, in.RepositoryUID); aerr != nil {
 		return nil, aerr
 	}
 	if len(in.Files) == 0 {
@@ -172,24 +176,15 @@ func (s *Server) stageCommitBundle(ctx context.Context, req dataplane.Request, v
 
 // pinRepository is resolve() without the Connection and the credential: the
 // commit verbs never talk to a git host, so there is nothing to authenticate
-// with, but the provider's own read of the Repository still has to agree with
-// what the caller was shown. It returns the provider's export client for the
-// cluster, which is what writes the RepositoryCommit: the caller authorized
-// the commit through the two gates and does not need `create` on a foreign
-// provider's kind to have one made for it.
-func (s *Server) pinRepository(ctx context.Context, req dataplane.Request, visible *unstructured.Unstructured, repositoryUID string) (dynamic.Interface, *actionwire.Error) {
-	if s.Authority == nil || strings.TrimSpace(repositoryUID) == "" || string(visible.GetUID()) != repositoryUID {
-		return nil, wireError("action_forbidden")
+// with, but the caller's input still has to name the Repository the gate
+// returned. The UID is what the caller saw; the object is what the provider
+// read, so a Repository deleted and recreated under the same name in between
+// fails rather than being committed to.
+func pinRepository(visible *unstructured.Unstructured, repositoryUID string) *actionwire.Error {
+	if visible == nil || strings.TrimSpace(repositoryUID) == "" || string(visible.GetUID()) != repositoryUID || visible.GetDeletionTimestamp() != nil {
+		return wireError("action_forbidden")
 	}
-	provider, err := s.Authority(ctx, req.ClusterID, repositories, req.Name)
-	if err != nil {
-		return nil, wireError("action_forbidden")
-	}
-	authoritative, err := provider.Resource(repositories).Get(ctx, req.Name, metav1.GetOptions{})
-	if err != nil || authoritative.GetUID() != visible.GetUID() || authoritative.GetDeletionTimestamp() != nil {
-		return nil, wireError("action_forbidden")
-	}
-	return provider, nil
+	return nil
 }
 
 func commitFiles(files []commitFile) []commitbundle.File {

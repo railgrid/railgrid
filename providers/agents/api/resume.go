@@ -32,9 +32,9 @@ import (
 	"github.com/railgrid/provider-agents/tools"
 )
 
-// resumeDeps carries the tenant access a resume runs with. The portal path
-// acts as the resolving user (tenant client + edges token); the channel path
-// acts through the APIExport virtual workspace (no edges).
+// resumeDeps carries the tenant access a resume runs with: the gate's
+// provider client on the inbox-resolve verb, the virtual-workspace client on
+// the channel path. Both act as the provider; neither carries edges.
 type resumeDeps struct {
 	Creds         llm.CredentialResolver
 	CR            tools.CRAccess
@@ -134,7 +134,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	toolset, _, closeTools := s.buildToolset(ctx, tools.Deps{
 		Store: s.store, Scope: agentScope, Agent: agent, CR: rd.CR,
 		Secrets: rd.Creds, ConnSecretName: connectionSecretName, RunID: run.ID,
-		DataPlane: s.dataPlaneFor(ctx, tr),
+		DataPlane: s.dataPlaneFor(tr),
 	}, tr)
 	defer closeTools()
 

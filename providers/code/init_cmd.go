@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	sdkinstall "github.com/railgrid/provider-sdk/install"
 
@@ -46,25 +47,25 @@ func runInitCmd(ctx context.Context) error {
 	if kcpDir == "" {
 		kcpDir = "/etc/railgrid/kcp"
 	}
-	// Per-installation APIExport identity hashes for first-party claim groups,
-	// as "group=hash,group=hash". Empty for this provider: it claims only
-	// built-in Secrets, which need no hash.
-	identityHashes, err := sdkinstall.ParseIdentityHashes(os.Getenv("RAILGRID_IDENTITY_HASHES"))
-	if err != nil {
-		return err
-	}
 	// CatalogEntry self-registration: the provider applies its own CatalogEntry
 	// into its workspace (the Provider controller bound providers.railgrid.ai
-	// here). Empty → skip.
-	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
+	// here). Empty → skip. The lookup is shared with serve (catalogentry.go),
+	// which derives its custom-subresource routes from the same document.
+	catalogEntryFile := catalogEntryPath()
+	// Where kcp reverse-proxies a custom subresource request to. Empty means
+	// "spec.serving.backend.url of the CatalogEntry above", which is right
+	// whenever the chart runs init; a harness that registers the CatalogEntry
+	// itself (the Makefile's install-provider-* target, the provider e2e) has no
+	// file to read it from and sets this instead.
+	dataPlaneURL := strings.TrimSpace(os.Getenv("RAILGRID_DATAPLANE_URL"))
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:           config,
 		ExportName:       install.APIExportName,
 		WorkspacePath:    workspacePath,
 		KCPDir:           kcpDir,
-		IdentityHashes:   identityHashes,
 		CatalogEntryFile: catalogEntryFile,
+		DataPlaneURL:     dataPlaneURL,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}

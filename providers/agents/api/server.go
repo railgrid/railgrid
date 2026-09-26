@@ -8,9 +8,12 @@
 
 // Package api serves the agents provider's tenant-facing surface.
 //
-// There is exactly one shape: a data-plane verb on a bound resource,
-// /dataplane/clusters/{id}/{resource}/{name}/{verb}, authorized as the caller
-// by provider-sdk/dataplane's two gates. The route table and the router live in
+// There is exactly one shape: a data-plane verb on a bound resource, published
+// as the kcp custom subresource "{resource}/{verb}" on the agents APIExport and
+// reached at /clusters/{id}/apis/agents.railgrid.ai/v1alpha1/{resource}/{name}/{verb}.
+// kcp authenticates and authorizes the caller and forwards the request here
+// with the caller stamped; provider-sdk/dataplane's gate settles visibility and
+// the handler then acts AS THE PROVIDER. The route table and the router live in
 // dataplane.go; the handlers in the other files of this package are what those
 // verbs run. The provider also serves MCP (/mcp), the browser OAuth callback
 // (/oauth/…) and signed inbound webhooks (/webhooks/…), each mounted by
@@ -35,6 +38,7 @@ import (
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tenant"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 // Config bundles the runtime settings the server needs. Everything but the hub
@@ -82,17 +86,20 @@ type Server struct {
 	bg       *background
 	events   *eventBus
 	liveRuns *runRegistry
-	// callers builds the per-request, caller-scoped kube client every
-	// data-plane gate runs through. It carries the provider's connection with
-	// every credential dropped, so a request without a bearer fails rather
-	// than silently acting as the provider.
-	callers dataplane.CallerFactory
+	// callers is the data-plane caller factory. On a verb it acts AS THE
+	// PROVIDER through the APIExport virtual workspace (Gate needs
+	// AsProvider); on the MCP class, the one route that still carries the
+	// caller's bearer, For builds a caller-scoped client from it.
+	callers dataplane.ProviderCallerFactory
+	// verbCallers addresses a verb ANOTHER provider serves (the infrastructure
+	// provider's instances/proxy, claimed under manifest.yaml
+	// spec.requires) through this provider's own export virtual workspace
+	// with its own credential. Nil without a provider kubeconfig; instance-
+	// backed tools then report that. See tools.DataPlane.
+	verbCallers tools.VerbCaller
 	// mcpEndpoints caches each workspace's aggregate MCP URL, read off the
 	// MCPServer object rather than composed from a hardcoded path.
 	mcpEndpoints *mcpEndpointCache
-	// providerLookups caches which provider serves an API group in a
-	// workspace, read off the tenant's own APIBinding. See crossprovider.go.
-	providerLookups *providerLookupCache
 	// scopeClusters maps a store scope back to its logical cluster, so a run
 	// transition can be projected onto its Run object without a store lookup
 	// every time. See runprojection.go.
@@ -134,56 +141,68 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		workspaces = tenantaccess.NewWorkspaceResolver(cfg.HubURL, cfg.HubInsecure, 0).Resolve
 	}
 
-	callers, err := callerFactory(cfg)
+	callers, providerScoped, err := callerFactory(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Server{
-		cfg:             cfg,
-		store:           st,
-		tenant:          tenantClient,
-		engine:          engine.New(),
-		events:          newEventBus(),
-		liveRuns:        newRunRegistry(),
-		callers:         callers,
-		mcpEndpoints:    newMCPEndpointCache(),
-		providerLookups: newProviderLookupCache(),
-		scopeClusters:   newScopeClusterCache(),
-		workspaces:      workspaces,
-		started:         time.Now().UTC(),
-	}, nil
+	s := &Server{
+		cfg:           cfg,
+		store:         st,
+		tenant:        tenantClient,
+		engine:        engine.New(),
+		events:        newEventBus(),
+		liveRuns:      newRunRegistry(),
+		mcpEndpoints:  newMCPEndpointCache(),
+		scopeClusters: newScopeClusterCache(),
+		workspaces:    workspaces,
+		started:       time.Now().UTC(),
+	}
+	// A nil *Callers must not become a non-nil interface holding nil: Gate
+	// reports "no caller factory" for a nil interface, which is the honest
+	// answer.
+	if callers != nil {
+		s.callers = callers
+		if providerScoped {
+			s.verbCallers = callers
+		}
+	}
+	return s, nil
 }
 
-// callerFactory builds the data-plane caller factory.
+// callerFactory builds the data-plane caller factory. providerScoped reports
+// whether it can act as the provider — the only way a verb runs, and the only
+// way another provider's verb is called.
 //
-// The provider kubeconfig is preferred — it is the same connection the
-// reconcilers use, so there is one CA and one host to get right — and the hub
-// URL is the fallback for a deployment that has no kubeconfig at serve time.
-// With neither, the factory is nil and every gated route answers 500 rather
-// than falling back to some other identity: a data-plane verb that cannot run
-// as the caller must not run at all.
-func callerFactory(cfg Config) (dataplane.CallerFactory, error) {
+// The provider kubeconfig is what a verb needs: the shard authenticates the
+// caller and stamps an identity but passes no bearer, so visibility is decided
+// by a SubjectAccessReview run on the caller's behalf through the provider's
+// export virtual workspace and the handler then acts as the provider. Without
+// it every verb fails closed (500): a verb that cannot run as the provider
+// must not run at all. The hub URL alone still serves the MCP class, whose
+// tools act with the bearer the hub's aggregate forwards.
+func callerFactory(cfg Config) (*dataplane.Callers, bool, error) {
 	if cfg.ProviderKubeconfig != "" {
 		base, err := clientcmd.BuildConfigFromFlags("", cfg.ProviderKubeconfig)
 		if err != nil {
-			return nil, fmt.Errorf("loading provider kubeconfig for the data-plane caller factory: %w", err)
+			return nil, false, fmt.Errorf("loading provider kubeconfig for the data-plane caller factory: %w", err)
 		}
-		callers, err := dataplane.NewCallerFactory(base)
+		callers, err := dataplane.NewCallerFactory(base, dataplane.WithProviderConfig(base, apiExportNameForSlice))
 		if err != nil {
-			return nil, fmt.Errorf("data-plane caller factory: %w", err)
+			return nil, false, fmt.Errorf("data-plane caller factory: %w", err)
 		}
-		return callers, nil
+		return callers, true, nil
 	}
 	if cfg.HubURL != "" {
+		log.Printf("agents: no provider kubeconfig — data-plane verbs are unavailable (RAILGRID_PROVIDER_KUBECONFIG); MCP tools still act with the caller's bearer")
 		callers, err := dataplane.NewHubCallerFactory(cfg.HubURL, nil, cfg.HubInsecure)
 		if err != nil {
-			return nil, fmt.Errorf("data-plane caller factory: %w", err)
+			return nil, false, fmt.Errorf("data-plane caller factory: %w", err)
 		}
-		return callers, nil
+		return callers, false, nil
 	}
-	log.Printf("agents: no provider kubeconfig and no hub URL — data-plane verbs are unavailable")
-	return nil, nil
+	log.Printf("agents: no provider kubeconfig and no hub URL — data-plane verbs and MCP tenant access are unavailable")
+	return nil, false, nil
 }
 
 // Close releases server resources.

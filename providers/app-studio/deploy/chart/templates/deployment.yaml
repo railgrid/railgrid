@@ -142,6 +142,15 @@ spec:
             # calling user via the forwarded bearer token.
             - name: RAILGRID_PROVIDER_KUBECONFIG
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
+            {{- if $catalogEntryConfigMap }}
+            # The same CatalogEntry the init container applies. serve reads it
+            # too: spec.export.resources[].verbs is the declaration of which
+            # "<resource>/<verb>" coordinates this provider answers on the path
+            # a kcp shard forwards for a custom subresource, so the routes
+            # cannot drift from what the APIExport declares.
+            - name: RAILGRID_CATALOGENTRY_FILE
+              value: /etc/railgrid/catalogentry/catalogentry.yaml
+            {{- end }}
             - name: APP_STUDIO_WORKSPACE_ROOT
               value: {{ .Values.workspace.path | quote }}
             {{- if .Values.store.databaseURL }}
@@ -245,6 +254,11 @@ spec:
               readOnly: true
             - name: project-workspaces
               mountPath: {{ .Values.workspace.path | quote }}
+            {{- if $catalogEntryConfigMap }}
+            - name: catalogentry
+              mountPath: /etc/railgrid/catalogentry
+              readOnly: true
+            {{- end }}
             {{- if $actionsCABundleConfigMap }}
             - name: actions-ca-bundle
               mountPath: /etc/railgrid/actions-ca

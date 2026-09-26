@@ -38,6 +38,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"sigs.k8s.io/yaml"
+
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // Kuery runs beside the edges provider in this suite; :18098 is edges.
@@ -186,7 +188,8 @@ func TestKueryAggregatesEdgeObjects(t *testing.T) {
 
 	// 7. THE PROOF: a SavedView in the tenant workspace that finds the
 	// Deployment and expands its descendants, run through kuery's one tenant
-	// route, POST /dataplane/clusters/{clusterID}/savedviews/{name}/run.
+	// verb — the kcp custom subresource savedviews/run on its APIExport,
+	// POST /clusters/{clusterID}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run.
 	const viewName = "kuery-agg-view"
 	view := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "kuery.providers.railgrid.ai/v1alpha1",
@@ -324,6 +327,12 @@ func startKueryProvider(t *testing.T, workDir string) {
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"KUERY_WORKSPACE_PATH="+kueryWorkspacePath,
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "kuery", "deploy", "chart", "files"),
+		// A verb exists only as a declared kcp custom subresource, so init
+		// reads the manifest for the coordinates the export publishes, and the
+		// DataPlaneEndpointSlice those coordinates route through needs the
+		// address this suite actually serves on.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "kuery", "manifest.yaml"),
+		"RAILGRID_DATAPLANE_URL=http://127.0.0.1:"+kueryPort,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -350,6 +359,9 @@ func startKueryProvider(t *testing.T, workDir string) {
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		// Scratch store so the suite never writes kuery.db into the repo.
 		"KUERY_STORE_DRIVER=sqlite",
+		// serve refuses to start without the manifest: it is where the
+		// "<resource>/<verb>" coordinates it answers come from.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "kuery", "manifest.yaml"),
 		"KUERY_STORE_DSN="+filepath.Join(workDir, "kuery.db"),
 	)
 	cmd.Stdout = provLog
@@ -399,8 +411,8 @@ func applyKueryManifests() error {
 			}
 			if obj.GetKind() == "CatalogEntry" {
 				overrideURL := "http://localhost:" + kueryPort
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url")
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url")
+				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "ui", "url")
+				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "backend", "url")
 			}
 			deadline := time.Now().Add(90 * time.Second)
 			for {
@@ -494,11 +506,16 @@ func enableKueryViaHub(t *testing.T, tenant dynamic.Interface, tenantWS string) 
 		t.Fatalf("tenant workspace %s has path %q, want root:railgrid:tenants:<org>:<ws>", tenantWS, wsPath)
 	}
 
+	// Accept everything kuery declares, read from the catalog rather than
+	// hardcoded: an Enable that ticks only some of spec.requires leaves the rest
+	// Rejected, and a claim the binding does not accept is a coordinate kcp's
+	// virtual workspace does not serve. A hardcoded list silently stops matching
+	// the declaration the moment a requirement is added, which is how this test
+	// came to enable kubernetesclusters without kubernetesclusters/k8s.
+	claims, compositions := declaredRequirements(t, orgUUID, workspaceUUID, "kuery")
 	body, _ := json.Marshal(map[string]any{
-		"acceptedClaims": []any{},
-		"acceptedCompositions": []map[string]string{{
-			"provider": "edges", "group": "edges.railgrid.ai", "resource": "kubernetesclusters",
-		}},
+		"acceptedClaims":       claims,
+		"acceptedCompositions": compositions,
 	})
 	path := fmt.Sprintf("/api/orgs/%s/workspaces/%s/providers/kuery/enable", orgUUID, workspaceUUID)
 	var status int
@@ -548,22 +565,22 @@ func enableKueryViaHub(t *testing.T, tenant dynamic.Interface, tenantWS string) 
 	}
 }
 
-// runSavedView POSTs the saved view's run verb straight at the kuery provider,
-// bypassing the hub. The bearer is the kcp admin token because kuery's gates
-// (a real GET of the SavedView, then a SelfSubjectAccessReview for
-// savedviews/run) run as the caller against kcp itself; a hub user token
-// means nothing there. Reaching the pod directly is the point: the gates must
-// hold without the proxy in front.
+// runSavedView POSTs the saved view's run verb on kcp's own front door: the
+// verb is a custom subresource on kuery's APIExport, so kcp authenticates the
+// bearer (the kcp admin token — a hub user token means nothing there),
+// authorizes the POST on savedviews/run with RBAC, and reverse-proxies the
+// request to the kuery provider with the caller's identity stamped. The
+// provider is never addressed directly: a verb has no bearer-authenticated
+// spelling of its own, and its gate runs on the identity kcp forwards.
 func runSavedView(t *testing.T, tenantWS, view string) (int, []byte) {
 	t.Helper()
-	path := "/dataplane/clusters/" + tenantWS + "/savedviews/" + view + "/run"
-	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+kueryPort+path, bytes.NewReader([]byte("{}")))
+	path := apiurl.ProviderVerbPath(tenantWS, "kuery.providers.railgrid.ai", "v1alpha1", "savedviews", view, "run")
+	req, err := http.NewRequest(http.MethodPost, kcpServer+path, bytes.NewReader([]byte(`{"input":{}}`)))
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+adminToken)
-	req.Header.Set("X-Railgrid-Cluster", tenantWS)
 	resp, err := insecureClient(60 * time.Second).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
@@ -592,4 +609,77 @@ func trunc(b []byte) string {
 		return string(b)
 	}
 	return string(b[:max]) + "...(truncated)"
+}
+
+// declaredRequirements reads one provider's spec.requires from the hub catalog
+// and splits it the way Enable expects: a requirement that NAMES a provider is
+// a composition, one that does not is a permission claim on a platform builtin.
+// Every declared coordinate is returned, verb coordinates included, because the
+// verbs come from the declaration and the caller only says yes.
+func declaredRequirements(t *testing.T, orgUUID, workspaceUUID, provider string) (claims, compositions []map[string]string) {
+	t.Helper()
+	var catalog struct {
+		Items []struct {
+			Name     string `json:"name"`
+			Requires []struct {
+				Provider  string `json:"provider,omitempty"`
+				Group     string `json:"group,omitempty"`
+				Resources []struct {
+					Name string `json:"name"`
+				} `json:"resources,omitempty"`
+			} `json:"requires,omitempty"`
+		} `json:"items"`
+	}
+	if !waitFor(t, 2*time.Minute, func() (bool, string) {
+		req, err := http.NewRequestWithContext(ctxWithTimeout(t, 30*time.Second), http.MethodGet, hubURL+"/api/providers", nil)
+		if err != nil {
+			return false, err.Error()
+		}
+		req.Header.Set("Authorization", "Bearer "+staticToken)
+		req.Header.Set("X-Railgrid-Org", orgUUID)
+		req.Header.Set("X-Railgrid-Workspace", workspaceUUID)
+		resp, err := insecureClient(30 * time.Second).Do(req)
+		if err != nil {
+			return false, err.Error()
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return false, fmt.Sprintf("list providers %d: %s", resp.StatusCode, trunc(raw))
+		}
+		catalog.Items = nil
+		if err := json.Unmarshal(raw, &catalog); err != nil {
+			return false, err.Error()
+		}
+		for _, item := range catalog.Items {
+			if item.Name == provider {
+				return true, ""
+			}
+		}
+		return false, provider + " is not in the catalog yet"
+	}) {
+		t.Fatalf("provider %s never appeared in the hub catalog", provider)
+	}
+	claims, compositions = []map[string]string{}, []map[string]string{}
+	for _, item := range catalog.Items {
+		if item.Name != provider {
+			continue
+		}
+		for _, requirement := range item.Requires {
+			for _, resource := range requirement.Resources {
+				if requirement.Provider != "" {
+					compositions = append(compositions, map[string]string{
+						"provider": requirement.Provider, "group": requirement.Group, "resource": resource.Name,
+					})
+					continue
+				}
+				claims = append(claims, map[string]string{"group": requirement.Group, "resource": resource.Name})
+			}
+		}
+	}
+	if len(claims)+len(compositions) == 0 {
+		t.Fatalf("provider %s declares no requirements; the catalog entry did not load", provider)
+	}
+	t.Logf("accepting %s requirements: %d claim(s), %d composition(s)", provider, len(claims), len(compositions))
+	return claims, compositions
 }

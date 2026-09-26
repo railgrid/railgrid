@@ -3,13 +3,6 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
 
-// Package conformance holds the data-plane contract's shared test suite and
-// the fake it runs against.
-//
-// It is separate from provider-sdk/dataplane on purpose: a provider binary
-// links the server-kit, and the server-kit must not drag "testing" or the
-// client-go fakes in with it. Everything here is imported from _test.go files
-// only.
 package conformance
 
 import (
@@ -25,15 +18,21 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-// ForeignCluster is the stand-in for "some other tenant's workspace" in the
-// foreign-cluster check. It is a valid logical-cluster ID that no fixture
-// should also use as its own cluster.
+// ForeignCluster is a logical-cluster ID the suite addresses to prove that a
+// caller's standing in one workspace reaches nothing in another. A fixture
+// must not use it as its own Cluster.
 const ForeignCluster = "0conformanceforei"
 
-// Attributes are the SelfSubjectAccessReview attributes gate 2 asks about.
-// FakeCallers hands them to its Allow func so a test can grant one verb and
-// refuse another without standing up an API server.
+// StrangerUser is the identity the suite stamps onto a request that must be
+// denied: a real, authenticated user who simply cannot see the object. A
+// fixture's Allow must not grant it anything (the fake refuses it before
+// Allow is consulted).
+const StrangerUser = "conformance-stranger@railgrid.test"
+
+// Attributes are the resourceAttributes of one access review, plus the user
+// it was asked about.
 type Attributes struct {
+	User        string
 	Group       string
 	Version     string
 	Resource    string
@@ -42,34 +41,50 @@ type Attributes struct {
 	Verb        string
 }
 
-// FakeCallers is a dataplane.CallerFactory for tests: a provider builds its
-// handler with one of these instead of the real dataplane.Callers, then hands
-// it to Test.
+// FakeCallers is a dataplane.ProviderCallerFactory for tests.
 //
-// Exactly one (Cluster, Token) pair is real. For any other cluster or token
-// the returned client sees no objects and allows nothing, which is what makes
-// "a token for workspace A cannot reach workspace B" observable without two
-// live workspaces: gate 1 answers NotFound and the handler denies.
+// AsProvider(Cluster) sees Objects; AsProvider(any other cluster) sees
+// nothing, so a request for a foreign workspace is denied for want of the
+// object. Every SubjectAccessReview the provider client creates is answered by
+// Allow — for User only; StrangerUser and any other identity are refused
+// outright — so a test states its grants as a function of the attributes kcp
+// would see. For (the MCP class) still answers a caller-credentialed client
+// for (Cluster, Token), for MCP tools under test.
 type FakeCallers struct {
-	// Cluster is the logical cluster whose objects exist.
+	// Cluster is the one tenant workspace the fake knows.
 	Cluster string
-	// Token is the only bearer treated as the tenant's caller.
+	// User is the caller the suite stamps on a granted request.
+	User string
+	// Token is the one bearer For accepts (MCP class only).
 	Token string
-	// Objects are visible in Cluster to Token.
+	// Objects are what the provider (and, for MCP, the caller) can read in
+	// Cluster.
 	Objects []*unstructured.Unstructured
-	// ListKinds maps each object's GVR to its list kind, as the dynamic fake
-	// requires. The SelfSubjectAccessReview mapping is added automatically.
+	// ListKinds maps each resource the handler may list to its List kind, as
+	// the dynamic fake requires.
 	ListKinds map[schema.GroupVersionResource]string
-	// Allow decides gate 2. A nil Allow refuses everything.
+	// Allow decides every access review about User. Nil grants nothing.
 	Allow func(Attributes) bool
 
 	mu      sync.Mutex
 	clients map[string]dynamic.Interface
 }
 
-var _ dataplane.CallerFactory = (*FakeCallers)(nil)
+var _ dataplane.ProviderCallerFactory = (*FakeCallers)(nil)
 
-// For implements dataplane.CallerFactory.
+// AsProvider implements dataplane.ProviderCallerFactory.
+func (f *FakeCallers) AsProvider(clusterID string) (dynamic.Interface, error) {
+	if f == nil {
+		return nil, fmt.Errorf("conformance: fake caller factory is unavailable")
+	}
+	if !dataplane.IsClusterID(clusterID) {
+		return nil, fmt.Errorf("conformance: %q is not a kcp logical-cluster ID", clusterID)
+	}
+	return f.client("provider\x00"+clusterID, clusterID == f.Cluster, true), nil
+}
+
+// For implements dataplane.CallerFactory, for MCP tools that still act with
+// the caller's own bearer.
 func (f *FakeCallers) For(clusterID, token string) (dynamic.Interface, error) {
 	if f == nil {
 		return nil, fmt.Errorf("conformance: fake caller factory is unavailable")
@@ -80,34 +95,35 @@ func (f *FakeCallers) For(clusterID, token string) (dynamic.Interface, error) {
 	if token == "" {
 		return nil, fmt.Errorf("%w: cannot act on the tenant's behalf", dataplane.ErrNoBearer)
 	}
+	return f.client("caller\x00"+clusterID+"\x00"+token, clusterID == f.Cluster && token == f.Token, false), nil
+}
 
+func (f *FakeCallers) client(key string, tenant, provider bool) dynamic.Interface {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	key := clusterID + "\x00" + token
 	if f.clients == nil {
 		f.clients = map[string]dynamic.Interface{}
 	}
 	if client, ok := f.clients[key]; ok {
-		return client, nil
+		return client
 	}
-
-	tenant := clusterID == f.Cluster && token == f.Token
+	sar := dataplane.SubjectAccessReviews()
 	ssar := dataplane.SelfSubjectAccessReviews()
-
-	listKinds := map[schema.GroupVersionResource]string{ssar: "SelfSubjectAccessReviewList"}
+	listKinds := map[schema.GroupVersionResource]string{
+		sar:  "SubjectAccessReviewList",
+		ssar: "SelfSubjectAccessReviewList",
+	}
 	for gvr, kind := range f.ListKinds {
 		listKinds[gvr] = kind
 	}
-
 	var objects []runtime.Object
 	if tenant {
 		for _, object := range f.Objects {
 			objects = append(objects, object.DeepCopy())
 		}
 	}
-
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, objects...)
-	client.PrependReactor("create", ssar.Resource, func(action k8stesting.Action) (bool, runtime.Object, error) {
+	answer := func(action k8stesting.Action, self bool) (bool, runtime.Object, error) {
 		create, ok := action.(k8stesting.CreateAction)
 		if !ok {
 			return false, nil, nil
@@ -117,9 +133,14 @@ func (f *FakeCallers) For(clusterID, token string) (dynamic.Interface, error) {
 			return false, nil, nil
 		}
 		attributes, _, _ := unstructured.NestedStringMap(review.Object, "spec", "resourceAttributes")
+		user := f.User
+		if !self {
+			user, _, _ = unstructured.NestedString(review.Object, "spec", "user")
+		}
 		allowed := false
-		if tenant && f.Allow != nil {
+		if tenant && f.Allow != nil && user == f.User && (provider || !self || true) {
 			allowed = f.Allow(Attributes{
+				User:        user,
 				Group:       attributes["group"],
 				Version:     attributes["version"],
 				Resource:    attributes["resource"],
@@ -131,8 +152,13 @@ func (f *FakeCallers) For(clusterID, token string) (dynamic.Interface, error) {
 		answered := review.DeepCopy()
 		_ = unstructured.SetNestedField(answered.Object, allowed, "status", "allowed")
 		return true, answered, nil
+	}
+	client.PrependReactor("create", sar.Resource, func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return answer(action, false)
 	})
-
+	client.PrependReactor("create", ssar.Resource, func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return answer(action, true)
+	})
 	f.clients[key] = client
-	return client, nil
+	return client
 }

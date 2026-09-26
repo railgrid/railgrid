@@ -33,7 +33,7 @@ const { scopePath } = useScopedNavigation()
 // Trust statement: a provider bundle therefore executes as fully trusted code
 // in this document. Two things bound what a bundle gets by default: the
 // script is pinned with the SRI hash the hub computed at registration
-// (catalog mainJSIntegrity), and the bundle talks to the hub through the
+// (catalog serving.ui.mainJSIntegrity), and the bundle talks to the hub through the
 // host-owned `railgridContext.fetch` (providerFetch.ts) rather than holding the
 // user's raw id token. A sandboxed iframe with a postMessage bridge is the
 // larger follow-up for untrusted third-party providers.
@@ -113,14 +113,14 @@ const isFullBleedProvider = computed(() =>
 
 const isBuiltinProvider = computed(() => {
   const p = entry.value
-  return !!p && (!!p.builtin || !!p.builtinRoute)
+  return !!p && (!!p.builtin || !!p.serving?.ui?.builtinRoute)
 })
 
 // Only providers that publish an APIExport need a workspace APIBinding. A
 // builtin provider is shipped with the portal and remains usable without one.
 const requiresBinding = computed(() => {
   const p = entry.value
-  return !!p && p.hasUI && !isBuiltinProvider.value && !!(p.apiExportName || p.apiExportPath)
+  return !!p && !!p.serving?.ui && !isBuiltinProvider.value && !!(p.export?.name || p.export?.path)
 })
 
 const bindingRequestCurrent = computed(() =>
@@ -169,7 +169,7 @@ const bindingMissing = computed(() =>
 const accessAllowed = computed(() =>
   catalogSettled.value &&
   !!entry.value &&
-  !!entry.value.hasUI &&
+  !!entry.value.serving?.ui &&
   !!entry.value.ready &&
   (!requiresBinding.value || (bindingsAuthoritative.value && providerBound.value)),
 )
@@ -558,7 +558,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
-      <div v-else-if="entry && !entry.hasUI" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
+      <div v-else-if="entry && !entry.serving?.ui" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
         This provider does not publish a portal UI.
       </div>
       <div

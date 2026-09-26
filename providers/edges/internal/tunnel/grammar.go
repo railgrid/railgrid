@@ -19,45 +19,45 @@ package tunnel
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 
-	authorizationv1 "k8s.io/api/authorization/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 
 	"github.com/railgrid/provider-sdk/dataplane"
 )
 
-// The two grammar roots this provider serves, both from provider-sdk so there
-// is one spelling of each in the tree:
+// The two route shapes this provider serves:
 //
-//	(a) data-plane verb  /dataplane/clusters/{id}/{resource}/{name}/{verb}[/{tail}]
+//	(a) data-plane verb  /clusters/{id}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail}]
 //	(f) agent tunnel     /agent/clusters/{id}/{resource}/{name}/proxy
 //
-// The consumer plane deliberately sits on the SHARED root rather than a
-// provider-private "/edgeproxy": provider-sdk/serve mounts class (a) at
-// /dataplane/ and refuses anything else, and a provider with its own root is
-// exactly the dialect docs/provider-contract-review.md §3.5 records. The old
-// ".../clusters/{id}/apis/edges.railgrid.ai/v1alpha1/{resource}/..." shape is
-// gone, not aliased: dataplane.ParsePath refuses "apis" in the resource
-// position outright.
+// A verb is a kcp custom subresource on this provider's APIExport: the caller
+// addresses it on the hub's kcp front door like any other kube path, kcp
+// authenticates the caller and authorizes the HTTP method as the RBAC verb on
+// {resource}/{verb}, and the shard reverse-proxies the request here with the
+// caller's identity stamped in requestheader headers. provider-sdk/serve
+// parses it (dataplane.RouteFrom) before the handler runs; there is no
+// hub-proxied spelling of a verb any more.
+//
+// The agent tunnel is the one route that still carries a bearer, because an
+// agent's connection never passes through kcp: it is terminated here, behind
+// the hub backend proxy, and the credential is TokenReview'd by this provider.
 const (
-	// DataPlaneRoot is class (a).
-	DataPlaneRoot = dataplane.DataplaneRoot
 	// AgentRoot is class (f).
 	AgentRoot = "agent"
 )
 
 // The verbs this provider serves, and the only ones it will gate. This table
-// is the code half of spec.dataPlane.verbs in manifest.yaml: a verb the
-// manifest declares but this table omits is served by nobody, and a verb here
-// that the manifest omits cannot have a cross-provider capability minted for
-// it (docs/provider-connectivity-contract.md §"Scoped identities", clause C).
-// Keep the two in lockstep.
+// is the code half of spec.export.resources[].verbs in manifest.yaml: a verb
+// the manifest declares but this table omits is served by nobody, and a verb
+// here that the manifest omits is never reached (serve's adapter refuses a
+// coordinate the declaration lacks) and cannot have a cross-provider
+// capability minted for it (docs/provider-connectivity-contract.md §"Scoped
+// identities", clause C). The two are pinned to each other by
+// TestDeclaredDataPlaneVerbsMatchWhatIsServed, which reads the manifest and
+// compares it with DataPlaneVerbs() below, so they cannot drift silently.
 const (
 	// VerbK8s proxies the edge's Kubernetes API through its tunnel.
 	VerbK8s = "k8s"
@@ -67,13 +67,10 @@ const (
 	VerbMCP = "mcp"
 	// VerbProxy proxies HTTP to the edge or to a Service published from it.
 	VerbProxy = "proxy"
-	// VerbTicket mints the short-lived WebSocket ticket a browser presents as
-	// a subprotocol, because a browser cannot set Authorization on an upgrade.
-	VerbTicket = "ticket"
 	// VerbAgentToken re-mints the caller's own agent credential. It is how an
 	// edge agent rotates a TTL'd token it cannot renew any other way: the hub
 	// identity service authenticates providers, and an agent is not one, so
-	// this provider stands in for it behind the ordinary two gates.
+	// this provider stands in for it behind the ordinary gate.
 	VerbAgentToken = "agent-token"
 	// VerbSSHCredentials hands a host agent's SSH credentials to the provider,
 	// which writes them into the tenant workspace on the agent's behalf. It
@@ -97,16 +94,21 @@ const (
 // MacOSServer has no SSH data plane to hold credentials for, and a
 // KubernetesCluster agent reaches its host through the Kubernetes API.
 //
-// runner-auth and runner-token are on the two HOST kinds, and only those: an
-// Addon may only name a LinuxServer or a MacOSServer (the API's own CEL rule
-// refuses KubernetesCluster, and internal/addonctrl refuses it again), so
-// declaring them on kubernetesclusters would mint a capability for a
-// coordinate no Addon can ever address.
+// addon-credentials is on the two HOST kinds, and only those: an Addon may
+// only name a LinuxServer or a MacOSServer (the API's own CEL rule refuses
+// KubernetesCluster, and internal/addonctrl refuses it again), so declaring it
+// on kubernetesclusters would mint a capability for a coordinate no Addon can
+// ever address.
+//
+// There is no "ticket" verb. A browser cannot set Authorization on a WebSocket
+// upgrade, so it presents the bearer as the Kubernetes subprotocol
+// (base64url.bearer.authorization.k8s.io.<token>) and kcp authenticates the
+// upgrade like any other request; nothing here mints or redeems anything.
 var dataPlaneVerbs = map[string]map[string]bool{
-	kubernetesClusterResource: {VerbK8s: true, VerbSSH: true, VerbMCP: true, VerbTicket: true, VerbAgentToken: true},
-	linuxServerResource:       {VerbK8s: true, VerbSSH: true, VerbTicket: true, VerbAgentToken: true, VerbSSHCredentials: true, VerbAddonCredentials: true},
+	kubernetesClusterResource: {VerbK8s: true, VerbSSH: true, VerbMCP: true, VerbAgentToken: true},
+	linuxServerResource:       {VerbK8s: true, VerbSSH: true, VerbAgentToken: true, VerbSSHCredentials: true, VerbAddonCredentials: true},
 	macOSServerResource:       {VerbAgentToken: true, VerbAddonCredentials: true},
-	serviceResource:           {VerbProxy: true, VerbMCP: true, VerbTicket: true},
+	serviceResource:           {VerbProxy: true, VerbMCP: true},
 }
 
 // verbServed reports whether this provider serves {resource}/{verb}.
@@ -116,7 +118,8 @@ func verbServed(resource, verb string) bool {
 
 // DataPlaneVerbs returns the served {resource}/{verb} coordinates, sorted by
 // neither — callers that need an order impose one. It exists so a test can
-// assert the manifest and this table agree.
+// assert that this table and the manifest's spec.export.resources[].verbs
+// declare the same set.
 func DataPlaneVerbs() map[string][]string {
 	out := make(map[string][]string, len(dataPlaneVerbs))
 	for resource, verbs := range dataPlaneVerbs {
@@ -133,98 +136,70 @@ func DataPlaneVerbs() map[string][]string {
 // "create on {resource}/proxy", name-scoped to its own edge.
 const AgentVerb = VerbProxy
 
-// edgeProxyPath renders the public consumer-egress path for one verb:
+// verbPath renders the hub-relative kube path of one verb on this provider's
+// export:
 //
-//	{base}/clusters/{cluster}/{resource}/{name}/{verb}
+//	/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/{verb}
 //
-// base is the provider's public data-plane mount behind the hub backend proxy
-// (/services/providers/edges/dataplane). It is the inverse of
-// dataplane.ParsePath and is what goes into an edge's or a Service's
-// status.URL, so a CLI client swaps in the hub host and lands back here.
-func edgeProxyPath(base, cluster, resource, name, verb string) string {
-	return fmt.Sprintf("%s/clusters/%s/%s/%s/%s",
-		strings.TrimRight(base, "/"), cluster, resource, name, verb)
+// It is the spelling that goes into an edge's or a Service's status.URL and
+// into an agent's credential bundle: relative to the hub, so a CLI client
+// swaps in the hub host and lands on the kcp front door, which routes the
+// custom subresource back here. dataplane.SubresourcePath is the one renderer
+// of the grammar; it refuses a coordinate that would not parse back.
+func (p *Server) verbPath(cluster, resource, name, verb string) (string, error) {
+	path, err := dataplane.SubresourcePath(p.group, p.version, dataplane.Request{
+		ClusterID: cluster, Resource: resource, Name: name, Verb: verb,
+	})
+	if err != nil {
+		return "", fmt.Errorf("rendering %s/%s on %s/%s: %w", resource, verb, cluster, name, err)
+	}
+	return path, nil
 }
 
-// gateFnType is the signature of the two-gate check; injectable so tests can
-// exercise the routing without a kcp server.
-type gateFnType func(ctx context.Context, p *Server, token string, req dataplane.Request) (*unstructured.Unstructured, error)
-
-// gateAsCaller runs the contract's two gates for req, as the CALLER, and
-// returns the addressed object.
+// parseAgentPath parses the class (f) route,
 //
-//	Gate 1 is a real GET of {resource}/{name} in the caller's workspace with
-//	the caller's own bearer. It proves the caller can see the object and
-//	yields the object, so the handler pins the spec it acts on to what the
-//	caller could read rather than to what the provider can read. An object on
-//	its way out is refused: a verb must not run against a deleting edge.
+//	/agent/clusters/{cluster}/{resource}/{name}/proxy
 //
-//	Gate 2 is a SelfSubjectAccessReview for "create" on the virtual
-//	subresource {resource}/{verb}, scoped to the object's name. The hub
-//	materializes every data-plane grant as exactly that rule
-//	(pkg/hub/serviceaccounts/workload_identity.go), so no other verb string
-//	works for a workload identity. This replaces the single wildcard "proxy"
-//	verb the edges dialect used for k8s, ssh, service proxy and MCP alike.
-//
-// Both run through the caller's credential and nothing else, so the provider
-// is never a confused deputy on this path: it cannot read or reach anything
-// the caller could not have read or reached itself.
-func gateAsCaller(ctx context.Context, p *Server, token string, req dataplane.Request) (*unstructured.Unstructured, error) {
-	if p.kcpConfig == nil {
-		return nil, fmt.Errorf("no kcp config available to build a caller client")
+// and refuses anything else: a missing or extra segment, an empty or dotted
+// one, a cluster that is not a kcp logical-cluster ID (a workspace path never
+// is), or a verb other than AgentVerb. The path is matched exactly as sent —
+// never cleaned — so ".." and "//" are refused rather than reinterpreted.
+func parseAgentPath(path string) (cluster, resource, name string, ok bool) {
+	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(segments) != 6 || segments[0] != AgentRoot || segments[1] != "clusters" || segments[5] != AgentVerb {
+		return "", "", "", false
 	}
-	cfg := p.userClusterConfig(req.ClusterID, token)
+	cluster, resource, name = segments[2], segments[3], segments[4]
+	if !dataplane.IsClusterID(cluster) {
+		return "", "", "", false
+	}
+	for _, segment := range []string{resource, name} {
+		if segment == "" || segment == "." || segment == ".." || len(segment) > 253 {
+			return "", "", "", false
+		}
+	}
+	return cluster, resource, name, true
+}
 
-	dynClient, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("creating caller dynamic client: %w", err)
+// gate runs the contract's gate for req — provider-sdk's dataplane.Gate — and
+// returns the addressed object together with a client acting as the provider
+// in the tenant workspace.
+//
+// There is no caller bearer on a verb. kcp authenticated the caller, authorized
+// the method on {resource}/{verb} with ordinary RBAC, and stamped the identity
+// serve's adapter put on the request context. Gate 1 (visibility of the parent
+// object) is a SubjectAccessReview run on the caller's behalf through this
+// provider's export virtual workspace, then a read as the provider; an object
+// on its way out is refused. Gate 2 (the verb grant) is not repeated: kcp
+// decided it before forwarding.
+//
+// Any further question about the caller — "may they read this second object",
+// "may they act as this SSH user" — is dataplane.Authorize with the identity
+// dataplane.ProxiedIdentityFrom returns, never a client built from a token.
+func (p *Server) gate(ctx context.Context, req dataplane.Request) (*unstructured.Unstructured, dynamic.Interface, error) {
+	if p.callers == nil {
+		return nil, nil, fmt.Errorf("%w: no provider caller factory (tunnel.Config.Callers) to gate with", dataplane.ErrDenied)
 	}
 	gvr := schema.GroupVersionResource{Group: p.group, Version: p.version, Resource: req.Resource}
-	obj, err := dynClient.Resource(gvr).Get(ctx, req.Name, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("%w: caller cannot get %s/%s: %w", dataplane.ErrDenied, req.Resource, req.Name, err)
-	}
-	if obj.GetDeletionTimestamp() != nil {
-		return nil, fmt.Errorf("%w: %s/%s is being deleted", dataplane.ErrDenied, req.Resource, req.Name)
-	}
-
-	k8sClient, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("creating caller review client: %w", err)
-	}
-	review, err := k8sClient.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{
-		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
-			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Group:       p.group,
-				Version:     p.version,
-				Resource:    req.Resource,
-				Subresource: req.Verb,
-				Name:        req.Name,
-				Verb:        dataplane.SSARVerb,
-			},
-		},
-	}, metav1.CreateOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("%w: access review refused: %w", dataplane.ErrDenied, err)
-	}
-	if !review.Status.Allowed {
-		return nil, fmt.Errorf("%w: caller may not %s %s/%s on %q",
-			dataplane.ErrDenied, dataplane.SSARVerb, req.Resource, req.Verb, req.Name)
-	}
-	return obj, nil
-}
-
-// gate parses nothing and assumes req came from dataplane.ParseRequest. It
-// refuses a request whose path cluster disagrees with the hub-injected
-// X-Railgrid-Cluster before either gate runs — the path is authoritative, and
-// a disagreement means the request was assembled wrong or tampered with.
-func (p *Server) gate(ctx context.Context, r *http.Request, token string, req dataplane.Request) (*unstructured.Unstructured, error) {
-	if headerCluster := strings.TrimSpace(r.Header.Get(dataplane.HeaderCluster)); headerCluster != "" && headerCluster != req.ClusterID {
-		return nil, fmt.Errorf("%w: path %q, header %q", dataplane.ErrClusterMismatch, req.ClusterID, headerCluster)
-	}
-	fn := p.gateFn
-	if fn == nil {
-		fn = gateAsCaller
-	}
-	return fn(ctx, p, token, req)
+	return dataplane.Gate(ctx, p.callers, gvr, req)
 }

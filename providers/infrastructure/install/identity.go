@@ -82,6 +82,13 @@ type RuntimeIdentity struct {
 	// the connection. Pulled from the admin rest.Config.
 	CAData []byte
 
+	// Insecure mirrors the admin rest.Config's TLS setting: a dev kubeconfig
+	// that skips verification (the Makefile's provider-token kubeconfigs
+	// against the embedded kcp's self-signed cert) carries no CA, and a minted
+	// kubeconfig that then verified against the system roots could never
+	// connect. The runtime uses exactly the trust the bootstrap used.
+	Insecure bool
+
 	// Token is the SA's long-lived bearer, read from a
 	// kubernetes.io/service-account-token Secret. Non-expiring, so no
 	// rotation is required.
@@ -124,6 +131,7 @@ func MintRuntimeIdentity(ctx context.Context, adminConfig *rest.Config) (*Runtim
 	return &RuntimeIdentity{
 		Server:         adminConfig.Host,
 		CAData:         adminConfig.CAData,
+		Insecure:       adminConfig.Insecure,
 		Token:          token,
 		ServiceAccount: RuntimeServiceAccountName,
 		Namespace:      RuntimeServiceAccountNamespace,

@@ -112,10 +112,6 @@ func newKCPTenantResolver(kcpProxy *kcpproxy.KCPProxy, client *railgridclient.Cl
 	if kcpProxy != nil {
 		r.identifyUser = kcpProxy.IdentifyUser
 	}
-	// Returned as the concrete type, not as a TenantResolverFunc: the backend
-	// proxy also asks it whether a caller may address the cluster a data-plane
-	// path names (providers.ClusterAuthorizer), and a function value would
-	// drop that method.
 	return r
 }
 
@@ -124,9 +120,10 @@ func (r *kcpTenantResolver) Resolve(req *http.Request) (string, string, error) {
 	return r.resolve(req)
 }
 
-// AuthorizeCluster satisfies providers.ClusterAuthorizer: may user address
-// clusterID? A provider data-plane route names its workspace in its path, and
-// the hub authorizes that cluster before it tells the provider about it.
+// AuthorizeCluster answers: may user address clusterID? Data-plane verbs no
+// longer pass through the backend proxy (kcp authorizes them on
+// /clusters/{id} itself), so nothing on that path asks this any more; it
+// remains the hub's one membership answer for other callers.
 //
 // The answer comes from the SAME check the kcp proxy applies to
 // /clusters/{id} (pkg/server/proxy authorizer.go): a workspace-scope

@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kcp-dev/embeddedetcd"
 	genericapiserver "k8s.io/apiserver/pkg/server"
@@ -107,6 +108,11 @@ type EmbeddedKCP struct {
 }
 
 // NewEmbeddedKCP creates a new embedded kcp instance.
+// providerVerbRequestTimeout is the embedded shard's request deadline. An
+// external kcp needs the equivalent --request-timeout on its shards for
+// streaming provider verbs to outlive the kube default of one minute.
+const providerVerbRequestTimeout = time.Hour
+
 func NewEmbeddedKCP(opts EmbeddedKCPOptions) *EmbeddedKCP {
 	if opts.RootDir == "" {
 		opts.RootDir = ".kcp"
@@ -150,6 +156,15 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	if e.opts.BindAddress != "" {
 		kcpOpts.GenericControlPlane.SecureServing.BindAddress = net.ParseIP(e.opts.BindAddress)
 	}
+
+	// Provider data-plane verbs are kcp custom subresources the shard
+	// reverse-proxies to the provider, and several of them stream for as
+	// long as the caller keeps reading (an agent chat, a project's event
+	// feed, a development log tail). kube-apiserver's request deadline
+	// exempts only the verbs it knows to be long-running (watch, exec, log,
+	// proxy, upgrades), so anything else would be cut at the 60s default.
+	// The deadline is the ceiling on one streamed response, not a keepalive.
+	kcpOpts.GenericControlPlane.GenericServerRunOptions.RequestTimeout = providerVerbRequestTimeout
 
 	// Use provided TLS cert/key instead of auto-generated ones.
 	if e.opts.TLSCertFile != "" && e.opts.TLSKeyFile != "" {

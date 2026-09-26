@@ -6,7 +6,20 @@ the sections below intentionally retain the proposed end state and alternatives
 and should not be read as the current API contract.
 References below to `SandboxRunner`, runner images, signed preview URLs, and
 `APP_STUDIO_RUNTIME_KUBECONFIG` describe the superseded implementation or a
-proposal alternative only.
+proposal alternative only. The `/services/providers/infrastructure/dataplane/…`
+paths and the "as the tenant user" data-plane model below are superseded too
+(2026-09-25): infrastructure's verbs are kcp custom subresources on
+`instances`, which App Studio calls **as itself** through its own APIExport
+virtual workspace on the claim its `spec.requires` declaration generates — see
+[provider-connectivity-contract.md](./provider-connectivity-contract.md).
+The CatalogEntry field paths used below — `spec.apiExport`,
+`spec.dependencies[].composes` — are the old ones and are kept as written:
+`CatalogEntrySpec` was restructured into `export`/`requires`/`serving`/`hub` on
+2026-09-25, with the mapping in
+[roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+§"Status update 2026-09-25 — the CatalogEntry contract is four sections".
+(`Template.spec.dataPlane`, which most of this doc is about, is an
+infrastructure **Template** field and is unaffected.)
 Author: 2026-06-27
 Related: [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) (current runtime contract), [`infrastructure-architecture.md`](./infrastructure-architecture.md) (the kcp-native infra provider this builds on), [`provider-connectivity-contract.md`](./provider-connectivity-contract.md) (the two data paths), `providers/infrastructure/apis/v1alpha1/types_template.go`, `providers/infrastructure/dataplane/`, `pkg/virtual/builder/edges_proxy_builder.go` (the proven VW-proxy pattern).
 
@@ -279,7 +292,7 @@ project view — and is never a URL segment.
 ### The pull secret is a typed reference, not a name
 
 At promote, App Studio asks the Code provider for an image-pull credential
-(`connections/{n}/mint_registry_token/v1`, as the caller), writes it as a
+(`connections/{n}/mint-registry-token/v1`, as the caller), writes it as a
 `dockerconfigjson` Secret, and then **names that Secret** on the production
 binding — which the Project controller copies onto the instance's
 `spec.imagePullSecretRef`. The infrastructure provider bridges the Secret it is
@@ -415,18 +428,26 @@ Session, Studio — spec, status, finalizers, annotations — plus the Secrets i
 writes itself (the LLM model credentials and the promotion pull credential).
 The reconcilers read and write those with the multicluster manager's client for
 `req.ClusterName`, as the provider's ServiceAccount, with the tenant-scoped
-claims accepted at Enable (AGENTS.md §5.4). `secrets` is the ONLY permission
-claim App Studio has.
+claims accepted at Enable (AGENTS.md §5.4). `secrets` was the ONLY permission
+claim App Studio had until 23 September 2026; the three dependency kinds are
+claimed too now — see the addendum at the end of this file.
 
 **A DEPENDENCY's kinds ride the tenant workspace itself.** The bound
 `Instance`s, the backing `Repository`, an in-flight `RepositoryCommit`, the
 Studio's shared search and browser backends: all of it is reached at
 `{hub}/clusters/{cluster}` with a client built by
 `provider-sdk/tenantaccess`, authenticated as a hub-minted scoped identity —
-one per Project (`controller/project/identity.go`), one per Studio
-(`controller/studio/identity.go`).
+one per Project (`controller/project/identity.go`). *(Historical: the composed
+kinds and the dependency watch now ride App Studio's own export virtual
+workspace; the Studio identity is gone and the Project identity carries only
+the commit path's verbs — see the status note below.)*
 
 ### Why not a permission claim, which is the obvious answer
+
+> **Superseded (23 September 2026).** kcp now resolves a claim with no
+> `identityHash` per consuming workspace, so the pin this section is about no
+> longer exists and the dependency kinds have moved back onto the claim. The
+> section is kept for the reasoning. See the addendum at the end of this file.
 
 It was tried, and it is the thing this whole document exists to avoid.
 
@@ -454,10 +475,9 @@ identity's ClusterRole, and one App Studio install serves every mix.
 
 Not the provider, by itself. The CatalogEntry declares a **composition** per
 dependency — `spec.dependencies[].composes`, in `manifest.yaml` and the chart's
-copy identically — and the tenant accepts it at Enable alongside the claims.
-The hub's identity policy (clause E) admits a requested rule only when a
-declared composition covers it. `internal/crossprovider/composition.go` is the
-Go mirror of that declaration, and a test compares the two.
+copy identically — and the tenant accepts it at Enable; it IS the claim on App
+Studio's APIExport, resolved per workspace by kcp. Nothing is minted for it:
+`internal/crossprovider` keeps only the coordinates' names.
 
 App Studio declares:
 
@@ -490,17 +510,16 @@ So a project's identity carries, in full:
   the `APIBinding`s named `infrastructure` and `code` (which say WHICH provider
   serves each dependency here, and therefore which `/services/providers/{name}/`
   segment addresses it; a `get`, never a `list`);
-- clause E — unnamed `create`/`list`/`watch` on `instances`, `repositories`
-  and `repositorycommits`; named `get`/`update`/`delete` on its bound
-  instances, named `get`/`update` on its backing repository, and named `get`
-  on the `RepositoryCommit` it is currently following up (that last one
+- clause B — named `get` on its bound instances, on its backing repository and
+  on the `RepositoryCommit` it is currently following up: what the dependency's
+  data plane checks as gate 1 when the project calls a verb (that last one
   appears when the pending-commit pointer is written and disappears when it
   settles — the rules are restated on every refresh, which is what makes a
   grant shrink);
 - clause B — `get` on the named `Connection` it was created from;
 - clause C — `create` on `instances/{verb}` for the eight infrastructure
-  data-plane verbs this provider calls, on `connections/mint_registry_token`,
-  and on `repositories/commit` plus `repositories/stage_commit_bundle` for the
+  data-plane verbs this provider calls, on `connections/mint-registry-token`,
+  and on `repositories/commit` plus `repositories/stage-commit-bundle` for the
   project's backing repository, all name-scoped.
 
 A Studio's identity is the instance composition and nothing else: unnamed
@@ -513,8 +532,12 @@ written over the virtual workspace, where this provider already owns the kind.
 
 ### The watch is the same credential
 
-Because the virtual workspace does not serve the foreign kinds, the dependency
-watches cannot be `builder.Watches` on the manager. `controller/tenantwatch`
+The dependency watches are not `builder.Watches` on the manager. (Until
+23 September 2026 they could not be: the virtual workspace served none of the
+foreign kinds. It serves all three now — see the addendum at the end of this
+file — and the watch stays per workspace anyway, so that one wildcard informer
+failing to sync cannot hold up every workspace's reconcilers.)
+`controller/tenantwatch`
 holds one LIST/WATCH per tenant workspace per kind, dialled with the identity
 token, `Ensure`d by each reconcile that holds one and replaced when a 401/403
 proves the token in hand is dead. Events map back to the owning Project (by the
@@ -544,7 +567,7 @@ this package already runs is what settles it. A commit queued behind a GitHub
 rate limit is no longer a special case, just a commit that takes longer.
 
 A payload past the catalogue's 1 MiB input ceiling goes up first through
-`repositories/stage_commit_bundle` — the Code provider's second uncatalogued
+`repositories/stage-commit-bundle` — the Code provider's second uncatalogued
 large-upload verb (`docs/provider-actions.md` §"Uncatalogued large-upload
 verbs") — and the commit names the returned handle instead of inline files. A
 generated application is exactly that payload, which is why the project
@@ -824,3 +847,89 @@ now says that in those words, instead of listing the volume alongside it. The
 still have no distributed CAS.
 
 See `app-studio-replica-awareness.md` for the full accounting.
+
+## Addendum: the claim works now, so the dependency kinds move back (23 September 2026)
+
+This supersedes the "Why not a permission claim" section of the 19 September
+addendum above. That section is kept because the reasoning was right at the
+time and explains why the code looked the way it did; the premise it rested on
+has since stopped being true.
+
+**What changed in kcp.** A permission claim on a first-party group no longer
+has to name the serving APIExport by `identityHash`. kcp accepts a claim with
+NO `identityHash` and resolves it **per consuming workspace**, provided a
+cluster-scoped `PermissionClaimPolicy` pairs the claiming export's own API
+group with the claimed group (kcp-dev/kcp#4388). This repository generates that
+policy from each manifest's `spec.dependencies[].composes[]`, and the hub
+applies it at bootstrap (`pkg/hub/bootstrap/permissionclaimpolicy.go`).
+
+That removes the whole failure mode the old section described. There is no pin,
+so there is nothing to be wrong for the workspaces that mismatch it; each
+consumer is served the copy of the dependency **it** bound. One App Studio
+install still serves every mix, which was the requirement all along.
+
+**What moved.** App Studio's APIExport now claims three kinds beside `secrets`,
+all with an empty `identityHash`:
+
+| resource | verbs |
+|---|---|
+| `infrastructure.railgrid.ai/instances` | get, list, watch, create, update, delete |
+| `code.railgrid.ai/repositories` | get, list, watch, create, update, delete |
+| `code.railgrid.ai/repositorycommits` | get, list, watch |
+
+Every ordinary Kubernetes verb on those kinds is now issued with the
+multicluster manager's client for `req.ClusterName` — the same client that
+carries Project, Session and Studio. Concretely: the Project reconciler's
+instance convergence and repository convergence, its pending-commit read, and
+its teardown; the Studio reconciler's shared search and browser backends and
+their teardown.
+
+The split in the 19 September addendum was stated as "by whose API surface the
+object lives on". The sentence to keep now is **by what the call is**:
+
+- an ordinary Kubernetes verb, on this provider's own kinds or on a claimed
+  one → the manager's client;
+- a verb on another provider's object that is not yet a claimed custom
+  subresource (the commit path, whose bundle staging exceeds what kcp will
+  carry) → the hub-minted scoped identity, on the tenant path.
+
+**What did not move, and must not.** A permission claim grants objects. It is
+not a bearer token another provider's HTTP data plane will accept, and a
+provider's action gates re-read the addressed object AS THE CALLER before they
+run anything. So these stay on `identityclient`:
+
+- the Code provider's `repositories/{name}/commit` and
+  `repositories/{name}/stage-commit-bundle` actions (`commitaction.go`,
+  `internal/codecommit`);
+- the Code MCP tools reached through the workspace's MCP aggregate, which
+  admits a caller on `use` of the `MCPServer` and forwards this bearer;
+- the `mint-registry-token` action on the project's `Connection`;
+- a project workload's data-plane verbs on its own instance;
+- the read of the workspace's own `APIBinding` that says where the Code
+  provider answers — nothing claims `apis.kcp.io/apibindings`, and the
+  coordinate should be resolved as the same subject that will use it.
+
+The composition rules in `internal/crossprovider/composition.go` are therefore
+still minted into each owner's identity, and the table in the 19 September
+addendum still describes them. They now have two jobs rather than one: the
+UNNAMED half authorizes the per-workspace dependency watch, and the NAMED half
+is what gate 1 of every action above re-reads as.
+
+**The dependency watch stays on the tenant path**
+(`controller/tenantwatch`). It could be a `builder.Watches` on the manager now
+that the kinds are claimed, but that would put the events on the manager's
+WILDCARD informer, and a controller does not start until its sources sync — so
+one wildcard watch that cannot establish itself would stop the reconcilers for
+every workspace, including healthy ones. Watching each workspace separately
+keeps a failure where it belongs.
+
+**Degrading when a workspace has not accepted the claim.** kcp answers a kind
+that is not in a workspace's API surface with a RESTMapper miss, not a 404.
+That distinction is load-bearing and is the reason `crossprovider.ClaimUnaccepted`
+exists: an earlier attempt at the claimed path read an unserved resource's 404
+as "already gone" and released a Project's finalizer over live instances.
+`apierrors.IsNotFound` is false for a mapper miss, so every teardown path
+returns it, keeps the finalizer and is retried; the convergence paths mark the
+binding pending, log the reason by name, and let the controller's backoff run.
+Nothing panics, nothing fails to start, and a workspace that later accepts the
+claim converges on the next pass with no operator action.

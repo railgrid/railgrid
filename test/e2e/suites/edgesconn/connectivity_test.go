@@ -291,16 +291,19 @@ func grantEdgeProxy(t *testing.T, tenant dynamic.Interface) {
 	rules := []any{
 		map[string]any{"nonResourceURLs": []any{"/"}, "verbs": []any{"access"}},
 		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{"kubernetesclusters", "linuxservers"}, "verbs": []any{"get", "list", "watch"}},
-		// The data-plane gate authorizes `create` on the {resource}/{verb}
-		// COORDINATE, not the old wildcard `proxy` on the kind: the
-		// provider-contract remediation replaced one verb covering k8s, ssh,
-		// service proxy and MCP with the declared coordinates in
-		// spec.dataPlane.verbs. A grant of `proxy` authorizes nothing now.
+		// kcp authorizes a data-plane verb on the {resource}/{verb}
+		// COORDINATE — a custom subresource on the edges APIExport — mapping
+		// the HTTP method onto the RBAC verb, so a grant on a coordinate is
+		// the wildcard verb, exactly as the hub materializes one: kubectl's
+		// GET/LIST/WATCH through k8s and a WebSocket upgrade for ssh are all
+		// covered. The old wildcard `proxy` on the kind authorizes nothing,
+		// and there is no ticket verb: a browser presents its bearer as the
+		// Kubernetes WebSocket subprotocol and kcp authenticates the upgrade.
 		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{
-			"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp", "kubernetesclusters/ticket",
-			"linuxservers/k8s", "linuxservers/ssh", "linuxservers/ticket",
-			"services/proxy", "services/mcp", "services/ticket",
-		}, "verbs": []any{"create"}},
+			"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp",
+			"linuxservers/k8s", "linuxservers/ssh",
+			"services/proxy", "services/mcp",
+		}, "verbs": []any{"*"}},
 		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{"services"}, "verbs": []any{"get", "list", "watch"}},
 		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{"kubernetesclusters/status", "linuxservers/status"}, "verbs": []any{"get", "update", "patch"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "verbs": []any{"get", "list", "watch", "create", "update"}},

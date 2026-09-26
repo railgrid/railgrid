@@ -14,7 +14,24 @@ trigger_mode(TRIGGER_MODE_AUTO)
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 config.define_string('external-providers-dir')
 config.define_string('external-providers')
+# Run kcp from a published image instead of the server compiled into the hub,
+# so a kcp change can be tried without moving this repository's kcp dependency.
+# The hub then starts with --external-kcp and the embedded server stays off.
+#
+# kcp pushes one image per PR commit to ghcr.io/kcp-dev/kcp-prs, tagged
+# pr-<number>-<short sha>; a bare pr-<number> tag does not exist.
+#
+#   make tilt KCP_IMAGE=ghcr.io/kcp-dev/kcp-prs:pr-4388-4bce57376
+#
+# The external server keeps its own root directory, so switching starts from an
+# EMPTY kcp: no workspaces, no providers, no tenants. Switch back by dropping
+# the flag; the embedded server's .kcp directory is left untouched.
+config.define_string('kcp-image')
 cfg = config.parse()
+
+kcp_image = cfg.get('kcp-image', '') or os.getenv('RAILGRID_KCP_IMAGE', '')
+kcp_external_root = '.kcp-external'
+kcp_external_kubeconfig = kcp_external_root + '/admin.kubeconfig'
 
 # Public URL overrides keep the default sslip.io local loop intact while
 # allowing a developer to put trusted DNS/TLS in front of the same dynamic
@@ -57,6 +74,26 @@ local_resource(
 
 # ---------------------------------------------------------------------------
 # hub — railgrid-hub binary (embedded KCP, static auth, portal proxy)
+# kcp — only when an external binary was named. It serves on the same port the
+# embedded server uses, so every other kcp address in the Makefile and in the
+# provider kubeconfigs keeps working, and the two can never run at once.
+if kcp_image:
+    local_resource(
+        'kcp',
+        serve_cmd='hack/kcp-external.sh %s %s 6443' % (kcp_image, kcp_external_root),
+        readiness_probe=probe(
+            period_secs=5,
+            initial_delay_secs=10,
+            exec=exec_action(['test', '-f', kcp_external_kubeconfig]),
+        ),
+        labels=['hub'],
+    )
+    kcp_server_flags = '  --external-kcp-kubeconfig=' + kcp_external_kubeconfig
+    hub_deps = ['portal', 'kcp']
+else:
+    kcp_server_flags = '  --embedded-kcp \\\n  --kcp-root-dir=.kcp \\\n  --kcp-secure-port=6443'
+    hub_deps = ['portal']
+
 # ---------------------------------------------------------------------------
 local_resource(
     'hub',
@@ -72,9 +109,7 @@ go build -o bin/railgrid-hub ./cmd/railgrid-hub
   --static-auth-token=dev-token \
   --static-auth-token=dev-token2 \
   --admin-users=railgrid:static:47b9dce0e91570a1 \
-  --embedded-kcp \
-  --kcp-root-dir=.kcp \
-  --kcp-secure-port=6443 \
+%s \
   --portal-dev-url=http://localhost:3000 \
   --portal-frame-source=%s \
   --published-apps-domain=%s \
@@ -82,6 +117,7 @@ go build -o bin/railgrid-hub ./cmd/railgrid-hub
   --hub-internal-url=https://host.docker.internal:9443
 ''' % (
         railgrid_hub_external_url,
+        kcp_server_flags,
         preview_app_frame_source,
         preview_app_base_domain,
     )),
@@ -105,7 +141,7 @@ go build -o bin/railgrid-hub ./cmd/railgrid-hub
     # The standalone generic runner is reached through its enrolled Edge
     # Service and is not a hub dependency; runner edits must not restart KCP.
     ignore=['pkg/runner'],
-    resource_deps=['portal'],
+    resource_deps=hub_deps,
     labels=['hub'],
 )
 
@@ -413,6 +449,12 @@ local_resource(
     labels=['providers-agents'],
 )
 
+# serve needs the provider's OWN kubeconfig (.kcp/agents-provider.kubeconfig),
+# minted by ▶ agents-init AFTER ▶ agents-register has been applied and
+# reconciled: a data-plane verb runs as the provider, so no other identity will
+# do. The file is in deps, so Tilt restarts the serve process once init writes
+# it; until then the Makefile target refuses to start and names the target to
+# run.
 local_resource(
     'agents',
     cmd='make build-agents-provider',
@@ -437,6 +479,7 @@ local_resource(
         'providers/agents/portal/package.json',
         'providers/agents/portal/vite.config.ts',
         'providers/agents/.env',
+        '.kcp/agents-provider.kubeconfig',
     ],
     resource_deps=['hub', 'agents-db'],
     readiness_probe=probe(

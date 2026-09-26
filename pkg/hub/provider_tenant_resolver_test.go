@@ -363,21 +363,7 @@ func TestKCPTenantResolverRejectsUnavailableWorkloadIdentity(t *testing.T) {
 	}
 }
 
-// The backend proxy adopts the resolver as its cluster authorizer by type
-// assertion (providers.SetTenantResolver), so the resolver has to satisfy both
-// interfaces as a value — a TenantResolverFunc would satisfy only one, and the
-// path-cluster authorization would silently never run.
-var (
-	_ providers.TenantResolver    = (*kcpTenantResolver)(nil)
-	_ providers.ClusterAuthorizer = (*kcpTenantResolver)(nil)
-)
-
-func TestNewKCPTenantResolverAuthorizesClusters(t *testing.T) {
-	r := newKCPTenantResolver(nil, nil, nil, nil)
-	if _, ok := r.(providers.ClusterAuthorizer); !ok {
-		t.Fatal("the wired resolver does not authorize clusters; the backend proxy would leave data-plane paths unauthorized")
-	}
-}
+var _ providers.TenantResolver = (*kcpTenantResolver)(nil)
 
 func TestKCPTenantResolverAuthorizeClusterFailsClosed(t *testing.T) {
 	// No kcp proxy (so no membership index), no user, no cluster: each is a

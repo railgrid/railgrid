@@ -210,14 +210,14 @@ test('reactive catalog readiness invalidates provider-tool derivation', () => {
   const providers = ref([])
   const providerTools = computed(() => {
     if (!catalogLoaded.value || catalogContextKey.value !== currentContextKey) return []
-    return providers.value.flatMap((provider) => (provider.children ?? []).map((child) => ({
+    return providers.value.flatMap((provider) => (provider.serving?.ui?.children ?? []).map((child) => ({
       id: `${provider.name}/${child.builtinRoute}`,
       title: child.displayName,
     })))
   })
   const provider = {
     name: 'code',
-    children: [{ displayName: 'Connections', builtinRoute: 'connections' }],
+    serving: { ui: { children: [{ displayName: 'Connections', builtinRoute: 'connections' }] } },
   }
 
   assert.deepEqual(providerTools.value, [])

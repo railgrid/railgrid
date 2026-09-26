@@ -80,7 +80,7 @@ type ProviderTarget struct {
 	Transport http.RoundTripper
 
 	// Actions and Verbs are what this provider DECLARES in its validated
-	// CatalogEntry (spec.actions, spec.dataPlane.verbs), projected by
+	// CatalogEntry (spec.export.resources[].actions and .verbs), projected by
 	// RegistryEnumerator. They are coordinates the hub has admitted, never
 	// anything the provider said at runtime: they feed the
 	// railgrid://providers/capabilities resource and are the only thing a

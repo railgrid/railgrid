@@ -31,7 +31,7 @@ import (
 // doubling, never slower than the 10-minute cycle; a success resets it; and
 // two Services (or the same name in two workspaces) back off independently.
 func TestProbeRetryBackoff(t *testing.T) {
-	r := newValidationReconciler(nil, nil, "")
+	r := newValidationReconciler(nil, nil)
 	a := retryKey(mcreconcile.Request{ClusterName: "ws-a", Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: "kiosk"}}})
 	b := retryKey(mcreconcile.Request{ClusterName: "ws-b", Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: "kiosk"}}})
 	if a == b {

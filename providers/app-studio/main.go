@@ -11,22 +11,25 @@
 // liveness/readiness endpoints from a single port, and keeps the hub heartbeat
 // alive.
 //
-// Two surfaces share the port, split only by URL — the hub's CatalogEntry
-// routes the same Service to both proxies:
+// Two surfaces share the port, split only by URL:
 //
 //   - /, /main.js, /icon.svg, /assets/* — the portal micro-frontend (Vite
-//     build embedded via portal/dist, see assets.go). Mounted under
+//     build embedded via portal/dist, see assets.go). Mounted by the hub under
 //     /ui/providers/app-studio/.
-//   - /healthz, /readyz, /api/projects/* — the backend API, liveness probe, and
-//     controller-backed readiness probe. Mounted under
-//     /services/providers/app-studio/; the hub backend proxy strips that prefix
-//     and injects X-Railgrid-Tenant/X-Railgrid-User plus the caller's bearer token.
+//   - /clusters/{id}/apis/ai.railgrid.ai/v1alpha1/{resource}/{name}/{verb} —
+//     the data-plane verbs, each a kcp custom subresource on this provider's
+//     APIExport. A kcp shard authorizes the caller with RBAC and reverse-proxies
+//     the request here (through the DataPlaneEndpointSlice) with the caller's
+//     identity stamped in X-Remote-* headers; there is no hub-proxied grammar
+//     and no caller bearer. Plus /healthz (liveness) and /readyz
+//     (controller-aware readiness).
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/railgrid/provider-sdk/dataplane"
 	"io"
 	"log"
 	"net/http"
@@ -162,15 +165,35 @@ func runServe() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Tenant access goes through the hub's caller-scoped kcp proxy (the hub
-	// injects X-Railgrid-Cluster per request). Without a hub URL the project API returns
-	// 501 (useful for UI-only dev), with a loud warning.
 	hubInsecure := os.Getenv("RAILGRID_HUB_INSECURE") == "true"
+	if os.Getenv("RAILGRID_HUB_URL") == "" {
+		log.Printf("WARNING hub REST and MCP calls disabled (no RAILGRID_HUB_URL)")
+	}
+
+	// The provider's own kcp credential, mounted by the chart from the Secret
+	// the hub minted. It is the ONE credential on the data plane: a verb
+	// arrives with the caller's identity stamped by a kcp shard and no bearer,
+	// so the gate decides visibility with a SubjectAccessReview on the
+	// caller's behalf and every handler then acts as the provider through its
+	// APIExport virtual workspace — the same door the controllers watch tenant
+	// workspaces through. Without it every verb fails closed and the project
+	// API is effectively disabled (useful for UI-only dev), with a loud
+	// warning.
+	kcpConfig, kcpErr := loadProviderConfig()
+	if kcpErr != nil {
+		kcpConfig = nil
+	}
+	var providerCallers *dataplane.Callers
 	var tenantClient *tenant.Client
-	if hubURL := os.Getenv("RAILGRID_HUB_URL"); hubURL == "" {
-		log.Printf("WARNING project API disabled (no RAILGRID_HUB_URL)")
+	if kcpConfig == nil {
+		log.Printf("WARNING project API disabled (no provider kubeconfig: %v)", kcpErr)
 	} else {
-		tenantClient = tenant.NewClient(hubURL, hubInsecure)
+		pc, err := dataplane.NewCallerFactory(kcpConfig, dataplane.WithProviderConfig(kcpConfig, apiExportName))
+		if err != nil {
+			log.Fatalf("provider caller factory: %v", err)
+		}
+		providerCallers = pc
+		tenantClient = tenant.NewClient(pc)
 	}
 
 	msgStore, closeStore, err := openMessageStore(ctx)
@@ -244,8 +267,9 @@ func runServe() {
 	}
 	// App Studio holds no runtime-cluster kubeconfig: the development data
 	// plane (logs/sync/restart) is served by the infrastructure provider as
-	// subresources on the template instance, reached through the hub as the
-	// calling user. See docs/app-studio-template-sandboxes.md.
+	// custom subresources on the template instance, which App Studio calls
+	// through its own export virtual workspace as itself under the claims in
+	// manifest.yaml. See docs/app-studio-template-sandboxes.md.
 
 	// Readiness is reachability of the APIExport virtual workspace, plus —
 	// while this replica holds the controller lease — whether the multicluster
@@ -254,10 +278,6 @@ func runServe() {
 	// attached and stays ready on the probe alone: its REST API, assistant
 	// supervisor and replica-affinity forwarder are serving regardless.
 	mode := controllerModeFromEnv()
-	kcpConfig, kcpErr := loadProviderConfig()
-	if kcpErr != nil {
-		kcpConfig = nil
-	}
 	vwState := &vwhealth.Readiness{}
 	if mode == controllerModeRequired && kcpConfig == nil {
 		// Fail closed: a pod told to run controllers that has no credential to
@@ -268,9 +288,22 @@ func runServe() {
 		vwState.Attach("controllers", checkerFunc(func() error { return err }))
 	}
 
+	// The data plane acts as the provider (see providerCallers above); the
+	// hub's own REST API and MCP aggregate — not data-plane verbs — are
+	// reached with the provider's hub token, since a verb carries no caller
+	// bearer to forward there.
+	if providerCallers != nil {
+		apiServer.UseProviderCallers(providerCallers)
+	}
+	if hubToken, err := hubclient.ResolveHubToken(); err != nil {
+		log.Printf("hub token: %v (hub REST and MCP calls will be unauthenticated)", err)
+	} else {
+		apiServer.SetHubToken(hubToken)
+	}
+
 	handler, err := newHandler(apiServer, vwhealth.Handler(vwState))
 	if err != nil {
-		log.Fatalf("portal embed: %v", err)
+		log.Fatalf("server: %v", err)
 	}
 
 	// Replica awareness (docs/app-studio-replica-awareness.md): durable run
@@ -361,6 +394,10 @@ func runServe() {
 	if mode == controllerModeRESTOnly {
 		log.Printf("controller manager disabled: explicit REST-only mode")
 	} else {
+		// The provider's own connection for what the controllers read and
+		// watch of OTHER providers' kinds — and for the verbs they call on
+		// them — through this export's virtual workspace, under the
+		// composition claims the tenant accepted.
 		deps := controllerDeps{
 			Actions:     apiServer.ActionsRuntimeConfig(),
 			Workspace:   workspaces,
@@ -373,6 +410,7 @@ func runServe() {
 			StopAssistant: apiServer.StopAssistantForDeletedProject,
 			HubBase:       strings.TrimRight(os.Getenv("RAILGRID_HUB_URL"), "/"),
 			HubInsecure:   os.Getenv("RAILGRID_HUB_INSECURE") == "true",
+			Callers:       providerCallers,
 			// Event-driven reconciles: the API publishes thread/turn and
 			// workspace transitions, the controllers subscribe.
 			SessionSignals: apiServer.SessionSignals(),
@@ -427,9 +465,21 @@ func newHandler(apiServer *api.Server, readiness http.Handler) (http.Handler, er
 		Portal:    distFS,
 	}
 	if apiServer != nil {
-		// Class (a): every tenant-facing verb, on the one grammar, each gated
-		// as the caller. serve.New hands it the RAW request path.
+		// Class (a): every tenant-facing verb, dispatched by serve's
+		// subresource adapter off the path a kcp shard forwards for a custom
+		// subresource, each gated for visibility as the caller and then served
+		// as the provider. The table of coordinates is derived from this
+		// provider's own CatalogEntry manifest (catalogentry.go), so what kcp
+		// routes and what serve answers are one declaration; without the
+		// manifest there is no data plane, and that is a startup error.
+		// Without an apiServer there is nothing to dispatch to, so neither is
+		// set rather than mounting a dead prefix.
 		options.DataPlane = apiServer.DataPlane()
+		subresources, err := subresourceRoutes()
+		if err != nil {
+			return nil, err
+		}
+		options.Subresources = subresources
 	}
 	handler, err := serve.New(options)
 	if err != nil {

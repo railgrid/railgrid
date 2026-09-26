@@ -265,7 +265,7 @@ Data-plane verbs (through the hub, as you; production instances answer 409).
 `railgrid sandbox` ([cli.md](cli.md)) wraps them:
 
 ```
-GET  /services/providers/infrastructure/dataplane/clusters/{cluster}/instances/{name}/status
+GET  /services/providers/infrastructure/dataplane/clusters/{cluster}/instances/{name}/runtime-status
 GET  …/instances/{name}/components/{c}/log        (stream; bound it with timeout)
 GET  …/instances/{name}/components/{c}/process    → {running, port, portReachable, sourceRevision, sourceDigest, syncEncodings[], …}
 POST …/instances/{name}/components/{c}/sync       {files[{path,content,encoding?}], deletePaths[], restart ""|auto|always, sourceRevision?, sourceDigest?}
@@ -374,7 +374,7 @@ digest pinning, naming, sharing, and the sandbox loop.
 ## 11. Self-hosting
 
 The chart supports `operator.enabled=true` to run the operator and runtime in
-your own cluster (`selfHosting` block in the CatalogEntry); required value
+your own cluster (`spec.serving.selfHosting` block in the CatalogEntry); required value
 `operator.application.baseDomain`. The kcp shard's virtual workspace URL must
 be reachable from that cluster or Instances never reconcile. Edge clusters
 are **not** targets for this provider; edge placement is the edges

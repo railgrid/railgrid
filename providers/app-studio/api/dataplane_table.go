@@ -11,7 +11,7 @@ You may obtain a copy of the License at
 package api
 
 // The verb table: every route this provider serves, and the only place a new
-// one can be added. It is checked against manifest.yaml's spec.dataPlane.verbs
+// one can be added. It is checked against manifest.yaml's spec.export.resources[].verbs
 // by TestDataPlaneVerbsMatchManifest, so a verb that is served but not
 // declared (or declared but not served) fails the build rather than becoming a
 // coordinate the hub's scoped-identity service cannot verify.

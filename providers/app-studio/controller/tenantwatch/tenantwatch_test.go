@@ -110,16 +110,16 @@ func TestHubEnqueuesMappedRequestsForWatchedKinds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	dyn := newFakeDynamic(instance("existing", "demo"))
-	hub := NewHub(func(string, string) (dynamic.Interface, error) { return dyn, nil })
+	hub := NewHub(func(string) (dynamic.Interface, error) { return dyn, nil })
 	src := hub.Source(labelMapper, InstancesGVR)
 	q := engage(t, ctx, src, "cluster-a")
 
-	// Nothing watches until a token arrives; then the initial list enqueues
-	// the existing instance's owner.
+	// Nothing watches until Ensure; then the initial list enqueues the
+	// existing instance's owner.
 	if hub.watching("cluster-a", InstancesGVR) {
 		t.Fatal("watcher started before Ensure")
 	}
-	hub.Ensure("cluster-a", "token-1", InstancesGVR)
+	hub.Ensure("cluster-a", InstancesGVR)
 	req := nextRequest(t, q)
 	if string(req.ClusterName) != "cluster-a" || req.Name != "demo" {
 		t.Fatalf("request = %+v", req)
@@ -127,7 +127,7 @@ func TestHubEnqueuesMappedRequestsForWatchedKinds(t *testing.T) {
 
 	// A later change enqueues again; a kind the source does not watch is
 	// ignored even if a watcher runs for it.
-	hub.Ensure("cluster-a", "token-1", RepositoriesGVR)
+	hub.Ensure("cluster-a", RepositoriesGVR)
 	if _, err := dyn.Resource(RepositoriesGVR).Create(ctx, &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "code.railgrid.ai/v1alpha1", "kind": "Repository",
 		"metadata": map[string]any{"name": "repo", "labels": map[string]any{"project": "other"}},
@@ -148,16 +148,19 @@ func TestHubEnqueuesMappedRequestsForWatchedKinds(t *testing.T) {
 	}
 }
 
-func TestHubRestartsWatcherWithFreshTokenAfterAuthFailure(t *testing.T) {
+// A watcher the virtual workspace refuses (the claim not accepted yet) stops
+// and is retried on the next Ensure — which the APIBinding update that records
+// acceptance triggers — rather than spinning.
+func TestHubRestartsRefusedWatcherOnNextEnsure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var dials atomic.Int32
-	hub := NewHub(func(_ string, token string) (dynamic.Interface, error) {
-		dials.Add(1)
+	hub := NewHub(func(string) (dynamic.Interface, error) {
+		n := dials.Add(1)
 		dyn := newFakeDynamic(instance("existing", "demo"))
-		if token == "revoked" {
+		if n == 1 {
 			dyn.PrependReactor("list", "instances", func(clienttesting.Action) (bool, runtime.Object, error) {
-				return true, nil, apierrors.NewUnauthorized("token revoked")
+				return true, nil, apierrors.NewForbidden(InstancesGVR.GroupResource(), "", errors.New("claim not accepted"))
 			})
 		}
 		return dyn, nil
@@ -165,16 +168,15 @@ func TestHubRestartsWatcherWithFreshTokenAfterAuthFailure(t *testing.T) {
 	src := hub.Source(labelMapper, InstancesGVR)
 	q := engage(t, ctx, src, "cluster-a")
 
-	hub.Ensure("cluster-a", "revoked", InstancesGVR)
+	hub.Ensure("cluster-a", InstancesGVR)
 	waitFor(t, "watcher to fail", func() bool { return !hub.watching("cluster-a", InstancesGVR) })
-	// Offering the same dead token again must not spin a new watcher.
-	hub.Ensure("cluster-a", "revoked", InstancesGVR)
-	if hub.watching("cluster-a", InstancesGVR) || dials.Load() != 1 {
-		t.Fatalf("watching = %t dials = %d; a dead token must not restart", hub.watching("cluster-a", InstancesGVR), dials.Load())
+	if dials.Load() != 1 {
+		t.Fatalf("dials = %d after the refusal, want 1", dials.Load())
 	}
-	hub.Ensure("cluster-a", "live", InstancesGVR)
+	// The next Ensure redials; the claim is accepted now, so the watch runs.
+	hub.Ensure("cluster-a", InstancesGVR)
 	if !hub.watching("cluster-a", InstancesGVR) || dials.Load() != 2 {
-		t.Fatalf("watching = %t dials = %d after a fresh token", hub.watching("cluster-a", InstancesGVR), dials.Load())
+		t.Fatalf("watching = %t dials = %d after the retry", hub.watching("cluster-a", InstancesGVR), dials.Load())
 	}
 	if req := nextRequest(t, q); req.Name != "demo" {
 		t.Fatalf("request = %+v", req)
@@ -184,17 +186,17 @@ func TestHubRestartsWatcherWithFreshTokenAfterAuthFailure(t *testing.T) {
 func TestHubStopsWatchersWhenClusterDisengages(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	dyn := newFakeDynamic()
-	hub := NewHub(func(string, string) (dynamic.Interface, error) { return dyn, nil })
+	hub := NewHub(func(string) (dynamic.Interface, error) { return dyn, nil })
 	src := hub.Source(labelMapper, InstancesGVR)
 	engage(t, ctx, src, "cluster-a")
-	hub.Ensure("cluster-a", "token", InstancesGVR)
+	hub.Ensure("cluster-a", InstancesGVR)
 	if !hub.watching("cluster-a", InstancesGVR) {
 		t.Fatal("watcher not started")
 	}
 	cancel()
 	waitFor(t, "cluster to disengage", func() bool { return !hub.Engaged("cluster-a") })
 	// Ensure for an unengaged cluster is a no-op rather than a leak.
-	hub.Ensure("cluster-a", "token", InstancesGVR)
+	hub.Ensure("cluster-a", InstancesGVR)
 	if hub.Engaged("cluster-a") {
 		t.Fatal("Ensure re-engaged a cluster no source is engaged for")
 	}
@@ -209,19 +211,19 @@ func TestHubWithoutDialerAndLocalClusterAreInert(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	engage(t, ctx, src, "cluster-a")
-	hub.Ensure("cluster-a", "token", InstancesGVR)
+	hub.Ensure("cluster-a", InstancesGVR)
 	if hub.watching("cluster-a", InstancesGVR) {
 		t.Fatal("hub without a dialer started a watcher")
 	}
 	var nilHub *Hub
-	nilHub.Ensure("cluster-a", "token", InstancesGVR)
+	nilHub.Ensure("cluster-a", InstancesGVR)
 	if nilHub.Engaged("cluster-a") {
 		t.Fatal("nil hub reports engagement")
 	}
-	failing := NewHub(func(string, string) (dynamic.Interface, error) { return nil, errors.New("dial failed") })
+	failing := NewHub(func(string) (dynamic.Interface, error) { return nil, errors.New("dial failed") })
 	fsrc := failing.Source(labelMapper, InstancesGVR)
 	engage(t, ctx, fsrc, "cluster-a")
-	failing.Ensure("cluster-a", "token", InstancesGVR)
+	failing.Ensure("cluster-a", InstancesGVR)
 	if failing.watching("cluster-a", InstancesGVR) {
 		t.Fatal("a failed dial produced a watcher")
 	}

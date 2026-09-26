@@ -33,7 +33,7 @@ import (
 	"github.com/railgrid/provider-infrastructure/install"
 )
 
-// APIExportName is the provider's APIExport (manifest.yaml spec.apiExport.name).
+// APIExportName is the provider's APIExport (manifest.yaml spec.export.name).
 const APIExportName = "infrastructure.providers.railgrid.ai"
 
 // Reconciler reconciles InfrastructureProvider CRs.

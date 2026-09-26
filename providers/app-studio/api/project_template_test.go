@@ -678,7 +678,7 @@ func TestPutProjectTemplateRejectsPlatformOwnedAsBadRequest(t *testing.T) {
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	request.Header.Set("X-Railgrid-User", "alice")
-	request.Header.Set("Authorization", "Bearer "+"alice-token")
+	request = stampTestCaller(request, testUserForToken("alice-token"))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 

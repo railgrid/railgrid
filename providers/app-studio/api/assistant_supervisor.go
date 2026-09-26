@@ -933,8 +933,8 @@ func (s *projectAssistantSupervisor) Abort(scope store.Scope, runID string) bool
 // Stop makes cancellation observable before asking Eino to unwind. Pending
 // runs have no active loop, so they use the existing synchronous terminal path.
 // Callers with the authenticated request identity should use
-// StopWithIdentity so a suspended run sandbox can be deleted through the
-// caller-scoped client.
+// StopWithIdentity so a suspended run sandbox can be deleted in the run's
+// workspace cluster.
 func (s *projectAssistantSupervisor) Stop(scope store.Scope, runID string) (store.AssistantRun, bool, error) {
 	return s.stopWithIdentity(context.Background(), identity{}, scope, runID)
 }

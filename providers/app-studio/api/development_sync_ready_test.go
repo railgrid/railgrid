@@ -69,7 +69,7 @@ func newDevelopmentSyncReadyFixture(t *testing.T, handler func(http.Handler) htt
 	return &developmentSyncReadyFixture{
 		server: &Server{
 			tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-			hubBase:                     hub.URL,
+			hubBase: hub.URL, callers: newTestCallers(nil, hub.URL),
 			workspaces:                  workspaces,
 			developmentSyncReadyTimeout: 2 * time.Second,
 			developmentSyncReadyBackoff: 5 * time.Millisecond,

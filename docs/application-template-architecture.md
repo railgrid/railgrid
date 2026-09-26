@@ -263,7 +263,8 @@ CR, and puts the client secret under key `oidc_client_secret` in their workspace
 `cloud-credentials` Secret. The **Application instance controller** reads that Secret through
 the APIExport VW and writes the bridged `cloud-credentials-<name>` Secret into the runtime
 per-tenant namespace; oauth2-proxy reads it via `secretKeyRef`. No new permission claim is
-needed — the `secrets` `tenantScoped` claim in `manifest.yaml` already covers it.
+needed — the label-scoped `secrets` requirement in `manifest.yaml`
+(`spec.requires`) already covers it.
 
 ### 7.2 Mode A — Platform SSO (deferred; NOT yet supported)
 The intended "guard with railgrid's own identity" mode. Because the hub is a relying party (not

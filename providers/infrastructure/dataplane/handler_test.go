@@ -30,21 +30,25 @@ import (
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	sdk "github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/dataplane/conformance"
+	"github.com/railgrid/provider-sdk/serve"
 )
 
 const (
 	testWorkspace = "tenant-a"
 	testNamespace = "tenant-a-default"
+
+	// testUser is the caller kcp stamps on a granted request. There is no
+	// bearer on a verb: the identity travels in requestheader headers and,
+	// once serve's adapter has read them, in the request context.
+	testUser = "alice@railgrid.test"
 )
 
-// callerToken is the only bearer the fake caller factory treats as the
-// tenant's caller; anything else sees an empty workspace, which is how
-// "workspace A's token cannot reach workspace B" is observable here.
-const callerToken = "caller-token"
+// testCaller is testUser as the adapter puts it in the context.
+var testCaller = sdk.ProxiedIdentity{User: testUser, Groups: []string{"system:authenticated"}}
 
 // asInstance restamps a template fixture as the flattened Instance kind. That
 // is the only resource the data plane serves, so it is the only GVR the
-// caller's client answers gate 1 on.
+// provider's client answers gate 1 on.
 func asInstance(object *unstructured.Unstructured) *unstructured.Unstructured {
 	out := object.DeepCopy()
 	out.SetAPIVersion(instancesGVR.Group + "/" + instancesGVR.Version)
@@ -52,28 +56,26 @@ func asInstance(object *unstructured.Unstructured) *unstructured.Unstructured {
 	return out
 }
 
-// callersIn builds the caller factory the handler runs both gates through.
-// deny names the verbs gate 2 refuses; everything else on instances/* is
-// granted, so a routing test exercises routing rather than RBAC.
-func callersIn(cluster string, deny []string, objects ...*unstructured.Unstructured) *conformance.FakeCallers {
-	refused := map[string]bool{}
-	for _, verb := range deny {
-		refused[verb] = true
-	}
+// callersIn builds the provider caller factory the handler runs the gate
+// through: the provider sees objects in cluster, and every access review
+// about testUser for "get" on an instance is granted, so a routing test
+// exercises routing rather than RBAC. (The verb grant itself is kcp's, before
+// the request is ever forwarded here, and is not visible to the handler.)
+func callersIn(cluster string, objects ...*unstructured.Unstructured) *conformance.FakeCallers {
 	visible := make([]*unstructured.Unstructured, 0, len(objects))
 	for _, object := range objects {
 		visible = append(visible, asInstance(object))
 	}
 	return &conformance.FakeCallers{
 		Cluster:   cluster,
-		Token:     callerToken,
+		User:      testUser,
 		Objects:   visible,
 		ListKinds: map[schema.GroupVersionResource]string{instancesGVR: "InstanceList"},
 		Allow: func(a conformance.Attributes) bool {
-			return a.Verb == sdk.SSARVerb &&
+			return a.Verb == "get" &&
 				a.Group == instancesGVR.Group &&
 				a.Resource == instancesGVR.Resource &&
-				a.Subresource != "" && !refused[a.Subresource]
+				a.Subresource == ""
 		},
 	}
 }
@@ -115,41 +117,97 @@ func (f *fakeRuntime) ControlToken(_ context.Context, namespace, name string) (s
 	return f.token, nil
 }
 
-func newTestHandler(t *testing.T, callers sdk.CallerFactory, rt Runtime) *Handler {
+func newTestHandler(t *testing.T, callers sdk.ProviderCallerFactory, rt Runtime) *Handler {
 	t.Helper()
 	return NewHandler(callers, &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
 }
 
-// runnerCallers is the common fixture: one visible Instance in testWorkspace
-// with every verb granted.
+// runnerCallers is the common fixture: one visible Instance in testWorkspace.
 func runnerCallers() *conformance.FakeCallers {
-	return callersIn(testWorkspace, nil, runnerInstance(testNamespace))
+	return callersIn(testWorkspace, runnerInstance(testNamespace))
 }
 
-func doRequest(h *Handler, method, target string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, target, nil)
-	req.Header.Set("Authorization", "Bearer "+callerToken)
+// stamped builds the request the way it reaches the handler through serve's
+// subresource adapter: the shard's identity headers, the same identity in
+// the context, and the parsed route beside it. An empty user leaves the
+// request anonymous, which the gate must refuse.
+func stamped(method, target, user string, body io.Reader) *http.Request {
+	r := httptest.NewRequest(method, target, body)
+	ctx := r.Context()
+	if user != "" {
+		r.Header.Set(sdk.HeaderRemoteUser, user)
+		r.Header.Add(sdk.HeaderRemoteGroup, "system:authenticated")
+		identity := testCaller
+		identity.User = user
+		ctx = sdk.WithProxiedIdentity(ctx, identity)
+	}
+	if route, err := sdk.ParseSubresourceRequest(r); err == nil {
+		ctx = sdk.WithRoute(ctx, route)
+	}
+	return r.WithContext(ctx)
+}
+
+func doRequest(h http.Handler, method, target string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, stamped(method, target, testUser, nil))
 	return rec
 }
 
+// verbPath is the kube path of a verb on an instance, rendered by the SDK so
+// the tests cannot spell the grammar differently from the callers.
+func verbPath(t testing.TB, cluster, resource, name, component, verb string) string {
+	t.Helper()
+	p, err := sdk.SubresourcePath(instancesGVR.Group, instancesGVR.Version, sdk.Request{
+		ClusterID: cluster, Resource: resource, Name: name, Component: component, Verb: verb,
+	})
+	if err != nil {
+		t.Fatalf("SubresourcePath(%s/%s/%s?component=%s): %v", cluster, name, verb, component, err)
+	}
+	return p
+}
+
 func dataplaneURL(verb string) string {
-	return PathPrefix + "clusters/" + testWorkspace + "/instances/" + testNamespace + "/" + verb
+	return "/clusters/" + testWorkspace + "/apis/" + instancesGVR.Group + "/" + instancesGVR.Version + "/instances/" + testNamespace + "/" + verb
+}
+
+func componentURL(cluster, name, component, verb string) string {
+	return "/clusters/" + cluster + "/apis/" + instancesGVR.Group + "/" + instancesGVR.Version + "/instances/" + name + "/" + verb + "?" + sdk.ComponentQuery + "=" + component
+}
+
+func TestVerbPathsMatchTheSDK(t *testing.T) {
+	if got, want := dataplaneURL("log"), verbPath(t, testWorkspace, "instances", testNamespace, "", "log"); got != want {
+		t.Errorf("dataplaneURL = %q, want %q", got, want)
+	}
+	if got, want := componentURL("ws", "shop", "backend", "sync"), verbPath(t, "ws", "instances", "shop", "backend", "sync"); got != want {
+		t.Errorf("componentURL = %q, want %q", got, want)
+	}
 }
 
 func TestHandlerProxiesControlVerb(t *testing.T) {
 	var gotPath, gotControlToken, gotAuth string
+	var gotIdentity []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotControlToken = r.Header.Get(controlTokenHeader)
 		gotAuth = r.Header.Get("Authorization")
+		for name := range r.Header {
+			if strings.HasPrefix(name, "X-Remote-") || strings.HasPrefix(name, "X-Railgrid-") || name == sdk.HeaderHops {
+				gotIdentity = append(gotIdentity, name)
+			}
+		}
 		_, _ = io.WriteString(w, "log line\n")
 	}))
 	defer upstream.Close()
 
 	rt := &fakeRuntime{host: upstream.URL, token: "control-secret-token"}
-	rec := doRequest(newTestHandler(t, runnerCallers(), rt), http.MethodGet, dataplaneURL("log"))
+	req := stamped(http.MethodGet, dataplaneURL("log"), testUser, nil)
+	// Everything a shard or the hub proxy might stamp, as it would arrive.
+	req.Header.Set(sdk.HeaderRemoteExtraPrefix+"Authentication.kcp.io%2Fcluster-name", "somecluster")
+	req.Header.Set(sdk.HeaderHops, "2")
+	req.Header.Set(sdk.HeaderCluster, testWorkspace)
+	req.Header.Set(sdk.HeaderUser, testUser)
+	rec := httptest.NewRecorder()
+	newTestHandler(t, runnerCallers(), rt).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
@@ -165,7 +223,12 @@ func TestHandlerProxiesControlVerb(t *testing.T) {
 		t.Errorf("control token header = %q, want injected token", gotControlToken)
 	}
 	if gotAuth != "" {
-		t.Errorf("caller Authorization leaked to runtime: %q", gotAuth)
+		t.Errorf("an Authorization header reached the runtime: %q", gotAuth)
+	}
+	if len(gotIdentity) != 0 {
+		// The stamped identity is the provider's to read, not the runtime's:
+		// a verb never carries the caller past this hop.
+		t.Errorf("caller identity headers reached the runtime: %v", gotIdentity)
 	}
 	if rt.gotTokenName != testNamespace+"-control" || rt.gotTokenNamespace != testNamespace {
 		t.Errorf("control token read from %s/%s, want %s/%s-control", rt.gotTokenNamespace, rt.gotTokenName, testNamespace, testNamespace)
@@ -213,6 +276,46 @@ func TestHandlerProxyVerbPreservesQueryString(t *testing.T) {
 	}
 }
 
+// The component travels as ?component= on the kube path. It addresses the
+// object, not the verb, so it must not reach the upstream — while the rest of
+// the query string still arrives untouched and in the caller's order.
+func TestHandlerStripsComponentFromForwardedQuery(t *testing.T) {
+	var gotQuery, gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+	}))
+	defer upstream.Close()
+
+	ns := "ws-default"
+	h := NewHandler(callersIn("ws", applicationInstance(ns)), &fakeContractGetter{contract: applicationContract()}, &fakeRuntime{host: upstream.URL})
+	for raw, want := range map[string]string{
+		"?component=frontend&follow=true&tail=50":  "follow=true&tail=50",
+		"?follow=true&component=frontend&tail=50":  "follow=true&tail=50",
+		"?follow=true&tail=50&component=frontend":  "follow=true&tail=50",
+		"?component=frontend":                      "",
+		"?%63omponent=frontend&z=1&a=2":            "z=1&a=2",
+		"?component=frontend&component=frontend&x": "", // refused by the parser: no route, 400
+	} {
+		target := "/clusters/ws/apis/" + instancesGVR.Group + "/" + instancesGVR.Version + "/instances/shop/log" + raw
+		rec := doRequest(h, http.MethodGet, target)
+		if strings.Count(raw, "component=") > 1 {
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("%s: status = %d, want 400 for a repeated component", raw, rec.Code)
+			}
+			continue
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200 (body %q)", raw, rec.Code, rec.Body.String())
+		}
+		if gotQuery != want {
+			t.Errorf("%s: upstream query = %q, want %q", raw, gotQuery, want)
+		}
+		if wantPath := "/api/v1/namespaces/" + ns + "/services/shop-frontend-control:control/proxy/logs"; gotPath != wantPath {
+			t.Errorf("%s: upstream path = %q, want %q", raw, gotPath, wantPath)
+		}
+	}
+}
+
 func TestHandlerProxiesSandboxPreviewWithoutRouteGate(t *testing.T) {
 	// The public preview HTTPRoute is now created declaratively by the
 	// SandboxRunner RGD (same as the application template), so the data-plane
@@ -236,7 +339,7 @@ func TestHandlerProxiesSandboxPreviewWithoutRouteGate(t *testing.T) {
 
 func TestHandlerStatusVerbServedFromCR(t *testing.T) {
 	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: "http://unused"})
-	rec := doRequest(h, http.MethodGet, dataplaneURL("status"))
+	rec := doRequest(h, http.MethodGet, dataplaneURL("runtime-status"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -248,7 +351,7 @@ func TestHandlerStatusVerbServedFromCR(t *testing.T) {
 func TestHandlerRecordsActivityAfterAuthorization(t *testing.T) {
 	rt := &activityRuntime{fakeRuntime: &fakeRuntime{host: "http://unused"}}
 	h := NewHandler(runnerCallers(), &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
-	rec := doRequest(h, http.MethodGet, dataplaneURL("status"))
+	rec := doRequest(h, http.MethodGet, dataplaneURL("runtime-status"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 	}
@@ -260,7 +363,7 @@ func TestHandlerRecordsActivityAfterAuthorization(t *testing.T) {
 func TestHandlerFailsClosedWhenActivityMarkerCannotBeWritten(t *testing.T) {
 	rt := &activityRuntime{fakeRuntime: &fakeRuntime{host: "http://unused"}, err: context.DeadlineExceeded}
 	h := NewHandler(runnerCallers(), &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
-	rec := doRequest(h, http.MethodGet, dataplaneURL("status"))
+	rec := doRequest(h, http.MethodGet, dataplaneURL("runtime-status"))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503 (body %q)", rec.Code, rec.Body.String())
 	}
@@ -269,50 +372,78 @@ func TestHandlerFailsClosedWhenActivityMarkerCannotBeWritten(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsMissingToken(t *testing.T) {
+// A request with no stamped caller has nobody to authorize. Anonymous is not
+// a fallback and the provider's own identity is never a substitute.
+func TestHandlerRejectsMissingCaller(t *testing.T) {
 	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: "http://unused"})
-	req := httptest.NewRequest(http.MethodGet, dataplaneURL("log"), nil) // no Authorization
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, stamped(http.MethodGet, dataplaneURL("log"), "", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
 
-// A gate failure is a 404 whichever gate refused and whatever the underlying
-// Kubernetes status was. A caller that may not use a verb must not be able to
+// A request that did not come through serve's subresource adapter carries no
+// parsed route, and nothing else is entitled to say what it addresses — not
+// even a well-formed URL.
+func TestHandlerRefusesRequestWithoutRoute(t *testing.T) {
+	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: "http://unused"})
+	req := httptest.NewRequest(http.MethodGet, dataplaneURL("log"), nil)
+	req.Header.Set(sdk.HeaderRemoteUser, testUser)
+	req = req.WithContext(sdk.WithProxiedIdentity(req.Context(), sdk.ProxiedIdentity{User: testUser}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// A gate failure is a 404 whatever refused and whatever the underlying
+// Kubernetes status was. A caller who may not use a verb must not be able to
 // tell an object that exists from one that does not: the whole point of the
 // contract's non-disclosing default.
 func TestHandlerDeniesWithoutDisclosure(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		callers *conformance.FakeCallers
+		user    string
 		path    string
 	}{
 		{
 			name:    "no such instance",
-			callers: callersIn(testWorkspace, nil),
+			callers: callersIn(testWorkspace),
+			user:    testUser,
 			path:    dataplaneURL("log"),
 		},
 		{
 			name:    "instance belongs to another workspace",
-			callers: callersIn("otherworkspace", nil, runnerInstance(testNamespace)),
+			callers: callersIn("otherworkspace", runnerInstance(testNamespace)),
+			user:    testUser,
 			path:    dataplaneURL("log"),
 		},
 		{
-			name:    "verb is not granted",
-			callers: callersIn(testWorkspace, []string{"log"}, runnerInstance(testNamespace)),
+			name:    "caller cannot see the instance",
+			callers: runnerCallers(),
+			user:    conformance.StrangerUser,
 			path:    dataplaneURL("log"),
 		},
 		{
 			name:    "resource is not served",
 			callers: runnerCallers(),
-			path:    PathPrefix + "clusters/" + testWorkspace + "/sandboxrunners/" + testNamespace + "/log",
+			user:    testUser,
+			path:    "/clusters/" + testWorkspace + "/apis/" + instancesGVR.Group + "/" + instancesGVR.Version + "/sandboxrunners/" + testNamespace + "/log",
+		},
+		{
+			name:    "group is not ours",
+			callers: runnerCallers(),
+			user:    testUser,
+			path:    "/clusters/" + testWorkspace + "/apis/other.railgrid.ai/" + instancesGVR.Version + "/instances/" + testNamespace + "/log",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTestHandler(t, tc.callers, &fakeRuntime{host: "http://unused"})
-			rec := doRequest(h, http.MethodGet, tc.path)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, stamped(http.MethodGet, tc.path, tc.user, nil))
 			if rec.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want 404 (body %q)", rec.Code, rec.Body.String())
 			}
@@ -323,36 +454,17 @@ func TestHandlerDeniesWithoutDisclosure(t *testing.T) {
 	}
 }
 
-// Gate 2 is per verb, not per object: granting one verb must not carry any
-// other verb on the same instance, and a component verb collapses onto the
-// instance-level subresource so one grant covers both spellings.
-func TestHandlerGatesEveryVerbSeparately(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer upstream.Close()
-
-	callers := callersIn(testWorkspace, []string{"restart"}, runnerInstance(testNamespace))
-	h := newTestHandler(t, callers, &fakeRuntime{host: upstream.URL})
-
-	if rec := doRequest(h, http.MethodPost, dataplaneURL("sync")); rec.Code != http.StatusOK {
-		t.Fatalf("granted sync: status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+// An object on its way out is denied: a verb must not run against something
+// already being deleted, and the answer is the same non-disclosing 404.
+func TestHandlerDeniesDeletingInstance(t *testing.T) {
+	instance := runnerInstance(testNamespace)
+	if err := unstructured.SetNestedField(instance.Object, "2026-01-01T00:00:00Z", "metadata", "deletionTimestamp"); err != nil {
+		t.Fatal(err)
 	}
-	if rec := doRequest(h, http.MethodPost, dataplaneURL("restart")); rec.Code != http.StatusNotFound {
-		t.Fatalf("ungranted restart: status = %d, want 404", rec.Code)
-	}
-}
-
-// A request whose path cluster disagrees with the hub-injected header is
-// self-contradictory: the path wins, and the request is refused outright
-// rather than served against either reading.
-func TestHandlerRefusesClusterHeaderMismatch(t *testing.T) {
-	h := newTestHandler(t, runnerCallers(), &fakeRuntime{host: "http://unused"})
-	req := httptest.NewRequest(http.MethodGet, dataplaneURL("log"), nil)
-	req.Header.Set("Authorization", "Bearer "+callerToken)
-	req.Header.Set(sdk.HeaderCluster, "someotherworkspc")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+	h := newTestHandler(t, callersIn(testWorkspace, instance), &fakeRuntime{host: "http://unused"})
+	rec := doRequest(h, http.MethodGet, dataplaneURL("runtime-status"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body %q)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -367,7 +479,7 @@ func TestHandlerMethodNotAllowed(t *testing.T) {
 func TestHandlerNamespaceEscapeIsConflict(t *testing.T) {
 	instance := runnerInstance(testNamespace)
 	unstructured.SetNestedField(instance.Object, "kube-system", "status", "controlServiceRef", "namespace") //nolint:errcheck
-	h := newTestHandler(t, callersIn(testWorkspace, nil, instance), &fakeRuntime{host: "http://unused"})
+	h := newTestHandler(t, callersIn(testWorkspace, instance), &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("log"))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", rec.Code)
@@ -402,9 +514,9 @@ func TestHandlerProxiesComponentVerb(t *testing.T) {
 
 	ns := "ws-default"
 	rt := &fakeRuntime{host: upstream.URL, token: "control-secret-token"}
-	h := NewHandler(callersIn("ws", nil, applicationInstance(ns)), &fakeContractGetter{contract: applicationContract()}, rt)
+	h := NewHandler(callersIn("ws", applicationInstance(ns)), &fakeContractGetter{contract: applicationContract()}, rt)
 
-	rec := doRequest(h, http.MethodPost, PathPrefix+"clusters/ws/instances/shop/components/backend/sync")
+	rec := doRequest(h, http.MethodPost, componentURL("ws", "shop", "backend", "sync"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 	}
@@ -417,43 +529,103 @@ func TestHandlerProxiesComponentVerb(t *testing.T) {
 	}
 
 	// Method allowlist applies per component verb.
-	rec = doRequest(h, http.MethodGet, PathPrefix+"clusters/ws/instances/shop/components/backend/sync")
+	rec = doRequest(h, http.MethodGet, componentURL("ws", "shop", "backend", "sync"))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET component sync: status = %d, want 405", rec.Code)
 	}
 
 	// Unknown component is a conflict (contract mismatch), not a proxy.
-	rec = doRequest(h, http.MethodPost, PathPrefix+"clusters/ws/instances/shop/components/worker/sync")
+	rec = doRequest(h, http.MethodPost, componentURL("ws", "shop", "worker", "sync"))
 	if rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusConflict {
 		t.Errorf("unknown component: status = %d, want 405/409", rec.Code)
 	}
+
+	// The old path spelling is not a component address: kcp would route
+	// "components" as a subresource of its own, and this handler never sees
+	// it as anything but a verb it does not serve.
+	rec = doRequest(h, http.MethodPost, "/clusters/ws/apis/"+instancesGVR.Group+"/"+instancesGVR.Version+"/instances/shop/components/backend/sync")
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusConflict && rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("path-form component: status = %d, want a refusal", rec.Code)
+	}
 }
 
-// The grammar and both gates are the SDK's, so the contract's own suite is
-// what proves this provider serves them: granted verb 200, missing bearer
-// 401, header/path cluster mismatch 400, foreign cluster denied, ungranted
-// verb denied, malformed path 400. It runs against the real handler, which is
-// exactly what serve.New mounts under /dataplane/.
+// newServer mounts the handler the way main does — through serve.New with
+// the coordinates this provider's own manifest declares — so the suite drives
+// the adapter (path parsing, declaration check, identity headers) and the
+// handler together, exactly as a kcp shard reaches them.
+func newServer(t *testing.T, h *Handler) http.Handler {
+	t.Helper()
+	subresources, err := serve.SubresourcesFromCatalogEntryFile("../manifest.yaml")
+	if err != nil {
+		t.Fatalf("subresources from manifest: %v", err)
+	}
+	server, err := serve.New(serve.Options{
+		Name:         "infrastructure",
+		Readiness:    http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }),
+		DataPlane:    h,
+		Subresources: subresources,
+	})
+	if err != nil {
+		t.Fatalf("serve.New refused this provider's layout: %v", err)
+	}
+	return server
+}
+
+// The grammar and the gate are the SDK's, so the contract's own suite is what
+// proves this provider serves them: granted verb 200, no stamped caller 401, a
+// caller who cannot see the object denied, foreign cluster denied, undeclared
+// verb not served, malformed path refused. It runs against the whole server
+// serve.New builds, with the real handler behind the real declaration.
 func TestDataPlaneConformance(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer upstream.Close()
 
-	// "restart" is the verb the fake refuses; "sync" is the one it grants.
-	callers := callersIn(testWorkspace, []string{"restart"}, runnerInstance(testNamespace))
+	callers := runnerCallers()
+	h := newTestHandler(t, callers, &fakeRuntime{host: upstream.URL})
+	apis := "/clusters/" + testWorkspace + "/apis/" + instancesGVR.Group + "/" + instancesGVR.Version
+
+	conformance.Test(t, newServer(t, h), conformance.Fixtures{
+		Callers:     callers,
+		GrantedPath: dataplaneURL("sync"),
+		// A verb this provider never declared: the adapter refuses it before
+		// the handler could answer, because the declaration is the contract.
+		DeniedPath: dataplaneURL("shout"),
+		MalformedPaths: []string{
+			apis + "/instances/../" + testNamespace + "/sync",
+			apis + "/instances//" + testNamespace + "/sync",
+			"/clusters/root:railgrid:orgs:acme/apis/" + instancesGVR.Group + "/" + instancesGVR.Version + "/instances/" + testNamespace + "/sync",
+			dataplaneURL("status"),
+			dataplaneURL("sync") + "?component=a&component=b",
+			dataplaneURL("sync") + "?component=..",
+		},
+		// A data-plane verb is a proxy, not an action: it has no actionwire
+		// envelope and no {"input": …} body to decode strictly.
+		SkipStrictBody: true,
+	})
+}
+
+// The same suite against the bare handler: it reads the context serve's
+// adapter would have set, so it must behave identically without the adapter
+// in front of it (the suite stamps both the headers and the context).
+func TestDataPlaneConformanceBareHandler(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer upstream.Close()
+
+	callers := runnerCallers()
 	h := newTestHandler(t, callers, &fakeRuntime{host: upstream.URL})
 
 	conformance.Test(t, h, conformance.Fixtures{
 		Callers:     callers,
 		GrantedPath: dataplaneURL("sync"),
-		DeniedPath:  dataplaneURL("restart"),
+		// Without the adapter's table the handler itself refuses a verb the
+		// template contract does not declare; the suite accepts 404 or the
+		// denied status, and this one is a 409 from the resolver, so name a
+		// resource the handler does not serve instead.
+		DeniedPath: "/clusters/" + testWorkspace + "/apis/" + instancesGVR.Group + "/" + instancesGVR.Version + "/sandboxrunners/" + testNamespace + "/sync",
 		MalformedPaths: []string{
-			PathPrefix + "clusters/" + testWorkspace + "/instances/../" + testNamespace + "/sync",
-			PathPrefix + "clusters/" + testWorkspace + "/instances//" + testNamespace + "/sync",
-			PathPrefix + "clusters/root:railgrid:orgs:acme/instances/" + testNamespace + "/sync",
-			PathPrefix + "clusters/" + testWorkspace + "/instances/" + testNamespace + "/components/sync",
+			"/clusters/" + testWorkspace + "/apis/" + instancesGVR.Group + "/" + instancesGVR.Version + "/instances/../" + testNamespace + "/sync",
+			"/clusters/root:railgrid:orgs:acme/apis/" + instancesGVR.Group + "/" + instancesGVR.Version + "/instances/" + testNamespace + "/sync",
 		},
-		// A data-plane verb is a proxy, not an action: it has no actionwire
-		// envelope and no {"input": …} body to decode strictly.
 		SkipStrictBody: true,
 	})
 }
@@ -467,8 +639,8 @@ func TestDataPlaneFromTemplate(t *testing.T) {
 				"runtimeNamespacePath": "status.runtimeNamespace",
 				"tokenSecretPath":      "status.controlSecretRef",
 				"endpoints": map[string]any{
-					"log":    map[string]any{"servicePath": "status.controlServiceRef", "port": "control", "upstreamPath": "/logs", "methods": []any{"GET"}, "stream": true},
-					"status": map[string]any{"fromStatus": true},
+					"log":            map[string]any{"servicePath": "status.controlServiceRef", "port": "control", "upstreamPath": "/logs", "methods": []any{"GET"}, "stream": true},
+					"runtime-status": map[string]any{"fromStatus": true},
 				},
 			},
 		},
@@ -487,7 +659,7 @@ func TestDataPlaneFromTemplate(t *testing.T) {
 	if !ok || logEp.Port != "control" || !logEp.Stream || logEp.UpstreamPath != "/logs" {
 		t.Errorf("log endpoint decoded wrong: %+v", logEp)
 	}
-	if st, ok := got.Endpoints["status"]; !ok || !st.FromStatus {
+	if st, ok := got.Endpoints["runtime-status"]; !ok || !st.FromStatus {
 		t.Errorf("status endpoint decoded wrong: %+v", st)
 	}
 }

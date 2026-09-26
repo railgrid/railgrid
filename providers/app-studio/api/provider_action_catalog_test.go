@@ -41,7 +41,7 @@ func TestFetchProviderActionCatalogRejectsSelfSignedByDefault(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}).fetchProviderActionCatalog(context.Background(), identity{token: "caller-token"})
+	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}).fetchProviderActionCatalog(context.Background(), identity{})
 	if err == nil {
 		t.Fatal("catalog lookup accepted a self-signed hub without an explicit insecure opt-in")
 	}
@@ -63,12 +63,12 @@ func TestProviderAssistantSkillSourceKeepsCatalogPackagesAcrossReadinessChanges(
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{
-			{Name: "databricks", Ready: ready, AssistantSkills: []providerCatalogAssistantSkill{{
+			{Name: "databricks", Ready: ready, Hub: &providerCatalogHub{AssistantSkills: []providerCatalogAssistantSkill{{
 				PackageName: valid.PackageName,
 				Version:     valid.Version,
 				Digest:      valid.Digest,
 				Skill:       valid.Skill,
-			}}},
+			}}}},
 		}, nil
 	}
 	source, err := server.providerAssistantSkillSource(context.Background(), identity{})
@@ -122,7 +122,7 @@ func TestProjectAssistantSkillCatalogResolverFailureIsolated(t *testing.T) {
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return nil, errors.New("provider catalog backend secret should not escape")
 	}
-	snapshot, err := server.projectAssistantSkillCatalogSnapshot(context.Background(), workspace.Scope{}, identity{token: "caller-token"})
+	snapshot, err := server.projectAssistantSkillCatalogSnapshot(context.Background(), workspace.Scope{}, identity{})
 	if err != nil {
 		t.Fatalf("catalog snapshot = %v, want source failure isolation", err)
 	}
@@ -174,7 +174,7 @@ func TestFetchProviderActionCatalogInsecureOptInPreservesCallerHeaders(t *testin
 			t.Errorf("catalog request = %s %s, want GET %s", r.Method, r.URL.Path, providerCatalogPath)
 		}
 		wantHeaders := map[string]string{
-			"Authorization":        "Bearer caller-token",
+			"Authorization":        "Bearer provider-hub-token",
 			"X-Railgrid-Tenant":    "cluster-1",
 			"X-Railgrid-Cluster":   "cluster-1",
 			"X-Railgrid-Org":       "org-1",
@@ -201,14 +201,13 @@ func TestFetchProviderActionCatalogInsecureOptInPreservesCallerHeaders(t *testin
 		baseInsecure = baseTLS.InsecureSkipVerify
 	}
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, mcpInsecureSkipTLSVerify: true}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, hubToken: "provider-hub-token", mcpInsecureSkipTLSVerify: true}
 	catalog, err := s.fetchProviderActionCatalog(context.Background(), identity{
 		tenant:        "cluster-1",
 		clusterID:     "cluster-1",
 		orgUUID:       "org-1",
 		workspaceUUID: "workspace-1",
 		user:          "alice@example.com",
-		token:         "caller-token",
 	})
 	if err != nil {
 		t.Fatalf("insecure catalog lookup failed: %v", err)
@@ -242,7 +241,7 @@ func TestFetchProviderActionCatalogRejectsRedirect(t *testing.T) {
 	}))
 	defer redirect.Close()
 
-	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: redirect.URL, mcpInsecureSkipTLSVerify: true}).fetchProviderActionCatalog(context.Background(), identity{token: "caller-token"})
+	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: redirect.URL, mcpInsecureSkipTLSVerify: true}).fetchProviderActionCatalog(context.Background(), identity{})
 	if err == nil {
 		t.Fatal("catalog lookup followed a redirect")
 	}
@@ -259,11 +258,10 @@ func TestProjectIntegrationGrantRequiresConsentAndOwnsAudit(t *testing.T) {
 	})
 	catalog := []providerCatalogEntry{{
 		Name: "databricks", Ready: true,
-		Actions: []providerCatalogAction{{
-			ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest,
-			BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-			Consent:       providerCatalogActionConsent{Required: true, Prompt: "Allow table queries?", Scope: "orders"},
-		}},
+		Export: testDatabricksTableExport([]providerCatalogAction{{
+			Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
+			Consent: providerCatalogActionConsent{Required: true, Prompt: "Allow table queries?", Scope: "orders"},
+		}}),
 	}}
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
@@ -317,10 +315,9 @@ func TestProjectIntegrationGrantRejectsDigestDriftWithoutMutation(t *testing.T) 
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{{
 			Name: "databricks", Ready: true,
-			Actions: []providerCatalogAction{{
-				ID: "query_table/v1", SchemaDigest: currentDigest,
-				BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-			}},
+			Export: testDatabricksTableExport([]providerCatalogAction{{
+				Name: "query_table", Version: "v1", SchemaDigest: currentDigest,
+			}}),
 		}}, nil
 	}
 	router := newIntegrationRouter(server)
@@ -352,10 +349,9 @@ func TestProjectIntegrationRevokePreservesAuditWithoutProvider(t *testing.T) {
 	})
 	catalog := []providerCatalogEntry{{
 		Name: "databricks", Ready: true,
-		Actions: []providerCatalogAction{{
-			ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest,
-			BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-		}},
+		Export: testDatabricksTableExport([]providerCatalogAction{{
+			Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
+		}}),
 	}}
 	catalogCalls := 0
 	catalogUnavailable := false
@@ -387,11 +383,10 @@ func TestProjectIntegrationRevokePreservesAuditWithoutProvider(t *testing.T) {
 	// consult the provider's current readiness, deprecation, or digest state.
 	catalog = []providerCatalogEntry{{
 		Name: "databricks", Ready: false,
-		Actions: []providerCatalogAction{{
-			ID: "query_table/v1", SchemaDigest: "sha256:" + strings.Repeat("f", 64),
-			BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-			Deprecation:   &providerCatalogDeprecation{Deprecated: true},
-		}},
+		Export: testDatabricksTableExport([]providerCatalogAction{{
+			Name: "query_table", Version: "v1", SchemaDigest: "sha256:" + strings.Repeat("f", 64),
+			Deprecation: &providerCatalogDeprecation{Deprecated: true},
+		}}),
 	}}
 	catalogUnavailable = true
 	staleDigest := "sha256:" + strings.Repeat("f", 64)
@@ -441,11 +436,10 @@ func TestProjectIntegrationReactivationRequiresFreshCatalogConsent(t *testing.T)
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{{
 			Name: "databricks", Ready: true,
-			Actions: []providerCatalogAction{{
-				ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest,
-				BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-				Consent:       providerCatalogActionConsent{Required: true},
-			}},
+			Export: testDatabricksTableExport([]providerCatalogAction{{
+				Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
+				Consent: providerCatalogActionConsent{Required: true},
+			}}),
 		}}, nil
 	}
 	router := newIntegrationRouter(server)
@@ -478,9 +472,9 @@ func TestFindProviderCatalogActionRejectsUnavailableMetadata(t *testing.T) {
 		catalog []providerCatalogEntry
 	}{
 		{name: "unknown provider", catalog: nil},
-		{name: "unready provider", catalog: []providerCatalogEntry{{Name: "databricks", Actions: []providerCatalogAction{{ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest, BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource}}}}}},
+		{name: "unready provider", catalog: []providerCatalogEntry{{Name: "databricks", Export: testDatabricksTableExport([]providerCatalogAction{{Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest}})}}},
 		{name: "unknown action", catalog: []providerCatalogEntry{{Name: "databricks", Ready: true}}},
-		{name: "deprecated action", catalog: []providerCatalogEntry{{Name: "databricks", Ready: true, Actions: []providerCatalogAction{{ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest, BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource}, Deprecation: &providerCatalogDeprecation{Deprecated: true}}}}}},
+		{name: "deprecated action", catalog: []providerCatalogEntry{{Name: "databricks", Ready: true, Export: testDatabricksTableExport([]providerCatalogAction{{Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest, Deprecation: &providerCatalogDeprecation{Deprecated: true}}})}}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

@@ -11,38 +11,41 @@
 // kuery's sync controller, and records what it is syncing as Engagement
 // objects in kuery's own workspace.
 //
-// Discovery deliberately uses NO permission claim on the edges provider's
-// resources. Such a claim must pin the edges APIExport's identityHash, and an
-// export can pin exactly one identity per claimed resource — for every
-// consuming workspace at once — which breaks the moment one org self-hosts
-// the edges provider while others use the platform copy (see
-// docs/byo-providers.md). Instead:
+// Everything this package READS comes off ONE multicluster manager, built over
+// kuery's own APIExport virtual workspace:
 //
-//   - Workspace discovery rides the APIExport virtual workspace's reflexive
-//     APIBinding serving: every consumer's binding to kuery's own export is
-//     visible without any claim.
-//   - Per workspace, the hub mints a scoped identity owned by that
-//     workspace's kuery APIBinding (identity.go), carrying the COMPOSITION
-//     kuery's CatalogEntry declares on the edges dependency and the tenant
-//     accepted at Enable. Edges are listed and watched through the
-//     workspace's OWN edges binding — whichever copy of the edges provider
-//     that is (see provider-sdk/identityclient, edgewatch.go).
+//   - Workspace discovery rides that virtual workspace's reflexive APIBinding
+//     serving: every consumer's binding to kuery's own export is visible
+//     there without any claim.
+//   - The edges themselves ride a permission claim on
+//     edges.railgrid.ai/kubernetesclusters (get, list, watch) that carries NO
+//     identityHash. kcp resolves it per CONSUMER workspace — against whichever
+//     copy of the edges provider that workspace bound — because a
+//     cluster-scoped PermissionClaimPolicy pairs kuery's own API group with
+//     the claimed one (config/kcp/permissionclaimpolicy.yaml, generated from
+//     the manifests and applied by the hub at bootstrap). That is what a
+//     pinned claim could never do, and why this provider used to read edges
+//     through a credential instead. A claimed resource is served through the
+//     CLAIMING export's virtual workspace, so edges now arrive as ordinary
+//     cluster-aware reconcile requests on the same manager (edgewatch.go): no
+//     per-workspace client, no bearer token, no watch loop of our own.
 //
-// Per edge, the data path is the edges provider's consumer data plane, class
-// (a): a rest.Config pointing at the coordinate the EDGE PUBLISHES in
-// status.url — /services/providers/{edges}/dataplane/clusters/{cluster}/
-// kubernetesclusters/{name}/k8s — authenticating as that same per-workspace
-// identity, whose clause-C rule carries "create" on kubernetesclusters/k8s
-// for exactly the edges this workspace engages. Neither the provider name nor
-// the path shape is a literal here: both come from the binding and from what
-// the owning provider published (contract 3, rule 5). The credential is
-// deliberately NOT the provider SA: the edges proxy TokenReviews a foreign
-// (provider-workspace) SA in the SA's home cluster with its own credential,
-// and the hub's kcp proxy pins every SA caller to the caller's own workspace,
-// so that review lands on a doubled /clusters/{edges}/clusters/{kuery} path,
-// 404s, and the proxy answers 403. A token minted IN the consumer workspace
-// authenticates natively through the edges APIExport virtual workspace
-// instead — the same path edge-agent and delegated-user tokens take. See
+// Per edge, the data path is the edges provider's kubernetesclusters/k8s
+// custom subresource, reached THROUGH kuery's own export virtual workspace as
+// the provider:
+//
+//	<kuery VW>/clusters/{tenant}/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}/k8s
+//
+// kuery's export claims kubernetesclusters (get, list, watch) AND
+// kubernetesclusters/k8s (every verb: kcp authorizes the HTTP method as the
+// RBAC verb on a custom subresource, and a Kubernetes client issues GET, LIST,
+// WATCH and PATCH against the edge API behind it); the tenant accepts both
+// when it enables kuery. kcp builds the subresource on kuery's virtual
+// workspace, authorizes each call against that claim, forwards it to the
+// edges provider under kuery's identity, and the edges gate trusts the claim
+// kcp enforced. No
+// per-workspace identity is minted and no hub route is involved: the
+// credential is the provider's own, and the claim is the authorization. See
 // docs/kuery-provider-architecture.md.
 //
 // # What drives what
@@ -50,12 +53,13 @@
 // Nothing here runs on a timer over a list any more:
 //
 //   - The APIBinding reconciler notices a workspace enabling or disabling
-//     kuery. All it does is resolve that workspace's identity and start or
-//     stop its edge watch; it never lists edges.
-//   - The per-workspace edge watch is the authority on which edges exist and
-//     which are connected. A fresh watch replays every edge, so it IS the
-//     list. It creates the Engagement for each edge, claims the edge through
-//     provider-sdk/sharding, and engages the ones it wins.
+//     kuery, checks that it accepted the claim, and tears the workspace down
+//     when it disables; it never reads an edge.
+//   - The edge reconciler is the authority on which edges exist and which are
+//     connected. A freshly engaged workspace replays every edge through the
+//     manager's cache, so it IS the list. It creates the Engagement for each
+//     edge, claims the edge through provider-sdk/sharding, and engages the
+//     ones it wins.
 //   - The claim shard is the authority on which replica syncs which edge. It
 //     watches its own Leases, so losing an edge to a peer and picking up a
 //     dead peer's edge both arrive as events; the only periodic work left is
@@ -83,8 +87,8 @@ package engagement
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -92,16 +96,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/railgrid/provider-sdk/identityclient"
 	"github.com/railgrid/provider-sdk/sharding"
 	"github.com/railgrid/provider-sdk/vwhealth"
 
@@ -178,24 +181,19 @@ type Config struct {
 	// settings are reused for the per-edge edgeproxy data path; its bearer
 	// token is not (see the package comment).
 	ProviderConfig *rest.Config
-	// HubBaseURL is the railgrid hub root that serves the edges provider's
-	// consumer proxy (/services/providers/edges/edgeproxy/...). When the hub
-	// and the kcp API share one front-proxy host (in-cluster production)
-	// this is empty and the base is derived from ProviderConfig.Host; in
-	// host-binary/Tilt dev the kcp API (kcp front proxy) and the hub are
-	// split across two ports, so the hub URL is passed via RAILGRID_HUB_URL.
-	HubBaseURL string
+	// ExportEndpoint resolves kuery's own export virtual-workspace base URL
+	// (dataplane.Callers.ExportEndpoint). An edge's Kubernetes API is reached
+	// THROUGH it: <endpoint>/clusters/<tenant>/apis/edges.railgrid.ai/v1alpha1/
+	// kubernetesclusters/<edge>/k8s, with the provider's own credential. kcp
+	// serves that path because the tenant accepted kuery's claim on
+	// kubernetesclusters and kubernetesclusters/k8s, forwards it to the edges
+	// provider under kuery's identity, and the edges gate trusts that claim.
+	ExportEndpoint func(ctx context.Context) (string, error)
+	// ProviderRESTConfig returns the provider's credential and TLS settings
+	// with the host replaced (dataplane.Callers.ProviderRESTConfig).
+	ProviderRESTConfig func(target string) (*rest.Config, error)
 	// APIExportName is the provider's APIExport ("kuery.providers.railgrid.ai").
 	APIExportName string
-	// ProviderName is how this provider's CatalogEntry registers it. The hub
-	// identity service authenticates the caller against it and measures every
-	// requested rule against THAT provider's declared compositions, so it is
-	// the registered name and not a display string. Empty defaults to "kuery".
-	ProviderName string
-	// Identities is an override seam for the hub identity client. Production
-	// leaves it nil and New builds one from the resolved hub base URL and the
-	// provider's own service-account bearer.
-	Identities *identityclient.Client
 	// Sync is the kuery sync controller clusters are engaged into.
 	Sync *kuerysync.SyncController
 	// Store holds the synced objects. It is a cache: every row in it is
@@ -212,31 +210,35 @@ type Config struct {
 // Engagements.
 type Controller struct {
 	cfg      Config
-	hubBase  string // ProviderConfig host with the /clusters/... suffix stripped
 	claims   *sharding.Shard
 	registry *Registry
-	// identityCache holds one refreshing hub-minted token source per enabled
-	// workspace. Nil when no hub identity service is configured, which makes
-	// every reconcile fail loudly rather than silently syncing nothing.
-	identityCache *identityCache
 
-	// tenantDynamicFor is a test seam for the per-workspace edge watch.
-	// Production leaves it nil and dials {hubBase}/clusters/{cluster} as the
-	// workspace's hub-minted engagement identity.
-	tenantDynamicFor func(clusterName string, id credential) (dynamic.Interface, error)
+	// clusterClientFor and clusterCacheFor are the two test seams for reading
+	// a consumer workspace through the engagement manager: its client (the
+	// APIBinding reconcile, a typed cached read) and its cluster-aware cache
+	// (the edge reconcile, which reads unstructured — controller-runtime's
+	// delegating client does NOT cache unstructured reads, so the cache is
+	// asked directly rather than paying a live GET per event). Production
+	// leaves both nil and resolves them from the running manager.
+	clusterClientFor func(ctx context.Context, name multicluster.ClusterName) (client.Client, error)
+	clusterCacheFor  func(ctx context.Context, name multicluster.ClusterName) (client.Reader, error)
 
 	mu     sync.Mutex
 	mgr    mcmanager.Manager // the engagement manager; nil when not running
-	runCtx context.Context   // parents every edge watch this replica opens
+	runCtx context.Context   // parents every engaged edge this replica opens
 	// wanted is every edge this replica would sync but currently does not:
 	// one a peer holds the claim for, and one whose owning provider has not
 	// published a status.url yet. Store name → the last coordinate seen for
 	// it, which is "" for the second case. It is what a shard Available event
 	// and a later status.url update are both re-evaluated against.
-	wanted      map[string]string
-	engaged     map[string]engagedEdge        // "{tenantCluster}/{edgeName}" → handle
-	edgeWatches map[string]edgeWatch          // tenantCluster → running edge watch
-	identities  map[string]*workspaceIdentity // tenantCluster → its engagement identity
+	wanted  map[string]string
+	engaged map[string]engagedEdge // "{tenantCluster}/{edgeName}" → handle
+	// observed is the last state each edge was acted on in, keyed by store
+	// name. Reconciles are level-triggered and an edge's status is rewritten
+	// on every heartbeat, so without this every heartbeat would re-run the
+	// engage path and restamp an Engagement that changed in nothing but its
+	// timestamp.
+	observed map[string]edgeObservation
 }
 
 // engagedEdge tracks one locally engaged edge. The map key is
@@ -263,12 +265,8 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("engagement: ProviderConfig, Sync, and Store are required")
 	}
 
-	// The edgeproxy lives on the hub, which in dev is a different host than
-	// the kcp API ProviderConfig points at — prefer the explicit hub URL,
-	// fall back to the ProviderConfig host for the unified production case.
-	hubBase := strings.TrimRight(cfg.HubBaseURL, "/")
-	if hubBase == "" {
-		hubBase = stripClusterSuffix(cfg.ProviderConfig.Host)
+	if cfg.ExportEndpoint == nil || cfg.ProviderRESTConfig == nil {
+		return nil, fmt.Errorf("engagement: ExportEndpoint and ProviderRESTConfig are required (dataplane.Callers with WithProviderConfig)")
 	}
 
 	// One shard for the life of the process: the replica's claim identity must
@@ -288,49 +286,14 @@ func New(cfg Config) (*Controller, error) {
 	}
 
 	return &Controller{
-		cfg:           cfg,
-		hubBase:       hubBase,
-		claims:        claims,
-		registry:      registry,
-		identityCache: newIdentityCache(identityHubClient(cfg, hubBase)),
-		engaged:       map[string]engagedEdge{},
-		wanted:        map[string]string{},
-		edgeWatches:   map[string]edgeWatch{},
-		identities:    map[string]*workspaceIdentity{},
+		cfg:      cfg,
+		claims:   claims,
+		registry: registry,
+		engaged:  map[string]engagedEdge{},
+		wanted:   map[string]string{},
+		observed: map[string]edgeObservation{},
 	}, nil
 }
-
-// identityHubClient resolves the hub identity client this provider asks for
-// every workspace's engagement credential.
-//
-// A failure is logged and degrades to nil rather than refusing to start: the
-// query path, the MCP tools and the portal all keep working without it, and a
-// process that cannot mint an identity should say so on the reconcile that
-// needs one — where the workspace it could not reach is named — rather than by
-// failing to boot.
-func identityHubClient(cfg Config, hubBase string) *identityclient.Client {
-	if cfg.Identities != nil {
-		return cfg.Identities
-	}
-	provider := strings.TrimSpace(cfg.ProviderName)
-	if provider == "" {
-		provider = defaultProviderName
-	}
-	insecure := cfg.ProviderConfig != nil && cfg.ProviderConfig.Insecure
-	client, err := identityclient.New(identityclient.Options{
-		HubURL:   hubBase,
-		Provider: provider,
-		Insecure: &insecure,
-	})
-	if err != nil {
-		log.Printf("WARNING kuery: the hub identity service is unavailable, so no workspace can be engaged: %v", err)
-		return nil
-	}
-	return client
-}
-
-// defaultProviderName is kuery's registered CatalogEntry name.
-const defaultProviderName = "kuery"
 
 // Registry exposes the Engagement records for the request path, which runs on
 // every replica whether or not it holds the controller lease.
@@ -345,8 +308,9 @@ func (c *Controller) Registry() *Registry { return c.registry }
 // leadership term (a stopped controller-runtime manager cannot be restarted).
 func (c *Controller) newManager() (mcmanager.Manager, *apiexportprovider.Provider, error) {
 	scheme := NewScheme()
-	// Edge objects are read unstructured, but the apiexport multicluster
-	// provider builds a typed cache over APIExportEndpointSlice (v1alpha1) and
+	// Edge objects are read unstructured — this module does not import the
+	// edges provider for one type — and the apiexport multicluster provider
+	// builds a typed cache over APIExportEndpointSlice (v1alpha1) and
 	// APIExport (v1alpha2) to discover virtual-workspace URLs — those kinds
 	// must be registered or the cache fails with "no kind is registered for
 	// the type ... APIExportEndpointSlice". core/v1 and rbac/v1 are gone with
@@ -405,14 +369,19 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	// Drive workspace discovery off the consumer's APIBinding to kuery's own
 	// export — the one object every enabled workspace is guaranteed to expose
-	// through the VW without any claim. Edges are not served through the VW
-	// (no claim, see the package comment), so they cannot be a Watches here;
-	// each reconciled workspace runs its own edge watch instead.
+	// through the VW without any claim.
 	if err := mcbuilder.ControllerManagedBy(mgr).
 		Named("kuery-edge-engagement").
 		For(&apiskcpv1alpha2.APIBinding{}).
 		Complete(c); err != nil {
 		return fmt.Errorf("registering engagement reconciler: %w", err)
+	}
+	// And the edges themselves, on the same manager: the permission claim has
+	// the consumer's KubernetesClusters served through kuery's own virtual
+	// workspace, so they are watched exactly like the provider's own kinds
+	// rather than through a client this package builds (edgewatch.go).
+	if err := c.setupEdgeReconciler(mgr); err != nil {
+		return fmt.Errorf("registering edge reconciler: %w", err)
 	}
 
 	// The claim shard's own Lease watch: it is what turns "a peer took this
@@ -428,6 +397,11 @@ func (c *Controller) Run(ctx context.Context) error {
 	c.runCtx = ctx
 	c.mu.Unlock()
 	defer c.stopEngagement()
+
+	// The one clock left: re-assert the index rows and Engagement heartbeats
+	// of everything this replica syncs. It used to hang off each workspace's
+	// watch goroutine, which is the only reason it was ever per workspace.
+	go c.runHeartbeat(ctx)
 
 	return mgr.Start(ctx)
 }
@@ -498,21 +472,26 @@ func (c *Controller) followClaims(ctx context.Context) {
 
 // takeOver engages an edge whose previous owner is gone, using the coordinate
 // that edge published the last time this replica saw it. An edge this replica
-// never observed is not taken over: some other replica's edge watch has the
-// workspace, and this one has nothing to dial. An edge that is wanted but has
+// never observed is not taken over: this replica has nothing to dial, and the
+// edge's own reconcile is what picks it up once it is seen. An edge that is wanted but has
 // published no coordinate yet is re-evaluated like any other and stays wanted
 // — the status.url update is what engages it, here as everywhere else.
 func (c *Controller) takeOver(ctx context.Context, storeName string) {
 	tenantCluster, edge := SplitStoreName(storeName)
 	c.mu.Lock()
 	statusURL, wanted := c.wanted[storeName]
-	identity, known := c.identities[tenantCluster]
 	c.mu.Unlock()
-	if !wanted || !known {
+	if !wanted {
 		return
 	}
 	klog.FromContext(ctx).Info("taking an edge over from a departed replica", "edge", storeName)
-	c.claimAndEngage(ctx, tenantCluster, identity, edge, statusURL)
+	if err := c.claimAndEngage(ctx, tenantCluster, edge, statusURL); err != nil {
+		// The edge stays wanted and the record says "retrying"; drop the
+		// remembered state so the next reconcile of this edge acts on it
+		// instead of deduplicating it away.
+		c.forgetObservation(storeName)
+		klog.FromContext(ctx).Error(err, "taking an edge over", "edge", storeName)
+	}
 }
 
 // stopEngagement tears down everything this replica engaged. Claims are
@@ -522,19 +501,15 @@ func (c *Controller) takeOver(ctx context.Context, storeName string) {
 // costing it nothing.
 func (c *Controller) stopEngagement() {
 	c.mu.Lock()
-	watches := c.edgeWatches
-	c.edgeWatches = map[string]edgeWatch{}
 	keys := make([]string, 0, len(c.engaged))
 	for key := range c.engaged {
 		keys = append(keys, key)
 	}
+	c.observed = map[string]edgeObservation{}
 	c.mgr = nil
 	c.runCtx = nil
 	c.mu.Unlock()
 
-	for _, watch := range watches {
-		watch.cancel()
-	}
 	// The run context is already cancelled, so the release work needs its own
 	// bounded one.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -557,26 +532,26 @@ func (c *Controller) EngagedCount() int {
 }
 
 // Reconcile drives one enabled workspace. It mints (or refreshes) the
-// workspace's engagement identity and starts (or stops) that workspace's edge
-// watch — and nothing else. The watch is the list: a freshly opened one
-// replays every edge as an ADDED event, so there is no reason to fetch the
-// same set again here, and no reason to requeue on a timer to notice a change
-// the watch delivers.
+// workspace's data-plane identity, checks that the workspace actually serves
+// kuery its edges, and tears the workspace down when it disables kuery — and
+// nothing else. It never reads an edge: the edge reconciler on the same
+// manager does that, and a freshly engaged workspace replays every edge
+// through the manager's cache, so there is nothing to fetch here and no timer
+// to requeue on to notice a change the cache delivers.
 func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	tenantCluster := string(req.ClusterName)
 
-	mgr := c.manager()
-	if mgr == nil {
-		// Engagement stopped between the enqueue and here.
-		return ctrl.Result{}, nil
-	}
-	cl, err := mgr.GetCluster(ctx, req.ClusterName)
+	cl, err := c.clusterClient(ctx, req.ClusterName)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("getting workspace cluster %s: %w", req.ClusterName, err)
+		if isNotEngaging(err) {
+			// Engagement stopped between the enqueue and here.
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
 	binding := &apiskcpv1alpha2.APIBinding{}
-	if err := cl.GetClient().Get(ctx, req.NamespacedName, binding); err != nil {
+	if err := cl.Get(ctx, req.NamespacedName, binding); err != nil {
 		if apierrors.IsNotFound(err) {
 			// kuery disabled in this workspace: stop syncing its edges.
 			c.dropCluster(ctx, tenantCluster)
@@ -599,44 +574,72 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	// Mint eagerly: a workspace whose composition was never accepted, or whose
-	// edges provider is not enabled, is a refusal the hub can state now, with
-	// the workspace named, instead of a watch that dials and 403s. The
-	// controller's own backoff is the retry — there is nothing to watch for.
-	identity := c.identityFor(binding, tenantCluster)
-	if _, err := identity.Token(ctx); err != nil {
-		return ctrl.Result{}, fmt.Errorf("engagement identity in %s: %w", tenantCluster, err)
-	}
-	if err := c.ensureEdgeWatch(tenantCluster, identity); err != nil {
-		return ctrl.Result{}, fmt.Errorf("edge watch for %s: %w", tenantCluster, err)
+	// Reading this workspace's edges needs the workspace to have accepted
+	// kuery's claim on them, because kcp serves
+	// a claimed resource through the claiming export's virtual workspace only
+	// for consumers that did. One that has not is not an error and not a
+	// failure to start: kuery simply sees none of its edges, exactly as it
+	// sees none in a workspace it cannot reach. So it is named, logged, and
+	// looked at again — the acceptance is a tenant action, and the APIBinding
+	// update that records it also re-enqueues this reconcile.
+	if !edgesClaimAccepted(binding) {
+		klog.FromContext(ctx).Info("workspace has not accepted kuery's permission claim on the edges provider's clusters; none of its edges are visible to kuery yet",
+			"cluster", tenantCluster,
+			"claim", edgesAPIGroup+"/"+edgesResource,
+			"retryAfter", claimWaitRetry)
+		return ctrl.Result{RequeueAfter: claimWaitRetry}, nil
 	}
 	return ctrl.Result{}, nil
-}
-
-// identityFor returns the workspace's engagement identity, building a fresh
-// one when the binding this workspace enabled kuery with is not the one the
-// current identity belongs to. A deleted and recreated APIBinding has a new
-// UID and therefore a new identity, so a recreated binding never inherits its
-// predecessor's credential — the same guard the hub applies on its side.
-func (c *Controller) identityFor(binding *apiskcpv1alpha2.APIBinding, tenantCluster string) *workspaceIdentity {
-	owner := bindingOwner(binding, tenantCluster)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if existing, ok := c.identities[tenantCluster]; ok && existing.owner == owner {
-		return existing
-	}
-	identity := newWorkspaceIdentity(c.identityCache, owner)
-	if c.identities == nil {
-		c.identities = map[string]*workspaceIdentity{}
-	}
-	c.identities[tenantCluster] = identity
-	return identity
 }
 
 func (c *Controller) manager() mcmanager.Manager {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.mgr
+}
+
+// errNotEngaging says this replica is not engaging right now: Run has not
+// started, or it has returned. It is not a failure — a reconcile that races
+// the teardown has nothing to do — so callers answer it with an empty result
+// rather than an error the controller would log and retry.
+var errNotEngaging = errors.New("the engagement controller is not running")
+
+func isNotEngaging(err error) bool { return errors.Is(err, errNotEngaging) }
+
+// clusterClient resolves one consumer workspace's client from the engagement
+// manager.
+func (c *Controller) clusterClient(ctx context.Context, name multicluster.ClusterName) (client.Client, error) {
+	if c.clusterClientFor != nil {
+		return c.clusterClientFor(ctx, name)
+	}
+	mgr := c.manager()
+	if mgr == nil {
+		return nil, errNotEngaging
+	}
+	cl, err := mgr.GetCluster(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("getting workspace cluster %s: %w", name, err)
+	}
+	return cl.GetClient(), nil
+}
+
+// clusterCache resolves one consumer workspace's cluster-aware cache — the
+// reader every KubernetesCluster read in this package goes through. It is the
+// same cache that backs the edge watch, so a read here is served from what the
+// manager already holds rather than from a request to kcp.
+func (c *Controller) clusterCache(ctx context.Context, name multicluster.ClusterName) (client.Reader, error) {
+	if c.clusterCacheFor != nil {
+		return c.clusterCacheFor(ctx, name)
+	}
+	mgr := c.manager()
+	if mgr == nil {
+		return nil, errNotEngaging
+	}
+	cl, err := mgr.GetCluster(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("getting workspace cluster %s: %w", name, err)
+	}
+	return cl.GetCache(), nil
 }
 
 // verifyTenantCluster applies the binding identity guard for a reconcile and
@@ -673,13 +676,13 @@ func tenantClusterFromBinding(binding *apiskcpv1alpha2.APIBinding, expectedClust
 }
 
 // dropCluster disengages every edge this replica syncs for one workspace —
-// the workspace disabled kuery (or its binding is going away) — ends the
-// workspace's edge watch, revokes its engagement identity, and removes its
+// the workspace disabled kuery (or its binding is going away) — forgets what
+// it had observed there, revokes its data-plane identity, and removes its
 // Engagement records so the query path stops offering edges the tenant no
-// longer exposes to us.
+// longer exposes to us. The edge reconciler needs no stopping: the workspace
+// leaves the manager with its APIBinding.
 func (c *Controller) dropCluster(ctx context.Context, tenantCluster string) {
-	c.stopEdgeWatch(tenantCluster)
-	c.releaseIdentity(ctx, tenantCluster)
+	c.forgetObservations(tenantCluster)
 
 	prefix := tenantCluster + "/"
 	var gone, unwanted []string
@@ -729,30 +732,12 @@ func (c *Controller) dropCluster(ctx context.Context, tenantCluster string) {
 	}
 }
 
-// releaseIdentity revokes the workspace's engagement identity now rather than
-// waiting for the hub's sweep to notice the APIBinding is gone (up to one
-// token TTL later). A workspace this replica never reconciled has no identity
-// to release, and the sweep is what collects that one: the hub re-reads the
-// owning APIBinding and collects the record when it stops existing.
-func (c *Controller) releaseIdentity(ctx context.Context, tenantCluster string) {
-	c.mu.Lock()
-	identity, ok := c.identities[tenantCluster]
-	delete(c.identities, tenantCluster)
-	c.mu.Unlock()
-	if !ok {
-		return
-	}
-	if err := identity.Release(ctx); err != nil {
-		klog.FromContext(ctx).Error(err, "revoking the engagement identity", "cluster", tenantCluster)
-	}
-}
-
-// engage builds the edgeproxy cluster client and hands it to kuery. Idempotent
-// for an already-engaged edge. tenantCluster is the workspace's kcp
-// logical-cluster ID; identity is the workspace's hub-minted engagement
-// credential, which the edges data plane authenticates and whose rules name
-// this edge.
-func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, statusURL string, identity credential) error {
+// engage builds the edge's cluster client — through kuery's own export
+// virtual workspace, as the provider — and hands it to kuery. Idempotent for
+// an already-engaged edge. tenantCluster is the workspace's kcp logical-cluster
+// ID; statusURL is the coordinate the edges provider published, kept only as
+// the change signal that re-dials an edge.
+func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, statusURL string) error {
 	storeName := StoreName(tenantCluster, edgeName)
 	c.mu.Lock()
 	existing, wasEngaged := c.engaged[storeName]
@@ -785,7 +770,7 @@ func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, status
 	}
 	logger.Info("engaging edge into kuery")
 
-	cfg, err := edgeProxyConfig(c.hubBase, tenantCluster, edgeName, statusURL, identity, c.cfg.ProviderConfig.Insecure)
+	cfg, err := c.edgeConfig(ctx, tenantCluster, edgeName)
 	if err != nil {
 		return fmt.Errorf("resolving the edge data-plane endpoint: %w", err)
 	}
@@ -883,57 +868,37 @@ func (c *Controller) dropLocal(ctx context.Context, storeName string, releaseCla
 	klog.FromContext(ctx).Info("edge disengaged", "edge", storeName)
 }
 
-// edgeProxyConfig is the rest.Config for one edge's Kubernetes API through the
-// edges provider's consumer data plane, authenticated as the workspace's
-// hub-minted engagement identity.
+// edgeConfig is the rest.Config for one edge's Kubernetes API, reached as the
+// provider through kuery's own export virtual workspace:
 //
-// The bearer is resolved per request from the identity rather than pinned into
-// BearerToken: an engaged edge's informers outlive any one token, and a
-// rejected one invalidates the source so the next request re-Ensures with the
-// hub (identity.go identityTransport).
-func edgeProxyConfig(hubBase, cluster, edgeName, statusURL string, identity credential, insecure bool) (*rest.Config, error) {
-	host, err := edgeProxyURL(hubBase, cluster, edgeName, statusURL)
+//	<endpoint>/clusters/<tenant>/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/<edge>/k8s
+//
+// kcp serves kubernetesclusters/k8s there because the tenant accepted kuery's
+// claim on it (spec.requires), authorizes each call against
+// that claim, and forwards it to the edges provider under kuery's identity;
+// the edges gate trusts the claim. No per-workspace identity is minted: the
+// credential is the provider's own, and the claim is the authorization.
+func (c *Controller) edgeConfig(ctx context.Context, cluster, edgeName string) (*rest.Config, error) {
+	if c.cfg.ExportEndpoint == nil || c.cfg.ProviderRESTConfig == nil {
+		return nil, fmt.Errorf("engagement: no export virtual-workspace resolver configured (Config.ExportEndpoint / ProviderRESTConfig)")
+	}
+	endpoint, err := c.cfg.ExportEndpoint(ctx)
 	if err != nil {
 		return nil, err
 	}
-	cfg := &rest.Config{
-		Host:  host,
-		QPS:   50,
-		Burst: 100,
+	cfg, err := c.cfg.ProviderRESTConfig(edgeK8sPath(endpoint, cluster, edgeName))
+	if err != nil {
+		return nil, err
 	}
-	if insecure {
-		cfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
-	}
-	return identityTransport(cfg, identity), nil
+	cfg.QPS = 50
+	cfg.Burst = 100
+	return cfg, nil
 }
 
-// edgeProxyURL resolves where to reach one edge's Kubernetes API.
-//
-// The authority is the edge's own status.url: the edges provider stamps the
-// exact hub-relative path it serves that edge on, so a consumer that reads it
-// follows the owning provider wherever it moved — a renamed root, a
-// self-hosted copy under a different provider name — without knowing anything
-// about its grammar. That is contract 3, rule 5: resolve the target from what
-// the provider publishes, not from a format string.
-//
-// An edge with no published URL yet (a brand-new one whose lifecycle
-// reconciler has not stamped it) is an error, not a guess. Guessing is how
-// the inlined "/services/providers/edges/edgeproxy/clusters/{c}/apis/
-// edges.railgrid.ai/v1alpha1/kubernetesclusters/{n}/k8s" string survived a
-// grammar change in the provider it was copied from; the caller requeues and
-// picks the URL up on the next event.
-func edgeProxyURL(hubBase, cluster, edgeName, statusURL string) (string, error) {
-	statusURL = strings.TrimSpace(statusURL)
-	if statusURL == "" {
-		return "", fmt.Errorf("edge %s/%s publishes no status.url yet", cluster, edgeName)
-	}
-	if strings.HasPrefix(statusURL, "http://") || strings.HasPrefix(statusURL, "https://") {
-		return strings.TrimRight(statusURL, "/"), nil
-	}
-	if !strings.HasPrefix(statusURL, "/") {
-		return "", fmt.Errorf("edge %s/%s published an unusable status.url %q", cluster, edgeName, statusURL)
-	}
-	return strings.TrimRight(hubBase, "/") + statusURL, nil
+// edgeK8sPath is where an edge's Kubernetes API lives under kuery's export
+// virtual workspace.
+func edgeK8sPath(endpoint, cluster, edgeName string) string {
+	return strings.TrimRight(endpoint, "/") + "/clusters/" + cluster + "/apis/" + edgesAPIGroup + "/v1alpha1/" + edgesResource + "/" + edgeName + "/k8s"
 }
 
 // tenantLabelsJSON renders the cluster labels blob for the store. The map
@@ -941,14 +906,4 @@ func edgeProxyURL(hubBase, cluster, edgeName, statusURL string) (string, error) 
 func tenantLabelsJSON(tenant string) []byte {
 	b, _ := json.Marshal(map[string]string{TenantLabel: tenant})
 	return b
-}
-
-// stripClusterSuffix drops a trailing /clusters/... path from the minted
-// kubeconfig host, yielding the hub base URL (same convention as the
-// infrastructure provider's tenant.ClientFactory).
-func stripClusterSuffix(host string) string {
-	if idx := strings.Index(host, "/clusters/"); idx != -1 {
-		return host[:idx]
-	}
-	return host
 }

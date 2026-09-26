@@ -32,12 +32,13 @@ What works today:
   objects.
 - **Edge engagement** (`engagement/`): watches `Edge` objects across every
   tenant workspace that Enabled the provider (APIExport virtual
-  workspace), and syncs each connected kubernetes edge through the hub's
-  edges-proxy as a **hub-minted scoped identity** owned by that workspace's
-  kuery `APIBinding` (`engagement/identity.go`): the declared composition on
-  `edges.railgrid.ai/kubernetesclusters` plus `create` on
-  `kubernetesclusters/k8s` for the edges it engages. This provider mints no
-  ServiceAccount and holds no RBAC-authoring claims. Engaged clusters are keyed
+  workspace), and syncs each connected kubernetes edge through **kuery's own
+  export virtual workspace**, as the provider: the declared composition on
+  `edges.railgrid.ai/kubernetesclusters` plus the `kubernetesclusters/k8s`
+  custom subresource are claims the tenant accepts, kcp forwards the verb to
+  the edges provider under kuery's identity, and no per-workspace identity is
+  minted. This provider mints no ServiceAccount and holds no RBAC-authoring
+  claims. Engaged clusters are keyed
   `{clusterID}/{edgeName}` and labelled with their tenant, where the tenant
   key is the tenant workspace's **kcp logical-cluster ID** (read from the
   kuery `APIBinding`'s `kcp.io/cluster` annotation) — never a workspace
@@ -61,15 +62,24 @@ What works today:
   picking up a departed peer's edges both arrive as events on the shard's own
   Lease watch, so nothing re-lists and nothing polls. See
   [Running more than one replica](#running-more-than-one-replica).
-- **The query verb** (`queryapi/`):
-  `POST /dataplane/clusters/{clusterID}/savedviews/{name}/run`, the provider's
-  ONE tenant route. Two gates run as the caller before the engine is touched
-  (`provider-sdk/dataplane`): a real GET of the SavedView in the path's
-  cluster, then a SelfSubjectAccessReview for `create` on `savedviews/run`
-  scoped to that name. Only then is the query scoped to the caller's
-  Engagements. The body may carry `{"input":{"query":…}}` to override the
-  view's saved query. Results report `objects[].cluster` as
-  `{clusterID}/{edge}`.
+- **The query verb** (`queryapi/`): the kcp custom subresource
+  `savedviews/run` on kuery's APIExport, the provider's ONE tenant route,
+  reached on the hub's kcp front door like any other kube path:
+  `POST /clusters/{clusterID}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run`.
+  kcp authenticates the caller and authorizes the verb with ordinary RBAC
+  (a grant on the coordinate is `*`; the HTTP method is the RBAC verb), then
+  forwards the request to the provider with the caller's identity stamped in
+  requestheader headers — no bearer travels. The shared gate
+  (`provider-sdk/dataplane`) settles visibility with a SubjectAccessReview
+  for `get` on the SavedView run on the caller's behalf, reads the view AS
+  THE PROVIDER through kuery's export virtual workspace, and only then is the
+  query scoped to the caller's Engagements. There is no hub-proxied
+  `/services/providers/kuery/dataplane/…` spelling. The body may carry
+  `{"input":{"query":…}}` to override the view's saved query. Results report
+  `objects[].cluster` as `{clusterID}/{edge}`. The MCP tools reach the same
+  executor with the caller's own bearer — the one class the hub still
+  proxies with a credential — and gate as the caller: a GET of the view and
+  a SelfSubjectAccessReview for `create` on `savedviews/run`.
 - **SavedView reconciler** (`controller/savedview/`): validates `spec.query`
   against the published QuerySpec JSON Schema and stamps
   `status.conditions[Ready]`, because the CRD cannot — QuerySpec is recursive
@@ -85,16 +95,17 @@ What works today:
   SavedViews are read with the **kube client** from the tenant's own
   workspace, not from this provider.
 - **Registration surface**: heartbeats, CatalogEntry (SavedView schema,
-  and the `edges` dependency with the composition it declares on
-  `kubernetesclusters`), Helm chart. The APIExport carries **no permission
-  claims at all**. No first-party (`*.railgrid.ai`) claim, because one would
-  have to pin a single serving APIExport identity for every consuming
-  workspace at once, which breaks as soon as one org self-hosts `edges`; and
-  no `serviceaccounts`/`secrets`/`clusterroles`/`clusterrolebindings`, because
-  a provider does not mint identities, it asks the hub. Edge discovery acts as
-  a hub-minted identity through each workspace's own `edges` binding instead
-  (`init_cmd.go`, `engagement/identity.go`,
-  `provider-sdk/identityclient`).
+  and the `edges` requirement it declares on
+  `kubernetesclusters`), Helm chart. Every permission claim on the generated
+  APIExport is **derived from `spec.requires`** and **pins no `identityHash`**,
+  so kcp resolves each one per consuming workspace against whatever `edges`
+  export is bound there; a pinned first-party (`*.railgrid.ai`) claim would fix
+  one serving identity for every consumer at once and break as soon as one org
+  self-hosts `edges`. And nothing requires
+  `serviceaccounts`/`secrets`/`clusterroles`/`clusterrolebindings`, because
+  a provider does not mint identities. Edge discovery and the `k8s` verb both
+  ride kuery's own export virtual workspace under the accepted requirement
+  claims (`engagement/controller.go` `edgeConfig`).
 
 What lands next (see the design doc): an e2e suite asserting edge-object
 sync end to end with a real connected agent, and the Postgres chart option.
@@ -147,7 +158,7 @@ engagement/         edge watch → Engage/Disengage, Engagements, per-edge shard
 queryapi/           the query verb: gates, engagement scoping, QuerySpec validation
 mcpserver/          kuery_query + kuery_impact, through the same gated executor
 assets.go           //go:embed of portal/dist
-manifest.yaml       CatalogEntry (SavedView schema; the edges composition; no claims at all, no edgeProxyAccess)
+manifest.yaml       CatalogEntry (spec.export: savedviews/run on SavedView; spec.requires: edges incl. kubernetesclusters/k8s, the review API)
 portal/             Vite + TS micro-frontend (custom element)
 deploy/chart/       Helm chart (host cluster only; PVC for the SQLite store)
 ```
@@ -271,13 +282,13 @@ creates a workspace for it in your organization, mints a credential scoped to
 that workspace alone, and generates the exact `helm` commands — under
 **Providers → Self-Hosting** in the portal.
 
-Nothing to fill in: kuery claims nothing at all, so there is no identity hash
-to resolve. It reads through edges as a hub-minted identity over each
-workspace's own `edges` binding, so self-hosting kuery usually means
-self-hosting `edges` as well — do that first and kuery will reach your own
-instance. The composition kuery declares on `edges.railgrid.ai/kubernetesclusters`
-is resolved per workspace against whichever copy is bound there, so nothing
-about this changes when the copy is yours.
+Nothing to fill in: kuery pins no identity hash, so there is none to resolve.
+It reaches edges through its own export virtual workspace under the claims each
+workspace accepted, so self-hosting kuery usually means self-hosting `edges` as
+well — do that first and kuery will reach your own instance. The requirement
+kuery declares on `edges.railgrid.ai/kubernetesclusters` is resolved per
+workspace against whichever copy is bound there, so nothing about this changes
+when the copy is yours.
 
 Once installed, the provider registers itself and your workspaces enable it
 exactly like the platform copy. See

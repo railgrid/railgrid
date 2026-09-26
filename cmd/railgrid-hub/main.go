@@ -78,14 +78,14 @@ func main() {
 		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
 			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
 	cmd.Flags().StringVar(&opts.ProviderDelegatedTokens, "provider-delegated-tokens", opts.ProviderDelegatedTokens,
-		"Which providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on /services/providers/*: "+
+		"Which providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on the hub's backend proxy (/services/providers/{name}/*: MCP, browser OAuth, webhooks; data-plane verbs are kcp custom subresources under /clusters/{id} and never carry this token): "+
 			"off (platform providers get the caller's bearer; org-owned providers are always delegated), "+
 			"platform (also platform providers, except --provider-delegated-tokens-exclude), or all (every platform provider). "+
 			"Default off for this release; the next release defaults to platform.")
 	cmd.Flags().StringSliceVar(&opts.ProviderDelegatedTokensExclude, "provider-delegated-tokens-exclude", opts.ProviderDelegatedTokensExclude,
 		"Platform providers that keep receiving the caller's bearer under --provider-delegated-tokens=platform (comma-separated or repeat).")
 	cmd.Flags().BoolVar(&opts.ProviderHubAccessPlatformDefault, "provider-hub-access-platform-default", opts.ProviderHubAccessPlatformDefault,
-		"Let platform providers use the hub capabilities they declare (spec.hubAccess) in workspaces where no one has accepted or declined them yet. "+
+		"Let platform providers use the hub capabilities they declare (spec.hub.access) in workspaces where no one has accepted or declined them yet. "+
 			"Org-owned providers always need an explicit acceptance. Set false to require acceptance for every provider.")
 
 	cmd.Flags().StringVar(&opts.ProviderHeartbeatAuth, "provider-heartbeat-auth", opts.ProviderHeartbeatAuth, "What to do with a provider heartbeat whose bearer token does not verify as that provider's own service account: warn (log and accept) or enforce (reject). Default warn for this release; the next release defaults to enforce.")

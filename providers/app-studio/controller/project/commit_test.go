@@ -31,6 +31,7 @@ import (
 	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-app-studio/internal/projectledger"
 	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
+	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
@@ -95,16 +96,14 @@ func TestCommitMessageStaysUnderRepositoryCommitLimit(t *testing.T) {
 	}
 }
 
-// commitTestEnv drives commitWorkspace against a fake Code provider action
-// endpoint and a fake client. Production splits that client in two — the
-// Project rides this provider's APIExport virtual workspace, the
-// RepositoryCommit and the APIBinding ride the tenant workspace as the
-// project identity — but a single fake holding all three stands in for the
-// pair here; what the tests are about is the commit protocol, not which
-// socket each read goes down. The commit itself is asked for on the action
-// grammar (only the Code provider can store the source bundle a
-// RepositoryCommit points at), so the env also mints a project identity from
-// a fake hub identity service.
+// commitTestEnv drives commitWorkspace against a fake Code provider verb
+// endpoint and a fake manager client. The Project AND the RepositoryCommit
+// ride this provider's APIExport virtual workspace (the commit kind is
+// claimed); the commit itself is asked for as the provider on the verb the
+// export claims (only the Code provider can store the source bundle a
+// RepositoryCommit points at), addressed under the fake hub as if it were the
+// export virtual workspace. The env also mints a project identity from a fake
+// hub identity service, as the reconciler does for the project's workload.
 type commitTestEnv struct {
 	t        *testing.T
 	ctx      context.Context
@@ -144,23 +143,21 @@ func newCommitTestEnv(t *testing.T, respond func(call int) (string, string), obj
 	env := &commitTestEnv{t: t, ctx: context.Background(), respond: respond}
 	staged := 0
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The route is the contract: /services/providers/{provider}/actions/
-		// clusters/{id}/repositories/{name}/{verb}/v1, addressed through
-		// dataplane.ProviderPath at the provider this workspace's APIBinding
-		// names.
-		want := "/services/providers/code/actions/clusters/cluster-a/repositories/demo-repo/"
-		if !strings.HasPrefix(r.URL.Path, want) || !strings.HasSuffix(r.URL.Path, "/v1") {
-			t.Errorf("action route = %q, want %q{verb}/v1", r.URL.Path, want)
+		// The route is the contract: the kube path of the claimed custom
+		// subresource repositories/{verb} on the export virtual workspace,
+		// /clusters/{id}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb},
+		// rendered by dataplane.SubresourceURL. No contract version travels in
+		// the path, and no cluster header: the path is the address.
+		want := "/clusters/cluster-a/apis/code.railgrid.ai/v1alpha1/repositories/demo-repo/"
+		if !strings.HasPrefix(r.URL.Path, want) {
+			t.Errorf("verb route = %q, want %q{verb}", r.URL.Path, want)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if got := r.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer ") {
-			t.Errorf("action called without the project identity: %q", got)
+		if got := r.Header.Get("Authorization"); got != "Bearer "+tenanttest.ProviderBearer {
+			t.Errorf("verb called with %q, want the provider's own credential", got)
 		}
-		if got := r.Header.Get("X-Railgrid-Cluster"); got != "cluster-a" {
-			t.Errorf("action cluster header = %q", got)
-		}
-		verb := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, want), "/v1")
+		verb := strings.TrimPrefix(r.URL.Path, want)
 		var envelope struct {
 			Input map[string]any `json:"input"`
 		}
@@ -219,10 +216,8 @@ func newCommitTestEnv(t *testing.T, respond func(call int) (string, string), obj
 	// APIBinding alongside Projects.
 	scheme.AddKnownTypeWithName(repositoryCommitGVK, &unstructured.Unstructured{})
 	scheme.AddKnownTypeWithName(repositoryCommitGVK.GroupVersion().WithKind("RepositoryCommitList"), &unstructured.UnstructuredList{})
-	scheme.AddKnownTypeWithName(apiBindingGVK, &unstructured.Unstructured{})
-	scheme.AddKnownTypeWithName(apiBindingGVK.GroupVersion().WithKind("APIBindingList"), &unstructured.UnstructuredList{})
 	env.c = fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(env.project, codeAPIBindingObject()).
+		WithObjects(env.project).
 		// The working-copy ledger is written through the status subresource,
 		// so the fake has to serve it as one.
 		WithStatusSubresource(&aiv1alpha1.Project{}).
@@ -241,6 +236,7 @@ func newCommitTestEnv(t *testing.T, respond func(call int) (string, string), obj
 	env.r = &Reconciler{
 		Workspace:  env.files,
 		HubBase:    hub.URL,
+		Callers:    tenanttest.Callers(hub.URL),
 		Identities: scopedidentity.New((&fakeIdentityHub{}).server(t)),
 		OnCommitted: func(_ context.Context, got workspace.Scope, commit CommitResult) {
 			if got != env.scope {
@@ -250,19 +246,6 @@ func newCommitTestEnv(t *testing.T, respond func(call int) (string, string), obj
 		},
 	}
 	return env
-}
-
-// codeAPIBindingObject is the workspace's own binding for the Code APIExport:
-// the object that says which provider segment addresses it here.
-func codeAPIBindingObject() *unstructured.Unstructured {
-	obj := &unstructured.Unstructured{Object: map[string]any{
-		"metadata": map[string]any{"name": "code"},
-		"spec": map[string]any{
-			"reference": map[string]any{"export": map[string]any{"name": "code.providers.railgrid.ai"}},
-		},
-	}}
-	obj.SetGroupVersionKind(apiBindingGVK)
-	return obj
 }
 
 func (env *commitTestEnv) write(path, content string) {
@@ -278,11 +261,7 @@ func (env *commitTestEnv) write(path, content string) {
 // commit runs one convergence pass and reports whether uncommitted work
 // remains (commitOutcome.dirty).
 func (env *commitTestEnv) commit() (bool, error) {
-	token, err := env.r.identityToken(env.ctx, clusterOf(env.project), env.project)
-	if err != nil {
-		env.t.Fatalf("project identity: %v", err)
-	}
-	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.c, token, env.project, env.repo)
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
 	return outcome.dirty, err
 }
 

@@ -37,12 +37,12 @@ import (
 // attached to its context (project_ledger.go); a test that then reads the
 // ledger with a bare context needs to be looking at the same place, or it is
 // asserting against an empty in-process ledger that nothing wrote to.
-func bindTestProjectLedger(t *testing.T, files *workspace.FileStore, tenantClient *tenant.Client, cluster, token string) {
+func bindTestProjectLedger(t *testing.T, files *workspace.FileStore, tenantClient *tenant.Client, cluster string) {
 	t.Helper()
 	if files == nil || tenantClient == nil {
 		return
 	}
-	scope, err := tenantClient.For(cluster, token)
+	scope, err := tenantClient.For(cluster)
 	if err != nil {
 		t.Fatalf("binding the test working-copy ledger: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestProjectLedgerRidesTheRequestAndTheProjectStatus(t *testing.T) {
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
 
-	id := identity{orgUUID: "org-a", workspaceUUID: "workspace-a", clusterID: "cluster-a", token: "alice-token"}
+	id := identity{orgUUID: "org-a", workspaceUUID: "workspace-a", clusterID: "cluster-a"}
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "uid-demo"}
 
 	// A write on the request path: the ledger is the caller's, attached to the
@@ -107,7 +107,7 @@ func TestProjectLedgerRidesTheRequestAndTheProjectStatus(t *testing.T) {
 	}
 
 	// And it really is on the Project, where kubectl and the reconciler see it.
-	tenantScope, err := proxy.Client().For("cluster-a", "alice-token")
+	tenantScope, err := proxy.Client().For("cluster-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestIdentityFromRequestAttachesTheCallerLedger(t *testing.T) {
 	server.tenantActors = defaultTestActors.lookup
 
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/demo/files", nil)
-	req.Header.Set("Authorization", "Bearer alice-token")
+	req = stampTestCaller(req, testUserForToken("alice-token"))
 	req.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	req.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	if _, ok := server.identityFromRequest(httptest.NewRecorder(), req); !ok {

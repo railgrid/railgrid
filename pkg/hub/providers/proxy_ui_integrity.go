@@ -29,7 +29,7 @@ import (
 )
 
 // The reconcile loop pins a provider's bundle by fetching it (ui_integrity.go),
-// which leaves one window open: between a rebuild behind spec.ui.url and the
+// which leaves one window open: between a rebuild behind spec.serving.ui.url and the
 // next reconcile, the pin the portal holds describes bytes the upstream no
 // longer serves, and every browser refuses the bundle with "Failed to find a
 // valid digest in the 'integrity' attribute". The proxy is the one component

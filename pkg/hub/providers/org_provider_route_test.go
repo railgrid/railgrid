@@ -23,6 +23,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 func orgInfra(t *testing.T, p *ProviderProxy) Provider {
@@ -48,7 +50,7 @@ func TestOrgProviderRouteCarriesDelegatedTokenOverEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OrgProviderRoute: %v", err)
 	}
-	wantBase := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy"
+	wantBase := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
 	if !strings.HasSuffix(route.BaseURL, wantBase) {
 		t.Fatalf("BaseURL = %q, want it to end in %q", route.BaseURL, wantBase)
 	}
@@ -64,10 +66,13 @@ func TestOrgProviderRouteCarriesDelegatedTokenOverEdge(t *testing.T) {
 	_ = resp.Body.Close()
 
 	if !rec.hit || rec.path != wantBase+"/mcp" {
-		t.Fatalf("edges provider saw hit=%v path=%q, want %q", rec.hit, rec.path, wantBase+"/mcp")
+		t.Fatalf("kcp saw hit=%v path=%q, want %q", rec.hit, rec.path, wantBase+"/mcp")
 	}
-	if rec.authorization != "Bearer "+delegatedToken {
-		t.Fatalf("Authorization = %q, want the delegated token", rec.authorization)
+	if rec.authorization != "" {
+		t.Fatalf("Authorization = %q, want none on the kcp hop", rec.authorization)
+	}
+	if rec.upstreamAuth != "Bearer "+delegatedToken {
+		t.Fatalf("%s = %q, want the delegated token", dataplane.HeaderUpstreamAuthorization, rec.upstreamAuth)
 	}
 	if rec.user != "alice" {
 		t.Fatalf("X-Railgrid-User = %q, want alice (the inbound value must not survive)", rec.user)

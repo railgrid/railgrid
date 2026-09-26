@@ -29,11 +29,14 @@ package restapi
 // claim gets it for free.
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gorilla/mux"
 	"k8s.io/klog/v2"
 
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
@@ -88,8 +91,10 @@ type ReacceptClaimFailure struct {
 // somebody else's CatalogEntry. ListProviderAPIBindingsForExport matches on
 // the export reference, not the name, so those bindings are never touched.
 //
-// Only tenantScoped claims are applied. A claim that is not tenant-scoped is
-// not something a tenant's binding grants in the first place.
+// Only the requirements that belong to no provider are applied unconditionally.
+// A requirement naming a provider is a composition the tenant consented to, so
+// it is applied only where their Grant records that acceptance — re-accepting is
+// not consenting on somebody's behalf.
 func (h *Handler) reacceptProviderClaims(w http.ResponseWriter, r *http.Request) {
 	if h.mgr.providers == nil {
 		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "provider registry not wired on this hub")
@@ -110,12 +115,12 @@ func (h *Handler) reacceptProviderClaims(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	claims := tenantScopedClaims(prov.PermissionClaims)
-	if len(claims) == 0 {
+	claims := platformRequiredClaims(prov.Requires)
+	if len(claims) == 0 && len(hubaccess.DeclaredCompositions(prov.Requires)) == 0 {
 		// Refused rather than run: writing an empty claim set would strip every
 		// tenant's grants, which is the opposite of a migration. In practice
 		// this means the hub has not observed the provider's CatalogEntry yet.
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "provider "+providerName+" declares no tenant-scoped permission claims")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "provider "+providerName+" declares no requirements")
 		return
 	}
 
@@ -138,7 +143,22 @@ func (h *Handler) reacceptProviderClaims(w http.ResponseWriter, r *http.Request)
 	}
 
 	for _, ref := range refs {
-		changed, err := h.mgr.bootstrapper.ReacceptProviderAPIBindingClaims(ctx, ref, prov.APIExportPath, prov.APIExportName, claims)
+		// The compositions this workspace consented to (recorded in its Grant
+		// at Enable) are claims on the binding too, and a binding written
+		// before the hub put them there is exactly what this migration
+		// repairs. Only the accepted ones are added: re-accepting is not
+		// consenting on the tenant's behalf.
+		perBinding, err := h.compositionClaimsFor(ctx, ref, prov, claims)
+		if err != nil {
+			logger.Error(err, "reading composition consent", "org", ref.OrgUUID, "workspace", ref.WorkspaceUUID, "binding", ref.BindingName)
+			resp.Failed = append(resp.Failed, ReacceptClaimFailure{Org: ref.OrgUUID, Workspace: ref.WorkspaceUUID, Binding: ref.BindingName, Error: err.Error()})
+			continue
+		}
+		if len(perBinding) == 0 {
+			resp.Unchanged++
+			continue
+		}
+		changed, err := h.mgr.bootstrapper.ReacceptProviderAPIBindingClaims(ctx, ref, prov.APIExportPath, prov.APIExportName, perBinding)
 		switch {
 		case err != nil:
 			logger.Error(err, "re-accepting provider claims", "org", ref.OrgUUID, "workspace", ref.WorkspaceUUID, "binding", ref.BindingName)
@@ -159,24 +179,57 @@ func (h *Handler) reacceptProviderClaims(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// tenantScopedClaims projects the registry's view of a CatalogEntry's
-// permission claims onto the kcp.ProviderClaim the Bootstrapper writes,
-// keeping only the tenant-scoped ones. Accepted is set on every entry because
-// this endpoint's contract is "accept what the provider declares"; a claim the
-// tenant explicitly rejected is preserved by the Bootstrapper, which is the
-// only place that can see the binding's current state.
-func tenantScopedClaims(declared []providers.PermissionClaim) []kcp.ProviderClaim {
-	out := make([]kcp.ProviderClaim, 0, len(declared))
-	for _, c := range declared {
-		if !c.TenantScoped {
-			continue
+// platformRequiredClaims projects the requirements that name no provider — the
+// platform builtins and core kinds the provider's own machinery depends on —
+// onto the kcp.ProviderClaim the Bootstrapper writes. Accepted is set on every
+// entry because this endpoint's contract is "accept what the provider
+// declares"; a claim the tenant explicitly rejected is preserved by the
+// Bootstrapper, which is the only place that can see the binding's current
+// state.
+//
+// A requirement that DOES name a provider is a composition and is left to
+// compositionClaimsFor, which applies only what the workspace consented to.
+func platformRequiredClaims(requires []providersv1alpha1.ProviderRequirement) []kcp.ProviderClaim {
+	claims := requiredClaims(requires, func(coordinate providersv1alpha1.RequiredCoordinate) bool {
+		return coordinate.Provider == ""
+	})
+	out := make([]kcp.ProviderClaim, 0, len(claims))
+	for _, claim := range claims {
+		if claim.Accepted {
+			out = append(out, claim)
 		}
-		out = append(out, kcp.ProviderClaim{
-			Group:    c.Group,
-			Resource: c.Resource,
-			Verbs:    c.Verbs,
-			Accepted: true,
-		})
 	}
 	return out
+}
+
+// compositionClaimsFor appends to base the composition claims the workspace
+// behind ref accepted, read from its Grant. Without a grant store, or without a
+// grant, nothing is added.
+func (h *Handler) compositionClaimsFor(ctx context.Context, ref kcp.ProviderBindingRef, prov providers.Provider, base []kcp.ProviderClaim) ([]kcp.ProviderClaim, error) {
+	out := append([]kcp.ProviderClaim(nil), base...)
+	if h.mgr.hubAccess == nil || len(hubaccess.DeclaredCompositions(prov.Requires)) == 0 {
+		return out, nil
+	}
+	grant, err := h.mgr.hubAccess.Get(ctx, hubaccess.GrantKey{OrgUUID: ref.OrgUUID, WorkspaceUUID: ref.WorkspaceUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID})
+	if err != nil {
+		return nil, err
+	}
+	if grant == nil {
+		return out, nil
+	}
+	accepted := map[string]bool{}
+	for _, g := range grant.Spec.Capabilities {
+		if group, resource, ok := hubaccess.ParseComposeCapability(g.Capability); ok {
+			accepted[acceptedKey(group, resource)] = true
+		}
+	}
+	composed := requiredClaims(prov.Requires, func(coordinate providersv1alpha1.RequiredCoordinate) bool {
+		return coordinate.Provider != "" && accepted[acceptedKey(coordinate.Group, coordinate.Resource)]
+	})
+	for _, c := range composed {
+		if c.Accepted {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }

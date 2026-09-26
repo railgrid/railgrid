@@ -43,7 +43,7 @@ func (s *Server) codeCheckoutBinaryEncoding(ctx context.Context, r *http.Request
 	if r == nil || cluster == "" {
 		return false
 	}
-	tools, err := fetchProjectMCPTools(ctx, s.mcpEndpoint(cluster), r, id.tenant, s.mcpInsecureSkipTLSVerify)
+	tools, err := fetchProjectMCPTools(ctx, s.mcpEndpoint(cluster), s.hubRequest(r, id), id.tenant, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
 		klog.V(2).Infof("read Code provider tool catalog for cluster %s: %v", cluster, err)
 		return false

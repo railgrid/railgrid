@@ -101,8 +101,8 @@ func TestDecodeCredential(t *testing.T) {
 		ClusterID:          "2hx82dl9ncmepp5l",
 		Resource:           "linuxservers",
 		Name:               "edge-1",
-		RefreshPath:        "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/agent-token",
-		SSHCredentialsPath: "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/ssh-credentials",
+		RefreshPath:        "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/agent-token",
+		SSHCredentialsPath: "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/ssh-credentials",
 	}
 	raw, err := json.Marshal(want)
 	if err != nil {
@@ -167,7 +167,7 @@ func TestCredentialStoreRefresh(t *testing.T) {
 			HubURL:    "http://" + r.Host,
 			// The provider re-renders the route, so an agent follows a
 			// provider that moved without being rebuilt.
-			RefreshPath: "/services/providers/edges/dataplane/clusters/c/linuxservers/e/agent-token",
+			RefreshPath: "/clusters/c/apis/edges.railgrid.ai/v1alpha1/linuxservers/e/agent-token",
 		})
 	}))
 	defer server.Close()

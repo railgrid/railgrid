@@ -19,6 +19,13 @@
 > P-3 (per-Org `bind` ClusterRole), P-7 (Disable confirm gate), P-9 through P-12,
 > and the Personal scope remain unimplemented. Read this doc for those; read
 > byo-providers.md for what the Org scope actually does today.
+>
+> **2026-09-25:** the `CatalogEntry` spec was restructured into
+> `export` / `requires` / `serving` / `hub` (see
+> [providers.md](./providers.md) §"The CatalogEntry manifest" and
+> [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)).
+> The field paths in this doc are updated to the new shape so its unimplemented
+> proposals remain implementable; the proposals themselves are unchanged.
 
 ---
 
@@ -55,14 +62,14 @@ Don't re-litigate; the doc body assumes these.
 | P-2 | **Enforcement of "no provider APIBindings in Org workspaces" = api-proxy mediation.** Tenants never receive a kubeconfig that reaches an Org workspace; all Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) go through hub REST endpoints. The railgrid kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths under `root:railgrid:orgs:{uuid}` (without a child `:{ws-uuid}` segment). Tenants *physically cannot* `kubectl apply` an APIBinding there. | Strongest possible enforcement (network-level, not RBAC) and zero kcp changes. See [organizations.md](./organizations.md) §"Org workspaces are hub-mediated only." |
 | P-3 | **`bind` verb scope = per-Org `ClusterRole`, controller-maintained.** A controller watches CatalogEntries + Memberships and keeps `railgrid:org:{uuid}:bind` up-to-date with `resourceNames` = all that Org's APIExports + the Global ones, subjects = every Org Membership. | Standing privilege but matches the Org-membership model; auditable via `kubectl get clusterrole railgrid:org:*:bind`. |
 | P-4 | **Builtin providers require explicit Enable too** (not auto-bound in new Workspaces). Membership APIs are the only thing the `workspace` WorkspaceType auto-binds. | Consistent rule: every provider, builtin or third-party, Enable is a deliberate Workspace action. Avoids the "this just showed up, what is it?" surprise on new Workspaces. |
-| P-5 | **Permission claim acceptance = per-Workspace Enable** for all scopes (Global, Org, Personal). Same flow as today (`providers.md` #9 auto-accepts `tenantScoped` claims at Enable time). Org admin's CatalogEntry create does *not* pre-accept on behalf of members. | One consistent flow; the trust decision stays with the workspace that gains the binding. |
+| P-5 | **Permission claim acceptance = per-Workspace Enable** for all scopes (Global, Org, Personal). Same flow as today (`providers.md` #9 — the claims generated from `spec.requires`, accepted at Enable time). Org admin's CatalogEntry create does *not* pre-accept on behalf of members. | One consistent flow; the trust decision stays with the workspace that gains the binding. |
 | P-6 | **No `requireWorkspaceContext` migration flag.** Workspace headers (`X-Railgrid-Org`, `X-Railgrid-Workspace`) are **required** from day one. Follows from clean-slate migration (O-2). | No legacy users to keep working; the fallback flag was solving a problem we don't have. |
 | P-7 | **Disable = kcp handles the cascade; hub gates on confirm.** `DELETE .../providers/{uuid}/enable` returns 409 + a preview body (counts of CRs that will be affected, per kind) unless `?confirm=true` is passed. Hub doesn't try to delete CRs itself — kcp's APIBinding deletion semantics own that. | Fat-finger protection without re-implementing what kcp already does. |
-| P-8 | **Breaking CatalogEntry fields are immutable via CEL.** `spec.apiExport.schemas`, `spec.apiExport.permissionClaims`, `spec.apiExport.path`, `spec.apiExport.name`, and `spec.backend.url` carry a `+kubebuilder:validation:XValidation` rule of `self == oldSelf`. Display fields (`displayName`, `iconURL`, `category`, `version`) stay mutable. Changing a locked field requires deleting the CatalogEntry and creating a new one. | Kcp/CRD-layer enforcement; hub doesn't need to inspect updates. Producers expressing "this is the same provider" by reusing the slug get to control breaking-change UX explicitly. |
+| P-8 | **Breaking CatalogEntry fields are immutable via CEL.** `spec.export.name`, `spec.export.resources`, `spec.requires`, and `spec.serving.backend.url` carry a `+kubebuilder:validation:XValidation` rule of `self == oldSelf`. Display fields (`displayName`, `iconURL`, `category`, `version`) stay mutable. Changing a locked field requires deleting the CatalogEntry and creating a new one. | Kcp/CRD-layer enforcement; hub doesn't need to inspect updates. Producers expressing "this is the same provider" by reusing the slug get to control breaking-change UX explicitly. |
 | P-9 | **Org soft-delete grace behavior (during the 30-day O-13 window):** the deleting Org's CatalogEntries are hidden from `/api/providers` everywhere; the per-Org `bind` ClusterRole (P-3) is removed so no *new* `APIBinding` can be created; existing `APIBindings` keep working until cascade-day. Undelete restores listings + RBAC. | Honors deletion intent without breaking running workloads mid-flight. |
 | P-10 | **ServiceAccounts can Enable iff `role=admin`** (mirroring human Memberships). Member-role SAs cannot. Permission claims are auto-accepted on the SA's behalf since SAs can't see a dialog — Org admin pre-authorizes the trust by giving the SA admin role. | Lets CI pipelines bootstrap a Workspace end-to-end; preserves the human-reviewed default for casual automation. |
 | P-11 | **Slug uniqueness is bi-directional.** Global adds are rejected if the slug is already in use by any Org-Private entry (response lists the conflicting Org UUIDs). Org-Private adds are rejected if the slug is in use Globally (today's rule). | Symmetric, no silent shadowing. The platform admin sees a clear list at add time. |
-| P-12 | **Hub probes CatalogEntry backend URLs at register time.** A controller GETs `spec.backend.url` (and `spec.ui.url`) once at register, then again per heartbeat. Result lands on `status.conditions: BackendReachable`. Probe failure does **not** block registration — the CR is accepted with the warning condition so dev workflows ("register first, deploy backend later") still work; the portal surfaces the condition prominently. | Catches the localhost/private-URL footgun without locking out legitimate "stage the entry first" use cases. |
+| P-12 | **Hub probes CatalogEntry backend URLs at register time.** A controller GETs `spec.serving.backend.url` (and `spec.serving.ui.url`) once at register, then again per heartbeat. Result lands on `status.conditions: BackendReachable`. Probe failure does **not** block registration — the CR is accepted with the warning condition so dev workflows ("register first, deploy backend later") still work; the portal surfaces the condition prominently. | Catches the localhost/private-URL footgun without locking out legitimate "stage the entry first" use cases. |
 
 ---
 
@@ -122,23 +129,23 @@ type CatalogEntrySpec struct {
     // +optional
     Scope string `json:"scope,omitempty"`
 
-    // Backend, UI, APIExport: existing structures from providers.md.
+    // Export, Requires, Serving, Hub: existing structures from providers.md.
     // Per P-8, the following sub-fields are immutable:
-    //   - spec.backend.url
-    //   - spec.apiExport.path
-    //   - spec.apiExport.name
-    //   - spec.apiExport.schemas (the list itself; per-element edits
+    //   - spec.serving.backend.url
+    //   - spec.export.name
+    //   - spec.export.resources (the list itself; per-element edits
     //     blocked by CEL on each element's identifying tuple)
-    //   - spec.apiExport.permissionClaims
-    // Display sub-fields (spec.ui.iconURL, spec.version) stay mutable.
-    Backend   *Backend          `json:"backend,omitempty"`
-    UI        *UI               `json:"ui,omitempty"`
-    APIExport *APIExportConfig  `json:"apiExport,omitempty"`
+    //   - spec.requires
+    // Display sub-fields (spec.iconURL, spec.version) stay mutable.
+    Export   *ProviderExport        `json:"export,omitempty"`
+    Requires []ProviderRequirement  `json:"requires,omitempty"`
+    Serving  *ProviderServing       `json:"serving,omitempty"`
+    Hub      *ProviderHub           `json:"hub,omitempty"`
 }
 
 type CatalogEntryStatus struct {
     // Conditions[BackendReachable] is set by the URL probe controller
-    // (P-12): True if the most recent hub-side GET to spec.backend.url
+    // (P-12): True if the most recent hub-side GET to spec.serving.backend.url
     // succeeded, False (with reason) if not. Drives the "unreachable"
     // warning in the portal.
     Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -307,7 +314,7 @@ providers) or replaced by a new account (org-owned); tokens from them verify as
 proxy did when it issued them.
 
 What a delegated token may do on the hub REST surface is the provider's
-declared-and-accepted `hubAccess` (`docs/providers.md`, *Hub access*), enforced
+declared-and-accepted `spec.hub.access` (`docs/providers.md`, *Hub access*), enforced
 by `pkg/hub/hubaccess`.
 
 ### Per-provider audit
@@ -322,12 +329,12 @@ instead.
 | Consumer | What it does with the bearer | Verdict |
 |---|---|---|
 | `provider-sdk/tenantaccess` `NewClient` | `rest.Config{Host: {hub}/clusters/{id}, BearerToken: …}` | **Works.** Also never fed a caller bearer today — its four callers pass a reconciler-minted SA token. |
-| `providers/infrastructure/dataplane/identity.go`, `authorizer.go` | `SelfSubjectAccessReview` on `<resource>/exec`, plus a caller-scoped instance GET | **Works.** SSAR asks "what can *this* credential do", so the delegated SA's workspace role is evaluated, matching the user's. No username or groups are supplied. |
+| Data-plane verbs (every provider, `provider-sdk/dataplane.Gate`) | none — a verb carries no bearer. kcp authenticates the caller on `/clusters/{id}/apis/…/{resource}/{name}/{verb}` and stamps the identity; the gate runs a `SubjectAccessReview` on it | **Unaffected.** A verb never goes through the backend proxy, so no delegated token is ever substituted on it; the identity kcp stamps is the one that presented the credential to the front door. |
 | `providers/infrastructure/tenant/`, `providers/code/tenant/` | `{hub}/clusters/{X-Railgrid-Cluster}` dynamic + authorization clients | **Works.** Opaque credential; the provider's own kubeconfig credentials are deliberately dropped from the config. |
 | `providers/edges` — tunnel, k8s subresource, `services/{name}/proxy` | TokenReview then SAR (`verb: proxy`) through the APIExport VW for the addressed cluster | **Works.** A delegated token authenticates in the workspace that minted it — the same one being addressed — keeps its groups, and its `cluster-admin` binding passes the SAR. Already exercised: the org-provider tunnel carries delegated tokens today. |
 | `providers/edges` — SSH with `spec.sshUserMapping: identity` | TokenReview'd username becomes the **Linux login name** | **Breaks.** Resolves to `system:serviceaccount:default:railgrid-du-<hash>`, which is not the human's account. `edges` is therefore in the default exclusion list. Lifting it means taking that identity from `X-Railgrid-User`. |
-| `providers/app-studio` (`tenant/scope.go`) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards the bearer to the hub MCP aggregate, to provider action routes, and to the infrastructure data plane | **Works.** All hops are hub surfaces that accept an SA token; each re-forwards `X-Railgrid-*` alongside. |
-| `providers/agents` (`tenant/scope.go`) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards it to the edges MCP endpoint and the infrastructure data plane | **Works.** Its own TokenReview/SAR path is the *s2s* endpoint, which is not hub-proxied and is unaffected. |
+| `providers/app-studio` (`tenant/scope.go`, MCP only) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards the bearer to the hub MCP aggregate. Another provider's verb is called **as app-studio** through its own export virtual workspace, never with the caller's token | **Works.** The remaining hop is a hub surface that accepts an SA token and re-forwards `X-Railgrid-*` alongside. |
+| `providers/agents` (`tenant/scope.go`, MCP only) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards it to the edges MCP endpoint. Infrastructure verbs are called as the provider (`Callers.ExportVerbURL`) | **Works.** |
 | `providers/databricks` | `{hub}/clusters/{id}` client + SSAR per action | **Works.** The Databricks-facing PAT is a workspace Secret, unrelated to the caller's bearer. |
 | `providers/kuery`, `providers/quickstart` | Echo the token's length/fingerprint only | **Works.** Neither uses it as a credential. |
 | Hub kcp proxy (`/clusters/{cluster}`, `pkg/server/proxy/proxy.go`) | Dispatches by token shape and dials `{front-proxy}/clusters/{cluster}` as the caller; user tokens are gated by workspace membership | **Works.** kcp pins an SA token to its own cluster claim, which is the workspace the delegated account was minted in. |
@@ -343,7 +350,8 @@ minutes and is scoped to one workspace instead of being a live hub credential.
 
 ## Proxy gating
 
-`/services/providers/{slug}` and `/ui/providers/{slug}` need the active
+`/services/providers/{slug}` (MCP, OAuth, webhooks, the agent tunnel, health
+— no verbs) and `/ui/providers/{slug}` need the active
 workspace from the tenant middleware. The slug (P-1) is resolved to a
 CatalogEntry UUID by looking it up in:
 
@@ -441,7 +449,7 @@ and to centralize permission-claim acceptance.
   declared by `Organization.spec.catalogEntryCreation` (O-7): default
   `members` means any Org member can publish; `admin` restricts to
   Org admins.
-- `spec.apiExport` (if set) points at an `APIExport` the Org is
+- `spec.export` (if set) names an `APIExport` the Org is
   allowed to reference — for v1, only APIExports inside the same Org
   workspace. (Cross-org APIExport references see §Explicitly deferred
   to v2.)
@@ -492,7 +500,7 @@ kcp-proxy Org gate from O-10 don't exist). Then in this doc's order:
    Also reconciles P-9: when an Org enters soft-delete, the controller
    removes its bind ClusterRole; undelete restores it.
 4. **Backend URL probe controller (P-12).** Periodically GETs
-   `spec.backend.url` / `spec.ui.url` for every CatalogEntry, writes
+   `spec.serving.backend.url` / `spec.serving.ui.url` for every CatalogEntry, writes
    `status.conditions[BackendReachable]`.
 5. **Visibility filter + per-workspace `enabled`** in `NewListHandler`,
    reading workspace context from the middleware (mandatory per P-6).

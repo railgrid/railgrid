@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	// GroupName is the API group the quickstart APIExport serves. It matches
-	// manifest.yaml spec.apiExport.name minus the leading resource segment:
-	// the export is quickstart.providers.railgrid.ai and so is the group.
+	// GroupName is the API group the quickstart APIExport serves, and what
+	// manifest.yaml spec.export.resources[].apiVersion names: an export name is
+	// not an API group, but here the export is quickstart.providers.railgrid.ai
+	// and so is the group it serves.
 	GroupName = "quickstart.providers.railgrid.ai"
 	// Version is the served + storage version.
 	Version = "v1alpha1"

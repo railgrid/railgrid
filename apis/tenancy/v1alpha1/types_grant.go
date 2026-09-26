@@ -38,7 +38,7 @@ type GrantSubjectKind string
 const (
 	// GrantSubjectProvider is a provider acting with the delegated user token
 	// the hub hands it; its capabilities are the hub-access capabilities of
-	// the provider contract (CatalogEntry.spec.hubAccess), enforced by
+	// the provider contract (CatalogEntry.spec.hub.access), enforced by
 	// pkg/hub/hubaccess.
 	GrantSubjectProvider GrantSubjectKind = "Provider"
 )

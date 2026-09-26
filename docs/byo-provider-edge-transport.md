@@ -1,6 +1,16 @@
 # Edge-fronted BYO providers
 
-**Status:** Design + phase 1 (fail-fast gating) + phase 2 (transport) implemented
+**Status:** Design + phase 1 (fail-fast gating) + phase 2 (transport) implemented.
+**Superseded in part (2026-09-25):** data-plane verbs no longer go through the
+hub's backend proxy at all — they are kcp custom subresources on
+`/clusters/{id}/apis/…`, and the org-owned provider hop is made by the hub
+through kcp at the edges `services/{name}/proxy` verb with the delegated token
+in `X-Railgrid-Upstream-Authorization` (`pkg/hub/providers/proxy_edge.go`).
+The `/services/providers/{name}/dataplane/…` paths and the "caller's bearer"
+authorization model below describe the transport as it was designed; see
+[provider-connectivity-contract.md](./provider-connectivity-contract.md)
+§"Pillar 2 route classes" for the current one. What remains on the backend
+proxy for an org-owned provider is MCP, browser OAuth, webhooks and health.
 **Reads as a delta on:** [byo-providers.md](./byo-providers.md), [edges-marketplace.md](./edges-marketplace.md), [platform-internal-networking.md](./platform-internal-networking.md), [provider-connectivity-contract.md](./provider-connectivity-contract.md)
 
 [byo-providers.md](./byo-providers.md) gets an org-owned provider *registered*:
@@ -16,7 +26,7 @@ objects through its APIExport virtual workspace — is **outbound**: the provide
 dials the hub. A self-hosted provider behind NAT does that fine.
 
 The data half is not. `/services/providers/{name}/**` is the hub reverse-proxying
-to `CatalogEntry.spec.backend.url`, and the hub **dials out** to that URL
+to `CatalogEntry.spec.serving.backend.url`, and the hub **dials out** to that URL
 ([pkg/hub/providers/proxy.go](../pkg/hub/providers/proxy.go)). Every provider in
 the tree registers a `.svc.cluster.local` name, which resolves only inside the
 platform cluster. [platform-internal-networking.md](./platform-internal-networking.md)
@@ -73,7 +83,7 @@ upgrade is handled.
 
 ### E-1 — An org-owned provider backend is reached over an edge, never over a URL
 
-`CatalogEntry.spec.backend.url` stays what it is for platform providers. For an
+`CatalogEntry.spec.serving.backend.url` stays what it is for platform providers. For an
 org-owned provider the hub **ignores** it: whatever the chart wrote there is a
 name in the tenant's cluster, meaningful to the tenant and not to the hub.
 Routing comes from the edge binding the hub recorded at registration, not from

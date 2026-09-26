@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	sdkinstall "github.com/railgrid/provider-sdk/install"
 )
@@ -25,18 +26,20 @@ const (
 	providerName = "app-studio"
 )
 
-// The APIExport deliberately claims NO first-party (*.railgrid.ai) resources,
-// and so needs no RAILGRID_IDENTITY_HASHES. Such a claim must pin the serving
-// APIExport's identityHash, and an export can pin exactly one identity per
-// claimed resource — for every consuming workspace at once. That breaks the
-// moment one org self-hosts a dependency (infrastructure, code) while others
-// use the platform copy. Instead the reconcilers act as per-project and
+// No claim carries an identityHash: the first-party claims derived from
+// spec.requires are identity-agnostic, resolved by kcp per consuming workspace
+// against whichever copy of infrastructure or code that workspace bound.
+// kcp now resolves an unpinned claim per consuming workspace, against a
+// cluster-scoped PermissionClaimPolicy that pairs this export's group with the
+// claimed group, so each workspace is served the copy it enabled.
+//
+// What may be claimed is still declared, not assumed: manifest.yaml
+// spec.requires, accepted by the tenant at Enable, is what both the claims and
+// the identity rules are generated from. The per-project and
 // per-Studio identities MINTED BY THE HUB (controller/project/identity.go,
-// controller/studio/identity.go) inside each workspace, through that
-// workspace's OWN bindings, which reach whichever copy it enabled; what they
-// may do there is declared as manifest.yaml spec.dependencies[].composes and
-// accepted by the tenant at Enable. The only claim left is on Secrets, for
-// the credential material this provider writes itself.
+// controller/studio/identity.go) remain for what a claim cannot grant — a
+// bearer another provider's data plane accepts — and for the per-workspace
+// dependency watch.
 
 // runInitCmd applies the App Studio provider's in-workspace objects
 // (APIResourceSchemas, APIExport, APIExportEndpointSlice, bind grant) using the
@@ -56,21 +59,29 @@ func runInitCmd(ctx context.Context) error {
 	if kcpDir == "" {
 		kcpDir = "/etc/railgrid/kcp"
 	}
-	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
+	// The lookup is shared with serve (catalogentry.go), which derives its
+	// custom-subresource routes from the same document.
+	catalogEntryFile := catalogEntryPath()
+	// Where kcp reverse-proxies a custom subresource request to. Empty means
+	// "spec.serving.backend.url of the CatalogEntry above", which is right whenever the
+	// chart runs init; a harness that registers the CatalogEntry itself (the
+	// Makefile's install-provider-* target, the provider e2e) has no file to
+	// read it from and sets this instead.
+	dataPlaneURL := strings.TrimSpace(os.Getenv("RAILGRID_DATAPLANE_URL"))
 
-	// The per-project and per-Studio identities the reconcilers act as are
-	// asked for, not minted here: the hub writes the ServiceAccount, the
-	// ClusterRole and the binding against a policy, and collects them when the
-	// owning object goes (provider-sdk/identityclient). The one claim left is
-	// on Secrets — the credential material this provider writes itself —
-	// declared in manifest.yaml, which codegen stamps onto the APIExport this
-	// reads. No IdentityHashes: there is no first-party claim to pin.
+	// The APIExport this applies claims Secrets — the credential material this
+	// provider writes itself — plus the three dependency kinds the reconcilers
+	// converge: instances, repositories and repositorycommits. All four are
+	// declared in manifest.yaml spec.requires — one list, keyed by API group —
+	// and stamped onto the APIExport by codegen; none carries an identityHash,
+	// for the reason above.
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:           config,
 		ExportName:       apiExportName,
 		WorkspacePath:    workspacePath,
 		KCPDir:           kcpDir,
 		CatalogEntryFile: catalogEntryFile,
+		DataPlaneURL:     dataPlaneURL,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}

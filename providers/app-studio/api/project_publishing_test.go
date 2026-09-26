@@ -125,7 +125,7 @@ func setPublishingIdentity(r *http.Request) {
 	r.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	r.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	r.Header.Set("X-Railgrid-User", "alice")
-	r.Header.Set("Authorization", "Bearer "+"alice-token")
+	r = stampTestCaller(r, testUserForToken("alice-token"))
 }
 
 func publishingDo(t *testing.T, router *mux.Router, method, target, body string) *httptest.ResponseRecorder {
@@ -604,6 +604,7 @@ func publishingServerAgainstHub(t *testing.T, dyn *fake.FakeDynamicClient, hubUR
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		hubBase:          hubURL,
+		hubToken:         "provider-hub-token",
 	}
 	router := mux.NewRouter()
 	server.Register(router)
@@ -652,11 +653,13 @@ func TestInviteByEmailPostsOrgMembershipScopedToWorkspace(t *testing.T) {
 		t.Fatalf("hub call = %s %s, want POST /api/orgs/org-a/memberships", hub.inviteMethod, hub.invitePath)
 	}
 	for header, want := range map[string]string{
-		"Authorization":        "Bearer alice-token",
+		// The hub's REST API is reached as the provider — a verb carries no
+		// caller bearer to forward — and told who asked.
+		"Authorization":        "Bearer provider-hub-token",
 		"X-Railgrid-Org":       "org-a",
 		"X-Railgrid-Workspace": "ws-1",
-		// The forwarded user header now carries the REVIEWED actor, not the
-		// inbound label: the hub is told who this request actually is.
+		// The forwarded user header carries the kcp-AUTHENTICATED actor, not
+		// the inbound label: the hub is told who this request actually is.
 		"X-Railgrid-User": "alice",
 		"Content-Type":    "application/json",
 	} {

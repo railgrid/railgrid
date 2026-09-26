@@ -177,23 +177,30 @@ func (p *Server) mintAgentCredential(ctx context.Context, gvr schema.GroupVersio
 	return credential, nil
 }
 
-// publicVerbPath renders a hub-relative data-plane route for the agent, from
-// the same public base an edge's status.URL is stamped from.
+// publicVerbPath renders the hub-relative kube path of one of the agent's
+// credential verbs — the same spelling an edge's status.URL is stamped with —
+// so the agent composes hubURL + path and lands on the kcp front door, which
+// authenticates its ServiceAccount token and routes the custom subresource
+// back here. Returns "" for a coordinate that cannot be rendered, so the
+// bundle carries no route rather than one that would not parse.
 func (p *Server) publicVerbPath(cluster, resource, name, verb string) string {
-	if p.edgeProxyPublicPath == "" {
+	path, err := p.verbPath(cluster, resource, name, verb)
+	if err != nil {
+		p.logger.Error(err, "agent credential route not rendered", "cluster", cluster, "resource", resource, "name", name, "verb", verb)
 		return ""
 	}
-	return edgeProxyPath(p.edgeProxyPublicPath, cluster, resource, name, verb)
+	return path
 }
 
 // serveAgentToken handles the agent-token verb: an agent refreshing its own
 // credential.
 //
-// Authorization is the ordinary two gates, run before this is reached, with
-// the agent's CURRENT token as the caller: gate 1 is a real GET of its own
-// edge, gate 2 an SSAR for create on {resource}/agent-token, name-scoped. Both
-// are satisfied by exactly one identity in the workspace — this edge's — so an
-// agent can refresh its own credential and nothing else's.
+// Authorization is the ordinary gate, run before this is reached, with the
+// agent's CURRENT token as the caller: kcp authenticated it and authorized the
+// POST on {resource}/agent-token, name-scoped, and the gate proved the agent
+// may see its own edge. Both are satisfied by exactly one identity in the
+// workspace — this edge's — so an agent can refresh its own credential and
+// nothing else's.
 //
 // The agent cannot call the hub identity service itself: that endpoint
 // authenticates providers, and an edge agent is not one. This verb is the
@@ -218,8 +225,9 @@ func (p *Server) serveAgentToken(w http.ResponseWriter, r *http.Request, req dat
 		return
 	}
 
-	// The UID comes off the object gate 1 read AS THE AGENT, so the credential
-	// is bound to the incarnation the caller could actually see.
+	// The UID comes off the object the gate read once the agent's visibility
+	// of it was proved, so the credential is bound to the incarnation the
+	// caller could actually see.
 	credential, err := p.mintAgentCredential(r.Context(), gvr, kind, req.ClusterID, req.Name, string(edge.GetUID()))
 	if err != nil {
 		p.logger.Error(err, "agent-token refresh failed", "cluster", req.ClusterID, "edge", req.Name)
@@ -261,7 +269,7 @@ const maxSSHCredentialsBody = 1 << 20
 // and it was reachable with a credential that never expired.
 //
 // So the write moved to where the authority already is. The agent proves, with
-// the two gates, that it is this edge; the provider then performs the write
+// the gate, that it is this edge; the provider then performs the write
 // with its own claimed credential, into the one namespace and the one Secret
 // name derived from the edge — nothing in the request names a destination. An
 // agent that lies about its credentials only ever lies about its own.

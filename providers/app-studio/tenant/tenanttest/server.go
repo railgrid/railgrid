@@ -9,7 +9,7 @@ You may obtain a copy of the License at
 */
 
 // Package tenanttest serves an in-memory stand-in for the hub's kcp proxy so
-// tests can point tenant.NewClient at a real HTTP endpoint. It speaks enough
+// tests can point tenant.NewClient (via Callers) at a real HTTP endpoint. It speaks enough
 // of the Kubernetes REST API for unstructured objects — GET, LIST (label and
 // name/namespace field selectors), POST, PUT, merge PATCH (main and status
 // subresources) and DELETE with preconditions — under
@@ -39,9 +39,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
 	"github.com/railgrid/provider-app-studio/tenant"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // Request is one HTTP request the server handled, for assertions on what the
@@ -98,9 +100,35 @@ func NewServer(t testing.TB) *Server {
 	return s
 }
 
-// Client returns a tenant.Client targeting this server.
+// ProviderBearer is the bearer the caller factory Callers builds presents:
+// the provider's own credential, which is what every request through
+// tenant.Client carries now that a verb has no caller token.
+const ProviderBearer = "provider-token"
+
+// Callers builds a dataplane.Callers whose AsProvider addresses base as if it
+// were this provider's export virtual workspace: <base>/clusters/{id}, as
+// ProviderBearer. It is the factory tenant.NewClient and the api package's
+// production wiring take, pointed at a test server.
+func Callers(base string) *dataplane.Callers {
+	cfg := &rest.Config{Host: strings.TrimRight(base, "/"), BearerToken: ProviderBearer}
+	callers, err := dataplane.NewCallerFactory(cfg,
+		dataplane.WithProviderConfig(cfg, "ai.railgrid.ai"),
+		dataplane.WithProviderEndpoint(base))
+	if err != nil {
+		panic(fmt.Sprintf("tenanttest: caller factory for %s: %v", base, err))
+	}
+	return callers
+}
+
+// Callers is the provider caller factory targeting this server.
+func (s *Server) Callers() *dataplane.Callers {
+	return Callers(s.URL)
+}
+
+// Client returns a tenant.Client targeting this server, acting as the
+// provider (ProviderBearer).
 func (s *Server) Client() *tenant.Client {
-	return tenant.NewClient(s.URL, false)
+	return tenant.NewClient(s.Callers())
 }
 
 // Register marks resource types as served without seeding objects, so LIST

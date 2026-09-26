@@ -420,7 +420,7 @@ spec:
     runtimeNamespacePath: status.runtimeNamespace
     tokenSecretPath: status.controlSecretRef
     endpoints:
-      status:
+      runtime-status:
         fromStatus: true
     components:
       web:

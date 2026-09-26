@@ -39,7 +39,7 @@ import {
 } from 'lucide-vue-next'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import { toast } from '@/portalkit/toast'
-import { useProvidersStore, type ProviderDTO, type PermissionClaim, type AcceptedHubAccess } from '@/stores/providers'
+import { useProvidersStore, type ProviderDTO, type AcceptedClaim, type AcceptedHubAccess } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 
@@ -136,7 +136,7 @@ watch(dialogScope, () => {
   if (dialogProvider.value) closeEnableDialog()
 })
 
-async function onDialogConfirm(accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[] = []) {
+async function onDialogConfirm(accept: AcceptedClaim[], acceptHubAccess: AcceptedHubAccess[] = []) {
   const p = dialogProvider.value
   const revision = dialogRevision.value
   const scope = dialogScope.value
@@ -359,7 +359,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
 
                 <div class="shrink-0">
                   <router-link
-                    v-if="providers.isEnabled(p.name) && p.hasUI"
+                    v-if="providers.isEnabled(p.name) && p.serving?.ui"
                     :to="`/providers/${p.name}`"
                     class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:text-accent"
                   >
@@ -424,7 +424,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
                 — the full catalog. Enable and disable anything, any time.
               </span>
             </li>
-            <li v-if="firstEnabled?.hasUI" class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2">
+            <li v-if="firstEnabled?.serving?.ui" class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2">
               <ArrowRight class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
               <span>
                 <router-link

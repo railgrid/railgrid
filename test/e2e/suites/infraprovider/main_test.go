@@ -33,6 +33,9 @@ package infraprovider
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -159,6 +162,26 @@ func TestMain(m *testing.M) {
 	// container / `make init-provider-infrastructure`). It also mints the
 	// workspace-scoped ServiceAccount kubeconfig serve runs with.
 	mintedKubeconfig := filepath.Join(dataDir, "infrastructure.kubeconfig")
+
+	// init runs as the PROVIDER's ServiceAccount, not as kcp admin. The
+	// platform's PermissionClaimPolicy reserves every API group it names, and
+	// only the subjects it lists as providers may export one, so creating the
+	// APIExport as kcp-admin is refused with
+	//
+	//   spec.resources[0].group: Forbidden: API group
+	//   "infrastructure.railgrid.ai" is reserved by PermissionClaimPolicy
+	//   "railgrid"; only its providers may export it
+	//
+	// The hub's Provider controller provisions that ServiceAccount and publishes
+	// its token as the provider-token Secret when it materializes the workspace,
+	// which is what `make init-provider-infrastructure` and the chart's init
+	// container both read. Every other provider suite mints it the same way.
+	bootstrapKubeconfig := filepath.Join(dataDir, "infrastructure-bootstrap.kubeconfig")
+	if err := mintProviderKubeconfig(bootstrapKubeconfig, 2*time.Minute); err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "mint provider kubeconfig:", err)
+		os.Exit(1)
+	}
 	initLog, err := os.Create(filepath.Join(dataDir, "init.log"))
 	if err != nil {
 		cleanup()
@@ -167,7 +190,7 @@ func TestMain(m *testing.M) {
 	}
 	initCmd := exec.Command(filepath.Join(repoRoot, "bin", "infrastructure-provider"), "init")
 	initCmd.Env = append(os.Environ(),
-		"INFRASTRUCTURE_ADMIN_KUBECONFIG="+adminKubeconfig,
+		"INFRASTRUCTURE_ADMIN_KUBECONFIG="+bootstrapKubeconfig,
 		"INFRASTRUCTURE_WORKSPACE_PATH="+workspacePath,
 		"INFRASTRUCTURE_KUBECONFIG="+mintedKubeconfig,
 		// The generated APIExport shell (name + permission claims, written by
@@ -178,12 +201,23 @@ func TestMain(m *testing.M) {
 		// tree. Without it init fails with "reading APIExport file
 		// /etc/railgrid/kcp/apiexport.yaml: no such file or directory".
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "infrastructure", "deploy", "chart", "files"),
+		// The manifest is the declaration of the provider's verbs; init reads
+		// it to know which coordinates the export publishes, and the
+		// DataPlaneEndpointSlice those coordinates route through needs the
+		// shard-facing address of the serve process started below.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "infrastructure", "manifest.yaml"),
+		"RAILGRID_DATAPLANE_URL=http://127.0.0.1:"+providerPort,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
 	if err := initCmd.Run(); err != nil {
+		// Read the log BEFORE cleanup: it removes the whole data dir, so a tail
+		// taken afterwards reports only that the file is gone. CI does not
+		// upload this directory either, so stderr is the only place the reason
+		// survives — without it the failure says just "exit status 1".
+		tail := tailFile(initLog.Name(), 60)
 		cleanup()
-		fmt.Fprintf(os.Stderr, "provider init failed: %v (log: %s)\n", err, initLog.Name())
+		fmt.Fprintf(os.Stderr, "provider init failed: %v (log: %s)\n%s\n", err, initLog.Name(), tail)
 		os.Exit(1)
 	}
 
@@ -200,6 +234,9 @@ func TestMain(m *testing.M) {
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "infrastructure-provider"))
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
+		// serve refuses to start without the manifest: a verb exists only as
+		// a declared kcp custom subresource.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "infrastructure", "manifest.yaml"),
 		"RAILGRID_HUB_URL="+hubURL,
 		"RAILGRID_HUB_TOKEN="+staticToken,
 		"RAILGRID_HUB_INSECURE=true",
@@ -217,8 +254,9 @@ func TestMain(m *testing.M) {
 	fmt.Fprintf(os.Stderr, "infrastructure-provider started (pid=%d, port=:%s)\n", provCmd.Process.Pid, providerPort)
 
 	if err := waitReady("http://127.0.0.1:"+providerPort+"/healthz", 30*time.Second); err != nil {
+		tail := tailFile(provLog.Name(), 60)
 		cleanup()
-		fmt.Fprintln(os.Stderr, "provider never ready:", err)
+		fmt.Fprintf(os.Stderr, "provider never ready: %v (log: %s)\n%s\n", err, provLog.Name(), tail)
 		os.Exit(1)
 	}
 
@@ -270,6 +308,94 @@ func waitReady(url string, timeout time.Duration) error {
 
 // extractToken pulls the first `token:` value out of the kcp admin
 // kubeconfig — same cheap parse as suites/provider.
+// mintProviderKubeconfig writes a kubeconfig for the provider workspace's
+// ServiceAccount, reading its token from the provider-token Secret the hub's
+// Provider controller publishes there. It polls: the Secret appears once the
+// controller has finished materializing the workspace.
+func mintProviderKubeconfig(path string, timeout time.Duration) error {
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // dev cert
+	}
+	url := kcpServer + "/clusters/" + workspacePath + "/api/v1/namespaces/default/secrets/provider-token"
+
+	var token, lastErr string
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) && token == "" {
+		token, lastErr = readProviderToken(client, url)
+		if token == "" {
+			time.Sleep(2 * time.Second)
+		}
+	}
+	if token == "" {
+		return fmt.Errorf("provider-token never populated: %s", lastErr)
+	}
+
+	kubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: railgrid
+  cluster:
+    server: %s/clusters/%s
+    insecure-skip-tls-verify: true
+contexts:
+- name: railgrid
+  context:
+    cluster: railgrid
+    user: railgrid
+current-context: railgrid
+users:
+- name: railgrid
+  user:
+    token: %s
+`, kcpServer, workspacePath, token)
+	return os.WriteFile(path, []byte(kubeconfig), 0o600)
+}
+
+// readProviderToken returns the decoded token, or the reason it is not there
+// yet.
+func readProviderToken(client *http.Client, url string) (string, string) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err.Error()
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err.Error()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Sprintf("GET provider-token: HTTP %d: %s", resp.StatusCode, truncate(body))
+	}
+	var secret struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &secret); err != nil {
+		return "", err.Error()
+	}
+	if secret.Data.Token == "" {
+		return "", "provider-token Secret exists but its token is not populated yet"
+	}
+	raw, err := base64.StdEncoding.DecodeString(secret.Data.Token)
+	if err != nil {
+		return "", fmt.Sprintf("decode provider-token: %v", err)
+	}
+	return string(raw), ""
+}
+
+// truncate bounds an error body so a failure stays readable.
+func truncate(b []byte) string {
+	const max = 200
+	if len(b) <= max {
+		return string(b)
+	}
+	return string(b[:max]) + "...(truncated)"
+}
+
 func extractToken(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -289,4 +415,18 @@ func ctxWithTimeout(t *testing.T, d time.Duration) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// tailFile returns the last n lines of a log file, so a bootstrap failure
+// reports what went wrong instead of only an exit status.
+func tailFile(path string, n int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(" + err.Error() + ")"
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

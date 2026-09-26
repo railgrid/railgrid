@@ -321,7 +321,7 @@ func restoreRequest(commitSHA string, expectedSourceRevision uint64) *http.Reque
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/shop/restore-workspace", strings.NewReader(fmt.Sprintf(`{"commitSHA":%q,"expectedSourceRevision":%d}`, commitSHA, expectedSourceRevision)))
 	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request = stampTestCaller(request, testUserForToken("test-token"))
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
 }
@@ -454,7 +454,7 @@ func restoreRequestWithBody(body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/shop/restore-workspace", strings.NewReader(body))
 	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request = stampTestCaller(request, testUserForToken("test-token"))
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
 }

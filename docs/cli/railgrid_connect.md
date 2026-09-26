@@ -12,6 +12,9 @@ the current context, so plain kubectl talks to that cluster:
   kubectl get nodes
   railgrid disconnect            # back to the hub workspace
 
+When a server edge shares the name, the cluster is used; 'kubernetes/<name>'
+says so explicitly.
+
 Without an argument an interactive picker lists the connected clusters.
 The context stays in your kubeconfig; switch between edges with
 'kubectl config use-context railgrid-<edge>' or connect again.

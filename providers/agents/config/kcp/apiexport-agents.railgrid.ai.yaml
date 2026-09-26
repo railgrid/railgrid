@@ -9,17 +9,39 @@
 # GENERATED FILE — DO NOT EDIT.
 #
 # Written by provider-sdk/cmd/apiexportgen from two inputs:
-#   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
-#   spec.resources                        <- kcp apigen (hack/apigen.sh)
-# Regenerate with: make codegen-<provider>-provider. spec.permissionClaims
-# carries no identityHash: provider-sdk/install stamps one per installation for
-# first-party (*.railgrid.ai) claim groups.
+#   metadata.name                         <- manifest.yaml spec.export.name
+#   spec.permissionClaims                 <- manifest.yaml spec.requires
+#   spec.resources                        <- kcp apigen (hack/apigen.sh), plus
+#                                            one "<resource>/<verb>" custom
+#                                            subresource per manifest.yaml
+#                                            spec.export.resources[].verbs[] and
+#                                            spec.export.resources[].actions[]
+#                                            entry, naming the schema apigen
+#                                            minted for the verb's
+#                                            "<Verb>Request" kind
+# Regenerate with: make codegen-<provider>-provider. No claim carries an
+# identityHash: kcp resolves a first-party claim per consumer workspace against
+# whatever export that workspace bound (PermissionClaimPolicy admits it).
 apiVersion: apis.kcp.io/v1alpha2
 kind: APIExport
 metadata:
   name: agents.railgrid.ai
 spec:
   permissionClaims:
+  - group: infrastructure.railgrid.ai
+    resource: instances
+    verbs:
+    - get
+    - list
+    - watch
+  - group: infrastructure.railgrid.ai
+    resource: instances/proxy
+    verbs:
+    - '*'
+  - group: authorization.k8s.io
+    resource: subjectaccessreviews
+    verbs:
+    - create
   - defaultSelector:
       matchLabels:
         railgrid.ai/owner: agents
@@ -67,3 +89,174 @@ spec:
     schema: v260919-b1e9b5e6.triggers.agents.railgrid.ai
     storage:
       crd: {}
+  - group: agents.railgrid.ai
+    name: agents/chat
+    schema: v260924-87f1980f.chat.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/events
+    schema: v260924-87f1980f.events.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/inbox
+    schema: v260924-87f1980f.inbox.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/inbox-resolve
+    schema: v260924-87f1980f.inbox-resolve.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/messages
+    schema: v260924-87f1980f.messages.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/run
+    schema: v260924-87f1980f.run.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/session
+    schema: v260924-87f1980f.session.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/sessions
+    schema: v260924-87f1980f.sessions.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/usage
+    schema: v260924-87f1980f.usage.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: connections/authorize
+    schema: v260924-87f1980f.authorize.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: connections/enable-inbound
+    schema: v260924-87f1980f.enable-inbound.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: connections/test
+    schema: v260924-87f1980f.test.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: modelcredentials/discover
+    schema: v260924-87f1980f.discover.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: modelcredentials/test
+    schema: v260924-87f1980f.test.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: runs/cancel
+    schema: v260924-87f1980f.cancel.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: runs/trace
+    schema: v260924-87f1980f.trace.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: runs/wait
+    schema: v260924-87f1980f.wait.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: schedules/run
+    schema: v260924-87f1980f.run.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: triggers/run
+    schema: v260924-87f1980f.run.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai

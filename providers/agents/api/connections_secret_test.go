@@ -26,6 +26,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/tenantaccess"
+
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
@@ -180,23 +183,30 @@ func TestMergeConnectionSecretKeepsUnmentionedKeys(t *testing.T) {
 	}
 }
 
-// enableInboundOn drives the handler against the fake workspace.
+// enableInboundOn drives the handler against the fake workspace, as the
+// data-plane router would hand it over: gated, with the provider's client on
+// the request (here a dynamic client on the fake workspace) and no bearer.
 func enableInboundOn(t *testing.T, ws *tenanttest.Server) *httptest.ResponseRecorder {
 	t.Helper()
 	srv := httptest.NewServer(ws)
 	t.Cleanup(srv.Close)
 	s := &Server{
-		cfg:        Config{WebhookKey: "unit-test-webhook-key"},
-		store:      store.NewMemoryStore(),
-		tenant:     tenant.NewClient(srv.URL, false),
-		workspaces: staticWorkspaces{"c1": {ClusterID: "c1", Path: "root:railgrid:tenants:org1:ws1", OrgUUID: "org1", WorkspaceUUID: "ws1"}}.lookup,
+		cfg:   Config{WebhookKey: "unit-test-webhook-key"},
+		store: store.NewMemoryStore(),
 	}
-	r := httptest.NewRequest(http.MethodPost, "/connections/"+testSecretConn+"/inbound",
+	if err := s.store.SaveTenantRef(t.Context(), "c1", store.TenantRef{OrgUUID: "org1", WorkspaceUUID: "ws1"}); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := tenantaccess.NewDynamicClient(srv.URL, "c1", "provider-token", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := dataplane.Request{ClusterID: "c1", Resource: "connections", Name: testSecretConn, Verb: "enable-inbound"}
+	ctx := dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: "alice"})
+	id := s.dataPlaneIdentity(ctx, req)
+	r := httptest.NewRequest(http.MethodPost, "/clusters/c1/apis/agents.railgrid.ai/v1alpha1/connections/"+testSecretConn+"/enable-inbound",
 		strings.NewReader(`{"publicBaseURL":"https://agents.example.test"}`))
-	// The hub identifies the tenant by cluster ID in both headers.
-	r.Header.Set("X-Railgrid-Tenant", "c1")
-	r.Header.Set("X-Railgrid-Cluster", "c1")
-	r.Header.Set("Authorization", "Bearer test-token")
+	r = r.WithContext(withGate(ctx, &gateInfo{request: req, provider: provider, identity: id}))
 	r.SetPathValue("name", testSecretConn)
 	w := httptest.NewRecorder()
 	s.enableInbound(w, r)

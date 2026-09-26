@@ -32,7 +32,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
 )
 
@@ -159,18 +158,22 @@ type readyHAService struct {
 }
 
 // listReadyServices lists Ready Services in the tenant that expose MCP tools
-// (Home Assistant + catalog apps), reading as the caller (token) — the provider
-// SA has no direct RBAC on Service objects in tenant workspaces (see
-// userClusterConfig).
+// (Home Assistant + catalog apps), reading as the caller. The MCP class is the
+// one route that still carries the caller's bearer — the hub's aggregate
+// forwards it with each tool call — so the list is made with a
+// caller-credentialed client (dataplane.CallerFactory.For), and only Services
+// the caller can see contribute tools. The provider's own credential is never
+// a substitute here.
 func (p *Server) listReadyServices(ctx context.Context, cluster, token string) []readyHAService {
-	if p.kcpConfig == nil || cluster == "" {
-		return nil
-	}
-	dynClient, err := dynamic.NewForConfig(p.userClusterConfig(cluster, token))
-	if err != nil {
+	if p.callers == nil || cluster == "" || token == "" {
 		return nil
 	}
 	logger := klog.FromContext(ctx).WithName("service-discovery")
+	dynClient, err := p.callers.For(cluster, token)
+	if err != nil {
+		logger.V(2).Info("service discovery: no caller client", "err", err.Error())
+		return nil
+	}
 	gvr := schema.GroupVersionResource{Group: p.group, Version: p.version, Resource: serviceResource}
 	list, err := dynClient.Resource(gvr).List(ctx, metav1.ListOptions{})
 	if err != nil {

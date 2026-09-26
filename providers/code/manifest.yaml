@@ -5,7 +5,7 @@
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
 #
-# This CatalogEntry registers routing and references apiExport.name. The
+# This CatalogEntry registers routing and references spec.export.name. The
 # provider's init command creates the APIExport, schemas, endpoint slice, and
 # bind grant from deploy/chart/files/schemas: the eight kinds Connection,
 # Repository, RepositoryCommit, RepositoryCheckout, RepositoryBuildStatus,
@@ -22,851 +22,831 @@ spec:
   version: "0.1.0"
   category: "Developer"
   iconURL: "/ui/providers/code/icon.svg"
-  # Local dev (Tilt / Makefile): the provider binary runs on the host at
-  # PORT=8083 — distinct from quickstart (:8081) and infrastructure (:8082).
-  # For in-cluster deployment, change to the Service DNS, e.g.
-  # http://code.code.svc.cluster.local:8083.
-  ui:
-    url: "http://localhost:8083"
-    indexPath: "/"
-    children:
-      - displayName: Connections
-        builtinRoute: connections
-      - displayName: Repositories
-        builtinRoute: repositories
-      - displayName: Packages
-        builtinRoute: packages
-  backend:
-    url: "http://localhost:8083"
-    healthPath: "/readyz"
-  apiExport:
+  # What this provider exports: one APIExport, and the coordinates each of its
+  # kinds serves. A resource entry exists only to hang a verb or an action off
+  # it — the six kinds that carry neither (RepositoryCommit,
+  # RepositoryCheckout, RepositoryBuildStatus, DeployKey, Collaborator,
+  # Package) are ordinary CRs and need no entry here.
+  export:
     name: "code.providers.railgrid.ai"
-    # The controllers read each Connection's PAT Secret AND write the generated
-    # DeployKey private-key Secret in the tenant workspace, so the secrets claim
-    # needs write verbs (infra only needed read). tenantScoped: true auto-accepts
-    # on Enable.
-    permissionClaims:
-      - resource: secrets
-        verbs: [get, list, watch, create, update, patch, delete]
-        tenantScoped: true
-        # Only Secrets this provider wrote (deploy keys, connection tokens);
-        # every writer stamps railgrid.ai/owner=code (docs/provider-connectivity-contract.md
-        # §"Label-scoped claims").
-        selector:
-          matchLabels:
-            railgrid.ai/owner: code
-  # Lets an organization run this provider in its own cluster
-  # (docs/byo-providers.md). Keep manifest.yaml and
-  # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
-  # one that reaches production.
-  selfHosting:
-    supported: true
-    chart:
-      repository: "oci://ghcr.io/railgrid/charts"
-      name: "railgrid-code-provider"
-    namespace: "railgrid-provider-code"
-    releaseName: "code"
-    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/code/deploy/chart/README.md"
-  # Two verbs that are NOT actions. stage_snapshot and stage_commit_bundle are
-  # served on the same actions route as the catalogued verbs below, but their
-  # bodies (a 25 MiB git bundle, a 48 MiB source tree) cannot be described under
-  # limits.maxInputBytes, which the CatalogEntry API caps at 1 MiB — so they are
-  # deliberately absent from spec.actions (docs/provider-actions.md,
-  # "Uncatalogued large-upload verbs").
-  #
-  # Absent from spec.actions is not the same as absent from the CatalogEntry.
-  # The hub's identity policy (pkg/hub/identity/policy.go, clause C) mints
-  # `create` on {resource}/{verb} only for a coordinate the owning provider
-  # DECLARES — as an action OR as a data-plane verb. Undeclared, these two were
-  # ungrantable: no consumer identity (an App Studio project, a factory runner)
-  # could ever be given them, so only a caller whose workspace RBAC already
-  # allowed them could stage an upload at all. Declaring them grants nothing and
-  # serves nothing; it makes the coordinate machine-readable so it CAN be
-  # granted. The two gates in actions/server.go are unchanged.
-  dataPlane:
-    verbs:
-      - resource: repositories
-        verb: stage_snapshot
-        description: "Stage a git bundle and return the opaque bundleRef that the catalogued prepare_snapshot and publish_snapshot then name. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
-        stream: false
-        readOnly: false
-      - resource: repositories
-        verb: stage_commit_bundle
-        description: "Stage a source tree and return the bundleRef/bundleDigest pair the catalogued commit names instead of inline files. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
-        stream: false
-        readOnly: false
-  # Fifteen catalogued actions: fourteen bound to a Repository and one
-  # (mint_registry_token) to a Connection. The provider also serves two
-  # deliberately uncatalogued verbs on the same route, stage_snapshot and
-  # stage_commit_bundle: their bodies (a 25 MiB git bundle, a 48 MiB source
-  # tree) cannot be declared under limits.maxInputBytes, which the CatalogEntry
-  # API caps at 1 MiB. See docs/provider-actions.md, "Uncatalogued large-upload
-  # verbs" — keep this list and the served set in actions/server.go together.
-  # Both of those verbs ARE declared, as data-plane verbs above, so their
-  # {resource}/{verb} coordinate stays grantable.
-  actions:
-  - id: branches/v1
-    displayName: List branches
-    description: List a bounded page of branch names from a registered repository. Uses
-      caller authorization and pinned resource identities.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - repository
-      properties:
-        repositoryUID:
-          type: string
-          minLength: 1
-          maxLength: 253
-        connectionUID:
-          type: string
-          minLength: 1
-          maxLength: 253
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-        page:
-          type: integer
-          minimum: 1
-          maximum: 10000
-      additionalProperties: false
-    outputSchema:
-      type: object
-      required:
-      - branches
-      - nextPage
-      properties:
-        branches:
-          type: array
-          maxItems: 50
-          items:
-            type: string
-            minLength: 1
-            maxLength: 255
-        nextPage:
-          type: integer
-          minimum: 0
-          maximum: 10000
-      additionalProperties: false
-    executionMode: sync
-    readOnly: true
-    risk: low
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-    schemaDigest: sha256:83cae0fe851319cfc23544f9c6d202a4355e0878fa18e990bebfad2786d7bfe2
-  - id: branch_head/v1
-    displayName: Branch head
-    description: Use the registered Repository and pinned resource identities. Returns
-      current host state.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - branch
-      - repository
-      properties:
-        repositoryUID: &id001
-          type: string
-          minLength: 1
-          maxLength: 253
-        connectionUID: *id001
-        branch: &id002
-          type: string
-          minLength: 1
-          maxLength: 255
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:8768bfafae9fb0ef9328ee46a55eeda45558c3ccf66661841990dddb706b74f7
-    executionMode: sync
-    readOnly: true
-    risk: low
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: find_pull_request/v1
-    displayName: Find pull request
-    description: Use the registered Repository and pinned resource identities. Returns
-      current host state.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - head
-      - base
-      - commit
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        head: *id002
-        base: *id002
-        commit: &id003
-          type: string
-          pattern: ^[0-9a-f]{40}$
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      anyOf:
-      - type: object
-        additionalProperties: true
-      - type: 'null'
-    schemaDigest: sha256:67cfd5409978bc88be462dfd6e1dc21167c8460512210ad8d987ccb9ed8743bc
-    executionMode: sync
-    readOnly: true
-    risk: low
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: pull_request/v1
-    displayName: Pull request
-    description: Use the registered Repository and pinned resource identities. Returns
-      current host state.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - number
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        number: &id006
-          type: integer
-          minimum: 1
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:5a658622b1e1e7588ecc82f63451c9da9e7266a4e15ac093606871c5f45968a3
-    executionMode: sync
-    readOnly: true
-    risk: low
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: create_pull_request/v1
-    displayName: Create pull request
-    description: Use the registered Repository and pinned resource identities. A failed
-      response may leave an unconfirmed upstream outcome; inspect before retrying.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - head
-      - base
-      - commit
-      - title
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        head: *id002
-        base: *id002
-        commit: *id003
-        title: &id004
-          type: string
-          minLength: 1
-          maxLength: 256
-        body: &id005
-          type: string
-          maxLength: 32768
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:c389253dd92c08bf664bde0ad72d40ee61e6270919e34f8fa9f47a4b2d3fae12
-    executionMode: sync
-    readOnly: false
-    risk: medium
-    idempotency: none
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: update_pull_request/v1
-    displayName: Update pull request
-    description: Use the registered Repository and pinned resource identities. A failed
-      response may leave an unconfirmed upstream outcome; inspect before retrying.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - head
-      - base
-      - commit
-      - title
-      - number
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        head: *id002
-        base: *id002
-        commit: *id003
-        title: *id004
-        body: *id005
-        number: *id006
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:dffee173b2762eb26cf59ef05d066e850bb3a3553172cf96371b6e8a62bbb88e
-    executionMode: sync
-    readOnly: false
-    risk: medium
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: feedback/v1
-    displayName: Feedback
-    description: Use the registered Repository and pinned resource identities. Returns
-      current host state.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - number
-      - commit
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        number: *id006
-        commit: *id003
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:f8f9e0fadc70b1dc91c4a7ed5c6b977480fc5ca9a164d60611880110a40ff9a4
-    executionMode: sync
-    readOnly: true
-    risk: low
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 2000
-    consent:
-      required: false
-  - id: comments/v1
-    displayName: Comments
-    description: Use the registered Repository and pinned resource identities. Returns
-      current host state.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - number
-      - page
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        number: *id006
-        page:
-          type: integer
-          minimum: 1
-          maximum: 20
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:d37ca53e61369da77665f48222732d5bc97de85ad3c69dc85ff667d3b727426e
-    executionMode: sync
-    readOnly: true
-    risk: low
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: add_comment/v1
-    displayName: Add comment
-    description: Use the registered Repository and pinned resource identities. A failed
-      response may leave an unconfirmed upstream outcome; inspect before retrying.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - number
-      - body
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        number: *id006
-        body: *id005
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:7efaed8cd0871c4e6460ac3302bee9ffb5c48e1a2cd22885a7b44882fcac73cd
-    executionMode: sync
-    readOnly: false
-    risk: medium
-    idempotency: none
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: reply_to_review/v1
-    displayName: Reply to review
-    description: Use the registered Repository and pinned resource identities. A failed
-      response may leave an unconfirmed upstream outcome; inspect before retrying.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - number
-      - parentCommentID
-      - body
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        number: *id006
-        parentCommentID: *id006
-        body: *id005
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:a6b4fdfe076d82a660e83621611da7c46bf69018373e17decbb736581a5c8522
-    executionMode: sync
-    readOnly: false
-    risk: medium
-    idempotency: none
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: prepare_snapshot/v1
-    displayName: Prepare snapshot
-    description: Use the registered Repository and pinned resource identities. Returns
-      current host state.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - bundleRef
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        bundleRef: &id007
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:519de3f8463ccb786602e163f2be51e2ec6718989756954e71f2a3ba4cd3b8fd
-    executionMode: sync
-    readOnly: true
-    risk: low
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: publish_snapshot/v1
-    displayName: Publish snapshot
-    description: Use the registered Repository and pinned resource identities. A failed
-      response may leave an unconfirmed upstream outcome; inspect before retrying.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      - bundleRef
-      - branch
-      - expectedHead
-      - repository
-      properties:
-        repositoryUID: *id001
-        connectionUID: *id001
-        bundleRef: *id007
-        branch: *id002
-        expectedHead:
-          type: string
-          pattern: ^([a-f0-9]{40})?$
-        repository:
-          type: string
-          minLength: 3
-          maxLength: 201
-      additionalProperties: false
-    outputSchema:
-      type: object
-      additionalProperties: true
-    schemaDigest: sha256:e8feb48580ce282a5fe8243cfc89f32eedd48353e74d542fadd382e40fb2991c
-    executionMode: sync
-    readOnly: false
-    risk: medium
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  # The one Connection-bound action. It exists so a consumer that needs to pull
-  # an image built from a tenant's repository never has to read this
-  # provider's Connection Secret to get a credential — see
-  # tenant/registry_token.go and docs/code-provider-architecture.md.
-  - id: commit/v1
-    displayName: Commit files
-    description: Write and delete files in a managed Repository. The provider stores
-      the source bundle and creates a RepositoryCommit; the result names that
-      object, which the caller watches for the landed commit. Files over the
-      1 MiB input ceiling are uploaded with stage_commit_bundle and named here
-      as bundleRef.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      properties:
-        repositoryUID:
-          type: string
-          minLength: 1
-          maxLength: 253
-        message:
-          type: string
-          maxLength: 512
-        branch:
-          type: string
-          maxLength: 255
-        files:
-          type: array
-          maxItems: 500
-          items:
-            type: object
-            required:
-            - path
-            properties:
-              path:
-                type: string
-                minLength: 1
-                maxLength: 1024
-              content:
-                type: string
-              encoding:
-                type: string
-                enum:
-                - utf-8
-                - base64
-              delete:
-                type: boolean
-            additionalProperties: false
-        bundleRef:
-          type: string
-          maxLength: 253
-        bundleDigest:
-          type: string
-          maxLength: 96
-      additionalProperties: false
-    outputSchema:
-      type: object
-      required:
-      - commit
-      properties:
-        commit:
-          type: object
-          required:
-          - name
-          - uid
-          properties:
-            name:
-              type: string
-              minLength: 1
-              maxLength: 253
-            uid:
-              type: string
-              minLength: 1
-              maxLength: 253
-          additionalProperties: false
-      additionalProperties: false
-    schemaDigest: sha256:7ee0cdf571702b8014a79bd01a8de43b3950de1fc36e45aed6b1ea0eb5ab77f1
-    executionMode: async
-    readOnly: false
-    risk: high
-    idempotency: none
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 1048576
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: mint_registry_token/v1
-    displayName: Mint a registry pull token
-    description: Issue a short-lived image-pull credential for the connection's
-      container registry. For a GitHub App connection the token is issued with
-      packages:read alone; the connection's own credential is never returned.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Connection
-      resource: connections
-    inputSchema:
-      type: object
-      required:
-      - connectionUID
-      properties:
-        connectionUID:
-          type: string
-          minLength: 1
-          maxLength: 253
-      additionalProperties: false
-    outputSchema:
-      type: object
-      required:
-      - registry
-      - username
-      - token
-      - scoped
-      properties:
-        registry:
-          type: string
-          minLength: 1
-          maxLength: 253
-        username:
-          type: string
-          minLength: 1
-          maxLength: 253
-        token:
-          type: string
-          minLength: 1
-          maxLength: 8192
-        expiresAt:
-          type: string
-          minLength: 20
-          maxLength: 40
-        scoped:
-          type: boolean
-      additionalProperties: false
-    schemaDigest: sha256:3441d195d8221919653e0933ccd619714e5902f5830e40012de54e1e8968914f
-    executionMode: sync
-    # readOnly: it mints a credential but changes nothing about the
-    # Connection, the repository or the registry.
-    readOnly: true
-    risk: medium
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
-  - id: mint_clone_token/v1
-    displayName: Mint a repository clone token
-    description: Issue a short-lived, read-only git clone credential for this repository.
-      For a GitHub App connection the token is issued with contents:read alone; the
-      connection's own push-capable credential is never returned.
-    boundResource:
-      apiVersion: code.railgrid.ai/v1alpha1
-      kind: Repository
-      resource: repositories
-    inputSchema:
-      type: object
-      required:
-      - repositoryUID
-      - connectionUID
-      properties:
-        repositoryUID:
-          type: string
-          minLength: 1
-          maxLength: 253
-        connectionUID:
-          type: string
-          minLength: 1
-          maxLength: 253
-      additionalProperties: false
-    outputSchema:
-      type: object
-      required:
-      - remoteURL
-      - username
-      - token
-      - scoped
-      properties:
-        remoteURL:
-          type: string
-          minLength: 1
-          maxLength: 2048
-        username:
-          type: string
-          minLength: 1
-          maxLength: 253
-        token:
-          type: string
-          maxLength: 8192
-        expiresAt:
-          type: string
-          minLength: 20
-          maxLength: 40
-        scoped:
-          type: boolean
-      additionalProperties: false
-    schemaDigest: sha256:f9ec0b094856e193b2f3fc96aa84b162f3b8dde33aa76c3cd073492dd0689b18
-    executionMode: sync
-    # readOnly: it mints a credential but changes nothing about the Repository,
-    # the Connection or the git host.
-    readOnly: true
-    risk: medium
-    idempotency: inherent
-    limits:
-      timeoutSeconds: 180
-      maxInputBytes: 65536
-      maxOutputBytes: 524288
-      maxResultItems: 50
-    consent:
-      required: false
+    resources:
+      - name: repositories
+        apiVersion: code.railgrid.ai/v1alpha1
+        kind: Repository
+        # Two verbs that are NOT actions. stage-snapshot and stage-commit-bundle
+        # are served by the same actions handler as the catalogued actions
+        # below, at the same kcp custom-subresource path
+        # (/clusters/{id}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb}),
+        # but their bodies (a 25 MiB git bundle, a 48 MiB source tree) cannot be
+        # described under limits.maxInputBytes, which the CatalogEntry API caps
+        # at 1 MiB — so they are deliberately absent from actions below
+        # (docs/provider-actions.md, "Uncatalogued large-upload verbs").
+        #
+        # Absent from actions is not the same as absent from the CatalogEntry.
+        # The hub's identity policy (pkg/hub/identity/policy.go, clause C) mints
+        # `create` on {resource}/{verb} only for a coordinate the owning
+        # provider DECLARES — as an action OR as a verb. Undeclared, these two
+        # were ungrantable: no consumer identity (an App Studio project, a
+        # factory runner) could ever be given them, so only a caller whose
+        # workspace RBAC already allowed them could stage an upload at all.
+        # Declaring them grants nothing and serves nothing; it makes the
+        # coordinate machine-readable so it CAN be granted. kcp authorizes the
+        # coordinate and actions/server.go gates on visibility exactly as for a
+        # catalogued action.
+        verbs:
+          - name: stage-snapshot
+            description: "Stage a git bundle and return the opaque bundleRef that the catalogued prepare-snapshot and publish-snapshot then name. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
+            stream: false
+            readOnly: false
+          - name: stage-commit-bundle
+            description: "Stage a source tree and return the bundleRef/bundleDigest pair the catalogued commit names instead of inline files. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
+            stream: false
+            readOnly: false
+        # Fourteen catalogued actions on a Repository; the fifteenth
+        # (mint-registry-token) hangs off connections below. Keep this list and
+        # the served set in actions/server.go together.
+        actions:
+          - name: branches
+            version: v1
+            displayName: List branches
+            description: List a bounded page of branch names from a registered repository. Uses
+              caller authorization and pinned resource identities.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - repository
+              properties:
+                repositoryUID:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                connectionUID:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+                page:
+                  type: integer
+                  minimum: 1
+                  maximum: 10000
+              additionalProperties: false
+            outputSchema:
+              type: object
+              required:
+              - branches
+              - nextPage
+              properties:
+                branches:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 255
+                nextPage:
+                  type: integer
+                  minimum: 0
+                  maximum: 10000
+              additionalProperties: false
+            executionMode: sync
+            readOnly: true
+            risk: low
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+            schemaDigest: sha256:83cae0fe851319cfc23544f9c6d202a4355e0878fa18e990bebfad2786d7bfe2
+          - name: branch-head
+            version: v1
+            displayName: Branch head
+            description: Use the registered Repository and pinned resource identities. Returns
+              current host state.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - branch
+              - repository
+              properties:
+                repositoryUID: &id001
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                connectionUID: *id001
+                branch: &id002
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:8768bfafae9fb0ef9328ee46a55eeda45558c3ccf66661841990dddb706b74f7
+            executionMode: sync
+            readOnly: true
+            risk: low
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: find-pull-request
+            version: v1
+            displayName: Find pull request
+            description: Use the registered Repository and pinned resource identities. Returns
+              current host state.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - head
+              - base
+              - commit
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                head: *id002
+                base: *id002
+                commit: &id003
+                  type: string
+                  pattern: ^[0-9a-f]{40}$
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              anyOf:
+              - type: object
+                additionalProperties: true
+              - type: 'null'
+            schemaDigest: sha256:67cfd5409978bc88be462dfd6e1dc21167c8460512210ad8d987ccb9ed8743bc
+            executionMode: sync
+            readOnly: true
+            risk: low
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: pull-request
+            version: v1
+            displayName: Pull request
+            description: Use the registered Repository and pinned resource identities. Returns
+              current host state.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - number
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                number: &id006
+                  type: integer
+                  minimum: 1
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:5a658622b1e1e7588ecc82f63451c9da9e7266a4e15ac093606871c5f45968a3
+            executionMode: sync
+            readOnly: true
+            risk: low
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: create-pull-request
+            version: v1
+            displayName: Create pull request
+            description: Use the registered Repository and pinned resource identities. A failed
+              response may leave an unconfirmed upstream outcome; inspect before retrying.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - head
+              - base
+              - commit
+              - title
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                head: *id002
+                base: *id002
+                commit: *id003
+                title: &id004
+                  type: string
+                  minLength: 1
+                  maxLength: 256
+                body: &id005
+                  type: string
+                  maxLength: 32768
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:c389253dd92c08bf664bde0ad72d40ee61e6270919e34f8fa9f47a4b2d3fae12
+            executionMode: sync
+            readOnly: false
+            risk: medium
+            idempotency: none
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: update-pull-request
+            version: v1
+            displayName: Update pull request
+            description: Use the registered Repository and pinned resource identities. A failed
+              response may leave an unconfirmed upstream outcome; inspect before retrying.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - head
+              - base
+              - commit
+              - title
+              - number
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                head: *id002
+                base: *id002
+                commit: *id003
+                title: *id004
+                body: *id005
+                number: *id006
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:dffee173b2762eb26cf59ef05d066e850bb3a3553172cf96371b6e8a62bbb88e
+            executionMode: sync
+            readOnly: false
+            risk: medium
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: feedback
+            version: v1
+            displayName: Feedback
+            description: Use the registered Repository and pinned resource identities. Returns
+              current host state.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - number
+              - commit
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                number: *id006
+                commit: *id003
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:f8f9e0fadc70b1dc91c4a7ed5c6b977480fc5ca9a164d60611880110a40ff9a4
+            executionMode: sync
+            readOnly: true
+            risk: low
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 2000
+            consent:
+              required: false
+          - name: comments
+            version: v1
+            displayName: Comments
+            description: Use the registered Repository and pinned resource identities. Returns
+              current host state.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - number
+              - page
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                number: *id006
+                page:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:d37ca53e61369da77665f48222732d5bc97de85ad3c69dc85ff667d3b727426e
+            executionMode: sync
+            readOnly: true
+            risk: low
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: add-comment
+            version: v1
+            displayName: Add comment
+            description: Use the registered Repository and pinned resource identities. A failed
+              response may leave an unconfirmed upstream outcome; inspect before retrying.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - number
+              - body
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                number: *id006
+                body: *id005
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:7efaed8cd0871c4e6460ac3302bee9ffb5c48e1a2cd22885a7b44882fcac73cd
+            executionMode: sync
+            readOnly: false
+            risk: medium
+            idempotency: none
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: reply-to-review
+            version: v1
+            displayName: Reply to review
+            description: Use the registered Repository and pinned resource identities. A failed
+              response may leave an unconfirmed upstream outcome; inspect before retrying.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - number
+              - parentCommentID
+              - body
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                number: *id006
+                parentCommentID: *id006
+                body: *id005
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:a6b4fdfe076d82a660e83621611da7c46bf69018373e17decbb736581a5c8522
+            executionMode: sync
+            readOnly: false
+            risk: medium
+            idempotency: none
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: prepare-snapshot
+            version: v1
+            displayName: Prepare snapshot
+            description: Use the registered Repository and pinned resource identities. Returns
+              current host state.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - bundleRef
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                bundleRef: &id007
+                  type: string
+                  pattern: ^[a-f0-9]{64}$
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:519de3f8463ccb786602e163f2be51e2ec6718989756954e71f2a3ba4cd3b8fd
+            executionMode: sync
+            readOnly: true
+            risk: low
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: publish-snapshot
+            version: v1
+            displayName: Publish snapshot
+            description: Use the registered Repository and pinned resource identities. A failed
+              response may leave an unconfirmed upstream outcome; inspect before retrying.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              - bundleRef
+              - branch
+              - expectedHead
+              - repository
+              properties:
+                repositoryUID: *id001
+                connectionUID: *id001
+                bundleRef: *id007
+                branch: *id002
+                expectedHead:
+                  type: string
+                  pattern: ^([a-f0-9]{40})?$
+                repository:
+                  type: string
+                  minLength: 3
+                  maxLength: 201
+              additionalProperties: false
+            outputSchema:
+              type: object
+              additionalProperties: true
+            schemaDigest: sha256:e8feb48580ce282a5fe8243cfc89f32eedd48353e74d542fadd382e40fb2991c
+            executionMode: sync
+            readOnly: false
+            risk: medium
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: commit
+            version: v1
+            displayName: Commit files
+            description: Write and delete files in a managed Repository. The provider stores
+              the source bundle and creates a RepositoryCommit; the result names that
+              object, which the caller watches for the landed commit. Files over the
+              1 MiB input ceiling are uploaded with stage-commit-bundle and named here
+              as bundleRef.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              properties:
+                repositoryUID:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                message:
+                  type: string
+                  maxLength: 512
+                branch:
+                  type: string
+                  maxLength: 255
+                files:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required:
+                    - path
+                    properties:
+                      path:
+                        type: string
+                        minLength: 1
+                        maxLength: 1024
+                      content:
+                        type: string
+                      encoding:
+                        type: string
+                        enum:
+                        - utf-8
+                        - base64
+                      delete:
+                        type: boolean
+                    additionalProperties: false
+                bundleRef:
+                  type: string
+                  maxLength: 253
+                bundleDigest:
+                  type: string
+                  maxLength: 96
+              additionalProperties: false
+            outputSchema:
+              type: object
+              required:
+              - commit
+              properties:
+                commit:
+                  type: object
+                  required:
+                  - name
+                  - uid
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                      maxLength: 253
+                    uid:
+                      type: string
+                      minLength: 1
+                      maxLength: 253
+                  additionalProperties: false
+              additionalProperties: false
+            schemaDigest: sha256:7ee0cdf571702b8014a79bd01a8de43b3950de1fc36e45aed6b1ea0eb5ab77f1
+            executionMode: async
+            readOnly: false
+            risk: high
+            idempotency: none
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 1048576
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+          - name: mint-clone-token
+            version: v1
+            displayName: Mint a repository clone token
+            description: Issue a short-lived, read-only git clone credential for this repository.
+              For a GitHub App connection the token is issued with contents:read alone; the
+              connection's own push-capable credential is never returned.
+            inputSchema:
+              type: object
+              required:
+              - repositoryUID
+              - connectionUID
+              properties:
+                repositoryUID:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                connectionUID:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+              additionalProperties: false
+            outputSchema:
+              type: object
+              required:
+              - remoteURL
+              - username
+              - token
+              - scoped
+              properties:
+                remoteURL:
+                  type: string
+                  minLength: 1
+                  maxLength: 2048
+                username:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                token:
+                  type: string
+                  maxLength: 8192
+                expiresAt:
+                  type: string
+                  minLength: 20
+                  maxLength: 40
+                scoped:
+                  type: boolean
+              additionalProperties: false
+            schemaDigest: sha256:f9ec0b094856e193b2f3fc96aa84b162f3b8dde33aa76c3cd073492dd0689b18
+            executionMode: sync
+            # readOnly: it mints a credential but changes nothing about the Repository,
+            # the Connection or the git host.
+            readOnly: true
+            risk: medium
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+      - name: connections
+        apiVersion: code.railgrid.ai/v1alpha1
+        kind: Connection
+        # The one Connection-bound action. It exists so a consumer that needs to
+        # pull an image built from a tenant's repository never has to read this
+        # provider's Connection Secret to get a credential — see
+        # tenant/registry_token.go and docs/code-provider-architecture.md.
+        actions:
+          - name: mint-registry-token
+            version: v1
+            displayName: Mint a registry pull token
+            description: Issue a short-lived image-pull credential for the connection's
+              container registry. For a GitHub App connection the token is issued with
+              packages:read alone; the connection's own credential is never returned.
+            inputSchema:
+              type: object
+              required:
+              - connectionUID
+              properties:
+                connectionUID:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+              additionalProperties: false
+            outputSchema:
+              type: object
+              required:
+              - registry
+              - username
+              - token
+              - scoped
+              properties:
+                registry:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                username:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                token:
+                  type: string
+                  minLength: 1
+                  maxLength: 8192
+                expiresAt:
+                  type: string
+                  minLength: 20
+                  maxLength: 40
+                scoped:
+                  type: boolean
+              additionalProperties: false
+            schemaDigest: sha256:3441d195d8221919653e0933ccd619714e5902f5830e40012de54e1e8968914f
+            executionMode: sync
+            # readOnly: it mints a credential but changes nothing about the
+            # Connection, the repository or the registry.
+            readOnly: true
+            risk: medium
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 180
+              maxInputBytes: 65536
+              maxOutputBytes: 524288
+              maxResultItems: 50
+            consent:
+              required: false
+  # What this provider needs that it does not own. Everything here is
+  # tenant-scoped by definition and becomes one permission claim on the
+  # generated APIExport; nothing is granted until a workspace or org admin
+  # accepts it in the Enable dialog. Code depends on no other provider, so
+  # every entry is a platform builtin and none names one.
+  requires:
+    # Every provider that serves a custom subresource needs this one claim:
+    # on the shard-forwarded path there is no caller bearer, so the provider
+    # runs a SubjectAccessReview for the stamped caller through its own
+    # APIExport virtual workspace, and kcp serves that builtin there only for
+    # an export that claims it (hack/verify-provider-contract.mjs
+    # subresource-access-claim). Built-in review API: no identityHash, verb
+    # create only; the VW confines each review to the tenant's OWN workspace.
+    - group: authorization.k8s.io
+      resources:
+        - name: subjectaccessreviews
+          verbs: [create]
+    # The core group. The controllers read each Connection's PAT Secret AND
+    # write the generated DeployKey private-key Secret in the tenant workspace,
+    # so this needs write verbs (infrastructure only needed read).
+    - resources:
+        - name: secrets
+          verbs: [get, list, watch, create, update, patch, delete]
+          # Only Secrets this provider wrote (deploy keys, connection tokens);
+          # every writer stamps railgrid.ai/owner=code
+          # (docs/provider-connectivity-contract.md §"Label-scoped claims").
+          selector:
+            matchLabels:
+              railgrid.ai/owner: code
+  # Where the hub reaches this provider.
+  serving:
+    # Local dev (Tilt / Makefile): the provider binary runs on the host at
+    # PORT=8083 — distinct from quickstart (:8081) and infrastructure (:8082).
+    # For in-cluster deployment, change to the Service DNS, e.g.
+    # http://code.code.svc.cluster.local:8083.
+    ui:
+      url: "http://localhost:8083"
+      indexPath: "/"
+      children:
+        - displayName: Connections
+          builtinRoute: connections
+        - displayName: Repositories
+          builtinRoute: repositories
+        - displayName: Packages
+          builtinRoute: packages
+    backend:
+      url: "http://localhost:8083"
+      healthPath: "/readyz"
+    # Lets an organization run this provider in its own cluster
+    # (docs/byo-providers.md). Keep manifest.yaml and
+    # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
+    # one that reaches production.
+    selfHosting:
+      supported: true
+      chart:
+        repository: "oci://ghcr.io/railgrid/charts"
+        name: "railgrid-code-provider"
+      namespace: "railgrid-provider-code"
+      releaseName: "code"
+      docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/code/deploy/chart/README.md"

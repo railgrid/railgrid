@@ -19,7 +19,6 @@ package tunnel
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,7 +32,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
-	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -41,7 +39,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
@@ -51,30 +48,34 @@ import (
 	"github.com/railgrid/provider-sdk/dataplane"
 )
 
-// buildEdgesProxyHandler serves class (a), the consumer data plane, on the one
-// grammar every provider shares:
+// buildEdgesProxyHandler serves class (a), the consumer data plane: every verb
+// this provider declares, reached as a kcp custom subresource,
 //
-//	/dataplane/clusters/{clusterID}/{resource}/{name}/{verb}[/{tail}]
+//	/clusters/{clusterID}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail}]
 //
 // {resource} is kubernetesclusters, linuxservers, macosservers or services and
 // {verb} is one of the coordinates in dataPlaneVerbs — the same set
-// manifest.yaml declares under spec.dataPlane.verbs. The path is parsed by
-// provider-sdk/dataplane, not by hand, so ".." , "//" and a percent-encoded
-// separator are refused here rather than reinterpreted, and the old
-// ".../apis/edges.railgrid.ai/v1alpha1/..." dialect no longer parses at all.
+// manifest.yaml declares under spec.export.resources[].verbs. provider-sdk/serve
+// has
+// already parsed the path (so ".." , "//" and a percent-encoded separator were
+// refused before this ran), checked the coordinate against the declaration,
+// and put the route and the caller kcp stamped on the request context. The
+// URL itself arrives unchanged.
 //
-// Every request runs the two gates as the CALLER (see gateAsCaller): a real
-// GET of the addressed object, then a SelfSubjectAccessReview for "create" on
-// {resource}/{verb}, name-scoped. The single wildcard "proxy" verb that used
-// to cover k8s, ssh, service proxy and MCP alike is gone.
+// There is no bearer here. kcp authenticated the caller and authorized the
+// method on {resource}/{verb}; the gate below decides visibility of the parent
+// object on that caller's behalf and then acts as the provider.
 func (p *Server) buildEdgesProxyHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		req, ok := dataplane.ParseRequest(DataPlaneRoot, r)
-		if !ok {
-			dataplane.WriteError(w, fmt.Errorf("%w: expected /%s/clusters/{cluster}/{resource}/{name}/{verb}",
-				dataplane.ErrBadPath, DataPlaneRoot))
+		route, ok := dataplane.RouteFrom(r.Context())
+		if !ok || route.Group != p.group || route.APIVersion != p.version {
+			// Not reached through serve's adapter, or addressed on a group
+			// this provider does not export: nothing else is entitled to say
+			// what the request means.
+			dataplane.WriteError(w, dataplane.ErrBadPath)
 			return
 		}
+		req := route.Request
 
 		// A coordinate this provider does not serve is a 404 before anything
 		// else happens, so an un-served verb cannot be used to probe whether
@@ -84,28 +85,14 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 			return
 		}
 
-		// Fail closed when kcp delegated authorization is unavailable: no
-		// credential means no caller client and no gates, and this handler is
-		// mounted whether or not kcp is wired.
+		// Fail closed when there is nothing to gate with: without a provider
+		// caller factory there is no access review and no read, and this
+		// handler is mounted whether or not kcp is wired.
 		if p.denyIfAuthorizationUnavailable(w, r) {
 			return
 		}
 
-		// The bearer comes from Authorization, or — for a browser WebSocket,
-		// which cannot set that header — from a ticket this caller minted a
-		// moment ago for THIS object. There is no "?token=" path: a bearer in
-		// a query string is a bearer in every log between here and the
-		// browser.
-		token := extractBearerToken(r)
-		if token == "" {
-			token = p.redeemTicket(r, req)
-		}
-		if token == "" {
-			dataplane.WriteError(w, dataplane.ErrNoBearer)
-			return
-		}
-
-		obj, err := p.gate(r.Context(), r, token, req)
+		obj, _, err := p.gate(r.Context(), req)
 		if err != nil {
 			p.logger.Error(err, "edges data-plane gate refused the request",
 				"cluster", req.ClusterID, "resource", req.Resource, "name", req.Name, "verb", req.Verb)
@@ -118,9 +105,6 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 		// momentarily disconnected (or, for agent-token, an agent whose tunnel
 		// is exactly what it is trying to re-establish) must still be served.
 		switch req.Verb {
-		case VerbTicket:
-			p.serveTicket(w, r, token, req)
-			return
 		case VerbAgentToken:
 			p.serveAgentToken(w, r, req, obj)
 			return
@@ -137,7 +121,7 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 			return
 		}
 
-		// 4. Look up the dialer registered by the agent-ingress handler.
+		// Look up the dialer registered by the agent-ingress handler.
 		key := edgeConnKey(req.Resource, req.ClusterID, req.Name)
 		dialer, found := p.edgeConnManager.Load(key)
 		if !found {
@@ -149,14 +133,13 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 		gvr, _, _ := p.gvrForResource(req.Resource)
 		switch req.Verb {
 		case VerbK8s:
-			p.edgesK8sHandler(r.Context(), w, r, key, dialer)
+			p.edgesK8sHandler(r.Context(), w, r, key, dialer, req.Tail)
 		case VerbSSH:
-			// Resolve caller identity for identity-mode SSH mapping and the
-			// session audit line. Best-effort: inherited/provided modes work
-			// without it (the token already passed both gates above); the audit
-			// line then records caller=unknown with the reason.
-			callerIdentity, callerErr := resolveCallerIdentity(r.Context(), p.kcpConfig, token)
-			p.edgesSSHHandler(r.Context(), w, r, key, dialer, callerIdentity, callerErr, gvr)
+			// The caller for identity-mode SSH mapping and the session audit
+			// line is the identity kcp stamped — the gate already refused a
+			// request without one.
+			identity, _ := dataplane.ProxiedIdentityFrom(r.Context())
+			p.edgesSSHHandler(r.Context(), w, r, key, dialer, identity.User, gvr)
 		case VerbMCP:
 			// Per-edge MCP. It used to hang off the /agent mount, where it was
 			// the one route on the agent-ingress class that no agent ever
@@ -170,9 +153,11 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 
 // edgesK8sHandler reverse-proxies HTTP to the edge agent's local K8s API.
 // It dials the agent via the revdial.Dialer obtained from edgeConnManager.
+// tail is the route's remainder after the k8s verb (the Kubernetes API path
+// the caller addressed, e.g. "api/v1/pods"); the query travels unchanged.
 func (p *Server) edgesK8sHandler(ctx context.Context, w http.ResponseWriter, r *http.Request, key string, dialer interface {
 	Dial(context.Context) (net.Conn, error)
-}) {
+}, tail string) {
 	logger := klog.FromContext(ctx)
 
 	deviceConn, err := dialer.Dial(ctx)
@@ -184,7 +169,7 @@ func (p *Server) edgesK8sHandler(ctx context.Context, w http.ResponseWriter, r *
 
 	// Handle upgrade requests (exec, port-forward) via raw hijacking.
 	if isUpgradeRequest(r) {
-		p.edgesHandleK8sUpgrade(ctx, w, r, deviceConn)
+		p.edgesHandleK8sUpgrade(ctx, w, r, deviceConn, tail)
 		return
 	}
 
@@ -195,16 +180,66 @@ func (p *Server) edgesK8sHandler(ctx context.Context, w http.ResponseWriter, r *
 
 	// Reverse-proxy to the agent's Kubernetes API server.
 	transport := &edgeDeviceConnTransport{conn: deviceConn}
-	path := extractEdgeK8sPath(r.URL.Path)
+	path := agentK8sPath(tail)
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "http"
 			req.URL.Host = "edge-agent"
-			req.URL.Path = path // path already includes /k8s/ prefix
+			req.URL.Path = path
+			stripCallerHeaders(req.Header)
 		},
 		Transport: transport,
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// stripCallerHeaders removes what kcp stamped for THIS provider from a request
+// about to cross the tunnel: the requestheader identity and the hop counter
+// mean something only to a server that trusts the shard, and the agent's
+// upstream is not one. The adapter already dropped Authorization.
+func stripCallerHeaders(h http.Header) {
+	h.Del(dataplane.HeaderRemoteUser)
+	h.Del(dataplane.HeaderRemoteGroup)
+	h.Del(dataplane.HeaderHops)
+	for name := range h {
+		if strings.HasPrefix(http.CanonicalHeaderKey(name), dataplane.HeaderRemoteExtraPrefix) {
+			h.Del(name)
+		}
+	}
+}
+
+// bearerSubprotocolPrefix is the Kubernetes WebSocket bearer subprotocol
+// (k8s.io/apiserver/pkg/authentication/request/websocket). A browser cannot
+// set Authorization on an upgrade, so it offers the token this way; kcp
+// authenticates it and strips that protocol before forwarding, leaving the
+// other protocols the client offered.
+const bearerSubprotocolPrefix = "base64url.bearer.authorization.k8s.io."
+
+// selectSubprotocol picks the Sec-WebSocket-Protocol the upgrade response
+// echoes. A browser aborts a WebSocket whose server does not select one of the
+// protocols it offered, so one must be chosen whenever any were: the first one
+// that is not the bearer protocol, or — should the bearer protocol be all that
+// arrived — that one, which is the client's own credential handed back to it.
+// The content is never read as a credential here: the caller is the identity
+// kcp stamped, and nothing else.
+func selectSubprotocol(r *http.Request) string {
+	bearer := ""
+	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, offered := range strings.Split(header, ",") {
+			offered = strings.TrimSpace(offered)
+			if offered == "" {
+				continue
+			}
+			if strings.HasPrefix(offered, bearerSubprotocolPrefix) {
+				if bearer == "" {
+					bearer = offered
+				}
+				continue
+			}
+			return offered
+		}
+	}
+	return bearer
 }
 
 // edgesSSHHandler establishes a WebSocket SSH session to the edge agent.
@@ -214,9 +249,12 @@ func (p *Server) edgesK8sHandler(ctx context.Context, w http.ResponseWriter, r *
 // Every session produces two V(0) audit lines: "SSH session opened" once the
 // SSH client is established, and "SSH session ended" when the handler returns
 // (also for sessions refused before opening, with opened=false and the reason).
+//
+// callerIdentity is the user name kcp stamped on the request: what identity-mode
+// SSH mapping logs in as, and what the audit line records.
 func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *http.Request, key string, dialer interface {
 	Dial(context.Context) (net.Conn, error)
-}, callerIdentity string, callerErr error, gvr schema.GroupVersionResource) {
+}, callerIdentity string, gvr schema.GroupVersionResource) {
 	logger := klog.FromContext(ctx)
 
 	// Parse cluster and edge name from the key (format: "edges/{cluster}/{name}")
@@ -244,9 +282,6 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 	audit := logger.WithValues(
 		"cluster", cluster, "edge", edgeName, "caller", caller,
 		"mode", mode, "exec", sanitizeAuditValue(remoteCmd), "remoteAddr", clientAddr(r))
-	if callerErr != nil {
-		audit = audit.WithValues("callerError", callerErr.Error())
-	}
 	start := time.Now()
 	opened := false
 	var outcome error
@@ -288,20 +323,23 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 
 	// The consumer terminal connects from the portal, which is served at the
 	// hub's external origin — NOT at this provider's host (the request reaches us
-	// through the hub backend proxy, so r.Host is the internal provider address).
+	// through the hub and kcp, so r.Host is the internal provider address).
 	// Allow the hub external origin in addition to same-origin. This request is
-	// already gated (a caller GET plus a SelfSubjectAccessReview on
-	// {resource}/ssh) before it reaches here, so the origin check is
-	// defence-in-depth, not the primary auth boundary.
+	// already gated (kcp authorized the upgrade on {resource}/ssh, and the gate
+	// decided visibility on the caller's behalf) before it reaches here, so the
+	// origin check is defence-in-depth, not the primary auth boundary.
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return utilhttp.CheckSameOrAllowedOrigin(r, allowedOriginsFor(p.hubExternalURL))
 		},
 	}
 	// A browser aborts a WebSocket whose server does not select one of the
-	// subprotocols it offered, and the ticket travels as one — so echo it.
+	// subprotocols it offered — and a browser offers at least the bearer
+	// protocol, since that is how it authenticates — so select one.
 	upgradeHeaders := http.Header{}
-	acceptTicketSubprotocol(upgradeHeaders, r)
+	if protocol := selectSubprotocol(r); protocol != "" {
+		upgradeHeaders.Set("Sec-WebSocket-Protocol", protocol)
+	}
 	wsConn, err := upgrader.Upgrade(w, r, upgradeHeaders)
 	if err != nil {
 		outcome = fmt.Errorf("upgrading caller connection: %w", err)
@@ -724,45 +762,9 @@ func (p *Server) readSSHCredsFromSecret(ctx context.Context, k8sClient kubernete
 	return creds, nil
 }
 
-// resolveCallerIdentity performs a kcp TokenReview to extract the caller's
-// username. Returns an empty identity and the reason on failure; the caller
-// decides whether that is fatal (identity-mode SSH mapping) or only affects the
-// audit line (inherited/provided modes).
-func resolveCallerIdentity(ctx context.Context, kcpConfig *rest.Config, token string) (string, error) {
-	if kcpConfig == nil {
-		return "", errors.New("no kcp config")
-	}
-	if token == "" {
-		return "", errors.New("no bearer token")
-	}
-	client, err := kubernetes.NewForConfig(kcpConfig)
-	if err != nil {
-		return "", fmt.Errorf("creating token-review client: %w", err)
-	}
-	// This runs on the SSH data-plane path BEFORE the tunnel dial, and the
-	// request context is a WebSocket upgrade with no deadline. A TokenReview that
-	// hangs (e.g. cross-shard routing) would block the whole SSH session before
-	// the agent is ever dialed — the browser terminal just shows "session ended".
-	// The caller identity is only an optimization for identity-mode SSH mapping;
-	// bound it hard and fall back to empty (inherited/provided modes still work).
-	trCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	tr := &authv1.TokenReview{
-		Spec: authv1.TokenReviewSpec{Token: token},
-	}
-	result, err := client.AuthenticationV1().TokenReviews().Create(trCtx, tr, metav1.CreateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("token review: %w", err)
-	}
-	if !result.Status.Authenticated {
-		return "", errors.New("token review: not authenticated")
-	}
-	return result.Status.User.Username, nil
-}
-
 // edgesHandleK8sUpgrade handles upgrade requests (exec, port-forward) to an
 // edge agent by hijacking the client connection and doing a bidirectional copy.
-func (p *Server) edgesHandleK8sUpgrade(ctx context.Context, w http.ResponseWriter, r *http.Request, deviceConn net.Conn) {
+func (p *Server) edgesHandleK8sUpgrade(ctx context.Context, w http.ResponseWriter, r *http.Request, deviceConn net.Conn, tail string) {
 	logger := klog.FromContext(ctx)
 
 	hijacker, ok := w.(http.Hijacker)
@@ -780,13 +782,15 @@ func (p *Server) edgesHandleK8sUpgrade(ctx context.Context, w http.ResponseWrite
 	defer deviceConn.Close() //nolint:errcheck
 
 	// Rewrite the URL path to the /k8s/... form the agent's mux expects.
-	// Without this the agent router sees the full hub path and returns 404.
-	r.URL.Path = extractEdgeK8sPath(r.URL.Path)
+	// Without this the agent router sees the full kube path and returns 404.
+	r.URL.Path = agentK8sPath(tail)
 	r.RequestURI = r.URL.RequestURI()
 
-	// Strip user credentials before forwarding to the edge agent to prevent
-	// the user's OIDC token from unnecessarily transiting the reverse tunnel.
+	// Nothing about the caller crosses the tunnel: serve's adapter already
+	// dropped Authorization, and the identity kcp stamped for this provider
+	// means nothing to the agent's upstream.
 	r.Header.Del("Authorization")
+	stripCallerHeaders(r.Header)
 
 	if err := r.Write(deviceConn); err != nil {
 		logger.Error(err, "failed to forward upgrade request to edge agent")
@@ -813,24 +817,20 @@ func (t *edgeDeviceConnTransport) RoundTrip(req *http.Request) (*http.Response, 
 	return http.ReadResponse(bufio.NewReader(t.conn), req)
 }
 
-// edgeProxyStatusURL builds the public consumer-egress path stamped into an
-// edge's status.URL:
+// edgeProxyStatusURL builds the hub-relative kube path stamped into an edge's
+// status.URL:
 //
-//	{edgeProxyPublicPath}/clusters/{cluster}/{resource}/{name}/{verb}
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/{verb}
 //
-// It is the inverse of dataplane.ParsePath, prefixed with the public mount the
-// hub backend proxy gives this provider (/services/providers/edges/dataplane).
-// CLI clients read status.URL, swap in the hub host, and land back on the verb
-// handler here.
+// CLI clients read status.URL, swap in the hub host, and land on the kcp front
+// door, which routes the custom subresource back to the verb handler here.
 //
 // The default verb is derived from the kind: KubernetesCluster is reached over
 // "k8s" (its Kubernetes API), LinuxServer over "ssh". MacOSServer is
-// Service-only, so it has no status URL. Returns "" when edgeProxyPublicPath
-// is unset, so callers skip stamping.
+// Service-only, so it has no status URL. Returns "" when the coordinate cannot
+// be rendered, so callers skip stamping rather than stamp a path that would
+// not parse.
 func (p *Server) edgeProxyStatusURL(gvr schema.GroupVersionResource, cluster, name string) string {
-	if p.edgeProxyPublicPath == "" {
-		return ""
-	}
 	if gvr.Resource == macOSServerResource {
 		return ""
 	}
@@ -838,22 +838,22 @@ func (p *Server) edgeProxyStatusURL(gvr schema.GroupVersionResource, cluster, na
 	if gvr.Resource == linuxServerResource {
 		verb = VerbSSH
 	}
-	return edgeProxyPath(p.edgeProxyPublicPath, cluster, gvr.Resource, name, verb)
+	path, err := p.verbPath(cluster, gvr.Resource, name, verb)
+	if err != nil {
+		p.logger.Error(err, "edge status.URL not stamped", "cluster", cluster, "resource", gvr.Resource, "name", name)
+		return ""
+	}
+	return path
 }
 
-// extractEdgeK8sPath strips the data-plane prefix from the request path,
-// keeping the /k8s/ prefix that the agent expects.
+// agentK8sPath renders the path the agent's mux serves the edge's Kubernetes
+// API on, from the route's tail — the remainder of the kube path after the
+// k8s verb, which is the Kubernetes API path the caller addressed.
 //
-// Input:  /dataplane/clusters/{cluster}/kubernetesclusters/{name}/k8s/api/v1/pods
-// Output: /k8s/api/v1/pods
-func extractEdgeK8sPath(path string) string {
-	idx := strings.Index(path, "/k8s/")
-	if idx >= 0 {
-		return path[idx:] // keep "/k8s/api/..."
-	}
-	// Handle case where path ends with just "/k8s" (no trailing slash)
-	if strings.HasSuffix(path, "/k8s") {
-		return "/k8s/"
-	}
-	return "/k8s/"
+// Tail "api/v1/pods" → /k8s/api/v1/pods; an empty tail → /k8s/ (the API root).
+// Deriving it from the parsed route rather than by searching the URL for
+// "/k8s/" means an object or resource name containing "k8s" cannot shift where
+// the agent path begins.
+func agentK8sPath(tail string) string {
+	return "/k8s/" + strings.TrimPrefix(tail, "/")
 }

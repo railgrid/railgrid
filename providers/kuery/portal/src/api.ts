@@ -9,18 +9,25 @@
 /**
  * Framework-neutral client for the Kuery query verb.
  *
- * There is one route: POST
- * {base}/dataplane/clusters/{clusterID}/savedviews/{name}/run. A query is a
- * verb on a SavedView the caller must be able to see and must be granted the
- * verb on, which is why every call needs a cluster and a view name. The
- * playground's ad-hoc queries are not an exception: they run a per-user
- * scratch SavedView, created with the kube client, with the query supplied as
- * the request's input override.
+ * There is one route: the kcp custom subresource savedviews/run on kuery's
+ * APIExport, POST
+ * /clusters/{clusterID}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run
+ * on the hub's kcp front door, like every other kube path the portal reads
+ * (kubeVerbPath). kcp authorizes the verb with the caller's own RBAC before
+ * the provider ever sees it; there is no hub-proxied /services/providers/…
+ * spelling. A query is a verb on a SavedView the caller must be able to see
+ * and must be granted the verb on, which is why every call needs a cluster
+ * and a view name. The playground's ad-hoc queries are not an exception: they
+ * run a per-user scratch SavedView, created with the kube client, with the
+ * query supplied as the request's input override.
  *
  * The response is an actionwire envelope; this module unwraps it so a Vue view
  * still sees a QueryStatus and does not need to know the wire format (or make
  * assumptions about an opaque cursor).
  */
+
+import { kubeVerbPath } from './portalkit/kube'
+import { SAVEDVIEW_REF } from './savedviews'
 
 export type RootKind = 'objects' | 'clusters'
 export type SortDirection = 'Asc' | 'Desc'
@@ -154,8 +161,6 @@ export interface QueryRequestOptions {
 export type HeaderSource = HeadersInit | (() => HeadersInit)
 
 export interface KueryApiOptions {
-  /** The provider service base, normally /services/providers/kuery. */
-  basePath: string
   /**
    * The tenant workspace's kcp logical-cluster ID (railgridContext.tenant).
    * It addresses the request; the caller's bearer is what authorizes it.
@@ -178,13 +183,17 @@ interface RunEnvelope {
   error?: { code?: string; message?: string; retryable?: boolean }
 }
 
+/** RUN_VERB is the custom subresource kuery publishes on its SavedView kind. */
+export const RUN_VERB = 'run'
+
 /**
- * runPath is the one tenant route. Every segment is encoded: a view name is
- * caller-authored and must not be able to escape its slot.
+ * runPath is the one tenant route: the run verb as a kube path on the kcp
+ * front door, relative to the portal origin. Every segment is encoded by
+ * kubeVerbPath: a view name is caller-authored and must not be able to
+ * escape its slot.
  */
-export function runPath(basePath: string, cluster: string, savedView: string): string {
-  const base = basePath.replace(/\/+$/, '')
-  return `${base}/dataplane/clusters/${encodeURIComponent(cluster)}/savedviews/${encodeURIComponent(savedView)}/run`
+export function runPath(cluster: string, savedView: string): string {
+  return kubeVerbPath(cluster, SAVEDVIEW_REF, savedView, RUN_VERB)
 }
 
 export interface InventoryFilters {
@@ -343,14 +352,12 @@ export class KueryApiError extends Error {
 }
 
 export class KueryApi {
-  private readonly basePath: string
   private readonly cluster: string
   private readonly savedView: string
   private readonly headerSource?: HeaderSource
   private readonly fetchImpl: typeof globalThis.fetch
 
   constructor(options: KueryApiOptions) {
-    this.basePath = options.basePath.replace(/\/+$/, '')
     this.cluster = options.cluster
     this.savedView = options.savedView
     this.headerSource = options.headers
@@ -362,7 +369,7 @@ export class KueryApi {
     headers.set('Accept', 'application/json')
     headers.set('Content-Type', 'application/json')
 
-    const response = await this.fetchImpl(runPath(this.basePath, this.cluster, options.savedView || this.savedView), {
+    const response = await this.fetchImpl(runPath(this.cluster, options.savedView || this.savedView), {
       method: 'POST',
       headers,
       // The verb takes {"input": …} and nothing else; an omitted query runs

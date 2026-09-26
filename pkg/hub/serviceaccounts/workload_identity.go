@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/railgrid/provider-sdk/dataplane"
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -323,10 +324,13 @@ func verifyWorkloadServiceAccountAnnotations(ctx context.Context, sa *corev1.Ser
 
 // workloadIdentityRules is the exact rule set a workload identity carries:
 // GET on its own Project, GET on each verified provider resource, and one
-// CREATE rule per granted action on that action's virtual subresource. The
-// owning provider enforces that coordinate with a caller-scoped SSAR, the
-// same pattern as the infrastructure data-plane exec verb. Materializing a
-// Project action grant IS writing this rule; revoking it removes the rule.
+// rule per granted action on that action's kcp custom subresource. The
+// subresource IS the capability, so the rule carries dataplane.SubresourceVerbs:
+// kcp authorizes a verb call by mapping the HTTP method onto the RBAC verb
+// (GET → get, POST → create, an upgrade → its method), and which method a
+// verb uses is the provider's transport detail, not a separate grant.
+// Materializing a Project action grant IS writing this rule; revoking it
+// removes the rule.
 func workloadIdentityRules(scope WorkloadIdentityScope) []rbacv1.PolicyRule {
 	wantRules := []rbacv1.PolicyRule{
 		{
@@ -348,7 +352,7 @@ func workloadIdentityRules(scope WorkloadIdentityScope) []rbacv1.PolicyRule {
 		for _, action := range actions {
 			providerRules = append(providerRules, rbacv1.PolicyRule{
 				APIGroups: []string{gv.Group}, Resources: []string{resource.Resource + "/" + action},
-				Verbs: []string{"create"}, ResourceNames: []string{resource.Name},
+				Verbs: append([]string(nil), dataplane.SubresourceVerbs...), ResourceNames: []string{resource.Name},
 			})
 		}
 	}

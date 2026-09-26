@@ -24,7 +24,7 @@ import (
 
 // EnsureCatalogEntry registers the provider with the hub by applying its
 // CatalogEntry (the embedded manifest) into the provider workspace, rewriting
-// the ui/backend URLs to the serve Service the operator owns. This is what makes
+// its spec.serving ui/backend URLs to the serve Service the operator owns. This is what makes
 // the provider appear in the catalog/portal — without it the workspace is
 // bootstrapped but the provider is never listed.
 func EnsureCatalogEntry(ctx context.Context, providerCfg *rest.Config, manifest []byte, serveURL string) error {
@@ -37,13 +37,18 @@ func EnsureCatalogEntry(ctx context.Context, providerCfg *rest.Config, manifest 
 		return fmt.Errorf("parse CatalogEntry manifest: %w", err)
 	}
 	if spec, ok := obj["spec"].(map[string]any); ok {
-		// Point ui + backend at the in-cluster serve Service the operator manages.
+		// Point serving.ui + serving.backend at the in-cluster serve Service the
+		// operator manages. Both live under spec.serving: a CatalogEntry says
+		// where the hub reaches it in one section, so there is one place to
+		// rewrite and no top-level spec.ui/spec.backend to fall back to.
 		if serveURL != "" {
-			if ui, ok := spec["ui"].(map[string]any); ok {
-				ui["url"] = serveURL
-			}
-			if be, ok := spec["backend"].(map[string]any); ok {
-				be["url"] = serveURL
+			if serving, ok := spec["serving"].(map[string]any); ok {
+				if ui, ok := serving["ui"].(map[string]any); ok {
+					ui["url"] = serveURL
+				}
+				if be, ok := serving["backend"].(map[string]any); ok {
+					be["url"] = serveURL
+				}
 			}
 		}
 		// Stamp the release version. The embedded manifest.yaml carries a

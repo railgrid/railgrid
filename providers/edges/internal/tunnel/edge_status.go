@@ -112,11 +112,11 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 			delete(status, "joinToken")
 		}
 
-		// Stamp the public proxy URL so `railgrid edge kubeconfig` / `railgrid ssh`
-		// have an address to externalize. This was previously set by the hub's
-		// (now-deleted) mount_reconciler; it moved here when the edge plane
-		// became a standalone provider. Idempotent: same value on every
-		// reconnect. Empty when edgeProxyPublicPath is unconfigured.
+		// Stamp the hub-relative kube path of the edge's data-plane verb so
+		// `railgrid edge kubeconfig` / `railgrid ssh` have an address to
+		// externalize. This was previously set by the hub's (now-deleted)
+		// mount_reconciler; it moved here when the edge plane became a
+		// standalone provider. Idempotent: same value on every reconnect.
 		if gvr.Resource == macOSServerResource {
 			// MacOSServer is Service-only. Clear any stale URL if an object was
 			// restored from an older status snapshot; consumers must not infer an
@@ -319,9 +319,9 @@ func (p *Server) storeSSHCredentials(ctx context.Context, cfg *rest.Config, clus
 	}
 	status["sshCredentials"] = sshStatus
 
-	// Note: status.URL (the public /services/providers/edges/edgeproxy SSH URL)
-	// is stamped by markEdgeConnected via edgeProxyStatusURL. Do NOT set it here
-	// — a relative /clusters/... path would break the CLI's SSH WebSocket dialler.
+	// Note: status.URL (the hub-relative kube path of the edge's ssh verb) is
+	// stamped by markEdgeConnected via edgeProxyStatusURL, the one renderer.
+	// Do NOT set it here.
 
 	p.logger.Info("SSH credentials stored for edge", "cluster", cluster, "edge", edgeName, "user", creds.User)
 	return nil

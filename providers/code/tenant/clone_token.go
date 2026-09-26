@@ -22,13 +22,13 @@ import (
 // that one can push to every repository the connection reaches, and it would
 // sit in a runner's environment for as long as the attempt runs.
 //
-// mint_clone_token is mint_registry_token's repository-bound sibling. The
+// mint-clone-token is mint-registry-token's repository-bound sibling. The
 // credential stays inside Code, the consumer asks for one repository, and what
 // comes back is a CLONE credential: for a GitHub App connection a fresh
 // installation token issued with contents:read alone and about an hour to
 // live, which is the narrowest thing GitHub will hand out for a git fetch.
 
-// ClonePermissions is what mint_clone_token asks a GitHub App installation
+// ClonePermissions is what mint-clone-token asks a GitHub App installation
 // for. A runner holds the token for the length of an attempt, so it must be
 // able to read a repository's contents and nothing else — not write them, not
 // packages, not workflows.

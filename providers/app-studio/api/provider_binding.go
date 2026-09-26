@@ -13,81 +13,76 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/client-go/dynamic"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/railgrid/provider-sdk/dataplane"
-	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	"github.com/railgrid/provider-app-studio/internal/crossprovider"
 )
 
-// Which provider serves a dependency is a fact about the TENANT's workspace,
-// not about this provider's configuration. A workspace may have enabled the
-// platform copy of infrastructure or its own self-hosted one, and both answer
-// to a different name under /services/providers/{name}/. App Studio used to
-// hardcode "infrastructure" and build the rest of the URL by hand, which is
-// cross-provider-simplification finding X-8: the coordinate was a constant in
-// the consumer rather than something read from the binding that makes the
-// dependency reachable at all.
+// A cross-provider call no longer needs to know which PROVIDER serves a
+// dependency in a workspace. App Studio calls another provider's verb through
+// its OWN APIExport virtual workspace, as itself, at the kube coordinate of
+// the claimed custom subresource
+// (…/clusters/{tenant}/apis/{group}/{version}/{resource}/{name}/{verb}); kcp
+// resolves the claim per consumer workspace against whichever copy of the
+// dependency that workspace bound, and forwards the call there. The
+// /services/providers/{name}/ segment that once had to be read off the
+// tenant's APIBinding (cross-provider-simplification X-8) is gone with the
+// grammar that carried it.
 //
-// The provider name is therefore read from the tenant's APIBinding for the
-// dependency's APIExport, as the caller, and the path is rendered by
-// dataplane.ProviderPath so the grammar lives in one place.
-//
-// The read is a GET of the binding named after the provider, not a LIST of
-// every binding in the workspace. The hub names each binding after the
-// provider it enables (pkg/hub/restapi/providers_enable.go), so anyone who
-// knows which dependency they want already knows the name; a list would hand
-// the caller the full inventory of what the tenant has enabled, and it is not
-// a shape the hub's scoped-identity policy will mint for a background identity
-// at all (docs/provider-connectivity-contract.md §"Scoped identities", clause
-// D). Reading the object is still the point: the export reference on it is
-// asserted against the export asked for, without which this would be the
-// hardcoded name with extra steps.
+// What remains useful is the question the binding also answered: is the
+// dependency enabled in this workspace at all? A claimed kind is served to
+// this provider's virtual workspace exactly when the consumer's binding has
+// accepted the claim, so a LIST of that kind through the export answers it —
+// crossprovider.ClaimUnaccepted is the "no" (a RESTMapper miss or a 403, not
+// an object 404).
 
-// infraAPIExportName is the APIExport the infrastructure provider serves.
-// App Studio's dependency on it is declared in manifest.yaml
-// (spec.dependencies); this is the name of the export a workspace binds when
-// it enables that dependency, whichever copy of the provider it enabled.
-const infraAPIExportName = crossprovider.InfrastructureAPIExport
+// infraAPIExportName / codeAPIExportName are the APIExports the dependencies
+// serve. App Studio's dependencies on them are declared in manifest.yaml
+// (the spec.requires entries that name a provider); these name what a workspace
+// binds when it enables each one, whichever copy of the provider it enabled.
+const (
+	infraAPIExportName = crossprovider.InfrastructureAPIExport
+	codeAPIExportName  = crossprovider.CodeAPIExport
+)
 
 // infraDependencyName is the dependency App Studio declares on the
-// infrastructure provider in manifest.yaml (spec.dependencies). It is a
+// infrastructure provider in manifest.yaml (spec.requires). It is a
 // LABEL — it names the dependency in the project view — and is never a URL
-// segment: which provider actually serves it in a given workspace comes from
-// that workspace's APIBinding, because a self-hosted copy answers to whatever
-// name the tenant enabled it under.
+// segment.
 const infraDependencyName = "infrastructure"
 
-// providerLookup resolves the provider name serving exportName in a cluster,
-// as the caller holding token. Production wires ProviderResolver; tests
-// substitute a table.
-type providerLookup func(ctx context.Context, clusterID, token, exportName string) (string, error)
+// dependencyProbe is the kind a LIST through the export proves each
+// dependency is served with. Both are claimed kinds (manifest.yaml
+// spec.requires), so the workspace serving them is the workspace that accepted
+// the dependency's claims.
+var dependencyProbe = map[string]schema.GroupVersionResource{
+	infraAPIExportName: {Group: crossprovider.InfrastructureAPIGroup, Version: "v1alpha1", Resource: crossprovider.InstancesResource},
+	codeAPIExportName:  {Group: crossprovider.CodeAPIGroup, Version: "v1alpha1", Resource: crossprovider.RepositoriesResource},
+}
 
-// DefaultProviderBindingTTL is how long a resolved provider name is reused.
-// Which provider a workspace binds changes only when someone enables or
-// disables one, so a few minutes of staleness costs a failed call at worst
-// and saves a List on every data-plane hop.
+// providerLookup reports whether exportName is enabled in a cluster, returning
+// the dependency's LABEL (the provider name as this manifest knows it) when
+// it is. Production wires DependencyResolver; tests substitute a table.
+type providerLookup func(ctx context.Context, clusterID, exportName string) (string, error)
+
+// DefaultProviderBindingTTL is how long a resolved answer is reused. Which
+// providers a workspace binds changes only when someone enables or disables
+// one, so a few minutes of staleness costs a failed call at worst.
 const DefaultProviderBindingTTL = 5 * time.Minute
 
-// ProviderResolver answers "which provider serves APIExport X in this
-// workspace" from the workspace's own APIBindings.
-//
-// The read is done as the caller — a caller who cannot see the binding cannot
-// use the provider either, so there is no reason to hold a provider identity
-// for it — and the answer is cached per (cluster, export) rather than per
-// token, because it is a property of the workspace and not of who asked.
-type ProviderResolver struct {
-	hubBase  string
-	insecure bool
-	ttl      time.Duration
+// DependencyResolver answers "is dependency X enabled in this workspace" by
+// listing one of the kinds X serves through this provider's own export.
+type DependencyResolver struct {
+	callers dataplane.ProviderCallerFactory
+	ttl     time.Duration
 
 	mu  sync.Mutex
 	hot map[string]providerEntry
@@ -98,22 +93,27 @@ type providerEntry struct {
 	expiresAt time.Time
 }
 
-// NewProviderResolver builds a resolver against a hub. ttl <= 0 takes
-// DefaultProviderBindingTTL.
-func NewProviderResolver(hubBase string, insecure bool, ttl time.Duration) *ProviderResolver {
+// NewDependencyResolver builds a resolver over the provider's caller factory.
+// ttl <= 0 takes DefaultProviderBindingTTL.
+func NewDependencyResolver(callers dataplane.ProviderCallerFactory, ttl time.Duration) *DependencyResolver {
 	if ttl <= 0 {
 		ttl = DefaultProviderBindingTTL
 	}
-	return &ProviderResolver{hubBase: strings.TrimRight(strings.TrimSpace(hubBase), "/"), insecure: insecure, ttl: ttl, hot: map[string]providerEntry{}}
+	return &DependencyResolver{callers: callers, ttl: ttl, hot: map[string]providerEntry{}}
 }
 
-// Resolve returns the provider name serving exportName in clusterID.
-func (r *ProviderResolver) Resolve(ctx context.Context, clusterID, token, exportName string) (string, error) {
-	if r == nil {
-		return "", fmt.Errorf("provider binding resolver is unavailable")
+// Resolve reports the dependency label for exportName in clusterID, or an
+// error saying the workspace does not serve it.
+func (r *DependencyResolver) Resolve(ctx context.Context, clusterID, exportName string) (string, error) {
+	if r == nil || r.callers == nil {
+		return "", fmt.Errorf("dependency resolver is unavailable")
 	}
 	if !dataplane.IsClusterID(clusterID) {
 		return "", fmt.Errorf("%q is not a kcp logical-cluster ID", clusterID)
+	}
+	probe, ok := dependencyProbe[exportName]
+	if !ok {
+		return "", fmt.Errorf("%q is not a dependency this provider declares", exportName)
 	}
 	key := clusterID + "\x00" + exportName
 	now := time.Now()
@@ -125,94 +125,83 @@ func (r *ProviderResolver) Resolve(ctx context.Context, clusterID, token, export
 		return entry.provider, nil
 	}
 
-	provider, err := r.lookup(ctx, clusterID, token, exportName)
+	provider, err := r.callers.AsProvider(clusterID)
 	if err != nil {
 		return "", err
 	}
+	if _, err := provider.Resource(probe).List(ctx, metav1.ListOptions{Limit: 1}); err != nil {
+		if crossprovider.ClaimUnaccepted(err) {
+			return "", fmt.Errorf("workspace %s binds no provider serving %s — enable the dependency in this workspace first", clusterID, exportName)
+		}
+		return "", fmt.Errorf("probing %s in cluster %q: %w", exportName, clusterID, err)
+	}
+	name := crossprovider.ProviderNameForExport(exportName)
 
 	r.mu.Lock()
-	r.hot[key] = providerEntry{provider: provider, expiresAt: now.Add(r.ttl)}
+	r.hot[key] = providerEntry{provider: name, expiresAt: now.Add(r.ttl)}
 	r.mu.Unlock()
-	return provider, nil
-}
-
-// lookup reads the workspace's APIBinding for exportName as the caller and
-// returns the provider name it addresses.
-func (r *ProviderResolver) lookup(ctx context.Context, clusterID, token, exportName string) (string, error) {
-	candidate := crossprovider.ProviderNameForExport(exportName)
-	if candidate == "" {
-		return "", fmt.Errorf("%q is not an APIExport a provider name can be derived from", exportName)
-	}
-	cfg, err := tenantaccess.RESTConfig(r.hubBase, clusterID, token, r.insecure)
-	if err != nil {
-		return "", err
-	}
-	client, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return "", fmt.Errorf("building APIBinding client for cluster %q: %w", clusterID, err)
-	}
-	binding, err := client.Resource(crossprovider.APIBindingsGVR).Get(ctx, candidate, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return "", fmt.Errorf("workspace %s binds no provider serving %s — enable the dependency in this workspace first", clusterID, exportName)
-	}
-	if err != nil {
-		return "", fmt.Errorf("reading APIBinding %q in cluster %q: %w", candidate, clusterID, err)
-	}
-	return providerForBinding(binding, exportName, clusterID)
-}
-
-// providerForBinding is the pure half of lookup: the consistency assertion
-// that this binding really is the one that makes exportName reachable, and
-// therefore that its own name is the /services/providers/{name}/ segment that
-// addresses it.
-func providerForBinding(binding *unstructured.Unstructured, exportName, clusterID string) (string, error) {
-	if binding == nil {
-		return "", fmt.Errorf("workspace %s binds no provider serving %s — enable the dependency in this workspace first", clusterID, exportName)
-	}
-	bound, _, _ := unstructured.NestedString(binding.Object, "spec", "reference", "export", "name")
-	if bound != exportName {
-		return "", fmt.Errorf("APIBinding %q in workspace %s serves %q, not %s; which provider serves the dependency here is unknown", binding.GetName(), clusterID, bound, exportName)
-	}
-	name := strings.TrimSpace(binding.GetName())
-	if name == "" {
-		return "", fmt.Errorf("the APIBinding serving %s in workspace %s has no name", exportName, clusterID)
-	}
 	return name, nil
 }
 
-// providerLookupFor wires the production resolver, or nil when there is no hub
-// to ask (bare dev / tests). A nil lookup makes every cross-provider call
-// report that it cannot address the dependency, which is the honest answer:
-// without the binding there is no coordinate to call.
-func providerLookupFor(hubBase string, insecure bool) providerLookup {
-	if strings.TrimSpace(hubBase) == "" {
+// providerLookupFor wires the production resolver, or nil when there is no
+// provider credential (bare dev / tests). A nil lookup makes every dependency
+// check report that it cannot tell, which is the honest answer.
+func providerLookupFor(callers dataplane.ProviderCallerFactory) providerLookup {
+	if callers == nil {
 		return nil
 	}
-	return NewProviderResolver(hubBase, insecure, 0).Resolve
+	return NewDependencyResolver(callers, 0).Resolve
 }
 
-// providerFor resolves the provider serving exportName for this request's
-// workspace.
+// providerFor reports whether the dependency serving exportName is enabled in
+// this request's workspace, returning its label.
 func (s *Server) providerFor(ctx context.Context, id identity, exportName string) (string, error) {
 	if s == nil || s.tenantProviders == nil {
-		return "", fmt.Errorf("cannot resolve which provider serves %s: no hub configured to read this workspace's APIBindings", exportName)
+		return "", fmt.Errorf("cannot tell whether %s is enabled: no provider credential to read this workspace with", exportName)
 	}
-	return s.tenantProviders(ctx, id.clusterID, id.token, exportName)
+	return s.tenantProviders(ctx, id.clusterID, exportName)
 }
 
-// callerFactoryFor builds the data plane's caller factory against the hub, or
-// nil when there is no hub to reach (bare dev / tests). A nil factory makes
-// dataplane.Gate refuse every request, which is the honest failure: without a
-// way to check the caller's own RBAC there is nothing to authorize against.
-func callerFactoryFor(hubBase string, insecure bool) dataplane.CallerFactory {
-	if strings.TrimSpace(hubBase) == "" {
-		return nil
-	}
-	// The hub's CA travels in the pod's trust store; insecure mirrors the
-	// RAILGRID_HUB_INSECURE knob every other hub client here honours.
-	callers, err := dataplane.NewHubCallerFactory(hubBase, nil, insecure)
-	if err != nil {
-		return nil
-	}
-	return callers
+// providerCallers is what the data plane needs of the provider's caller
+// factory: to act as the provider in a tenant workspace (the gate, every
+// handler's client), and to call a verb ANOTHER provider serves — a custom
+// subresource this provider has claimed — through its own export virtual
+// workspace with its own credential. *dataplane.Callers is the production
+// implementation.
+type providerCallers interface {
+	dataplane.ProviderCallerFactory
+	ExportVerbURL(ctx context.Context, gvr schema.GroupVersionResource, r dataplane.Request) (string, error)
+	ProviderHTTPClient() (*http.Client, error)
 }
+
+// UseProviderCallers hands the server this provider's OWN authenticated kcp
+// connection, wrapped as the caller factory every verb acts through.
+//
+// There is no other credential on the data plane: the shard authenticates the
+// caller and stamps their identity, handing over no bearer, so the gate
+// decides visibility with a SubjectAccessReview the provider runs on the
+// caller's behalf and every handler then acts as the provider through its
+// export virtual workspace. The tenant client, the workspace lookup and the
+// dependency check all ride the same factory.
+//
+// A nil factory leaves the server as it was, which keeps every verb failing
+// closed (dataplane.Gate refuses without a factory).
+func (s *Server) UseProviderCallers(callers providerCallers) {
+	if s == nil || callers == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callers = callers
+	s.tenant = tenantClientFor(callers)
+	if s.tenantWorkspaces == nil {
+		s.tenantWorkspaces = workspaceLookupFor(callers)
+	}
+	if s.tenantProviders == nil {
+		s.tenantProviders = providerLookupFor(callers)
+	}
+}
+
+// hubTokenFrom trims a bearer for the hub REST calls this provider makes as
+// itself.
+func hubTokenFrom(token string) string { return strings.TrimSpace(token) }

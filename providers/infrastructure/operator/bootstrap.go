@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
@@ -39,6 +38,10 @@ type BootstrapOptions struct {
 	KCPDir string
 	// CatalogEntryFile, when set, self-registers the CatalogEntry from this path.
 	CatalogEntryFile string
+	// DataPlaneURL is where kcp reverse-proxies an instances/<verb> request to.
+	// Empty means spec.serving.backend.url of CatalogEntryFile, which is right whenever
+	// the chart runs the operator.
+	DataPlaneURL string
 	// SkipSeedTemplates leaves the catalog empty (GitOps-managed clusters).
 	SkipSeedTemplates bool
 	// CodingSandboxEnabled opts the platform-owned universal coding sandbox
@@ -59,27 +62,24 @@ func Bootstrap(ctx context.Context, providerCfg *rest.Config, opts BootstrapOpti
 		return fmt.Errorf("install CRDs: %w", err)
 	}
 
-	dynCl, err := dynamic.NewForConfig(providerCfg)
-	if err != nil {
-		return fmt.Errorf("dynamic client: %w", err)
+	kcpDir := opts.KCPDir
+	if kcpDir == "" {
+		kcpDir = install.KCPDir()
 	}
-
-	// The APIExport shell is the generated file (manifest.yaml -> codegen ->
-	// deploy/chart/files/apiexport.yaml), read from KCPDir. Its spec.resources
-	// is empty; PlatformSchemaInAPIExport and the Template controller fill it
-	// in, and ApplyAPIExport merges instead of clobbering.
-	export, err := install.APIExport(opts.KCPDir)
-	if err != nil {
-		return fmt.Errorf("read generated APIExport: %w", err)
-	}
-	if name := export.GetName(); name != opts.APIExportName {
-		return fmt.Errorf("generated APIExport is %q but the operator was configured for %q", name, opts.APIExportName)
-	}
-	if err := sdkinstall.ApplyAPIExport(ctx, dynCl, export); err != nil {
-		return fmt.Errorf("materialize APIExport: %w", err)
-	}
-	if err := sdkinstall.ApplyBindGrant(ctx, dynCl, opts.APIExportName); err != nil {
-		return fmt.Errorf("apply bind grant: %w", err)
+	// The same bootstrap every provider runs: the shipped schemas (instances,
+	// templates and one per instances/<verb> subresource), the
+	// DataPlaneEndpointSlice, the generated APIExport, its endpoint slice, the
+	// bind grant and the CatalogEntry. Templates land on CRD storage first and
+	// are re-pointed at virtual storage below, once the identityHash is known.
+	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
+		Config:           providerCfg,
+		ExportName:       opts.APIExportName,
+		WorkspacePath:    opts.WorkspacePath,
+		KCPDir:           kcpDir,
+		CatalogEntryFile: opts.CatalogEntryFile,
+		DataPlaneURL:     opts.DataPlaneURL,
+	}); err != nil {
+		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}
 
 	if err := install.PlatformCachedResources(ctx, providerCfg); err != nil {
@@ -105,12 +105,6 @@ func Bootstrap(ctx context.Context, providerCfg *rest.Config, opts BootstrapOpti
 	}
 	if err := install.PlatformSchemaInAPIExport(ctx, providerCfg, hash); err != nil {
 		return fmt.Errorf("register APIExport schemas: %w", err)
-	}
-
-	if opts.CatalogEntryFile != "" {
-		if err := sdkinstall.ApplyCatalogEntry(ctx, dynCl, opts.CatalogEntryFile); err != nil {
-			return fmt.Errorf("apply CatalogEntry: %w", err)
-		}
 	}
 
 	if !opts.SkipSeedTemplates {

@@ -21,10 +21,10 @@ limitations under the License.
 // different audiences, and the difference matters:
 //
 //   - SavedView is the provider's ONE exported kind. It is the named resource
-//     the query verb hangs off — POST
-//     /dataplane/clusters/{id}/savedviews/{name}/run — so a tenant's query is
-//     authorized as a verb on an object they can see, not as a flat REST route
-//     whose tenant comes from a header. Its schema ships in
+//     the query verb hangs off — the kcp custom subresource savedviews/run,
+//     POST /clusters/{id}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run
+//     — so a tenant's query is authorized by kcp as a verb on an object they
+//     can see, not as a flat REST route whose tenant comes from a header. Its schema ships in
 //     deploy/chart/files/schemas/ and is attached to the APIExport by `init`.
 //
 //   - Engagement is PROVIDER-PRIVATE. It lives only in kuery's own workspace,

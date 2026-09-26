@@ -113,7 +113,7 @@ type Options struct {
 	ProviderDelegatedTokensExclude []string
 
 	// ProviderHubAccessPlatformDefault lets a platform provider use the hub
-	// capabilities it declares (CatalogEntry.spec.hubAccess) in a workspace
+	// capabilities it declares (CatalogEntry.spec.hub.access) in a workspace
 	// where no tenant decision was recorded yet. Platform providers are
 	// operator-installed and, under ProviderDelegatedTokens=off, hold the
 	// caller's own bearer anyway; this keeps them working across the upgrade

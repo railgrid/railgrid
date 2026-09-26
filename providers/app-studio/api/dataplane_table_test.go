@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-sdk/dataplane"
 	"sigs.k8s.io/yaml"
 )
@@ -32,14 +33,21 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Coordinates hang off the resource they are served on, so a declared
+	// verb is read as {resource}/{verb} from its parent entry.
 	var manifest struct {
 		Spec struct {
-			DataPlane struct {
-				Verbs []struct {
-					Resource string `json:"resource"`
-					Verb     string `json:"verb"`
-				} `json:"verbs"`
-			} `json:"dataPlane"`
+			Export struct {
+				Resources []struct {
+					Name  string `json:"name"`
+					Verbs []struct {
+						Name string `json:"name"`
+					} `json:"verbs"`
+					Actions []struct {
+						Name string `json:"name"`
+					} `json:"actions"`
+				} `json:"resources"`
+			} `json:"export"`
 		} `json:"spec"`
 	}
 	if err := yaml.Unmarshal(raw, &manifest); err != nil {
@@ -47,8 +55,15 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 	}
 
 	declared := []string{}
-	for _, v := range manifest.Spec.DataPlane.Verbs {
-		declared = append(declared, v.Resource+"/"+v.Verb)
+	for _, resource := range manifest.Spec.Export.Resources {
+		for _, verb := range resource.Verbs {
+			declared = append(declared, resource.Name+"/"+verb.Name)
+		}
+		// An action is a coordinate too: it is served on the same path and
+		// routed by the same table, so it belongs in this comparison.
+		for _, action := range resource.Actions {
+			declared = append(declared, resource.Name+"/"+action.Name)
+		}
 	}
 	served := []string{}
 	for resource, byVerb := range verbIndex {
@@ -78,9 +93,10 @@ func missing(a, b []string) []string {
 	return out
 }
 
-// Every declared verb has to survive a round trip through the grammar: the
-// hub renders a consumer's coordinate with dataplane.ProviderPath, and a verb
-// that does not round-trip is one no consumer can call however it is granted.
+// Every declared verb has to survive a round trip through the grammar: a
+// consumer renders the coordinate with dataplane.SubresourcePath, kcp routes
+// it as the custom subresource "{resource}/{verb}", and a verb that does not
+// round-trip is one no consumer can call however it is granted.
 func TestEveryVerbIsAddressable(t *testing.T) {
 	const cluster = "rgl3jcl2cfl3xa5p"
 	for resource, byVerb := range verbIndex {
@@ -89,14 +105,14 @@ func TestEveryVerbIsAddressable(t *testing.T) {
 				t.Errorf("%s/%s has no handler", resource, verb)
 			}
 			request := dataplane.Request{ClusterID: cluster, Resource: resource, Name: "demo", Verb: verb}
-			path, err := request.Path(dataplane.DataplaneRoot)
+			path, err := verbPath(request)
 			if err != nil {
 				t.Errorf("%s/%s is not addressable: %v", resource, verb, err)
 				continue
 			}
-			parsed, ok := dataplane.ParsePath(dataplane.DataplaneRoot, path)
-			if !ok || parsed != request {
-				t.Errorf("%s/%s does not round-trip: %q -> %+v (ok=%v)", resource, verb, path, parsed, ok)
+			parsed, err := dataplane.ParseSubresourcePath(path)
+			if err != nil || parsed.Request != request || parsed.Group != aiv1alpha1.GroupName || parsed.APIVersion != aiv1alpha1.Version {
+				t.Errorf("%s/%s does not round-trip: %q -> %+v (%v)", resource, verb, path, parsed, err)
 			}
 		}
 	}

@@ -29,7 +29,7 @@ func TestSearchRequest(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("brave is the default and keeps its own auth header", func(t *testing.T) {
-		req, err := searchRequest(ctx, searchConn("brave", agentsv1alpha1.ConnectionSpec{}), DataPlane{}, "tok", "railgrid agents")
+		req, _, err := searchRequest(ctx, searchConn("brave", agentsv1alpha1.ConnectionSpec{}), DataPlane{}, "tok", "railgrid agents")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -45,7 +45,7 @@ func TestSearchRequest(t *testing.T) {
 	})
 
 	t.Run("brave without a token is a clear error", func(t *testing.T) {
-		_, err := searchRequest(ctx, searchConn("brave", agentsv1alpha1.ConnectionSpec{}), DataPlane{}, "", "x")
+		_, _, err := searchRequest(ctx, searchConn("brave", agentsv1alpha1.ConnectionSpec{}), DataPlane{}, "", "x")
 		if err == nil || !strings.Contains(err.Error(), "token") {
 			t.Fatalf("want a missing-token error, got %v", err)
 		}
@@ -56,7 +56,7 @@ func TestSearchRequest(t *testing.T) {
 			BaseURL: "https://searxng-abc.apps.example.com",
 			Config:  map[string]string{"provider": "searxng"},
 		})
-		req, err := searchRequest(ctx, conn, DataPlane{}, "t0ken", "who is ada lovelace")
+		req, _, err := searchRequest(ctx, conn, DataPlane{}, "t0ken", "who is ada lovelace")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +76,7 @@ func TestSearchRequest(t *testing.T) {
 			BaseURL: "https://s.example.com/search",
 			Config:  map[string]string{"provider": "searxng"},
 		})
-		req, err := searchRequest(ctx, conn, DataPlane{}, "", "x")
+		req, _, err := searchRequest(ctx, conn, DataPlane{}, "", "x")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +91,7 @@ func TestSearchRequest(t *testing.T) {
 
 	t.Run("searxng without a baseURL is a clear error", func(t *testing.T) {
 		conn := searchConn("local", agentsv1alpha1.ConnectionSpec{Config: map[string]string{"provider": "searxng"}})
-		_, err := searchRequest(ctx, conn, DataPlane{}, "", "x")
+		_, _, err := searchRequest(ctx, conn, DataPlane{}, "", "x")
 		if err == nil || !strings.Contains(err.Error(), "baseURL") {
 			t.Fatalf("want a missing-baseURL error, got %v", err)
 		}
@@ -99,7 +99,7 @@ func TestSearchRequest(t *testing.T) {
 
 	t.Run("an unknown provider names the valid options", func(t *testing.T) {
 		conn := searchConn("x", agentsv1alpha1.ConnectionSpec{Config: map[string]string{"provider": "google"}})
-		_, err := searchRequest(ctx, conn, DataPlane{}, "", "x")
+		_, _, err := searchRequest(ctx, conn, DataPlane{}, "", "x")
 		if err == nil || !strings.Contains(err.Error(), "searxng") {
 			t.Fatalf("want an error listing the supported providers, got %v", err)
 		}
@@ -187,39 +187,44 @@ func TestDialGuard(t *testing.T) {
 }
 
 // A searxng connection that names an instance is addressed over the
-// infrastructure provider's data plane — no public hostname, no instance
-// credential, authorized by the caller's own RBAC on the instance.
+// infrastructure provider's instances/proxy verb through this provider's own
+// export virtual workspace — no public hostname, no instance credential, and
+// no caller credential: the call is made as this provider, authorized by the
+// claim the tenant accepted.
 func TestDataPlaneSearchRequest(t *testing.T) {
 	ctx := context.Background()
-	dp := DataPlane{HubBase: "https://hub.example.com", ClusterID: "23qp2e0jwjeqwp2i", Token: "user-token", Provider: "infrastructure"}
+	dp := DataPlane{ClusterID: "23qp2e0jwjeqwp2i", Callers: fakeVerbCaller{endpoint: testVW}}
 	instanceConn := func(cfg map[string]string) *agentsv1alpha1.Connection {
 		cfg["provider"] = "searxng"
 		return searchConn("search", agentsv1alpha1.ConnectionSpec{Config: cfg})
 	}
 
-	t.Run("addresses the instance through the hub data plane", func(t *testing.T) {
-		req, err := searchRequest(ctx, instanceConn(map[string]string{"instance": "search"}), dp, "", "ada lovelace")
+	t.Run("addresses the instance through the export virtual workspace", func(t *testing.T) {
+		req, client, err := searchRequest(ctx, instanceConn(map[string]string{"instance": "search"}), dp, "", "ada lovelace")
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "https://hub.example.com/services/providers/infrastructure/dataplane/clusters/23qp2e0jwjeqwp2i/instances/search/proxy/search"
+		want := testVW + "/clusters/23qp2e0jwjeqwp2i/apis/infrastructure.railgrid.ai/v1alpha1/instances/search/proxy/search"
 		if got := req.URL.Scheme + "://" + req.URL.Host + req.URL.Path; got != want {
 			t.Fatalf("url = %s\nwant %s", got, want)
 		}
 		if req.URL.Query().Get("format") != "json" || req.URL.Query().Get("q") != "ada lovelace" {
 			t.Fatalf("query not composed: %s", req.URL.RawQuery)
 		}
-		// The caller's token is what the data plane authorizes with; the
-		// instance itself holds no credential.
-		if req.Header.Get("Authorization") != "Bearer user-token" {
+		// The provider's own client authenticates the call; no bearer rides
+		// on the request, and the instance itself holds no credential.
+		if req.Header.Get("Authorization") != "" {
 			t.Fatalf("headers = %v", req.Header)
+		}
+		if client == nil {
+			t.Fatal("an instance-backed request must come with the provider's HTTP client")
 		}
 	})
 
 	t.Run("an instance reference wins over a stale baseURL", func(t *testing.T) {
 		conn := instanceConn(map[string]string{"instance": "search"})
 		conn.Spec.BaseURL = "https://leftover-public-url.example.com"
-		req, err := searchRequest(ctx, conn, dp, "", "x")
+		req, _, err := searchRequest(ctx, conn, dp, "", "x")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,30 +233,30 @@ func TestDataPlaneSearchRequest(t *testing.T) {
 		}
 	})
 
-	t.Run("a run with no identity gets a precise error, not a bare 401 two hops away", func(t *testing.T) {
-		noToken := DataPlane{HubBase: dp.HubBase, ClusterID: dp.ClusterID}
-		_, err := searchRequest(ctx, instanceConn(map[string]string{"instance": "search"}), noToken, "", "x")
+	t.Run("a provider with no provider-scoped config gets a precise error", func(t *testing.T) {
+		cold := DataPlane{ClusterID: dp.ClusterID}
+		_, _, err := searchRequest(ctx, instanceConn(map[string]string{"instance": "search"}), cold, "", "x")
 		if err == nil {
-			t.Fatal("want an error explaining the run has no identity to authorize as")
+			t.Fatal("want an error explaining the provider cannot reach the data plane")
 		}
-		if !strings.Contains(err.Error(), "no identity") {
-			t.Fatalf("error should name the missing identity: %v", err)
+		if !strings.Contains(err.Error(), "provider-scoped kubeconfig") {
+			t.Fatalf("error should name the missing provider config: %v", err)
 		}
 	})
 
-	t.Run("a custom template resource is honoured", func(t *testing.T) {
-		req, err := searchRequest(ctx, instanceConn(map[string]string{"instance": "s", "instanceResource": "mysearches"}), dp, "", "x")
+	t.Run("the instance resource is overridable per connection", func(t *testing.T) {
+		req, _, err := searchRequest(ctx, instanceConn(map[string]string{"instance": "s", "instanceResource": "mysearches"}), dp, "", "x")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(req.URL.Path, "/mysearches/s/proxy/") {
-			t.Fatalf("path = %s", req.URL.Path)
+		if !strings.Contains(req.URL.Path, "/infrastructure.railgrid.ai/v1alpha1/mysearches/s/proxy/search") {
+			t.Fatalf("resource override not applied: %s", req.URL.Path)
 		}
 	})
 
-	t.Run("names neither an instance nor a baseURL", func(t *testing.T) {
-		_, err := searchRequest(ctx, instanceConn(map[string]string{}), dp, "", "x")
-		if err == nil || !strings.Contains(err.Error(), "instance") {
+	t.Run("searxng with no instance and no baseURL names both options", func(t *testing.T) {
+		_, _, err := searchRequest(ctx, instanceConn(map[string]string{}), dp, "", "x")
+		if err == nil || !strings.Contains(err.Error(), "neither an instance nor a baseURL") {
 			t.Fatalf("want an error naming both options, got %v", err)
 		}
 	})

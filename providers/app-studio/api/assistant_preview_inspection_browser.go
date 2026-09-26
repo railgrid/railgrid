@@ -269,10 +269,10 @@ func (s *Server) browserSessionHandoffURL(ctx context.Context, id identity, hubO
 	if err != nil {
 		return "", err
 	}
-	if token := strings.TrimSpace(id.token); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
+	// A hub REST call, made as the provider (there is no caller bearer on a
+	// verb); the caller's name travels as a label.
+	s.setHubCallerHeaders(req.Header, id)
+	resp, err := s.hubHTTPClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("mint browser session handoff: %w", err)
 	}

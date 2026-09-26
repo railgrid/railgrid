@@ -21,11 +21,13 @@ import (
 )
 
 // buildDataPlaneHandler wires the data-plane subresource handler for serve.
-// Returns nil (the handler then reports 503) when the provider has no kcp config
-// or no runtime cluster — the dev/REST-only flow.
+// Returns nil (the data plane is then absent) when the provider has no kcp
+// config or no runtime cluster — the dev flow.
 //
-//   - InstanceGetter authorizes + fetches the instance AS THE CALLER via the
-//     tenant client factory (caller RBAC is the access gate).
+//   - The caller factory acts AS THE PROVIDER through its APIExport virtual
+//     workspace: dataplane.Gate decides the caller's visibility of the
+//     Instance with a SubjectAccessReview on their behalf and reads it as the
+//     provider. There is no caller credential on a verb.
 //   - ContractGetter reads Templates with the provider's own kcp client
 //     (platform-owned, cluster-scoped) to find the dataPlane contract.
 //   - Runtime holds the only runtime-cluster credential in the request path.
@@ -52,11 +54,15 @@ func buildDataPlaneHandler(kcpConfig *rest.Config) *dataplane.Handler {
 		return nil
 	}
 
-	// The data plane's only credential is the caller's own bearer: the SDK
-	// factory keeps the provider kubeconfig's host and CA and drops every way
-	// of authenticating as the provider, so a request with no token fails
-	// rather than silently acting as the platform.
-	callers, err := sdkdataplane.NewCallerFactory(kcpConfig)
+	// A verb is reached only as a kcp custom subresource: the shard
+	// authenticates the caller itself and stamps requestheader identity
+	// without handing over any bearer, so the gate is a SubjectAccessReview
+	// the PROVIDER runs on the caller's behalf, through its export virtual
+	// workspace (WithProviderConfig). It is the same authenticated config
+	// this process already holds for its own reads — nothing newly minted —
+	// and dataplane.Gate reaches it only for a request serve's subresource
+	// adapter parsed and stamped.
+	callers, err := sdkdataplane.NewCallerFactory(kcpConfig, sdkdataplane.WithProviderConfig(kcpConfig, apiExportName))
 	if err != nil {
 		log.Printf("data plane: disabled (caller factory: %v)", err)
 		return nil

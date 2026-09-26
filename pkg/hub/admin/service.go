@@ -46,14 +46,6 @@ import (
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
-// exportsWorkspace is where the platform APIExports live (system:controllers).
-// ListRootIdentities reads APIExport identity hashes from here.
-const exportsWorkspace = kcppaths.SystemControllers
-
-var apiExportGVR = schema.GroupVersionResource{
-	Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports",
-}
-
 // providerGVR is the declarative Provider provisioning record. Provider objects
 // live in root:railgrid:system:providers; creating one drives the Provider
 // reconciler (pkg/hub/providers/provider_controller.go) to provision the
@@ -444,59 +436,6 @@ func (s *Service) ListOnboardedWorkspaces(ctx context.Context) ([]OnboardedWorks
 	out := make([]OnboardedWorkspace, 0, len(ws))
 	for _, w := range ws {
 		out = append(out, OnboardedWorkspace{Name: w.Name, Cluster: w.Cluster, Phase: w.Phase})
-	}
-	return out, nil
-}
-
-// RootIdentity is one (group, resource) served by a first-party APIExport,
-// together with the identityHash kcp minted for it. The admin copies the hash a
-// provider needs (e.g. edges.railgrid.ai for kuery) into that provider's
-// Helm values so its `init` can stamp it onto the APIExport's permissionClaim.
-type RootIdentity struct {
-	Group        string `json:"group"`
-	Resource     string `json:"resource"`
-	IdentityHash string `json:"identityHash"`
-	Export       string `json:"export"`
-	Path         string `json:"path"`
-}
-
-// ListRootIdentities returns the (group, resource → identityHash) tuples served
-// by the APIExports in the providers parent workspace. An empty identityHash
-// means kcp has not minted the export's identity yet.
-func (s *Service) ListRootIdentities(ctx context.Context) ([]RootIdentity, error) {
-	cfg := rest.CopyConfig(s.kcpConfig)
-	cfg.Host = apiurl.KCPClusterURL(cfg.Host, exportsWorkspace)
-	cl, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("dynamic client for %s: %w", exportsWorkspace, err)
-	}
-	list, err := cl.Resource(apiExportGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("listing APIExports in %s: %w", exportsWorkspace, err)
-	}
-	out := make([]RootIdentity, 0)
-	for i := range list.Items {
-		ex := &list.Items[i]
-		hash, _, _ := unstructured.NestedString(ex.Object, "status", "identityHash")
-		resources, _, _ := unstructured.NestedSlice(ex.Object, "spec", "resources")
-		for _, r := range resources {
-			rm, ok := r.(map[string]any)
-			if !ok {
-				continue
-			}
-			group, _ := rm["group"].(string)
-			resource, _ := rm["name"].(string)
-			if group == "" {
-				continue // built-in types need no identityHash
-			}
-			out = append(out, RootIdentity{
-				Group:        group,
-				Resource:     resource,
-				IdentityHash: hash,
-				Export:       ex.GetName(),
-				Path:         exportsWorkspace,
-			})
-		}
 	}
 	return out, nil
 }

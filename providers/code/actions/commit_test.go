@@ -14,57 +14,37 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	api "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
 	"github.com/railgrid/provider-code/commitbundle"
 	"github.com/railgrid/provider-sdk/actionwire"
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	ktesting "k8s.io/client-go/testing"
 )
 
-// commitFixture wires the two clients an action sees — the caller's, which
-// both gates run through, and the provider's own export client, which writes
-// the RepositoryCommit — over a real on-disk bundle store.
+// commitFixture wires the one client an action acts through — the provider's
+// own, through its export virtual workspace, which the gate reads with and the
+// commit verbs write the RepositoryCommit with — over a real on-disk bundle
+// store. visible says whether the stamped caller may see the Repository.
 type commitFixture struct {
 	server   *Server
+	callers  *conformance.FakeCallers
 	provider *dynamicfake.FakeDynamicClient
 	bundles  *commitbundle.FileStore
-	granted  map[string]bool
-	checked  map[string]string
+	visible  bool
 }
 
 func newCommitFixture(t *testing.T) *commitFixture {
 	t.Helper()
-	repo := &api.Repository{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository"},
-		ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo-uid"},
-		Spec:       api.RepositorySpec{ConnectionRef: "git", Name: "product"},
-		Status:     api.RepositoryStatus{RepoID: "123"},
-	}
-	listKinds := map[schema.GroupVersionResource]string{
-		{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "repositories"}:      "RepositoryList",
-		{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "repositorycommits"}: "RepositoryCommitList",
-	}
-	f := &commitFixture{
-		granted: map[string]bool{"create": true},
-		checked: map[string]string{},
-	}
-	caller := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, actionObject(t, repo))
-	caller.PrependReactor("create", "selfsubjectaccessreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
-		object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured)
-		attrs, _, _ := unstructured.NestedMap(object.Object, "spec", "resourceAttributes")
-		verb, _ := attrs["verb"].(string)
-		subresource, _ := attrs["subresource"].(string)
-		f.checked[verb] = subresource
-		return true, &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"allowed": f.granted[verb]}}}, nil
-	})
-
-	f.provider = dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, actionObject(t, repo))
+	f := &commitFixture{visible: true}
+	f.callers = newCallers(func(a conformance.Attributes) bool {
+		return f.visible && allowGet("repositories", "product")(a)
+	}, actionObject(t, testRepository()))
+	f.provider = providerClient(t, f.callers)
 	// kcp stamps the logical cluster on everything it serves; the executor
 	// refuses to leave a commit behind whose bundle it cannot scope.
 	f.provider.PrependReactor("create", "repositorycommits", func(action ktesting.Action) (bool, runtime.Object, error) {
@@ -73,7 +53,7 @@ func newCommitFixture(t *testing.T) *commitFixture {
 		if annotations == nil {
 			annotations = map[string]string{}
 		}
-		annotations["kcp.io/cluster"] = "tenant-id"
+		annotations["kcp.io/cluster"] = testCluster
 		object.SetAnnotations(annotations)
 		object.SetUID("commit-uid")
 		return false, nil, nil
@@ -84,9 +64,7 @@ func newCommitFixture(t *testing.T) *commitFixture {
 		t.Fatal(err)
 	}
 	f.bundles = store
-	f.server = New(callerFixture{client: caller, t: t}, func(_ context.Context, _ string, _ schema.GroupVersionResource, _ string) (dynamic.Interface, error) {
-		return f.provider, nil
-	}, backend.NewRegistry())
+	f.server = New(f.callers, backend.NewRegistry())
 	f.server.Bundles = store
 	return f
 }
@@ -97,11 +75,8 @@ func (f *commitFixture) invoke(t *testing.T, verb string, input map[string]any) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/actions/clusters/tenant-id/repositories/product/"+verb+"/v1", bytes.NewReader(body))
-	request.Header.Set("X-Railgrid-Cluster", "tenant-id")
-	request.Header.Set("Authorization", "Bearer caller-token")
 	response := httptest.NewRecorder()
-	f.server.ServeHTTP(response, request)
+	f.server.ServeHTTP(response, actionRequest(http.MethodPost, kubePath(testCluster, "repositories", "product", verb), bytes.NewReader(body), testUser))
 	var envelope actionwire.Envelope
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatalf("response is not an action envelope: %s", response.Body.String())
@@ -109,9 +84,12 @@ func (f *commitFixture) invoke(t *testing.T, verb string, input map[string]any) 
 	return response, envelope
 }
 
-// The whole point of the action: the two gates pass, the bundle lands in the
-// provider's own store, a RepositoryCommit pointing at it is created, and the
-// caller is told which object to watch — never the file contents back.
+var repositoryCommits = schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "repositorycommits"}
+
+// The whole point of the action: the gate passes, the bundle lands in the
+// provider's own store, a RepositoryCommit pointing at it is created AS THE
+// PROVIDER, and the caller is told which object to watch — never the file
+// contents back.
 func TestCommitActionCreatesRepositoryCommit(t *testing.T) {
 	f := newCommitFixture(t)
 	response, envelope := f.invoke(t, Commit, map[string]any{
@@ -126,9 +104,6 @@ func TestCommitActionCreatesRepositoryCommit(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", response.Code, response.Body.String())
 	}
-	if f.checked["create"] != Commit {
-		t.Fatalf("gate 2 asked about repositories/%q, want repositories/%s", f.checked["create"], Commit)
-	}
 	var result commitOutput
 	if err := json.Unmarshal(envelope.Result, &result); err != nil {
 		t.Fatal(err)
@@ -137,8 +112,7 @@ func TestCommitActionCreatesRepositoryCommit(t *testing.T) {
 		t.Fatalf("result does not name the commit to watch: %+v", result)
 	}
 
-	created, err := f.provider.Resource(schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "repositorycommits"}).
-		Get(context.Background(), result.Commit.Name, metav1.GetOptions{})
+	created, err := f.provider.Resource(repositoryCommits).Get(context.Background(), result.Commit.Name, metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +124,7 @@ func TestCommitActionCreatesRepositoryCommit(t *testing.T) {
 	if _, found, _ := unstructured.NestedFieldNoCopy(created.Object, "spec", "files"); found {
 		t.Fatal("file contents leaked into the RepositoryCommit spec")
 	}
-	bundle, err := f.bundles.Get(context.Background(), "tenant-id", ref, digest)
+	bundle, err := f.bundles.Get(context.Background(), testCluster, ref, digest)
 	if err != nil {
 		t.Fatalf("bundle is not readable under the commit's cluster scope: %v", err)
 	}
@@ -159,7 +133,7 @@ func TestCommitActionCreatesRepositoryCommit(t *testing.T) {
 	}
 }
 
-// A body too large to declare goes through stage_commit_bundle, and the
+// A body too large to declare goes through stage-commit-bundle, and the
 // handle it returns is the one thing commit needs afterwards.
 func TestStagedBundleCommits(t *testing.T) {
 	f := newCommitFixture(t)
@@ -173,9 +147,6 @@ func TestStagedBundleCommits(t *testing.T) {
 	}
 	if staged.BundleRef == "" || staged.BundleDigest == "" || staged.FileCount != 1 {
 		t.Fatalf("staging returned no usable handle: %+v", staged)
-	}
-	if f.checked["create"] != StageCommitBundle {
-		t.Fatalf("staging was gated on repositories/%q", f.checked["create"])
 	}
 
 	response, envelope := f.invoke(t, Commit, map[string]any{
@@ -196,9 +167,9 @@ func TestStagedBundleCommits(t *testing.T) {
 	}
 }
 
-// A handle nobody staged, a UID that does not match what gate 1 returned, and
-// a body naming both sources are all caller bugs, and none of them leaves a
-// RepositoryCommit behind.
+// A handle nobody staged, a UID that does not match what the gate returned,
+// and a body naming both sources are all caller bugs, and none of them leaves
+// a RepositoryCommit behind.
 func TestCommitActionRefusals(t *testing.T) {
 	for name, input := range map[string]map[string]any{
 		"unknown bundle": {"repositoryUID": "repo-uid", "bundleRef": "bundle-does-not-exist"},
@@ -222,8 +193,7 @@ func TestCommitActionRefusals(t *testing.T) {
 			if envelope.Error == nil || envelope.Error.Code == "" {
 				t.Fatalf("refusal carries no typed code: %s", response.Body.String())
 			}
-			list, err := f.provider.Resource(schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "repositorycommits"}).
-				List(context.Background(), metav1.ListOptions{})
+			list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -234,16 +204,23 @@ func TestCommitActionRefusals(t *testing.T) {
 	}
 }
 
-// Gate 2 is per action: a grant to commit is not a grant to stage, and a
-// caller with neither gets nothing.
-func TestCommitActionDeniedWithoutGrant(t *testing.T) {
+// The gate is visibility: a caller who cannot see the Repository gets the
+// contract's non-disclosing 404, and nothing is written.
+func TestCommitActionDeniedWithoutVisibility(t *testing.T) {
 	f := newCommitFixture(t)
-	f.granted = map[string]bool{}
+	f.visible = false
 	response, _ := f.invoke(t, Commit, map[string]any{
 		"repositoryUID": "repo-uid",
 		"files":         []any{map[string]any{"path": "a.txt", "content": "a"}},
 	})
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", response.Code)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", response.Code)
+	}
+	list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 0 {
+		t.Fatalf("a denied commit left %d RepositoryCommit(s) behind", len(list.Items))
 	}
 }

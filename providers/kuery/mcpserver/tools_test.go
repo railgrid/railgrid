@@ -279,7 +279,9 @@ func TestImpactFindsDeployment(t *testing.T) {
 // That is the whole point of the change these tests cover. The tools used to
 // read the tenant out of a header and query the store directly, so a grant on
 // the MCP endpoint was a grant over the entire fleet. Now every call is the
-// run verb on a named SavedView, and the two gates decide.
+// run verb on a named SavedView, and the two gates decide — run as the caller
+// here, because MCP is the one class that still carries the caller's bearer
+// (the verb route has kcp authorize the grant before it forwards).
 type mcpFixture struct {
 	handler http.Handler
 	callers *conformance.FakeCallers
@@ -295,6 +297,7 @@ func newMCPFixture(t *testing.T, eng *engine.Engine, engaged []string) *mcpFixtu
 	views := kueryv1alpha1.SavedViewsResource
 	callers := &conformance.FakeCallers{
 		Cluster: testTenant,
+		User:    "agent@railgrid.test",
 		Token:   mcpToken,
 		Objects: []*unstructured.Unstructured{{Object: map[string]any{
 			"apiVersion": kueryv1alpha1.SchemeGroupVersion.String(),

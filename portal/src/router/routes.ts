@@ -113,7 +113,6 @@ export const routes = [
     children: [
       { path: '', redirect: '/bonkers/providers' },
       { path: 'providers', name: 'bonkers-providers', component: () => import('@/pages/bonkers/ProvidersSection.vue') },
-      { path: 'identities', name: 'bonkers-identities', component: () => import('@/pages/bonkers/IdentitiesSection.vue') },
       { path: 'organizations', name: 'bonkers-organizations', component: () => import('@/pages/bonkers/OrgsSection.vue') },
       { path: 'users', name: 'bonkers-users', component: () => import('@/pages/bonkers/UsersSection.vue') },
     ],

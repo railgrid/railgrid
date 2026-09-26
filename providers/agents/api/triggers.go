@@ -179,8 +179,8 @@ func (s *Server) applyTriggerUpdate(ctx context.Context, c *agentsclient.Client,
 	return out, nil
 }
 
-// runTriggerNow fires a trigger's task immediately as the calling user with an
-// optional payload, asynchronously: 202 + runID, output delivered to the
+// runTriggerNow fires a trigger's task immediately with an optional payload,
+// asynchronously: 202 + runID, output delivered to the
 // trigger's channel like a real event. Mirrors schedule "run now".
 func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 	c, id, ok := s.requireClient(w, r)

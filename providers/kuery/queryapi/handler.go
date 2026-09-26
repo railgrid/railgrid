@@ -9,19 +9,24 @@
 // Package queryapi is the ONLY entry point to the kuery store.
 //
 // There is exactly one route into it — the query verb on a named SavedView,
-// POST /dataplane/clusters/{clusterID}/savedviews/{name}/run (run.go) — and it
-// authorizes every request as the caller, twice, before the engine is touched.
-// What used to be here instead was a flat POST /api/query whose tenant came
-// from the X-Railgrid-Cluster header and whose bearer was never looked at; it
-// was safe only for as long as the hub proxy stripped and re-injected that
-// header, and a request sent straight at the pod would have been believed. It
-// is gone, along with /api/edges, /api/status and the RAILGRID_DEV_ALLOW_TENANT_QUERY
-// "?tenant=" escape hatch. No compatibility route replaced them.
+// the kcp custom subresource savedviews/run on kuery's APIExport,
+// POST /clusters/{clusterID}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run
+// (run.go). kcp authenticates the caller and authorizes the verb with ordinary
+// RBAC before forwarding the request with the caller's identity stamped in
+// requestheader headers; the handler then settles visibility of the SavedView
+// on the caller's behalf and acts as the provider. What used to be here
+// instead was a flat POST /api/query whose tenant came from the
+// X-Railgrid-Cluster header and whose bearer was never looked at; it was safe
+// only for as long as the hub proxy stripped and re-injected that header, and
+// a request sent straight at the pod would have been believed. It is gone,
+// along with /api/edges, /api/status, the RAILGRID_DEV_ALLOW_TENANT_QUERY
+// "?tenant=" escape hatch and, later, the hub-proxied /dataplane/ spelling of
+// the verb. No compatibility route replaced any of them.
 //
 // Tenant identity is the tenant workspace's kcp logical-cluster ID, and it
 // comes from the request PATH: the engagement controller keys engaged clusters
 // "{clusterID}/{edge}", the Engagement records key on the same ID, and the
-// gates run against that same ID. Workspace paths are never identity — the
+// gate runs against that same ID. Workspace paths are never identity — the
 // data-plane grammar refuses one in the cluster position rather than
 // translating it.
 package queryapi

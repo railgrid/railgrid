@@ -250,7 +250,7 @@ func newEvaluationSkillRouter(t *testing.T) (*mux.Router, *workspace.FileStore) 
 	server := NewWithWorkspace(proxy.Client(), nil, files, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
-	bindTestProjectLedger(t, files, proxy.Client(), "cluster-a", "alice-token")
+	bindTestProjectLedger(t, files, proxy.Client(), "cluster-a")
 	router := mux.NewRouter()
 	server.Register(router)
 	return router, files
@@ -259,7 +259,7 @@ func newEvaluationSkillRouter(t *testing.T) (*mux.Router, *workspace.FileStore) 
 var evaluationSkillRequest = func(method, target, body string) *http.Request {
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+"alice-token")
+	req = stampTestCaller(req, testUserForToken("alice-token"))
 	req.Header.Set("X-Railgrid-User", "alice")
 	req.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	req.Header.Set("X-Railgrid-Cluster", "cluster-a")

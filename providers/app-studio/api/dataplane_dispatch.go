@@ -53,8 +53,8 @@ func (s *Server) projectPublishingGrantWrite(w http.ResponseWriter, r *http.Requ
 }
 
 // adoptProjectAssistantSession creates the Session projection for a thread
-// that has none, as the caller, so the thread becomes addressable as
-// sessions/{thread}.
+// that has none, as the provider (the caller passed the Project's own gate),
+// so the thread becomes addressable as sessions/{thread}.
 //
 // It is deliberately narrow: the thread must already exist in the store for
 // THIS project, so adopting cannot mint a projection for a conversation the

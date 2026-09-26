@@ -377,7 +377,7 @@ func TestEnvCommand(t *testing.T) {
 		"export ORG='org-b'",
 		"export WS='ws-b1'",
 		"export TOKEN='" + fakeUserToken + "'",
-		"export AS='" + hub.URL + "/services/providers/app-studio'",
+		"export AS='" + hub.URL + "/clusters/cl-b/apis/ai.railgrid.ai/v1alpha1'",
 		"export MCP_URL='" + hub.URL + "/mcp'",
 		"export MCP_TOKEN='" + fakeMCPToken + "'",
 	}, "\n") + "\n"

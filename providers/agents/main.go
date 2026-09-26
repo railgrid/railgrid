@@ -19,8 +19,10 @@
 //   - /healthz, /readyz                 liveness and virtual-workspace readiness
 //   - /mcp, /mcp/sse                    the MCP transport the hub's aggregate
 //     federates as agents__* tools
-//   - /dataplane/clusters/{id}/…        every tenant verb (chat, run, …), gated
-//     as the caller — see api/dataplane.go
+//   - /clusters/{id}/apis/agents.railgrid.ai/v1alpha1/{resource}/{name}/{verb}
+//     every tenant verb (chat, run, …) as the kcp custom subresource a shard
+//     forwards, gated on the stamped caller and run as the provider — see
+//     api/dataplane.go. This is the only way a verb is reached.
 //   - /oauth/…                          the browser OAuth popup flow
 //   - /webhooks/…                       signed inbound trigger and channel hooks
 //   - everything else                   the portal micro-frontend, mounted in
@@ -127,7 +129,15 @@ func runServe() {
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
-	handler, err := buildHandler(srv, vwhealth.Handler(vwState), dist)
+	// Which "<resource>/<verb>" coordinates are answered on the path a kcp
+	// shard forwards, read from the CatalogEntry manifest this image ships so
+	// the routes cannot drift from the declaration. A verb is reached no other
+	// way, so a missing manifest is fatal.
+	subresources, err := subresourceRoutes()
+	if err != nil {
+		log.Fatalf("custom subresource routes: %v", err)
+	}
+	handler, err := buildHandler(srv, vwhealth.Handler(vwState), dist, subresources)
 	if err != nil {
 		log.Fatalf("server: %v", err)
 	}
@@ -171,7 +181,7 @@ func runServe() {
 // list of Pillar 2 route classes. It is a function of its own so a test can
 // prove serve.New accepts this layout — otherwise the only place that is
 // checked is a log.Fatalf on the first startup after a mistake.
-func buildHandler(srv *api.Server, readiness http.Handler, dist fs.FS) (http.Handler, error) {
+func buildHandler(srv *api.Server, readiness http.Handler, dist fs.FS, subresources map[string]serve.SubresourceRoute) (http.Handler, error) {
 	// Class (d): the popup flow's public callback (the signed state is the
 	// auth) plus the deployment probe the connection form reads to decide
 	// whether the user has to paste their own client id and secret. Neither has
@@ -195,7 +205,11 @@ func buildHandler(srv *api.Server, readiness http.Handler, dist fs.FS) (http.Han
 		Portal:    dist,
 		MCP:       srv.MCPHandler(),
 		DataPlane: srv.DataPlane(),
-		OAuth:     oauthRoutes,
+		// The declared coordinates serve's adapter dispatches to DataPlane:
+		// a verb exists only as a kcp custom subresource on the agents
+		// APIExport, and only for a coordinate in this table.
+		Subresources: subresources,
+		OAuth:        oauthRoutes,
 		Extra: []serve.Route{
 			{Prefix: serve.WebhooksPrefix, Class: serve.ClassWebhook, Handler: webhookRoutes},
 		},

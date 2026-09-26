@@ -8,11 +8,15 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package tenant reaches a tenant's kcp workspace through the hub's
-// caller-scoped kcp proxy at <hubBase>/clusters/<clusterID>, authenticating as
-// the caller. The proxy authorizes the request by workspace membership and
-// forwards it to kcp as that user, so App Studio acts with exactly the
-// caller's RBAC in any workspace the caller can reach.
+// Package tenant reaches a tenant's kcp workspace AS THE PROVIDER, through
+// this provider's APIExport virtual workspace
+// (…/services/apiexport/<cluster>/<export>/clusters/<clusterID>). A data-plane
+// verb carries no caller credential — kcp authenticated the caller, authorized
+// the verb with RBAC and forwarded the request with the caller's identity
+// stamped in headers — so after the gate a handler acts with the standing the
+// export gives the provider in that workspace: its own kinds, and the kinds it
+// claims. Anything that is still a question about the CALLER is a
+// SubjectAccessReview (dataplane.Authorize), never a client.
 //
 // Every operation is plain Kubernetes REST through a dynamic client, so
 // errors arrive as apierrors.StatusError and callers' IsNotFound /
@@ -33,21 +37,21 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/railgrid/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
-// Client is a factory for per-(cluster, caller) access to tenant workspaces
-// through the hub's kcp proxy.
+// Client is a factory for per-cluster access to tenant workspaces as the
+// provider, over a dataplane.ProviderCallerFactory (dataplane.Callers built
+// with WithProviderConfig in production, conformance.FakeCallers in tests).
 type Client struct {
-	hubBase  string
-	insecure bool
+	callers dataplane.ProviderCallerFactory
 }
 
-// NewClient targets the hub under hubBase (the hub's base URL, e.g.
-// https://railgrid-hub.railgrid.svc:9443). insecureSkipVerify relaxes TLS for
-// in-cluster hub certs that aren't in the provider's trust store.
-func NewClient(hubBase string, insecureSkipVerify bool) *Client {
-	return &Client{hubBase: strings.TrimRight(hubBase, "/"), insecure: insecureSkipVerify}
+// NewClient wraps the provider's caller factory. A nil factory yields a
+// Client whose For always fails, which is the honest answer for a process
+// with no provider credential.
+func NewClient(callers dataplane.ProviderCallerFactory) *Client {
+	return &Client{callers: callers}
 }
 
 // Resource identifies a kcp resource App Studio reads or writes. GVR drives
@@ -65,16 +69,17 @@ type Scope struct {
 	dyn dynamic.Interface
 }
 
-// For returns a client scoped to clusterID (the X-Railgrid-Cluster the hub
-// injected) authenticating as the caller via token.
-func (c *Client) For(clusterID, token string) (*Scope, error) {
+// For returns a client acting as the provider in clusterID (the logical
+// cluster the verb's path named), through the export virtual workspace.
+func (c *Client) For(clusterID string) (*Scope, error) {
+	clusterID = strings.TrimSpace(clusterID)
 	if clusterID == "" {
-		return nil, fmt.Errorf("no cluster id (X-Railgrid-Cluster missing) — cannot target the tenant workspace")
+		return nil, fmt.Errorf("no cluster id on the request — cannot target the tenant workspace")
 	}
-	if token == "" {
-		return nil, fmt.Errorf("no bearer token on request — cannot act on the tenant's behalf")
+	if c == nil || c.callers == nil {
+		return nil, fmt.Errorf("tenant client for cluster %q: this process has no provider credential to act with", clusterID)
 	}
-	dyn, err := tenantaccess.NewDynamicClient(c.hubBase, clusterID, token, c.insecure)
+	dyn, err := c.callers.AsProvider(clusterID)
 	if err != nil {
 		return nil, fmt.Errorf("tenant client for cluster %q: %w", clusterID, err)
 	}

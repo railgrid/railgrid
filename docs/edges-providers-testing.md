@@ -27,8 +27,9 @@ The full **connectivity** path is wired and builds (core + `provider-sdk` +
 `providers/edges`, under `go.work` and standalone/`GOWORK=off`):
 
 - register a `KubernetesCluster` / `LinuxServer`, run the agent, tunnel connects
-- `kubectl` streams through `/dataplane/clusters/{ws}/kubernetesclusters/{name}/k8s`
-- `ssh` streams through `/dataplane/clusters/{ws}/linuxservers/{name}/ssh`
+- `kubectl` streams through `/clusters/{ws}/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}/k8s`
+  (the edge kubeconfig's `server` URL is that kube path on the hub)
+- `ssh` streams through `/clusters/{ws}/apis/edges.railgrid.ai/v1alpha1/linuxservers/{name}/ssh`
 - the CLI verbs (`railgrid edge|list|ssh|kubeconfig edge|agent|mcp`) address the
   `edges.railgrid.ai` group
 

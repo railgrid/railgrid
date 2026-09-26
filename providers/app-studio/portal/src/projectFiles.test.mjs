@@ -89,7 +89,7 @@ test('file API routes use providerFetch with tenant headers and the agreed wire 
 
   const created = await api.putProjectFile(ctx, 'demo', 'notes.md', '', { createOnly: true })
   assert.deepEqual(created, { path: 'notes.md', size: 0, version: 'sha256:00', binary: false })
-  assert.equal(calls[0].url, '/services/providers/app-studio/dataplane/clusters/cluster-1/projects/demo/files-content?path=notes.md')
+  assert.equal(calls[0].url, '/clusters/cluster-1/apis/ai.railgrid.ai/v1alpha1/projects/demo/files-content?path=notes.md')
   assert.equal(calls[0].init.headers['If-None-Match'], '*')
   assert.equal(calls[0].init.headers['X-Railgrid-Org'], 'org-1')
   assert.equal(calls[0].init.headers['X-Railgrid-Workspace'], 'ws-1')
@@ -102,14 +102,14 @@ test('file API routes use providerFetch with tenant headers and the agreed wire 
 
   await api.deleteProjectFile(ctx, 'demo', 'public/a b.png', { ifMatch: 'sha256:bb' })
   assert.equal(calls[2].init.method, 'DELETE')
-  assert.equal(calls[2].url, '/services/providers/app-studio/dataplane/clusters/cluster-1/projects/demo/files-content?path=public%2Fa%20b.png')
+  assert.equal(calls[2].url, '/clusters/cluster-1/apis/ai.railgrid.ai/v1alpha1/projects/demo/files-content?path=public%2Fa%20b.png')
   assert.equal(calls[2].init.headers['If-Match'], 'sha256:bb')
 
   const glb = new File([new Uint8Array([1, 2, 3])], 'jeep.glb', { type: 'model/gltf-binary' })
   const uploaded = await api.uploadProjectFiles(ctx, 'demo', [glb], { dir: 'public/assets', overwrite: true })
   assert.deepEqual(uploaded, [{ path: 'public/assets/jeep.glb', size: 3, version: 'sha256:01', binary: true }])
   assert.equal(calls[3].init.method, 'POST')
-  assert.equal(calls[3].url, '/services/providers/app-studio/dataplane/clusters/cluster-1/projects/demo/files-upload')
+  assert.equal(calls[3].url, '/clusters/cluster-1/apis/ai.railgrid.ai/v1alpha1/projects/demo/files-upload')
   const form = calls[3].init.body
   assert.ok(form instanceof FormData)
   assert.equal(form.getAll('file').length, 1)
@@ -119,7 +119,7 @@ test('file API routes use providerFetch with tenant headers and the agreed wire 
 
   const blob = await api.fetchProjectFileRaw(ctx, 'demo', 'public/assets/jeep.glb', { download: true })
   assert.equal(blob.size, 3)
-  assert.equal(calls[4].url, '/services/providers/app-studio/dataplane/clusters/cluster-1/projects/demo/files-raw?path=public%2Fassets%2Fjeep.glb&download=1')
+  assert.equal(calls[4].url, '/clusters/cluster-1/apis/ai.railgrid.ai/v1alpha1/projects/demo/files-raw?path=public%2Fassets%2Fjeep.glb&download=1')
 })
 
 test('file API maps 409, 412, and 413 to recoverable reasons', async () => {

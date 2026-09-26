@@ -24,7 +24,7 @@ limitations under the License.
 // contents, so a generated app does not land in etcd. Writing the bundle and
 // creating the CR that names it therefore have to happen together, in the
 // provider, and that pairing is what lives here. Callers differ only in how
-// they were authorized (an action's two gates, or the MCP bearer) and in what
+// they were authorized (an action's kcp grant and gate, or the MCP bearer) and in what
 // they do afterwards (the action returns the commit's coordinates; the tool
 // waits for a terminal phase).
 package commitexec

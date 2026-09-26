@@ -220,7 +220,7 @@ func applyConnectionUpdate(ctx context.Context, c *agentsclient.Client, name str
 	return out, nil
 }
 
-// mergeConnectionSecret writes keys into the connection Secret as the caller,
+// mergeConnectionSecret writes keys into the connection Secret through c,
 // keeping every key it does not mention.
 //
 // The read is load-bearing, not an optimisation: the apply below sends the

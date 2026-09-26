@@ -12,29 +12,32 @@ package api
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"testing"
 )
 
-func testDataPlaneServer(provider string) *Server {
+func testDataPlaneServer() *Server {
 	return &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup,
 		tenantActors:     defaultTestActors.lookup,
-		tenantProviders:  testProviders(provider),
-		hubBase:          "https://hub.example/",
+		tenantProviders:  defaultTestProviders,
+		callers:          newTestCallers(nil, ""),
 	}
 }
 
+// A verb on an infrastructure Instance is addressed through THIS provider's
+// export virtual workspace, at the kube path of the claimed custom
+// subresource: no provider name, no hub grammar, and the component as a query
+// parameter rather than a path segment.
 func TestDataPlaneURL(t *testing.T) {
-	s := testDataPlaneServer("infrastructure")
-	id := identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"}
+	s := testDataPlaneServer()
+	id := identity{clusterID: "rgl3jcl2cfl3xa5p"}
 
 	got, err := s.dataPlaneURL(context.Background(), id, dataPlaneRef{Resource: "instances", Name: "shop-dev"}, dataPlaneVerbLog, "")
 	if err != nil {
 		t.Fatalf("dataPlaneURL: %v", err)
 	}
-	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/rgl3jcl2cfl3xa5p/instances/shop-dev/log"
+	want := testExportBase + "/clusters/rgl3jcl2cfl3xa5p/apis/infrastructure.railgrid.ai/v1alpha1/instances/shop-dev/log"
 	if got != want {
 		t.Fatalf("dataPlaneURL = %q, want %q", got, want)
 	}
@@ -45,121 +48,84 @@ func TestDataPlaneURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy URL: %v", err)
 	}
-	wantProxy := "https://hub.example/services/providers/infrastructure/dataplane/clusters/rgl3jcl2cfl3xa5p/instances/r1/proxy/search?q=ada&format=json"
+	wantProxy := testExportBase + "/clusters/rgl3jcl2cfl3xa5p/apis/infrastructure.railgrid.ai/v1alpha1/instances/r1/proxy/search?q=ada&format=json"
 	if gotProxy != wantProxy {
 		t.Fatalf("proxy URL = %q, want %q", gotProxy, wantProxy)
 	}
 
 	// Component verbs address a template instance's component
-	// (docs/app-studio-template-sandboxes.md §3).
+	// (docs/app-studio-template-sandboxes.md §3) as ?component=: kcp reads
+	// {name}/{subresource} and would take a path segment for a subresource.
 	gotComp, err := s.dataPlaneURL(context.Background(), id, dataPlaneRef{Resource: "instances", Name: "shop-dev", Component: "backend"}, dataPlaneVerbSync, "")
 	if err != nil {
 		t.Fatalf("component URL: %v", err)
 	}
-	wantComp := "https://hub.example/services/providers/infrastructure/dataplane/clusters/rgl3jcl2cfl3xa5p/instances/shop-dev/components/backend/sync"
+	wantComp := testExportBase + "/clusters/rgl3jcl2cfl3xa5p/apis/infrastructure.railgrid.ai/v1alpha1/instances/shop-dev/sync?component=backend"
 	if gotComp != wantComp {
 		t.Fatalf("component URL = %q, want %q", gotComp, wantComp)
 	}
-}
 
-// The provider segment is whatever the workspace bound, not a constant: a
-// tenant running its own copy of infrastructure is reached under that copy's
-// name with no change here.
-func TestDataPlaneURLFollowsTheWorkspaceBinding(t *testing.T) {
-	s := testDataPlaneServer("acme-infrastructure")
-	got, err := s.dataPlaneURL(context.Background(), identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"},
-		dataPlaneRef{Resource: "instances", Name: "shop-dev"}, dataPlaneVerbLog, "")
+	// A component AND a proxy query: both survive, as one query string.
+	gotBoth, err := s.dataPlaneURL(context.Background(), id, dataPlaneRef{Resource: "instances", Name: "shop-dev", Component: "web"}, dataPlaneVerbProxy, "/healthz?verbose=1")
 	if err != nil {
-		t.Fatalf("dataPlaneURL: %v", err)
+		t.Fatalf("component proxy URL: %v", err)
 	}
-	want := "https://hub.example/services/providers/acme-infrastructure/dataplane/clusters/rgl3jcl2cfl3xa5p/instances/shop-dev/log"
-	if got != want {
-		t.Fatalf("dataPlaneURL = %q, want %q", got, want)
+	wantBoth := testExportBase + "/clusters/rgl3jcl2cfl3xa5p/apis/infrastructure.railgrid.ai/v1alpha1/instances/shop-dev/proxy/healthz?component=web&verbose=1"
+	if gotBoth != wantBoth {
+		t.Fatalf("component proxy URL = %q, want %q", gotBoth, wantBoth)
 	}
 }
 
-// A workspace path is not a logical-cluster ID: the hub proxy answers it with
-// 403, so the address is refused here rather than minted and sent.
+// A workspace path is not a logical-cluster ID: the address is refused here
+// rather than minted and sent.
 func TestDataPlaneURLRefusesAWorkspacePath(t *testing.T) {
-	s := testDataPlaneServer("infrastructure")
-	if _, err := s.dataPlaneURL(context.Background(), identity{clusterID: "root:railgrid:orgs:acme", token: "tok"},
+	s := testDataPlaneServer()
+	if _, err := s.dataPlaneURL(context.Background(), identity{clusterID: "root:railgrid:orgs:acme"},
 		dataPlaneRef{Resource: "instances", Name: "shop-dev"}, dataPlaneVerbLog, ""); err == nil {
 		t.Fatal("expected a workspace path to be refused")
 	}
 }
 
-// Without a binding there is no coordinate. The call fails with that reason
-// instead of guessing a provider name that may not be enabled here.
-func TestDataPlaneURLFailsWhenNoProviderIsBound(t *testing.T) {
-	s := testDataPlaneServer("infrastructure")
-	s.tenantProviders = func(context.Context, string, string, string) (string, error) {
-		return "", errors.New("workspace binds no provider serving infrastructure.providers.railgrid.ai")
-	}
-	if _, err := s.dataPlaneURL(context.Background(), identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"},
-		dataPlaneRef{Resource: "instances", Name: "shop-dev"}, dataPlaneVerbLog, ""); err == nil {
-		t.Fatal("expected an unbound dependency to fail")
+// A component name that would not survive the grammar (a slash) is refused
+// rather than rerouting the call.
+func TestDataPlaneURLRefusesAComponentWithASeparator(t *testing.T) {
+	s := testDataPlaneServer()
+	if _, err := s.dataPlaneURL(context.Background(), identity{clusterID: "rgl3jcl2cfl3xa5p"},
+		dataPlaneRef{Resource: "instances", Name: "shop-dev", Component: "a/b"}, dataPlaneVerbSync, ""); err == nil {
+		t.Fatal("expected a component with a separator to be refused")
 	}
 }
 
-func TestNewDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
-	id := identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"}
+func TestNewDataPlaneRequestRequiresCallersAndCluster(t *testing.T) {
+	id := identity{clusterID: "rgl3jcl2cfl3xa5p", user: "alice"}
 	ref := dataPlaneRef{Resource: "applications", Name: "r1"}
-	// No hub base configured.
+	// No provider credential configured.
 	if _, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).newDataPlaneRequest(context.Background(), http.MethodGet, id, ref, dataPlaneVerbLog, "", nil); err == nil {
-		t.Fatal("expected error when hubBase is unset")
+		t.Fatal("expected error when no caller factory is configured")
 	}
 	// No cluster on the request.
-	s := testDataPlaneServer("infrastructure")
-	if _, err := s.newDataPlaneRequest(context.Background(), http.MethodGet, identity{token: "tok"}, ref, dataPlaneVerbLog, "", nil); err == nil {
+	s := testDataPlaneServer()
+	if _, err := s.newDataPlaneRequest(context.Background(), http.MethodGet, identity{}, ref, dataPlaneVerbLog, "", nil); err == nil {
 		t.Fatal("expected error when clusterID is empty")
 	}
-	// Happy path forwards the caller's bearer token.
+	// Happy path: no caller bearer travels (the call is made as the provider,
+	// authenticated by the provider's HTTP client), and the caller's name is
+	// a label for the far end.
 	req, err := s.newDataPlaneRequest(context.Background(), http.MethodGet, id, ref, dataPlaneVerbLog, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := req.Header.Get("Authorization"); got != "Bearer tok" {
-		t.Fatalf("Authorization = %q, want Bearer tok", got)
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization = %q, want none: the provider client authenticates", got)
 	}
-}
-
-// The hub resolves a provider call's scope from X-Railgrid-Org and
-// X-Railgrid-Workspace. An org-owned infrastructure provider is reached with a
-// delegated token minted in that workspace, so a data-plane request without
-// the selection is refused with "a workspace selection (X-Railgrid-Workspace) is
-// required to reach provider: infrastructure" — which is exactly what every
-// sandbox sync, exec and restart returned once the infrastructure provider
-// moved into a tenant cluster.
-func TestNewDataPlaneRequestSelectsTheCallerWorkspace(t *testing.T) {
-	s := testDataPlaneServer("infrastructure")
-	ref := dataPlaneRef{Resource: "instances", Name: "pitch-dev", Component: "app"}
-	req, err := s.newDataPlaneRequest(context.Background(), http.MethodPost, identity{
-		clusterID:     "rgl3jcl2cfl3xa5p",
-		token:         "tok",
-		orgUUID:       " org-1 ",
-		workspaceUUID: "ws-1",
-	}, ref, dataPlaneVerbSync, "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if got := req.Header.Get("X-Railgrid-User"); got != "alice" {
+		t.Fatalf("X-Railgrid-User = %q, want alice", got)
 	}
-	if got := req.Header.Get("X-Railgrid-Org"); got != "org-1" {
-		t.Errorf("X-Railgrid-Org = %q, want org-1", got)
-	}
-	if got := req.Header.Get("X-Railgrid-Workspace"); got != "ws-1" {
-		t.Errorf("X-Railgrid-Workspace = %q, want ws-1", got)
-	}
-
-	// An org-only identity sends no workspace header rather than an empty one:
-	// the hub treats a present-but-empty header as an org-scope selection too,
-	// but an absent header keeps the request identical to today's for callers
-	// that never had a workspace.
-	req, err = s.newDataPlaneRequest(context.Background(), http.MethodGet, identity{clusterID: "rgl3jcl2cfl3xa5p", token: "tok"}, ref, dataPlaneVerbLog, "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	// The hub's workspace-selection headers belong to the hub's REST API,
+	// not to a kube path on the export virtual workspace.
 	for _, header := range []string{"X-Railgrid-Org", "X-Railgrid-Workspace"} {
 		if _, present := req.Header[header]; present {
-			t.Errorf("%s set on an identity without a tenant scope", header)
+			t.Errorf("%s set on a cross-provider verb call", header)
 		}
 	}
 }

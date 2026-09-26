@@ -2,7 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  ShieldAlert, AlertCircle, RefreshCw, Puzzle, KeyRound, Building2, Users,
+  ShieldAlert, AlertCircle, RefreshCw, Puzzle, Building2, Users,
   Hexagon, ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, Tag,
 } from 'lucide-vue-next'
 
@@ -21,7 +21,6 @@ const platformVersionDetails = computed(() => hubVersionDetails(hubVersion.value
 
 const sections = [
   { to: '/bonkers/providers', label: 'Providers', icon: Puzzle },
-  { to: '/bonkers/identities', label: 'Root identities', icon: KeyRound },
   { to: '/bonkers/organizations', label: 'Organizations', icon: Building2 },
   { to: '/bonkers/users', label: 'Users', icon: Users },
 ]

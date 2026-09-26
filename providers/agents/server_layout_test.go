@@ -30,12 +30,20 @@ func TestServerLayoutIsAcceptable(t *testing.T) {
 	}
 	t.Cleanup(srv.Close)
 
+	// The subresource table comes from the real manifest, as in runServe: a
+	// DataPlane handler with no coordinates to reach it through is a layout
+	// serve.New refuses.
+	t.Setenv("RAILGRID_CATALOGENTRY_FILE", "manifest.yaml")
+	routes, err := subresourceRoutes()
+	if err != nil {
+		t.Fatalf("subresourceRoutes: %v", err)
+	}
 	ready := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	dist, err := portalFS()
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := buildHandler(srv, ready, dist)
+	handler, err := buildHandler(srv, ready, dist, routes)
 	if err != nil {
 		t.Fatalf("serve.New refused this provider's layout: %v", err)
 	}
@@ -51,9 +59,11 @@ func TestServerLayoutIsAcceptable(t *testing.T) {
 		}
 	}
 
-	// There is no /api/*. serve.New would have refused to register one; this
-	// asserts nothing answers there either.
-	for _, path := range []string{"/api/agents", "/api/runs", "/api/whoami", "/api/capabilities"} {
+	// There is no /api/*, and no hub-proxied /dataplane/* or /actions/*.
+	// serve.New would have refused to register any of them; this asserts
+	// nothing answers there either.
+	for _, path := range []string{"/api/agents", "/api/runs", "/api/whoami", "/api/capabilities",
+		"/dataplane/clusters/aaaaaaaaaaaaaaaa/agents/x/sessions", "/actions/clusters/aaaaaaaaaaaaaaaa/agents/x/run"} {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		// The portal's index fallback owns unmatched paths, so "not an API" is

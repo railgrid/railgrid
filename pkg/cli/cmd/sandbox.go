@@ -35,6 +35,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/railgrid/provider-sdk/dataplane"
+
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // sandboxExecMaxTimeout is the data plane's exec ceiling.
@@ -131,7 +135,8 @@ func newSandboxCommand() *cobra.Command {
 		Aliases: []string{"sbx"},
 		Short:   "Drive a development-mode instance: sync, exec, logs, restart, status",
 		Long: `Drive a development-mode infrastructure Instance (for an App Studio project,
-<project>-dev) through the hub data plane, as you.
+<project>-dev) through its data-plane verbs, as you. Each verb is a Kubernetes
+custom subresource on the Instance, reached through the hub's kcp front door.
 
 Component paths are relative to the component's workspacePath: for the
 application template, sync api/ to component "api" and web/ to "web".
@@ -156,14 +161,33 @@ Production instances answer 409.
 	return cmd
 }
 
-// dataPlaneURL is the instance's data-plane base on the hub.
-func dataPlaneURL(s *hubSession, instance string) string {
-	return fmt.Sprintf("%s/services/providers/infrastructure/dataplane/clusters/%s/instances/%s",
-		s.Hub, url.PathEscape(s.Cluster), url.PathEscape(instance))
+// The infrastructure provider's API coordinates. Its data-plane verbs (env,
+// exec, log, process, proxy, restart, runtime-status, sync, workspace) are kcp
+// custom subresources "instances/{verb}" on its APIExport.
+const (
+	infrastructureAPIGroup   = "infrastructure.railgrid.ai"
+	infrastructureAPIVersion = "v1alpha1"
+	instancesResource        = "instances"
+)
+
+// instanceVerbURL is the kube path of a data-plane verb on an infrastructure
+// Instance, on the hub's kcp front door:
+//
+//	/clusters/{cluster}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/{verb}
+//
+// kcp authorizes the verb with ordinary RBAC and reverse-proxies it to the
+// provider; there is no hub-side grammar for it.
+func instanceVerbURL(s *hubSession, instance, verb string) string {
+	return apiurl.ProviderVerbURL(s.Hub, url.PathEscape(s.Cluster),
+		infrastructureAPIGroup, infrastructureAPIVersion, instancesResource, url.PathEscape(instance), verb)
 }
 
+// componentURL addresses a verb on one component of a multi-component
+// instance. The component travels as the "component" query parameter, never
+// as a path segment: kcp reads {name}/{verb} and treats anything after the
+// verb as the verb's own tail.
 func componentURL(s *hubSession, instance, component, verb string) string {
-	return dataPlaneURL(s, instance) + "/components/" + url.PathEscape(component) + "/" + verb
+	return instanceVerbURL(s, instance, verb) + "?" + dataplane.ComponentQuery + "=" + url.QueryEscape(component)
 }
 
 func newSandboxSyncCommand(target *hubTarget) *cobra.Command {
@@ -552,7 +576,7 @@ func appStudioProjectForInstance(ctx context.Context, s *hubSession, instance st
 	if !ok || base == "" {
 		return ""
 	}
-	if err := s.do(ctx, http.MethodGet, projectURL(s, base), nil, nil); err != nil {
+	if err := s.do(ctx, http.MethodGet, projectAPIURL(s, base), nil, nil); err != nil {
 		return ""
 	}
 	return base
@@ -732,7 +756,7 @@ func newSandboxStatusCommand(target *hubTarget) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			statusURL := dataPlaneURL(s, args[0]) + "/status"
+			statusURL := instanceVerbURL(s, args[0], "runtime-status")
 			if len(args) == 2 {
 				statusURL = componentURL(s, args[0], args[1], "process")
 			}

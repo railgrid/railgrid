@@ -16,6 +16,7 @@ import (
 
 	rbacv1 "k8s.io/api/rbac/v1"
 
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
@@ -27,6 +28,32 @@ import (
 //
 // The registry below is the platform as actually shipped. Note how few
 // providers have export name == served group.
+
+// readVerbs and writeVerbs spell the requirement verb sets the platform's
+// providers actually ask for.
+var (
+	readVerbs = []providersv1alpha1.ProviderRequiredVerb{
+		providersv1alpha1.RequiredVerbGet,
+		providersv1alpha1.RequiredVerbList,
+		providersv1alpha1.RequiredVerbWatch,
+	}
+	readWriteVerbs = []providersv1alpha1.ProviderRequiredVerb{
+		providersv1alpha1.RequiredVerbGet,
+		providersv1alpha1.RequiredVerbList,
+		providersv1alpha1.RequiredVerbWatch,
+		providersv1alpha1.RequiredVerbCreate,
+		providersv1alpha1.RequiredVerbUpdate,
+	}
+	fullVerbs = []providersv1alpha1.ProviderRequiredVerb{
+		providersv1alpha1.RequiredVerbGet,
+		providersv1alpha1.RequiredVerbList,
+		providersv1alpha1.RequiredVerbWatch,
+		providersv1alpha1.RequiredVerbCreate,
+		providersv1alpha1.RequiredVerbUpdate,
+		providersv1alpha1.RequiredVerbDelete,
+	}
+)
+
 func platformRegistry(t *testing.T) *providers.Registry {
 	t.Helper()
 	registry := providers.NewRegistry()
@@ -34,10 +61,15 @@ func platformRegistry(t *testing.T) *providers.Registry {
 		Name:          "edges",
 		APIExportName: "edges.providers.railgrid.ai",
 		APIGroups:     []string{"edges.railgrid.ai"},
-		DataPlaneVerbs: []providers.ProviderDataPlaneVerb{
-			{Resource: "kubernetesclusters", Verb: "k8s"},
-			{Resource: "kubernetesclusters", Verb: "ssh"},
-			{Resource: "services", Verb: "proxy"},
+		Export: &providersv1alpha1.ProviderExport{
+			Name: "edges.providers.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderExportResource{{
+				Name: "kubernetesclusters", APIVersion: "edges.railgrid.ai/v1alpha1", Kind: "KubernetesCluster",
+				Verbs: []providersv1alpha1.ProviderVerb{{Name: "k8s"}, {Name: "ssh"}},
+			}, {
+				Name: "services", APIVersion: "edges.railgrid.ai/v1alpha1", Kind: "Service",
+				Verbs: []providersv1alpha1.ProviderVerb{{Name: "proxy"}},
+			}},
 		},
 	}, {
 		Name:          "infrastructure",
@@ -53,31 +85,30 @@ func platformRegistry(t *testing.T) *providers.Registry {
 		Name:          "kuery",
 		APIExportName: "kuery.providers.railgrid.ai",
 		APIGroups:     []string{"kuery.providers.railgrid.ai"},
-		Dependencies: []providers.Dependency{{
-			Name: "edges",
-			Composes: []providers.Composition{{
-				Group: "edges.railgrid.ai", Resource: "kubernetesclusters",
-				Verbs: []string{"get", "list", "watch"},
+		Requires: []providersv1alpha1.ProviderRequirement{{
+			Provider: "edges",
+			Group:    "edges.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderRequiredResource{{
+				Name: "kubernetesclusters", Verbs: readVerbs,
 			}},
 		}},
 	}, {
 		Name:          "app-studio",
 		APIExportName: "ai.railgrid.ai",
 		APIGroups:     []string{"ai.railgrid.ai"},
-		Dependencies: []providers.Dependency{{
-			Name: "infrastructure",
-			Composes: []providers.Composition{{
-				Group: "infrastructure.railgrid.ai", Resource: "instances",
-				Verbs: []string{"get", "list", "watch", "create", "update", "delete"},
+		Requires: []providersv1alpha1.ProviderRequirement{{
+			Provider: "infrastructure",
+			Group:    "infrastructure.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderRequiredResource{{
+				Name: "instances", Verbs: fullVerbs,
 			}},
 		}, {
-			Name: "code",
-			Composes: []providers.Composition{{
-				Group: "code.railgrid.ai", Resource: "repositories",
-				Verbs: []string{"get", "list", "watch", "create", "update"},
+			Provider: "code",
+			Group:    "code.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderRequiredResource{{
+				Name: "repositories", Verbs: readWriteVerbs,
 			}, {
-				Group: "code.railgrid.ai", Resource: "repositorycommits",
-				Verbs: []string{"get", "list", "watch"},
+				Name: "repositorycommits", Verbs: readVerbs,
 			}},
 		}},
 	}, {
@@ -98,12 +129,6 @@ func platformPolicy(t *testing.T) *Policy {
 		fakeBindings{bound: map[string]bool{
 			"edges": true, "infrastructure": true, "code": true,
 			"kuery": true, "app-studio": true,
-		}},
-		fakeCompositions{granted: map[string]bool{
-			"cluster-1|kuery|edges.railgrid.ai/kubernetesclusters":      true,
-			"cluster-1|app-studio|infrastructure.railgrid.ai/instances": true,
-			"cluster-1|app-studio|code.railgrid.ai/repositories":        true,
-			"cluster-1|app-studio|code.railgrid.ai/repositorycommits":   true,
 		}},
 	)
 }
@@ -188,8 +213,8 @@ func TestRegistryCatalogClauseA(t *testing.T) {
 }
 
 // Clause C over the real registry: kuery's engagement controller takes
-// `create` on the edges data-plane coordinate kubernetesclusters/k8s, in
-// edges' group, name-scoped to the edge it engages.
+// `create` on the edges coordinate kubernetesclusters/k8s, in edges' group,
+// name-scoped to the edge it engages.
 func TestRegistryCatalogClauseC(t *testing.T) {
 	got, err := platformPolicy(t).Authorize("kuery", "cluster-1", []rbacv1.PolicyRule{
 		rule("edges.railgrid.ai", []string{"kubernetesclusters/k8s"}, []string{"create"}, []string{"edge-1"}),
@@ -209,40 +234,6 @@ func TestRegistryCatalogClauseC(t *testing.T) {
 	var refusal Refusal
 	if !errors.As(err, &refusal) || refusal.Code != CodeUndeclaredVerb {
 		t.Fatalf("want %s, got %v", CodeUndeclaredVerb, err)
-	}
-}
-
-// Clause E over the real registry: the two `composes` declarations the
-// platform actually ships. Both name a dependency whose export is named
-// differently from the group they compose, which is what used to make
-// composition.Dependency != owner and refuse the rule.
-func TestRegistryCatalogClauseE(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		requester string
-		rule      rbacv1.PolicyRule
-	}{{
-		name:      "kuery watches the edges it engages",
-		requester: "kuery",
-		rule:      rule("edges.railgrid.ai", []string{"kubernetesclusters"}, []string{"list", "watch"}, nil),
-	}, {
-		name:      "app-studio creates the infrastructure Instance a project is",
-		requester: "app-studio",
-		rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, nil),
-	}, {
-		name:      "app-studio updates the code Repository it created",
-		requester: "app-studio",
-		rule:      rule("code.railgrid.ai", []string{"repositories"}, []string{"get", "update"}, []string{"proj-1"}),
-	}} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := platformPolicy(t).Authorize(tc.requester, "cluster-1", []rbacv1.PolicyRule{tc.rule})
-			if err != nil {
-				t.Fatalf("a shipped composition was refused: %v", err)
-			}
-			if len(got) != 1 {
-				t.Fatalf("got %d rules, want 1", len(got))
-			}
-		})
 	}
 }
 

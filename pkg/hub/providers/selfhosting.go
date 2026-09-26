@@ -18,7 +18,8 @@ package providers
 
 // Rendering self-hosting install instructions.
 //
-// A provider declares how it is deployed once, in CatalogEntry.spec.selfHosting,
+// A provider declares how it is deployed once, in
+// CatalogEntry.spec.serving.selfHosting,
 // and the hub turns that into the exact commands one organization needs to run
 // its own copy against the workspace the hub just created for it. The provider
 // is the only party that knows its chart; the hub is the only party that knows
@@ -31,7 +32,6 @@ package providers
 // changing anything in this file's inputs.
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -104,22 +104,6 @@ type InstallInstructions struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-// APIExportIdentityReader reads an APIExport's kcp identity hash from a
-// workspace. Implemented by *Provisioner; declared as an interface so the REST
-// layer can depend on the capability rather than the concrete type.
-type APIExportIdentityReader interface {
-	ResolveAPIExportIdentityHash(ctx context.Context, workspacePath, exportName string) (string, error)
-}
-
-// IdentityResolver resolves an APIExport's kcp identity hash. Implemented by
-// the hub against kcp; separated so instruction rendering stays unit-testable
-// without a cluster.
-type IdentityResolver interface {
-	// ResolveIdentityHash returns the identity hash of exportName as visible to
-	// orgUUID, or "" when it cannot be determined.
-	ResolveIdentityHash(orgUUID, exportName string) string
-}
-
 // InstallOptions carries the per-organization facts the provider's own
 // metadata cannot know.
 type InstallOptions struct {
@@ -131,11 +115,6 @@ type InstallOptions struct {
 	// externally reachable: the provider runs outside the platform, so an
 	// in-cluster service DNS name would be unroutable for it.
 	HubURL string
-	// Identities resolves identity-hash values. Optional; when nil those values
-	// are emitted as placeholders with a warning.
-	Identities IdentityResolver
-	// OrgUUID scopes identity resolution.
-	OrgUUID string
 }
 
 // RenderInstallInstructions builds the install steps for one provider.
@@ -224,7 +203,7 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 			"This hub has no external URL configured, so hub.url could not be filled in. Set it to an address your cluster can reach.")
 	}
 
-	// Provider-declared values, with identity hashes resolved where possible.
+	// Provider-declared values.
 	if sh != nil {
 		declared := append([]SelfHostingValue(nil), sh.RequiredValues...)
 		sort.Slice(declared, func(i, j int) bool { return declared[i].Name < declared[j].Name })
@@ -234,24 +213,6 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 			}
 			resolved := ResolvedValue{Name: v.Name, Description: v.Description}
 			switch {
-			case v.IdentityFor != "":
-				hash := ""
-				if opts.Identities != nil {
-					hash = opts.Identities.ResolveIdentityHash(opts.OrgUUID, v.IdentityFor)
-				}
-				if hash != "" {
-					resolved.Value = hash
-				} else {
-					// A wrong or missing identity hash produces a provider that
-					// binds successfully and then silently sees none of the
-					// resources it claimed — so say so loudly rather than
-					// letting it look like a working command.
-					resolved.Value = "<identity-hash>"
-					resolved.Unresolved = true
-					out.Warnings = append(out.Warnings, fmt.Sprintf(
-						"Could not resolve the identity hash for %s. Fill in %s manually — an incorrect value leaves the provider running but unable to see the resources it claims.",
-						v.IdentityFor, v.Name))
-				}
 			case v.Value != "":
 				expanded := expandPlaceholders(v.Value, opts.HubURL, out)
 				// A placeholder the hub could not fill (e.g. {{hubURL}} on a hub

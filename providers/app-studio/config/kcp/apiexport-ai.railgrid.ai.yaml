@@ -9,17 +9,109 @@
 # GENERATED FILE — DO NOT EDIT.
 #
 # Written by provider-sdk/cmd/apiexportgen from two inputs:
-#   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
-#   spec.resources                        <- kcp apigen (hack/apigen.sh)
-# Regenerate with: make codegen-<provider>-provider. spec.permissionClaims
-# carries no identityHash: provider-sdk/install stamps one per installation for
-# first-party (*.railgrid.ai) claim groups.
+#   metadata.name                         <- manifest.yaml spec.export.name
+#   spec.permissionClaims                 <- manifest.yaml spec.requires
+#   spec.resources                        <- kcp apigen (hack/apigen.sh), plus
+#                                            one "<resource>/<verb>" custom
+#                                            subresource per manifest.yaml
+#                                            spec.export.resources[].verbs[] and
+#                                            spec.export.resources[].actions[]
+#                                            entry, naming the schema apigen
+#                                            minted for the verb's
+#                                            "<Verb>Request" kind
+# Regenerate with: make codegen-<provider>-provider. No claim carries an
+# identityHash: kcp resolves a first-party claim per consumer workspace against
+# whatever export that workspace bound (PermissionClaimPolicy admits it).
 apiVersion: apis.kcp.io/v1alpha2
 kind: APIExport
 metadata:
   name: ai.railgrid.ai
 spec:
   permissionClaims:
+  - group: infrastructure.railgrid.ai
+    resource: instances
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - group: infrastructure.railgrid.ai
+    resource: templates
+    verbs:
+    - get
+    - list
+    - watch
+  - group: infrastructure.railgrid.ai
+    resource: instances/log
+    verbs:
+    - '*'
+  - group: infrastructure.railgrid.ai
+    resource: instances/sync
+    verbs:
+    - '*'
+  - group: infrastructure.railgrid.ai
+    resource: instances/restart
+    verbs:
+    - '*'
+  - group: infrastructure.railgrid.ai
+    resource: instances/proxy
+    verbs:
+    - '*'
+  - group: infrastructure.railgrid.ai
+    resource: instances/env
+    verbs:
+    - '*'
+  - group: infrastructure.railgrid.ai
+    resource: instances/process
+    verbs:
+    - '*'
+  - group: infrastructure.railgrid.ai
+    resource: instances/exec
+    verbs:
+    - '*'
+  - group: infrastructure.railgrid.ai
+    resource: instances/workspace
+    verbs:
+    - '*'
+  - group: code.railgrid.ai
+    resource: repositories
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - group: code.railgrid.ai
+    resource: repositorycommits
+    verbs:
+    - get
+    - list
+    - watch
+  - group: code.railgrid.ai
+    resource: connections
+    verbs:
+    - get
+    - list
+    - watch
+  - group: code.railgrid.ai
+    resource: repositories/commit
+    verbs:
+    - '*'
+  - group: code.railgrid.ai
+    resource: repositories/stage-commit-bundle
+    verbs:
+    - '*'
+  - group: code.railgrid.ai
+    resource: connections/mint-registry-token
+    verbs:
+    - '*'
+  - group: authorization.k8s.io
+    resource: subjectaccessreviews
+    verbs:
+    - create
   - defaultSelector:
       matchLabels:
         railgrid.ai/owner: app-studio
@@ -47,3 +139,552 @@ spec:
     schema: v260919-91e6c6ad.studios.ai.railgrid.ai
     storage:
       crd: {}
+  - group: ai.railgrid.ai
+    name: projects/adopt-session
+    schema: v260924-87f1980f.adopt-session.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/approval-mode
+    schema: v260924-87f1980f.approval-mode.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/attachments
+    schema: v260924-87f1980f.attachments.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/authorize-development-preview
+    schema: v260924-87f1980f.authorize-development-preview.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/checkpoints
+    schema: v260924-87f1980f.checkpoints.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/create-session
+    schema: v260924-87f1980f.create-session.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/development-logs
+    schema: v260924-87f1980f.development-logs.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/development-status
+    schema: v260924-87f1980f.development-status.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/files
+    schema: v260924-87f1980f.files.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/files-content
+    schema: v260924-87f1980f.files-content.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/files-raw
+    schema: v260924-87f1980f.files-raw.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/files-upload
+    schema: v260924-87f1980f.files-upload.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/hydrate-workspace
+    schema: v260924-87f1980f.hydrate-workspace.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/integration-actions
+    schema: v260924-87f1980f.integration-actions.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/integrations
+    schema: v260924-87f1980f.integrations.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/preview
+    schema: v260924-87f1980f.preview.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/preview-bridge-sessions
+    schema: v260924-87f1980f.preview-bridge-sessions.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/preview-grants
+    schema: v260924-87f1980f.preview-grants.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/promote
+    schema: v260924-87f1980f.promote.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/promotion
+    schema: v260924-87f1980f.promotion.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/publishing
+    schema: v260924-87f1980f.publishing.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/publishing-grants
+    schema: v260924-87f1980f.publishing-grants.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/publishing-members
+    schema: v260924-87f1980f.publishing-members.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/releases
+    schema: v260924-87f1980f.releases.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/restart-development
+    schema: v260924-87f1980f.restart-development.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/restore-workspace
+    schema: v260924-87f1980f.restore-workspace.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/scaffold
+    schema: v260924-87f1980f.scaffold.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/sessions
+    schema: v260920-91c16a31.sessions.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/set-repository
+    schema: v260924-87f1980f.set-repository.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/set-template
+    schema: v260924-87f1980f.set-template.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/skill
+    schema: v260924-87f1980f.skill.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/skill-detail
+    schema: v260924-87f1980f.skill-detail.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/skill-export
+    schema: v260924-87f1980f.skill-export.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/skills
+    schema: v260924-87f1980f.skills.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/skills-activation
+    schema: v260924-87f1980f.skills-activation.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/skills-create
+    schema: v260924-87f1980f.skills-create.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/skills-import
+    schema: v260924-87f1980f.skills-import.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/sync-development
+    schema: v260924-87f1980f.sync-development.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/thumbnail
+    schema: v260924-87f1980f.thumbnail.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/view
+    schema: v260924-87f1980f.view.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/active-turn
+    schema: v260924-87f1980f.active-turn.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/approval
+    schema: v260924-87f1980f.approval.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/continue
+    schema: v260924-87f1980f.continue.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/discard
+    schema: v260924-87f1980f.discard.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/edit
+    schema: v260924-87f1980f.edit.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/events
+    schema: v260924-87f1980f.events.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/input
+    schema: v260924-87f1980f.input.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/interrupt
+    schema: v260924-87f1980f.interrupt.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/items
+    schema: v260924-87f1980f.items.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/review
+    schema: v260924-87f1980f.review.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/steer
+    schema: v260924-87f1980f.steer.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/turn
+    schema: v260924-87f1980f.turn.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: sessions/turn-status
+    schema: v260924-87f1980f.turn-status.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: studios/create-project
+    schema: v260924-87f1980f.create-project.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: studios/create-project-stream
+    schema: v260924-87f1980f.create-project-stream.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: studios/create-readiness
+    schema: v260924-87f1980f.create-readiness.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: studios/development-templates
+    schema: v260924-87f1980f.development-templates.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: studios/discover-models
+    schema: v260924-87f1980f.discover-models.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: studios/import-repositories
+    schema: v260924-87f1980f.import-repositories.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: studios/plan
+    schema: v260924-87f1980f.plan.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: studios/test-model
+    schema: v260924-87f1980f.test-model.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai

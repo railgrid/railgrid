@@ -56,18 +56,10 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/klog/v2"
-
-	"github.com/railgrid/provider-sdk/dataplane"
 )
 
-// Route prefixes. The two grammar roots come from provider-sdk/dataplane so
-// there is one spelling of each in the tree.
+// Route prefixes.
 const (
-	// DataPlanePrefix is class (a): a verb on a bound resource.
-	DataPlanePrefix = "/" + dataplane.DataplaneRoot + "/"
-	// ActionsPrefix is class (a′): an action, whose verb segment carries its
-	// contract version.
-	ActionsPrefix = "/" + dataplane.ActionsRoot + "/"
 	// AgentPrefix is class (f): the agent tunnel.
 	AgentPrefix = "/agent/"
 	// WebhooksPrefix is class (g): a signed inbound webhook.
@@ -140,12 +132,25 @@ type Options struct {
 	// MCP answers both /mcp and /mcp/sse; the streamable-HTTP handler
 	// dispatches on method internally. Nil omits both.
 	MCP http.Handler
-	// DataPlane receives everything under /dataplane/ with the path EXACTLY as
-	// the caller sent it, so dataplane.ParseRequest — not an http.ServeMux —
-	// decides what ".." and "//" mean.
+	// DataPlane serves class (a), the provider's data-plane verbs. It is
+	// reached ONLY through Subresources: the shard forwards a kcp custom
+	// subresource to /clusters/{id}/apis/…, the adapter checks the coordinate
+	// against the declaration and dispatches here with the URL untouched, the
+	// parsed route in the request context (dataplane.RouteFrom) and the
+	// caller's stamped identity beside it (dataplane.ProxiedIdentityFrom).
 	DataPlane http.Handler
-	// Actions receives everything under /actions/, likewise unmodified.
+	// Actions serves class (a′) the same way; the route carries the action's
+	// contract version restored from the declaration.
 	Actions http.Handler
+	// Subresources declares which "<resource>/<verb>" coordinates exist and
+	// how each maps onto DataPlane or Actions. It is the provider's
+	// spec.export.resources[].verbs and .actions in Go form
+	// (SubresourcesFromCatalogEntryFile), and it is REQUIRED whenever
+	// DataPlane or Actions is set: a handler with no declared coordinates is
+	// unreachable, and New refuses to build a server that silently has no
+	// data plane. A coordinate absent here is not served even if a handler
+	// would answer it.
+	Subresources map[string]SubresourceRoute
 	// HubOnly maps an exact path under HubOnlyPrefixes to its handler, e.g.
 	// "/workload-identities/review". The route is served here and refused to
 	// callers by the hub proxy; nothing in this package enforces that, which
@@ -165,7 +170,8 @@ type Options struct {
 // It fails rather than silently serving something the contract does not allow:
 // a missing Readiness, an Extra route outside /agent/ or /webhooks/ (or whose
 // Class disagrees with its prefix), a HubOnly path the hub proxy would not
-// deny to callers, a duplicate mount, and any attempt to register /api/*.
+// deny to callers, a duplicate mount, a DataPlane or Actions handler with no
+// Subresources to reach it through, and any attempt to register /api/*.
 func New(o Options) (http.Handler, error) {
 	if o.Readiness == nil {
 		return nil, errors.New("serve: Readiness is required (pass vwhealth.Handler(readiness); a provider that cannot answer /readyz honestly must not serve)")
@@ -216,18 +222,15 @@ func New(o Options) (http.Handler, error) {
 		s.mux.Handle(OAuthPrefix, o.OAuth)
 	}
 
-	// (a) and (a′) are dispatched off the raw path, never off the mux — see
-	// server.ServeHTTP.
-	if o.DataPlane != nil {
-		s.raw = append(s.raw, rawRoute{prefix: DataPlanePrefix, handler: o.DataPlane})
-	}
-	if o.Actions != nil {
-		s.raw = append(s.raw, rawRoute{prefix: ActionsPrefix, handler: o.Actions})
+	// (a) and (a′) have no mount of their own: they exist only as declared
+	// custom subresources, dispatched by the adapter below.
+	if (o.DataPlane != nil || o.Actions != nil) && len(o.Subresources) == 0 {
+		return nil, errors.New("serve: DataPlane/Actions set but no Subresources declared; a verb is reached only as a kcp custom subresource, so pass serve.SubresourcesFromCatalogEntryFile(manifest) (RAILGRID_KCP_DIR/catalogentry.yaml)")
 	}
 
-	// (f) and (g). Same raw dispatch: both carry a cluster ID and a name in
-	// the path, and both must see what the caller actually sent.
-	seen := map[string]bool{DataPlanePrefix: true, ActionsPrefix: true}
+	// (f) and (g). Raw dispatch: both carry a cluster ID and a name in the
+	// path, and both must see what the caller actually sent.
+	seen := map[string]bool{SubresourcePrefix: true}
 	for _, route := range o.Extra {
 		if err := rejectAPIRoute(route.Prefix); err != nil {
 			return nil, err
@@ -253,6 +256,33 @@ func New(o Options) (http.Handler, error) {
 	// /webhooks/ without either shadowing the other by declaration order.
 	sort.SliceStable(s.raw, func(i, j int) bool { return len(s.raw[i].prefix) > len(s.raw[j].prefix) })
 
+	// The verbs, as the shard forwards them. Mounted as a raw prefix so
+	// dataplane.ParseSubresourceRequest, not the mux, decides what the path
+	// means.
+	if len(o.Subresources) > 0 {
+		if o.DataPlane == nil && o.Actions == nil {
+			return nil, errors.New("serve: Subresources declared but neither DataPlane nor Actions is set")
+		}
+		for coordinate, route := range o.Subresources {
+			resource, verb, ok := strings.Cut(coordinate, "/")
+			if !ok || resource == "" || verb == "" || strings.Contains(verb, "/") {
+				return nil, fmt.Errorf("serve: Subresources key %q is not \"<resource>/<verb>\"", coordinate)
+			}
+			if verb == "status" || verb == "scale" {
+				return nil, fmt.Errorf("serve: Subresources key %q names a subresource kcp reserves for the object's own shape", coordinate)
+			}
+			if route.Action && route.Version == "" {
+				return nil, fmt.Errorf("serve: Subresources key %q is an action with no Version", coordinate)
+			}
+		}
+		s.raw = append(s.raw, rawRoute{prefix: SubresourcePrefix, handler: &subresourceAdapter{
+			routes:    o.Subresources,
+			dataPlane: o.DataPlane,
+			actions:   o.Actions,
+			logger:    logger,
+		}})
+	}
+
 	// The portal is last and is the only catch-all.
 	s.mux.HandleFunc("/", s.handlePortal)
 
@@ -274,16 +304,16 @@ type server struct {
 	files  http.Handler
 }
 
-// ServeHTTP dispatches the grammar prefixes off the RAW path and only then
-// falls through to the mux.
+// ServeHTTP dispatches the raw-path prefixes (/clusters/, /agent/ and
+// /webhooks/) off the RAW path and only then falls through to the mux.
 //
 // This ordering is the whole point of the type. http.ServeMux cleans the
 // request path and answers a non-clean one with a 301/307 redirect. On the
 // data plane that is wrong twice over: ".." and "//" are exactly what the
 // grammar must refuse, and a redirect hands the caller back a path it never
 // asked for — which, cleaned, may address a different object. Letting
-// dataplane.ParseRequest see what the caller actually sent is the only way the
-// refusal happens where the contract says it does.
+// dataplane.ParseSubresourceRequest see what the shard actually sent is the
+// only way the refusal happens where the contract says it does.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	recorder := &statusRecorder{ResponseWriter: w}

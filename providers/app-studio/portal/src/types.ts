@@ -526,7 +526,11 @@ export interface ProviderChild {
   builtinRoute: string
 }
 
-export interface ProviderActionBoundResource {
+// ProviderResourceCoordinate is the addressable triple of an exported kind:
+// the apiVersion and kind its export resource entry declares, plus the plural
+// resource name. It is what an action is bound to — read off the PARENT
+// resource entry, which is the only place the catalog publishes it.
+export interface ProviderResourceCoordinate {
   apiVersion: string
   kind: string
   resource: string
@@ -552,11 +556,17 @@ export interface ProviderActionDeprecation {
   sunset?: string
 }
 
+// ProviderAction is one versioned, schema'd call the catalog publishes. It
+// carries no resource coordinate of its own: the kind it is served on is its
+// parent ProviderExportResource, declared once there.
 export interface ProviderAction {
+  // "<name>/<version>" — the string a grant and a consent record key on. The
+  // hub derives and publishes it alongside the two fields it comes from.
   id: string
+  name: string
+  version: string
   displayName: string
   description?: string
-  boundResource: ProviderActionBoundResource
   inputSchema?: unknown
   outputSchema?: unknown
   schemaDigest: string
@@ -569,19 +579,64 @@ export interface ProviderAction {
   deprecation?: ProviderActionDeprecation
 }
 
+// ProviderVerb is one unversioned call on an exported kind.
+export interface ProviderVerb {
+  name: string
+  description?: string
+  stream?: boolean
+  readOnly?: boolean
+}
+
+// ProviderExportResource is one exported kind with the coordinates on it. It is
+// the only place an action's resource coordinate is published, so a grant is
+// built from this triple rather than from anything the action carries.
+export interface ProviderExportResource {
+  name: string
+  apiVersion: string
+  kind: string
+  verbs?: ProviderVerb[]
+  actions?: ProviderAction[]
+}
+
+export interface ProviderExport {
+  name: string
+  path?: string
+  apiGroups?: string[]
+  resources?: ProviderExportResource[]
+}
+
+// ProviderUI is present exactly when the provider ships a portal UI.
+export interface ProviderUI {
+  builtinRoute?: string
+  children?: ProviderChild[]
+  mainJSIntegrity?: string
+}
+
+// ProviderServing mirrors CatalogEntry.spec.serving: presence is the signal, so
+// `backend` is an empty object when the hub proxies one and absent otherwise.
+export interface ProviderServing {
+  ui?: ProviderUI
+  backend?: Record<string, never>
+  selfHosting?: { supported: boolean; docsURL?: string }
+}
+
+// ProviderItem is one entry of the hub's GET /api/providers, whose sections
+// follow CatalogEntry.spec one for one. Only what this portal reads is
+// declared; the response carries more (requires, hub).
 export interface ProviderItem {
   name: string
   displayName: string
   version?: string
   ready: boolean
-  hasUI: boolean
-  hasBackend: boolean
   iconURL?: string
-  builtinRoute?: string
-  children?: ProviderChild[]
   category?: string
   builtin?: boolean
-  actions?: ProviderAction[]
+  // What a workspace may call once it enables the provider, including every
+  // action it publishes. Absent when it exports no API of its own.
+  export?: ProviderExport
+  // Where the hub reaches the provider. `serving.ui` present means it has a
+  // portal UI the workbench can open.
+  serving?: ProviderServing
 }
 
 export interface ListResponse<T> {

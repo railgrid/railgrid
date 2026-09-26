@@ -14,32 +14,36 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tenant"
 )
 
-// identity carries the verified tenant context the hub injects on every proxied
-// request. The hub authenticates the caller and resolves their workspace before
-// forwarding, so these headers are trusted.
+// identity carries the tenant context of one request.
 //
-// The tenant is identified by the workspace's kcp logical-cluster ID: the hub
-// sends it in both X-Railgrid-Tenant and X-Railgrid-Cluster and never sends the
-// workspace path. The organization / workspace UUIDs the store is keyed on are
-// therefore not parsed from any header; they come from kcp (the workspace's
-// LogicalCluster, read as the caller) via Server.workspaces.
+// The tenant is identified by the workspace's kcp logical-cluster ID. On a
+// data-plane verb it is the cluster segment of the path kcp forwarded, and the
+// user is the identity kcp stamped (dataplane.ProxiedIdentityFrom); there is no
+// bearer, so token is empty. On the MCP class the hub's aggregate still
+// forwards the caller's bearer with X-Railgrid-Tenant/-Cluster/-User, and token
+// is set.
+//
+// The organization / workspace UUIDs the store is keyed on are never parsed
+// from a header: they come from kcp (the workspace's LogicalCluster, read as
+// the caller when there is a caller credential) or from the cluster→workspace
+// mapping this provider recorded — see resolveWorkspace and resolveClusterScope.
 type identity struct {
-	tenant        string // X-Railgrid-Tenant: the workspace's kcp logical-cluster ID
-	clusterID     string // X-Railgrid-Cluster: the same ID; what the tenant client addresses
+	tenant        string // the workspace's kcp logical-cluster ID
+	clusterID     string // the same ID; what the tenant client addresses
 	workspacePath string // resolved from kcp, e.g. root:railgrid:tenants:<org>:<ws>; never from a header
-	orgUUID       string // from workspacePath
-	workspaceUUID string // from workspacePath ("" for an organization workspace)
+	orgUUID       string // from workspacePath, or the recorded mapping
+	workspaceUUID string // from workspacePath ("" for an organization workspace), or the recorded mapping
 	workspaceErr  error  // why workspacePath could not be resolved, when it could not
-	user          string // X-Railgrid-User
-	token         string // bearer token, forwarded as-is from Authorization
+	user          string // the caller's user name, for labels and audit lines; never a trust root
+	token         string // the caller's bearer — MCP class only; a verb never has one
 }
 
 // workspaceLookup resolves a cluster ID to its workspace as the caller holding
@@ -47,51 +51,55 @@ type identity struct {
 // table.
 type workspaceLookup func(ctx context.Context, clusterID, token string) (tenantaccess.Workspace, error)
 
-// identityFromRequest returns the tenant context for this request.
+// identityFromRequest returns the tenant context for a data-plane verb.
 //
-// On a data-plane verb the router has already resolved it from the PATH and
-// stashed it (see dataplane.go), which is what lets a caller with no
-// hub-injected identity headers — another provider's ServiceAccount, a job —
-// use the same handlers as a signed-in user. Everything else (the MCP
-// transport, the OAuth callback) still reads the hub's headers.
-//
-// It writes a 401 and returns ok=false when there is no tenant context at all.
-// Workspace resolution is best-effort here: handlers that need the
-// org/workspace scope check it (requireClient) and report the resolution
-// error, so an endpoint that only needs the cluster ID keeps working when the
-// lookup is unavailable.
+// The router resolved it from the PATH and the caller kcp stamped, and stashed
+// it (see dataplane.go). A request that carries no gate did not come through
+// the router — nothing else is entitled to say which workspace a request
+// addresses, and the hub's identity headers are never a trust root here — so
+// it is refused with 401. The MCP transport reads its own identity with
+// mcpIdentity; the OAuth callback and the webhooks carry none.
 func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool) {
 	if gate, ok := gateFrom(r.Context()); ok {
 		return gate.identity, true
 	}
-	id := identity{
-		tenant:    strings.TrimSpace(r.Header.Get("X-Railgrid-Tenant")),
-		clusterID: strings.TrimSpace(r.Header.Get("X-Railgrid-Cluster")),
-		user:      strings.TrimSpace(r.Header.Get("X-Railgrid-User")),
-		token:     bearerToken(r),
-	}
-	if id.tenant == "" {
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "tenant context missing — the hub did not resolve a workspace for this request")
-		return identity{}, false
-	}
-	if id.clusterID == "" {
-		// Older hubs sent only X-Railgrid-Tenant; both carry the cluster ID now.
-		id.clusterID = id.tenant
-	}
-	s.resolveWorkspace(r.Context(), &id)
-	return id, true
+	writeStatus(w, http.StatusUnauthorized, "Unauthorized", "no caller identity — this route is reached only as a kcp custom subresource")
+	return identity{}, false
 }
 
-// resolveWorkspace fills the org/workspace scope of id from kcp. A missing
-// lookup (no hub URL configured) or a failed one leaves the scope empty and
-// records why in id.workspaceErr.
+// unmappedOrg is the organization half of the fallback store scope for a
+// cluster this provider has no recorded workspace mapping for. It pairs with
+// the cluster ID as the workspace half, so rows written before and after a
+// mapping is learned can be told apart; background.scopeFor writes under the
+// same fallback.
+const unmappedOrg = "unmapped"
+
+// resolveClusterScope fills the org/workspace scope of id for a request that
+// carries no caller credential — a data-plane verb.
+//
+// The recorded cluster→workspace mapping wins: it is what background execution
+// (which likewise has no caller) writes transcripts under, so the two halves
+// agree. Without one the scope is the cluster-keyed fallback background.scopeFor
+// uses, never an error: a verb on a fresh workspace must work, and the cluster
+// ID is a perfectly good key for rows that belong to exactly that workspace.
+// Nothing here reads kcp as the caller, because there is no caller to read as.
+func (s *Server) resolveClusterScope(ctx context.Context, id *identity) {
+	if ref, ok, err := s.tenantRef(ctx, id.clusterID); err == nil && ok {
+		id.orgUUID, id.workspaceUUID = ref.OrgUUID, ref.WorkspaceUUID
+		return
+	}
+	id.orgUUID, id.workspaceUUID = unmappedOrg, id.clusterID
+}
+
+// resolveWorkspace fills the org/workspace scope of id from kcp, as the caller
+// holding id.token — the MCP class, the one route that still carries a bearer.
+// A missing lookup (no hub URL configured) or a failed one leaves the scope
+// empty and records why in id.workspaceErr.
 //
 // A failed kcp read falls back to the cluster→workspace mapping this provider
-// recorded the last time a caller who COULD read it came through. That is what
-// makes a service identity usable on the data plane: it holds `create` on
-// agents/run and `get` on the agent, and has no business also holding a read
-// on the workspace's LogicalCluster just so its transcripts land in the right
-// Postgres rows.
+// recorded the last time a caller who COULD read it came through. A data-plane
+// verb never gets here: it has no token, and resolves its scope per cluster
+// with resolveClusterScope.
 func (s *Server) resolveWorkspace(ctx context.Context, id *identity) {
 	if s == nil || s.workspaces == nil {
 		id.workspaceErr = errNoWorkspaceLookup
@@ -203,41 +211,38 @@ func (id identity) scope(agentName string) store.Scope {
 	return store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: agentName}
 }
 
-// requireClient resolves the caller identity and a workspace-scoped tenant
-// client. Returns ok=false (after writing the response) when the tenant context
-// is incomplete or the provider has no hub URL configured.
+// requireClient resolves the identity of a gated request and the client its
+// handler acts through. Returns ok=false (after writing the response) when the
+// request did not come through the data-plane router or its tenant context is
+// incomplete.
 func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsclient.Client, identity, bool) {
 	id, ok := s.identityFromRequest(w, r)
 	if !ok {
 		return nil, identity{}, false
 	}
-	if s.tenant == nil {
-		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant access not configured — provider has no hub URL (set RAILGRID_HUB_URL)")
+	gate, ok := gateFrom(r.Context())
+	if !ok || gate.provider == nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "the data-plane gate resolved no provider client for this request")
 		return nil, identity{}, false
 	}
 	if id.clusterID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Railgrid-Cluster missing) — the hub did not resolve a cluster")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request — the path names no logical cluster")
 		return nil, identity{}, false
 	}
 	if id.workspaceUUID == "" {
 		if id.workspaceErr != nil {
 			log.Printf("agents: resolving workspace for cluster %s: %v", id.clusterID, id.workspaceErr)
-			writeStatus(w, http.StatusBadGateway, "WorkspaceUnresolved", "could not resolve the workspace behind cluster "+id.clusterID+" from the hub: "+id.workspaceErr.Error())
+			writeStatus(w, http.StatusBadGateway, "WorkspaceUnresolved", "could not resolve the workspace behind cluster "+id.clusterID+": "+id.workspaceErr.Error())
 			return nil, identity{}, false
 		}
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required — cluster "+id.clusterID+" is an organization workspace; select a workspace first")
 		return nil, identity{}, false
 	}
-	scope, err := s.tenant.For(id.clusterID, id.token)
-	if err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "creating tenant client: "+err.Error())
-		return nil, identity{}, false
-	}
-	// Record the cluster→tenant mapping so background execution (which only
-	// sees cluster IDs via the APIExport virtual workspace) writes transcripts
-	// under the same scope the portal reads.
-	_ = s.store.SaveTenantRef(r.Context(), id.clusterID, store.TenantRef{
-		OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, UpdatedAt: time.Now().UTC(),
-	})
-	return agentsclient.NewFromScope(scope), id, true
+	// The client is THE PROVIDER's, through its APIExport virtual workspace,
+	// scoped to the path's cluster: the gate already settled that the caller
+	// may see the addressed object, and there is no caller credential to act
+	// with. Anything a handler reads or writes from here on is what the
+	// provider's export and claims let it see — its own kinds, and Secrets
+	// carrying the railgrid.ai/owner: agents label.
+	return agentsclient.NewFromScope(tenant.NewScopeFromDynamic(id.clusterID, gate.provider)), id, true
 }

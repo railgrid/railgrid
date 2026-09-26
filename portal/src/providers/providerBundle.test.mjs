@@ -39,7 +39,7 @@ test('a platform provider keeps the loader default and its catalog pin', async (
     throw new Error('platform providers must not request a grant')
   })
   const bundle = await resolveProviderBundle(
-    { name: 'kuery', scope: 'global', mainJSIntegrity: 'sha384-abc' },
+    { name: 'kuery', scope: 'global', serving: { ui: { mainJSIntegrity: 'sha384-abc' } } },
     fetchImpl,
   )
   assert.deepEqual(bundle, { integrity: 'sha384-abc' })
@@ -55,7 +55,7 @@ test('an org-owned provider loads the granted URL and pin as the user', async ()
     }),
   )
   const bundle = await resolveProviderBundle(
-    { name: 'infrastructure', scope: 'org', ownerOrg: 'org-1', mainJSIntegrity: undefined },
+    { name: 'infrastructure', scope: 'org', ownerOrg: 'org-1', serving: { ui: {} } },
     fetchImpl,
   )
   assert.deepEqual(bundle, {

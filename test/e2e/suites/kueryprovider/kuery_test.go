@@ -138,11 +138,11 @@ func applyKueryManifests() error {
 				// run-provider-kuery`); the suite runs on :18118 to keep
 				// test ports separate from dev-loop ports.
 				overrideURL := "http://localhost:" + providerPort
-				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url"); err != nil {
-					return fmt.Errorf("%s: override spec.ui.url: %w", file, err)
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "ui", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.serving.ui.url: %w", file, err)
 				}
-				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url"); err != nil {
-					return fmt.Errorf("%s: override spec.backend.url: %w", file, err)
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "backend", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.serving.backend.url: %w", file, err)
 				}
 			}
 			deadline := time.Now().Add(90 * time.Second)
@@ -253,9 +253,32 @@ func providerPost(t *testing.T, path, body string, headers map[string]string) (i
 	return resp.StatusCode, out
 }
 
-// runPath is the provider's one tenant route.
+// runPath is the provider's one tenant route: the kcp custom subresource
+// savedviews/run on kuery's APIExport, a kube path on the hub's kcp front
+// door. There is no hub-proxied /services/providers/kuery/dataplane spelling.
 func runPath(cluster, view string) string {
-	return "/dataplane/clusters/" + cluster + "/savedviews/" + view + "/run"
+	return "/clusters/" + cluster + "/apis/" + apiExportName + "/v1alpha1/savedviews/" + view + "/run"
+}
+
+// hubPost issues a POST against the hub's kcp front door. An empty token sends
+// no Authorization at all.
+func hubPost(t *testing.T, path, body, token string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, hubURL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, out
 }
 
 // TestACatalogProvisioning asserts the kcp-side artefacts provisioning leaves
@@ -278,20 +301,20 @@ func TestACatalogProvisioning(t *testing.T) {
 	// edgeProxyAccess must be ABSENT. It used to grant kuery's provider SA the
 	// `proxy` verb on edges at Enable time, but that SA was never the
 	// credential on the engagement path — the edges data plane cannot
-	// authenticate a foreign workspace's provider SA at all. Kuery now reaches
-	// each tenant's edges as a hub-minted scoped identity owned by that
-	// workspace's kuery APIBinding, carrying the clause E composition declared
-	// below (provider-contract remediation §10 / docs/roadmap). A manifest that
-	// re-grows the flag is asking for a capability nothing uses.
+	// authenticate a foreign workspace's provider SA at all. Kuery now calls
+	// each tenant's edges as ITSELF, through the requirement declared below:
+	// kcp serves the required coordinate on kuery's own virtual workspace and
+	// forwards it to edges under kuery's identity. A manifest that re-grows the
+	// flag is asking for a capability nothing uses.
 	if v, found, _ := unstructured.NestedBool(ce.Object, "spec", "edgeProxyAccess"); found && v {
-		t.Errorf("CatalogEntry spec.edgeProxyAccess = true, want it absent: kuery reaches edges through a hub-minted scoped identity, not an Enable-time proxy grant")
+		t.Errorf("CatalogEntry spec.edgeProxyAccess = true, want it absent: kuery reaches edges through its own required coordinate, not an Enable-time proxy grant")
 	}
-	// The composition that replaced it: read-only on the edges provider's
-	// KubernetesClusters, declared as a dependency so a workspace admin
-	// accepts it at Enable and can revoke it.
-	assertKueryEdgesComposition(t, ce.Object)
-	if name, _, _ := unstructured.NestedString(ce.Object, "spec", "apiExport", "name"); name != apiExportName {
-		t.Errorf("CatalogEntry spec.apiExport.name = %q, want %q", name, apiExportName)
+	// The requirement that replaced it: read-only on the edges provider's
+	// KubernetesClusters plus the kubernetesclusters/k8s coordinate, naming
+	// `edges` so a workspace admin accepts it at Enable and can revoke it.
+	assertKueryEdgesRequirement(t, ce.Object)
+	if name, _, _ := unstructured.NestedString(ce.Object, "spec", "export", "name"); name != apiExportName {
+		t.Errorf("CatalogEntry spec.export.name = %q, want %q", name, apiExportName)
 	}
 
 	// The Provider controller materializes the sub-workspace, the SA and the
@@ -319,17 +342,55 @@ func TestACatalogProvisioning(t *testing.T) {
 		t.Errorf("APIExport spec.resources does not include savedviews.kuery.providers.railgrid.ai: %v", resources)
 	}
 
-	// The export claims NOTHING, and that is the assertion. Kuery used to
-	// claim serviceaccounts, secrets, clusterroles and clusterrolebindings to
-	// mint a per-workspace ServiceAccount for itself; it now asks the hub for
-	// a scoped identity instead, and a claim on those types is a contract
-	// violation (docs/provider-connectivity-contract.md §"Scoped identities").
-	// A first-party claim would be worse still: it pins one identityHash for
-	// every consumer at once, which is exactly what an org-owned edges
-	// provider has to survive.
+	// The export's claims are exactly what spec.requires declares, generated by
+	// apiexportgen — nothing hand-written, and nothing beyond it. Two
+	// invariants live here:
+	//
+	//   - No claim pins an identityHash. One that did would fix a single
+	//     APIExport identity for every consumer at once, so an org running its
+	//     own edges provider would be served nothing (AGENTS.md §5.7). kcp
+	//     resolves an unpinned first-party claim per consumer workspace against
+	//     the PermissionClaimPolicy the hub applies at bootstrap.
+	//   - No claim on serviceaccounts, secrets, clusterroles or
+	//     clusterrolebindings. Kuery used to claim all four to mint a
+	//     per-workspace ServiceAccount for itself; it now asks the hub for a
+	//     scoped identity, and a claim on those types is a contract violation
+	//     (docs/provider-connectivity-contract.md §"Scoped identities").
 	claims, _, _ := unstructured.NestedSlice(export.Object, "spec", "permissionClaims")
-	if len(claims) != 0 {
-		t.Errorf("APIExport carries permissionClaims %v; kuery must claim nothing", claims)
+	if len(claims) == 0 {
+		t.Error("APIExport carries no permissionClaims; kuery requires the edges coordinates and the review API, and apiexportgen must have emitted them")
+	}
+	minted := map[string]bool{}
+	for _, raw := range claims {
+		claim, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		resource, _, _ := unstructured.NestedString(claim, "resource")
+		group, _, _ := unstructured.NestedString(claim, "group")
+		minted[group+"/"+resource] = true
+		if hash, found, _ := unstructured.NestedString(claim, "identityHash"); found && hash != "" {
+			t.Errorf("claim %s/%s pins identityHash %q; a pinned claim serves nothing to an org that self-hosts the dependency", group, resource, hash)
+		}
+		for _, forbidden := range []string{"serviceaccounts", "secrets", "clusterroles", "clusterrolebindings"} {
+			if group == "" && resource == forbidden {
+				t.Errorf("APIExport claims the core group's %s; a provider does not mint identities, it asks the hub", forbidden)
+			}
+			if group == "rbac.authorization.k8s.io" && resource == forbidden {
+				t.Errorf("APIExport claims rbac.authorization.k8s.io/%s; a provider does not mint identities, it asks the hub", forbidden)
+			}
+		}
+	}
+	// Every required coordinate must have become a claim: an entry declared but
+	// not generated is a capability kuery believes it has and does not.
+	for _, want := range []string{
+		"edges.railgrid.ai/kubernetesclusters",
+		"edges.railgrid.ai/kubernetesclusters/k8s",
+		"authorization.k8s.io/subjectaccessreviews",
+	} {
+		if !minted[want] {
+			t.Errorf("APIExport carries no claim for required coordinate %s: %v", want, claims)
+		}
 	}
 
 	// maximalPermissionPolicy caps tenant access as well as provider access,
@@ -359,39 +420,66 @@ func TestACatalogProvisioning(t *testing.T) {
 	}
 }
 
-// assertKueryEdgesComposition pins the clause E declaration that replaced
-// edgeProxyAccess: kuery composes the edges provider's KubernetesClusters,
-// read-only. The hub's identity policy reads these verbs fresh on every mint
-// (pkg/hub/identity/policy.go, clause E), so the declaration IS the bound on
-// what kuery's engagement identity can ever hold — a `create` or `delete`
-// creeping in here would widen every tenant's identity on the next refresh.
-func assertKueryEdgesComposition(t *testing.T, entry map[string]any) {
+// assertKueryEdgesRequirement pins the spec.requires entry that replaced
+// edgeProxyAccess: one entry keyed by the edges group, NAMING the edges
+// provider — which is what makes it a dependency edge the hub refuses to
+// enable without — carrying read-only verbs on the kind plus the
+// kubernetesclusters/k8s coordinate kuery actually calls.
+//
+// The declaration IS the bound on what the generated permission claim can ever
+// hold, and it is re-read on every catalog update, so a `create` or `delete`
+// creeping in here would widen every tenant's claim the next time the Enable
+// dialog is accepted. The coordinate entry must carry NO verbs: the verb is
+// the capability, and the generated claim spells every verb
+// (dataplane.SubresourceVerbs).
+func assertKueryEdgesRequirement(t *testing.T, entry map[string]any) {
 	t.Helper()
-	dependencies, found, _ := unstructured.NestedSlice(entry, "spec", "dependencies")
-	if !found || len(dependencies) == 0 {
-		t.Fatal("CatalogEntry spec.dependencies is empty; kuery must declare the edges composition it engages through")
+	requires, found, _ := unstructured.NestedSlice(entry, "spec", "requires")
+	if !found || len(requires) == 0 {
+		t.Fatal("CatalogEntry spec.requires is empty; kuery must declare what it needs from the edges provider")
 	}
-	for _, raw := range dependencies {
-		dependency, ok := raw.(map[string]any)
-		if !ok || dependency["name"] != "edges" {
+	for _, raw := range requires {
+		requirement, ok := raw.(map[string]any)
+		if !ok || requirement["group"] != "edges.railgrid.ai" {
 			continue
 		}
-		composes, _, _ := unstructured.NestedSlice(dependency, "composes")
-		for _, rawComposition := range composes {
-			composition, ok := rawComposition.(map[string]any)
-			if !ok || composition["group"] != "edges.railgrid.ai" || composition["resource"] != "kubernetesclusters" {
+		// Naming the provider is not decoration: it is the dependency edge the
+		// hub checks before enabling kuery in a workspace.
+		if requirement["provider"] != "edges" {
+			t.Errorf("requirement on edges.railgrid.ai names provider %v, want \"edges\"; without it the hub does not treat edges as a dependency", requirement["provider"])
+		}
+		resources, _, _ := unstructured.NestedSlice(requirement, "resources")
+		var sawKind, sawCoordinate bool
+		for _, rawResource := range resources {
+			resource, ok := rawResource.(map[string]any)
+			if !ok {
 				continue
 			}
-			verbs, _, _ := unstructured.NestedStringSlice(composition, "verbs")
-			sorted := append([]string(nil), verbs...)
-			sort.Strings(sorted)
-			if want := []string{"get", "list", "watch"}; !reflect.DeepEqual(sorted, want) {
-				t.Errorf("composition edges.railgrid.ai/kubernetesclusters verbs = %v, want exactly %v (read-only)", verbs, want)
+			verbs, _, _ := unstructured.NestedStringSlice(resource, "verbs")
+			switch resource["name"] {
+			case "kubernetesclusters":
+				sawKind = true
+				sorted := append([]string(nil), verbs...)
+				sort.Strings(sorted)
+				if want := []string{"get", "list", "watch"}; !reflect.DeepEqual(sorted, want) {
+					t.Errorf("required edges.railgrid.ai/kubernetesclusters verbs = %v, want exactly %v (read-only)", verbs, want)
+				}
+			case "kubernetesclusters/k8s":
+				sawCoordinate = true
+				if len(verbs) != 0 {
+					t.Errorf("required coordinate kubernetesclusters/k8s carries verbs %v; a verb coordinate is claimed whole and must declare none", verbs)
+				}
 			}
-			return
 		}
+		if !sawKind {
+			t.Errorf("requirement on edges.railgrid.ai does not require kubernetesclusters: %v", resources)
+		}
+		if !sawCoordinate {
+			t.Errorf("requirement on edges.railgrid.ai does not require the kubernetesclusters/k8s coordinate kuery calls: %v", resources)
+		}
+		return
 	}
-	t.Errorf("CatalogEntry declares no composition of edges.railgrid.ai/kubernetesclusters on dependency \"edges\": %v", dependencies)
+	t.Errorf("CatalogEntry declares no requirement on API group edges.railgrid.ai: %v", requires)
 }
 
 // TestBAPIProvidersDTO asserts kuery shows up in the hub's provider catalog
@@ -465,87 +553,96 @@ func TestEDeletedRoutesAreGone(t *testing.T) {
 	}
 }
 
-// TestFQueryVerbGates is the tenant-isolation boundary, checked against the
-// provider pod directly so the hub proxy is not what is being trusted.
+// TestFQueryVerbGates is the tenant-isolation boundary on the verb route.
 //
-// Every refusal is the same 404: a caller must not be able to use the status
-// to learn whether a SavedView exists in a workspace they cannot see. The one
-// exception is a request that contradicts itself — a path cluster that
-// disagrees with the header — which is a 400, because retrying it unchanged
-// cannot succeed.
+// The run verb is a kcp custom subresource, so it is reached on the hub's kcp
+// front door and kcp authenticates the caller, authorizes the verb with RBAC
+// and forwards the request to the provider with the caller's identity stamped
+// in requestheader headers. Two things are checked: through the hub, every
+// refusal a caller could probe with is a non-disclosing 403/404 and a GET
+// never runs a query; and straight at the pod — where the hub is not what is
+// being trusted — a request with no stamped identity is refused whatever
+// bearer it carries, because a bearer is not a caller on this path and the
+// shard never forwards one.
 func TestFQueryVerbGates(t *testing.T) {
 	cluster := loginStaticTokenAndGetCluster(t)
 	const body = `{"input":{}}`
 
-	t.Run("no bearer is 401", func(t *testing.T) {
-		status, out := providerPost(t, runPath(cluster, "any-view"), body, map[string]string{
-			"X-Railgrid-Cluster": cluster,
-		})
-		if status != http.StatusUnauthorized {
-			t.Errorf("no bearer = %d, want 401; body=%s", status, truncate(out))
-		}
-	})
-
-	t.Run("a workspace path in the cluster position is 400", func(t *testing.T) {
-		// A path like root:railgrid:orgs:acme is a valid-looking tenant
-		// reference but not a logical-cluster ID. The grammar refuses it here
-		// rather than minting it into a URL the hub proxy answers with 403.
-		status, out := providerPost(t, runPath("root:railgrid:orgs:acme", "any-view"), body, map[string]string{
-			"Authorization": "Bearer " + staticToken,
-		})
-		if status != http.StatusBadRequest {
-			t.Errorf("workspace path in the path = %d, want 400; body=%s", status, truncate(out))
-		}
-	})
-
-	t.Run("a header disagreeing with the path is 400", func(t *testing.T) {
-		status, out := providerPost(t, runPath(cluster, "any-view"), body, map[string]string{
-			"Authorization":      "Bearer " + staticToken,
-			"X-Railgrid-Cluster": "zzzforeign000000",
-		})
-		if status != http.StatusBadRequest {
-			t.Errorf("cluster mismatch = %d, want 400; body=%s", status, truncate(out))
+	t.Run("no bearer on the front door is refused", func(t *testing.T) {
+		status, out := hubPost(t, runPath(cluster, "any-view"), body, "")
+		if status != http.StatusUnauthorized && status != http.StatusForbidden {
+			t.Errorf("no bearer = %d, want 401 or 403; body=%s", status, truncate(out))
 		}
 	})
 
 	t.Run("a view that does not exist is 404, not 403", func(t *testing.T) {
-		status, out := providerPost(t, runPath(cluster, "no-such-view"), body, map[string]string{
-			"Authorization":      "Bearer " + staticToken,
-			"X-Railgrid-Cluster": cluster,
-		})
+		// kcp authorized the verb (the caller administers this workspace) and
+		// forwarded; the provider's gate finds no such view and says so with
+		// the contract's non-disclosing status.
+		status, out := hubPost(t, runPath(cluster, "no-such-view"), body, staticToken)
 		if status != http.StatusNotFound {
 			t.Errorf("missing view = %d, want 404; body=%s", status, truncate(out))
 		}
 	})
 
-	t.Run("a foreign workspace is 404", func(t *testing.T) {
-		// The bearer is scoped to its own workspace, so both gates fail in a
-		// workspace it has no access to — and the answer is indistinguishable
-		// from "no such view".
-		status, out := providerPost(t, runPath("zzzforeign000000", "any-view"), body, map[string]string{
-			"Authorization":      "Bearer " + staticToken,
-			"X-Railgrid-Cluster": "zzzforeign000000",
-		})
-		if status != http.StatusNotFound {
-			t.Errorf("foreign workspace = %d, want 404; body=%s", status, truncate(out))
+	t.Run("a foreign workspace is refused", func(t *testing.T) {
+		// The caller has no standing in a cluster that is not theirs, so kcp
+		// refuses before the provider is involved — and the answer must not
+		// say whether the view, or the workspace, exists.
+		status, out := hubPost(t, runPath("zzzforeign000000", "any-view"), body, staticToken)
+		if status != http.StatusForbidden && status != http.StatusNotFound {
+			t.Errorf("foreign workspace = %d, want 403 or 404; body=%s", status, truncate(out))
+		}
+		if status == http.StatusOK {
+			t.Errorf("foreign workspace answered 200: %s", truncate(out))
 		}
 	})
 
 	t.Run("GET is not a query", func(t *testing.T) {
-		status, out := providerGetWithHeaders(t, runPath(cluster, "any-view"), map[string]string{
-			"Authorization":      "Bearer " + staticToken,
-			"X-Railgrid-Cluster": cluster,
+		// kcp checks the HTTP method as the RBAC verb and the grant is "*", so
+		// the method discipline is the provider's: dataplane.Serve refuses a
+		// GET with 405. A kcp that refuses it first (403/404) is equally fine;
+		// what must not happen is a query running on a GET.
+		status, out := hubGet(t, runPath(cluster, "any-view"))
+		if status == http.StatusOK {
+			t.Errorf("GET on the run verb = 200, want a refusal; body=%s", truncate(out))
+		}
+		if status != http.StatusMethodNotAllowed && status != http.StatusNotFound && status != http.StatusForbidden {
+			t.Errorf("GET on the run verb = %d, want 405, 404 or 403; body=%s", status, truncate(out))
+		}
+	})
+
+	t.Run("straight at the pod a bearer is not a caller", func(t *testing.T) {
+		// The kube path exists on the pod (the shard forwards to it), but the
+		// caller is the identity kcp stamps, never a bearer. Anonymous is not
+		// a fallback and the provider's own identity is never a substitute.
+		status, out := providerPost(t, runPath(cluster, "any-view"), body, map[string]string{
+			"Authorization": "Bearer " + staticToken,
 		})
-		// Either the gates refuse it first (404) or Serve does (405); what must
-		// not happen is a query running on a GET.
-		if status != http.StatusMethodNotAllowed && status != http.StatusNotFound {
-			t.Errorf("GET on the run verb = %d, want 405 or 404; body=%s", status, truncate(out))
+		if status != http.StatusUnauthorized {
+			t.Errorf("bearer with no stamped caller = %d, want 401; body=%s", status, truncate(out))
+		}
+	})
+
+	t.Run("the hub-proxied grammar does not exist", func(t *testing.T) {
+		// Neither the hub nor the provider serves a verb under
+		// /services/providers/kuery/dataplane/… any more. The hub refuses it
+		// outright; the pod has no such route and falls through to the portal
+		// bundle. Whatever the status, no JSON envelope may come back.
+		legacy := "/dataplane/clusters/" + cluster + "/savedviews/any-view/run"
+		status, out := hubPost(t, "/services/providers/kuery"+legacy, body, staticToken)
+		if status == http.StatusOK {
+			t.Errorf("hub still answers the legacy grammar with 200: %s", truncate(out))
+		}
+		status, out = providerPost(t, legacy, body, map[string]string{"Authorization": "Bearer " + staticToken})
+		if status == http.StatusOK && bytes.Contains(out, []byte(`"requestID"`)) {
+			t.Errorf("provider still answers the legacy grammar with an envelope: %s", truncate(out))
 		}
 	})
 }
 
 // TestGReadyzReportsVirtualWorkspaceReachability asserts /readyz — the path the
-// CatalogEntry's backend.healthPath points at — answers, and that /healthz
+// CatalogEntry's spec.serving.backend.healthPath points at — answers, and that /healthz
 // stays a separate liveness signal.
 func TestGReadyzReportsVirtualWorkspaceReachability(t *testing.T) {
 	status, body := providerGet(t, "/readyz")
@@ -589,10 +686,12 @@ func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 
-	// No permissionClaims on the binding, because the export declares none:
-	// what kuery's engagement controller needs on an edge is a COMPOSITION
-	// (spec.dependencies[].composes) reached through a hub-minted scoped
-	// identity, not a claim served through this virtual workspace.
+	// The binding accepts NOTHING, deliberately: this test only round-trips a
+	// SavedView, which is kuery's own kind and needs no claim at all. The
+	// claims the export declares (spec.requires) stay undecided here — what
+	// kuery's engagement controller needs on an edge reaches a workspace only
+	// once someone accepted it in the Enable dialog, which is the hub's flow
+	// and not this test's.
 	binding := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apis.kcp.io/v1alpha2",
 		"kind":       "APIBinding",

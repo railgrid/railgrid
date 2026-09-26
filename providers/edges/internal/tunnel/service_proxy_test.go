@@ -128,11 +128,13 @@ func TestServiceViewSetSvcHeaders(t *testing.T) {
 	}
 }
 
-// The Service routes are the shared grammar now, parsed by
-// provider-sdk/dataplane rather than by a hand-rolled splitter. What this
-// pins is the provider's half: which {resource}/{verb} pairs it serves, and
-// that the old dialect no longer parses at all.
+// The Service routes are kube paths — kcp custom subresources on this
+// provider's export — parsed by provider-sdk/dataplane rather than by a
+// hand-rolled splitter. What this pins is the provider's half: which
+// {resource}/{verb} pairs it serves, and that the retired hub-proxied grammar
+// is not a route at all.
 func TestServiceRouteGrammar(t *testing.T) {
+	const base = "/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1"
 	cases := []struct {
 		name             string
 		path             string
@@ -143,76 +145,79 @@ func TestServiceRouteGrammar(t *testing.T) {
 	}{
 		{
 			name:    "proxy verb, no trailing path",
-			path:    "/" + DataPlaneRoot + "/clusters/abc/services/ha-box-home-assistant/proxy",
+			path:    base + "/services/ha-box-home-assistant/proxy",
 			wantOK:  true,
-			cluster: "abc", obj: "ha-box-home-assistant", verb: "proxy",
+			cluster: "11tcw27t4rdtnacy", obj: "ha-box-home-assistant", verb: "proxy",
 		},
 		{
 			name:    "proxy verb with a trailing service path",
-			path:    "/" + DataPlaneRoot + "/clusters/abc/services/ha/proxy/api/services/cover/open_cover",
+			path:    base + "/services/ha/proxy/api/services/cover/open_cover",
 			wantOK:  true,
-			cluster: "abc", obj: "ha", verb: "proxy", tail: "api/services/cover/open_cover",
+			cluster: "11tcw27t4rdtnacy", obj: "ha", verb: "proxy", tail: "api/services/cover/open_cover",
 		},
 		{
 			name:    "mcp verb",
-			path:    "/" + DataPlaneRoot + "/clusters/xyz/services/ha/mcp",
+			path:    base + "/services/ha/mcp",
 			wantOK:  true,
-			cluster: "xyz", obj: "ha", verb: "mcp",
-		},
-		{
-			name:    "ticket verb",
-			path:    "/" + DataPlaneRoot + "/clusters/xyz/services/ha/ticket",
-			wantOK:  true,
-			cluster: "xyz", obj: "ha", verb: "ticket",
+			cluster: "11tcw27t4rdtnacy", obj: "ha", verb: "mcp",
 		},
 		{
 			name:    "a connectable kind parses, and serves its own verbs",
-			path:    "/" + DataPlaneRoot + "/clusters/abc/linuxservers/srv/ssh",
+			path:    base + "/linuxservers/srv/ssh",
 			wantOK:  true,
-			cluster: "abc", obj: "srv", verb: "ssh",
+			cluster: "11tcw27t4rdtnacy", obj: "srv", verb: "ssh",
 		},
 		{
 			name:             "a verb this provider does not serve is refused",
-			path:             "/" + DataPlaneRoot + "/clusters/abc/services/ha/k8s",
+			path:             base + "/services/ha/k8s",
 			wantOK:           true,
-			cluster:          "abc",
+			cluster:          "11tcw27t4rdtnacy",
 			obj:              "ha",
 			verb:             "k8s",
 			wantVerbUnserved: true,
 		},
 		{
-			name:   "the old apis/{group}/{version} dialect no longer parses",
-			path:   "/" + DataPlaneRoot + "/clusters/abc/apis/edges.railgrid.ai/v1alpha1/services/ha/proxy",
+			name:             "the ticket verb is gone: a browser presents the kube bearer subprotocol instead",
+			path:             base + "/services/ha/ticket",
+			wantOK:           true,
+			cluster:          "11tcw27t4rdtnacy",
+			obj:              "ha",
+			verb:             "ticket",
+			wantVerbUnserved: true,
+		},
+		{
+			name:   "the retired hub-proxied grammar is not a route",
+			path:   "/dataplane/clusters/11tcw27t4rdtnacy/services/ha/proxy",
 			wantOK: false,
 		},
 		{
 			name:   "too short",
-			path:   "/" + DataPlaneRoot + "/clusters/abc/services/ha",
+			path:   base + "/services/ha",
 			wantOK: false,
 		},
 		{
 			name:   "a traversal segment is refused, not cleaned",
-			path:   "/" + DataPlaneRoot + "/clusters/abc/services/../ha/proxy",
+			path:   base + "/services/../ha/proxy",
 			wantOK: false,
 		},
 		{
 			name:   "a workspace path is not a cluster ID",
-			path:   "/" + DataPlaneRoot + "/clusters/root:railgrid:tenants:a/services/ha/proxy",
+			path:   "/clusters/root:railgrid:tenants:a/apis/edges.railgrid.ai/v1alpha1/services/ha/proxy",
 			wantOK: false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req, ok := dataplane.ParsePath(DataPlaneRoot, tc.path)
-			if ok != tc.wantOK {
-				t.Fatalf("ParsePath(%q) ok=%v, want %v", tc.path, ok, tc.wantOK)
+			req, err := dataplane.ParseSubresourcePath(tc.path)
+			if ok := err == nil; ok != tc.wantOK {
+				t.Fatalf("ParseSubresourcePath(%q) ok=%v (err %v), want %v", tc.path, ok, err, tc.wantOK)
 			}
 			if !tc.wantOK {
 				return
 			}
 			if req.ClusterID != tc.cluster || req.Name != tc.obj || req.Verb != tc.verb || req.Tail != tc.tail {
-				t.Fatalf("ParsePath(%q) = %+v, want cluster=%q name=%q verb=%q tail=%q",
+				t.Fatalf("ParseSubresourcePath(%q) = %+v, want cluster=%q name=%q verb=%q tail=%q",
 					tc.path, req, tc.cluster, tc.obj, tc.verb, tc.tail)
 			}
 			if served := verbServed(req.Resource, req.Verb); served == tc.wantVerbUnserved {
@@ -241,32 +246,76 @@ func TestServiceViewAuthModeDefaults(t *testing.T) {
 	}
 }
 
-// applyServiceAuth decides what the upstream behind the tunnel sees. The
-// passthrough case is the one that matters for a self-hosted provider backend:
-// its whole authorization model is the caller's own bearer, so substituting a
-// shared token would collapse per-user RBAC.
+// applyServiceAuth decides what the upstream behind the tunnel sees. On the
+// kube path the request's own Authorization was the caller's kcp credential
+// and never reaches this proxy (the adapter drops it); a credential meant for
+// the far end travels in X-Railgrid-Upstream-Authorization instead, which
+// passthrough forwards as the upstream Authorization. That is what lets a
+// self-hosted provider backend keep its own per-user authorization model —
+// the hub's edge hop hands it the delegated token this way — while no mode
+// ever leaks the carrier header itself.
 func TestApplyServiceAuth(t *testing.T) {
-	const caller = "Bearer caller-token"
+	const upstream = "Bearer delegated-token"
 	for _, tc := range []struct {
-		name  string
-		mode  string
-		token string
-		want  string
+		name         string
+		mode         string
+		token        string
+		withUpstream bool
+		want         string
 	}{
-		{"passthrough keeps the caller's credential", serviceAuthPassthrough, "", caller},
-		{"passthrough ignores any service token", serviceAuthPassthrough, "svc-token", caller},
-		{"secret substitutes the service token", serviceAuthSecret, "svc-token", "Bearer svc-token"},
-		{"secret with no token strips rather than leaking the caller's", serviceAuthSecret, "", ""},
-		{"none strips", serviceAuthNone, "svc-token", ""},
+		{"passthrough forwards the upstream credential", serviceAuthPassthrough, "", true, upstream},
+		{"passthrough ignores any service token", serviceAuthPassthrough, "svc-token", true, upstream},
+		{"passthrough with nothing to forward sends nothing", serviceAuthPassthrough, "", false, ""},
+		{"secret substitutes the service token", serviceAuthSecret, "svc-token", true, "Bearer svc-token"},
+		{"secret with no token strips rather than leaking the caller's", serviceAuthSecret, "", true, ""},
+		{"none strips", serviceAuthNone, "svc-token", true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := http.Header{}
-			h.Set("Authorization", caller)
+			// What a request would carry if the adapter had not already
+			// dropped it: it must never be what the upstream sees.
+			h.Set("Authorization", "Bearer callers-kcp-credential")
+			if tc.withUpstream {
+				h.Set(dataplane.HeaderUpstreamAuthorization, upstream)
+			}
 			applyServiceAuth(h, tc.mode, tc.token)
 			if got := h.Get("Authorization"); got != tc.want {
 				t.Fatalf("Authorization = %q, want %q", got, tc.want)
 			}
+			if got := h.Get(dataplane.HeaderUpstreamAuthorization); got != "" {
+				t.Fatalf("%s = %q leaked to the upstream", dataplane.HeaderUpstreamAuthorization, got)
+			}
 		})
+	}
+}
+
+// What a service behind the tunnel learns about the caller: the railgrid
+// identity headers, set from the identity kcp stamped and never from what the
+// caller spelled; the requestheader identity itself never crosses.
+func TestStampCallerForUpstream(t *testing.T) {
+	h := http.Header{}
+	h.Set(dataplane.HeaderRemoteUser, "alice@railgrid.test")
+	h.Set(dataplane.HeaderRemoteGroup, "system:authenticated")
+	h.Set(dataplane.HeaderRemoteExtraPrefix+"warrant", "secret")
+	h.Set(dataplane.HeaderHops, "3")
+	h.Set(dataplane.HeaderUser, "forged@railgrid.test")
+	ctx := dataplane.WithProxiedIdentity(context.Background(), dataplane.ProxiedIdentity{User: "alice@railgrid.test"})
+
+	stampCallerForUpstream(h, ctx, "11tcw27t4rdtnacy")
+
+	if got := h.Get(dataplane.HeaderUser); got != "alice@railgrid.test" {
+		t.Errorf("%s = %q, want the stamped identity", dataplane.HeaderUser, got)
+	}
+	if got := h.Get(dataplane.HeaderTenant); got != "11tcw27t4rdtnacy" {
+		t.Errorf("%s = %q", dataplane.HeaderTenant, got)
+	}
+	if got := h.Get(dataplane.HeaderCluster); got != "11tcw27t4rdtnacy" {
+		t.Errorf("%s = %q", dataplane.HeaderCluster, got)
+	}
+	for _, name := range []string{dataplane.HeaderRemoteUser, dataplane.HeaderRemoteGroup, dataplane.HeaderRemoteExtraPrefix + "warrant", dataplane.HeaderHops} {
+		if got := h.Get(name); got != "" {
+			t.Errorf("%s = %q crossed the tunnel", name, got)
+		}
 	}
 }
 
@@ -278,15 +327,16 @@ func TestApplyServiceAuth(t *testing.T) {
 // can ever satisfy: the hub's identity policy does not mint core-group `get`
 // on secrets, so a workload identity (a factory runner dispatch, kuery) 403'd
 // on every Service that had a credential attached, while a human's token
-// worked. The Secret is edges-owned — the portal writes it labelled
-// railgrid.ai/owner: edges — so it sits inside this provider's label-scoped
-// `secrets` claim and its own virtual workspace serves it.
+// worked — and on the kube path there is no caller bearer at all. The Secret
+// is edges-owned — the portal writes it labelled railgrid.ai/owner: edges — so
+// it sits inside this provider's label-scoped `secrets` claim and its own
+// virtual workspace serves it.
 //
 // The confused-deputy protection is unchanged and is asserted here too: the
 // Secret's namespace/name come from the gated Service's spec (svc, decoded
-// from the object gate 1 read as the caller), never from the request, so the
-// provider can only ever unwrap the credential attached to a Service the
-// caller was just authorized to use.
+// from the object the gate read after reviewing the caller's access), never
+// from the request, so the provider can only ever unwrap the credential
+// attached to a Service the caller was just authorized to use.
 func TestReadServiceTokenReadsTheSecretAsTheProvider(t *testing.T) {
 	var gotAuth, gotPath string
 	reads := 0
@@ -303,10 +353,9 @@ func TestReadServiceTokenReadsTheSecretAsTheProvider(t *testing.T) {
 	}))
 	defer kcp.Close()
 
-	// kcpConfig is what the caller-scoped client would have been built from
-	// (userClusterConfig re-roots it and swaps in the caller's bearer). It
-	// points at an unroutable host on purpose: a read that still went as the
-	// caller would fail here rather than quietly pass.
+	// kcpConfig points at an unroutable host on purpose: a read that went
+	// anywhere but through the tenant config getter (the provider's export
+	// virtual workspace) would fail here rather than quietly pass.
 	s := &Server{kcpConfig: &rest.Config{Host: "https://caller-path.invalid", BearerToken: "provider-sa"}}
 	s.SetTenantConfigGetter(func(_ context.Context, cluster string) (*rest.Config, error) {
 		return &rest.Config{Host: kcp.URL + "/clusters/" + cluster, BearerToken: "provider-vw"}, nil

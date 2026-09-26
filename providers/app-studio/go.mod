@@ -145,7 +145,7 @@ replace (
 	k8s.io/kms => github.com/kcp-dev/kubernetes/staging/src/k8s.io/kms v0.0.0-20260602065202-e006560fc76a
 )
 
-replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.33.0
+replace github.com/kcp-dev/apimachinery/v2 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20260926054725-20f1d300ccbe
 
 // In-tree SDK: the monorepo is the source of truth until the SDK is
 // published with every package providers use (leaderelection landed after

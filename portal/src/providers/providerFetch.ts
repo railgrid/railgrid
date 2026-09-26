@@ -33,16 +33,21 @@ export interface ProviderFetchOptions {
 }
 
 // PROVIDER_FETCH_ALLOWED_PATHS documents which same-origin paths a provider's
-// host fetch may reach. Both auth models from AGENTS.md 5.7 are covered:
+// host fetch may reach:
 //
-//   hub-proxy model (agents, app-studio, kuery, quickstart, databricks REST):
-//     /services/providers/<name>/   the provider's own backend, via the hub's
-//                                   backend proxy (tenant headers -> X-Railgrid-*)
-//     /ui/providers/<name>/         its own static assets (icons, lazy chunks)
-//
-//   cluster-in-path model (code, edges, infrastructure, databricks):
-//     /clusters/                    kcp REST by cluster, /clusters/<cluster>/apis/...;
-//                                   the hub proxy authorizes the bearer per cluster
+//   /clusters/                    kcp REST by cluster, /clusters/<cluster>/apis/...:
+//                                 the provider's own kinds, and every data-plane
+//                                 verb it serves — a kcp custom subresource
+//                                 /clusters/<cluster>/apis/<group>/<version>/<resource>/<name>/<verb>
+//                                 [?component=<c>], authorized by kcp with the
+//                                 caller's RBAC and reverse-proxied to the
+//                                 provider. This is the ONLY route to a verb.
+//   /services/providers/<name>/   the provider's own backend via the hub's
+//                                 backend proxy (tenant headers -> X-Railgrid-*).
+//                                 It carries no verbs any more; what is left is
+//                                 MCP, browser OAuth callbacks, signed webhooks
+//                                 and health.
+//   /ui/providers/<name>/         its own static assets (icons, lazy chunks)
 //
 //   shared, as the user:
 //     /api/orgs/<orgUUID>/          org-scoped hub REST (bindings, workspaces)

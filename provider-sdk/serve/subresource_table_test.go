@@ -1,0 +1,111 @@
+/*
+Copyright 2026 The Railgrid Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package serve
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+)
+
+const fixtureManifest = `
+apiVersion: providers.railgrid.ai/v1alpha1
+kind: CatalogEntry
+metadata: {name: fixture}
+spec:
+  export:
+    name: fixture.providers.railgrid.ai
+    resources:
+    - name: linuxservers
+      apiVersion: edges.railgrid.ai/v1alpha1
+      kind: LinuxServer
+      verbs:
+      - name: addon-credentials
+    - name: services
+      apiVersion: edges.railgrid.ai/v1alpha1
+      kind: Service
+      verbs:
+      - name: proxy
+    - name: repositories
+      apiVersion: code.railgrid.ai/v1alpha1
+      kind: Repository
+      actions:
+      - name: mint-clone-token
+        version: v1
+    - name: factorylines
+      apiVersion: example.railgrid.ai/v1alpha1
+      kind: FactoryLine
+      actions:
+      - name: preview
+        version: v2
+`
+
+func TestSubresourcesFromCatalogEntryMirrorsTheDeclaration(t *testing.T) {
+	table, err := SubresourcesFromCatalogEntry([]byte(fixtureManifest))
+	if err != nil {
+		t.Fatalf("SubresourcesFromCatalogEntry: %v", err)
+	}
+	if len(table) != 4 {
+		t.Fatalf("table = %v, want 4 coordinates", table)
+	}
+	if r := table["linuxservers/addon-credentials"]; r.Action || r.Version != "" {
+		t.Fatalf("verb route = %+v", r)
+	}
+	if r := table["repositories/mint-clone-token"]; !r.Action || r.Version != "v1" {
+		t.Fatalf("action route = %+v, want action at v1", r)
+	}
+	if r := table["factorylines/preview"]; !r.Action || r.Version != "v2" {
+		t.Fatalf("versioned action route = %+v", r)
+	}
+	// An action's version is carried by the ROUTE, never by the coordinate: it
+	// is in no path, and the provider restores it onto the rewritten one.
+	for coordinate := range table {
+		if strings.Contains(coordinate, "/v1") || strings.Contains(coordinate, "/v2") {
+			t.Fatalf("an action's version reached the coordinate %q", coordinate)
+		}
+	}
+	// The table is what New accepts, unchanged.
+	if _, err := New(Options{Readiness: okHandler(), DataPlane: okHandler(), Actions: okHandler(), Subresources: table}); err != nil {
+		t.Fatalf("New rejected the derived table: %v", err)
+	}
+}
+
+func TestSubresourcesFromCatalogEntryRefusesWhatKcpWouldRefuse(t *testing.T) {
+	for name, manifest := range map[string]string{
+		"underscore in a verb":    "spec:\n  export:\n    resources:\n    - name: repositories\n      verbs: [{name: mint_token}]\n",
+		"status as a verb":        "spec:\n  export:\n    resources:\n    - name: instances\n      verbs: [{name: status}]\n",
+		"scale as a verb":         "spec:\n  export:\n    resources:\n    - name: instances\n      verbs: [{name: scale}]\n",
+		"action with no version":  "spec:\n  export:\n    resources:\n    - name: factorylines\n      actions: [{name: preview}]\n",
+		"underscore in an action": "spec:\n  export:\n    resources:\n    - name: boards\n      actions: [{name: update_thing, version: v1}]\n",
+		"a coordinate declared twice": "spec:\n  export:\n    resources:\n    - name: widgets\n      verbs: [{name: rebuild}]\n" +
+			"      actions: [{name: rebuild, version: v1}]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := SubresourcesFromCatalogEntry([]byte(manifest))
+			if err == nil {
+				t.Fatal("an invalid declaration was accepted")
+			}
+			if !strings.Contains(err.Error(), "/") {
+				t.Fatalf("error does not name the coordinate: %v", err)
+			}
+		})
+	}
+}
+
+func okHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+}

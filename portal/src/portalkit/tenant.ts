@@ -54,8 +54,12 @@ export function hasWorkspace(): boolean {
 }
 
 // serviceBase rewrites a host-provided basePath (/ui/providers/<name>) to the
-// service-proxy path (/services/providers/<name>) the backend is actually
-// reached through. A path without the /ui/providers/ prefix is returned as-is.
+// hub's backend-proxy path (/services/providers/<name>) for the route classes
+// that are not kcp API traffic: the browser OAuth flow (/oauth/…) and MCP.
+// Data-plane verbs are NOT reached this way — they are kcp custom
+// subresources, addressed with kubeVerbPath on the kcp front door — and the
+// hub refuses /dataplane/ and /actions/ under this prefix. A path without the
+// /ui/providers/ prefix is returned as-is.
 export function serviceBase(basePath: string): string {
   return basePath.replace(/^\/ui\/providers\//, '/services/providers/')
 }

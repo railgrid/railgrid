@@ -17,10 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"fmt"
-	"regexp"
-	"strings"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -57,6 +53,13 @@ type CatalogEntry struct {
 }
 
 // CatalogEntrySpec defines the desired state of a CatalogEntry.
+//
+// It answers four questions, one section each:
+//
+//	export   — what a tenant may call once it enables this provider.
+//	requires — what this provider needs that it does not own.
+//	serving  — where the hub reaches it.
+//	hub      — what it asks of the hub itself.
 type CatalogEntrySpec struct {
 	// DisplayName is the human-readable name shown in the portal catalog.
 	// +kubebuilder:validation:MaxLength=128
@@ -92,30 +95,281 @@ type CatalogEntrySpec struct {
 	// +kubebuilder:validation:MaxLength=64
 	Category string `json:"category,omitempty"`
 
-	// Dependencies lists providers that must already be enabled in a
-	// tenant workspace before this provider can be enabled there. The hub
-	// and portal use this as an enable-time guard; it does not grant access
-	// to the dependency provider's resources.
+	// Export declares the provider's kcp APIExport: its name, and the
+	// resources it serves with the verbs and actions on each. Everything a
+	// tenant can call is here, and nowhere else. Omit for a provider that
+	// exports no API of its own.
+	// +optional
+	Export *ProviderExport `json:"export,omitempty"`
+
+	// Requires declares everything this provider needs that it does not own:
+	// another provider's kinds and verbs, and the platform builtins its own
+	// machinery depends on. Every entry becomes one permission claim on the
+	// generated APIExport (provider-sdk/apiexportgen), resolved by kcp per
+	// consumer workspace against whichever copy of that provider the
+	// workspace bound — so it keeps working when an Org self-hosts it.
+	//
+	// Declaring grants NOTHING. A requirement reaches a workspace only when a
+	// workspace or org admin accepted it in the Enable dialog, which is what
+	// accepts the claim on the tenant's APIBinding. A catalog update that adds
+	// or widens one is pending until someone accepts it again, so a provider
+	// cannot widen itself by shipping a new chart.
+	//
+	// An entry naming a Provider is also a dependency edge: the hub refuses to
+	// enable this provider in a workspace where that one is not enabled yet.
+	// +optional
+	// +listType=map
+	// +listMapKey=group
+	// +kubebuilder:validation:MaxItems=16
+	Requires []ProviderRequirement `json:"requires,omitempty"`
+
+	// Serving declares where the hub reaches this provider: its
+	// micro-frontend, its backend origin for the route classes that are not
+	// kcp API traffic, and whether an organization may run its own copy.
+	// +optional
+	Serving *ProviderServing `json:"serving,omitempty"`
+
+	// Hub declares what the provider asks of the hub itself, as opposed to of
+	// kcp: REST capabilities exercised with a delegated token, and assistant
+	// skill packages the hub republishes.
+	// +optional
+	Hub *ProviderHub `json:"hub,omitempty"`
+}
+
+// ProviderExport declares the kcp APIExport the provider owns and everything
+// it publishes on it.
+//
+// Distinct from kcp's apis.kcp.io APIExport CRD: this is the declaration, and
+// the provider's own `init` materialises the export, its APIResourceSchemas
+// and its bind grant from it (provider-sdk/install). The hub reads it for the
+// Enable flow and the portal catalog.
+type ProviderExport struct {
+	// Name is the APIExport name: what a tenant APIBinding references in
+	// spec.reference.export.name, and what the hub looks the export up by.
+	//
+	// It is NOT an API group. Most providers export
+	// `<provider>.providers.railgrid.ai` while serving kinds in
+	// `<provider>.railgrid.ai`, and one export may serve several groups; each
+	// resource below names its own apiVersion. Anything that needs the groups
+	// reads them off the export itself; the hub publishes what it read as
+	// status.apiGroups.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Resources are the kinds this export serves, each with the verbs and
+	// actions callable on it. A resource with neither is an ordinary CR kind
+	// tenants read and write through kcp, which is the common case and needs
+	// no entry here at all — list a resource only to hang a verb or an action
+	// off it.
 	// +optional
 	// +listType=map
 	// +listMapKey=name
-	Dependencies []ProviderDependency `json:"dependencies,omitempty"`
+	// +kubebuilder:validation:MaxItems=32
+	Resources []ProviderExportResource `json:"resources,omitempty"`
+}
 
+// ProviderExportResource is one of the provider's own kinds, with the verbs
+// and actions it serves on it.
+//
+// Every verb and action is published on the APIExport as a kcp custom
+// subresource named "<resource>/<verb>" and reached as an ordinary API path,
+// /clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}. The
+// coordinate kcp routes on is exactly (this resource, that verb), and the
+// apiVersion declared here is what lets a consumer address it without
+// knowing the provider's group.
+type ProviderExportResource struct {
+	// Name is the plural resource name, as it appears in an API path.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9]*([a-z0-9-]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// APIVersion is the resource's group and version, "group/version". The
+	// group must be one this export serves; the hub checks it against what it
+	// read off the export (status.apiGroups).
+	// +kubebuilder:validation:MinLength=3
+	// +kubebuilder:validation:MaxLength=253
+	APIVersion string `json:"apiVersion"`
+
+	// Kind is the resource's Kubernetes kind, for the resource reference an
+	// action's envelope carries and for anything rendering the coordinate to
+	// a person.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Kind string `json:"kind"`
+
+	// Verbs are the unversioned calls this resource serves: the streaming and
+	// proxying ones, and anything whose request and response are the verb's
+	// own business rather than a declared schema.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=64
+	Verbs []ProviderVerb `json:"verbs,omitempty"`
+
+	// Actions are the versioned, schema'd calls: one bounded request and one
+	// bounded response, carried in the action envelope
+	// (provider-sdk/actionwire), with limits and a consent policy the hub and
+	// the assistant can reason about before invoking anything.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=32
+	Actions []ProviderAction `json:"actions,omitempty"`
+}
+
+// ProviderVerb is one unversioned verb on the parent resource.
+//
+// Declaring it is what makes the coordinate real: the provider's server
+// refuses a verb absent from this list even when a handler would answer it
+// (provider-sdk/serve), the generated APIExport publishes exactly these
+// entries, and the hub's identity policy will only mint a cross-provider
+// capability for a coordinate somebody declared.
+type ProviderVerb struct {
+	// Name is the verb, the last path segment of the call and the subresource
+	// half of the {resource}/{verb} coordinate. It carries no version and no
+	// slash.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9_-]*$`
+	Name string `json:"name"`
+
+	// Description explains what the verb does, for the Enable dialog and for
+	// anyone auditing what a provider can be asked to grant.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	Description string `json:"description,omitempty"`
+
+	// Stream is true when the verb upgrades or streams (exec, ssh, k8s, mcp,
+	// logs -f) rather than returning one bounded response.
+	// +optional
+	Stream bool `json:"stream,omitempty"`
+
+	// ReadOnly declares that the verb does not mutate the resource or what it
+	// fronts. A streaming shell is never read-only, whatever it is used for.
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
+}
+
+// ProviderRequirement is everything one provider needs from one API group it
+// does not own.
+//
+// The group appears once: a group belongs to one provider, so this list is
+// keyed by it and a second entry for the same group is a schema error.
+type ProviderRequirement struct {
+	// Provider is the CatalogEntry metadata.name of the provider that serves
+	// Group. Setting it makes this requirement a dependency edge as well as a
+	// claim: the hub refuses to enable this provider in a workspace where
+	// that one is not enabled.
+	//
+	// Leave it empty for a platform builtin — authorization.k8s.io,
+	// authentication.k8s.io, the core group — which no provider serves and
+	// which nothing needs to enable first.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	Provider string `json:"provider,omitempty"`
+
+	// Group is the API group the claims are on, empty for the core group — the
+	// same spelling kcp gives a permission claim on a builtin. It must be a
+	// group the named provider SERVES, not that provider's APIExport name:
+	// `code.providers.railgrid.ai` serves `code.railgrid.ai`. The hub checks it
+	// against the registry, and the identity policy checks it again before it
+	// mints anything.
+	//
+	// It carries an explicit empty default because it is this list's map key,
+	// and Kubernetes requires a list-map key to be defaulted or required.
+	// +optional
+	// +kubebuilder:default=""
+	// +kubebuilder:validation:MaxLength=253
+	Group string `json:"group,omitempty"`
+
+	// Resources are the coordinates claimed in Group.
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	Resources []ProviderRequiredResource `json:"resources"`
+}
+
+// ProviderRequiredResource is one claimed coordinate: a kind, or one verb on
+// a kind.
+type ProviderRequiredResource struct {
+	// Name is the plural resource name, or "<resource>/<verb>" to claim one
+	// of that provider's declared verbs.
+	//
+	// A verb coordinate is claimed whole: the verb IS the capability, and
+	// which HTTP method it uses — which is what kcp maps onto an RBAC verb —
+	// is the serving provider's transport detail. Verbs below must therefore
+	// be empty for a coordinate carrying a slash, and the generated claim
+	// spells every verb.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=127
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]*(/[a-z][a-z0-9_-]*)?$`
+	Name string `json:"name"`
+
+	// Verbs are the Kubernetes verbs needed on the kind. Required for a plain
+	// resource, forbidden for a "<resource>/<verb>" coordinate. They bound
+	// what the identity policy will mint: a rule asking for a verb absent
+	// here is refused.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=7
+	Verbs []ProviderRequiredVerb `json:"verbs,omitempty"`
+
+	// Selector narrows the claim from "every object of this resource in the
+	// tenant's workspace" to "the objects carrying these labels". It is the
+	// difference between a provider that can read every Secret a tenant holds
+	// and one that can only reach the Secrets it owns.
+	//
+	// kcp enforces it on both sides of the APIExport virtual workspace: the
+	// permission-claim labeler only stamps the internal
+	// `claimed.internal.apis.kcp.io/<export>` label on objects the selector
+	// matches, and the virtual workspace filters LIST/WATCH and 404s GET on
+	// anything without that label. Writes through the virtual workspace are
+	// mutated to carry the matchLabels (and refused if they carry a
+	// conflicting value), so a provider cannot create an object outside its
+	// own selector.
+	//
+	// A claim on the core group's `secrets` MUST carry one; see
+	// hack/verify-provider-contract.mjs (`claim-selector`).
+	// +optional
+	Selector *ProviderLabelSelector `json:"selector,omitempty"`
+}
+
+// ProviderRequiredVerb is one Kubernetes verb a requirement may ask for on a
+// kind. The set is closed and holds only ordinary verbs: a requirement is
+// plain CRUD on somebody else's object, and reaching somebody else's VERB is
+// a coordinate, not a verb list.
+// +kubebuilder:validation:Enum=get;list;watch;create;update;patch;delete
+type ProviderRequiredVerb string
+
+const (
+	RequiredVerbGet    ProviderRequiredVerb = "get"
+	RequiredVerbList   ProviderRequiredVerb = "list"
+	RequiredVerbWatch  ProviderRequiredVerb = "watch"
+	RequiredVerbCreate ProviderRequiredVerb = "create"
+	RequiredVerbUpdate ProviderRequiredVerb = "update"
+	RequiredVerbPatch  ProviderRequiredVerb = "patch"
+	RequiredVerbDelete ProviderRequiredVerb = "delete"
+)
+
+// ProviderServing declares where the hub reaches a provider.
+type ProviderServing struct {
 	// UI declares the provider's micro-frontend. Omit to ship a UI-less
-	// provider (controllers + APIExport only).
+	// provider (controllers and an APIExport only).
 	// +optional
 	UI *ProviderUI `json:"ui,omitempty"`
 
-	// Backend declares the provider's custom HTTP backend (REST/GraphQL/WS).
-	// NOT used for CR traffic — CRs flow through kcp directly. Omit for
-	// providers that only expose CRs.
+	// Backend declares the origin the hub reverse-proxies for
+	// /services/providers/{name}/*, which carries only the route classes that
+	// are not kcp API traffic: MCP, the browser OAuth flow, signed webhooks,
+	// the agent tunnel, and health. It is NOT how a verb or an action is
+	// reached — those are custom subresources on the APIExport, served through
+	// kcp — and it is not how CRs are reached either. Omit for a provider
+	// serving none of those classes.
 	// +optional
 	Backend *ProviderBackend `json:"backend,omitempty"`
-
-	// APIExport declares the provider's kcp APIExport. Not yet honored by
-	// the hub (Phase 1B will wire it up).
-	// +optional
-	APIExport *ProviderAPIExport `json:"apiExport,omitempty"`
 
 	// SelfHosting declares that an organization may run its own copy of this
 	// provider in its own cluster, and carries the Helm coordinates needed to
@@ -125,48 +379,22 @@ type CatalogEntrySpec struct {
 	// the provider is platform-operated only.
 	// +optional
 	SelfHosting *ProviderSelfHosting `json:"selfHosting,omitempty"`
+}
 
-	// HubAccess requests hub REST capabilities the provider may exercise with
-	// the delegated user token the hub hands it in place of the caller's
-	// bearer. Each entry names a capability from a closed set the hub owns;
-	// the hub maps it to concrete routes and enforces its limits, so a
-	// provider never declares routes. Nothing here is granted by declaring
+// ProviderHub declares what a provider asks of the hub itself.
+type ProviderHub struct {
+	// Access requests hub REST capabilities the provider may exercise against
+	// the hub's own API. Each entry names a capability from a closed set the
+	// hub owns; the hub maps it to concrete routes and enforces its limits, so
+	// a provider never declares routes. Nothing here is granted by declaring
 	// it: the capabilities are shown in the Enable dialog and apply only once
-	// a tenant accepts them, and every call is still authorized as the person
-	// the token stands for — a provider can never do more than that person.
+	// a tenant accepts them.
 	// +optional
 	// +listType=map
 	// +listMapKey=capability
 	// +listMapKey=scope
 	// +kubebuilder:validation:MaxItems=8
-	HubAccess []ProviderHubAccess `json:"hubAccess,omitempty"`
-
-	// Actions declares the versioned capabilities that this provider exposes
-	// through its action transport. The list is keyed by the canonical action
-	// ID (for example, query_table/v1) so a provider cannot publish duplicate
-	// versions of the same action.
-	// +optional
-	// +listType=map
-	// +listMapKey=id
-	Actions []ProviderActionSpec `json:"actions,omitempty"`
-
-	// DataPlane declares the verbs this provider serves on its own resources
-	// through the Pillar 2 data-plane grammar
-	// (.../clusters/{clusterID}/{resource}/{name}/{verb}).
-	//
-	// Declaring a verb grants nothing and serves nothing: the provider still
-	// enforces it with its own caller-scoped SSAR on the virtual subresource
-	// {resource}/{verb}. What the declaration buys is that the coordinate is
-	// MACHINE-READABLE. Before it, `exec`, `proxy` and `delegate` existed only
-	// in provider code, so the hub scoped-identity service had no way to tell
-	// a real verb from an invented one and could not mint a cross-provider
-	// capability for any of them (pkg/hub/identity/policy.go, clause C).
-	//
-	// Actions (spec.actions) are the versioned, schema'd, request/response
-	// capabilities; data-plane verbs are the unversioned, streaming or
-	// proxying ones. Both land on the same RBAC coordinate.
-	// +optional
-	DataPlane *ProviderDataPlane `json:"dataPlane,omitempty"`
+	Access []ProviderHubAccess `json:"access,omitempty"`
 
 	// AssistantSkills declares read-only App Studio skill packages supplied by
 	// this provider. Packages are embedded in the CatalogEntry so the hub can
@@ -230,17 +458,26 @@ type ProviderAssistantSkillResource struct {
 	Content string `json:"content"`
 }
 
-// ProviderActionSpec declares one provider-owned, versioned action. The
+// ProviderAction declares one versioned action on the parent resource. The
 // declaration is intentionally complete: callers can inspect the input and
 // output schemas and policy metadata without learning the provider's backend
 // URL or credential model.
-type ProviderActionSpec struct {
-	// ID is the canonical action identifier: a lowercase action name followed
-	// by a slash and a numeric version (for example query_table/v1).
-	// +kubebuilder:validation:MinLength=3
-	// +kubebuilder:validation:MaxLength=128
-	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9_-]{0,62}/v[1-9][0-9]{0,7}$`
-	ID string `json:"id"`
+type ProviderAction struct {
+	// Name is the action, the subresource half of the {resource}/{action}
+	// coordinate kcp routes on. It carries no version: the coordinate a grant
+	// names and the contract revision a caller asks for are different things,
+	// so the version is its own field.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9_-]*$`
+	Name string `json:"name"`
+
+	// Version is the action's contract revision, "v" followed by a positive
+	// integer. It is not part of the path: the serving provider restores it
+	// from this declaration, so a caller cannot ask for a revision the
+	// provider does not serve.
+	// +kubebuilder:validation:Pattern=`^v[1-9][0-9]{0,7}$`
+	Version string `json:"version"`
 
 	// DisplayName is the human-readable label shown to action consumers.
 	// +kubebuilder:validation:MinLength=1
@@ -251,10 +488,6 @@ type ProviderActionSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	Description string `json:"description,omitempty"`
-
-	// BoundResource identifies the provider-owned resource that supplies the
-	// action's server-resolved identity.
-	BoundResource ProviderActionBoundResource `json:"boundResource"`
 
 	// InputSchema is the JSON Schema for caller-supplied input. Provider
 	// credentials and backend details must not appear in this schema.
@@ -297,22 +530,6 @@ type ProviderActionSpec struct {
 	// no longer be selected for new integrations.
 	// +optional
 	Deprecation *ProviderActionDeprecation `json:"deprecation,omitempty"`
-}
-
-// ProviderActionBoundResource identifies the API resource to which an action
-// is bound.
-type ProviderActionBoundResource struct {
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	APIVersion string `json:"apiVersion"`
-
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	Kind string `json:"kind"`
-
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	Resource string `json:"resource"`
 }
 
 // ProviderHubCapability names one hub REST capability a provider may request.
@@ -445,161 +662,6 @@ type ProviderActionDeprecation struct {
 	Sunset *metav1.Time `json:"sunset,omitempty"`
 }
 
-// ProviderDependency references another provider that must be enabled first.
-type ProviderDependency struct {
-	// Name is the CatalogEntry metadata.name of the dependency provider.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	Name string `json:"name"`
-
-	// Composes declares which of this dependency's kinds the declaring
-	// provider's reconcilers CREATE AND MANAGE inside the tenant workspace,
-	// and with which verbs. It is the machine-readable form of "App Studio
-	// builds a project out of an infrastructure Instance and a code
-	// Repository": one provider composing another provider's objects on the
-	// tenant's behalf, in the tenant's own workspace.
-	//
-	// Declaring grants NOTHING. A composition reaches a workspace only when a
-	// workspace or org admin accepted it in the Enable dialog, and only then
-	// will the hub's scoped-identity policy admit a rule for it (clause E,
-	// pkg/hub/identity/policy.go). A catalog update that adds or widens a
-	// composition is pending until someone accepts it again, so a provider
-	// cannot widen itself by shipping a new chart.
-	//
-	// It is deliberately NOT an APIExport permission claim. A first-party
-	// claim pins to one export's identityHash (AGENTS.md §5.7), so a provider
-	// holding one breaks the moment an Org self-hosts the dependency it
-	// claims — which is exactly the case composition has to keep working.
-	// +optional
-	// +listType=map
-	// +listMapKey=group
-	// +listMapKey=resource
-	// +kubebuilder:validation:MaxItems=16
-	Composes []ProviderComposition `json:"composes,omitempty"`
-}
-
-// ProviderCompositionVerb is one verb a composition may ask for. The set is
-// closed and holds only ordinary Kubernetes verbs: a composition is plain CRUD
-// on somebody else's kind, never a data-plane verb (those are clause C, and
-// they are declared by the OWNING provider, not by the consumer).
-// +kubebuilder:validation:Enum=get;list;watch;create;update;patch;delete
-type ProviderCompositionVerb string
-
-const (
-	CompositionVerbGet    ProviderCompositionVerb = "get"
-	CompositionVerbList   ProviderCompositionVerb = "list"
-	CompositionVerbWatch  ProviderCompositionVerb = "watch"
-	CompositionVerbCreate ProviderCompositionVerb = "create"
-	CompositionVerbUpdate ProviderCompositionVerb = "update"
-	CompositionVerbPatch  ProviderCompositionVerb = "patch"
-	CompositionVerbDelete ProviderCompositionVerb = "delete"
-)
-
-// ProviderComposition is one composed kind: a (group, resource) of the
-// dependency provider, with the verbs the composing reconciler needs on it.
-type ProviderComposition struct {
-	// Group is the API group the kind belongs to. It must be a group the
-	// dependency provider SERVES — one of the groups on spec.resources of that
-	// provider's APIExport, which the hub records as status.apiGroups. It is
-	// NOT the dependency's APIExport name: `code.providers.railgrid.ai` serves
-	// `code.railgrid.ai`. The hub checks it against the registry, and the
-	// identity policy checks it again before it mints anything.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Group string `json:"group"`
-
-	// Resource is the plural resource name, with no subresource: a
-	// composition is CRUD on the object itself.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	Resource string `json:"resource"`
-
-	// Verbs are the verbs the reconciler needs. They bound what the policy
-	// will mint: a rule asking for a verb absent here is refused
-	// (composition_verb_not_declared).
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=7
-	Verbs []ProviderCompositionVerb `json:"verbs"`
-}
-
-// providerCompositionGroupPattern is a DNS-subdomain API group.
-var providerCompositionGroupPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
-
-// providerCompositionVerbs is the closed verb vocabulary. It matches the
-// kubebuilder enum; the Go check exists because the hub also reads
-// CatalogEntries that were written before a schema update reached the server.
-var providerCompositionVerbs = map[ProviderCompositionVerb]struct{}{
-	CompositionVerbGet: {}, CompositionVerbList: {}, CompositionVerbWatch: {},
-	CompositionVerbCreate: {}, CompositionVerbUpdate: {}, CompositionVerbPatch: {},
-	CompositionVerbDelete: {},
-}
-
-// ValidateProviderCompositions checks a CatalogEntry's composition
-// declarations. Like the action and data-plane declarations it fails CLOSED:
-// one malformed entry rejects the whole provider rather than leaving a
-// half-read declaration behind, because a declaration is what an admin is
-// asked to consent to and what the identity policy measures a rule against.
-//
-// It checks shape only. That the group really belongs to the named dependency
-// is a registry question the catalog controller answers, and the identity
-// policy answers it once more at mint time.
-func ValidateProviderCompositions(dependencies []ProviderDependency) error {
-	for i, dep := range dependencies {
-		seen := make(map[string]struct{}, len(dep.Composes))
-		for j, composition := range dep.Composes {
-			if err := ValidateProviderComposition(composition); err != nil {
-				return fmt.Errorf("dependencies[%d] (%s).composes[%d]: %w", i, dep.Name, j, err)
-			}
-			key := composition.Group + "/" + composition.Resource
-			if _, ok := seen[key]; ok {
-				return fmt.Errorf("dependencies[%d] (%s).composes[%d]: duplicate composed resource %s", i, dep.Name, j, key)
-			}
-			seen[key] = struct{}{}
-		}
-	}
-	return nil
-}
-
-// ValidateProviderComposition validates one composition independently of its
-// siblings.
-func ValidateProviderComposition(composition ProviderComposition) error {
-	if len(composition.Group) > 253 || !providerCompositionGroupPattern.MatchString(composition.Group) {
-		return fmt.Errorf("group must be a lowercase DNS subdomain naming the dependency's API group")
-	}
-	// A wildcard group would be a DNS-invalid string anyway; saying so
-	// explicitly keeps the refusal readable when somebody tries it.
-	if strings.ContainsAny(composition.Group, "*") {
-		return fmt.Errorf("group must not contain a wildcard")
-	}
-	if len(composition.Resource) > 63 || !providerDataPlaneResourcePattern.MatchString(composition.Resource) {
-		return fmt.Errorf("resource must be a lowercase DNS-like plural name with no subresource")
-	}
-	if len(composition.Verbs) == 0 {
-		return fmt.Errorf("at least one verb is required")
-	}
-	seen := make(map[ProviderCompositionVerb]struct{}, len(composition.Verbs))
-	for _, verb := range composition.Verbs {
-		if _, ok := providerCompositionVerbs[verb]; !ok {
-			return fmt.Errorf("verb %q is not one of get, list, watch, create, update, patch, delete", verb)
-		}
-		if _, ok := seen[verb]; ok {
-			return fmt.Errorf("duplicate verb %q", verb)
-		}
-		seen[verb] = struct{}{}
-	}
-	return nil
-}
-
-// CompositionVerbStrings renders a composition's verbs as plain strings, the
-// form RBAC and the identity policy work in.
-func CompositionVerbStrings(verbs []ProviderCompositionVerb) []string {
-	out := make([]string, 0, len(verbs))
-	for _, verb := range verbs {
-		out = append(out, string(verb))
-	}
-	return out
-}
-
 // ProviderUI declares a provider's micro-frontend target. Exactly one of
 // URL or BuiltinRoute should be set:
 //
@@ -675,126 +737,8 @@ type ProviderBackend struct {
 	HealthPath string `json:"healthPath,omitempty"`
 }
 
-// ProviderDataPlane declares the provider's data-plane verb surface.
-type ProviderDataPlane struct {
-	// Verbs are the verbs this provider serves, one entry per
-	// (resource, verb) coordinate.
-	// +optional
-	// +listType=map
-	// +listMapKey=resource
-	// +listMapKey=verb
-	// +kubebuilder:validation:MaxItems=64
-	Verbs []ProviderDataPlaneVerb `json:"verbs,omitempty"`
-}
-
-// ProviderDataPlaneVerb is one declared data-plane verb. The resource must be
-// one the provider's own APIExport serves: a provider declares verbs on its
-// own kinds, never on another provider's.
-type ProviderDataPlaneVerb struct {
-	// Resource is the plural resource name the verb is served on, in the
-	// provider's own API group.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9]*([a-z0-9-]*[a-z0-9])?$`
-	Resource string `json:"resource"`
-
-	// Verb is the verb name. It is the last path segment of the data-plane
-	// route and the subresource half of the {resource}/{verb} RBAC
-	// coordinate, so it carries no version and no slash.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9_-]*$`
-	Verb string `json:"verb"`
-
-	// Description explains what the verb does, for the Enable dialog and for
-	// anyone auditing what a provider can be asked to grant.
-	// +optional
-	// +kubebuilder:validation:MaxLength=512
-	Description string `json:"description,omitempty"`
-
-	// Stream is true when the verb upgrades or streams (exec, ssh, k8s, mcp,
-	// logs -f) rather than returning one bounded response.
-	// +optional
-	Stream bool `json:"stream,omitempty"`
-
-	// ReadOnly declares that the verb does not mutate the resource or what it
-	// fronts. A streaming shell is never read-only, whatever it is used for.
-	// +optional
-	ReadOnly bool `json:"readOnly,omitempty"`
-}
-
-// ProviderAPIExport declares the kcp APIExport the provider owns.
-// Distinct from kcp's apis.kcp.io APIExport CRD; this is the inline
-// declaration the catalog controller will use to materialise that CRD.
-type ProviderAPIExport struct {
-	// Name is the APIExport name: what a tenant APIBinding references in
-	// spec.reference.export.name, and what the hub looks the export up by.
-	//
-	// It is NOT an API group. Most providers export
-	// `<provider>.providers.railgrid.ai` while serving kinds in
-	// `<provider>.railgrid.ai`, and one export may serve several groups.
-	// Anything that needs the groups reads them off the export itself; the hub
-	// publishes what it read as status.apiGroups.
-	//
-	// The APIExport itself, along with its APIResourceSchemas and bind grant,
-	// is created by the provider's own Helm `init` (see the
-	// railgrid-provider-sdk) — the hub only references it here for the portal
-	// Enable flow. Schemas are no longer embedded on the CatalogEntry.
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-
-	// PermissionClaims mirrors the APIExport's permissionClaims for display
-	// in the Enable dialog. Each claim must be marked TenantScoped=true to
-	// be auto-acceptable.
-	// +optional
-	PermissionClaims []ProviderPermissionClaim `json:"permissionClaims,omitempty"`
-}
-
-// ProviderPermissionClaim describes a permission the provider's APIExport
-// claims against bound tenants' workspaces.
-type ProviderPermissionClaim struct {
-	// Group is the API group (empty for core).
-	// +optional
-	Group string `json:"group,omitempty"`
-
-	// Resource is the resource name (plural).
-	// +kubebuilder:validation:MinLength=1
-	Resource string `json:"resource"`
-
-	// Verbs are the requested verbs.
-	// +optional
-	Verbs []string `json:"verbs,omitempty"`
-
-	// TenantScoped declares the claim is bounded to the binding tenant's own
-	// workspace. Non-tenant-scoped claims are refused unless an admin sets
-	// the railgrid.ai/accept-untrusted-claims annotation on the
-	// CatalogEntry.
-	// +optional
-	TenantScoped bool `json:"tenantScoped,omitempty"`
-
-	// Selector narrows the claim from "every object of this resource in the
-	// tenant's workspace" to "the objects carrying these labels". It is the
-	// difference between a provider that can read every Secret a tenant holds
-	// and one that can only reach the Secrets it owns
-	// (docs/cross-provider-simplification.md X-4).
-	//
-	// kcp enforces it on both sides of the APIExport virtual workspace:
-	// the permission-claim labeler only stamps the internal
-	// `claimed.internal.apis.kcp.io/<export>` label on objects the selector
-	// matches, and the virtual workspace filters LIST/WATCH and 404s GET on
-	// anything without that label. Writes through the virtual workspace are
-	// mutated to carry the matchLabels (and refused if they carry a
-	// conflicting value), so a provider cannot create an object outside its
-	// own selector.
-	//
-	// A claim on the CORE group's `secrets` MUST carry one; see
-	// hack/verify-provider-contract.mjs (`claim-selector`).
-	// +optional
-	Selector *ProviderPermissionClaimSelector `json:"selector,omitempty"`
-}
-
-// ProviderPermissionClaimSelector scopes a permission claim to the objects
-// carrying a set of labels.
+// ProviderLabelSelector scopes a requirement to the objects carrying a set of
+// labels.
 //
 // Deliberately narrower than kcp's PermissionClaimSelector, which also offers
 // matchExpressions and matchAll: kcp's virtual-workspace admission stamps
@@ -802,7 +746,7 @@ type ProviderPermissionClaim struct {
 // matchExpressions selector, so a provider declaring one would be unable to
 // create the very objects it claims. matchAll is the absence of a selector and
 // is what the hub writes when this field is unset.
-type ProviderPermissionClaimSelector struct {
+type ProviderLabelSelector struct {
 	// MatchLabels is the label set a claimed object must carry, ANDed.
 	// The conventional key is `railgrid.ai/owner`, whose value is the
 	// provider's own name.
@@ -893,7 +837,7 @@ type ProviderSelfHostingChart struct {
 
 // ProviderSelfHostingValue is one Helm value the installer must set.
 type ProviderSelfHostingValue struct {
-	// Name is the Helm value path, e.g. "apiExport.edgesIdentityHash".
+	// Name is the Helm value path, e.g. "store.databaseURLSecretRef.name".
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
@@ -903,18 +847,6 @@ type ProviderSelfHostingValue struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	Description string `json:"description,omitempty"`
-
-	// IdentityFor names an APIExport whose kcp identity hash is the value for
-	// this setting, e.g. "edges.providers.railgrid.ai". When set, the hub resolves
-	// the hash and fills the value in for the installer.
-	//
-	// This exists because identity hashes are the one required value a person
-	// cannot reasonably produce by hand: today they are copied out of an admin
-	// debug view, and getting one wrong yields a provider that binds
-	// successfully and then silently sees none of the resources it claimed.
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	IdentityFor string `json:"identityFor,omitempty"`
 
 	// Value is a literal default the hub puts in the generated command.
 	// +optional

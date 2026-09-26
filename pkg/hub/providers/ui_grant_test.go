@@ -25,6 +25,8 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
@@ -55,6 +57,7 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 		f.edge.user = r.Header.Get("X-Railgrid-User")
 		f.edge.tenant = r.Header.Get("X-Railgrid-Tenant")
 		f.edge.authorization = r.Header.Get("Authorization")
+		f.edge.upstreamAuth = r.Header.Get(dataplane.HeaderUpstreamAuthorization)
 		if r.URL.Query().Get(UIGrantQueryParam) != "" {
 			t.Errorf("the grant reached the tenant's cluster: query %q", r.URL.RawQuery)
 		}
@@ -87,6 +90,9 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 	})
 
 	f.ui = NewUIProxy(f.reg, logr.Discard())
+	// The recording server stands in for kcp's front door, where the hop
+	// lands on the edges provider's services/{name}/proxy verb.
+	f.ui.SetKCPFrontDoor(edgesURL, http.DefaultTransport)
 	f.ui.SetUIGrantKeys(uiGrantTestKey)
 	f.ui.SetDelegatedTokenIssuer(f.issuer)
 	f.grants = NewUIGrantHandler(f.reg, f.ui, logr.Discard())
@@ -156,9 +162,10 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	if grant.ExpiresAt.Before(time.Now().Add(uiGrantTTL-time.Minute)) || grant.ExpiresAt.After(time.Now().Add(uiGrantTTL+time.Minute)) {
 		t.Errorf("expiresAt = %v, want about %v from now", grant.ExpiresAt, uiGrantTTL)
 	}
-	// The hash fetch went over the edge as alice with the delegated token.
-	if !f.edge.hit || f.edge.authorization != "Bearer "+delegatedToken || f.edge.user != "alice" {
-		t.Fatalf("hash fetch: hit=%v authorization=%q user=%q", f.edge.hit, f.edge.authorization, f.edge.user)
+	// The hash fetch went over the edge as alice with the delegated token as
+	// the upstream credential.
+	if !f.edge.hit || f.edge.upstreamAuth != "Bearer "+delegatedToken || f.edge.user != "alice" {
+		t.Fatalf("hash fetch: hit=%v upstream=%q user=%q", f.edge.hit, f.edge.upstreamAuth, f.edge.user)
 	}
 	*f.edge = edgeUpstream{}
 	f.issuer.calls = 0
@@ -170,12 +177,15 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	if got.Body.String() != orgBundleBody {
 		t.Errorf("bundle body = %q, want the org's bundle", got.Body.String())
 	}
-	wantPath := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy/main.js"
+	wantPath := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/main.js"
 	if f.edge.path != wantPath {
 		t.Errorf("edges provider saw path %q, want %q", f.edge.path, wantPath)
 	}
-	if f.edge.authorization != "Bearer "+delegatedToken {
-		t.Errorf("Authorization at the edge = %q, want the delegated token", f.edge.authorization)
+	if f.edge.authorization != "" {
+		t.Errorf("Authorization on the kcp hop = %q, want none (the transport authenticates as the hub)", f.edge.authorization)
+	}
+	if f.edge.upstreamAuth != "Bearer "+delegatedToken {
+		t.Errorf("%s at the edge = %q, want the delegated token", dataplane.HeaderUpstreamAuthorization, f.edge.upstreamAuth)
 	}
 	if f.edge.user != "alice" {
 		t.Errorf("X-Railgrid-User at the edge = %q, want the grant's user", f.edge.user)
@@ -437,7 +447,7 @@ func TestUIGrantCarriesUIPathPrefix(t *testing.T) {
 	f.reg.Upsert(p)
 
 	_, grant := f.requestGrant(t, "infrastructure")
-	wantHash := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy/ui/main.js"
+	wantHash := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/ui/main.js"
 	if f.edge.path != wantHash {
 		t.Errorf("hash fetch path %q, want %q", f.edge.path, wantHash)
 	}
@@ -446,7 +456,7 @@ func TestUIGrantCarriesUIPathPrefix(t *testing.T) {
 	if got.Code != http.StatusOK {
 		t.Fatalf("status = %d (body %q)", got.Code, got.Body.String())
 	}
-	wantIcon := "/dataplane/clusters/" + testCluster + "/services/provider-infrastructure/proxy/ui/icon.svg"
+	wantIcon := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/ui/icon.svg"
 	if f.edge.path != wantIcon {
 		t.Errorf("asset path %q, want %q", f.edge.path, wantIcon)
 	}

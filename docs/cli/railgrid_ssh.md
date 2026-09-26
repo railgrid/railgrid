@@ -14,6 +14,10 @@ Examples:
   # Run a single command (non-interactive)
   railgrid ssh my-server -- echo hello
 
+  # When a cluster edge shares the name, the server is used; qualify it
+  # explicitly with server/<name> if you prefer
+  railgrid ssh server/minis
+
 
 ```
 railgrid ssh <name> [-- command [args...]] [flags]

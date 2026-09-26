@@ -176,6 +176,32 @@ func TestProviderAgentProxyURLUsesMacOSResource(t *testing.T) {
 	}
 }
 
+func TestProviderVerbPath(t *testing.T) {
+	got := ProviderVerbPath("abc123", "infrastructure.railgrid.ai", "v1alpha1", "instances", "site", "exec")
+	want := "/clusters/abc123/apis/infrastructure.railgrid.ai/v1alpha1/instances/site/exec"
+	if got != want {
+		t.Fatalf("ProviderVerbPath() = %q, want %q", got, want)
+	}
+	if got := ProviderVerbURL("https://hub:9443/", "abc123", "infrastructure.railgrid.ai", "v1alpha1", "instances", "site", "exec"); got != "https://hub:9443"+want {
+		t.Fatalf("ProviderVerbURL() = %q", got)
+	}
+}
+
+func TestEdgeVerbPaths(t *testing.T) {
+	if got, want := EdgeVerbPath("abc123", "linuxservers", "box", "ssh"), "/clusters/abc123/apis/edges.railgrid.ai/v1alpha1/linuxservers/box/ssh"; got != want {
+		t.Fatalf("EdgeVerbPath() = %q, want %q", got, want)
+	}
+	if got, want := EdgeVerbURL("https://hub:9443", "macos", "abc123", "mac-mini", "agent-token"), "https://hub:9443/clusters/abc123/apis/edges.railgrid.ai/v1alpha1/macosservers/mac-mini/agent-token"; got != want {
+		t.Fatalf("EdgeVerbURL() = %q, want %q", got, want)
+	}
+	if got, want := EdgeServiceProxyPath("abc123", "grafana", "proxy"), "/clusters/abc123/apis/edges.railgrid.ai/v1alpha1/services/grafana/proxy"; got != want {
+		t.Fatalf("EdgeServiceProxyPath() = %q, want %q", got, want)
+	}
+	if got, want := EdgeServiceProxyURL("https://hub:9443/", "abc123", "grafana", "mcp"), "https://hub:9443/clusters/abc123/apis/edges.railgrid.ai/v1alpha1/services/grafana/mcp"; got != want {
+		t.Fatalf("EdgeServiceProxyURL() = %q, want %q", got, want)
+	}
+}
+
 // TestKubernetesMCPPath / TestKubernetesMCPURL / TestLinuxMCPPath /
 // TestLinuxMCPURL removed alongside their helpers when the per-kind
 // MCP endpoints collapsed into the MCPServer aggregate. MCPServer
@@ -233,10 +259,16 @@ func TestExternalizeURL(t *testing.T) {
 			want:    "https://other-host/some/path",
 		},
 		{
-			name:    "non-services path returned unchanged",
-			edgeURL: "/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge",
+			name:    "kube verb path gets externalized",
+			edgeURL: "/clusters/abc123/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/k8s",
 			hubBase: "https://hub:9443",
-			want:    "/clusters/abc123/apis/railgrid.ai/v1alpha1/edges/my-edge",
+			want:    "https://hub:9443/clusters/abc123/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/k8s",
+		},
+		{
+			name:    "unrelated relative path returned unchanged",
+			edgeURL: "/ui/providers/edges/main.js",
+			hubBase: "https://hub:9443",
+			want:    "/ui/providers/edges/main.js",
 		},
 		{
 			name:    "hub base with trailing slash",

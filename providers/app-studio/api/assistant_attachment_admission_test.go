@@ -142,7 +142,7 @@ func TestCreateProjectAssistantAttachmentRejectsMetadataWriteFailureBeforeStore(
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	request.Header.Set("X-Railgrid-Tenant", "cluster")
-	request.Header.Set("Authorization", "Bearer "+"alice-token")
+	request = stampTestCaller(request, testUserForToken("alice-token"))
 	request.Header.Set("X-Railgrid-Cluster", "cluster")
 	request.Header.Set("X-Railgrid-User", "alice")
 	response := httptest.NewRecorder()

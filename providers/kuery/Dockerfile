@@ -28,7 +28,8 @@ COPY providers/kuery/go.mod providers/kuery/go.sum ./
 # REPO ROOT: docker build -f providers/kuery/Dockerfile .
 COPY provider-sdk/ /provider-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY providers/kuery/main.go providers/kuery/assets.go providers/kuery/init_cmd.go ./
+COPY providers/kuery/main.go providers/kuery/assets.go providers/kuery/init_cmd.go \
+     providers/kuery/catalogentry.go ./
 COPY providers/kuery/apis/ ./apis/
 COPY providers/kuery/controller/ ./controller/
 COPY providers/kuery/core/ ./core/

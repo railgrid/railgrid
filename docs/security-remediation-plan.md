@@ -2,6 +2,14 @@
 
 Status: proposed 2026-09-04 against `9ab06b67`; **executed 2026-09-05/06**, all 21 PRs merged, re-verified against `f58ef1d3` on 2026-09-06. See "Status after remediation" below.
 
+> **Note (2026-09-25).** Findings and verification steps below that address a
+> provider verb through the hub's backend proxy
+> (`/services/providers/{name}/dataplane/…`) describe a route that no longer
+> exists: verbs are kcp custom subresources on `/clusters/{id}/apis/…`, and the
+> backend proxy forwards only MCP, browser OAuth, signed webhooks, the agent
+> tunnel and health. See
+> [provider-connectivity-contract.md](./provider-connectivity-contract.md).
+
 ## Status after remediation (verified on main at `f58ef1d3`; follow-ups #658–#663 merged by `d2d01e78`)
 
 With the follow-ups merged, the adversarial High (client-IP handling) and all four Mediums that were code fixes are closed, and the hub chart can set the three hardening flags. What is still open is listed in "What is still open" at the end of this section.

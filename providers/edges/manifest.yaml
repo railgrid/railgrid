@@ -3,13 +3,18 @@
 # Single, optional, self-contained provider for all seven edges.railgrid.ai kinds
 # (KubernetesCluster, LinuxServer, MacOSServer, Service, Workload, Placement,
 # Addon). It terminates the agent reverse tunnel (revdial) in-process, owns the
-# API + its APIExport, runs the token/RBAC/lifecycle controllers, and proxies
-# kubectl/SSH/MCP/Services through the hub backend proxy.
+# API + its APIExport, runs the token/RBAC/lifecycle controllers, and serves
+# kubectl/SSH/MCP/Services as kcp custom subresources on that export.
 #
 # The tunnel layer scales horizontally — each agent dials one replica and a
 # Lease registry + pod-to-pod relay route requests to the tunnel's owner — and
 # the reconcilers are leader-elected on a Lease in the provider workspace, so
 # the chart is safe to scale past one replica.
+#
+# The spec answers four questions, one section each: export (what a tenant may
+# call), requires (what this provider needs that it does not own), serving
+# (where the hub reaches it) and hub (what it asks of the hub itself — edges
+# asks nothing, so there is no hub section).
 ---
 apiVersion: providers.railgrid.ai/v1alpha1
 kind: CatalogEntry
@@ -22,189 +27,206 @@ spec:
   version: "0.1.0"
   category: "Edges"
   iconURL: "/ui/providers/edges/icon.svg"
-  ui:
-    # The provider serves its portal micro-frontend (main.js custom element) from
-    # the embedded Vite bundle; the hub proxies /ui/providers/edges/* here and
-    # ProviderFrame mounts <railgrid-provider-edges>. Overridden by the chart to the
-    # in-cluster Service DNS name.
-    url: "http://localhost:8088"
-    indexPath: "/"
-    # Sidebar sub-nav under the edges provider. The parent item routes to the
-    # edges fleet (/providers/edges); "Workloads" routes to /providers/edges/
-    # workloads, which the micro-frontend reads off subPath to render its
-    # Workloads view (VirtualWorkload → Placement scheduling across edges).
-    children:
-      - displayName: Workloads
-        builtinRoute: workloads
-      - displayName: Services
-        builtinRoute: services
-  backend:
-    # Agent ingress (/agent/*) and consumer egress (/edgeproxy/*) route through
-    # the hub backend proxy at /services/providers/edges/* to this Service.
-    # Overridden by the chart to the in-cluster Service DNS name.
-    url: "http://localhost:8088"
-    healthPath: "/readyz"
-  apiExport:
-    name: "edges.providers.railgrid.ai"
-    # KubernetesCluster, LinuxServer, and MacOSServer come with this export (the
-    # provider owns them). What remains here is the tenant-workspace access the
-    # data plane needs, and nothing else.
-    #
-    # Gone with §5.7: serviceaccounts, clusterroles and clusterrolebindings. A
-    # provider does not mint identities — it asks the hub's scoped-identity
-    # service, which TokenRequest-mints a TTL'd credential, records it and
-    # collects it (docs/provider-connectivity-contract.md §"Scoped identities").
-    # A claim on those three types is a contract violation, not a design choice.
-    permissionClaims:
-      # The SSH data plane. The provider — never the agent — writes the
-      # railgrid-system namespace and the <edge>-ssh-credentials Secret when a
-      # host agent calls the gated ssh-credentials verb, and reads back
-      # spec.sshCredentialsRef Secrets to open a session. The agent used to
-      # hold this itself; identity policy X-4 refuses to mint a Secrets rule
-      # for anyone, so the write moved behind a verb rather than the claim
-      # moving to the agent.
-      - group: ""
-        resource: namespaces
-        verbs: [get, list, watch, create]
-        tenantScoped: true
-      # Secrets, and ONLY the ones labelled railgrid.ai/owner: edges. Five
-      # shapes, each written by a party this provider controls, each of which
-      # stamps the label:
-      #
-      #   railgrid-system/<edge>-ssh-credentials   the host's SSH credential,
-      #     written by this provider when a host agent calls the gated
-      #     ssh-credentials verb (internal/tunnel/edge_status.go) and read back
-      #     to open a session (internal/tunnel/edges_proxy_builder.go).
-      #   railgrid-system/railgrid-edges-svc-<name>  a published Service's
-      #     credential, written by this provider's portal as the caller
-      #     (portal/src/api.ts) and read by the validation reconciler. The
-      #     service-proxy read path already runs as the caller and needs no
-      #     claim.
-      #   default/<addon>-runner-token             published by this provider
-      #     through addon-credentials for the add-on reconciler.
-      #   add-on harness auth references, explicitly labelled by the tenant.
-      #   whatever spec.sshCredentialsRef names, which is normally the first.
-      #
-      # Without the selector this claim is read-write on EVERY Secret in EVERY
-      # workspace that enables this provider — the side-door
-      # docs/cross-provider-simplification.md X-4 closes. A Secret a tenant
-      # hand-writes and points spec.sshCredentialsRef at must carry the label
-      # too, which is the tenant saying "this one is for edges".
-      - group: ""
-        resource: secrets
-        verbs: [get, list, watch, create, update]
-        tenantScoped: true
-        selector:
-          matchLabels:
-            railgrid.ai/owner: edges
-      # Delegated authn/authz for the AGENT ingress class (f). The provider
-      # terminates agent tunnels OUTSIDE kcp's request path, so a reconnecting
-      # agent's token is validated here: TokenReview to authenticate it,
-      # SubjectAccessReview to authorize the resolved identity for
-      # create on {resource}/proxy against THIS consumer workspace. The
-      # consumer data plane no longer needs either — it runs both gates as the
-      # caller — but class (f) still does, because an agent's bearer never
-      # passes through kcp on its way here. kcp serves both on the APIExport
-      # virtual workspace scoped to the engaged cluster (kcp#4279 / kcp#4280).
-      # tenantScoped: the VW confines each review to the tenant's OWN
-      # workspace. Built-in review APIs: no identityHash, verb create only.
-      - group: authentication.k8s.io
-        resource: tokenreviews
-        verbs: [create]
-        tenantScoped: true
-      - group: authorization.k8s.io
-        resource: subjectaccessreviews
-        verbs: [create]
-        tenantScoped: true
-  # Data-plane verbs this provider serves, declared so the coordinate is
-  # machine-readable. Declaring one grants and serves nothing: every call is
-  # still authorized by this provider's own caller-scoped SSAR on
-  # {resource}/{verb}. What the declaration buys is that the hub
-  # scoped-identity service can mint a capability for a verb it can verify
-  # exists (pkg/hub/identity/policy.go clause C), instead of consumers
-  # hardcoding a coordinate nobody validates.
-  dataPlane:
-    verbs:
-      - resource: kubernetesclusters
-        verb: k8s
-        description: "Proxy the Kubernetes API of the edge through its tunnel."
-        stream: true
-      - resource: kubernetesclusters
-        verb: ssh
-        description: "Open an SSH session to the edge through its tunnel."
-        stream: true
-      - resource: kubernetesclusters
-        verb: mcp
-        description: "Reach the edge's MCP endpoint through its tunnel."
-        stream: true
-      - resource: kubernetesclusters
-        verb: ticket
-        description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
-        readOnly: true
-      - resource: kubernetesclusters
-        verb: agent-token
-        description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
-        readOnly: true
-      - resource: linuxservers
-        verb: k8s
-        description: "Proxy the Kubernetes API of the edge through its tunnel."
-        stream: true
-      - resource: linuxservers
-        verb: ssh
-        description: "Open an SSH session to the edge through its tunnel."
-        stream: true
-      - resource: linuxservers
-        verb: ticket
-        description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
-        readOnly: true
-      - resource: linuxservers
-        verb: addon-credentials
-        description: Read runner auth and publish its token for an add-on assigned to this edge
-      - resource: linuxservers
-        verb: agent-token
-        description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
-        readOnly: true
-      - resource: linuxservers
-        verb: ssh-credentials
-        description: "Hand the host's SSH credentials to the provider, which records them against this edge. Replaces the agent holding core-group Secrets access, which the hub's identity policy refuses to mint."
-      - resource: macosservers
-        verb: addon-credentials
-        description: Read runner auth and publish its token for an add-on assigned to this edge
-      - resource: macosservers
-        verb: agent-token
-        description: "Re-mint the calling agent's own TTL'd credential. MacOSServer serves no consumer verb, but its agent still has a credential to rotate."
-        readOnly: true
-      - resource: services
-        verb: proxy
-        description: "Proxy HTTP to a Service published from an edge."
-        stream: true
-      - resource: services
-        verb: mcp
-        description: "Reach a published Service's MCP endpoint."
-        stream: true
-      - resource: services
-        verb: ticket
-        description: "Mint a short-lived, single-object ticket a browser presents as a WebSocket subprotocol, because a browser cannot set Authorization on an upgrade."
-        readOnly: true
-  # Self-hosting: run the edges provider inside your own cluster, so agent
-  # tunnels terminate there instead of on the platform. See docs/byo-providers.md.
+  # What a tenant may call once it enables this provider. One APIExport; every
+  # verb hangs off the resource it is served on, and the apiVersion is declared
+  # once per resource so a consumer can address a coordinate without knowing
+  # this provider's group.
   #
-  # hub.externalURL is derived from the hub's own external URL: it is the address
-  # this provider bakes into the agent kubeconfigs it mints, i.e. where agents
-  # reach kcp through the hub, not where they reach this provider. Keep in
-  # lockstep with deploy/chart/templates/catalogentry.yaml.
-  selfHosting:
-    supported: true
-    chart:
-      repository: "oci://ghcr.io/railgrid/charts"
-      name: "railgrid-edges-provider"
-    namespace: "railgrid-provider-edges"
-    releaseName: "edges"
-    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/edges/deploy/chart/README.md"
-    requiredValues:
-      - name: hub.externalURL
-        value: "{{hubURL}}"
-        description: >-
-          Address baked into every agent kubeconfig this provider mints, so
-          agents reach kcp through the hub. Derived from the hub's own external
-          URL; override only if your agents reach railgrid at a different address.
+  # Declaring a verb grants nothing: kcp authorizes every call on
+  # {resource}/{verb} with ordinary RBAC before it forwards, and this provider's
+  # gate then reviews the caller's visibility of the object. What the
+  # declaration buys, per verb: codegen emits the kcp custom subresource
+  # "<resource>/<verb>" on the generated APIExport (the shard routes it here
+  # through this provider's DataPlaneEndpointSlice) together with the
+  # "<Verb>Request" schema it names; another provider can claim the coordinate
+  # under ITS spec.requires and have it claimed on its own export; and the hub
+  # scoped-identity service (pkg/hub/identity/policy.go clause C) can mint a
+  # capability only for a coordinate it can verify exists. None of this is a
+  # permission claim of this provider: a claim names another group's resources,
+  # never one's own verbs.
+  #
+  # Workload, Placement and Addon carry no verb and no action, so they need no
+  # entry here at all — they are ordinary CR kinds tenants read and write
+  # through kcp, and they reach the APIExport's spec.resources from apigen's
+  # schemas either way.
+  export:
+    name: "edges.providers.railgrid.ai"
+    resources:
+      - name: kubernetesclusters
+        apiVersion: edges.railgrid.ai/v1alpha1
+        kind: KubernetesCluster
+        verbs:
+          - name: k8s
+            description: "Proxy the Kubernetes API of the edge through its tunnel."
+            stream: true
+          - name: ssh
+            description: "Open an SSH session to the edge through its tunnel."
+            stream: true
+          - name: mcp
+            description: "Reach the edge's MCP endpoint through its tunnel."
+            stream: true
+          - name: agent-token
+            description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
+            readOnly: true
+      - name: linuxservers
+        apiVersion: edges.railgrid.ai/v1alpha1
+        kind: LinuxServer
+        verbs:
+          - name: k8s
+            description: "Proxy the Kubernetes API of the edge through its tunnel."
+            stream: true
+          - name: ssh
+            description: "Open an SSH session to the edge through its tunnel."
+            stream: true
+          - name: addon-credentials
+            description: Read runner auth and publish its token for an add-on assigned to this edge
+          - name: agent-token
+            description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
+            readOnly: true
+          - name: ssh-credentials
+            description: "Hand the host's SSH credentials to the provider, which records them against this edge. Replaces the agent holding core-group Secrets access, which the hub's identity policy refuses to mint."
+      # MacOSServer is a Service-only host edge: no Kubernetes API and no SSH
+      # data plane, so it serves no CONSUMER verb. Its agent still has a
+      # credential to rotate, and an edge whose agent cannot refresh would lock
+      # itself out at TTL.
+      - name: macosservers
+        apiVersion: edges.railgrid.ai/v1alpha1
+        kind: MacOSServer
+        verbs:
+          - name: addon-credentials
+            description: Read runner auth and publish its token for an add-on assigned to this edge
+          - name: agent-token
+            description: "Re-mint the calling agent's own TTL'd credential. MacOSServer serves no consumer verb, but its agent still has a credential to rotate."
+            readOnly: true
+      - name: services
+        apiVersion: edges.railgrid.ai/v1alpha1
+        kind: Service
+        verbs:
+          - name: proxy
+            description: "Proxy HTTP to a Service published from an edge."
+            stream: true
+          - name: mcp
+            description: "Reach a published Service's MCP endpoint."
+            stream: true
+  # Everything this provider needs from groups it does not own. One entry per
+  # API group; each of its resources becomes one permission claim on the
+  # generated APIExport, and each is tenant-scoped by definition.
+  #
+  # KubernetesCluster, LinuxServer, MacOSServer, Service, Workload, Placement
+  # and Addon are NOT here: the provider owns them and they come with its own
+  # export. What remains is the tenant-workspace access the data plane needs,
+  # and nothing else. edges depends on no other provider, so no entry names one.
+  #
+  # Gone with §5.7: serviceaccounts, clusterroles and clusterrolebindings. A
+  # provider does not mint identities — it asks the hub's scoped-identity
+  # service, which TokenRequest-mints a TTL'd credential, records it and
+  # collects it (docs/provider-connectivity-contract.md §"Scoped identities").
+  # A requirement on those three types is a contract violation, not a design
+  # choice.
+  requires:
+    # The core group: the SSH data plane. The provider — never the agent —
+    # writes the railgrid-system namespace and the <edge>-ssh-credentials Secret
+    # when a host agent calls the gated ssh-credentials verb, and reads back
+    # spec.sshCredentialsRef Secrets to open a session. The agent used to hold
+    # this itself; identity policy X-4 refuses to mint a Secrets rule for
+    # anyone, so the write moved behind a verb rather than the claim moving to
+    # the agent.
+    - resources:
+        - name: namespaces
+          verbs: [get, list, watch, create]
+        # Secrets, and ONLY the ones labelled railgrid.ai/owner: edges. Five
+        # shapes, each written by a party this provider controls, each of which
+        # stamps the label:
+        #
+        #   railgrid-system/<edge>-ssh-credentials   the host's SSH credential,
+        #     written by this provider when a host agent calls the gated
+        #     ssh-credentials verb (internal/tunnel/edge_status.go) and read back
+        #     to open a session (internal/tunnel/edges_proxy_builder.go).
+        #   railgrid-system/railgrid-edges-svc-<name>  a published Service's
+        #     credential, written by this provider's portal as the caller
+        #     (portal/src/api.ts) and read by the validation reconciler. The
+        #     service-proxy read path already runs as the caller and needs no
+        #     claim.
+        #   default/<addon>-runner-token             published by this provider
+        #     through addon-credentials for the add-on reconciler.
+        #   add-on harness auth references, explicitly labelled by the tenant.
+        #   whatever spec.sshCredentialsRef names, which is normally the first.
+        #
+        # Without the selector this claim is read-write on EVERY Secret in EVERY
+        # workspace that enables this provider — the side-door
+        # docs/cross-provider-simplification.md X-4 closes. A Secret a tenant
+        # hand-writes and points spec.sshCredentialsRef at must carry the label
+        # too, which is the tenant saying "this one is for edges".
+        - name: secrets
+          verbs: [get, list, watch, create, update]
+          selector:
+            matchLabels:
+              railgrid.ai/owner: edges
+    # Delegated authn/authz for the AGENT ingress class (f). The provider
+    # terminates agent tunnels OUTSIDE kcp's request path, so a reconnecting
+    # agent's token is validated here: TokenReview to authenticate it,
+    # SubjectAccessReview to authorize the resolved identity for create on
+    # {resource}/proxy against THIS consumer workspace. The consumer data plane
+    # no longer needs TokenReview — it runs both gates as the caller — but class
+    # (f) still does, because an agent's bearer never passes through kcp on its
+    # way here, and the shard-forwarded path has no caller bearer at all, so the
+    # SubjectAccessReview is what authorizes every forwarded verb. kcp serves
+    # both on the APIExport virtual workspace scoped to the engaged cluster
+    # (kcp#4279 / kcp#4280), and only for an export that claims them. Built-in
+    # review APIs: no identityHash, verb create only.
+    - group: authentication.k8s.io
+      resources:
+        - name: tokenreviews
+          verbs: [create]
+    - group: authorization.k8s.io
+      resources:
+        - name: subjectaccessreviews
+          verbs: [create]
+  # Where the hub reaches this provider.
+  serving:
+    ui:
+      # The provider serves its portal micro-frontend (main.js custom element) from
+      # the embedded Vite bundle; the hub proxies /ui/providers/edges/* here and
+      # ProviderFrame mounts <railgrid-provider-edges>. Overridden by the chart to the
+      # in-cluster Service DNS name.
+      url: "http://localhost:8088"
+      indexPath: "/"
+      # Sidebar sub-nav under the edges provider. The parent item routes to the
+      # edges fleet (/providers/edges); "Workloads" routes to /providers/edges/
+      # workloads, which the micro-frontend reads off subPath to render its
+      # Workloads view (VirtualWorkload → Placement scheduling across edges).
+      children:
+        - displayName: Workloads
+          builtinRoute: workloads
+        - displayName: Services
+          builtinRoute: services
+    backend:
+      # Agent ingress (/agent/*) and the provider MCP endpoint (/mcp) route
+      # through the hub backend proxy at /services/providers/edges/* to this
+      # Service. The declared verbs do not: each is a kcp custom subresource
+      # the serving shard routes here through the DataPlaneEndpointSlice.
+      # Overridden by the chart to the in-cluster Service DNS name.
+      url: "http://localhost:8088"
+      healthPath: "/readyz"
+    # Self-hosting: run the edges provider inside your own cluster, so agent
+    # tunnels terminate there instead of on the platform. See docs/byo-providers.md.
+    #
+    # hub.externalURL is derived from the hub's own external URL: it is the address
+    # this provider bakes into the agent kubeconfigs it mints, i.e. where agents
+    # reach kcp through the hub, not where they reach this provider. Keep in
+    # lockstep with deploy/chart/templates/catalogentry.yaml.
+    selfHosting:
+      supported: true
+      chart:
+        repository: "oci://ghcr.io/railgrid/charts"
+        name: "railgrid-edges-provider"
+      namespace: "railgrid-provider-edges"
+      releaseName: "edges"
+      docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/edges/deploy/chart/README.md"
+      requiredValues:
+        - name: hub.externalURL
+          value: "{{hubURL}}"
+          description: >-
+            Address baked into every agent kubeconfig this provider mints, so
+            agents reach kcp through the hub. Derived from the hub's own external
+            URL; override only if your agents reach railgrid at a different address.

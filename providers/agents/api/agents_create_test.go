@@ -87,8 +87,12 @@ func TestCreateAgentMCPSchemaHasLimits(t *testing.T) {
 // on. Every one of these has to be unroutable: a handler that quietly came back
 // would be a second writer the hub cannot authorize per resource, which is the
 // whole reason they went away.
+//
+// The requests are stamped the way a shard stamps a forwarded subresource, so
+// a refusal here is the router's or the adapter's, not a missing caller.
 func TestObjectCRUDIsNotServed(t *testing.T) {
-	h := newMCPTestServer(t).DataPlane()
+	h := gatedHandler(t, newMCPTestServer(t))
+	base := verbBase(testCluster, "agents", "x")
 	for _, tc := range []struct{ method, path string }{
 		// The old facade, in every shape it had.
 		{"GET", "/api/agents"}, {"POST", "/api/agents"},
@@ -100,22 +104,31 @@ func TestObjectCRUDIsNotServed(t *testing.T) {
 		{"GET", "/api/capabilities"}, {"GET", "/api/catalog"},
 		// The bespoke service-to-service route: retired, not relocated.
 		{"POST", "/s2s/clusters/" + testCluster + "/agents/x/runs"},
-		// And CRUD dressed up as a data-plane verb. The grammar has no room
-		// for it — there is no verb-less form — but assert it anyway.
-		{"GET", "/dataplane/clusters/" + testCluster + "/agents"},
+		// The hub-proxied spelling of a verb: gone, not aliased.
+		{"POST", "/dataplane/clusters/" + testCluster + "/agents/x/chat"},
+		{"POST", "/actions/clusters/" + testCluster + "/agents/x/chat"},
+		// And CRUD dressed up as a verb. The grammar has no room for it —
+		// there is no verb-less form — but assert it anyway.
+		{"GET", verbBase(testCluster, "agents", "")},
 		// Listing and reading runs is a kube list now, not a verb: a route
 		// that restated the object would be a second source of truth.
-		{"GET", "/dataplane/clusters/" + testCluster + "/runs"},
-		{"GET", "/dataplane/clusters/" + testCluster + "/runs/r1"},
-		{"GET", "/dataplane/clusters/" + testCluster + "/agents/x/runs"},
-		{"POST", "/dataplane/clusters/" + testCluster + "/agents/x"},
-		{"DELETE", "/dataplane/clusters/" + testCluster + "/agents/x"},
-		{"POST", "/dataplane/clusters/" + testCluster + "/agents/x/delegate"},
+		{"GET", verbBase(testCluster, "runs", "")},
+		{"GET", verbBase(testCluster, "runs", "r1")},
+		{"GET", base + "/runs"},
+		{"POST", base},
+		{"DELETE", base},
+		{"POST", base + "/delegate"},
 	} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
-		if rec.Code != http.StatusNotFound && rec.Code != http.StatusBadRequest {
+		h.ServeHTTP(rec, stamped(tc.method, tc.path, nil, "alice"))
+		// 404 and 400 are the adapter's and the router's refusals; 405 is the
+		// portal catch-all declining a non-GET, which is where an unmounted
+		// path lands. A JSON answer would mean a handler is still there.
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusBadRequest && rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s → %d: still served; CRUD belongs to kcp", tc.method, tc.path, rec.Code)
+		}
+		if strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") && rec.Code != http.StatusBadRequest {
+			t.Errorf("%s %s answered JSON (%d): a handler is still mounted there", tc.method, tc.path, rec.Code)
 		}
 	}
 }
@@ -124,57 +137,60 @@ func TestObjectCRUDIsNotServed(t *testing.T) {
 // server-held credential or Postgres-backed state stay, and a refactor that
 // deletes a route group must not take them with it.
 //
-// "Routed" here means the router recognised the coordinate and handed the
-// request to the gates. Without a caller factory the gates cannot run, so the
-// answer is a 500 — what matters is that it is not the 400 the router answers
-// for a coordinate it does not serve.
+// "Routed" here means the adapter recognised the declared coordinate and the
+// router handed the request to the gate. This Server has no caller factory, so
+// the gate cannot run and the answer is a 500 — what matters is that it is not
+// the 404 the adapter answers for a coordinate it does not serve, nor the 400
+// the router answers for a shape it refuses.
 func TestVerbRoutesSurvive(t *testing.T) {
-	h := newMCPTestServer(t).DataPlane()
-	base := "/dataplane/clusters/" + testCluster
+	h := gatedHandler(t, newMCPTestServer(t))
+	agents := verbBase(testCluster, "agents", "x")
 	for _, tc := range []struct{ method, path string }{
-		{"POST", base + "/agents/x/chat"},
-		{"POST", base + "/agents/x/run"},
-		{"GET", base + "/runs/r1/trace"},
-		{"GET", base + "/runs/r1/wait"},
-		{"POST", base + "/runs/r1/cancel"},
-		{"GET", base + "/agents/x/sessions"},
-		{"DELETE", base + "/agents/x/session/s1"},
-		{"GET", base + "/agents/x/messages"},
-		{"GET", base + "/agents/x/usage"},
-		{"GET", base + "/agents/x/inbox"},
-		{"POST", base + "/agents/x/inbox-resolve/i1"},
-		{"GET", base + "/agents/x/events"},
-		{"POST", base + "/modelcredentials/x/test"},
-		{"POST", base + "/modelcredentials/x/discover"},
-		{"POST", base + "/connections/x/test"},
-		{"POST", base + "/connections/x/enable-inbound"},
-		{"POST", base + "/connections/x/authorize"},
-		{"POST", base + "/schedules/x/run"},
-		{"POST", base + "/triggers/x/run"},
+		{"POST", agents + "/chat"},
+		{"POST", agents + "/run"},
+		{"GET", verbBase(testCluster, "runs", "r1") + "/trace"},
+		{"GET", verbBase(testCluster, "runs", "r1") + "/wait"},
+		{"POST", verbBase(testCluster, "runs", "r1") + "/cancel"},
+		{"GET", agents + "/sessions"},
+		{"DELETE", agents + "/session/s1"},
+		{"GET", agents + "/messages"},
+		{"GET", agents + "/usage"},
+		{"GET", agents + "/inbox"},
+		{"POST", agents + "/inbox-resolve/i1"},
+		{"GET", agents + "/events"},
+		{"POST", verbBase(testCluster, "modelcredentials", "x") + "/test"},
+		{"POST", verbBase(testCluster, "modelcredentials", "x") + "/discover"},
+		{"POST", verbBase(testCluster, "connections", "x") + "/test"},
+		{"POST", verbBase(testCluster, "connections", "x") + "/enable-inbound"},
+		{"POST", verbBase(testCluster, "connections", "x") + "/authorize"},
+		{"POST", verbBase(testCluster, "schedules", "x") + "/run"},
+		{"POST", verbBase(testCluster, "triggers", "x") + "/run"},
 	} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
-		if rec.Code == http.StatusNotFound || rec.Code == http.StatusBadRequest || rec.Code == http.StatusMethodNotAllowed {
+		h.ServeHTTP(rec, stamped(tc.method, tc.path, nil, "alice"))
+		if rec.Code == http.StatusNotFound || rec.Code == http.StatusBadRequest || rec.Code == http.StatusMethodNotAllowed || rec.Code == http.StatusUnauthorized {
 			t.Errorf("%s %s → %d: not routed", tc.method, tc.path, rec.Code)
 		}
 	}
 }
 
 // TestVerbMethodsAreEnforced: a verb answers the methods it declares and 405s
-// the rest, and it says so in Allow. This runs before the gates on purpose —
+// the rest, and it says so in Allow. This runs before the gate on purpose —
 // the path has already told the caller the verb exists, so a 405 discloses
-// nothing a 404 would have hidden.
+// nothing a 404 would have hidden. kcp authorizes the method as the RBAC verb
+// on the coordinate, and a grant on a verb is "*", so this is the provider's
+// check to make.
 func TestVerbMethodsAreEnforced(t *testing.T) {
-	h := newMCPTestServer(t).DataPlane()
-	base := "/dataplane/clusters/" + testCluster
+	h := gatedHandler(t, newMCPTestServer(t))
+	agents := verbBase(testCluster, "agents", "x")
 	for _, tc := range []struct{ method, path, allow string }{
-		{"GET", base + "/agents/x/chat", "POST"},
-		{"POST", base + "/agents/x/sessions", "GET"},
-		{"GET", base + "/agents/x/session/s1", "DELETE"},
-		{"DELETE", base + "/schedules/x/run", "POST"},
+		{"GET", agents + "/chat", "POST"},
+		{"POST", agents + "/sessions", "GET"},
+		{"GET", agents + "/session/s1", "DELETE"},
+		{"DELETE", verbBase(testCluster, "schedules", "x") + "/run", "POST"},
 	} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		h.ServeHTTP(rec, stamped(tc.method, tc.path, nil, "alice"))
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s → %d, want 405", tc.method, tc.path, rec.Code)
 		}
@@ -187,23 +203,23 @@ func TestVerbMethodsAreEnforced(t *testing.T) {
 // TestTailPolicyIsEnforced: a verb that takes no tail refuses one, and a verb
 // that needs exactly one segment refuses zero or two. This is what keeps
 // `…/agents/x/sessions/../../other` from being reinterpreted as something the
-// gates never saw.
-
+// gate never saw.
 func TestTailPolicyIsEnforced(t *testing.T) {
-	h := newMCPTestServer(t).DataPlane()
-	base := "/dataplane/clusters/" + testCluster
+	h := gatedHandler(t, newMCPTestServer(t))
+	agents := verbBase(testCluster, "agents", "x")
+	runs := verbBase(testCluster, "runs", "r1")
 	for _, tc := range []struct{ method, path string }{
-		{"POST", base + "/agents/x/chat/extra"},
-		{"GET", base + "/agents/x/sessions/s1"},
-		{"DELETE", base + "/agents/x/session"},
-		{"DELETE", base + "/agents/x/session/s1/s2"},
-		{"POST", base + "/agents/x/inbox-resolve"},
-		{"POST", base + "/schedules/x/run/now"},
-		{"GET", base + "/runs/r1/trace/extra"},
-		{"POST", base + "/runs/r1/cancel/now"},
+		{"POST", agents + "/chat/extra"},
+		{"GET", agents + "/sessions/s1"},
+		{"DELETE", agents + "/session"},
+		{"DELETE", agents + "/session/s1/s2"},
+		{"POST", agents + "/inbox-resolve"},
+		{"POST", verbBase(testCluster, "schedules", "x") + "/run/now"},
+		{"GET", runs + "/trace/extra"},
+		{"POST", runs + "/cancel/now"},
 	} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		h.ServeHTTP(rec, stamped(tc.method, tc.path, nil, "alice"))
 		if rec.Code != http.StatusBadRequest && rec.Code != http.StatusNotFound {
 			t.Errorf("%s %s → %d: a tail the verb does not take must be refused", tc.method, tc.path, rec.Code)
 		}

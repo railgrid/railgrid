@@ -23,16 +23,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/railgrid/provider-edges/internal/kcpurl"
 	"github.com/railgrid/provider-sdk/dataplane"
 )
 
@@ -162,13 +161,15 @@ func (v *serviceView) setSvcHeaders(h http.Header) {
 }
 
 // serveService dispatches an already-gated Service verb. svcObj is the object
-// gate 1 read AS THE CALLER, so the spec this proxy acts on is the one the
-// caller could see — the provider never re-reads it on its own authority.
+// the gate returned: read as the provider only after a SubjectAccessReview on
+// the caller's behalf proved the caller may see it, so the spec this proxy
+// acts on is one the caller could have read — the provider never acts on an
+// object the gate did not vouch for.
 //
-// It deliberately takes no caller bearer. Everything downstream acts on
+// There is no caller bearer on this path. Everything downstream acts on
 // svcObj, and the Service's auth Secret — the one thing still fetched from kcp
-// on this path — is read with the provider's own tenant credential, because it
-// is a provider-owned object (see readServiceToken).
+// here — is read with the provider's own tenant credential, because it is a
+// provider-owned object (see readServiceToken).
 //
 // Verbs: "proxy" (HTTP data plane) and "mcp".
 func (p *Server) serveService(w http.ResponseWriter, r *http.Request, req dataplane.Request, svcObj *unstructured.Unstructured) {
@@ -291,6 +292,7 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 			req.URL.Host = "edge-agent"
 			req.URL.Path = svcPath
 			svc.setSvcHeaders(req.Header)
+			stampCallerForUpstream(req.Header, ctx, cluster)
 			applyServiceAuth(req.Header, mode, token)
 		},
 		// The agent's answer is relayed as-is, including a 403 with
@@ -305,13 +307,45 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 	proxy.ServeHTTP(w, r)
 }
 
+// stampCallerForUpstream replaces what kcp stamped for THIS provider with what
+// a service behind the tunnel may reasonably want to know about the caller.
+// The requestheader identity (X-Remote-*) and the hop counter are meaningful
+// only to a server that trusts the shard, so they never cross the tunnel; the
+// caller's user name and tenant travel as the railgrid headers a self-hosted
+// provider backend reads to attribute and scope the call (X-Railgrid-User,
+// X-Railgrid-Tenant, X-Railgrid-Cluster), overwriting anything the caller
+// spelled there itself.
+func stampCallerForUpstream(h http.Header, ctx context.Context, cluster string) {
+	stripCallerHeaders(h)
+	h.Del(dataplane.HeaderUser)
+	if identity, ok := dataplane.ProxiedIdentityFrom(ctx); ok && identity.User != "" {
+		h.Set(dataplane.HeaderUser, identity.User)
+	}
+	h.Set(dataplane.HeaderTenant, cluster)
+	h.Set(dataplane.HeaderCluster, cluster)
+}
+
 // applyServiceAuth sets the Authorization the agent-side upstream will see,
-// per spec.auth. In passthrough mode the caller's header is left exactly as it
-// arrived — that is the point of the mode.
+// per spec.auth.
+//
+// The request's own Authorization never reaches this proxy: on the kube path
+// it was the caller's kcp credential, and serve's adapter dropped it. A
+// credential meant for the far-end service travels instead in
+// dataplane.HeaderUpstreamAuthorization (X-Railgrid-Upstream-Authorization),
+// which is what passthrough mode forwards as the upstream Authorization — the
+// hub's edge hop uses it to hand an org-owned provider the delegated token
+// (pkg/hub/providers/proxy_edge.go). The header itself is consumed here in
+// every mode, so no upstream ever sees it.
 func applyServiceAuth(h http.Header, mode, token string) {
+	upstream := strings.TrimSpace(h.Get(dataplane.HeaderUpstreamAuthorization))
+	h.Del(dataplane.HeaderUpstreamAuthorization)
 	switch mode {
 	case serviceAuthPassthrough:
-		return
+		if upstream != "" {
+			h.Set("Authorization", upstream)
+		} else {
+			h.Del("Authorization")
+		}
 	case serviceAuthNone:
 		h.Del("Authorization")
 	default: // serviceAuthSecret
@@ -344,6 +378,7 @@ func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter
 	r.URL.Path = svcPath
 	r.RequestURI = r.URL.RequestURI()
 	svc.setSvcHeaders(r.Header)
+	stampCallerForUpstream(r.Header, ctx, r.Header.Get(dataplane.HeaderCluster))
 	applyServiceAuth(r.Header, mode, token)
 
 	if err := r.Write(deviceConn); err != nil {
@@ -357,37 +392,13 @@ func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter
 	<-errc
 }
 
-// userClusterConfig returns a rest.Config scoped to a tenant workspace that
-// authenticates as the CALLER, not the provider SA.
-//
-// This is deliberate. The provider SA is not granted direct (non-virtual-
-// workspace) RBAC on Service objects in tenant workspaces — only on the
-// connectable kinds — so reading a Service with p.kcpConfig 403s. The caller
-// owns the workspace and can always read their own Services, so we read as
-// them, and gate 1 is exactly that read: the provider never learns of an
-// object the caller could not see. AnonymousClientConfig keeps the server URL
-// + CA trust but strips the SA credentials before we set the bearer token.
-//
-// It is NOT used for the Service's auth Secret. That Secret is provider-owned
-// (railgrid.ai/owner: edges) and lives behind this provider's label-scoped
-// `secrets` claim; a caller — in particular a hub-minted workload identity,
-// which can never hold core-group `get` — has no path to it. See
-// readServiceToken.
-func (p *Server) userClusterConfig(cluster, token string) *rest.Config {
-	cfg := rest.AnonymousClientConfig(p.kcpConfig)
-	cfg.Host = kcpurl.ClusterURL(p.kcpConfig.Host, cluster)
-	cfg.BearerToken = token
-	return cfg
-}
-
-// decodeServiceView projects the Service object gate 1 already read into the
+// decodeServiceView projects the Service object the gate already read into the
 // fields the proxy needs, and refuses one whose spec cannot be acted on.
 //
-// It takes the object rather than re-reading it on purpose. The provider SA is
-// not granted direct RBAC on Service objects in tenant workspaces — only on
-// the connectable kinds — and more importantly, acting on a spec the provider
-// read with its own credential when the caller was authorized against a
-// different read is a confused deputy. Gate 1 is the read.
+// It takes the object rather than re-reading it on purpose: acting on a spec
+// read separately from the one the caller was authorized against is a
+// confused deputy. The gate's read — as the provider, after the access review
+// on the caller's behalf — is the read.
 func decodeServiceView(name string, obj *unstructured.Unstructured) (*serviceView, error) {
 	if obj == nil {
 		return nil, fmt.Errorf("service %s: no object", name)
@@ -428,10 +439,11 @@ func decodeServiceView(name string, obj *unstructured.Unstructured) (*serviceVie
 // on any Service with a credential attached.
 //
 // This is not a confused deputy. The caller has already passed both gates —
-// gate 1, a GET of the Service with their own bearer, and gate 2, an SSAR for
-// `create` on services/{verb} — and `ref` comes from the spec THAT read
-// returned, never from the request. The provider only ever unwraps the
-// credential attached to a Service the caller was just authorized to use.
+// kcp authorized the method on services/{verb} before forwarding, and the
+// gate proved with a SubjectAccessReview that the caller may see the Service —
+// and `ref` comes from the spec the gate's read returned, never from the
+// request. The provider only ever unwraps the credential attached to a Service
+// the caller was just authorized to use.
 func (p *Server) readServiceToken(ctx context.Context, cluster string, svc *serviceView) (string, error) {
 	ref := svc.Spec.AuthSecretRef
 	if ref == nil {

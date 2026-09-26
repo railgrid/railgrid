@@ -168,10 +168,18 @@ resolves bearer → User CR → personal org / membership index. Provider SAs
 have no User CR and no membership, so hub-side injection of `X-Railgrid-Tenant`
 can never work for them without teaching the hub a parallel SA identity
 model. We don't need to: the app-studio → infrastructure data plane
-(`providers/app-studio/api/dataplane_client.go`) already established the
-pattern — address the target workspace **by cluster ID in the URL**, forward
-the bearer as-is through the hub backend proxy, and let the receiving
-provider authorize.
+already established the pattern — address the target workspace **by cluster
+ID in the URL** and let the receiving provider authorize.
+
+> **Superseded (2026-09-25).** The `/s2s/*` mount below was deleted rather than
+> moved ([agents-provider-architecture.md](./agents-provider-architecture.md)
+> §"The route surface"). Provider-to-provider invocation is a declared verb on
+> the agents APIExport (`agents/delegate`), a kcp custom subresource the
+> calling provider reaches **as itself** through its own export virtual
+> workspace on a `spec.requires` claim on that coordinate (generated as
+> `verbs: ["*"]`) — see
+> [provider-connectivity-contract.md](./provider-connectivity-contract.md).
+> The route sketch is kept as the design record.
 
 S2S route (alongside, not replacing, the portal-shaped routes):
 
@@ -333,9 +341,10 @@ are each tested), and everything in phases 3–4.
 12. **Both reviews go through the APIExport virtual workspace**, never by
     re-rooting the provider kubeconfig at the tenant path — that is the approach
     the production hub proxy answers with an opaque 404 (kcp#4279), the same trap
-    the edges provider hit. This is what the new `tokenreviews` +
-    `subjectaccessreviews` claims are for, and `tenantScoped: true` confines each
-    review to the tenant's own workspace.
+    the edges provider hit. This is what the `tokenreviews` +
+    `subjectaccessreviews` requirements under `spec.requires` are for; a
+    requirement is tenant-scoped by definition, so each review is confined to
+    the tenant's own workspace.
 13. **The run executes as the AGENT's ServiceAccount, not the caller's.** The
     caller's token authorizes the *request*; it does not become the identity the
     agent acts with. Same posture as a scheduled run, and it means an S2S invoke

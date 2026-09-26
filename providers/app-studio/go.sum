@@ -154,8 +154,6 @@ github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHm
 github.com/jtolds/gls v4.20.0+incompatible h1:xdiiI2gbIgH/gLH7ADydsJ1uDOEzR8yvV7C0MuV77Wo=
 github.com/jtolds/gls v4.20.0+incompatible/go.mod h1:QJZ7F/aHp+rZTRtaJ1ow/lLfFfVYBRgL+9YlvaHOwJU=
 github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0/go.mod h1:1NbS8ALrpOvjt0rHPNLyCIeMtbizbir8U//inJ+zuB8=
-github.com/kcp-dev/apimachinery/v2 v2.33.0 h1:FjHobIOa0jX8mJ/Zc7lPIfqlcc0dARQH2m9tm6jE3Bg=
-github.com/kcp-dev/apimachinery/v2 v2.33.0/go.mod h1:1Rkhiwoq345wlUYtq1/P+3chL2eE1rdoIgBPwb6Y9x8=
 github.com/kcp-dev/kubernetes/staging/src/k8s.io/api v0.0.0-20260602065202-e006560fc76a h1:1k49zqcr+54UquOj46hY0yRurpRuEJI8TSHr8iyNKZg=
 github.com/kcp-dev/kubernetes/staging/src/k8s.io/api v0.0.0-20260602065202-e006560fc76a/go.mod h1:IjHWT2O66SfysG/Ti8VyFHYvzhNftesoXeffmyprgwc=
 github.com/kcp-dev/kubernetes/staging/src/k8s.io/apiextensions-apiserver v0.0.0-20260602065202-e006560fc76a h1:5xvOaxgrPM/QSxnOPpBBVVzYr82YlCkOy5VdM6IeHzo=
@@ -200,6 +198,8 @@ github.com/meguminnnnnnnnn/go-openai v0.1.2 h1:iXombGGjqjBrmE9WaSidUhhi3YQhf42QT
 github.com/meguminnnnnnnnn/go-openai v0.1.2/go.mod h1:qs96ysDmxhE4BZoU45I43zcyfnaYxU3X+aRzLko/htY=
 github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b h1:j7+1HpAFS1zy5+Q4qx1fWh90gTKwiN4QCGoY9TWyyO4=
 github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b/go.mod h1:01TrycV0kFyexm33Z7vhZRXopbI8J3TDReVlkTgMUxE=
+github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20260926054725-20f1d300ccbe h1:Qcg2uVMLMOB2pJVxMioDoOJ3wZyVI762eT+xrH7pYIM=
+github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20260926054725-20f1d300ccbe/go.mod h1:1Rkhiwoq345wlUYtq1/P+3chL2eE1rdoIgBPwb6Y9x8=
 github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
 github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd h1:TRLaZ9cD/w8PVh93nsPXa1VrQ6jlwL5oN8l14QlcNfg=
 github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=

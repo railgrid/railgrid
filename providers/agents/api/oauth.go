@@ -476,7 +476,7 @@ func (s *Server) listOAuthProviders(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"providers": out})
 }
 
-// connectionSecretValue reads one key from a connection's Secret as the caller.
+// connectionSecretValue reads one key from a connection's Secret through c.
 func (s *Server) connectionSecretValue(r *http.Request, c *agentsclient.Client, name, key string) string {
 	sec, err := c.GetSecret(r.Context(), llm.SecretNamespace, connectionSecretName(name))
 	if err != nil {

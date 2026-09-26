@@ -27,9 +27,14 @@ cascade in and light/dark themes match without any extra plumbing. Its own
 stylesheet (`src/style.css`) is injected once, with every selector namespaced
 under `railgrid-provider-agents`.
 
-API calls go to `basePath` with `/ui/providers/` rewritten to
-`/services/providers/` (the hub's service proxy), carrying the bearer token and
-the `X-Railgrid-Org` / `X-Railgrid-Workspace` tenant headers — see
+Tenant objects are read and written straight against kcp on the hub's
+`/clusters/<tenant>/…` front door (`src/resources.ts`, portalkit's kube client).
+Provider verbs — chat, run, trace, test, … — are kcp custom subresources on
+those same objects, addressed with `kubeVerbPath` from `src/portalkit/kube.ts`
+(`/clusters/<tenant>/apis/agents.railgrid.ai/v1alpha1/<resource>/<name>/<verb>`)
+and fetched through the host-owned transport, which injects the bearer. Only
+`/oauth/providers` and `/mcp` still go to `basePath` with `/ui/providers/`
+rewritten to `/services/providers/` (the hub's service proxy) — see
 `src/portalkit/tenant.ts`. The host context is authoritative for the tenant; the
 localStorage copy is only a fallback.
 

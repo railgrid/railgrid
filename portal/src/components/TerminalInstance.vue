@@ -48,35 +48,31 @@ const statusLabel = computed(() => {
   return 'Unknown'
 })
 
-// The edges provider's consumer data plane, Pillar 2 class (a):
-// /dataplane/clusters/{cluster}/{resource}/{name}/{verb}.
-const EDGE_DATAPLANE_BASE = `/services/providers/edges/dataplane/clusters`
-
+// The edges provider's SSH verb is a kcp custom subresource on its APIExport,
+// reached on the hub's kcp front door like any other kube path:
+// /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/linuxservers/{name}/ssh.
 function verbPath(verb: string): string {
-  return `${EDGE_DATAPLANE_BASE}/${props.cluster}/linuxservers/${props.edgeName}/${verb}`
+  return `/clusters/${encodeURIComponent(props.cluster)}/apis/edges.railgrid.ai/v1alpha1/linuxservers/${encodeURIComponent(props.edgeName)}/${verb}`
 }
 
-// The ticket subprotocol namespace, mirroring the provider
-// (providers/edges/internal/tunnel/ticket.go).
-const TICKET_SUBPROTOCOL_PREFIX = 'railgrid.ticket.'
+// A browser cannot set an Authorization header on a WebSocket upgrade. The
+// Kubernetes convention is to carry the bearer as a subprotocol,
+// base64url.bearer.authorization.k8s.io.<base64url token>, which kcp's own
+// authenticator (and the hub's front door, for its membership check) reads
+// and strips before the request reaches the edges provider. No ticket, no
+// second round trip, and the same credential kubectl would present.
+//
+// That authenticator insists on at least one other subprotocol being offered
+// (it removes the bearer one and must still have something to echo), so the
+// terminal also offers its own, which the edges SSH handler selects.
+const BEARER_SUBPROTOCOL_PREFIX = 'base64url.bearer.authorization.k8s.io.'
+const SSH_SUBPROTOCOL = 'railgrid.ssh.v1'
 
-// A browser cannot set an Authorization header on a WebSocket upgrade. It used
-// to put the caller's kcp bearer in "?token=", which is a full-lifetime,
-// workspace-wide credential written into every access log, proxy log and
-// Referer on the way. Instead we POST to the gated "ticket" verb with the
-// bearer in a header like any other fetch, and get back a short-lived,
-// single-object, single-use string — which we hand over as the one header a
-// browser WebSocket CAN set, Sec-WebSocket-Protocol.
-async function mintTicket(token: string): Promise<string> {
-  const res = await fetch(verbPath('ticket'), {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!res.ok) throw new Error(`ticket request failed: ${res.status}`)
-  const body = (await res.json()) as { subprotocol?: string; ticket?: string }
-  const subprotocol = body.subprotocol ?? (body.ticket ? TICKET_SUBPROTOCOL_PREFIX + body.ticket : '')
-  if (!subprotocol) throw new Error('ticket response carried no subprotocol')
-  return subprotocol
+function bearerSubprotocol(token: string): string {
+  const bytes = new TextEncoder().encode(token)
+  let binary = ''
+  for (const b of bytes) binary += String.fromCharCode(b)
+  return BEARER_SUBPROTOCOL_PREFIX + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 function buildWsUrl(): string {
@@ -128,14 +124,12 @@ async function initialize() {
     const token = await auth.getValidToken()
     // Logout, unmount, or reconnect can occur while token refresh is pending.
     if (attempt !== lifecycle || disposed || JSON.stringify(auth.user) !== owner) return
-    subprotocol = await mintTicket(token)
+    subprotocol = bearerSubprotocol(token)
   } catch {
     if (attempt === lifecycle) cleanup()
     return
   }
-  // …and again while the ticket was being minted.
-  if (attempt !== lifecycle || disposed || JSON.stringify(auth.user) !== owner) return
-  ws = new WebSocket(buildWsUrl(), [subprotocol])
+  ws = new WebSocket(buildWsUrl(), [subprotocol, SSH_SUBPROTOCOL])
   ws.binaryType = 'arraybuffer'
 
   ws.onopen = () => {
