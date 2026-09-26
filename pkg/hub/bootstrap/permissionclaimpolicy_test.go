@@ -123,6 +123,26 @@ func TestPermissionClaimPolicyServed(t *testing.T) {
 	if served, err := PermissionClaimPolicyServed(erroringDiscovery{err: notFound}); err != nil || served {
 		t.Fatalf("NotFound discovery: served=%v err=%v", served, err)
 	}
+
+	// A real kcp front proxy answers a path no virtual workspace claims with
+	// 403, not 404, so "the admin virtual workspace is not there" arrives as
+	// Forbidden. Reading that as an error is fatal to the hub, which is what
+	// crash-looped it against a released kcp.
+	unresolved := apierrors.NewForbidden(schema.GroupResource{}, "", errors.New(
+		`User "railgrid-e2e-admin" cannot get path "/services/admin/clusters/root/apis/admin.kcp.io/v1alpha1": Path not resolved to a valid virtual workspace`))
+	if served, err := PermissionClaimPolicyServed(erroringDiscovery{err: unresolved}); err != nil || served {
+		t.Fatalf("unresolved virtual workspace: served=%v err=%v", served, err)
+	}
+
+	// A denial from a kcp that DOES serve the group is a credential problem and
+	// must not be read as absence: skipping the policy would leave the API
+	// groups it reserves unreserved.
+	denied := apierrors.NewForbidden(
+		schema.GroupResource{Group: "admin.kcp.io", Resource: "permissionclaimpolicies"}, "",
+		errors.New(`User "someone" cannot list resource "permissionclaimpolicies"`))
+	if _, err := PermissionClaimPolicyServed(erroringDiscovery{err: denied}); err == nil {
+		t.Fatal("an RBAC denial must propagate rather than look like an absent API")
+	}
 }
 
 func TestInstallPermissionClaimPolicySkipsWhenTheAPIIsAbsent(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -97,6 +98,27 @@ func PermissionClaimPolicyTargetConfig(kcpAdminConfig *rest.Config) *rest.Config
 	return target
 }
 
+// virtualWorkspaceAbsent reports whether err is kcp refusing the admin path
+// because nothing serves it.
+//
+// The group lives behind a virtual workspace, and a path no virtual workspace
+// claims comes back 403, not 404: the framework's authorizer has no opinion on a
+// path it cannot resolve ("Path not resolved to a valid virtual workspace"), and
+// no opinion becomes a denial. So on a kcp without the admin virtual workspace —
+// every released kcp — "absent" reaches us as Forbidden, which is the case this
+// whole check exists to tolerate. Reading it as an error instead is fatal to the
+// hub: the caller wraps it, and the process exits and crash-loops.
+//
+// Matched on the reason and not on Forbidden alone. A kcp that DOES serve the
+// group and denies us is a credential problem, and calling that "not there"
+// would silently skip installing a policy whose job is to reserve API groups.
+// If kcp rewords the reason this returns false and the hub fails loudly again,
+// which is the right way round for a string match to break.
+func virtualWorkspaceAbsent(err error) bool {
+	return apierrors.IsForbidden(err) &&
+		strings.Contains(strings.ToLower(err.Error()), "not resolved to a valid virtual workspace")
+}
+
 // PermissionClaimPolicyServed reports whether the cluster serves
 // admin.kcp.io/v1alpha1 permissionclaimpolicies.
 //
@@ -107,7 +129,7 @@ func PermissionClaimPolicyTargetConfig(kcpAdminConfig *rest.Config) *rest.Config
 func PermissionClaimPolicyServed(discoveryClient discovery.DiscoveryInterface) (bool, error) {
 	resources, err := discoveryClient.ServerResourcesForGroupVersion(PermissionClaimPolicyGroupVersion)
 	if err != nil {
-		if apierrors.IsNotFound(err) || discovery.IsGroupDiscoveryFailedError(err) {
+		if apierrors.IsNotFound(err) || discovery.IsGroupDiscoveryFailedError(err) || virtualWorkspaceAbsent(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("discovering %s: %w", PermissionClaimPolicyGroupVersion, err)
