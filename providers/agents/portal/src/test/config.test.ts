@@ -1182,7 +1182,8 @@ describe('agent creation capabilities', () => {
     expect(text(el)).not.toContain('Blank agent')
     expect(text(el)).toContain('Read the web')
     expect(text(el)).toContain('Research fan-out')
-    expect(caps(el)).toHaveLength(2)
+    expect(text(el)).toContain('Visualize data')
+    expect(caps(el)).toHaveLength(3)
   })
 
   // The form is terse, so the surviving signal that behaviour is not the user's
@@ -1234,7 +1235,7 @@ describe('agent creation capabilities', () => {
   it('sends background families only for capabilities opted in', async () => {
     const { el, createAgent } = await mountCreate()
     const bg = [...el.querySelectorAll<HTMLInputElement>('.agents-bg-toggle input[type=checkbox]')]
-    expect(bg).toHaveLength(2)
+    expect(bg).toHaveLength(3)
     expect(bg.every(input => input.disabled)).toBe(true)
 
     const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
@@ -1250,7 +1251,8 @@ describe('agent creation capabilities', () => {
     fanOut.checked = true
     fanOut.dispatchEvent(new Event('change'))
     await settle(3)
-    expect(bg.every(input => !input.disabled)).toBe(true)
+    expect(bg.slice(0, 2).every(input => !input.disabled)).toBe(true)
+    expect(bg[2].disabled).toBe(true)
 
     bg[0].checked = true
     bg[0].dispatchEvent(new Event('change'))
@@ -1310,5 +1312,23 @@ describe('agent creation capabilities', () => {
     await settle(3)
     const sent = createAgent.mock.calls[0][0] as Record<string, unknown>
     expect(sent!.interactiveFamilies).toBeUndefined()
+  })
+})
+
+describe('visualization capability', () => {
+  it('is opt-in and survives changes to connected tools', () => {
+    expect(familiesForConns([], () => undefined)).not.toContain('visualization')
+    expect(familiesForConns(['gh'], () => 'github', ['core', 'visualization'])).toContain('visualization')
+  })
+  it('grants charts interactively without granting background charts', async () => {
+    const { el, patchAgent } = await mountConfig({ tools: { interactive: { families: ['core'] } } })
+    const label = [...el.querySelectorAll('label')].find(item => item.textContent?.includes('Visualize data'))!
+    const input = label.querySelector<HTMLInputElement>('input')!
+    expect(input.checked).toBe(false)
+    input.checked = true
+    input.dispatchEvent(new Event('change'))
+    await settle(4)
+    expect(patchAgent.mock.calls[0][1].interactiveFamilies).toContain('visualization')
+    expect(patchAgent.mock.calls[0][1].backgroundFamilies || []).not.toContain('visualization')
   })
 })

@@ -184,11 +184,12 @@ const (
 // is one of them rather than implicit: toolset assembly wires the core tools
 // only when the resolved grant names it.
 var KnownToolFamilies = map[string]bool{
-	"core":   true,
-	"web":    true,
-	"github": true,
-	"mcp":    true,
-	"edges":  true,
-	"files":  true,
-	"spawn":  true,
+	"core":          true,
+	"web":           true,
+	"github":        true,
+	"mcp":           true,
+	"edges":         true,
+	"files":         true,
+	"spawn":         true,
+	"visualization": true,
 }

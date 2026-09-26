@@ -20,15 +20,16 @@ import (
 // MemoryStore is a non-durable in-process Store for development and tests. It
 // is the fallback when no database URL is configured; production uses Postgres.
 type MemoryStore struct {
-	mu        sync.Mutex
-	messages  map[string][]Message      // key: scope|session
-	runs      map[string]Run            // key: scope|runID
-	memories  map[string]Memory         // key: scope|memoryID
-	inbox     map[string]InboxItem      // key: scope|itemID
-	toolCalls map[string][]ToolCall     // key: scope
-	usage     map[string]Usage          // key: scope|agent|windowStart
-	tenants   map[string]TenantRef      // key: clusterID
-	summaries map[string]SessionSummary // key: scope|session
+	mu              sync.Mutex
+	messages        map[string][]Message      // key: scope|session
+	runs            map[string]Run            // key: scope|runID
+	memories        map[string]Memory         // key: scope|memoryID
+	inbox           map[string]InboxItem      // key: scope|itemID
+	toolCalls       map[string][]ToolCall     // key: scope
+	usage           map[string]Usage          // key: scope|agent|windowStart
+	tenants         map[string]TenantRef      // key: clusterID
+	summaries       map[string]SessionSummary // key: scope|session
+	messageSequence int64
 	// runScopes remembers each run's scope so ListUnfinishedRuns can report it,
 	// mirroring the org/workspace columns the Postgres rows carry.
 	runScopes map[string]Scope // key: scope|runID
@@ -67,9 +68,18 @@ func (m *MemoryStore) PutSessionSummary(_ context.Context, scope Scope, s Sessio
 	if strings.TrimSpace(s.SessionID) == "" {
 		return fmt.Errorf("session ID is required")
 	}
+	if err := validateSessionCheckpoint(s.Checkpoint); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.summaries[sessionKey(scope, s.SessionID)] = s
+	k := sessionKey(scope, s.SessionID)
+	if current, ok := m.summaries[k]; ok && current.Checkpoint != nil {
+		if s.Checkpoint == nil || s.Checkpoint.ThroughSequence < current.Checkpoint.ThroughSequence {
+			return ErrSessionCheckpointStale
+		}
+	}
+	m.summaries[k] = cloneSessionSummary(s)
 	return nil
 }
 
@@ -80,7 +90,7 @@ func (m *MemoryStore) GetSessionSummary(_ context.Context, scope Scope, sessionI
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.summaries[sessionKey(scope, sessionID)]
-	return s, ok, nil
+	return cloneSessionSummary(s), ok, nil
 }
 
 func (m *MemoryStore) FindRunByIdempotencyKey(_ context.Context, scope Scope, key string) (Run, bool, error) {
@@ -135,8 +145,23 @@ func (m *MemoryStore) AppendMessage(_ context.Context, scope Scope, msg Message)
 	if msg.CreatedAt.IsZero() {
 		return fmt.Errorf("message CreatedAt is required")
 	}
+	m.messageSequence++
+	msg.Sequence = m.messageSequence
 	m.messages[k] = append(m.messages[k], msg)
 	return nil
+}
+
+func cloneSessionSummary(s SessionSummary) SessionSummary {
+	if s.Checkpoint == nil {
+		return s
+	}
+	checkpoint := *s.Checkpoint
+	checkpoint.ReplacementHistory = append([]SessionCheckpointMessage(nil), s.Checkpoint.ReplacementHistory...)
+	for i := range checkpoint.ReplacementHistory {
+		checkpoint.ReplacementHistory[i].ToolCalls = append([]SessionCheckpointToolCall(nil), checkpoint.ReplacementHistory[i].ToolCalls...)
+	}
+	s.Checkpoint = &checkpoint
+	return s
 }
 
 func (m *MemoryStore) ListMessages(_ context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error) {

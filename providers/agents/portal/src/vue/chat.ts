@@ -170,6 +170,10 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
   }
 
   for (const item of chronological) {
+    // Empty assistant tool-call groups must remain durable for model replay,
+    // but they are transcript structure rather than a blank user-facing turn.
+    if (item.role === 'assistant' && item.metadata?.modelOnly) continue
+
     if (item.role === 'tool') {
       const metadata = item.metadata || {}
       const rawError = metadata.error

@@ -348,6 +348,8 @@ export interface TranscriptMessage {
     startedAt?: string
     segmentDurationMS?: number
     turnError?: string
+    /** Structured history row with no user-visible assistant prose. */
+    modelOnly?: boolean
   }
   createdAt?: string
 }

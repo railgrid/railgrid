@@ -173,6 +173,9 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	if slices.Contains(families, "web") {
 		out = append(out, tools.Web(deps)...)
 	}
+	if slices.Contains(families, "visualization") {
+		out = append(out, tools.Visualization()...)
+	}
 	out = append(out, tools.Spawn(deps)...)
 
 	// Connection-backed families: dial each granted mcp/github connection and

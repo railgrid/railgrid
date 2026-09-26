@@ -63,10 +63,9 @@ func turnContextBudget(modelName string) int {
 	return llm.ContextWindowFor(modelName) * turnContextBudgetPct / 100
 }
 
-// turnContextBudgetPct is deliberately looser than compaction's threshold:
-// clipping a tool observation mid-turn loses information the model asked for, so
-// it should be the last line of defense, after session compaction has had its
-// chance.
+// turnContextBudgetPct triggers structured history compaction before the model
+// window fills, reserving room for output and token-estimation error. The same
+// pressure check applies to fresh requests and later tool rounds.
 const turnContextBudgetPct = 80
 
 // checkpointRecorder returns the engine callback that persists a mid-run

@@ -159,7 +159,7 @@ type createToolsetInput struct {
 	Name            string   `json:"name" jsonschema:"Lowercase toolset name, e.g. ops-tools"`
 	DisplayName     string   `json:"displayName,omitempty" jsonschema:"Human-readable name"`
 	Description     string   `json:"description,omitempty" jsonschema:"What this bundle is for"`
-	Families        []string `json:"families,omitempty" jsonschema:"Built-in tool families: core, web, github, mcp, files, edges, spawn"`
+	Families        []string `json:"families,omitempty" jsonschema:"Built-in tool families: core, web, github, mcp, files, edges, spawn, visualization"`
 	Connections     []string `json:"connections,omitempty" jsonschema:"Connection names whose tools this bundle grants"`
 	RequireApproval []string `json:"requireApproval,omitempty" jsonschema:"Tool-name patterns that must be approved before running; \"*\" gates everything"`
 }
@@ -229,6 +229,7 @@ type listToolFamiliesOutput struct {
 // toolFamilyDocs describes each grantable family in the terms a caller needs to
 // choose between them.
 var toolFamilyDocs = []toolFamilyInfo{
+	{"visualization", "visualize_data: render bar, line, area, scatter, or pie charts from supplied data inline in Agents chat, with a data table and SVG export. No connection required; opt-in per interactive/background grant."},
 	{"core", "Always on: memory, self-scheduling (schedule_create/update/delete), notify, ask, delegate."},
 	{"web", "web_fetch (SSRF-guarded) and web_search; needs a websearch Connection for search."},
 	{"github", "GitHub tools via a github Connection (issues, PRs, code)."},

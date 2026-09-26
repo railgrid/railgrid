@@ -98,6 +98,9 @@ let openSerial = 0
 let sessionReadSerial = 0
 let messageReadSerial = 0
 let orphanReadSerial = 0
+let approvalReadSerial = 0
+const approvalReadGenerations = new Map<string, number>()
+const approvalRecoveryClosedRunIDs = new Set<string>()
 let streamSerial = 0
 let chatOwnershipSerial = 0
 let liveCancellationSerial = 0
@@ -236,6 +239,84 @@ function applyRunProgress(run: RunSummary): void {
   })
 }
 
+function nextApprovalReadGeneration(runID: string): number {
+  const generation = (approvalReadGenerations.get(runID) || 0) + 1
+  approvalReadGenerations.set(runID, generation)
+  return generation
+}
+
+function invalidateApprovalRead(runID: string): void {
+  if (!runID) return
+  approvalReadGenerations.set(runID, (approvalReadGenerations.get(runID) || 0) + 1)
+}
+
+function closeApprovalRecovery(runID: string): void {
+  if (!runID) return
+  approvalRecoveryClosedRunIDs.add(runID)
+  invalidateApprovalRead(runID)
+  messages.value = messages.value.map(message => message.role === 'assistant' && message.runID === runID
+    ? { ...message, approval: undefined }
+    : message)
+}
+
+function resetApprovalRecovery(): void {
+  approvalReadSerial += 1
+  approvalReadGenerations.clear()
+  approvalRecoveryClosedRunIDs.clear()
+}
+
+// Approval resumes run outside the original chat SSE response. Lifecycle
+// events and session hydration therefore recover the current disclosure from
+// the durable run checkpoint, fenced against navigation and newer events.
+async function refreshRunApproval(runID: string): Promise<void> {
+  if (approvalRecoveryClosedRunIDs.has(runID)) return
+  const contextSerial = approvalReadSerial
+  const serial = nextApprovalReadGeneration(runID)
+  const requestIsCurrent = () => contextSerial === approvalReadSerial && serial === approvalReadGenerations.get(runID)
+  const authority = captureAuthority()
+  const name = props.name
+  const session = sessionID.value
+  try {
+    const detail = await authority.api.getRun(runID)
+    if (!requestIsCurrent() || !authorityIsCurrent(authority) || !contextIsCurrent(name, authority.api) || sessionID.value !== session || approvalRecoveryClosedRunIDs.has(runID)) return
+    // A local stream error can mark the message failed while the backend run
+    // is still executing. Only the backend phase can confirm terminal state.
+    if (TERMINAL_RUN_PHASES.has(detail.phase || '')) {
+      closeApprovalRecovery(runID)
+      applyRunProgress(detail)
+      const target = messages.value.find(message => message.role === 'assistant' && message.runID === runID)
+      if (target?.error?.startsWith('Chat failed:')) patchMessage(target.id, { error: undefined })
+      orphanReadSerial += 1
+      if (orphanRun.value?.id === runID) orphanRun.value = null
+      orphanError.value = null
+      orphanHasSnapshot.value = true
+      orphanLoading.value = false
+      terminalTranscriptRefresh = { name, api: authority.api, session }
+      flushTerminalTranscriptRefresh()
+      return
+    }
+    const target = messages.value.find(message => message.role === 'assistant' && message.runID === runID)
+    // The checkpoint can precede its KCP phase projection. Its pending ID is
+    // the current approval identity even if that projection still says Running.
+    if (!detail.pending) return
+    if (target?.approval?.inboxID === detail.pending.inboxID && target.approval.resolved) return
+    const approval = { runID, ...detail.pending }
+    if (target) {
+      patchMessage(target.id, {
+        approval,
+        ...(target.error?.startsWith('Chat failed:') ? { error: undefined } : {}),
+      })
+      patchProgress(target.id, { status: 'waiting' })
+    } else {
+      messages.value = [...messages.value, { id: `approval-${runID}`, role: 'assistant', content: '', tools: [], runID, approval, progress: { status: 'waiting', trace: [] } }]
+    }
+  } catch (error) {
+    if (requestIsCurrent() && authorityIsCurrent(authority) && contextIsCurrent(name, authority.api) && sessionID.value === session) {
+      orphanError.value = `Could not load approval details. ${(error as Error).message}`
+    }
+  }
+}
+
 function contextIsCurrent(name: string, api: ApiClient): boolean {
   return mounted && props.name === name && props.api === api
 }
@@ -268,6 +349,8 @@ function cancelFrame(): void {
 }
 
 function invalidateReads(): void {
+  approvalReadSerial += 1
+  approvalReadGenerations.clear()
   openSerial += 1
   sessionReadSerial += 1
   messageReadSerial += 1
@@ -275,6 +358,7 @@ function invalidateReads(): void {
 }
 
 function invalidateStream(): void {
+  resetApprovalRecovery()
   streamSerial += 1
   liveCancellationSerial += 1
   abort?.abort()
@@ -334,15 +418,21 @@ async function findOrphanRun(session: string, name = props.name, api = props.api
   }
   orphanLoading.value = true
   try {
-    const page = await api.listRuns({ agent: name, session, limit: 5 })
+    const page = await api.listRuns({ agent: name, session })
     if (
       serial !== orphanReadSerial ||
       !contextIsCurrent(name, api) ||
       sessionID.value !== session ||
       streaming.value
     ) return
-    orphanRun.value = page.items.find(run => LIVE_RUN_PHASES.has(run.phase)) ?? null
-    if (orphanRun.value) applyRunProgress(orphanRun.value)
+    const liveRuns = page.items.filter(run => (
+      LIVE_RUN_PHASES.has(run.phase) && !approvalRecoveryClosedRunIDs.has(run.id)
+    ))
+    orphanRun.value = liveRuns[0] ?? null
+    for (const run of liveRuns) {
+      applyRunProgress(run)
+      void refreshRunApproval(run.id)
+    }
     orphanHasSnapshot.value = true
     orphanError.value = null
   } catch (error) {
@@ -480,6 +570,7 @@ function maybeAutoSend(): void {
   if (!mounted || initializedFor !== props.name || streaming.value) return
   const text = props.store.takePendingPrompt(props.name)
   if (!text) return
+  resetApprovalRecovery()
   messageReadSerial += 1
   messagesLoading.value = false
   sessionID.value = newSessionID()
@@ -584,6 +675,9 @@ async function cancelLiveRun(
   try {
     await api.cancelRun(runID)
     if (!requestIsCurrent()) return
+    // A successful cancellation request closes this run to approval recovery,
+    // even when the executor still has to publish its terminal phase.
+    closeApprovalRecovery(runID)
     orphanReadSerial += 1
     orphanRun.value = null
     orphanError.value = null
@@ -797,11 +891,13 @@ async function send(): Promise<void> {
           const status = data.status === undefined
             ? 'completed'
             : progressStatusForRunPhase(data.status) || 'failed'
+          if (['completed', 'aborted', 'failed', 'interrupted'].includes(status)) closeApprovalRecovery(data.runID || liveRunID)
           const finalContent = data.finalContent !== undefined
             ? data.finalContent
             : current?.content || data.content || ''
           patchMessage(assistantID, {
             content: finalContent,
+            ...(status !== 'waiting' ? { approval: undefined } : {}),
             usage: data.usage,
             ...(data.finishedAt ? { createdAt: data.finishedAt } : {}),
           })
@@ -820,6 +916,7 @@ async function send(): Promise<void> {
           const status = data.status === undefined
             ? 'failed'
             : progressStatusForRunPhase(data.status) || 'failed'
+          if (data.status !== undefined && ['completed', 'aborted', 'failed', 'interrupted'].includes(status)) closeApprovalRecovery(data.runID || liveRunID)
           patchMessage(assistantID, { error: data.message || 'stream error' })
           patchProgress(assistantID, {
             status,
@@ -886,7 +983,10 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny'): P
   try {
     await api.resolveInbox(inboxID, decision)
     if (!requestIsCurrent()) return
-    if (target?.approval) patchMessage(target.id, { approval: { ...target.approval, resolved: decision } })
+    if (target?.approval) {
+      patchMessage(target.id, { approval: { ...target.approval, resolved: decision } })
+      void refreshRunApproval(target.approval.runID)
+    }
     toast('ok', decision === 'approve' ? 'Approved — resuming the run.' : 'Denied.')
     void store.load('inbox')
   } catch (error) {
@@ -914,6 +1014,7 @@ async function cancelOrphan(): Promise<void> {
   try {
     await api.cancelRun(run.id)
     if (!requestIsCurrent()) return
+    closeApprovalRecovery(run.id)
     orphanReadSerial += 1
     orphanRun.value = null
     orphanError.value = null
@@ -930,6 +1031,7 @@ async function cancelOrphan(): Promise<void> {
 async function switchSession(id: string): Promise<void> {
   if (!id || id === sessionID.value || streaming.value || selectingSessionID.value) return
   claimChatOwnership()
+  resetApprovalRecovery()
   selectingSessionID.value = id
   messageReadSerial += 1
   messagesLoading.value = false
@@ -950,6 +1052,7 @@ async function switchSession(id: string): Promise<void> {
 function newChat(): void {
   if (streaming.value) return
   claimChatOwnership()
+  resetApprovalRecovery()
   messageReadSerial += 1
   messagesLoading.value = false
   sessionID.value = newSessionID()
@@ -995,6 +1098,7 @@ async function deleteSession(id = sessionID.value): Promise<void> {
     sessionsLoading.value = false
     sessions.value = sessions.value.filter(session => session.id !== id)
     if (sessionID.value !== id) return
+    resetApprovalRecovery()
     messageReadSerial += 1
     messages.value = []
     messagesHasSnapshot.value = false
@@ -1013,8 +1117,21 @@ function onServerEvent(event: Event): void {
   const detail = (event as CustomEvent<ServerEvent>).detail
   if (detail.type !== 'run' || !detail.data.id) return
   const watchedLive = detail.data.id === liveRunID && liveRunSessionID === sessionID.value
-  const watched = watchedLive || detail.data.id === orphanRun.value?.id
-  if (!watched || !TERMINAL_RUN_PHASES.has(detail.data.phase || '')) return
+  const watched = watchedLive || detail.data.id === orphanRun.value?.id || messages.value.some(message => message.role === 'assistant' && message.runID === detail.data.id)
+  if (!watched) return
+  const terminal = TERMINAL_RUN_PHASES.has(detail.data.phase || '')
+  if (!terminal && approvalRecoveryClosedRunIDs.has(detail.data.id)) return
+  if (!terminal) {
+    const status = progressStatusForRunPhase(detail.data.phase)
+    if (status === 'waiting') void refreshRunApproval(detail.data.id)
+    else if (status === 'running') {
+      invalidateApprovalRead(detail.data.id)
+      messages.value = messages.value.map(message => message.runID === detail.data.id && message.role === 'assistant'
+        ? { ...message, approval: undefined, progress: progressPatch(message, { status }) } : message)
+    }
+    return
+  }
+  closeApprovalRecovery(detail.data.id)
   const status = progressStatusForRunPhase(detail.data.phase)
   if (status) {
     const runData = detail.data as ServerEvent['data'] & { startedAt?: string }
@@ -1022,6 +1139,7 @@ function onServerEvent(event: Event): void {
       if (message.role !== 'assistant' || message.runID !== detail.data.id) return message
       return {
         ...message,
+        approval: undefined,
         progress: progressPatch(message, {
           status,
           ...(runData.startedAt ? { startedAt: runData.startedAt } : {}),

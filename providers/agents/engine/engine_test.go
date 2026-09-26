@@ -10,13 +10,100 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
+
+func TestStructuredMessageRoundTripsThroughWireAndCheckpoint(t *testing.T) {
+	index := 0
+	original := []Message{
+		{
+			Role: RoleAssistant, Content: "", ID: "assistant-7", Sequence: 7,
+			ToolCalls: []schema.ToolCall{{
+				Index: &index, ID: "call-1", Type: "function", Extra: map[string]any{"vendor": "test"},
+				Function: schema.FunctionCall{Name: "lookup", Arguments: `{"query":"railgrid"}`},
+			}},
+		},
+		{Role: RoleTool, Content: "found", ToolCallID: "call-1", Name: "lookup", ID: "tool-8", Sequence: 8},
+	}
+	wire, identities := toEinoWithIdentities(original)
+	if len(wire) != 2 || wire[0].Role != schema.Assistant || len(wire[0].ToolCalls) != 1 {
+		t.Fatalf("assistant tool-call message was not preserved: %+v", wire)
+	}
+	if wire[1].Role != schema.Tool || wire[1].ToolCallID != "call-1" || wire[1].ToolName != "lookup" {
+		t.Fatalf("tool result metadata was not preserved: %+v", wire[1])
+	}
+	if got := messagesFromEino(wire, identities); !reflect.DeepEqual(got, original) {
+		t.Fatalf("wire round trip differs\n got: %#v\nwant: %#v", got, original)
+	}
+
+	checkpoint := checkpointMessagesWithIdentities(wire, identities)
+	restored, restoredIdentities := restoreMessagesWithIdentities(checkpoint)
+	if got := messagesFromEino(restored, restoredIdentities); !reflect.DeepEqual(got, original) {
+		t.Fatalf("checkpoint round trip differs\n got: %#v\nwant: %#v", got, original)
+	}
+
+	encoded, err := json.Marshal(original[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"toolCalls"`, `"id"`, `"sequence"`} {
+		if !strings.Contains(string(encoded), field) {
+			t.Fatalf("JSON message %s lacks %s: %s", original[0].Role, field, encoded)
+		}
+	}
+}
+
+func TestEphemeralImageProvenanceSurvivesCheckpointReplay(t *testing.T) {
+	image := imageUserMessage([]ToolImage{{MIMEType: "image/jpeg", Data: []byte{1, 2, 3}}})
+	if image == nil {
+		t.Fatal("imageUserMessage() returned nil")
+	}
+	identity := map[*schema.Message]historyIdentity{image: {ephemeral: true}}
+	history := messagesFromEino([]*schema.Message{image}, identity)
+	if len(history) != 1 || !history[0].Ephemeral || !strings.Contains(history[0].Content, "multimodal content") {
+		t.Fatalf("image history lost its transient provenance or placeholder: %#v", history)
+	}
+
+	checkpoint := checkpointMessagesWithIdentities([]*schema.Message{image}, identity)
+	if len(checkpoint) != 1 || !checkpoint[0].Ephemeral {
+		t.Fatalf("approval checkpoint lost ephemeral provenance: %#v", checkpoint)
+	}
+	restored, restoredIdentities := restoreMessagesWithIdentities(checkpoint)
+	got := messagesFromEino(restored, restoredIdentities)
+	if len(got) != 1 || !got[0].Ephemeral {
+		t.Fatalf("restored image history lost ephemeral provenance: %#v", got)
+	}
+	if latest := latestUserMessage(got); latest != nil {
+		t.Fatalf("ephemeral image placeholder became the resumed task anchor: %#v", latest)
+	}
+}
+
+func TestAssistantMessageExposesToolCallsWithoutProse(t *testing.T) {
+	noop := Tool{
+		Name: "noop", Desc: "does nothing",
+		Exec: func(context.Context, string) (string, error) { return "ok", nil },
+	}
+	var messages []AssistantMessage
+	_, err := New().StreamTurnWithTools(context.Background(), &loopingModel{},
+		[]Message{{Role: RoleUser, Content: "go"}}, []Tool{noop}, TurnConfig{MaxIters: 1},
+		Callbacks{OnAssistantMessage: func(message AssistantMessage) { messages = append(messages, message) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Content != "" || !messages[0].HasToolCalls || len(messages[0].ToolCalls) != 1 {
+		t.Fatalf("assistant callback lost a prose-free tool call: %+v", messages)
+	}
+	if messages[0].ToolCalls[0].ID != "tc" || messages[0].ToolCalls[0].Function.Name != "noop" {
+		t.Fatalf("assistant callback returned incomplete tool-call data: %+v", messages[0].ToolCalls)
+	}
+}
 
 // mockModel streams a fixed set of chunks (the last carrying usage), so the
 // engine's streaming loop and usage extraction can be exercised without a

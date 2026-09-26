@@ -10,135 +10,13 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
-
-func toolMsg(id, name, content string) *schema.Message {
-	return schema.ToolMessage(content, id, schema.WithToolName(name))
-}
-
-func totalTokens(in []*schema.Message) int {
-	n := 0
-	for _, m := range in {
-		n += estimateMessageTokens(m)
-	}
-	return n
-}
-
-func TestTrimConversation(t *testing.T) {
-	big := strings.Repeat("x", 8000) // ~2000 tokens each
-
-	build := func() []*schema.Message {
-		return []*schema.Message{
-			schema.SystemMessage("you are an agent"),
-			schema.UserMessage("research this"),
-			toolMsg("t1", "web_fetch", big),
-			toolMsg("t2", "web_fetch", big),
-			toolMsg("t3", "web_fetch", big),
-			toolMsg("t4", "web_fetch", big),
-			toolMsg("t5", "web_fetch", big),
-			toolMsg("t6", "web_fetch", big),
-		}
-	}
-
-	t.Run("a budget of zero disables trimming", func(t *testing.T) {
-		in := build()
-		before := totalTokens(in)
-		if n := trimConversation(in, 0); n != 0 {
-			t.Fatalf("clipped %d messages with no budget", n)
-		}
-		if totalTokens(in) != before {
-			t.Fatal("conversation changed with trimming disabled")
-		}
-	})
-
-	t.Run("a conversation under budget is left alone", func(t *testing.T) {
-		in := build()
-		before := totalTokens(in)
-		if n := trimConversation(in, before*2); n != 0 {
-			t.Fatalf("clipped %d messages while under budget", n)
-		}
-	})
-
-	t.Run("over budget clips the oldest observations first", func(t *testing.T) {
-		in := build()
-		budget := totalTokens(in) / 2
-		clipped := trimConversation(in, budget)
-		if clipped == 0 {
-			t.Fatal("expected some observations to be clipped")
-		}
-		if got := totalTokens(in); got > budget {
-			t.Fatalf("still %d tokens after trimming, budget %d", got, budget)
-		}
-		// Oldest first: t1 goes before t6.
-		if len(in[2].Content) >= len(big) {
-			t.Fatal("the oldest observation should have been clipped")
-		}
-		if len(in[len(in)-1].Content) != len(big) {
-			t.Fatal("the newest observation must be kept whole — it is what the model is reasoning about")
-		}
-	})
-
-	t.Run("the system prompt and the user's turn are never touched", func(t *testing.T) {
-		in := build()
-		sys, user := in[0].Content, in[1].Content
-		trimConversation(in, 10) // absurdly small: clip everything eligible
-		if in[0].Content != sys {
-			t.Fatal("the system prompt is policy and must survive trimming")
-		}
-		if in[1].Content != user {
-			t.Fatal("the user's own turn must survive trimming")
-		}
-	})
-
-	t.Run("message count and tool pairing are preserved", func(t *testing.T) {
-		in := build()
-		trimConversation(in, 10)
-		if len(in) != 8 {
-			t.Fatalf("len = %d, want 8 — dropping a tool message would break tool_call pairing", len(in))
-		}
-		for i := 2; i < len(in); i++ {
-			if in[i].ToolCallID == "" {
-				t.Fatalf("message %d lost its ToolCallID", i)
-			}
-		}
-	})
-
-	t.Run("a clipped observation says it was shortened", func(t *testing.T) {
-		in := build()
-		trimConversation(in, 10)
-		if !strings.Contains(in[2].Content, "shortened") {
-			t.Fatalf("a clipped observation must announce the gap, got: %q", in[2].Content)
-		}
-		// The tool is named so the model knows which result lost detail.
-		if !strings.Contains(in[2].Content, "web_fetch") {
-			t.Fatalf("expected the tool name in the notice, got: %q", in[2].Content)
-		}
-	})
-
-	t.Run("nothing to clip is not an error", func(t *testing.T) {
-		in := []*schema.Message{schema.SystemMessage("s"), schema.UserMessage(strings.Repeat("y", 100000))}
-		if n := trimConversation(in, 10); n != 0 {
-			t.Fatalf("clipped %d, but only a user message is oversized and those are never clipped", n)
-		}
-	})
-
-	t.Run("short observations are not worth clipping", func(t *testing.T) {
-		in := []*schema.Message{
-			schema.SystemMessage("s"), schema.UserMessage("u"),
-			toolMsg("t1", "x", "tiny"), toolMsg("t2", "x", "tiny"),
-			toolMsg("t3", "x", "tiny"), toolMsg("t4", "x", "tiny"),
-			toolMsg("t5", "x", "tiny"), toolMsg("t6", "x", "tiny"),
-		}
-		if n := trimConversation(in, 1); n != 0 {
-			t.Fatalf("clipped %d already-short observations", n)
-		}
-	})
-}
 
 func TestEstimateTokens(t *testing.T) {
 	if estimateTokens("") != 0 {
@@ -150,6 +28,167 @@ func TestEstimateTokens(t *testing.T) {
 	}
 	if got := estimateTokens("abcde"); got != 2 {
 		t.Fatalf("estimateTokens(5 bytes) = %d, want 2", got)
+	}
+}
+
+func TestEstimateToolSchemaTokens(t *testing.T) {
+	tokens, err := estimateToolSchemaTokens([]Tool{{
+		Name: "lookup", Desc: "search the tenant records",
+		Params: map[string]Param{"query": {Type: "string", Desc: "search terms", Required: true}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens == 0 {
+		t.Fatal("tool name, description, and parameter schema should contribute to context estimate")
+	}
+}
+
+func TestValidateToolMessagePairing(t *testing.T) {
+	paired := []Message{
+		{Role: RoleAssistant, ToolCalls: []schema.ToolCall{{ID: "call-1", Function: schema.FunctionCall{Name: "lookup", Arguments: `{}`}}}},
+		{Role: RoleTool, ToolCallID: "call-1", Name: "lookup", Content: "done"},
+	}
+	if err := validateToolMessagePairing(paired); err != nil {
+		t.Fatalf("valid tool group rejected: %v", err)
+	}
+	if err := validateToolMessagePairing(paired[:1]); err == nil {
+		t.Fatal("unanswered assistant tool call should be rejected")
+	}
+	if err := validateToolMessagePairing(paired[1:]); err == nil {
+		t.Fatal("tool result without matching call should be rejected")
+	}
+}
+
+func TestOversizedToolResultsAreRetainedWithoutCompactionPressure(t *testing.T) {
+	resultText := strings.Repeat("detail ", 800)
+	model := &toolMockModel{}
+	_, err := New().StreamTurnWithTools(context.Background(), model,
+		[]Message{{Role: RoleUser, Content: "weather in vilnius?"}},
+		[]Tool{{Name: "get_weather", Desc: "current weather", Exec: func(context.Context, string) (string, error) {
+			return resultText, nil
+		}}},
+		TurnConfig{MaxIters: 8}, Callbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.calls != 2 {
+		t.Fatalf("model calls = %d, want tool response followed by final response", model.calls)
+	}
+	for _, message := range model.gotIn {
+		if message.Role == schema.Tool {
+			if message.Content != resultText {
+				t.Fatalf("tool result changed without configured context pressure: got %d bytes, want %d", len(message.Content), len(resultText))
+			}
+			return
+		}
+	}
+	t.Fatal("second model request did not contain the tool result")
+}
+
+func TestContextCompactorRunsBeforeOverBudgetModelRequest(t *testing.T) {
+	resultText := strings.Repeat("large result ", 500)
+	tools := []Tool{{Name: "get_weather", Desc: "current weather", Exec: func(context.Context, string) (string, error) {
+		return resultText, nil
+	}}}
+	input := []Message{{Role: RoleUser, Content: "weather in vilnius?"}}
+	wire, _ := toEinoWithIdentities(input)
+	schemaTokens, err := estimateToolSchemaTokens(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := estimateConversationTokens(wire) + schemaTokens + 100
+	model := &toolMockModel{}
+	var estimates []ContextEstimate
+	var checkpoints []Checkpoint
+	_, err = New().StreamTurnWithTools(context.Background(), model, input, tools,
+		TurnConfig{
+			MaxIters:            8,
+			ContextBudgetTokens: budget,
+			ContextCompactor: func(_ context.Context, history []Message, estimate ContextEstimate) ([]Message, error) {
+				estimates = append(estimates, estimate)
+				if estimate.TotalTokens <= estimate.BudgetTokens || estimate.ToolSchemaTokens != schemaTokens {
+					t.Fatalf("compactor received wrong context estimate: %+v, schemas = %d", estimate, schemaTokens)
+				}
+				replacement := append([]Message(nil), history...)
+				foundCall, foundResult := false, false
+				for i := range replacement {
+					switch replacement[i].Role {
+					case RoleAssistant:
+						foundCall = len(replacement[i].ToolCalls) == 1 && replacement[i].ToolCalls[0].ID == "tc-1"
+					case RoleTool:
+						if replacement[i].ToolCallID == "tc-1" {
+							foundResult = replacement[i].Content == resultText
+							replacement[i].Content = "weather observation summarized: sunny"
+						}
+					}
+				}
+				if !foundCall || !foundResult {
+					t.Fatalf("compactor did not receive the complete tool-call group: %+v", history)
+				}
+				return replacement, nil
+			},
+		},
+		Callbacks{OnCheckpoint: func(checkpoint Checkpoint) { checkpoints = append(checkpoints, checkpoint) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(estimates) != 1 {
+		t.Fatalf("compactor calls = %d, want once before the over-budget second request", len(estimates))
+	}
+	if len(checkpoints) != 1 {
+		t.Fatalf("checkpoint calls = %d, want an immediate checkpoint after compaction", len(checkpoints))
+	}
+	if err := validateToolMessagePairing([]Message{
+		{Role: checkpoints[0].Messages[1].Role, ToolCalls: checkpointToolCalls(checkpoints[0].Messages[1].ToolCalls)},
+		{Role: checkpoints[0].Messages[2].Role, ToolCallID: checkpoints[0].Messages[2].ToolCallID},
+	}); err != nil {
+		t.Fatalf("compaction checkpoint broke tool-call pairing: %v", err)
+	}
+	if model.calls != 2 {
+		t.Fatalf("model calls = %d, want 2", model.calls)
+	}
+	for _, message := range model.gotIn {
+		if message.Role == schema.Tool {
+			if message.Content != "weather observation summarized: sunny" {
+				t.Fatalf("model did not receive compacted result: %q", message.Content)
+			}
+			return
+		}
+	}
+	t.Fatal("compacted second model request has no tool result")
+}
+
+func TestContextPressureWithoutCompactorReturnsTypedError(t *testing.T) {
+	model := &mockModel{chunks: []*schema.Message{{Role: schema.Assistant, Content: "should not run"}}}
+	_, err := New().StreamTurnWithTools(context.Background(), model,
+		[]Message{{Role: RoleUser, Content: strings.Repeat("x", 1000)}}, nil,
+		TurnConfig{MaxIters: 1, ContextBudgetTokens: 10}, Callbacks{})
+	var budgetErr *ContextBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("error = %v, want ContextBudgetError", err)
+	}
+	if model.gotIn != nil {
+		t.Fatal("model request started despite context budget error")
+	}
+}
+
+func TestContextCompactorErrorStopsModelRequest(t *testing.T) {
+	model := &mockModel{chunks: []*schema.Message{{Role: schema.Assistant, Content: "should not run"}}}
+	wantErr := errors.New("summary store unavailable")
+	_, err := New().StreamTurnWithTools(context.Background(), model,
+		[]Message{{Role: RoleUser, Content: strings.Repeat("x", 1000)}}, nil,
+		TurnConfig{
+			MaxIters: 1, ContextBudgetTokens: 10,
+			ContextCompactor: func(context.Context, []Message, ContextEstimate) ([]Message, error) {
+				return nil, wantErr
+			},
+		}, Callbacks{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want wrapped compactor error %v", err, wantErr)
+	}
+	if model.gotIn != nil {
+		t.Fatal("model request started after compactor failed")
 	}
 }
 

@@ -23,6 +23,22 @@ function session(id: string) {
 }
 
 describe('typed chat progress projection', () => {
+  it('hides an empty structured assistant row while keeping its tool card on the answer', () => {
+    const messages = rebuildTranscript([
+      { id: 'u1', role: 'user', content: 'Find the price', runID: 'r1' },
+      { id: 'call-group', role: 'assistant', content: '', runID: 'r1', metadata: { modelOnly: true } },
+      {
+        id: 'tool-1', role: 'tool', content: 'Found $24', runID: 'r1',
+        metadata: { tool: 'web_fetch', args: '{"url":"https://example.test"}' },
+      },
+      { id: 'answer', role: 'assistant', content: 'It costs $24.', runID: 'r1', metadata: { turnPhase: 'final' } },
+    ])
+
+    expect(messages).toHaveLength(2)
+    expect(messages[1]).toMatchObject({ role: 'assistant', content: 'It costs $24.' })
+    expect(messages[1].tools).toMatchObject([{ name: 'web_fetch', result: 'Found $24' }])
+  })
+
   it('keeps server-ordered commentary, tools, final output, and timestamps together', () => {
     const messages = rebuildTranscript([
       { id: 'u1', role: 'user', content: 'Find the issue', runID: 'r1', createdAt: '2026-09-10T10:00:00Z' },

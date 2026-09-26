@@ -107,7 +107,9 @@ func TestTurnProgressFinalFallbackKeepsToolLimitNoticeSeparateFromCommentary(t *
 	s := &Server{store: st}
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "scout"}
 	startedAt := time.Date(2026, 9, 10, 10, 0, 0, 0, time.UTC)
-	s.appendTurnFinal(ctx, scope, taskRun{RunID: "run-1"}, "chat", startedAt, startedAt.Add(time.Second), tracker, tracker.finalText(notice))
+	if err := s.appendTurnFinal(ctx, scope, taskRun{RunID: "run-1"}, "chat", startedAt, startedAt.Add(time.Second), tracker, tracker.finalText(notice)); err != nil {
+		t.Fatal(err)
+	}
 	page, err := st.ListMessages(ctx, scope, "chat", 10, "")
 	if err != nil {
 		t.Fatal(err)

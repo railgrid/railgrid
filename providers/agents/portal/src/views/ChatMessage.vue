@@ -16,6 +16,8 @@ import type { AIActivityGroup } from '../agentkit/activity'
 import { fmtDuration, fmtTokens, fmtUSD, type ChatMessage, type ToolCall } from '../types'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
+import AgentVisualization from '../components/AgentVisualization.vue'
+import { messageVisualizations } from '../visualization'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
 import AIInterrupt from '../agentkit/AIInterrupt.vue'
@@ -37,6 +39,7 @@ const emit = defineEmits<{
   'view-run': [runID: string]
 }>()
 
+const visualizations = computed(() => messageVisualizations(props.message))
 const root = ref<HTMLElement | null>(null)
 const expanded = ref(new Set<string>())
 const assistantHTML = computed(() => {
@@ -105,16 +108,33 @@ const fallbackActivity = computed<Extract<TracePresentation, { kind: 'tools' }>>
   tools: [...fallbackTools.value],
 }))
 
-function actionStatus(tool: ToolCall): 'running' | 'failed' | 'succeeded' {
-  if (tool.pending) return 'running'
+function actionStatus(tool: ToolCall): string {
+  if (tool.pending) {
+    switch (props.message.progress?.status) {
+      case 'waiting': return 'waiting'
+      case 'aborted': return 'canceled'
+      case 'failed': case 'interrupted': return 'failed'
+      case 'completed': return 'skipped'
+      default: return 'running'
+    }
+  }
   if (tool.error) return 'failed'
   return 'succeeded'
 }
 
 function actionStatusLabel(tool: ToolCall): string {
-  if (tool.pending) return 'Running'
-  if (tool.error) return 'Failed'
-  return 'Completed'
+  switch (actionStatus(tool)) {
+    case 'waiting': return 'Waiting for approval'
+    case 'canceled': return 'Cancelled'
+    case 'skipped': return 'No result recorded'
+    case 'running': return 'Running'
+    case 'failed': return tool.pending ? 'Interrupted' : 'Failed'
+    default: return 'Completed'
+  }
+}
+
+function toolBusy(tool: ToolCall): boolean {
+  return actionStatus(tool) === 'running'
 }
 
 function actionOutcome(tool: ToolCall): string {
@@ -173,7 +193,7 @@ function activityGroupsFor(block: Extract<TracePresentation, { kind: 'tools' }>)
       iconKey: toolIconKey(tool.name),
       status: actionStatus(tool),
       statusLabel: actionStatusLabel(tool), outcome: actionOutcome(tool),
-      busy: tool.pending, error: !!tool.error,
+      busy: toolBusy(tool), error: !!tool.error,
       expandable: Boolean(tool.args || tool.result || tool.error),
       detailsId: `agents-action-details-${tool.id}`,
     })),
@@ -191,7 +211,10 @@ function activityOpen(blockID: string, tools: readonly ToolCall[]): boolean {
 function activitySummary(tools: readonly ToolCall[]): string {
   const pending = tools.filter(tool => tool.pending).length
   const failed = tools.filter(tool => !!tool.error).length
-  if (pending) return `${pending} running`
+  if (pending) {
+    const first = tools.find(tool => tool.pending)!
+    return toolBusy(first) ? `${pending} running` : actionStatusLabel(first)
+  }
   if (failed) return `${failed} failed`
   return 'Completed'
 }
@@ -270,7 +293,7 @@ onBeforeUnmount(() => { mounted = false })
                 :summary="activitySummary(block.tools)"
                 :expanded="activityOpen(block.id, block.tools)"
                 :expanded-row-keys="[...expanded]"
-                :busy="block.tools.some(tool => tool.pending)"
+                :busy="block.tools.some(toolBusy)"
                 :error="block.tools.some(tool => !!tool.error)"
                 @toggle="toggleActivity(block.id, block.tools)"
                 @toggle-row="toggle"
@@ -302,7 +325,7 @@ onBeforeUnmount(() => { mounted = false })
           :summary="activitySummary(fallbackTools)"
           :expanded="activityOpen(fallbackActivity.id, fallbackTools)"
           :expanded-row-keys="[...expanded]"
-          :busy="fallbackTools.some(tool => tool.pending)"
+          :busy="fallbackTools.some(toolBusy)"
           :error="fallbackTools.some(tool => !!tool.error)"
           @toggle="toggleActivity(fallbackActivity.id, fallbackTools)"
           @toggle-row="toggle"
@@ -329,6 +352,8 @@ onBeforeUnmount(() => { mounted = false })
       v-html="assistantHTML"
     ></div>
     <div v-else-if="message.role === 'user' && message.content.trim()" class="agents-body">{{ message.content }}</div>
+
+    <AgentVisualization v-for="item in visualizations" :key="item.id" :chart="item.chart" />
 
     <template v-if="message.approval || message.error || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
       <AIInterrupt

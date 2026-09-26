@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 	"time"
 
@@ -35,10 +36,14 @@ func boundedPersistContext(ctx context.Context) (context.Context, context.Cancel
 
 // appendProgressMessage persists a transcript presentation row using the same
 // bounded cancellation policy for commentary, tool, final, and terminal rows.
-func (s *Server) appendProgressMessage(ctx context.Context, scope store.Scope, message store.Message) {
+func (s *Server) appendProgressMessage(ctx context.Context, scope store.Scope, message store.Message) error {
 	persistCtx, cancel := boundedPersistContext(ctx)
 	defer cancel()
-	_ = s.store.AppendMessage(persistCtx, scope, message)
+	if err := s.store.AppendMessage(persistCtx, scope, message); err != nil {
+		log.Printf("agents: persisting %s transcript row for run %s: %v", message.Role, message.RunID, err)
+		return err
+	}
+	return nil
 }
 
 // turnProgressTracker accumulates only work that completed inside the current
@@ -239,7 +244,7 @@ func (s *Server) appendTurnTerminal(ctx context.Context, scope store.Scope, run 
 	if run.Agent != nil {
 		agentName = run.Agent.Name
 	}
-	s.appendProgressMessage(ctx, scope, store.Message{
+	_ = s.appendProgressMessage(ctx, scope, store.Message{
 		ID: uuid.NewString(), AgentName: agentName, SessionID: sessionID, RunID: run.RunID,
 		Role: "assistant", Content: safeTruncate(content, maxStoredOutput),
 		Metadata:  turnMetadata("terminal", status, startedAt, tracker.durationMS(), 0, turnError),
@@ -247,7 +252,7 @@ func (s *Server) appendTurnTerminal(ctx context.Context, scope store.Scope, run 
 	})
 }
 
-func (s *Server) appendTurnFinal(ctx context.Context, scope store.Scope, run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, content string) {
+func (s *Server) appendTurnFinal(ctx context.Context, scope store.Scope, run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, content string) error {
 	if tracker == nil {
 		tracker = newTurnProgressTracker(0)
 	}
@@ -255,7 +260,7 @@ func (s *Server) appendTurnFinal(ctx context.Context, scope store.Scope, run tas
 	if run.Agent != nil {
 		agentName = run.Agent.Name
 	}
-	s.appendProgressMessage(ctx, scope, store.Message{
+	return s.appendProgressMessage(ctx, scope, store.Message{
 		ID: uuid.NewString(), AgentName: agentName, SessionID: sessionID, RunID: run.RunID,
 		Role: "assistant", Content: safeTruncate(content, maxStoredOutput),
 		Metadata:  turnMetadata("final", "completed", startedAt, tracker.durationMS(), 0, ""),

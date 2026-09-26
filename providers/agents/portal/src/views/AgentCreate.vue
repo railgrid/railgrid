@@ -30,10 +30,13 @@ const systemPrompt = ref('')
 const channel = ref('')
 const web = ref(false)
 const fanOut = ref(false)
+const visualization = ref(false)
 // Background runs (schedules, triggers) have no human watching, so a family
 // stays interactive-only unless opted in here — same rule as the Config pane.
 const webBackground = ref(false)
 const fanOutBackground = ref(false)
+const visualizationBackground = ref(false)
+watch(visualization, on => { if (!on) visualizationBackground.value = false })
 watch(web, on => { if (!on) webBackground.value = false })
 watch(fanOut, on => { if (!on) fanOutBackground.value = false })
 const errors = reactive<Record<string, string>>({})
@@ -55,6 +58,7 @@ const channelOptions = computed(() => [
   })),
 ])
 const capabilities = computed(() => [
+  visualization.value ? `charts${visualizationBackground.value ? ' (+background)' : ''}` : '',
   web.value ? `web${webBackground.value ? ' (+background)' : ''}` : '',
   fanOut.value ? `fan-out${fanOutBackground.value ? ' (+background)' : ''}` : '',
 ].filter(Boolean).join(', ') || 'Core only')
@@ -93,10 +97,12 @@ async function submit(): Promise<void> {
   if (prompt) body.systemPrompt = prompt
   if (channel.value) body.channels = [{ name: 'primary', connectionRef: channel.value, primary: true }]
   const families = ['core']
+  if (visualization.value) families.push('visualization')
   if (web.value) families.push('web')
   if (fanOut.value) families.push('spawn')
   if (families.length > 1) body.interactiveFamilies = families
   const background = ['core']
+  if (visualization.value && visualizationBackground.value) background.push('visualization')
   if (web.value && webBackground.value) background.push('web')
   if (fanOut.value && fanOutBackground.value) background.push('spawn')
   if (background.length > 1) body.backgroundFamilies = background
@@ -232,6 +238,15 @@ async function submit(): Promise<void> {
                 </label>
                 <label class="agents-check agents-bg-toggle k-checkbox-hit" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
                   <input v-model="fanOutBackground" type="checkbox" :disabled="busy || !fanOut" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
+                </label>
+              </div>
+              <div class="agents-cap-row">
+                <label class="agents-cap k-checkbox-hit">
+                  <input v-model="visualization" type="checkbox" :disabled="busy" />
+                  <span><strong>Visualize data</strong> <span class="muted">— create charts in chat from supplied data</span></span>
+                </label>
+                <label class="agents-check agents-bg-toggle k-checkbox-hit">
+                  <input v-model="visualizationBackground" type="checkbox" :disabled="busy || !visualization" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
                 </label>
               </div>
             </fieldset>

@@ -54,6 +54,7 @@ func (p *PostgresStore) Close() error { return p.db.Close() }
 var agentsSchema = []string{
 	`CREATE TABLE IF NOT EXISTS agents_messages (
 		id TEXT PRIMARY KEY,
+		append_sequence BIGSERIAL NOT NULL,
 		org_uuid TEXT NOT NULL,
 		workspace_uuid TEXT NOT NULL,
 		agent_name TEXT NOT NULL,
@@ -69,6 +70,9 @@ var agentsSchema = []string{
 		metadata JSONB,
 		created_at TIMESTAMPTZ NOT NULL
 	)`,
+	// Existing transcripts predate append_sequence. BIGSERIAL backfills those
+	// rows and assigns a durable exact append boundary to all future messages.
+	`ALTER TABLE agents_messages ADD COLUMN IF NOT EXISTS append_sequence BIGSERIAL NOT NULL`,
 	`CREATE INDEX IF NOT EXISTS agents_messages_scope_idx
 		ON agents_messages (org_uuid, workspace_uuid, agent_name, session_id, created_at DESC, id DESC)`,
 	`CREATE TABLE IF NOT EXISTS agents_runs (
@@ -203,6 +207,7 @@ var agentsSchema = []string{
 		updated_at TIMESTAMPTZ NOT NULL,
 		PRIMARY KEY (org_uuid, workspace_uuid, agent_name, session_id)
 	)`,
+	`ALTER TABLE agents_session_summaries ADD COLUMN IF NOT EXISTS checkpoint JSONB`,
 	// The sweep scans by phase + staleness across all tenants, so this index is
 	// the one that keeps it from being a full table scan as run history grows.
 	`CREATE INDEX IF NOT EXISTS agents_runs_phase_updated_idx
@@ -231,13 +236,28 @@ func (p *PostgresStore) AppendMessage(ctx context.Context, scope Scope, msg Mess
 	if err != nil {
 		return err
 	}
-	_, err = p.db.ExecContext(ctx, `
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Serialize appends within a session until commit. BIGSERIAL values are
+	// allocated before commit; this lock prevents a late-committing older value
+	// from appearing behind a checkpoint boundary captured by another turn.
+	lockKey := scope.OrgUUID + "/" + scope.WorkspaceUUID + "/" + scope.AgentName + "/" + msg.SessionID
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+		return fmt.Errorf("lock transcript session: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO agents_messages
 			(id, org_uuid, workspace_uuid, agent_name, session_id, run_id, role, content, content_encrypted, content_key_id, metadata, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		msg.ID, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, msg.SessionID, msg.RunID,
 		msg.Role, msg.Content, msg.ContentEncrypted, msg.ContentKeyID, meta, msg.CreatedAt.UTC())
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (p *PostgresStore) ListMessages(ctx context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error) {
@@ -252,7 +272,7 @@ func (p *PostgresStore) ListMessages(ctx context.Context, scope Scope, sessionID
 		limit = 100
 	}
 	q := `
-		SELECT id, session_id, run_id, role, content, content_encrypted, content_key_id, metadata, created_at
+		SELECT append_sequence, id, session_id, run_id, role, content, content_encrypted, content_key_id, metadata, created_at
 		FROM agents_messages
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`
 	args := []any{scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID}
@@ -291,7 +311,7 @@ func (p *PostgresStore) LoadRecentMessages(ctx context.Context, scope Scope, ses
 		limit = 50
 	}
 	rows, err := p.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT id, session_id, run_id, role, content, content_encrypted, content_key_id, metadata, created_at
+		SELECT append_sequence, id, session_id, run_id, role, content, content_encrypted, content_key_id, metadata, created_at
 		FROM agents_messages
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
 		ORDER BY created_at DESC, id DESC LIMIT %d`, limit),
@@ -318,7 +338,7 @@ func (p *PostgresStore) LoadRecentMessages(ctx context.Context, scope Scope, ses
 func scanMessage(rows *sql.Rows, agentName string) (Message, error) {
 	var m Message
 	var meta []byte
-	if err := rows.Scan(&m.ID, &m.SessionID, &m.RunID, &m.Role, &m.Content, &m.ContentEncrypted, &m.ContentKeyID, &meta, &m.CreatedAt); err != nil {
+	if err := rows.Scan(&m.Sequence, &m.ID, &m.SessionID, &m.RunID, &m.Role, &m.Content, &m.ContentEncrypted, &m.ContentKeyID, &meta, &m.CreatedAt); err != nil {
 		return Message{}, err
 	}
 	m.AgentName = agentName
@@ -395,16 +415,43 @@ func (p *PostgresStore) PutSessionSummary(ctx context.Context, scope Scope, s Se
 	if strings.TrimSpace(s.SessionID) == "" {
 		return fmt.Errorf("session ID is required")
 	}
-	_, err := p.db.ExecContext(ctx, `
+	if err := validateSessionCheckpoint(s.Checkpoint); err != nil {
+		return err
+	}
+	var checkpoint any
+	var err error
+	if s.Checkpoint != nil {
+		checkpoint, err = marshalJSONB(s.Checkpoint)
+	}
+	if err != nil {
+		return fmt.Errorf("marshal session checkpoint: %w", err)
+	}
+	result, err := p.db.ExecContext(ctx, `
 		INSERT INTO agents_session_summaries
-			(org_uuid, workspace_uuid, agent_name, session_id, summary, through_at, message_count, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			(org_uuid, workspace_uuid, agent_name, session_id, summary, through_at, message_count, created_at, updated_at, checkpoint)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
 			summary=EXCLUDED.summary, through_at=EXCLUDED.through_at,
-			message_count=EXCLUDED.message_count, updated_at=EXCLUDED.updated_at`,
+			message_count=EXCLUDED.message_count, updated_at=EXCLUDED.updated_at,
+			checkpoint=EXCLUDED.checkpoint
+		WHERE
+			(agents_session_summaries.checkpoint IS NULL AND EXCLUDED.checkpoint IS NULL)
+			OR (EXCLUDED.checkpoint IS NOT NULL AND (
+				agents_session_summaries.checkpoint IS NULL OR
+				COALESCE((agents_session_summaries.checkpoint->>'throughSequence')::BIGINT, 0) <=
+				COALESCE((EXCLUDED.checkpoint->>'throughSequence')::BIGINT, 0)
+			))`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, s.SessionID,
-		s.Summary, s.ThroughAt.UTC(), s.MessageCount, s.CreatedAt.UTC(), s.UpdatedAt.UTC())
-	return err
+		s.Summary, s.ThroughAt.UTC(), s.MessageCount, s.CreatedAt.UTC(), s.UpdatedAt.UTC(), checkpoint)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return ErrSessionCheckpointStale
+	}
+	return nil
 }
 
 func (p *PostgresStore) GetSessionSummary(ctx context.Context, scope Scope, sessionID string) (SessionSummary, bool, error) {
@@ -412,17 +459,28 @@ func (p *PostgresStore) GetSessionSummary(ctx context.Context, scope Scope, sess
 		return SessionSummary{}, false, err
 	}
 	out := SessionSummary{SessionID: sessionID}
+	var checkpoint []byte
 	row := p.db.QueryRowContext(ctx, `
-		SELECT summary, through_at, message_count, created_at, updated_at
+		SELECT summary, through_at, message_count, created_at, updated_at, checkpoint
 		FROM agents_session_summaries
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID)
-	err := row.Scan(&out.Summary, &out.ThroughAt, &out.MessageCount, &out.CreatedAt, &out.UpdatedAt)
+	err := row.Scan(&out.Summary, &out.ThroughAt, &out.MessageCount, &out.CreatedAt, &out.UpdatedAt, &checkpoint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionSummary{}, false, nil
 	}
 	if err != nil {
 		return SessionSummary{}, false, err
+	}
+	if len(checkpoint) > 0 {
+		var decoded SessionCheckpoint
+		if err := json.Unmarshal(checkpoint, &decoded); err != nil {
+			return SessionSummary{}, false, fmt.Errorf("decode session checkpoint: %w", err)
+		}
+		if err := validateSessionCheckpoint(&decoded); err != nil {
+			return SessionSummary{}, false, fmt.Errorf("invalid session checkpoint: %w", err)
+		}
+		out.Checkpoint = &decoded
 	}
 	out.ThroughAt, out.CreatedAt, out.UpdatedAt = out.ThroughAt.UTC(), out.CreatedAt.UTC(), out.UpdatedAt.UTC()
 	return out, true, nil

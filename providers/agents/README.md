@@ -149,3 +149,51 @@ Postgres and your own cluster.
 
 - [docs/agents-provider-architecture.md](../../docs/agents-provider-architecture.md)
 - [deploy/chart/README.md](deploy/chart/README.md) — chart values
+
+## Conversation history and compaction
+
+Chat, channel, and resumed runs retain structured assistant tool calls and their
+matching tool responses. Ordinary tool results remain available on later turns;
+they are not shortened to a fixed prefix for replay. Historical records written
+by older versions remain readable, but content already truncated by those
+versions cannot be recovered by upgrading.
+
+Context pressure is checked before model requests, including tool-schema costs.
+When history needs to shrink, the compaction model produces a handoff summary.
+The provider persists a versioned replacement checkpoint while retaining the
+original transcript. New messages outside the checkpoint's coverage remain in
+history, and current agent instructions and tool capabilities are assembled
+again for subsequent runs. Compaction is a lossy summary, not a guarantee that
+every earlier field or result remains in the active context; agents should
+rediscover details when the retained evidence is insufficient.
+
+The engine preserves tool-call/result pairing across interruption and restart.
+Missing results are explicitly unavailable rather than evidence that a tool
+succeeded. Internal tool-call records without assistant prose are kept for
+model replay without creating empty chat bubbles.
+
+## Optional visualization tools
+
+Enable **Visualize data** in an agent's built-in capabilities, or create a
+Toolset with that capability and attach it to the agent. It is off by default;
+background runs require their own grant. The API family name is
+`visualization`, and the first tool is `visualize_data`.
+
+The tool accepts supplied rows and named axes for bar, line, area, scatter, and
+pie charts. Agents can compose it with any granted query tool, including
+semantic BI tools. It does not query a warehouse or manufacture observations:
+query and aggregate the data first, then pass the resulting rows and a source
+label. Results are stored with the normal scoped conversation transcript and
+render inline in portal chat, including after reloading a session. Other chat
+channels receive the agent's textual explanation; inline rendering is a portal
+capability.
+
+Charts use bundled [Vega-Lite](https://vega.github.io/vega-lite/) and
+[Vega-Embed](https://github.com/vega/vega-embed), with no external rendering
+service. The tool accepts a bounded typed chart request, not arbitrary HTML,
+JavaScript, remote data URLs, or Vega expressions. Limits are 1,000 rows, 16
+fields and 512 KiB per request, with a 513 KiB encoded-result cap. Numbers
+that would lose decimal precision in the browser are rejected; round them
+explicitly upstream or keep exact identifiers as strings. Prepare larger
+datasets upstream. The portal also provides the underlying data table so
+the values remain inspectable.

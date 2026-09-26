@@ -42,12 +42,15 @@ const editValuesFor = ref('')
 const draftName = ref('')
 const draftDisplay = ref('')
 const draftConns = ref<string[]>([])
+const draftVisualization = ref(false)
+const draftStandalone = ref<string[]>([])
+const selectedStandalone = computed(() => [...draftStandalone.value.filter(family => family !== 'visualization'), ...(draftVisualization.value ? ['visualization'] : [])])
 const createBusy = ref(false)
 const deletingName = ref('')
 const tableFilters = ref<Record<string, string>>({})
 
 watch(() => props.createSession, () => {
-  editValuesFor.value = ''; draftName.value = ''; draftDisplay.value = ''; draftConns.value = []
+  editValuesFor.value = ''; draftName.value = ''; draftDisplay.value = ''; draftConns.value = []; draftVisualization.value = false; draftStandalone.value = []
 })
 
 const slice = computed(() => { revision.value; return { ...props.store.toolsets } })
@@ -55,7 +58,7 @@ const connectionSlice = computed(() => { revision.value; return { ...props.store
 const toolConnections = computed(() => { revision.value; return props.store.toolConnections() })
 const showFirstRun = computed(() => slice.value.hasSnapshot && slice.value.data.length === 0)
 const hasToolConnections = computed(() => connectionSlice.value.hasSnapshot && toolConnections.value.length > 0)
-const derivedFamilies = computed(() => { revision.value; return props.store.familiesFor(draftConns.value) })
+const derivedFamilies = computed(() => { revision.value; return props.store.familiesFor(draftConns.value, selectedStandalone.value) })
 const filters: TableFilterDefinition[] = [{ key: 'usage', label: 'Usage', allLabel: 'All usage' }]
 
 function usedBy(name: string): number | null {
@@ -70,7 +73,7 @@ const rows = computed<Array<Record<string, unknown>>>(() => slice.value.data.map
   return {
     id: item.metadata.name,
     name: `${item.spec.displayName || item.metadata.name} ${item.spec.displayName ? item.metadata.name : ''}`,
-    tools: (item.spec.connections || []).join(' '),
+    tools: [...(item.spec.connections || []), ...(item.spec.families?.includes('visualization') ? ['Visualize data'] : [])].join(' '),
     usedBy: used === null ? 'Unknown' : `${used} agent${used === 1 ? '' : 's'}`,
     usage: used === null ? 'Unknown' : used > 0 ? 'In use' : 'Unused',
     item,
@@ -101,6 +104,8 @@ function hydrateEdit(item: Toolset): void {
   draftName.value = item.metadata.name
   draftDisplay.value = item.spec.displayName || ''
   draftConns.value = [...(item.spec.connections || [])]
+  draftStandalone.value = [...(item.spec.families || [])]
+  draftVisualization.value = draftStandalone.value.includes('visualization')
 }
 watch([() => props.editRoute, () => props.editName, () => revision.value], () => {
   if (!props.editRoute || !props.editName || editValuesFor.value === props.editName) return
@@ -116,7 +121,7 @@ async function save(): Promise<void> {
   const authority = captureAuthority()
   const name = draftName.value.trim()
   const connections = [...draftConns.value]
-  const families = authority.store.familiesFor(connections)
+  const families = authority.store.familiesFor(connections, selectedStandalone.value)
   const displayName = draftDisplay.value.trim()
   const currentEdit = props.editRoute ? props.editName : ''
   createBusy.value = true
@@ -163,11 +168,12 @@ function cancelCreate(): void {
             <label>Display name<input v-model="draftDisplay" class="k-input" placeholder="optional" :disabled="createBusy" /></label>
           </div>
           <fieldset class="agents-tools"><legend>Tools</legend><div class="agents-checkrow">
+            <label class="agents-check k-checkbox-hit"><input v-model="draftVisualization" type="checkbox" :disabled="createBusy" /> Visualize data <span class="agents-hint">Charts in chat from supplied data</span></label>
             <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.metadata.name }} <span class="agents-hint">{{ connection.spec.type }}</span></label>
-            <span v-if="!toolConnections.length" class="muted">No tools yet — create MCP/GitHub/web tools above. Cluster edges are always on.</span>
-          </div><span class="agents-hint">Tool families are derived from these connections — never picked by hand.</span></fieldset>
+            <span v-if="!toolConnections.length" class="muted">No external tool connections yet.</span>
+          </div><span class="agents-hint">Choose built-in visualization or add existing tool connections.</span></fieldset>
         </div>
-        <CreateGuidance title="Build a reusable capability bundle" description="Choose existing tool connections; Railgrid derives the required tool families from those selections." :prerequisites="[toolConnections.length ? 'At least one tool connection is available in this workspace.' : 'Create a tool connection first if this bundle should expose external tools.', 'Cluster edge tools remain available independently and do not need a connection here.']" :values="[{ label: 'Toolset', value: draftName.trim() || 'Not entered yet', technical: true }, { label: 'Display name', value: draftDisplay.trim() || 'Same as name' }, { label: 'Connections', value: draftConns.length ? draftConns.join(', ') : 'None selected', technical: true }, { label: 'Families', value: derivedFamilies.join(', '), technical: true }]" :next-steps="['Railgrid creates the bundle without changing any existing agents.', 'Attach the toolset to interactive or background work from agent Config.', 'Connection authorization is still checked when an agent invokes a tool.']" />
+        <CreateGuidance title="Build a reusable capability bundle" description="Choose built-in visualization and optional existing tool connections." :prerequisites="[toolConnections.length ? 'At least one tool connection is available in this workspace.' : 'Create a tool connection first if this bundle should expose external tools.', 'Cluster edge tools remain available independently and do not need a connection here.']" :values="[{ label: 'Toolset', value: draftName.trim() || 'Not entered yet', technical: true }, { label: 'Display name', value: draftDisplay.trim() || 'Same as name' }, { label: 'Connections', value: draftConns.length ? draftConns.join(', ') : 'None selected', technical: true }, { label: 'Families', value: derivedFamilies.join(', '), technical: true }]" :next-steps="['Railgrid creates the bundle without changing any existing agents.', 'Attach the toolset to interactive or background work from agent Config.', 'Connection authorization is still checked when an agent invokes a tool.']" />
       </div>
       <div class="k-create-actions"><button type="button" class="k-btn k-btn--ghost secondary" :disabled="createBusy" @click="cancelCreate">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="createBusy">{{ createBusy ? 'Creating…' : 'Create toolset' }}</button></div>
     </form>
@@ -195,9 +201,10 @@ function cancelCreate(): void {
             <div class="k-create-body k-create-fields">
               <label>Display name<input v-model="draftDisplay" class="k-input" :placeholder="currentEditItem.metadata.name" :disabled="createBusy" /></label>
               <fieldset class="agents-tools"><legend>Tools</legend><div class="agents-checkrow">
+            <label class="agents-check k-checkbox-hit"><input v-model="draftVisualization" type="checkbox" :disabled="createBusy" /> Visualize data <span class="agents-hint">Charts in chat from supplied data</span></label>
                 <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.metadata.name }} <span class="agents-hint">{{ connection.spec.type }}</span></label>
-                <span v-if="!toolConnections.length" class="muted">No tools yet — create MCP/GitHub/web tools first. Cluster edges are always on.</span>
-              </div><span class="agents-hint">Tool families are derived from these connections — never picked by hand.</span></fieldset>
+                <span v-if="!toolConnections.length" class="muted">No external tool connections yet.</span>
+              </div><span class="agents-hint">Choose built-in visualization or add existing tool connections.</span></fieldset>
             </div>
             <div class="k-create-actions"><button type="button" class="k-btn k-btn--ghost secondary" :disabled="createBusy" @click="cancelCreate">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="createBusy">{{ createBusy ? 'Saving…' : 'Save changes' }}</button></div>
           </form>
@@ -231,7 +238,7 @@ function cancelCreate(): void {
     </template>
     <ResourceTable v-else :columns="[{ key: 'name', label: 'Name', primary: true }, { key: 'tools', label: 'Tools' }, { key: 'usedBy', label: 'Used by' }, { key: 'actions', label: '', ariaLabel: 'Actions' }]" :rows="rows" row-key="id" aria-label="Toolsets" :loaded="slice.hasSnapshot" :loading="slice.loading" :error="slice.error" :stale="slice.hasSnapshot && !!slice.error" retryable searchable search-placeholder="Search toolsets…" :search-keys="['name', 'tools']" :filters="filters" :filter-values="tableFilters" paginated :interactive="false" @update:filter-values="tableFilters = $event" @retry="store.load('toolsets')">
       <template #name="{ row }"><span class="agents-resource-name" :title="asToolset(row).metadata.name">{{ asToolset(row).spec.displayName || asToolset(row).metadata.name }}</span><code v-if="asToolset(row).spec.displayName" class="agents-resource-id">{{ asToolset(row).metadata.name }}</code></template>
-      <template #tools="{ row }"><span v-if="asToolset(row).spec.connections?.length" class="agents-resource-tags"><span v-for="connection in asToolset(row).spec.connections" :key="connection" class="k-badge agents-badge">{{ connection }}</span></span><span v-else class="muted">—</span></template>
+      <template #tools="{ row }"><span v-if="asToolset(row).spec.connections?.length || asToolset(row).spec.families?.includes('visualization')" class="agents-resource-tags"><span v-if="asToolset(row).spec.families?.includes('visualization')" class="k-badge agents-badge">Visualize data</span><span v-for="connection in asToolset(row).spec.connections" :key="connection" class="k-badge agents-badge">{{ connection }}</span></span><span v-else class="muted">—</span></template>
       <template #usedBy="{ row }"><span class="muted" :title="usedBy(asToolset(row).metadata.name) === null ? 'Agent assignments are unavailable' : undefined">{{ row.usedBy }}</span></template>
       <template #actions="{ row }"><ResourceTableEditButton :label="`Edit toolset ${asToolset(row).metadata.name}`" :disabled="!!deletingName" @click="openEdit(asToolset(row))" /><ResourceTableDeleteButton :label="`Delete toolset ${asToolset(row).metadata.name}`" :busy-label="`Deleting toolset ${asToolset(row).metadata.name}…`" :busy="deletingName === asToolset(row).metadata.name" :disabled="!!deletingName" @click="remove(asToolset(row).metadata.name)" /></template>
     </ResourceTable>
