@@ -67,6 +67,12 @@ var (
 	kcpServer   string // https://127.0.0.1:<port> (admin kubeconfig)
 	adminToken  string // kcp admin token (from .kcp/admin.kubeconfig)
 	staticToken = "test:user-default"
+
+	// providerLogPath lets a test report what the provider itself said about a
+	// request it refused. A gate refusal is a 404 on the wire by design, so the
+	// status alone cannot say whether the caller was denied, the object was
+	// unreadable, or the review never ran.
+	providerLogPath string
 )
 
 const (
@@ -197,7 +203,8 @@ func TestMain(m *testing.M) {
 	// Serve. Unlike the quickstart provider, the edges serve process needs the
 	// runtime kubeconfig at serve time (the tunnel token validation + the edge
 	// controller manager both read the provider's kcp credential).
-	provLog, _ := os.Create(filepath.Join(dataDir, "provider.log"))
+	providerLogPath = filepath.Join(dataDir, "provider.log")
+	provLog, _ := os.Create(providerLogPath)
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "serve")
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
