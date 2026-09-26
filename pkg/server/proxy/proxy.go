@@ -619,13 +619,16 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.St
 	return created, nil
 }
 
+// saClusterRE bounds a cluster a ServiceAccount request may name, in its token
+// claim or in the path, so neither can carry a traversal.
+var saClusterRE = regexp.MustCompile(`^[a-z0-9]+(?:[:-][a-z0-9]+)*$`)
+
 // serveServiceAccount handles kcp ServiceAccount tokens by forwarding the
 // request to the workspace identified by the clusterName claim, keeping the
 // original SA token so kcp performs native authn/authz.
 func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, token, clusterName string) {
 	// Validate clusterName against a strict regex to prevent path traversal.
-	matched, _ := regexp.MatchString(`^[a-z0-9]+(?:[:-][a-z0-9]+)*$`, clusterName)
-	if !matched {
+	if !saClusterRE.MatchString(clusterName) {
 		p.logger.Info("SA: clusterName regex rejected — 401", "clusterName", clusterName)
 		writeUnauthorized(w)
 		return
@@ -642,6 +645,37 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
+	// Where to forward. A request may name the workspace it is aimed at, which a
+	// data-plane verb on another provider's object always does:
+	//
+	//	/clusters/{tenant}/apis/{group}/{version}/{resource}/{name}/{verb}
+	//
+	// The clusterName claim says where the ServiceAccount LIVES, not where the
+	// request is aimed, so prepending it to a path that already names a cluster
+	// produces /clusters/{sa}/clusters/{tenant}/... and kcp answers 404. An agent
+	// kubeconfig whose server URL carries its own /clusters/{name} lands here
+	// too, and forwarding it unchanged is what the prefix strip used to achieve.
+	//
+	// Honouring the addressed cluster is safe because the SA token is forwarded
+	// as it arrived: kcp authenticates it natively and authorizes it in THAT
+	// workspace, so reaching another one still needs a grant there. Both checks
+	// the claim gets are applied to the addressed cluster as well, so naming one
+	// in the path cannot get past either.
+	forwardPath := "/clusters/" + clusterName + r.URL.Path
+	if addressed := extractClusterPathFromKCPPath(r.URL.Path); addressed != "" {
+		if !saClusterRE.MatchString(addressed) {
+			p.logger.Info("SA: addressed cluster regex rejected — 401", "cluster", addressed)
+			writeUnauthorized(w)
+			return
+		}
+		if isOrgWorkspacePath(addressed) {
+			p.logger.Info("SA: org workspace access denied (O-10)", "cluster", addressed)
+			writeOrgWorkspaceForbidden(w)
+			return
+		}
+		forwardPath = r.URL.Path
+	}
+
 	target := *p.kcpTarget
 	logger := p.logger
 
@@ -649,20 +683,7 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
-
-			// The agent kubeconfig may already include /clusters/{name} in its
-			// server URL, so the incoming path can be
-			//   /clusters/{name}/api/...
-			// Strip the prefix to avoid doubling it when we prepend below.
-			clusterPrefix := "/clusters/" + clusterName
-			reqPath := req.URL.Path
-			if strings.HasPrefix(reqPath, clusterPrefix+"/") || reqPath == clusterPrefix {
-				reqPath = strings.TrimPrefix(reqPath, clusterPrefix)
-				if reqPath == "" {
-					reqPath = "/"
-				}
-			}
-			req.URL.Path = clusterPrefix + reqPath
+			req.URL.Path = forwardPath
 			req.Host = target.Host
 
 			// Keep the SA token — kcp authenticates it natively.
