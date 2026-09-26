@@ -284,8 +284,9 @@ func TestMain(m *testing.M) {
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
 	if err := initCmd.Run(); err != nil {
+		tail := tailInitLog(initLog.Name(), 60)
 		cleanup()
-		fmt.Fprintf(os.Stderr, "quickstart init failed: %v (log: %s)\n", err, initLog.Name())
+		fmt.Fprintf(os.Stderr, "quickstart init failed: %v (log: %s)\n%s\n", err, initLog.Name(), tail)
 		os.Exit(1)
 	}
 
@@ -542,4 +543,20 @@ func ctxWithTimeout(t *testing.T, d time.Duration) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// tailInitLog returns the last n lines of a bootstrap log, so a failure reports
+// what went wrong instead of only an exit status. It must be read BEFORE
+// cleanup, which removes the data directory; CI does not upload that directory
+// either, so stderr is the only place the reason survives.
+func tailInitLog(path string, n int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(" + err.Error() + ")"
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
