@@ -528,7 +528,11 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		// A gate refusal is a 404 on the wire whether the caller was denied, the
 		// addressed object could not be read, or the review never ran, so the
 		// provider's own account of it is the only way to tell them apart.
-		t.Logf("edges-provider log tail:\n%s", tailInitLog(providerLogPath, 40))
+		// Which hop answered decides the cause: no provider line at all means
+		// the request never got past kcp, and the hub's own log says whether it
+		// forwarded the call.
+		t.Logf("hub log for the probe:\n%s", grepLog(hubLogPath, "e2e-engage", 25))
+		t.Logf("edges-provider log for the probe:\n%s", grepLog(providerLogPath, "e2e-engage", 25))
 		t.Fatal("edgeproxy never authorized the provider SA after grant")
 	}
 

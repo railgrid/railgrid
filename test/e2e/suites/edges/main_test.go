@@ -73,6 +73,7 @@ var (
 	// status alone cannot say whether the caller was denied, the object was
 	// unreadable, or the review never ran.
 	providerLogPath string
+	hubLogPath      string
 )
 
 const (
@@ -116,7 +117,8 @@ func TestMain(m *testing.M) {
 	}
 	keepData := os.Getenv("RAILGRID_E2E_KEEP_DATA") == "true"
 
-	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
+	hubLogPath = filepath.Join(dataDir, "hub.log")
+	hubLog, _ := os.Create(hubLogPath)
 	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "railgrid-hub"),
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
@@ -444,4 +446,32 @@ func tailInitLog(path string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// grepLog returns the last n lines of the log at path that mention needle,
+// truncated. Tailing is useless on these logs: one line can be a whole API
+// object, so the last few lines cover a few milliseconds. Matching on the thing
+// under test is what finds the request among them.
+func grepLog(path, needle string, n int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(" + err.Error() + ")"
+	}
+	var hits []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		if len(line) > 400 {
+			line = line[:400] + "...(truncated)"
+		}
+		hits = append(hits, line)
+	}
+	if len(hits) == 0 {
+		return "(no line mentions " + needle + ")"
+	}
+	if len(hits) > n {
+		hits = hits[len(hits)-n:]
+	}
+	return strings.Join(hits, "\n")
 }
