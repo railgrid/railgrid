@@ -355,3 +355,22 @@ describe('route-owned collection affordances', () => {
     expect(el.querySelector('agents-agent-create')).toBeNull()
   })
 })
+
+it('creates a reusable visualization toolset without an external connection', async () => {
+  const createToolset = vi.fn().mockResolvedValue({ metadata: { name: 'charts' }, spec: { families: ['core', 'visualization'] } })
+  const api = stubApi({ createToolset })
+  const store = makeStore(api)
+  markAuthoritative(store, 'toolsets', 'connections')
+  const el = await mount<Toolsets>('agents-toolsets', { store, api, routeOwned: true, createRoute: true })
+  const name = el.querySelector<HTMLInputElement>('input[name=name]')!
+  name.value = 'charts'
+  name.dispatchEvent(new Event('input'))
+  const label = [...el.querySelectorAll('label')].find(item => item.textContent?.includes('Visualize data'))!
+  const enabled = label.querySelector<HTMLInputElement>('input')!
+  enabled.checked = true
+  enabled.dispatchEvent(new Event('change'))
+  await settleVue()
+  el.querySelector('form')!.dispatchEvent(new Event('submit'))
+  await settleVue(4, 1)
+  expect(createToolset).toHaveBeenCalledWith(expect.objectContaining({ name: 'charts', connections: [], families: ['core', 'visualization'] }))
+})

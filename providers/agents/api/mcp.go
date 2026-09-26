@@ -174,7 +174,7 @@ type updateAgentInput struct {
 	TimeoutSeconds         *int32          `json:"timeoutSeconds,omitempty" jsonschema:"Wall-clock budget for one run in seconds; 0 uses the provider default"`
 	Delegates              *[]string       `json:"delegates,omitempty" jsonschema:"Names of other agents this agent may spawn as sub-agents; replaces the whole list"`
 	Channels               *[]channelInput `json:"channels,omitempty" jsonschema:"Messaging channel bindings (name + connectionRef + primary); replaces the whole list"`
-	InteractiveFamilies    *[]string       `json:"interactiveFamilies,omitempty" jsonschema:"Built-in tool families for interactive runs (core, web, github, mcp, files, edges, spawn); replaces the list, core is always kept"`
+	InteractiveFamilies    *[]string       `json:"interactiveFamilies,omitempty" jsonschema:"Built-in tool families for interactive runs (core, web, github, mcp, files, edges, spawn, visualization); replaces the list, core is always kept"`
 	BackgroundFamilies     *[]string       `json:"backgroundFamilies,omitempty" jsonschema:"Built-in tool families for background runs; replaces the list, core is always kept"`
 	InteractiveToolsets    *[]string       `json:"interactiveToolsets,omitempty" jsonschema:"Shared Toolset names linked for interactive runs; replaces the whole list"`
 	BackgroundToolsets     *[]string       `json:"backgroundToolsets,omitempty" jsonschema:"Shared Toolset names linked for background runs; replaces the whole list"`

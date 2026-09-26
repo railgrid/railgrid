@@ -11,10 +11,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -81,6 +83,8 @@ type fakeLLM struct {
 	calls atomic.Int64
 	// lastRequest is the decoded body of the most recent call.
 	lastRequest atomic.Pointer[map[string]any]
+	mu          sync.Mutex
+	requests    []map[string]any
 }
 
 func newFakeLLM(t *testing.T, reply string) *fakeLLM {
@@ -92,6 +96,9 @@ func newFakeLLM(t *testing.T, reply string) *fakeLLM {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.lastRequest.Store(&body)
+		f.mu.Lock()
+		f.requests = append(f.requests, body)
+		f.mu.Unlock()
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -122,6 +129,12 @@ func newFakeLLM(t *testing.T, reply string) *fakeLLM {
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+func (f *fakeLLM) requestSnapshot() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]any(nil), f.requests...)
 }
 
 // compactFixture is a server plus one agent and a seeded session.
@@ -171,212 +184,422 @@ func (f *compactFixture) run() taskRun {
 	}
 }
 
-func TestLoadSessionContextDropsCoveredMessages(t *testing.T) {
+func TestLoadSessionContextReadsCompletePaginatedHistory(t *testing.T) {
+	ctx := context.Background()
+	f := newCompactFixture(t, 520, 4, "gpt-4o")
+
+	loaded, err := f.s.loadSessionContext(ctx, f.scope, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Checkpoint != nil || len(loaded.Messages) != 520 {
+		t.Fatalf("loaded context has checkpoint=%v and %d messages, want no checkpoint and all 520 rows", loaded.Checkpoint != nil, len(loaded.Messages))
+	}
+	if loaded.Messages[0].ID != "m000" || loaded.Messages[len(loaded.Messages)-1].ID != "m519" {
+		t.Fatalf("pagination did not restore chronological history: first=%s last=%s", loaded.Messages[0].ID, loaded.Messages[len(loaded.Messages)-1].ID)
+	}
+}
+
+func TestLegacySummaryRemainsUntrustedAndReplayable(t *testing.T) {
 	ctx := context.Background()
 	f := newCompactFixture(t, 10, 10, "gpt-4o")
-
-	all := f.s.loadSessionContext(ctx, f.scope, "chat", 40)
-	if all.Summary != nil {
-		t.Fatal("no summary should exist yet")
+	all, err := f.s.loadSessionContext(ctx, f.scope, "chat")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(all.Messages) != 10 {
-		t.Fatalf("got %d messages, want 10", len(all.Messages))
-	}
-
-	// Fold the first six.
 	through := all.Messages[5].CreatedAt
 	if err := f.s.store.PutSessionSummary(ctx, f.scope, store.SessionSummary{
-		SessionID: "chat", Summary: "earlier talk", ThroughAt: through, MessageCount: 6,
+		SessionID: "chat", Summary: "THE-LEGACY-SUMMARY", ThroughAt: through, MessageCount: 6,
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	after := f.s.loadSessionContext(ctx, f.scope, "chat", 40)
-	if after.Summary == nil {
-		t.Fatal("expected the summary to be loaded")
+	loaded, err := f.s.loadSessionContext(ctx, f.scope, "chat")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(after.Messages) != 4 {
-		t.Fatalf("got %d messages after the summary, want 4", len(after.Messages))
+	if loaded.Checkpoint != nil || loaded.Summary == nil || len(loaded.Messages) != 4 {
+		t.Fatalf("legacy load = checkpoint %v, summary %v, %d tail messages", loaded.Checkpoint != nil, loaded.Summary != nil, len(loaded.Messages))
 	}
-	// The message exactly at ThroughAt is covered, not replayed.
-	for _, m := range after.Messages {
-		if !m.CreatedAt.After(through) {
-			t.Fatalf("message %s at or before ThroughAt is still replayed", m.ID)
+	messages, err := f.s.assembleTurnCtx(ctx, f.run(), "chat", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary engine.Message
+	for _, message := range messages {
+		if strings.Contains(message.Content, "THE-LEGACY-SUMMARY") {
+			summary = message
 		}
 	}
+	if summary.Role != engine.RoleUser || !strings.Contains(summary.Content, compactSummaryPrefix) {
+		t.Fatalf("legacy summary = %+v, want untrusted user evidence", summary)
+	}
+	for _, message := range messages {
+		if strings.Contains(message.Content, "msg000") || strings.Contains(message.Content, "msg005") {
+			t.Fatalf("covered legacy messages were replayed: %+v", message)
+		}
+	}
+	if !strings.Contains(messages[len(messages)-2].Content, "msg009") {
+		t.Fatalf("legacy summary tail did not include the newest row: %+v", messages[len(messages)-2])
+	}
 }
 
-func TestAssembleTurnCtxReplaysSummaryInsteadOfFoldedMessages(t *testing.T) {
+func TestAssembleTurnCtxRejectsUnsupportedAndEmptySummaries(t *testing.T) {
 	ctx := context.Background()
-	f := newCompactFixture(t, 10, 10, "gpt-4o")
-	msgs := f.s.loadSessionContext(ctx, f.scope, "chat", 40).Messages
-	if err := f.s.store.PutSessionSummary(ctx, f.scope, store.SessionSummary{
-		SessionID: "chat", Summary: "THE-SUMMARY", ThroughAt: msgs[5].CreatedAt, MessageCount: 6,
-		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-	}); err != nil {
+	for _, test := range []struct {
+		name    string
+		summary store.SessionSummary
+	}{
+		{
+			name: "unsupported checkpoint version",
+			summary: store.SessionSummary{SessionID: "chat", Summary: "nonempty", Checkpoint: &store.SessionCheckpoint{
+				Version: 9, ThroughSequence: 1, ReplacementHistory: []store.SessionCheckpointMessage{{Role: engine.RoleUser, Content: "old"}},
+			}},
+		},
+		{
+			name:    "empty legacy summary",
+			summary: store.SessionSummary{SessionID: "chat", ThroughAt: time.Now().UTC()},
+		},
+		{
+			name: "empty checkpoint summary",
+			summary: store.SessionSummary{SessionID: "chat", Checkpoint: &store.SessionCheckpoint{
+				Version: 1, ThroughSequence: 1, ReplacementHistory: []store.SessionCheckpointMessage{{Role: engine.RoleUser, Content: "old"}},
+			}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newCompactFixture(t, 0, 0, "gpt-4o")
+			f.s.store = &summaryOverrideStore{Store: f.s.store, summary: &test.summary}
+			if _, err := f.s.assembleTurnCtx(ctx, f.run(), "chat", "", false); err == nil {
+				t.Fatal("invalid summary unexpectedly assembled")
+			}
+		})
+	}
+}
+
+func TestLoadSessionContextFailureFailsRunBeforeAppendingTask(t *testing.T) {
+	f := newCompactFixture(t, 0, 0, "gpt-4o")
+	baseStore := f.s.store
+	f.s.store = &summaryOverrideStore{Store: baseStore, readErr: errors.New("injected summary read failure")}
+
+	result, err := f.s.executeTask(context.Background(), taskRun{
+		Creds: f.creds, CR: fakeCR{}, Scope: f.scope, Agent: f.agent,
+		SessionID: "chat", Task: "must not run without history", Trigger: agentsv1alpha1.RunTriggerChat,
+	})
+	if err == nil || !strings.Contains(err.Error(), "load session summary") {
+		t.Fatalf("executeTask error = %v, want history read failure", err)
+	}
+	if result.Phase != store.RunPhaseFailed || result.RunID == "" {
+		t.Fatalf("result = %+v, want a terminal failed run", result)
+	}
+	stored, err := baseStore.GetRun(context.Background(), f.scope, result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Phase != store.RunPhaseFailed {
+		t.Fatalf("stored phase = %s, want Failed", stored.Phase)
+	}
+	rows, err := baseStore.LoadRecentMessages(context.Background(), f.scope, "chat", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("task was appended despite history load failure: %+v", rows)
+	}
+}
+
+func TestContextCompactorKeepsCurrentTaskAndLargeToolGroupValid(t *testing.T) {
+	f := newCompactFixture(t, 0, 0, "gpt-4o")
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := range 4 {
+		appendCompactMessage(t, f, store.Message{ID: fmt.Sprintf("u%d", i), Role: "user", Content: fmt.Sprintf("request-%d %s", i, strings.Repeat("u", 300)), CreatedAt: base.Add(time.Duration(i*2) * time.Minute)})
+		appendCompactMessage(t, f, store.Message{ID: fmt.Sprintf("a%d", i), Role: "assistant", Content: fmt.Sprintf("reply-%d %s", i, strings.Repeat("a", 300)), CreatedAt: base.Add(time.Duration(i*2+1) * time.Minute)})
+	}
+	toolAt := base.Add(8 * time.Minute)
+	call := assistantCallRow("assistant-tool", "prior-run", "call-large", "read_order", `{"orderID":"order-1"}`, toolAt)
+	appendCompactMessage(t, f, call)
+	resultText := strings.Repeat("sold_at=2033-04-05T06:07:08Z; ", 1200)
+	appendCompactMessage(t, f, toolResultRow("tool-large", "prior-run", "call-large", "read_order", resultText, toolAt.Add(time.Second)))
+	for i := range 2 {
+		appendCompactMessage(t, f, store.Message{ID: fmt.Sprintf("u%d", i+4), Role: "user", Content: fmt.Sprintf("recent-request-%d %s", i, strings.Repeat("r", 300)), CreatedAt: base.Add(time.Duration(10+i*2) * time.Minute)})
+		appendCompactMessage(t, f, store.Message{ID: fmt.Sprintf("a%d", i+4), Role: "assistant", Content: fmt.Sprintf("recent-reply-%d %s", i, strings.Repeat("s", 300)), CreatedAt: base.Add(time.Duration(11+i*2) * time.Minute)})
+	}
+
+	run, history := appendAndAssembleCurrentTask(t, f, "run-current", "CURRENT TASK MUST SURVIVE")
+	result, err := runContextCompactor(t, f, run, history, 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engineHistoryTokens(result) > 5000 {
+		t.Fatalf("compacted history uses %d tokens, want at most 5000", engineHistoryTokens(result))
+	}
+	if err := validateStoredHistoryToolPairing(result); err != nil {
+		t.Fatalf("compacted history split or orphaned a tool group: %v", err)
+	}
+	currentCount := 0
+	for _, message := range result {
+		if message.ID == "task-run-current" && message.Content == "CURRENT TASK MUST SURVIVE" {
+			currentCount++
+		}
+	}
+	if currentCount != 1 {
+		t.Fatalf("current task appears %d times after compaction, want exactly once", currentCount)
+	}
+	requests := f.llm.requestSnapshot()
+	if len(requests) == 0 {
+		t.Fatal("compaction did not call the summary model")
+	}
+	foundToolEvidence := false
+	for _, request := range requests {
+		encoded, _ := json.Marshal(request)
+		if strings.Contains(string(encoded), "call-large") && strings.Contains(string(encoded), "sold_at=2033-04-05T06:07:08Z") {
+			foundToolEvidence = true
+			break
+		}
+	}
+	if !foundToolEvidence {
+		t.Fatal("the complete tool group was not provided together as summary evidence")
+	}
+
+	loaded := loadReplayHistory(t, f)
+	assertUniqueHistoryIDs(t, loaded)
+	currentCount = 0
+	for _, message := range loaded {
+		if message.ID == "task-run-current" {
+			currentCount++
+		}
+	}
+	if currentCount != 1 {
+		t.Fatalf("reloaded current task appears %d times, want exactly once", currentCount)
+	}
+}
+
+func TestRepeatedCompactionReloadHasNoDuplicateSourceIDs(t *testing.T) {
+	ctx := context.Background()
+	f := newCompactFixture(t, 20, 1800, "gpt-4o")
+	run1, history1 := appendAndAssembleCurrentTask(t, f, "run-one", "first compaction task")
+	if _, err := runContextCompactor(t, f, run1, history1, 12000); err != nil {
+		t.Fatal(err)
+	}
+	first, ok, err := f.s.store.GetSessionSummary(ctx, f.scope, "chat")
+	if err != nil || !ok || first.Checkpoint == nil {
+		t.Fatalf("first checkpoint missing: ok=%v err=%v", ok, err)
+	}
+
+	base := time.Now().UTC().Add(time.Minute)
+	for i := range 8 {
+		appendCompactMessage(t, f, store.Message{ID: fmt.Sprintf("new-u%d", i), Role: "user", Content: strings.Repeat("new request ", 180), CreatedAt: base.Add(time.Duration(i*2) * time.Minute)})
+		appendCompactMessage(t, f, store.Message{ID: fmt.Sprintf("new-a%d", i), Role: "assistant", Content: strings.Repeat("new answer ", 180), CreatedAt: base.Add(time.Duration(i*2+1) * time.Minute)})
+	}
+	run2, history2 := appendAndAssembleCurrentTask(t, f, "run-two", "second compaction task")
+	if _, err := runContextCompactor(t, f, run2, history2, 12000); err != nil {
+		t.Fatal(err)
+	}
+	second, ok, err := f.s.store.GetSessionSummary(ctx, f.scope, "chat")
+	if err != nil || !ok || second.Checkpoint == nil {
+		t.Fatalf("second checkpoint missing: ok=%v err=%v", ok, err)
+	}
+	if second.Checkpoint.ThroughSequence <= first.Checkpoint.ThroughSequence {
+		t.Fatalf("checkpoint boundary did not advance: first=%d second=%d", first.Checkpoint.ThroughSequence, second.Checkpoint.ThroughSequence)
+	}
+	loaded := loadReplayHistory(t, f)
+	assertUniqueHistoryIDs(t, loaded)
+	if !containsHistoryID(loaded, "task-run-two") {
+		t.Fatalf("reloaded history lost the current task: %+v", loaded)
+	}
+}
+
+func TestCompactionPersistenceFailureLeavesOriginalCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	f := newCompactFixture(t, 20, 1800, "gpt-4o")
+	run1, history1 := appendAndAssembleCurrentTask(t, f, "run-base", "initial task")
+	if _, err := runContextCompactor(t, f, run1, history1, 12000); err != nil {
+		t.Fatal(err)
+	}
+	baseStore := f.s.store
+	before, ok, err := baseStore.GetSessionSummary(ctx, f.scope, "chat")
+	if err != nil || !ok || before.Checkpoint == nil {
+		t.Fatalf("original checkpoint missing: ok=%v err=%v", ok, err)
+	}
+	base := time.Now().UTC().Add(time.Minute)
+	for i := range 8 {
+		appendCompactMessage(t, f, store.Message{ID: fmt.Sprintf("failure-u%d", i), Role: "user", Content: strings.Repeat("more request ", 180), CreatedAt: base.Add(time.Duration(i*2) * time.Minute)})
+		appendCompactMessage(t, f, store.Message{ID: fmt.Sprintf("failure-a%d", i), Role: "assistant", Content: strings.Repeat("more answer ", 180), CreatedAt: base.Add(time.Duration(i*2+1) * time.Minute)})
+	}
+	f.s.store = &summaryOverrideStore{Store: baseStore, putErr: errors.New("injected checkpoint write failure")}
+	run2, history2 := appendAndAssembleCurrentTask(t, f, "run-failed", "must not replace original checkpoint")
+	if _, err := runContextCompactor(t, f, run2, history2, 12000); err == nil || !strings.Contains(err.Error(), "checkpoint write failure") {
+		t.Fatalf("compaction error = %v, want checkpoint persistence failure", err)
+	}
+	after, ok, err := baseStore.GetSessionSummary(ctx, f.scope, "chat")
+	if err != nil || !ok {
+		t.Fatalf("original checkpoint disappeared after failed write: ok=%v err=%v", ok, err)
+	}
+	if after.Checkpoint.ThroughSequence != before.Checkpoint.ThroughSequence || after.Summary != before.Summary {
+		t.Fatalf("failed persistence replaced the existing checkpoint: before=%+v after=%+v", before.Checkpoint, after.Checkpoint)
+	}
+}
+
+func TestConcurrentAppendAfterCompactionSnapshotRemainsInSuffix(t *testing.T) {
+	ctx := context.Background()
+	f := newCompactFixture(t, 20, 1200, "gpt-4o")
+	baseStore := f.s.store
+	concurrentID := "concurrent-after-snapshot"
+	f.s.store = &summaryOverrideStore{Store: baseStore, beforePut: func(ctx context.Context, scope store.Scope) {
+		appendErr := baseStore.AppendMessage(ctx, scope, store.Message{
+			ID: concurrentID, AgentName: "scout", SessionID: "chat", RunID: "another-run",
+			Role: "user", Content: "newer concurrent transcript row", CreatedAt: time.Now().UTC().Add(time.Hour),
+		})
+		if appendErr != nil {
+			t.Errorf("append concurrent row: %v", appendErr)
+		}
+	}}
+	run, history := appendAndAssembleCurrentTask(t, f, "run-concurrent", "current task")
+	if _, err := runContextCompactor(t, f, run, history, 12000); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := f.s.loadSessionContext(ctx, f.scope, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range loaded.Messages {
+		if row.ID == concurrentID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("row appended after the checkpoint snapshot was lost; through=%d suffix=%+v", loaded.Checkpoint.ThroughSequence, loaded.Messages)
+	}
+}
+
+func appendCompactMessage(t *testing.T, f *compactFixture, message store.Message) {
+	t.Helper()
+	message.AgentName = f.agent.Name
+	message.SessionID = "chat"
+	if err := f.s.store.AppendMessage(context.Background(), f.scope, message); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendAndAssembleCurrentTask(t *testing.T, f *compactFixture, runID, task string) (taskRun, []engine.Message) {
+	t.Helper()
+	run := f.run()
+	run.RunID, run.Task = runID, task
+	history, err := f.s.assembleTurnCtx(context.Background(), run, "chat", "", false)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	var b strings.Builder
-	for _, m := range f.s.assembleTurnCtx(ctx, f.run(), "chat", "", false) {
-		b.WriteString(m.Role + ": " + m.Content + "\n")
+	message := store.Message{
+		ID: "task-" + runID, AgentName: f.agent.Name, SessionID: "chat", RunID: runID,
+		Role: "user", Content: task,
 	}
-	out := b.String()
-
-	if !strings.Contains(out, "THE-SUMMARY") {
-		t.Fatalf("the summary must be replayed:\n%s", out)
+	rows, err := f.s.store.LoadRecentMessages(context.Background(), f.scope, "chat", 500)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(out, "msg000") || strings.Contains(out, "msg005") {
-		t.Fatalf("folded messages must not be replayed as well:\n%s", out)
+	message.CreatedAt = time.Now().UTC()
+	if len(rows) > 0 && !rows[len(rows)-1].CreatedAt.Before(message.CreatedAt) {
+		message.CreatedAt = rows[len(rows)-1].CreatedAt.Add(time.Nanosecond)
 	}
-	if !strings.Contains(out, "msg009") {
-		t.Fatalf("messages after the summary must still be replayed:\n%s", out)
+	if err := f.s.store.AppendMessage(context.Background(), f.scope, message); err != nil {
+		t.Fatal(err)
 	}
-	// The model has to know this is a record of earlier turns, not a fresh turn.
-	if !strings.Contains(out, "Summary of this conversation") {
-		t.Fatalf("the summary needs framing so it is not mistaken for a user turn:\n%s", out)
+	rows, err = f.s.store.LoadRecentMessages(context.Background(), f.scope, "chat", 500)
+	if err != nil {
+		t.Fatal(err)
 	}
+	for _, row := range rows {
+		if row.ID == message.ID {
+			message = row
+			break
+		}
+	}
+	history[len(history)-1].ID = message.ID
+	history[len(history)-1].Sequence = message.Sequence
+	return run, history
 }
 
-func TestMaybeCompactSessionUnderBudgetDoesNothing(t *testing.T) {
-	ctx := context.Background()
-	// gpt-4o is a 128k window; a handful of short messages is nowhere near it.
-	f := newCompactFixture(t, 20, 50, "gpt-4o")
-
-	f.s.maybeCompactSession(ctx, f.run(), "chat", "gpt-4o")
-
-	if _, ok, _ := f.s.store.GetSessionSummary(ctx, f.scope, "chat"); ok {
-		t.Fatal("a small session must not be compacted")
+func runContextCompactor(t *testing.T, f *compactFixture, run taskRun, history []engine.Message, budget int) ([]engine.Message, error) {
+	t.Helper()
+	messageTokens := engineHistoryTokens(history)
+	estimate := engine.ContextEstimate{
+		MessageTokens: messageTokens, ToolSchemaTokens: 128,
+		TotalTokens: messageTokens + 128, BudgetTokens: budget,
 	}
-	if n := f.llm.calls.Load(); n != 0 {
-		t.Fatalf("the compaction model was called %d times for a small session", n)
-	}
+	return f.s.contextCompactor(run, "chat", "gpt-4o")(context.Background(), history, estimate)
 }
 
-func TestMaybeCompactSessionFoldsOlderMessages(t *testing.T) {
-	ctx := context.Background()
-	// claude-3-5-haiku is 200k tokens; 30 messages of 40k chars each is ~300k
-	// tokens of history, comfortably over the 70% threshold.
-	f := newCompactFixture(t, 30, 40000, "claude-3-5-haiku")
-
-	f.s.maybeCompactSession(ctx, f.run(), "chat", "claude-3-5-haiku")
-
-	sum, ok, err := f.s.store.GetSessionSummary(ctx, f.scope, "chat")
-	if err != nil || !ok {
-		t.Fatalf("expected a summary to be stored: ok=%v err=%v", ok, err)
+func loadReplayHistory(t *testing.T, f *compactFixture) []engine.Message {
+	t.Helper()
+	loaded, err := f.s.loadSessionContext(context.Background(), f.scope, "chat")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(sum.Summary, "COMPACTED") {
-		t.Fatalf("summary = %q, want the compaction model's output", sum.Summary)
-	}
-	if sum.MessageCount != 30-compactKeepMessages {
-		t.Fatalf("MessageCount = %d, want %d (all but the newest %d)", sum.MessageCount, 30-compactKeepMessages, compactKeepMessages)
-	}
-	if n := f.llm.calls.Load(); n != 1 {
-		t.Fatalf("the compaction model was called %d times, want 1", n)
-	}
-
-	// The newest messages survive verbatim; the rest are represented by the summary.
-	after := f.s.loadSessionContext(ctx, f.scope, "chat", 40)
-	if len(after.Messages) != compactKeepMessages {
-		t.Fatalf("%d messages replay after compaction, want %d", len(after.Messages), compactKeepMessages)
-	}
-	if !strings.HasPrefix(after.Messages[0].Content, "msg020") {
-		t.Fatalf("the kept window should start at msg020, got %q", after.Messages[0].Content[:10])
-	}
-
-	t.Run("compaction is billed to the agent", func(t *testing.T) {
-		u, err := f.s.store.GetUsage(ctx, f.scope, "scout", time.Now().UTC(), 30*24*time.Hour)
+	var replay []engine.Message
+	if loaded.Checkpoint != nil {
+		replay, err = engineMessagesFromCheckpoint(loaded.Checkpoint.ReplacementHistory)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if u.InputTokens != 100 || u.OutputTokens != 20 {
-			t.Fatalf("usage = %d in / %d out, want the compaction call's 100/20 — it is real spend", u.InputTokens, u.OutputTokens)
-		}
-	})
-
-	t.Run("the summarizer is asked to preserve decisions", func(t *testing.T) {
-		body := f.llm.lastRequest.Load()
-		if body == nil {
-			t.Fatal("no request recorded")
-		}
-		raw, _ := json.Marshal(*body)
-		if !strings.Contains(string(raw), "Decisions made and commitments given") {
-			t.Fatal("the compaction system prompt should be sent with the fold request")
-		}
-	})
+	} else if loaded.Summary != nil {
+		replay = append(replay, summaryMessage(*loaded.Summary))
+	}
+	replay = append(replay, engineMessagesFromHistory(loaded.Messages)...)
+	return replay
 }
 
-func TestMaybeCompactSessionFoldsPreviousSummary(t *testing.T) {
-	ctx := context.Background()
-	f := newCompactFixture(t, 30, 40000, "claude-3-5-haiku")
-
-	// First pass.
-	f.s.maybeCompactSession(ctx, f.run(), "chat", "claude-3-5-haiku")
-	first, ok, _ := f.s.store.GetSessionSummary(ctx, f.scope, "chat")
-	if !ok {
-		t.Fatal("expected a first summary")
-	}
-
-	// More conversation arrives, pushing it over again.
-	base := time.Now().UTC()
-	for i := range 20 {
-		if err := f.s.store.AppendMessage(ctx, f.scope, store.Message{
-			ID: fmt.Sprintf("n%03d", i), AgentName: "scout", SessionID: "chat", Role: "user",
-			Content:   fmt.Sprintf("new%03d ", i) + strings.Repeat("y", 40000),
-			CreatedAt: base.Add(time.Duration(i) * time.Second),
-		}); err != nil {
-			t.Fatal(err)
+func assertUniqueHistoryIDs(t *testing.T, history []engine.Message) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, message := range history {
+		if message.ID == "" {
+			continue
 		}
-	}
-	f.s.maybeCompactSession(ctx, f.run(), "chat", "claude-3-5-haiku")
-
-	second, ok, _ := f.s.store.GetSessionSummary(ctx, f.scope, "chat")
-	if !ok {
-		t.Fatal("expected the summary to still exist")
-	}
-	if !second.ThroughAt.After(first.ThroughAt) {
-		t.Fatal("the second fold must advance ThroughAt")
-	}
-	// The row always stands for the whole prefix, so its count accumulates.
-	if second.MessageCount <= first.MessageCount {
-		t.Fatalf("MessageCount went %d → %d; the new summary subsumes the old one and must cover more",
-			first.MessageCount, second.MessageCount)
-	}
-	// The previous summary is folded in, not left behind as a second block.
-	body := f.llm.lastRequest.Load()
-	raw, _ := json.Marshal(*body)
-	if !strings.Contains(string(raw), "Summary of the conversation before this excerpt") {
-		t.Fatal("the previous summary should be handed to the summarizer to merge")
+		if seen[message.ID] {
+			t.Fatalf("source message ID %q was replayed more than once", message.ID)
+		}
+		seen[message.ID] = true
 	}
 }
 
-func TestMaybeCompactSessionSkipsWorkers(t *testing.T) {
-	ctx := context.Background()
-	f := newCompactFixture(t, 30, 40000, "claude-3-5-haiku")
-	run := f.run()
-	run.Worker = &workerRun{Depth: 1, MaxToolTurns: 4}
-
-	f.s.maybeCompactSession(ctx, run, "chat", "claude-3-5-haiku")
-
-	if _, ok, _ := f.s.store.GetSessionSummary(ctx, f.scope, "chat"); ok {
-		t.Fatal("a worker starts from a fresh session; there is nothing to compact and nothing to pay for")
+func containsHistoryID(history []engine.Message, id string) bool {
+	for _, message := range history {
+		if message.ID == id {
+			return true
+		}
 	}
+	return false
 }
 
-func TestMaybeCompactSessionSurvivesAnUnavailableModel(t *testing.T) {
-	ctx := context.Background()
-	f := newCompactFixture(t, 30, 40000, "claude-3-5-haiku")
-	run := f.run()
-	run.Creds = fakeCreds{} // no credentials at all
+type summaryOverrideStore struct {
+	store.Store
+	summary   *store.SessionSummary
+	readErr   error
+	putErr    error
+	beforePut func(context.Context, store.Scope)
+}
 
-	// Must not panic and must not wedge the run: compaction degrades, the turn
-	// proceeds with whatever context it has.
-	f.s.maybeCompactSession(ctx, run, "chat", "claude-3-5-haiku")
-
-	if _, ok, _ := f.s.store.GetSessionSummary(ctx, f.scope, "chat"); ok {
-		t.Fatal("no summary should be stored when summarization failed")
+func (s *summaryOverrideStore) GetSessionSummary(ctx context.Context, scope store.Scope, sessionID string) (store.SessionSummary, bool, error) {
+	if s.readErr != nil {
+		return store.SessionSummary{}, false, s.readErr
 	}
+	if s.summary != nil {
+		return *s.summary, true, nil
+	}
+	return s.Store.GetSessionSummary(ctx, scope, sessionID)
+}
+
+func (s *summaryOverrideStore) PutSessionSummary(ctx context.Context, scope store.Scope, summary store.SessionSummary) error {
+	if s.beforePut != nil {
+		s.beforePut(ctx, scope)
+	}
+	if s.putErr != nil {
+		return s.putErr
+	}
+	return s.Store.PutSessionSummary(ctx, scope, summary)
 }
 
 func TestDeleteSessionClearsTheSummary(t *testing.T) {
@@ -403,11 +626,6 @@ func TestTurnContextBudget(t *testing.T) {
 	}
 	if got, want := turnContextBudget("some-unlisted-model"), llm.DefaultContextWindow*turnContextBudgetPct/100; got != want {
 		t.Fatalf("budget for an unknown model = %d, want the default-window budget %d", got, want)
-	}
-	// The in-turn budget must be looser than the compaction threshold, so
-	// compaction gets first chance and clipping is the fallback.
-	if turnContextBudgetPct <= compactThresholdPct {
-		t.Fatalf("turn budget %d%% must exceed the compaction threshold %d%%", turnContextBudgetPct, compactThresholdPct)
 	}
 }
 

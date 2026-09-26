@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
@@ -102,6 +103,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		log.Printf("resume: run %s: %v", run.ID, err)
 		return
 	}
+	s.upgradeLegacyImageCheckpoint(ctx, agentScope, run, &ck.Engine)
 	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseRunning})
 
 	agent, err := rd.CR.GetAgent(ctx, run.AgentName)
@@ -148,14 +150,23 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		workedMS, workedKnown = *run.WorkedDurationMS, true
 	}
 	tracker := newTurnProgressTrackerState(workedMS, workedKnown)
+	tr.transcriptWrites = &transcriptWriteState{}
 	cb := s.runCallbacks(ctx, tr, run.SessionID, startedAt, tracker)
 	// A resumed run keeps checkpointing, so a replica that dies again picks up
 	// from where the resume got to rather than from the original snapshot.
 	cb.OnCheckpoint = s.checkpointRecorder(ctx, tr, run.SessionID, func() int64 { return tracker.durationMS() })
-	cb.CheckAbort = s.cancelCheck(agentScope, run.ID)
+	cancelCheck := s.cancelCheck(agentScope, run.ID)
+	callbackCheck := cb.CheckAbort
+	cb.CheckAbort = func(checkCtx context.Context) error {
+		if err := cancelCheck(checkCtx); err != nil {
+			return err
+		}
+		return callbackCheck(checkCtx)
+	}
 	res, err := s.engine.ResumeTurnWithTools(ctx, model, ck.Engine, toolset, engine.TurnConfig{
 		MaxIters:            maxIters,
 		ContextBudgetTokens: turnContextBudget(modelName),
+		ContextCompactor:    s.contextCompactor(tr, run.SessionID, modelName),
 		CheckpointEvery:     checkpointEveryIterations,
 	}, approve, note, cb)
 	end := time.Now().UTC()
@@ -196,7 +207,10 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	}
 
 	finalContent := tracker.finalText(res.FinalContent)
-	s.appendTurnFinal(ctx, agentScope, tr, run.SessionID, startedAt, end, tracker, finalContent)
+	if err := s.appendTurnFinal(ctx, agentScope, tr, run.SessionID, startedAt, end, tracker, finalContent); err != nil {
+		s.failResume(ctx, agentScope, run, fmt.Errorf("persist final assistant message: %w", err), tracker)
+		return
+	}
 	body, sources := splitSources(res.Content)
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
 	s.finishRun(persistCtx, agentScope, run.ID, runOutcome{
@@ -222,6 +236,184 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			}
 		}
 	}
+}
+
+const legacyResumeImagePlaceholder = "[multimodal content from tool calls omitted on resume]"
+
+// upgradeLegacyImageCheckpoint recovers provenance lost by checkpoints written
+// before CheckpointMessage recorded ephemeral image follow-ups. It only looks
+// at this run's trusted checkpoint after authenticating the task and tool group
+// against the durable transcript. Ambiguous or incomplete shapes are unchanged.
+func (s *Server) upgradeLegacyImageCheckpoint(ctx context.Context, scope store.Scope, run store.Run, checkpoint *engine.Checkpoint) {
+	if checkpoint == nil || run.SessionID == "" || strings.TrimSpace(run.Input) == "" || run.Input == legacyResumeImagePlaceholder ||
+		!hasLegacyResumeImagePlaceholder(checkpoint.Messages) {
+		return
+	}
+	rows, err := s.loadAllSessionMessages(ctx, scope, run.SessionID)
+	if err != nil {
+		log.Printf("resume: run %s could not verify legacy image checkpoint provenance: %v", run.ID, err)
+		return
+	}
+	if upgraded := markLegacyResumeImagePlaceholders(checkpoint, run, rows); upgraded > 0 {
+		log.Printf("resume: recovered ephemeral image provenance for run %s messages=%d", run.ID, upgraded)
+	}
+}
+
+func hasLegacyResumeImagePlaceholder(messages []engine.CheckpointMessage) bool {
+	for _, message := range messages {
+		if message.Role == engine.RoleUser && message.Content == legacyResumeImagePlaceholder && !message.Ephemeral {
+			return true
+		}
+	}
+	return false
+}
+
+// markLegacyResumeImagePlaceholders mutates only structurally authenticated
+// image notes. The current request must be a unique durable user row from this
+// run, and its checkpoint occurrence must precede a complete, persisted tool
+// call/result group followed by the unbound legacy note.
+func markLegacyResumeImagePlaceholders(checkpoint *engine.Checkpoint, run store.Run, rows []store.Message) int {
+	if checkpoint == nil || run.ID == "" || run.SessionID == "" || run.Input == "" || run.Input == legacyResumeImagePlaceholder {
+		return 0
+	}
+	request, ok := uniqueRunInputRow(rows, run)
+	if !ok {
+		return 0
+	}
+
+	var runCalls, runResults []store.Message
+	for _, row := range rows {
+		if row.RunID != run.ID || row.SessionID != run.SessionID {
+			continue
+		}
+		switch row.Role {
+		case "assistant":
+			if len(historyToolCalls(row)) > 0 {
+				runCalls = append(runCalls, row)
+			}
+		case "tool":
+			if messageToolCallID(row) != "" {
+				runResults = append(runResults, row)
+			}
+		}
+	}
+
+	upgraded := 0
+	messages := checkpoint.Messages
+	for index := range messages {
+		message := messages[index]
+		if message.Role != engine.RoleUser || message.Content != legacyResumeImagePlaceholder || message.Ephemeral ||
+			message.ID != "" || message.Sequence != 0 || message.Name != "" || message.ToolCallID != "" || len(message.ToolCalls) != 0 {
+			continue
+		}
+		groupStart, ok := authenticatedCheckpointToolGroup(messages, index, runCalls, runResults)
+		if !ok {
+			continue
+		}
+		if _, ok := checkpointRunInputBefore(messages, request, run.Input, groupStart); !ok {
+			continue
+		}
+		messages[index].Ephemeral = true
+		upgraded++
+	}
+	checkpoint.Messages = messages
+	return upgraded
+}
+
+func uniqueRunInputRow(rows []store.Message, run store.Run) (store.Message, bool) {
+	var found store.Message
+	count := 0
+	for _, row := range rows {
+		if row.RunID != run.ID || row.SessionID != run.SessionID || row.Role != "user" || row.Content != run.Input || strings.TrimSpace(row.ID) == "" {
+			continue
+		}
+		found = row
+		count++
+	}
+	return found, count == 1
+}
+
+func checkpointRunInputBefore(messages []engine.CheckpointMessage, request store.Message, input string, before int) (int, bool) {
+	var explicit, unbound []int
+	for index := 0; index < before; index++ {
+		message := messages[index]
+		if message.Role != engine.RoleUser || message.Content != input {
+			continue
+		}
+		if message.ID == request.ID {
+			if message.Sequence != 0 && request.Sequence != 0 && message.Sequence != request.Sequence {
+				continue
+			}
+			explicit = append(explicit, index)
+			continue
+		}
+		if message.ID == "" && (message.Sequence == 0 || request.Sequence == 0 || message.Sequence == request.Sequence) {
+			unbound = append(unbound, index)
+		}
+	}
+	if len(explicit) == 1 {
+		return explicit[0], true
+	}
+	if len(explicit) > 1 || len(unbound) != 1 {
+		return 0, false
+	}
+	return unbound[0], true
+}
+
+func authenticatedCheckpointToolGroup(messages []engine.CheckpointMessage, before int, runCalls, runResults []store.Message) (int, bool) {
+	if before <= 0 || messages[before-1].Role != engine.RoleTool {
+		return 0, false
+	}
+	start := before - 1
+	for start >= 0 && messages[start].Role == engine.RoleTool {
+		start--
+	}
+	if start < 0 || messages[start].Role != engine.RoleAssistant || len(messages[start].ToolCalls) == 0 {
+		return 0, false
+	}
+
+	assistant := messages[start]
+	calls := make([]schema.ToolCall, 0, len(assistant.ToolCalls))
+	pending := make(map[string]bool, len(assistant.ToolCalls))
+	for _, call := range assistant.ToolCalls {
+		id := strings.TrimSpace(call.ID)
+		name := strings.TrimSpace(call.Name)
+		if id == "" || name == "" || pending[id] {
+			return 0, false
+		}
+		pending[id] = false
+		calls = append(calls, schema.ToolCall{
+			ID: id, Type: "function",
+			Function: schema.FunctionCall{Name: name, Arguments: call.Args},
+		})
+	}
+	for index := start + 1; index < before; index++ {
+		result := messages[index]
+		if result.Role != engine.RoleTool || result.ToolCallID == "" {
+			return 0, false
+		}
+		seen, exists := pending[result.ToolCallID]
+		if !exists || seen {
+			return 0, false
+		}
+		matches := matchingRunToolRows(runResults, result.ToolCallID)
+		if len(matches) != 1 || matches[0].Content != result.Content ||
+			(result.Name != "" && messageToolName(matches[0]) != result.Name) {
+			return 0, false
+		}
+		pending[result.ToolCallID] = true
+	}
+	for _, complete := range pending {
+		if !complete {
+			return 0, false
+		}
+	}
+	if matches := matchingRunAssistantCallRows(runCalls, engine.Message{
+		Role: engine.RoleAssistant, Content: assistant.Content, ToolCalls: calls,
+	}); len(matches) != 1 {
+		return 0, false
+	}
+	return start, true
 }
 
 func (s *Server) failResume(ctx context.Context, scope store.Scope, run store.Run, err error, trackers ...*turnProgressTracker) {
