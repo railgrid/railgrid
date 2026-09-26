@@ -305,6 +305,8 @@ jobs:
           go-version-file: go.mod
       - name: Test CI selection and completion contracts
         run: make verify-ci-selection
+      - name: Check every e2e suite is reached by a workflow
+        run: make verify-e2e-suites
       - name: Lint workflow syntax
         run: make verify-workflows
 

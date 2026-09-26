@@ -135,7 +135,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("if", verification)
         self.assertEqual([s["run"] for s in verification["steps"] if "run" in s],
                          ["python3 -m pip install -r hack/ci/requirements-test.txt",
-                          "make verify-ci-selection", "make verify-workflows"])
+                          "make verify-ci-selection", "make verify-e2e-suites",
+                          "make verify-workflows"])
 
     def test_image_and_helm_publishing_only_on_original_events(self):
         images = self.workflows["images"]["jobs"]

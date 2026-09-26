@@ -711,7 +711,10 @@ verify-tilt-browser-deployment: ## Verify Browser image pin and Tilt hub reachab
 
 # --- Tool installation ---
 
-.PHONY: verify-ci-selection verify-workflows
+.PHONY: verify-ci-selection verify-workflows verify-e2e-suites
+verify-e2e-suites: ## Check every test/e2e/suites/ suite is reached by a workflow
+	@bash hack/verify-e2e-suites.sh
+
 verify-ci-selection: ## Test CI change selection and completion gates (requires hack/ci/requirements-test.txt)
 	@python3 -c 'import yaml; assert yaml.__version__ == "6.0.3", "Install hack/ci/requirements-test.txt"'
 	@python3 -m unittest discover -s hack/ci -p 'test_*.py' -v
@@ -2793,7 +2796,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
+verify: verify-ci-selection verify-workflows verify-e2e-suites verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 
