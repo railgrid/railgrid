@@ -185,6 +185,16 @@ func TestMain(m *testing.M) {
 		// The SavedView APIResourceSchema the chart ships — init reads the
 		// schemas dir to author the APIExport's resources.
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "kuery", "deploy", "chart", "files"),
+		// Where a kcp shard reaches this provider when it forwards a custom
+		// subresource. The export declares "<resource>/<verb>" entries, so init
+		// writes a DataPlaneEndpointSlice for them to resolve through and refuses
+		// to guess the address.
+		//
+		// Given explicitly rather than read from the CatalogEntry: the committed
+		// manifest targets the dev-loop port, and applyKueryManifests rewrites
+		// spec.serving.backend.url to this same address when it registers the
+		// entry, so the slice and the entry agree on where the provider is.
+		"RAILGRID_DATAPLANE_URL=http://localhost:"+providerPort,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
