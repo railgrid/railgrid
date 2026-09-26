@@ -134,7 +134,7 @@ const credentialSecretName = (name: string) => CREDENTIAL_PREFIX + name
 const connectionSecretName = (name: string) => CONNECTION_PREFIX + name
 
 /** knownToolFamilies mirrors api/agents.go; core is always granted. */
-const KNOWN_FAMILIES = ['core', 'web', 'github', 'mcp', 'edges', 'files', 'spawn']
+const KNOWN_FAMILIES = ['core', 'web', 'github', 'mcp', 'edges', 'files', 'spawn', 'visualization']
 
 const CONNECTION_TYPES = [
   'github', 'mcp', 'websearch', 'edges', 'http', 'telegram', 'slack', 'smtp', 'discord',

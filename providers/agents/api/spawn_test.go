@@ -604,28 +604,28 @@ func TestWorkerTurnContextIsFresh(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	joined := func(msgs []engine.Message) string {
-		var b strings.Builder
-		for _, m := range msgs {
-			b.WriteString(m.Role + ": " + m.Content + "\n")
-		}
-		return b.String()
-	}
-
 	t.Run("an ordinary run gets memory and history", func(t *testing.T) {
-		out := joined(s.assembleTurnCtx(ctx, taskRun{
+		msgs, err := s.assembleTurnCtx(ctx, taskRun{
 			Scope: scope, Agent: agent, Task: "do the thing", Trigger: agentsv1alpha1.RunTriggerChat,
-		}, "shared", "", false))
+		}, "shared", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := joinedTurnMessages(msgs)
 		if !strings.Contains(out, "secret-note") || !strings.Contains(out, "earlier conversation turn") {
 			t.Fatalf("baseline run should carry memory + history:\n%s", out)
 		}
 	})
 
 	t.Run("a worker gets neither, plus the sub-agent preamble", func(t *testing.T) {
-		out := joined(s.assembleTurnCtx(ctx, taskRun{
+		msgs, err := s.assembleTurnCtx(ctx, taskRun{
 			Scope: scope, Agent: agent, Task: "check one fact", Trigger: agentsv1alpha1.RunTriggerSpawn,
 			Worker: &workerRun{Depth: 1, Instructions: "be brief", ParentTask: "the big question", MaxToolTurns: 4},
-		}, "shared", "", false))
+		}, "shared", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := joinedTurnMessages(msgs)
 		if strings.Contains(out, "secret-note") {
 			t.Fatalf("a worker must not get memory injection:\n%s", out)
 		}
@@ -726,16 +726,12 @@ func TestFanOutGuidanceComesWithTheGrant(t *testing.T) {
 	// Deliberately EMPTY system prompt: the whole point is that none is needed.
 	run := taskRun{Scope: scope, Agent: agent, Task: "do the research", Trigger: agentsv1alpha1.RunTriggerChannel}
 
-	joined := func(msgs []engine.Message) string {
-		var b strings.Builder
-		for _, m := range msgs {
-			b.WriteString(m.Role + ": " + m.Content + "\n")
-		}
-		return b.String()
-	}
-
 	t.Run("granted: the mechanics are injected", func(t *testing.T) {
-		out := joined(s.assembleTurnCtx(ctx, run, "chat", "", true))
+		msgs, err := s.assembleTurnCtx(ctx, run, "chat", "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := joinedTurnMessages(msgs)
 		for _, want := range []string{"join ONCE", "do NOT investigate them one after another", "stand alone"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("guidance missing %q:\n%s", want, out)
@@ -748,7 +744,11 @@ func TestFanOutGuidanceComesWithTheGrant(t *testing.T) {
 	})
 
 	t.Run("not granted: nothing is injected", func(t *testing.T) {
-		out := joined(s.assembleTurnCtx(ctx, run, "chat", "", false))
+		msgs, err := s.assembleTurnCtx(ctx, run, "chat", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := joinedTurnMessages(msgs)
 		if strings.Contains(out, "join ONCE") {
 			t.Fatal("an agent without the grant must not be told to fan out")
 		}
@@ -759,7 +759,11 @@ func TestFanOutGuidanceComesWithTheGrant(t *testing.T) {
 		// it call a tool it does not have.
 		w := run
 		w.Worker = &workerRun{Depth: 2, MaxToolTurns: 4}
-		out := joined(s.assembleTurnCtx(ctx, w, "chat", "", false))
+		msgs, err := s.assembleTurnCtx(ctx, w, "chat", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := joinedTurnMessages(msgs)
 		if strings.Contains(out, "join ONCE") {
 			t.Fatal("worker context must not carry fan-out mechanics")
 		}
@@ -770,9 +774,21 @@ func TestFanOutGuidanceComesWithTheGrant(t *testing.T) {
 		a := *agent
 		a.Spec.SystemPrompt = "You are Bob, terse and sceptical."
 		withPersona.Agent = &a
-		out := joined(s.assembleTurnCtx(ctx, withPersona, "chat", "", true))
+		msgs, err := s.assembleTurnCtx(ctx, withPersona, "chat", "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := joinedTurnMessages(msgs)
 		if strings.Index(out, "You are Bob") > strings.Index(out, "join ONCE") {
 			t.Fatal("the agent's persona should come before provider mechanics")
 		}
 	})
+}
+
+func joinedTurnMessages(msgs []engine.Message) string {
+	var b strings.Builder
+	for _, message := range msgs {
+		b.WriteString(message.Role + ": " + message.Content + "\n")
+	}
+	return b.String()
 }

@@ -1418,3 +1418,267 @@ describe('a run still working with nobody attached', () => {
     expect(text(view.element)).toContain('run refresh failed')
   })
 })
+
+describe('approval handoff after the chat stream closes', () => {
+  const frames: SSEEvent[] = [
+    { event: 'start', data: { runID: 'r-approval', sessionID: 's-approval' } },
+    { event: 'approval_required', data: { runID: 'r-approval', inboxID: 'first', tool: 'describe_model', args: '{"model":"first"}' } },
+    { event: 'done', data: { status: 'waiting' } },
+  ]
+  const pending = (inboxID: string, runID = 'r-approval') => ({ id: runID, phase: 'Running', pending: { inboxID, tool: 'describe_model', args: JSON.stringify({ model: inboxID }) }, steps: [] })
+  const event = (store: EventTarget, phase: string, runID = 'r-approval') => store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: runID, phase } } }))
+
+  it('recovers a pending disclosure after the original chat stream fails', async () => {
+    const chatStream = vi.fn(async function* () {
+      yield { event: 'start', data: { runID: 'r-approval', sessionID: 's-approval' } } as SSEEvent
+      throw new Error('connection closed')
+    })
+    const getRun = vi.fn().mockResolvedValue(pending('recovered'))
+    const { el, store } = await mountChat(chatStream, { getRun })
+    await send(el, 'describe models')
+    expect(text(el)).toContain('Chat failed: connection closed')
+
+    event(store, 'PendingApproval')
+    await settle(6)
+
+    expect(getRun).toHaveBeenCalledWith('r-approval')
+    expect(text(el.querySelector('.agents-approval'))).toContain('recovered')
+    expect(text(el)).not.toContain('Chat failed: connection closed')
+  })
+
+  it('keeps approval recovery closed after a terminal chat frame', async () => {
+    const chatStream = scripted([
+      { event: 'start', data: { runID: 'r-approval', sessionID: 's-approval' } },
+      { event: 'done', data: { runID: 'r-approval', status: 'completed', content: 'finished' } },
+    ])
+    const getRun = vi.fn().mockResolvedValue(pending('stale'))
+    const { el, store } = await mountChat(chatStream, { getRun })
+    await send(el, 'describe models')
+
+    event(store, 'PendingApproval')
+    await settle(6)
+
+    expect(getRun).not.toHaveBeenCalled()
+    expect(el.querySelector('.agents-approval')).toBeNull()
+  })
+
+  it('projects a terminal run detail when approval lifecycle events arrive late', async () => {
+    const finalTranscript = deferred<TranscriptMessage[]>()
+    const listMessages = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(() => finalTranscript.promise)
+    const getRun = vi.fn().mockResolvedValue({ ...pending('stale'), phase: 'Succeeded' })
+    const { el, store } = await mountChat(scripted(frames), { getRun, listMessages })
+    await send(el, 'describe models')
+    expect(text(el.querySelector('.agents-approval'))).toContain('first')
+
+    event(store, 'PendingApproval')
+    await settle(6)
+
+    expect(getRun).toHaveBeenCalledWith('r-approval')
+    expect(el.querySelector('.agents-approval')).toBeNull()
+    expect(el.querySelector('.k-ai-turn-progress__status')?.getAttribute('aria-label')).toBe('Worked')
+    expect(text(el)).not.toContain('Waiting for approval')
+
+    finalTranscript.resolve([{
+      id: 'terminal', runID: 'r-approval', role: 'assistant', content: 'Authoritative final answer',
+      metadata: { turnPhase: 'terminal', turnStatus: 'completed' },
+    }])
+    await settle(6)
+
+    expect(text(el)).toContain('Authoritative final answer')
+    expect(el.querySelector('.k-ai-turn-progress__status')?.getAttribute('aria-label')).toBe('Worked')
+  })
+
+  it('keeps approval recovery closed after an accepted cancellation without a terminal event', async () => {
+    const gate = deferred<void>()
+    const cancelRun = vi.fn().mockResolvedValue({ id: 'r-approval', cancelling: true })
+    const getRun = vi.fn().mockResolvedValue(pending('stale'))
+    const { el, store } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r-approval', sessionID: 's-approval' } },
+    ], gate.promise), { cancelRun, getRun })
+    await send(el, 'describe models')
+    el.querySelector<HTMLButtonElement>('.agents-stop')!.click()
+    await settle(6)
+
+    event(store, 'PendingApproval')
+    await settle(6)
+
+    expect(cancelRun).toHaveBeenCalledWith('r-approval')
+    expect(getRun).not.toHaveBeenCalled()
+    expect(el.querySelector('.agents-approval')).toBeNull()
+    gate.resolve()
+    await settle(6)
+  })
+
+  it('replaces the resolved card with a successive approval despite a lagging run phase', async () => {
+    const getRun = vi.fn().mockResolvedValue(pending('first'))
+    const resolveInbox = vi.fn().mockResolvedValue({})
+    const { el, store } = await mountChat(scripted(frames), { getRun, resolveInbox })
+    await send(el, 'describe models')
+    el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    await settle(6)
+    expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
+    getRun.mockResolvedValue(pending('second'))
+    event(store, 'PendingApproval')
+    await settle(6)
+    expect(el.querySelector('.agents-approval-done')).toBeNull()
+    expect(text(el.querySelector('.agents-approval'))).toContain('second')
+    el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    await settle(6)
+    expect(resolveInbox).toHaveBeenLastCalledWith('second', 'approve')
+  })
+
+  it('restores the pending disclosure when reopening a session', async () => {
+    const getRun = vi.fn().mockResolvedValue(pending('restored'))
+    const { el } = await mountChat(scripted([]), {
+      listSessions: () => Promise.resolve([session('s-approval')]),
+      listMessages: () => Promise.resolve([{ id: 'm1', runID: 'r-approval', role: 'assistant', content: '', metadata: { turnPhase: 'terminal', turnStatus: 'waiting' } }]),
+      listRuns: () => Promise.resolve({ items: [{ id: 'r-approval', phase: 'Running' }] }), getRun,
+    })
+    await settle(6)
+    expect(getRun).toHaveBeenCalledWith('r-approval')
+    expect(text(el.querySelector('.agents-approval'))).toContain('restored')
+  })
+
+  it('recovers independent run approvals concurrently', async () => {
+    let nextRun = 0
+    const chatStream = vi.fn(async function* () {
+      const runID = 'r-' + String(++nextRun)
+      yield { event: 'start', data: { runID, sessionID: 's-shared' } } as SSEEvent
+      throw new Error('connection closed')
+    })
+    const first = deferred<ReturnType<typeof pending>>()
+    const second = deferred<ReturnType<typeof pending>>()
+    const getRun = vi.fn((runID: string) => runID === 'r-1' ? first.promise : second.promise)
+    const { el, store } = await mountChat(chatStream, { getRun })
+    await send(el, 'first run')
+    await send(el, 'second run')
+
+    event(store, 'PendingApproval', 'r-1')
+    event(store, 'PendingApproval', 'r-2')
+    expect(getRun).toHaveBeenCalledTimes(2)
+
+    first.resolve(pending('inbox-r-1', 'r-1'))
+    second.resolve(pending('inbox-r-2', 'r-2'))
+    await settle(8)
+
+    expect(el.querySelectorAll('.agents-approval')).toHaveLength(2)
+    expect(text(el)).toContain('inbox-r-1')
+    expect(text(el)).toContain('inbox-r-2')
+  })
+
+  it.each(['Running', 'Succeeded'] as const)('%s on another run does not invalidate a pending approval lookup', async phase => {
+    let nextRun = 0
+    const chatStream = vi.fn(async function* () {
+      const runID = 'r-' + String(++nextRun)
+      yield { event: 'start', data: { runID, sessionID: 's-shared' } } as SSEEvent
+      throw new Error('connection closed')
+    })
+    const lookup = deferred<ReturnType<typeof pending>>()
+    const getRun = vi.fn(() => lookup.promise)
+    const { el, store } = await mountChat(chatStream, { getRun })
+    await send(el, 'first run')
+    await send(el, 'second run')
+
+    event(store, 'PendingApproval', 'r-1')
+    event(store, phase, 'r-2')
+    await settle(6)
+    lookup.resolve(pending('still-pending', 'r-1'))
+    await settle(8)
+
+    expect(text(el.querySelector('.agents-approval'))).toContain('still-pending')
+  })
+
+  it('still rejects a stale lookup after the same run returns to Running', async () => {
+    const lookup = deferred<ReturnType<typeof pending>>()
+    const getRun = vi.fn(() => lookup.promise)
+    const chatStream = vi.fn(async function* () {
+      yield { event: 'start', data: { runID: 'r-approval', sessionID: 's-approval' } } as SSEEvent
+      throw new Error('connection closed')
+    })
+    const { el, store } = await mountChat(chatStream, { getRun })
+    await send(el, 'describe models')
+
+    event(store, 'PendingApproval')
+    event(store, 'Running')
+    lookup.resolve(pending('stale'))
+    await settle(8)
+
+    expect(getRun).toHaveBeenCalledTimes(1)
+    expect(el.querySelector('.agents-approval')).toBeNull()
+    expect(text(el)).not.toContain('stale')
+  })
+
+  it('restores every live approval after a different run finishes and reloads the transcript', async () => {
+    const runIDs = ['r-a', 'r-b', 'r-c']
+    let nextRun = 0
+    const chatStream = vi.fn(async function* () {
+      const runID = runIDs[nextRun++]
+      yield { event: 'start', data: { runID, sessionID: 's-shared' } } as SSEEvent
+      yield { event: 'approval_required', data: { runID, inboxID: 'inbox-' + runID, tool: 'describe_model', args: '{}' } } as SSEEvent
+      yield { event: 'done', data: { runID, status: 'waiting' } } as SSEEvent
+    })
+    const transcript: TranscriptMessage[] = [
+      { id: 'user-a', runID: 'r-a', role: 'user', content: 'first run' },
+      { id: 'assistant-a', runID: 'r-a', role: 'assistant', content: '', metadata: { turnPhase: 'terminal', turnStatus: 'waiting' } },
+      { id: 'user-b', runID: 'r-b', role: 'user', content: 'second run' },
+      { id: 'assistant-b', runID: 'r-b', role: 'assistant', content: 'finished', metadata: { turnPhase: 'terminal', turnStatus: 'completed' } },
+      { id: 'user-c', runID: 'r-c', role: 'user', content: 'third run' },
+      { id: 'assistant-c', runID: 'r-c', role: 'assistant', content: '', metadata: { turnPhase: 'terminal', turnStatus: 'waiting' } },
+    ]
+    let persistedRuns: Array<{ id: string; phase: string; sessionID: string }> = []
+    const listRuns = vi.fn((query: { limit?: number }) => Promise.resolve({
+      items: query.limit ? persistedRuns.slice(0, query.limit) : persistedRuns,
+    }))
+    const listMessages = vi.fn(() => Promise.resolve([] as TranscriptMessage[]))
+    const getRun = vi.fn((runID: string) => Promise.resolve(pending('inbox-' + runID, runID)))
+    const { el, store } = await mountChat(chatStream, { listMessages, listRuns, getRun })
+    await send(el, 'first run')
+    await send(el, 'second run')
+    await send(el, 'third run')
+    expect(el.querySelectorAll('.agents-approval')).toHaveLength(3)
+
+    listMessages.mockResolvedValue(transcript.slice().reverse())
+    persistedRuns = [
+      ...Array.from({ length: 5 }, (_, index) => ({ id: 'r-history-' + index, phase: 'Succeeded', sessionID: 's-shared' })),
+      { id: 'r-b', phase: 'Running', sessionID: 's-shared' },
+      { id: 'r-c', phase: 'PendingApproval', sessionID: 's-shared' },
+      { id: 'r-a', phase: 'PendingApproval', sessionID: 's-shared' },
+    ]
+    event(store, 'Succeeded', 'r-b')
+    await settle(12)
+
+    expect(listRuns).toHaveBeenLastCalledWith({ agent: 'scout', session: 's-shared' })
+    expect(getRun).toHaveBeenCalledWith('r-a')
+    expect(getRun).toHaveBeenCalledWith('r-c')
+    expect(getRun).not.toHaveBeenCalledWith('r-b')
+    expect(el.querySelectorAll('.agents-approval')).toHaveLength(2)
+    expect(text(el)).toContain('inbox-r-a')
+    expect(text(el)).toContain('inbox-r-c')
+    expect(text(el)).not.toContain('inbox-r-b')
+    const terminalMessage = [...el.querySelectorAll<HTMLElement>('.agents-ai-message')]
+      .find(message => message.id === 'k-ai-conversation-turn-massistant-b')
+    expect(terminalMessage?.querySelector('.k-ai-turn-progress__status')?.getAttribute('aria-label')).toBe('Worked')
+  })
+
+  it.each(['cancel', 'navigate'] as const)('discards a pending disclosure fetched before %s', async reason => {
+    const lookup = deferred<ReturnType<typeof pending>>()
+    const getRun = vi.fn(() => lookup.promise)
+    const { el, store, view } = await mountChat(scripted(frames), { getRun })
+    await send(el, 'describe models')
+    event(store, 'PendingApproval')
+    if (reason === 'cancel') {
+      event(store, 'Aborted')
+      // A delayed nonterminal event after the terminal one must not start a
+      // fresh lookup from stale run details.
+      event(store, 'PendingApproval')
+    } else await view.setProps({ name: 'another-agent' })
+    await settle(6)
+    lookup.resolve(pending('stale'))
+    await settle(6)
+    expect(getRun).toHaveBeenCalledTimes(1)
+    expect(el.querySelector('.agents-approval')).toBeNull()
+    expect(text(el)).not.toContain('stale')
+  })
+})

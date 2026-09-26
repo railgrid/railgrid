@@ -141,7 +141,7 @@ const TOOL_FAMILY: Record<string, string> = { mcp: 'mcp', github: 'github', webs
 // web_fetch needs no connection whatsoever (it reads public URLs), so an agent
 // can usefully have web without one — and a preset that grants web would
 // otherwise lose it the moment the user wired any tool.
-export const STANDALONE_FAMILIES = ['spawn', 'web'] as const
+export const STANDALONE_FAMILIES = ['spawn', 'web', 'visualization'] as const
 
 export function familiesForConns(
   names: string[],

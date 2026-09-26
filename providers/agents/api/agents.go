@@ -33,9 +33,6 @@ import (
 	"github.com/railgrid/provider-agents/store"
 )
 
-// chatHistoryLimit bounds how many prior messages are replayed into a turn.
-const chatHistoryLimit = 40
-
 // writeResourceError maps a tenant-API error onto an HTTP status. Validation
 // and permission failures keep their own class — mapping them all to 502 made
 // a user's own bad input look like an upstream outage.
@@ -300,7 +297,7 @@ func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, r
 }
 
 // knownToolFamilies are the grantable built-in families (core is always on).
-var knownToolFamilies = map[string]bool{"core": true, "web": true, "github": true, "mcp": true, "edges": true, "files": true, "spawn": true}
+var knownToolFamilies = map[string]bool{"core": true, "web": true, "github": true, "mcp": true, "edges": true, "files": true, "spawn": true, "visualization": true}
 
 // normalizeFamilies keeps only recognized families, always includes core, and
 // de-duplicates — so the stored grant is clean regardless of UI input.

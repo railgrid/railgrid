@@ -24,6 +24,11 @@ import (
 	"time"
 )
 
+// ErrSessionCheckpointStale indicates that a concurrent compaction already
+// advanced the session checkpoint, or that the proposed boundary would cover
+// a transcript row absent from the compacted model history.
+var ErrSessionCheckpointStale = fmt.Errorf("session compaction checkpoint is stale")
+
 // Scope isolates all data to one tenant + agent boundary. Every query includes
 // org and workspace; AgentName narrows to a single agent where relevant.
 type Scope struct {
@@ -53,7 +58,11 @@ func (s Scope) withAgent() error {
 // ContentEncrypted and ContentKeyID are reserved for a future application-level
 // encryption layer and are always false/empty today.
 type Message struct {
-	ID               string         `json:"id"`
+	ID string `json:"id"`
+	// Sequence is assigned by the store when the message is appended. Unlike
+	// CreatedAt, it is an exact durable boundary for a compaction checkpoint and
+	// remains unambiguous when several messages share a timestamp.
+	Sequence         int64          `json:"sequence,omitempty"`
 	AgentName        string         `json:"agentName,omitempty"`
 	SessionID        string         `json:"sessionID,omitempty"`
 	RunID            string         `json:"runID,omitempty"`
@@ -164,6 +173,64 @@ type SessionSummary struct {
 	MessageCount int       `json:"messageCount"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
+	// Checkpoint is present for versioned durable history replacements. Older
+	// rows have no checkpoint and continue to use Summary + ThroughAt.
+	Checkpoint *SessionCheckpoint `json:"checkpoint,omitempty"`
+}
+
+// SessionCheckpoint is a versioned, replayable replacement for the exact
+// prefix of a transcript represented by a compaction summary. The source
+// messages remain append-only; the checkpoint only changes what replay feeds
+// back to the model.
+type SessionCheckpoint struct {
+	Version            int                        `json:"version"`
+	ThroughSequence    int64                      `json:"throughSequence"`
+	ThroughMessageID   string                     `json:"throughMessageID,omitempty"`
+	ThroughAt          time.Time                  `json:"throughAt,omitempty"`
+	ReplacementHistory []SessionCheckpointMessage `json:"replacementHistory"`
+}
+
+// SessionCheckpointMessage is the storage-neutral wire history retained in a
+// checkpoint. Tool calls and their results remain structured so replay can
+// restore valid call/result pairing after restart.
+type SessionCheckpointMessage struct {
+	ID         string                      `json:"id,omitempty"`
+	Sequence   int64                       `json:"sequence,omitempty"`
+	Role       string                      `json:"role"`
+	Content    string                      `json:"content,omitempty"`
+	Name       string                      `json:"name,omitempty"`
+	ToolCallID string                      `json:"toolCallID,omitempty"`
+	ToolCalls  []SessionCheckpointToolCall `json:"toolCalls,omitempty"`
+}
+
+// SessionCheckpointToolCall is the durable subset of a model tool call.
+type SessionCheckpointToolCall struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Args string `json:"args"`
+}
+
+func validateSessionCheckpoint(checkpoint *SessionCheckpoint) error {
+	if checkpoint == nil {
+		return nil
+	}
+	if checkpoint.Version != 1 {
+		return fmt.Errorf("unsupported session checkpoint version %d", checkpoint.Version)
+	}
+	if checkpoint.ThroughSequence <= 0 {
+		return fmt.Errorf("session checkpoint through sequence must be positive")
+	}
+	if checkpoint.ReplacementHistory == nil {
+		return fmt.Errorf("session checkpoint replacement history is required")
+	}
+	for i, message := range checkpoint.ReplacementHistory {
+		switch message.Role {
+		case "system", "user", "assistant", "tool":
+		default:
+			return fmt.Errorf("session checkpoint message %d has unsupported role %q", i, message.Role)
+		}
+	}
+	return nil
 }
 
 // Memory is a long-term note the agent writes and later recalls. Body is

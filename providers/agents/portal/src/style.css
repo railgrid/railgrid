@@ -733,3 +733,15 @@ railgrid-provider-agents .agents-usage-disclosure { align-self: flex-start; }
 
 /* Collection spacing follows Databricks: the host owns the outer inset. */
 railgrid-provider-agents .agents-panel.agents-models-page { padding: 0; gap: 16px; }
+
+/* Inline visualization layout; shared controls remain PortalKit-owned. */
+railgrid-provider-agents .agents-visualization { margin: 1rem 0; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-visualization__title { font-size: 1rem; font-weight: 600; margin: 0; }
+railgrid-provider-agents .agents-visualization figcaption p { margin: .5rem 0; color: var(--color-text-secondary); }
+railgrid-provider-agents .agents-visualization__canvas { width: 100%; min-width: 0; overflow: hidden; }
+railgrid-provider-agents .agents-visualization__canvas svg { max-width: 100%; height: auto; }
+railgrid-provider-agents .agents-visualization__note { color: var(--color-text-secondary); font-size: .875rem; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-visualization__data { margin-top: .75rem; }
+railgrid-provider-agents .agents-visualization__data summary { cursor: pointer; color: var(--color-text-secondary); }
+railgrid-provider-agents .agents-visualization__table { overflow: auto; max-height: 24rem; margin-top: .5rem; }
+railgrid-provider-agents .agents-visualization__table caption { text-align: left; color: var(--color-text-secondary); padding: .5rem; }

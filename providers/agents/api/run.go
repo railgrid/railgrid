@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -197,6 +198,32 @@ type taskRun struct {
 	// OnAssistantMessage receives complete model responses, after their tool-call
 	// status is known. The timestamp is assigned at the persistence boundary.
 	OnAssistantMessage func(engine.AssistantMessage, time.Time)
+	transcriptWrites   *transcriptWriteState
+}
+
+type transcriptWriteState struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (s *transcriptWriteState) record(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err == nil {
+		s.err = err
+	}
+}
+
+func (s *transcriptWriteState) failure() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
 }
 
 // delivery describes where this run's answer should go, for the run record. A
@@ -280,27 +307,34 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		maxIters = run.Worker.MaxToolTurns
 	}
 
-	// Fold the session's older messages into a summary when replaying them all
-	// would crowd the model's window. Must happen BEFORE the turn is assembled —
-	// the point is to be under the limit when the request goes out.
 	modelName := s.modelNameForPurpose(ctx, run.Creds, agent, purpose)
-	s.maybeCompactSession(ctx, run, sessionID, modelName)
 
 	// Assemble the turn before persisting the task message — LoadRecentMessages
 	// has no notion of "current run", so appending first would replay the task
 	// into history and the model would see it twice.
 	// Derived from the toolset that was actually built, not from the grant: a
 	// depth-limited worker has no spawn tool and must not be told to fan out.
-	msgs := s.assembleTurnCtx(ctx, run, sessionID, mcpInstructions, hasToolNamed(toolset, "spawn"))
+	msgs, err := s.assembleTurnCtx(ctx, run, sessionID, mcpInstructions, hasToolNamed(toolset, "spawn"))
+	if err != nil {
+		return s.failBeforeStart(ctx, scope, run, sessionID, time.Time{}, fmt.Errorf("assemble agent history: %w", err))
+	}
 
 	// The detached starter may have created a Pending record while this run was
 	// queued. Start the active turn clock only when executeTask is ready to write
 	// the durable Running record; queue/model/toolset setup is not worked time.
 	runStartedAt := time.Now().UTC()
-	_ = s.store.AppendMessage(ctx, scope, store.Message{
-		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
+	taskMessageID := uuid.NewString()
+	if err := s.store.AppendMessage(ctx, scope, store.Message{
+		ID: taskMessageID, AgentName: agent.Name, SessionID: sessionID, RunID: runID,
 		Role: "user", Content: run.Task, CreatedAt: runStartedAt,
-	})
+	}); err != nil {
+		return s.failBeforeStart(ctx, scope, run, sessionID, runStartedAt, fmt.Errorf("persist agent task message: %w", err))
+	}
+	// The active history already contains this request as its final user row.
+	// Attach the durable ID so a compaction checkpoint can prove which stored
+	// message that anchor represents, even though the append API assigns sequence
+	// numbers internally and does not return the updated row.
+	msgs[len(msgs)-1].ID = taskMessageID
 	_ = s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
 		ParentRunID: run.ParentRunID, IdempotencyKey: run.IdempotencyKey,
@@ -313,14 +347,23 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 	s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseRunning})
 
 	tracker := newTurnProgressTracker(0)
+	run.transcriptWrites = &transcriptWriteState{}
 	cb := s.runCallbacks(ctx, run, sessionID, runStartedAt, tracker)
 	// Periodic checkpoints make a long run recoverable: if this replica dies, the
 	// sweep (api/sweep.go) resumes from the last one instead of losing the work.
 	cb.OnCheckpoint = s.checkpointRecorder(ctx, run, sessionID, func() int64 { return tracker.durationMS() })
-	cb.CheckAbort = s.cancelCheck(scope, runID)
+	cancelCheck := s.cancelCheck(scope, runID)
+	callbackCheck := cb.CheckAbort
+	cb.CheckAbort = func(checkCtx context.Context) error {
+		if err := cancelCheck(checkCtx); err != nil {
+			return err
+		}
+		return callbackCheck(checkCtx)
+	}
 	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, engine.TurnConfig{
 		MaxIters:            maxIters,
 		ContextBudgetTokens: turnContextBudget(modelName),
+		ContextCompactor:    s.contextCompactor(run, sessionID, modelName),
 		CheckpointEvery:     checkpointEveryIterations,
 	}, cb)
 	end := time.Now().UTC()
@@ -385,7 +428,16 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 	}
 
 	finalContent := tracker.finalText(res.FinalContent)
-	s.appendTurnFinal(ctx, scope, run, sessionID, runStartedAt, end, tracker, finalContent)
+	if err := s.appendTurnFinal(ctx, scope, run, sessionID, runStartedAt, end, tracker, finalContent); err != nil {
+		writeErr := fmt.Errorf("persist final assistant message: %w", err)
+		persistCtx, cancelPersist := boundedPersistContext(ctx)
+		defer cancelPersist()
+		s.appendTurnTerminal(persistCtx, scope, run, sessionID, runStartedAt, end, tracker, turnStatusForRunPhase(store.RunPhaseFailed), "", writeErr.Error())
+		s.finishRun(persistCtx, scope, runID, runOutcome{Phase: store.RunPhaseFailed, Message: writeErr.Error(), WorkedDurationMS: tracker.workedDurationMS()}, end)
+		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
+		return runResult{RunID: runID, Content: res.Content, FinalContent: finalContent, Phase: store.RunPhaseFailed,
+			StartedAt: &runStartedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}, writeErr
+	}
 	// The answer goes on the run record too, so a programmatic reader (the parent
 	// of a spawned worker, GET /api/runs/{id}) finds the result where it found the
 	// phase instead of having to locate the session and dig out its last message.
@@ -469,6 +521,40 @@ func (s *Server) dataPlaneFor(run taskRun) tools.DataPlane {
 	return tools.DataPlane{ClusterID: run.ClusterID, Callers: s.verbCallers}
 }
 
+func (s *Server) failBeforeStart(ctx context.Context, scope store.Scope, run taskRun, sessionID string, at time.Time, cause error) (runResult, error) {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	persistCtx, cancel := boundedPersistContext(ctx)
+	defer cancel()
+	if existing, err := s.store.GetRun(persistCtx, scope, run.RunID); err == nil {
+		// A detached/background starter may have recorded Pending before this
+		// worker tried to load history. Settle that same record instead of
+		// leaving a run that can only look stuck after a read failure.
+		existing.Phase = store.RunPhaseFailed
+		existing.Message = cause.Error()
+		existing.Checkpoint = nil
+		existing.UpdatedAt = at
+		existing.FinishedAt = &at
+		if err := s.saveRun(persistCtx, scope, existing); err != nil {
+			cause = errors.Join(cause, fmt.Errorf("persisting failed run: %w", err))
+		}
+	} else {
+		record := store.Run{
+			ID: run.RunID, AgentName: scope.AgentName, SessionID: sessionID,
+			Trigger: run.Trigger, ParentRunID: run.ParentRunID,
+			IdempotencyKey: run.IdempotencyKey, Delivery: run.delivery(),
+			Phase: store.RunPhaseFailed, Input: run.Task, Message: cause.Error(),
+			CreatedAt: at, UpdatedAt: at, FinishedAt: &at,
+		}
+		if err := s.saveRun(persistCtx, scope, record); err != nil {
+			cause = errors.Join(cause, fmt.Errorf("persisting failed run: %w", err))
+		}
+	}
+	s.publishRunEvent(scope, runEvent{ID: run.RunID, Agent: scope.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
+	return runResult{RunID: run.RunID, Phase: store.RunPhaseFailed, FinishedAt: &at}, cause
+}
+
 // runCallbacks chains the caller's streaming callbacks with transcript
 // persistence. Complete model responses that led to a tool call are persisted
 // immediately as commentary; the final response is persisted by executeTask
@@ -476,6 +562,9 @@ func (s *Server) dataPlaneFor(run taskRun) tools.DataPlane {
 func (s *Server) runCallbacks(ctx context.Context, run taskRun, sessionID string, startedAt time.Time, tracker *turnProgressTracker) engine.Callbacks {
 	if tracker == nil {
 		tracker = newTurnProgressTracker(0)
+	}
+	if run.transcriptWrites == nil {
+		run.transcriptWrites = &transcriptWriteState{}
 	}
 	return engine.Callbacks{
 		OnDelta: func(delta string) {
@@ -487,33 +576,47 @@ func (s *Server) runCallbacks(ctx context.Context, run taskRun, sessionID string
 		OnAssistantMessage: func(message engine.AssistantMessage) {
 			tracker.assistant(message)
 			at := time.Now().UTC()
-			if message.Complete && message.HasToolCalls && strings.TrimSpace(message.Content) != "" {
-				s.appendProgressMessage(ctx, run.Scope, store.Message{
+			persisted := true
+			if message.Complete && (message.HasToolCalls || len(message.ToolCalls) > 0) {
+				metadata := turnMetadata("commentary", "running", startedAt, 0, message.Duration.Milliseconds(), "")
+				metadata[historyToolCallsKey] = storedToolCalls(message.ToolCalls)
+				metadata["modelOnly"] = strings.TrimSpace(message.Content) == ""
+				if err := s.appendProgressMessage(ctx, run.Scope, store.Message{
 					ID: uuid.NewString(), AgentName: run.Agent.Name, SessionID: sessionID, RunID: run.RunID,
-					Role: "assistant", Content: safeTruncate(message.Content, maxStoredOutput),
-					Metadata:  turnMetadata("commentary", "running", startedAt, 0, message.Duration.Milliseconds(), ""),
+					Role: "assistant", Content: message.Content,
+					Metadata:  metadata,
 					CreatedAt: at,
-				})
+				}); err != nil {
+					run.transcriptWrites.record(fmt.Errorf("persist assistant tool-call group: %w", err))
+					persisted = false
+				}
 			}
-			if run.OnAssistantMessage != nil {
+			if persisted && run.OnAssistantMessage != nil {
 				run.OnAssistantMessage(message, at)
 			}
 		},
 		OnToolStart: run.OnToolStart,
 		OnTool: func(ev engine.ToolEvent) {
 			tracker.tool(ev)
-			s.appendProgressMessage(ctx, run.Scope, store.Message{
+			if err := s.appendProgressMessage(ctx, run.Scope, store.Message{
 				ID: uuid.NewString(), AgentName: run.Agent.Name, SessionID: sessionID, RunID: run.RunID,
-				Role: "tool", Content: safeTruncate(ev.Result, 8*1024),
+				Role: "tool", Content: ev.Result,
 				Metadata: map[string]any{
-					"tool": ev.Name, "args": redactArgs(ev.Args),
+					"tool": ev.Name, historyToolNameKey: ev.Name,
+					historyToolCallIDKey: ev.ID, "args": redactHistoryArgs(ev.Args),
 					"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
 				},
 				CreatedAt: time.Now().UTC(),
-			})
+			}); err != nil {
+				run.transcriptWrites.record(fmt.Errorf("persist tool result %q: %w", ev.ID, err))
+				return
+			}
 			if run.OnTool != nil {
 				run.OnTool(ev)
 			}
+		},
+		CheckAbort: func(context.Context) error {
+			return run.transcriptWrites.failure()
 		},
 	}
 }
@@ -618,7 +721,7 @@ func hasToolNamed(ts []engine.Tool, name string) bool {
 	return false
 }
 
-func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mcpInstructions string, fanOut bool) []engine.Message {
+func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mcpInstructions string, fanOut bool) ([]engine.Message, error) {
 	scope, agent, task, trigger := run.Scope, run.Agent, run.Task, run.Trigger
 	var msgs []engine.Message
 	// A worker gets a fixed sub-agent preamble above the agent's persona: it is
@@ -644,7 +747,7 @@ func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mc
 		if mi := strings.TrimSpace(mcpInstructions); mi != "" {
 			msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: "Guidance from connected tools/services:\n\n" + mi})
 		}
-		return append(msgs, engine.Message{Role: engine.RoleUser, Content: task})
+		return append(msgs, engine.Message{Role: engine.RoleUser, Content: task}), nil
 	}
 	// Long-term memory: auto-inject the agent's saved notes so recall does not
 	// depend on the model remembering to call memory_list. spec.memory.enabled
@@ -666,44 +769,41 @@ func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mc
 	if mi := strings.TrimSpace(mcpInstructions); mi != "" {
 		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: "Guidance from connected tools/services:\n\n" + mi})
 	}
-	// History, with any compaction summary standing in for the older messages it
-	// covers (see api/compact.go). Without compaction this is just the last-N
-	// window it always was.
-	sc := s.loadSessionContext(ctx, scope, sessionID, chatHistoryLimit)
-	if sc.Summary != nil {
+	// History is loaded in full before the engine decides whether this request
+	// needs compaction. Loading failures are returned so a new run never silently
+	// proceeds as though a failed read meant the session was empty.
+	sc, err := s.loadSessionContext(ctx, scope, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if sc.Checkpoint != nil {
+		if sc.Summary == nil || strings.TrimSpace(sc.Summary.Summary) == "" || len(sc.Checkpoint.ReplacementHistory) == 0 {
+			return nil, fmt.Errorf("session checkpoint has no summary or replacement history")
+		}
+		if sc.Checkpoint.Version != 1 {
+			return nil, fmt.Errorf("unsupported session checkpoint version %d", sc.Checkpoint.Version)
+		}
+		replacement, err := engineMessagesFromCheckpoint(sc.Checkpoint.ReplacementHistory)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, replacement...)
+	} else if sc.Summary != nil {
+		if strings.TrimSpace(sc.Summary.Summary) == "" {
+			return nil, fmt.Errorf("session summary is empty")
+		}
 		msgs = append(msgs, summaryMessage(*sc.Summary))
 	}
 	history := sc.Messages
-	for _, m := range history {
-		switch m.Role {
-		case "assistant":
-			// Terminal presentation markers carry chat status/timing for the
-			// portal; they are not model prose and must not become empty turns on
-			// the next request.
-			if phase, _ := m.Metadata["turnPhase"].(string); phase == "terminal" {
-				continue
-			}
-			msgs = append(msgs, engine.Message{Role: engine.RoleAssistant, Content: m.Content})
-		case "tool":
-			// Replay persisted tool steps as compact context so a follow-up turn
-			// can see what earlier turns actually did.
-			toolName, _ := m.Metadata["tool"].(string)
-			args, _ := m.Metadata["args"].(string)
-			msgs = append(msgs, engine.Message{Role: engine.RoleUser, Content: fmt.Sprintf(
-				"[record of an earlier tool call]\ntool: %s\nargs: %s\nresult: %s",
-				toolName, safeTruncate(args, 500), safeTruncate(m.Content, 1500))})
-		default:
-			msgs = append(msgs, engine.Message{Role: engine.RoleUser, Content: m.Content})
-		}
-	}
+	msgs = append(msgs, engineMessagesFromHistory(history)...)
 	// Background sessions (schedule/heartbeat/wakeup) accumulate the agent's
 	// own prior replies turn after turn — kept deliberately, so e.g. a news
 	// schedule can see what it already posted and not repeat itself. That pile
 	// can outweigh the one persona line at the top, so re-assert it after
 	// history to keep the agent in character.
-	if sp := agent.Spec.SystemPrompt; sp != "" && !isInteractive(trigger) && (len(history) > 0 || sc.Summary != nil) {
+	if sp := agent.Spec.SystemPrompt; sp != "" && !isInteractive(trigger) && (len(history) > 0 || sc.Summary != nil || sc.Checkpoint != nil) {
 		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: "Reminder — your persona and standing instructions still apply to this reply:\n\n" + sp})
 	}
 	msgs = append(msgs, engine.Message{Role: engine.RoleUser, Content: task})
-	return msgs
+	return msgs, nil
 }

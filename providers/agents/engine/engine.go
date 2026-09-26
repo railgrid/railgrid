@@ -37,8 +37,17 @@ const (
 
 // Message is a role-tagged turn in the conversation the engine runs over.
 type Message struct {
-	Role    string
-	Content string
+	Role       string            `json:"role"`
+	Content    string            `json:"content,omitempty"`
+	ToolCalls  []schema.ToolCall `json:"toolCalls,omitempty"`
+	ToolCallID string            `json:"toolCallID,omitempty"`
+	Name       string            `json:"name,omitempty"`
+	ID         string            `json:"id,omitempty"`
+	Sequence   int64             `json:"sequence,omitempty"`
+	// Ephemeral marks engine-generated context that has no durable transcript
+	// identity, such as a tool-returned image follow-up. It must not become a
+	// durable user request or enter a session replacement checkpoint.
+	Ephemeral bool `json:"ephemeral,omitempty"`
 }
 
 // Param describes one tool parameter (a pragmatic subset of JSON schema).
@@ -108,9 +117,15 @@ type ToolEvent struct {
 type AssistantMessage struct {
 	Content      string
 	HasToolCalls bool
+	ToolCalls    []schema.ToolCall
 	Complete     bool
 	Duration     time.Duration
 }
+
+// ContextCompactionFunc replaces an over-budget model history. The estimate
+// includes the bound tool schemas as well as all messages. The returned history
+// must fit within estimate.BudgetTokens and retain the latest user message.
+type ContextCompactionFunc func(ctx context.Context, history []Message, estimate ContextEstimate) ([]Message, error)
 
 // Callbacks stream run progress to the caller. All fields are optional.
 type Callbacks struct {
@@ -178,12 +193,15 @@ func (c Callbacks) checkpoint(ck Checkpoint) {
 type TurnConfig struct {
 	// MaxIters caps tool-call rounds. <=0 becomes 1.
 	MaxIters int
-	// ContextBudgetTokens caps the estimated size of the wire conversation. When
-	// the conversation grows past it, the OLDEST tool observations are clipped in
-	// place (see trimConversation) — the mechanism that keeps one turn with large
-	// tool results, e.g. a research fan-out joining many workers, from exceeding
-	// the model's window. 0 disables trimming.
+	// ContextBudgetTokens caps the estimated size of the wire conversation,
+	// including bound tool schemas. 0 disables budget enforcement. When the
+	// estimate exceeds this budget, ContextCompactor must return a fitting
+	// structured replacement history or the turn fails with ContextBudgetError.
 	ContextBudgetTokens int
+	// ContextCompactor is called before each model request when the estimated
+	// input exceeds ContextBudgetTokens. Without it, over-budget requests fail
+	// instead of silently deleting tool-result prefixes.
+	ContextCompactor ContextCompactionFunc
 	// CheckpointEvery is how many iterations pass between OnCheckpoint offers.
 	// 0 disables periodic checkpointing.
 	CheckpointEvery int
@@ -241,13 +259,18 @@ func (e *Engine) StreamTurnWithTools(
 	if err != nil {
 		return Result{}, err
 	}
-	in := toEino(msgs)
+	schemaTokens, err := estimateToolSchemaTokens(tools)
+	if err != nil {
+		return Result{}, fmt.Errorf("engine: estimating tool schemas: %w", err)
+	}
+	in, identities := toEinoWithIdentities(msgs)
 	if len(in) == 0 {
 		return Result{}, errors.New("engine: no messages to send")
 	}
+	task := latestUserMessage(msgs)
 	var content strings.Builder
 	var usage Usage
-	return e.loop(ctx, active, byName, in, cfg.normalized(), 0, &content, &usage, nil, nil, cb)
+	return e.loop(ctx, active, byName, in, identities, schemaTokens, task, cfg.normalized(), 0, &content, &usage, nil, nil, cb)
 }
 
 // normalized applies the defaults so the loop can read cfg without guarding.
@@ -276,10 +299,23 @@ func (e *Engine) ResumeTurnWithTools(
 	if err != nil {
 		return Result{}, err
 	}
-	in := restoreMessages(ck.Messages)
+	schemaTokens, err := estimateToolSchemaTokens(tools)
+	if err != nil {
+		return Result{}, fmt.Errorf("engine: estimating tool schemas: %w", err)
+	}
+	in, identities := restoreMessagesWithIdentities(ck.Messages)
 	if len(in) == 0 {
 		return Result{}, errors.New("engine: checkpoint has no messages")
 	}
+	checkpointHistory := make([]Message, 0, len(ck.Messages))
+	for _, message := range ck.Messages {
+		checkpointHistory = append(checkpointHistory, Message{
+			Role: message.Role, Content: message.Content, ToolCallID: message.ToolCallID,
+			Name: checkpointMessageName(message), ToolCalls: checkpointToolCalls(message.ToolCalls),
+			ID: message.ID, Sequence: message.Sequence, Ephemeral: message.Ephemeral,
+		})
+	}
+	task := latestUserMessage(checkpointHistory)
 	cfg = cfg.normalized()
 	// A resume must be able to take at least one more step, even when the
 	// checkpoint already sits at the configured limit.
@@ -291,7 +327,7 @@ func (e *Engine) ResumeTurnWithTools(
 	usage := ck.Usage
 	pending := ck.Pending
 	dec := &decision{approve: approve, note: denyNote}
-	return e.loop(ctx, active, byName, in, cfg, ck.Iter, &content, &usage, pending, dec, cb)
+	return e.loop(ctx, active, byName, in, identities, schemaTokens, task, cfg, ck.Iter, &content, &usage, pending, dec, cb)
 }
 
 // decision is the user's verdict on the FIRST pending call of a resumed turn.
@@ -336,6 +372,9 @@ func (e *Engine) loop(
 	active einomodel.BaseChatModel,
 	byName map[string]Tool,
 	in []*schema.Message,
+	identities map[*schema.Message]historyIdentity,
+	toolSchemaTokens int,
+	task *Message,
 	cfg TurnConfig,
 	startIter int,
 	content *strings.Builder,
@@ -349,14 +388,19 @@ func (e *Engine) loop(
 			if err := cb.abort(ctx); err != nil {
 				return Result{}, err
 			}
-			// Keep the conversation inside its budget before asking the model —
-			// this is where a turn carrying large tool results gets trimmed.
-			trimConversation(in, cfg.ContextBudgetTokens)
+			var compacted bool
+			var compactErr error
+			in, identities, compacted, compactErr = compactBeforeRequest(ctx, in, identities, toolSchemaTokens, task, cfg)
+			if compactErr != nil {
+				return Result{}, compactErr
+			}
 			// Offer a resumable snapshot: no tool call is in flight here, so the
-			// checkpoint is coherent and resuming just re-asks the model.
-			if cb.OnCheckpoint != nil && cfg.CheckpointEvery > 0 && iter > startIter && (iter-startIter)%cfg.CheckpointEvery == 0 {
+			// checkpoint is coherent and resuming just re-asks the model. A compacted
+			// replacement is checkpointed immediately even when the periodic cadence
+			// would not otherwise fire, so recovery never restores stale history.
+			if cb.OnCheckpoint != nil && (compacted || (cfg.CheckpointEvery > 0 && iter > startIter && (iter-startIter)%cfg.CheckpointEvery == 0)) {
 				cb.checkpoint(Checkpoint{
-					Messages: checkpointMessages(in),
+					Messages: checkpointMessagesWithIdentities(in, identities),
 					Content:  content.String(),
 					Usage:    *usage,
 					Iter:     iter,
@@ -369,7 +413,7 @@ func (e *Engine) loop(
 				return Result{}, err
 			}
 			cb.assistantMessage(AssistantMessage{
-				Content: full.Content, HasToolCalls: len(full.ToolCalls) > 0,
+				Content: full.Content, HasToolCalls: len(full.ToolCalls) > 0, ToolCalls: cloneToolCalls(full.ToolCalls),
 				Complete: true, Duration: time.Since(started),
 			})
 			if len(full.ToolCalls) == 0 {
@@ -420,7 +464,7 @@ func (e *Engine) loop(
 					Interrupt: &Interrupt{
 						Tool: ie.Tool, Args: ie.Args, RequestID: ie.RequestID,
 						Checkpoint: Checkpoint{
-							Messages: checkpointMessages(in),
+							Messages: checkpointMessagesWithIdentities(in, identities),
 							Pending:  pending,
 							Content:  content.String(),
 							Usage:    *usage,
@@ -438,8 +482,15 @@ func (e *Engine) loop(
 			in = append(in, schema.ToolMessage(result, pc.ID, schema.WithToolName(pc.Name)))
 			pending = pending[1:]
 		}
+		// A durable result write may have failed in OnTool, including on the
+		// final allowed tool round. Check before reporting a successful limit
+		// stop or issuing another model request.
+		if err := cb.abort(ctx); err != nil {
+			return Result{Usage: *usage}, err
+		}
 		if msg := imageUserMessage(turnImages); msg != nil {
 			in = append(in, msg)
+			identities[msg] = historyIdentity{ephemeral: true}
 		}
 	}
 
@@ -611,22 +662,25 @@ func imageUserMessage(imgs []ToolImage) *schema.Message {
 	return &schema.Message{Role: schema.User, UserInputMultiContent: parts}
 }
 
-func toEino(msgs []Message) []*schema.Message {
+func toEinoWithIdentities(msgs []Message) ([]*schema.Message, map[*schema.Message]historyIdentity) {
 	out := make([]*schema.Message, 0, len(msgs))
 	for _, m := range msgs {
+		role := schema.RoleType(m.Role)
 		switch m.Role {
-		case RoleSystem:
-			out = append(out, schema.SystemMessage(m.Content))
-		case RoleUser:
-			out = append(out, schema.UserMessage(m.Content))
-		case RoleAssistant:
-			out = append(out, schema.AssistantMessage(m.Content, nil))
+		case RoleSystem, RoleUser, RoleAssistant, RoleTool:
 		default:
 			// Unknown roles are treated as user content so nothing is dropped
-			// silently; tool messages get first-class handling in the tool
-			// milestone.
-			out = append(out, schema.UserMessage(m.Content))
+			// silently.
+			role = schema.User
 		}
+		message := &schema.Message{
+			Role: role, Content: m.Content, Name: m.Name,
+			ToolCalls: cloneToolCalls(m.ToolCalls), ToolCallID: m.ToolCallID,
+		}
+		if role == schema.Tool {
+			message.ToolName = m.Name
+		}
+		out = append(out, message)
 	}
-	return out
+	return out, identitiesFromMessages(msgs, out)
 }

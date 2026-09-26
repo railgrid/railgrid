@@ -812,6 +812,10 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, false)" /> Research fan-out <span class="muted">spawn + join{{ familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web') ? ' — workers will have no web access' : '' }}</span></label>
           <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'spawn', true)" :disabled="!familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, true)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
         </div>
+        <div class="agents-tool-row">
+          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'visualization')" @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, false)" /> Visualize data <span class="muted">Create charts in chat from supplied data</span></label>
+          <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'visualization', true)" :disabled="!familyEnabled(agent, 'visualization')" @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, true)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
+        </div>
         <p v-if="familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web')" class="agents-hint agents-warn-inline"><Circle :stroke-width="1.75" aria-hidden="true" /> This agent can spawn workers but has no web access, so a worker inherits none either — a fan-out would answer from the model alone. Turn on <strong>Read the web</strong>, and wire a websearch tool for real searching.</p>
       </fieldset>
 
