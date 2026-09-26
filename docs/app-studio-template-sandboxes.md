@@ -205,7 +205,7 @@ dataPlane:
   runtimeNamespacePath: status.runtimeNamespace
   tokenSecretPath: status.controlSecretRef
   endpoints:
-    status: { fromStatus: true }
+    runtime-status: { fromStatus: true }
     proxy:                                    # instance-level preview (routed tier)
       servicePath: status.previewServiceRef
       port: preview
@@ -223,12 +223,13 @@ dataPlane:
       ...
 ```
 
-URL shape uses the generic data-plane handler:
+URL shape is the kcp custom subresource each verb is published as (the
+component is the `component` query parameter):
 
 ```
-POST …/dataplane/clusters/{ws}/applications/{name}/components/backend/sync
-GET  …/dataplane/clusters/{ws}/applications/{name}/components/frontend/log
-POST …/dataplane/clusters/{ws}/applications/{name}/restart      (all components)
+POST …/clusters/{ws}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/sync?component=backend
+GET  …/clusters/{ws}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/log?component=frontend
+POST …/clusters/{ws}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/restart      (all components)
 ```
 
 The generic resolver, namespace confinement, token injection, and

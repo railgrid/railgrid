@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	// APIExportName is the provider's APIExport (manifest.yaml spec.apiExport.name).
+	// APIExportName is the provider's APIExport (manifest.yaml spec.export.name).
 	APIExportName = "code.providers.railgrid.ai"
 	// APIExportEndpointSliceName is the slice the multicluster manager watches.
 	// Matches controller_manager.go's endpointSliceName and, by convention, the

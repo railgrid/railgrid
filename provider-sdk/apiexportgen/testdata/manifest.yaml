@@ -6,17 +6,28 @@ metadata:
   name: fixture
 spec:
   displayName: "Fixture"
-  apiExport:
+  export:
     name: "fixture.providers.railgrid.ai"
-    permissionClaims:
-      - resource: secrets
-        verbs: [get, list, watch]
-        tenantScoped: true
-      - group: ""
-        resource: serviceaccounts
-        verbs: ["get", "create"]
-        tenantScoped: true
-      - group: rbac.authorization.k8s.io
-        resource: clusterroles
-        verbs: [get, create]
-        tenantScoped: true
+  # spec.requires is the ONE source of the generated permission claims: one
+  # claim per resource, keyed by group. The core entry carries no `group` at
+  # all, a verb coordinate carries no verbs (the generated claim spells every
+  # verb), and a selector narrows the claim to the objects this provider owns.
+  requires:
+    - resources:
+        - name: secrets
+          verbs: [get, list, watch]
+          selector:
+            matchLabels:
+              railgrid.ai/owner: fixture
+        - name: serviceaccounts
+          verbs: [get, create]
+    - group: rbac.authorization.k8s.io
+      resources:
+        - name: clusterroles
+          verbs: [get, create]
+    - provider: edges
+      group: edges.railgrid.ai
+      resources:
+        - name: kubernetesclusters
+          verbs: [get, list, watch]
+        - name: kubernetesclusters/kubeconfig

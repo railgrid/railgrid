@@ -75,6 +75,7 @@ func TestHydrateRequestsAndWritesBase64Binaries(t *testing.T) {
 	upstream := hub.serve(t)
 	f := newProjectFilesFixture(t)
 	f.server.hubBase = upstream.URL
+	f.server.callers = newTestCallers(nil, upstream.URL)
 	f.server.developmentSyncAfterMutation = func(identity, *aiv1alpha1.Project, string) error { return nil }
 	resp, err := f.server.hydrateWorkspaceFromRepository(context.Background(), identity{orgUUID: "org-a", workspaceUUID: "workspace-a", clusterID: "cluster-a"}, f.project, httptest.NewRequest(http.MethodPost, "/", nil), "")
 	if err != nil {

@@ -44,6 +44,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
@@ -54,8 +55,8 @@ const (
 	// listener strips it.
 	replicaForwardedHeader = "X-Railgrid-AppStudio-Forwarded"
 	// replicaInternalTokenHeader authenticates peer-forwarded requests on the
-	// internal listener. Deliberately not Authorization: that header carries
-	// the caller's bearer and is forwarded untouched.
+	// internal listener. Deliberately not Authorization, which is the
+	// caller's own kcp credential on the way in and is never forwarded.
 	replicaInternalTokenHeader = "X-Railgrid-AppStudio-Internal-Token"
 
 	// projectClaimTTL is how stale a project pin may go before any replica
@@ -132,9 +133,11 @@ func (s *Server) routing() *replicaRouting {
 }
 
 // ReplicaAffinity routes project-scoped requests to the project's owning
-// replica. Wrap the full handler with it on every listener; requests outside
-// /api/projects/{project}, store-backed reads, and forwarded requests pass
-// straight through.
+// replica. Wrap the full handler with it on every listener; requests that are
+// not a project verb, store-backed reads, and forwarded requests pass
+// straight through. It runs BEFORE serve's subresource adapter, so it parses
+// the kube path itself and reads the stamped caller off the same X-Remote-*
+// headers the adapter will; a forwarded request carries them to the owner.
 func (s *Server) ReplicaAffinity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		routing := s.routing()
@@ -281,7 +284,7 @@ func (s *Server) RelinquishProjectClaims(ctx context.Context) {
 	klog.Background().Info("relinquished project claims", "replica", routing.id, "count", n)
 }
 
-// forwardToOwner proxies the request — path, query, caller Authorization and
+// forwardToOwner proxies the request — path, query and the shard-stamped
 // identity headers untouched — to the owning replica's internal listener. It
 // returns false, having written nothing, when the owner could not be dialled
 // and none of the request body was consumed, so the caller may still serve the
@@ -345,12 +348,12 @@ func (b *forwardBody) Read(p []byte) (int, error) {
 
 func (b *forwardBody) Close() error { return nil }
 
-// splitProjectPath extracts the {project} segment and the remainder from
-// /api/projects/{project}[/rest]. Literal collection endpoints that happen to
-// sit under /api/projects/ are not project-scoped.
+// splitProjectPath extracts the {project} segment and the verb-plus-tail from
+// a project verb's kube path,
+// /clusters/{id}/apis/ai.railgrid.ai/v1alpha1/projects/{project}/{verb}[/tail].
 func splitProjectPath(path string) (project, rest string, ok bool) {
-	request, parsed := dataplane.ParsePath(dataplane.DataplaneRoot, path)
-	if !parsed || request.Resource != projectsGVR.Resource {
+	request, err := dataplane.ParseSubresourcePath(path)
+	if err != nil || request.Group != aiv1alpha1.GroupName || request.Resource != projectsGVR.Resource {
 		// A session verb addresses a conversation, not a project, so the
 		// project it belongs to is not in the path — it is read off the
 		// gated Session, one layer down. Affinity therefore cannot route it
@@ -385,8 +388,8 @@ func affinityProject(r *http.Request) (project, rest string, ok bool) {
 	if project, rest, ok = splitProjectPath(r.URL.Path); ok {
 		return project, rest, true
 	}
-	request, parsed := dataplane.ParsePath(dataplane.DataplaneRoot, r.URL.Path)
-	if !parsed || request.Resource != sessionsGVR.Resource {
+	request, err := dataplane.ParseSubresourcePath(r.URL.Path)
+	if err != nil || request.Group != aiv1alpha1.GroupName || request.Resource != sessionsGVR.Resource {
 		return "", "", false
 	}
 	hint := strings.TrimSpace(r.Header.Get(affinityProjectHeader))

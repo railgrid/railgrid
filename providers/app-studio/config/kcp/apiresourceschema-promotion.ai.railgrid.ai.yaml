@@ -1,0 +1,47 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260924-87f1980f.promotion.ai.railgrid.ai
+spec:
+  group: ai.railgrid.ai
+  names:
+    kind: PromotionRequest
+    listKind: PromotionRequestList
+    plural: promotion
+    singular: promotionrequest
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      description: PromotionRequest is the payload of the "promotion" custom subresource
+        on projects.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        input:
+          description: Input is the request body's "input" member.
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        result:
+          description: Result is the response's "result" member.
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+      type: object
+    served: true
+    storage: true
+    subresources: {}

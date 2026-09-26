@@ -71,8 +71,8 @@ const updateAttempts = 6
 var ErrProjectGone = errors.New("project is gone; its working-copy ledger went with it")
 
 // Projects is the slice of a control-plane client the ledger needs. Both the
-// caller-scoped typed client and controller-runtime satisfy it through the
-// adapters below.
+// HTTP layer's provider-scoped typed client and controller-runtime satisfy it
+// through the adapters below.
 type Projects interface {
 	// Get reads one Project by name.
 	Get(ctx context.Context, name string) (*aiv1alpha1.Project, error)
@@ -301,7 +301,7 @@ func nullIfEmpty(paths []string) any {
 	return paths
 }
 
-// typedProjects is the adapter over the caller-scoped typed client the HTTP
+// typedProjects is the adapter over the provider-scoped typed client the HTTP
 // layer builds per request.
 type typedProjects struct {
 	get   func(ctx context.Context, name string, opts metav1.GetOptions) (*aiv1alpha1.Project, error)
@@ -318,8 +318,9 @@ type TypedProjects interface {
 }
 
 // FromProjects builds a ledger over a typed Project client — the HTTP layer's
-// caller-scoped one. Writes are therefore authorized as the caller, exactly
-// like every other tenant write this provider makes on the request path.
+// provider-scoped one. Writes are therefore made as the provider through its
+// export virtual workspace, exactly like every other tenant write this
+// provider makes on the request path.
 func FromProjects(projects TypedProjects) *Ledger {
 	if projects == nil {
 		return nil

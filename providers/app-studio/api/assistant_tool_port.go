@@ -56,6 +56,6 @@ func (p projectAssistantHTTPToolPort) Invoke(ctx context.Context, tool projectAs
 	if tool == nil {
 		return "", errors.New("an App Studio tool is required")
 	}
-	req.HTTPRequest = p.request.WithContext(ctx)
+	req.HTTPRequest = p.server.hubRequest(p.request.WithContext(ctx), req.Identity)
 	return tool.Call(ctx, req)
 }

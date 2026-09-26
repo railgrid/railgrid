@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 var snapshotDigest = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -27,17 +27,21 @@ var snapshotMu sync.Mutex
 const snapshotTTL = time.Hour
 
 // Staging is a bounded artifact upload endpoint, separate from the small action
-// inputs. Its opaque handle is scoped to tenant, resource identities and caller.
-func (s *Server) snapshotScope(r *http.Request, cluster string, in Input) string {
+// inputs. Its opaque handle is scoped to tenant, resource identities and
+// caller. The caller is the identity kcp stamped on the request — there is no
+// bearer on an action — qualified by the logical cluster a ServiceAccount
+// lives in, because two providers' ServiceAccounts spell their names
+// identically and must not share a staging directory.
+func (s *Server) snapshotScope(caller dataplane.ProxiedIdentity, cluster string, in Input) string {
 	root := s.SnapshotDir
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "railgrid-code-snapshots")
 	}
 	tenant := sha256.Sum256([]byte(cluster))
-	scope := sha256.Sum256([]byte(in.RepositoryUID + "\x00" + in.ConnectionUID + "\x00" + r.Header.Get("Authorization")))
+	scope := sha256.Sum256([]byte(in.RepositoryUID + "\x00" + in.ConnectionUID + "\x00" + caller.User + "\x00" + caller.ClusterName()))
 	return filepath.Join(root, hex.EncodeToString(tenant[:]), hex.EncodeToString(scope[:]))
 }
-func (s *Server) stage(r *http.Request, cluster string, in Input) (any, error) {
+func (s *Server) stage(caller dataplane.ProxiedIdentity, cluster string, in Input) (any, error) {
 	if in.Snapshot == nil || len(in.Snapshot.Bundle) == 0 || len(in.Snapshot.Bundle) > 25<<20 {
 		return nil, errors.New("invalid snapshot upload")
 	}
@@ -47,7 +51,7 @@ func (s *Server) stage(r *http.Request, cluster string, in Input) (any, error) {
 	}
 	digest := sha256.Sum256(data)
 	ref := hex.EncodeToString(digest[:])
-	scope := s.snapshotScope(r, cluster, in)
+	scope := s.snapshotScope(caller, cluster, in)
 	snapshotMu.Lock()
 	defer snapshotMu.Unlock()
 	if err = os.MkdirAll(scope, 0700); err != nil {
@@ -107,12 +111,12 @@ func (s *Server) stage(r *http.Request, cluster string, in Input) (any, error) {
 	}
 	return map[string]any{"bundleRef": ref}, nil
 }
-func (s *Server) loadSnapshot(r *http.Request, cluster string, in Input) (backend.Snapshot, error) {
+func (s *Server) loadSnapshot(caller dataplane.ProxiedIdentity, cluster string, in Input) (backend.Snapshot, error) {
 	var snapshot backend.Snapshot
 	if !snapshotDigest.MatchString(in.BundleRef) {
 		return snapshot, errors.New("invalid snapshot reference")
 	}
-	file, err := os.Open(filepath.Join(s.snapshotScope(r, cluster, in), in.BundleRef+".json"))
+	file, err := os.Open(filepath.Join(s.snapshotScope(caller, cluster, in), in.BundleRef+".json"))
 	if err != nil {
 		return snapshot, err
 	}

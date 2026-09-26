@@ -10,7 +10,12 @@ You may obtain a copy of the License at
 
 // Package server holds the one route this provider serves that is its own:
 //
-//	(a) data-plane verb  POST /dataplane/clusters/{id}/greetings/{name}/greet
+//	(a) data-plane verb  POST /clusters/{id}/apis/quickstart.providers.railgrid.ai/v1alpha1/greetings/{name}/greet
+//
+// A verb is a kcp custom subresource: the APIExport declares "greetings/greet",
+// kcp authorizes the caller with ordinary RBAC and reverse-proxies the request
+// here with the caller's identity stamped in requestheader headers. There is no
+// other way to reach it — no hub-proxied spelling, no bearer.
 //
 // Everything else about the HTTP surface — /healthz, /readyz, the portal and
 // the request log — is provider-sdk/serve's, and main.go wires the two
@@ -36,19 +41,22 @@ import (
 // exact handler, mounted in a real serve.New server, through the shared
 // data-plane conformance suite.
 type Deps struct {
-	// Callers builds the per-request, caller-scoped client the two gates run
-	// through. Nil makes the greet verb fail closed; the provider logs the
-	// missing kubeconfig at startup.
-	Callers dataplane.CallerFactory
+	// Callers builds the client the gate acts through: AS THE PROVIDER, via
+	// its APIExport virtual workspace, because the shard stamps the caller's
+	// identity but hands over no credential. Nil makes the greet verb fail
+	// closed; the provider logs the missing kubeconfig at startup.
+	Callers dataplane.ProviderCallerFactory
 	// Greetings is the GVR the verb hangs off.
 	Greetings schema.GroupVersionResource
 }
 
-// NewDataPlane returns the handler for everything under /dataplane/. It is
-// mounted as serve.Options.DataPlane, which dispatches off the raw request
-// path, so the grammar's refusals (".." , "//", a workspace path where a
-// logical-cluster ID belongs) happen in dataplane.ParseRequest rather than
-// being rewritten by a mux first.
+// NewDataPlane returns the handler for the greet verb. It is mounted as
+// serve.Options.DataPlane and reached only through serve.Options.Subresources:
+// serve's adapter parses the shard-forwarded path off the raw URL (so the
+// grammar's refusals — "..", "//", a workspace path where a logical-cluster ID
+// belongs — happen before any mux can rewrite them), checks the coordinate
+// against the manifest, and dispatches here with the parsed route and the
+// stamped caller in the request context.
 func NewDataPlane(deps Deps) http.Handler { return &dataPlane{deps: deps} }
 
 type dataPlane struct{ deps Deps }

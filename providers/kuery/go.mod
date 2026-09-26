@@ -107,7 +107,7 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )
 
-replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.33.0
+replace github.com/kcp-dev/apimachinery/v2 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20260926054725-20f1d300ccbe
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0
 

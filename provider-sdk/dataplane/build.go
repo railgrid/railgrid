@@ -7,47 +7,41 @@ package dataplane
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 )
 
-// ErrInvalidRequest is returned by Path when a Request would not round-trip
-// through ParsePath: an empty or malformed cluster ID, resource, name, verb,
-// component, version or tail segment.
-var ErrInvalidRequest = errors.New("dataplane: request does not form a valid path")
+// ErrInvalidRequest is returned by the path builders for a Request that would
+// not parse back to itself.
+var ErrInvalidRequest = errors.New("dataplane: request does not render to a valid route")
 
-// Path is the inverse of ParsePath: it renders the Request as the exact route
-// the owning provider serves under root, e.g.
+// SubresourcePath renders the Request as the path a caller uses for a verb:
+// the custom subresource kcp serves on the provider's APIExport,
 //
-//	/dataplane/clusters/rgl3jcl2cfl3xa5p/instances/my-site/components/app/log
-//	/actions/clusters/rgl3jcl2cfl3xa5p/repositories/api/branches/v1
+//	/clusters/{clusterID}/apis/{group}/{version}/{resource}/{name}/{verb}[/{tail}][?component={component}]
 //
-// Consumers use it instead of string-building another provider's URL, so the
-// grammar lives in one place (cross-provider-simplification X-8). The result
-// always round-trips: ParsePath(root, r.Path(root)) == r.
-func (r Request) Path(root string) (string, error) {
-	root = strings.Trim(root, "/")
-	if root == "" || !IsClusterID(r.ClusterID) || r.Resource == legacyAPIsSegment {
+// relative to whichever kcp front door the caller holds a credential for —
+// the hub's /clusters/{id} for a user or a tenant ServiceAccount, or a
+// provider's own export virtual workspace for a claimed verb on another
+// provider's kind (Callers.ExportVerbURL). Consumers use it instead of
+// string-building another provider's URL, so the grammar lives in one place.
+//
+// Version is ignored: an action's contract version is not part of the path
+// (the serving provider restores it from its declaration). The component
+// travels as a query parameter because kcp reads "{name}/{subresource}" and
+// treats everything after the verb as the verb's own tail. The result always
+// parses back to the same coordinates with ParseSubresourceRequest.
+func SubresourcePath(group, version string, r Request) (string, error) {
+	if !validSegment(group) || !validSegment(version) || !IsClusterID(r.ClusterID) {
 		return "", ErrInvalidRequest
 	}
-	if !validSegment(r.Resource) || !validSegment(r.Name) || !validSegment(r.Verb) || r.Verb == componentsSegment {
+	if !validSegment(r.Resource) || !validSegment(r.Name) || !validSegment(r.Verb) {
 		return "", ErrInvalidRequest
 	}
-	parts := []string{"", root, "clusters", r.ClusterID, r.Resource, r.Name}
-	if r.Component != "" {
-		if !validSegment(r.Component) {
-			return "", ErrInvalidRequest
-		}
-		parts = append(parts, componentsSegment, r.Component)
-	}
-	parts = append(parts, r.Verb)
-	if root == ActionsRoot {
-		if !validSegment(r.Version) {
-			return "", ErrInvalidRequest
-		}
-		parts = append(parts, r.Version)
-	} else if r.Version != "" {
+	if r.Verb == "status" || r.Verb == "scale" {
 		return "", ErrInvalidRequest
 	}
+	parts := []string{"", "clusters", r.ClusterID, apisSegment, group, version, r.Resource, r.Name, r.Verb}
 	if r.Tail != "" {
 		for _, seg := range strings.Split(r.Tail, "/") {
 			if !validSegment(seg) {
@@ -56,24 +50,23 @@ func (r Request) Path(root string) (string, error) {
 		}
 		parts = append(parts, r.Tail)
 	}
-	return strings.Join(parts, "/"), nil
+	path := strings.Join(parts, "/")
+	if r.Component != "" {
+		if !validSegment(r.Component) {
+			return "", ErrInvalidRequest
+		}
+		path += "?" + ComponentQuery + "=" + url.QueryEscape(r.Component)
+	}
+	return path, nil
 }
 
-// ProviderPath is Path prefixed with the hub's backend-proxy mount for the
-// owning provider, i.e. the URL a consumer (another provider, a portal, an
-// MCP tool) calls on the hub:
-//
-//	/services/providers/infrastructure/dataplane/clusters/{id}/instances/{n}/log
-//
-// The provider name comes from the consumer's binding to that provider's
-// APIExport, never from configuration.
-func ProviderPath(provider, root string, r Request) (string, error) {
-	if !validSegment(provider) {
-		return "", ErrInvalidRequest
-	}
-	p, err := r.Path(root)
+// SubresourceURL is SubresourcePath against a front-door base URL, e.g. the
+// hub's origin or an export virtual-workspace endpoint. base may already end
+// in a slash.
+func SubresourceURL(base, group, version string, r Request) (string, error) {
+	path, err := SubresourcePath(group, version, r)
 	if err != nil {
 		return "", err
 	}
-	return "/services/providers/" + provider + p, nil
+	return strings.TrimRight(base, "/") + path, nil
 }

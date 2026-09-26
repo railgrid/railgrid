@@ -79,15 +79,14 @@ func (p *Server) buildProviderMCPHandler() http.Handler {
 			baseURL = p.hubExternalURL
 		}
 		provider := &multiEdgeProvider{
-			cluster:             cluster,
-			resource:            resource,
-			group:               p.group,
-			version:             p.version,
-			edgeNames:           edgeNames,
-			edgeConnManager:     p.edgeConnManager,
-			hubBase:             strings.TrimRight(baseURL, "/"),
-			edgeProxyPublicPath: p.edgeProxyPublicPath,
-			bearerToken:         token,
+			cluster:         cluster,
+			resource:        resource,
+			group:           p.group,
+			version:         p.version,
+			edgeNames:       edgeNames,
+			edgeConnManager: p.edgeConnManager,
+			hubBase:         strings.TrimRight(baseURL, "/"),
+			bearerToken:     token,
 		}
 
 		staticCfg := mcpconfig.Default()
@@ -130,23 +129,27 @@ func ensureUserAgent(r *http.Request) {
 	}
 }
 
-// buildMCPHandler creates the HTTP handler for the per-edge MCP endpoint.
+// buildMCPHandler creates the HTTP handler for the per-edge MCP endpoint: the
+// "mcp" verb on a KubernetesCluster,
 //
-// URL pattern (behind the hub backend proxy, on the provider's agent-ingress
-// mount, which dispatches /mcp before agent auth):
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}/mcp
 //
-//	/services/providers/edges/agent/{cluster}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/mcp
+// reached as a kcp custom subresource and dispatched here by
+// buildEdgesProxyHandler after the gate. cluster, resource and edgeName come
+// from the parsed route. Kube MCP tools only apply to KubernetesCluster edges;
+// server edges have no Kubernetes API, so they are rejected.
 //
-// cluster, resource and edgeName are parsed from the path by the caller and
-// passed as explicit arguments. Kube MCP tools only apply to KubernetesCluster
-// edges (they route through the edge's k8s subresource); server edges have no
-// Kubernetes API, so they are rejected.
+// The request carries no bearer — kcp authenticated the caller and authorized
+// the verb — so the kube tools cannot call back through the hub as the caller
+// the way the aggregate endpoint does. They drive the edge's Kubernetes API
+// straight down its reverse tunnel instead, as the provider: the caller's
+// grant on kubernetesclusters/mcp for THIS edge is what authorized that.
 //
 // On each request the handler:
-//  1. Extracts the caller's bearer token from the Authorization header.
-//  2. Builds a single-edge railgridEdgeProvider for (cluster, resource, edgeName).
-//  3. Spins up a fresh stateless MCP server.
-//  4. Serves via the streamable-HTTP transport (ServeHTTP).
+//  1. Builds a single-edge railgridEdgeProvider for (cluster, resource, edgeName)
+//     that dials the tunnel directly.
+//  2. Spins up a fresh stateless MCP server.
+//  3. Serves via the streamable-HTTP transport (ServeHTTP).
 func (p *Server) buildMCPHandler(cluster, resource, edgeName string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logger := klog.FromContext(r.Context()).WithName("mcp-handler")
@@ -159,34 +162,18 @@ func (p *Server) buildMCPHandler(cluster, resource, edgeName string) http.Handle
 			return
 		}
 
-		// 1. Extract bearer token.
-		token := extractBearerToken(r)
-		if token == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		// 2. Build per-request single-edge MCP provider. hubInternalURL is
-		//    preferred over the external URL to avoid CDN/proxy loops when the
-		//    MCP kube client calls back through the hub to this provider's
-		//    edgeproxy k8s subresource.
-		baseURL := p.hubInternalURL
-		if baseURL == "" {
-			baseURL = p.hubExternalURL
-		}
+		// 1. Build the per-request single-edge MCP provider.
 		provider := &railgridEdgeProvider{
-			cluster:             cluster,
-			resource:            resource,
-			group:               p.group,
-			version:             p.version,
-			edgeName:            edgeName,
-			edgeConnManager:     p.edgeConnManager,
-			hubBase:             strings.TrimRight(baseURL, "/"),
-			edgeProxyPublicPath: p.edgeProxyPublicPath,
-			bearerToken:         token,
+			cluster:         cluster,
+			resource:        resource,
+			group:           p.group,
+			version:         p.version,
+			edgeName:        edgeName,
+			edgeConnManager: p.edgeConnManager,
+			direct:          true,
 		}
 
-		// 3. Create a stateless MCP server for this request. Use the default
+		// 2. Create a stateless MCP server for this request. Use the default
 		//    toolset configuration (core, config, helm) so tools/list returns the
 		//    expected tools. ServerInstructions seeds the LLM with railgrid-specific
 		//    context the moment it connects.
@@ -206,15 +193,16 @@ func (p *Server) buildMCPHandler(cluster, resource, edgeName string) http.Handle
 		}
 		defer srv.Close()
 
-		// 4. Serve via streamable HTTP transport.
+		// 3. Serve via streamable HTTP transport.
 		//
 		// The MCP SDK's streamable handler has DNS-rebinding protection that 403s
 		// ("invalid Host header") when the server's local address is loopback but
-		// the request Host isn't. Behind the hub backend proxy the provider sees
+		// the request Host isn't. Behind kcp's reverse proxy the provider sees
 		// Host "host.docker.internal:8088" (or the pod address) on a loopback
 		// connection, which trips it. That guard is meant for browser-facing
-		// localhost servers; this endpoint is reached only through the hub's
-		// authenticated proxy, so normalize Host to loopback to satisfy the check.
+		// localhost servers; this endpoint is reached only through kcp, which
+		// authenticated and authorized the caller, so normalize Host to
+		// loopback to satisfy the check.
 		r.Host = "localhost"
 		ensureUserAgent(r)
 		srv.ServeHTTP().ServeHTTP(w, r)

@@ -180,7 +180,7 @@ func projectLLMDiscoveryRequest(t *testing.T, body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/llm-settings/models/discover", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request = stampTestCaller(request, testUserForToken("test-token"))
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
 }

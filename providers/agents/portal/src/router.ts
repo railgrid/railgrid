@@ -163,7 +163,7 @@ export function syncHash(route: Route): void {
 
 // routeForSubPath maps a host sub-nav selection onto a top-level menu.
 //
-// CatalogEntry.spec.ui.children declares the sidebar entries indented under
+// CatalogEntry.spec.serving.ui.children declares the sidebar entries indented under
 // "Agents"; the portal composes each as /providers/agents/<builtinRoute> and
 // pushes the trailing segment back as railgridContext.subPath. This element
 // routes on its own hash, so the two have to be reconciled somewhere — here.

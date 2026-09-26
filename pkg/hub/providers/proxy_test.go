@@ -154,8 +154,8 @@ func TestBackendProxyHubOnlyReservations(t *testing.T) {
 	}
 
 	for _, requestPath := range []string{
-		"/services/providers/databricks/actions/clusters/cluster-a/tables/trips/query_table/v1",
 		"/services/providers/databricks/healthz",
+		"/services/providers/databricks/mcp",
 	} {
 		t.Run(requestPath, func(t *testing.T) {
 			upstreamCalled = false
@@ -163,10 +163,11 @@ func TestBackendProxyHubOnlyReservations(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, requestPath, nil)
 			proxy.ServeHTTP(response, request)
 			if !upstreamCalled {
-				t.Fatalf("public data-plane route status=%d upstreamCalled=false, want upstream selected", response.Code)
+				t.Fatalf("public route status=%d upstreamCalled=false, want upstream selected", response.Code)
 			}
 		})
 	}
+
 }
 
 // TestUIProxyLocalAssets exercises the first-party-provider path:

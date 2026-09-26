@@ -10,7 +10,6 @@ package tools
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -106,18 +105,6 @@ func ConfiguredEndpointHTTPClient() *http.Client { return configuredHTTPClient }
 // a self-hosted search backend, which is commonly an in-cluster Service or a
 // loopback address in local development.
 var configuredHTTPClient = newHTTPClient(true)
-
-// insecureConfiguredHTTPClient is the same, without TLS verification, for the
-// hub's own self-signed certificate in local development. Only ever selected
-// from the operator-set hub-insecure flag — never from anything a tenant or a
-// model can influence.
-var insecureConfiguredHTTPClient = func() *http.Client {
-	c := newHTTPClient(true)
-	t := c.Transport.(*http.Transport).Clone()
-	t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // dev hubs use self-signed certs; opt-in
-	c.Transport = t
-	return c
-}()
 
 // Web returns the web family: SSRF-guarded fetch and search. Search needs a
 // websearch Connection, which speaks either a self-hosted SearXNG instance
@@ -288,16 +275,14 @@ func webSearch(ctx context.Context, d Deps, query string) (string, error) {
 		return "", fmt.Errorf("no websearch connection in this workspace — add one on the Connections tab (a self-hosted SearXNG instance, or a Brave API key)")
 	}
 	token := d.connToken(ctx, search.Name)
-	req, err := searchRequest(ctx, search, d.DataPlane, token, query)
+	req, client, err := searchRequest(ctx, search, d.DataPlane, token, query)
 	if err != nil {
 		return "", err
 	}
-	// The endpoint came from the Connection (or from the platform's own data
-	// plane), not from the model, so private and loopback destinations are
-	// allowed here — see dialGuard.
-	client := configuredHTTPClient
-	if d.DataPlane.Insecure {
-		client = insecureConfiguredHTTPClient
+	if client == nil {
+		// The endpoint came from the Connection, not from the model, so
+		// private and loopback destinations are allowed here — see dialGuard.
+		client = configuredHTTPClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -332,15 +317,18 @@ func searchProvider(conn *agentsv1alpha1.Connection) string {
 	return searchProviderBrave
 }
 
-// searchRequest builds the backend-specific query.
+// searchRequest builds the backend-specific query, and the client to send it
+// with when the destination dictates one (nil means the caller's configured
+// client).
 //
 // A searxng connection addresses its backend one of two ways. Preferred is an
 // INSTANCE reference: a searxng Template provisioned in this workspace, reached
-// over the platform's internal data plane, with no public hostname and no
-// instance credential — kcp RBAC on the instance is the gate. A baseURL is the
-// fallback for a SearXNG the tenant runs somewhere else. Brave is a fixed
-// hosted endpoint authenticated with its own header.
-func searchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp DataPlane, token, query string) (*http.Request, error) {
+// over the platform's internal data plane as this provider, with no public
+// hostname and no instance credential — the tenant's acceptance of this
+// provider's claim on instances/proxy is the gate. A baseURL is the fallback
+// for a SearXNG the tenant runs somewhere else. Brave is a fixed hosted
+// endpoint authenticated with its own header.
+func searchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp DataPlane, token, query string) (*http.Request, *http.Client, error) {
 	base := strings.TrimSpace(conn.Spec.BaseURL)
 	switch searchProvider(conn) {
 	case searchProviderSearXNG:
@@ -348,7 +336,7 @@ func searchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp Data
 			return dataPlaneSearchRequest(ctx, conn, dp, instance, query)
 		}
 		if base == "" {
-			return nil, fmt.Errorf("websearch connection %q is searxng but names neither an instance nor a baseURL — point it at a searxng instance in this workspace, or at an external instance's URL", conn.Name)
+			return nil, nil, fmt.Errorf("websearch connection %q is searxng but names neither an instance nor a baseURL — point it at a searxng instance in this workspace, or at an external instance's URL", conn.Name)
 		}
 		// Accept either the instance root or the /search endpoint: pointing a
 		// connection at the URL the template reports is the obvious thing to do.
@@ -359,17 +347,17 @@ func searchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp Data
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 			endpoint+"?q="+url.QueryEscape(query)+"&format=json", nil)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		req.Header.Set("Accept", "application/json")
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
-		return req, nil
+		return req, nil, nil
 
 	case searchProviderBrave:
 		if token == "" {
-			return nil, fmt.Errorf("websearch connection %q has no API token", conn.Name)
+			return nil, nil, fmt.Errorf("websearch connection %q has no API token", conn.Name)
 		}
 		if base == "" {
 			base = braveSearchURL
@@ -377,14 +365,14 @@ func searchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp Data
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 			base+"?q="+url.QueryEscape(query)+"&count=5", nil)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("X-Subscription-Token", token)
-		return req, nil
+		return req, nil, nil
 
 	default:
-		return nil, fmt.Errorf("websearch connection %q has unknown provider %q (want %q or %q)",
+		return nil, nil, fmt.Errorf("websearch connection %q has unknown provider %q (want %q or %q)",
 			conn.Name, searchProvider(conn), searchProviderBrave, searchProviderSearXNG)
 	}
 }
@@ -396,27 +384,31 @@ func searchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp Data
 const searxngResource = "instances"
 
 // dataPlaneSearchRequest addresses a searxng instance through the
-// infrastructure provider's data plane:
+// infrastructure provider's instances/proxy verb, claimed on this provider's
+// own export and reached through its virtual workspace:
 //
-//	{hub}/services/providers/infrastructure/dataplane/clusters/{cluster}/{resource}/{name}/proxy/search?…
+//	{vw}/clusters/{cluster}/apis/infrastructure.railgrid.ai/v1alpha1/{resource}/{name}/proxy/search?…
 //
-// The call is authenticated as the CALLER, and the data plane authorizes it by
-// re-reading the instance with that same token — so kcp RBAC on the instance is
-// the whole gate and the workload needs no credential of its own.
-func dataPlaneSearchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp DataPlane, instance, query string) (*http.Request, error) {
+// The call is authenticated as THIS PROVIDER (the returned client carries its
+// credential); kcp authorizes it against the claim the tenant accepted, and
+// the workload needs no credential of its own.
+func dataPlaneSearchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp DataPlane, instance, query string) (*http.Request, *http.Client, error) {
 	_, resource := instanceRef(conn, searxngResource)
-	base, err := dp.ProxyURL("websearch", conn.Name, resource, instance)
+	endpoint, err := dp.ProxyURL(ctx, "websearch", conn.Name, resource, instance, "search")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	client, err := dp.HTTPClient()
+	if err != nil {
+		return nil, nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		base+"/search?q="+url.QueryEscape(query)+"&format=json", nil)
+		endpoint+"?q="+url.QueryEscape(query)+"&format=json", nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+dp.Token)
-	return req, nil
+	return req, client, nil
 }
 
 // searchResult is one hit, normalized across backends.

@@ -126,13 +126,13 @@ func isServiceAccountJWT(token string) bool {
 // extractBearerToken extracts the bearer token from the Authorization header
 // and NOWHERE ELSE.
 //
-// There used to be a "?token=" fallback, because a browser cannot set headers
-// on a WebSocket upgrade. A bearer in a query string is a bearer in every
-// access log, proxy log and Referer between the browser and this process, and
-// it is the full-lifetime kcp credential of the person at the keyboard. The
-// browser path now mints a short-lived, single-object ticket
-// (POST .../{name}/ticket) and presents it as a Sec-WebSocket-Protocol
-// subprotocol instead — see ticket.go and callerBearer.
+// It serves the routes that still carry a bearer because they never pass
+// through kcp: the agent tunnel (class (f), an edge's own credential), the
+// provider MCP endpoint (class (b), the caller's bearer forwarded by the hub's
+// aggregate) and the pod-to-pod relay. A data-plane verb carries none — kcp
+// authenticated the caller and stamped the identity — and its handler never
+// calls this. There is no "?token=" fallback: a bearer in a query string is a
+// bearer in every access log between the browser and this process.
 func extractBearerToken(r *http.Request) string {
 	scheme, token, ok := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") {

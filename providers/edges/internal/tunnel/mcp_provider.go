@@ -19,6 +19,8 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"strings"
 
 	mcpapi "github.com/containers/kubernetes-mcp-server/pkg/api"
@@ -26,6 +28,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // railgridEdgeProvider implements the kubernetes-mcp-server Provider interface so
@@ -33,19 +37,32 @@ import (
 //
 // It is single-edge: cluster, resource and edgeName are fixed at construction.
 // GetTargets returns edgeName only while the edge's reverse tunnel is registered
-// in the provider's ConnManager. All kube API calls are routed through the
-// provider's own consumer edgeproxy `k8s` subresource (reached back through the
-// hub via hubBase + edgeProxyPublicPath), which streams down the reverse tunnel.
+// in the provider's ConnManager. Kube API calls reach the edge one of two ways:
+//
+//   - direct: the edge's Kubernetes API is dialled straight down its reverse
+//     tunnel, as the provider. This is the per-edge "mcp" verb, whose caller
+//     kcp already authorized for THIS edge and who carries no bearer to act
+//     with.
+//   - via the hub: the call goes back through the hub's kcp front door to the
+//     edge's "k8s" verb with the caller's own bearer, so kcp authorizes the
+//     caller on each edge separately. This is the aggregate /mcp endpoint,
+//     which enumerates every connected edge in the tenant and must not let a
+//     caller reach one they hold no grant on.
 type railgridEdgeProvider struct {
-	cluster             string       // kcp logical-cluster ID, e.g. "11tcw27t4rdtnacy"
-	resource            string       // GVR resource, e.g. "kubernetesclusters"
-	group               string       // API group, e.g. "edges.railgrid.ai"
-	version             string       // API version, e.g. "v1alpha1"
-	edgeName            string       // fixed edge name, e.g. "my-cluster"
-	edgeConnManager     *ConnManager // shared dialer registry (tunnel liveness)
-	hubBase             string       // e.g. "https://railgrid.example.com" (no trailing slash)
-	edgeProxyPublicPath string       // e.g. "/services/providers/edges/edgeproxy"
-	bearerToken         string       // caller's bearer token, forwarded to the edgeproxy
+	cluster         string       // kcp logical-cluster ID, e.g. "11tcw27t4rdtnacy"
+	resource        string       // GVR resource, e.g. "kubernetesclusters"
+	group           string       // API group, e.g. "edges.railgrid.ai"
+	version         string       // API version, e.g. "v1alpha1"
+	edgeName        string       // fixed edge name, e.g. "my-cluster"
+	edgeConnManager *ConnManager // shared dialer registry (tunnel liveness)
+	// direct drives the edge's Kubernetes API down its tunnel as the provider;
+	// hubBase and bearerToken are then unused.
+	direct bool
+	// hubBase and bearerToken address the edge's k8s verb through the hub as
+	// the caller: hubBase is e.g. "https://railgrid.example.com" (no trailing
+	// slash), bearerToken the caller's own credential.
+	hubBase     string
+	bearerToken string
 }
 
 // Ensure railgridEdgeProvider implements mcpkubernetes.Provider.
@@ -64,17 +81,45 @@ func (p *railgridEdgeProvider) GetTargets(_ context.Context) ([]string, error) {
 	return []string{}, nil
 }
 
-// k8sSubresourceURL builds the full URL of this edge's k8s subresource, served
-// by the provider's own consumer edgeproxy and reached back through the hub:
+// k8sSubresourceURL builds the full URL of this edge's k8s verb, a custom
+// subresource on this provider's export, reached back through the hub's kcp
+// front door:
 //
-//	{hubBase}{edgeProxyPublicPath}/clusters/{cluster}/{resource}/{name}/k8s
-func (p *railgridEdgeProvider) k8sSubresourceURL(edgeName string) string {
-	return strings.TrimRight(p.hubBase, "/") +
-		edgeProxyPath(p.edgeProxyPublicPath, p.cluster, p.resource, edgeName, VerbK8s)
+//	{hubBase}/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/k8s
+func (p *railgridEdgeProvider) k8sSubresourceURL(edgeName string) (string, error) {
+	path, err := dataplane.SubresourcePath(p.group, p.version, dataplane.Request{
+		ClusterID: p.cluster, Resource: p.resource, Name: edgeName, Verb: VerbK8s,
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(p.hubBase, "/") + path, nil
+}
+
+// agentK8sBase is the base URL of the edge agent's Kubernetes API as the
+// agent's own mux serves it, for a client whose transport dials the tunnel.
+// The host is a placeholder the transport ignores; the path prefix is what the
+// agent routes on (see agentK8sPath).
+const agentK8sBase = "http://edge-agent/k8s"
+
+// tunnelTransport is an http.RoundTripper that opens one tunnel stream per
+// request to the edge agent. Keep-alives are off because a revdial stream is
+// not a pooled TCP connection: each Dial is a fresh back-connection the agent
+// answers once, exactly as edgeDeviceConnTransport does for the k8s verb.
+func tunnelTransport(dialer interface {
+	Dial(context.Context) (net.Conn, error)
+}) http.RoundTripper {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.Dial(ctx)
+		},
+		DisableKeepAlives: true,
+	}
 }
 
 // GetDerivedKubernetes returns a *mcpkubernetes.Kubernetes pointing at the edge
-// agent's Kubernetes API, reached via the provider's edgeproxy k8s subresource.
+// agent's Kubernetes API: down the tunnel directly, or via the edge's k8s verb
+// through the hub as the caller (see railgridEdgeProvider).
 func (p *railgridEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName string) (*mcpkubernetes.Kubernetes, error) {
 	// Guard: if the caller passes an empty edge name (e.g. MCP client sends
 	// cluster=""), fall back to the provider's fixed edge name.
@@ -84,14 +129,31 @@ func (p *railgridEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName 
 	if edgeName == "" {
 		return nil, fmt.Errorf("no edge name specified and no default available")
 	}
-	serverURL := p.k8sSubresourceURL(edgeName)
 
-	restCfg := &rest.Config{
-		Host:        serverURL,
-		BearerToken: p.bearerToken,
-		TLSClientConfig: rest.TLSClientConfig{
-			Insecure: true,
-		},
+	var (
+		serverURL string
+		restCfg   *rest.Config
+		authInfo  = &clientcmdapi.AuthInfo{}
+	)
+	if p.direct {
+		dialer, ok := p.edgeConnManager.Load(edgeConnKey(p.resource, p.cluster, edgeName))
+		if !ok {
+			return nil, fmt.Errorf("edge %s has no active tunnel", edgeName)
+		}
+		serverURL = agentK8sBase
+		restCfg = &rest.Config{Host: serverURL, Transport: tunnelTransport(dialer)}
+	} else {
+		url, err := p.k8sSubresourceURL(edgeName)
+		if err != nil {
+			return nil, fmt.Errorf("addressing the k8s verb of edge %s: %w", edgeName, err)
+		}
+		serverURL = url
+		restCfg = &rest.Config{
+			Host:            serverURL,
+			BearerToken:     p.bearerToken,
+			TLSClientConfig: rest.TLSClientConfig{Insecure: true},
+		}
+		authInfo.Token = p.bearerToken
 	}
 
 	// Build a minimal in-memory kubeconfig so NewKubernetes can construct its
@@ -99,11 +161,9 @@ func (p *railgridEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName 
 	rawCfg := clientcmdapi.NewConfig()
 	rawCfg.Clusters[edgeName] = &clientcmdapi.Cluster{
 		Server:                serverURL,
-		InsecureSkipTLSVerify: true,
+		InsecureSkipTLSVerify: !p.direct,
 	}
-	rawCfg.AuthInfos[edgeName] = &clientcmdapi.AuthInfo{
-		Token: p.bearerToken,
-	}
+	rawCfg.AuthInfos[edgeName] = authInfo
 	ctxName := edgeName + "-ctx"
 	rawCfg.Contexts[ctxName] = &clientcmdapi.Context{
 		Cluster:  edgeName,
@@ -139,15 +199,14 @@ func (p *railgridEdgeProvider) Close() {}
 // aggregate `/mcp` endpoint. GetTargets returns the connected subset; the MCP
 // "cluster" tool parameter selects which edge a call targets.
 type multiEdgeProvider struct {
-	cluster             string       // kcp logical-cluster ID
-	resource            string       // e.g. "kubernetesclusters"
-	group               string       // API group
-	version             string       // API version
-	edgeNames           []string     // candidate edge names in this tenant
-	edgeConnManager     *ConnManager // shared dialer registry
-	hubBase             string       // e.g. "https://railgrid.example.com" (no trailing slash)
-	edgeProxyPublicPath string       // e.g. "/services/providers/edges/edgeproxy"
-	bearerToken         string       // caller's bearer token
+	cluster         string       // kcp logical-cluster ID
+	resource        string       // e.g. "kubernetesclusters"
+	group           string       // API group
+	version         string       // API version
+	edgeNames       []string     // candidate edge names in this tenant
+	edgeConnManager *ConnManager // shared dialer registry
+	hubBase         string       // e.g. "https://railgrid.example.com" (no trailing slash)
+	bearerToken     string       // caller's bearer token, presented to kcp on each edge's k8s verb
 }
 
 var _ mcpkubernetes.Provider = (*multiEdgeProvider)(nil)
@@ -175,15 +234,14 @@ func (p *multiEdgeProvider) GetDerivedKubernetes(ctx context.Context, edgeName s
 		return nil, fmt.Errorf("no edge name specified and no connected edges available")
 	}
 	single := &railgridEdgeProvider{
-		cluster:             p.cluster,
-		resource:            p.resource,
-		group:               p.group,
-		version:             p.version,
-		edgeName:            edgeName,
-		edgeConnManager:     p.edgeConnManager,
-		hubBase:             p.hubBase,
-		edgeProxyPublicPath: p.edgeProxyPublicPath,
-		bearerToken:         p.bearerToken,
+		cluster:         p.cluster,
+		resource:        p.resource,
+		group:           p.group,
+		version:         p.version,
+		edgeName:        edgeName,
+		edgeConnManager: p.edgeConnManager,
+		hubBase:         p.hubBase,
+		bearerToken:     p.bearerToken,
 	}
 	return single.GetDerivedKubernetes(ctx, edgeName)
 }

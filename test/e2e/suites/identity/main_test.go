@@ -27,26 +27,39 @@ limitations under the License.
 //
 // Two things this suite adds to that bootstrap:
 //
-//  1. A second, synthetic provider called `fixture`, so clause E (composition)
-//     has a foreign API group to compose. It is registered the way a real
-//     provider is — a Provider record, a workspace-scoped APIExport over group
-//     `fixture.railgrid.ai`, a bind grant, a CatalogEntry — but it runs no
-//     process: the identity policy reads the catalog and kcp, never the
-//     provider's backend, so a served backend would add nothing. See
+//  1. A second, synthetic provider called `fixture`, so the foreign clauses (B
+//     and C) have somebody else's API group to reach into. It is registered the
+//     way a real provider is — a Provider record, a workspace-scoped APIExport
+//     over group `fixture.railgrid.ai`, a bind grant, a CatalogEntry — but it
+//     runs no process: the identity policy reads the catalog and kcp, never the
+//     provider's backend, so a served backend would add nothing. Its
+//     CatalogEntry DECLARES one verb, `widgets/spin`, which is the whole
+//     premise of clause C: the policy mints a cross-provider capability only
+//     for a coordinate the OWNING provider declares. `gadgets` is declared
+//     nowhere, which is what keeps the refusals honest. See
 //     applyFixtureProvider.
 //
-//  2. quickstart's CatalogEntry is applied with a `dependencies[].composes`
-//     declaration naming that fixture. The committed manifest is NOT edited:
-//     the suite patches the object in memory before creating it, exactly as the
-//     provider suite already patches spec.ui.url to the test port. Editing the
-//     shipped manifest would hand every deployment a dependency that exists
-//     only in this test.
+//  2. quickstart's CatalogEntry is applied with a `spec.requires` entry naming
+//     that fixture. The committed manifest is NOT edited: the suite patches the
+//     object in memory before creating it, exactly as the provider suite
+//     already patches spec.serving.ui.url to the test port. Editing the shipped
+//     manifest would hand every deployment a dependency that exists only in
+//     this test.
+//
+//     A requirement grants nothing that is minted: it becomes a permission
+//     claim on quickstart's OWN APIExport, accepted by the tenant at Enable and
+//     served by kcp on quickstart's virtual workspace. There is no composition
+//     clause in the policy any more, and TestE pins exactly that — a required
+//     kind is not reachable through a minted identity, whatever the tenant
+//     accepted. What the declaration still drives here is the dependency edge:
+//     the Enable flow refuses quickstart in a workspace where the fixture is
+//     not enabled.
 //
 // The hub runs with --provider-hub-access-platform-default=false. Quickstart is
-// a platform provider, and under the default (true) an undecided composition is
-// allowed, which would make "refused until accepted" vacuous. False is also the
-// setting the flag's own help text says every provider should eventually be
-// held to.
+// a platform provider, and under the default (true) an undecided hub-access
+// request is allowed, which would make "refused until accepted" vacuous. False
+// is also the setting the flag's own help text says every provider should
+// eventually be held to.
 package identity
 
 import (
@@ -102,19 +115,26 @@ const (
 	providerName  = "quickstart"
 	workspacePath = "root:railgrid:providers:quickstart"
 
-	// The synthetic dependency whose group quickstart composes.
+	// The synthetic dependency: the provider that owns fixtureGroup, and the
+	// only one that may declare a coordinate in it.
 	fixtureName          = "fixture"
 	fixtureWorkspacePath = "root:railgrid:providers:fixture"
 	fixtureExportName    = "fixture.providers.railgrid.ai"
 	fixtureGroup         = "fixture.railgrid.ai"
-	// fixtureResource is the kind quickstart DECLARES it composes — clause E.
+	// fixtureResource is the kind quickstart DECLARES it requires, and the kind
+	// the fixture hangs its one declared verb off.
 	fixtureResource   = "widgets"
 	fixtureSchemaName = "v1.widgets.fixture.railgrid.ai"
-	// fixturePlainResource is a second kind in the same group that quickstart
-	// does NOT compose. It is what makes the clause B and C refusals testable:
-	// clause E claims a rule only when every resource in it is composed, so a
-	// rule over `widgets` can never reach the foreign-read path, and a suite
-	// with only one fixture kind would be asserting the wrong clause.
+	// fixtureVerb is the coordinate the FIXTURE declares on fixtureResource, so
+	// `widgets/spin` is a coordinate clause C can mint for. Declaring it is the
+	// whole condition: the policy refuses a {resource}/{verb} rule whose verb
+	// the owning provider does not declare, which is what
+	// fixtureUndeclaredVerb pins.
+	fixtureVerb           = "spin"
+	fixtureUndeclaredVerb = "teleport"
+	// fixturePlainResource is a second kind in the same group carrying no
+	// declared verb at all. It is what makes the clause B refusals testable: a
+	// rule over it can only ever be a plain foreign read, never a coordinate.
 	fixturePlainResource   = "gadgets"
 	fixturePlainSchemaName = "v1.gadgets.fixture.railgrid.ai"
 )
@@ -179,9 +199,9 @@ func TestMain(m *testing.M) {
 		"--listen-addr", ":"+hubPort,
 		"--data-dir", dataDir,
 		"--static-auth-token", staticToken,
-		// See the package comment: without this a platform provider composes
-		// what it declares in a workspace nobody has decided on, and the
-		// "refused until accepted" assertion would pass for the wrong reason.
+		// See the package comment: without this a platform provider's undecided
+		// hub-access requests are allowed in a workspace nobody has decided on,
+		// and "refused until accepted" would pass for the wrong reason.
 		"--provider-hub-access-platform-default=false",
 	)
 	hubCmd.Stdout = hubLog
@@ -243,6 +263,12 @@ func TestMain(m *testing.M) {
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"QUICKSTART_WORKSPACE_PATH="+workspacePath,
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "quickstart", "deploy", "chart", "files"),
+		// This suite registers the CatalogEntry itself (applyQuickstartManifests),
+		// so init has no manifest to read spec.serving.backend.url from. The
+		// generated APIExport declares greetings/greet as a custom subresource,
+		// and install refuses to publish one with no DataPlaneEndpointSlice URL
+		// behind it — a coordinate routed nowhere is worse than no coordinate.
+		"RAILGRID_DATAPLANE_URL="+providerURL,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -261,6 +287,14 @@ func TestMain(m *testing.M) {
 		"RAILGRID_HUB_TOKEN="+staticToken,
 		"RAILGRID_PROVIDER_NAME="+providerName,
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "quickstart", "deploy", "chart", "files"),
+		// The chart mounts the rendered CatalogEntry on the serve container as
+		// RAILGRID_CATALOGENTRY_FILE; here the committed manifest plays that
+		// part. serve derives its custom-subresource route table from
+		// spec.export.resources[].verbs, and REQUIRES it: a verb has no other
+		// spelling, so without a manifest serve refuses to start rather than
+		// come up with no data plane at all.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "quickstart", "manifest.yaml"),
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog
@@ -281,8 +315,8 @@ func TestMain(m *testing.M) {
 
 // applyQuickstartManifests applies quickstart's Provider + CatalogEntry into
 // root:railgrid:system:providers, patched for this suite: the UI/backend URLs
-// point at the test port, and spec.dependencies declares the composition clause
-// E is tested through. The committed manifest is read, not written.
+// point at the test port, and spec.requires declares what quickstart needs from
+// the fixture provider. The committed manifest is read, not written.
 func applyQuickstartManifests() error {
 	cl, err := kcpDynamicRaw("root:railgrid:system:providers", adminToken)
 	if err != nil {
@@ -308,28 +342,41 @@ func applyQuickstartManifests() error {
 			"vendor":      "railgrid",
 			"version":     "0.1.0",
 			"category":    "Demo",
-			"ui":          map[string]any{"url": providerURL, "indexPath": "/"},
-			"backend":     map[string]any{"url": providerURL, "healthPath": "/readyz"},
-			"apiExport":   map[string]any{"name": "quickstart.providers.railgrid.ai"},
+			"serving": map[string]any{
+				"ui":      map[string]any{"url": providerURL, "indexPath": "/"},
+				"backend": map[string]any{"url": providerURL, "healthPath": "/readyz"},
+			},
+			// greetings is listed only to hang the greet verb off it: the kind
+			// itself is an ordinary CR tenants read and write through kcp.
+			// Clause A is what the suite mints on it.
+			"export": map[string]any{
+				"name": "quickstart.providers.railgrid.ai",
+				"resources": []any{map[string]any{
+					"name":       "greetings",
+					"apiVersion": greetingGVR.Group + "/" + greetingGVR.Version,
+					"kind":       "Greeting",
+					"verbs": []any{map[string]any{
+						"name":        "greet",
+						"description": "Return the greeting this Greeting describes.",
+						"readOnly":    true,
+					}},
+				}},
+			},
 			// The one declaration the committed manifest does not carry. It
-			// names the fixture provider — the owner of fixtureGroup — because
-			// the policy refuses a composition whose dependency does not
-			// actually export the group (policy.go, authorizeComposition).
-			"dependencies": []any{map[string]any{
-				"name": fixtureName,
-				"composes": []any{map[string]any{
-					"group":    fixtureGroup,
-					"resource": fixtureResource,
-					// Deliberately not the full vocabulary: the suite asks for
-					// `delete` too, and gets composition_verb_not_declared.
+			// names the fixture provider — the owner of fixtureGroup — which is
+			// both the dependency edge the Enable flow checks and, once a
+			// tenant accepts it, a permission claim on quickstart's OWN
+			// APIExport. It is deliberately NOT a path to a minted identity:
+			// TestE pins that a required kind stays unreachable through
+			// /api/identities.
+			"requires": []any{map[string]any{
+				"provider": fixtureName,
+				"group":    fixtureGroup,
+				"resources": []any{map[string]any{
+					"name":  fixtureResource,
 					"verbs": []any{"get", "list", "watch", "create"},
 				}},
 			}},
-			"dataPlane": map[string]any{"verbs": []any{map[string]any{
-				"resource": "greetings", "verb": "greet",
-				"description": "Return the greeting this Greeting describes.",
-				"readOnly":    true,
-			}}},
 		},
 	}}
 	return createWithRetry(cl, catalogEntryGVR, entry, 90*time.Second)
@@ -386,8 +433,8 @@ func applyFixtureProvider() error {
 		return err
 	}
 	// Without the bind grant the Enable flow's APIBinding is refused, and an
-	// unbound dependency makes every clause E rule fail as provider_not_bound
-	// rather than on consent.
+	// unbound fixture makes every foreign rule fail as provider_not_bound
+	// before the clause under test is even reached.
 	bindRole := "railgrid:providers:bind:" + fixtureExportName
 	role := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1",
@@ -424,14 +471,32 @@ func applyFixtureProvider() error {
 		"metadata":   map[string]any{"name": fixtureName},
 		"spec": map[string]any{
 			"displayName": "Identity E2E Fixture",
-			"description": "API-only provider whose group the quickstart provider composes.",
+			"description": "API-only provider whose group and verb the quickstart provider reaches.",
 			"vendor":      "railgrid",
 			"version":     "0.0.1",
 			"category":    "Demo",
-			// No ui and no backend on purpose: an APIExport alone is a valid
+			// No serving section on purpose: an APIExport alone is a valid
 			// provider shape (controller.go: EndpointsValid counts it), and it
 			// is the shape an org-owned, API-only provider has.
-			"apiExport": map[string]any{"name": fixtureExportName},
+			//
+			// widgets is listed to DECLARE one verb on it. That declaration is
+			// the sole thing standing between clause C and a refusal: the
+			// policy asks the OWNING provider's catalog entry whether the
+			// coordinate exists (ProviderDeclaredVerbs) and mints nothing for a
+			// verb nobody published. gadgets is deliberately absent, so it has
+			// no coordinates at all.
+			"export": map[string]any{
+				"name": fixtureExportName,
+				"resources": []any{map[string]any{
+					"name":       fixtureResource,
+					"apiVersion": fixtureGroup + "/v1alpha1",
+					"kind":       "Widget",
+					"verbs": []any{map[string]any{
+						"name":        fixtureVerb,
+						"description": "Spin the Widget, which is as much as a fixture needs to do.",
+					}},
+				}},
+			},
 		},
 	}}
 	return createWithRetry(sys, catalogEntryGVR, entry, 90*time.Second)

@@ -185,12 +185,23 @@ func TestMain(m *testing.M) {
 		// The SavedView APIResourceSchema the chart ships — init reads the
 		// schemas dir to author the APIExport's resources.
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "kuery", "deploy", "chart", "files"),
+		// Where a kcp shard reaches this provider when it forwards a custom
+		// subresource. The export declares "<resource>/<verb>" entries, so init
+		// writes a DataPlaneEndpointSlice for them to resolve through and refuses
+		// to guess the address.
+		//
+		// Given explicitly rather than read from the CatalogEntry: the committed
+		// manifest targets the dev-loop port, and applyKueryManifests rewrites
+		// spec.serving.backend.url to this same address when it registers the
+		// entry, so the slice and the entry agree on where the provider is.
+		"RAILGRID_DATAPLANE_URL=http://localhost:"+providerPort,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
 	if err := initCmd.Run(); err != nil {
+		tail := tailInitLog(initLog.Name(), 60)
 		cleanup()
-		fmt.Fprintf(os.Stderr, "kuery init failed: %v (log: %s)\n", err, initLog.Name())
+		fmt.Fprintf(os.Stderr, "kuery init failed: %v (log: %s)\n%s\n", err, initLog.Name(), tail)
 		os.Exit(1)
 	}
 
@@ -207,6 +218,12 @@ func TestMain(m *testing.M) {
 		"RAILGRID_HUB_TOKEN="+staticToken,
 		"RAILGRID_PROVIDER_NAME=kuery",
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		// The CatalogEntry manifest is where serve reads the
+		// "<resource>/<verb>" coordinates it answers on the kcp
+		// custom-subresource path — the only way a verb is reached — so the
+		// provider refuses to start without it. init already applied the
+		// entry (applyKueryManifests), so this is not repeated there.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "kuery", "manifest.yaml"),
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog
@@ -350,4 +367,20 @@ func ctxWithTimeout(t *testing.T, d time.Duration) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// tailInitLog returns the last n lines of a bootstrap log, so a failure reports
+// what went wrong instead of only an exit status. It must be read BEFORE
+// cleanup, which removes the data directory; CI does not upload that directory
+// either, so stderr is the only place the reason survives.
+func tailInitLog(path string, n int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(" + err.Error() + ")"
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

@@ -23,16 +23,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-func testProviderAction() ProviderActionSpec {
-	action := ProviderActionSpec{
-		ID:          "query_table/v1",
+func testProviderAction() ProviderAction {
+	action := ProviderAction{
+		Name:        "query_table",
+		Version:     "v1",
 		DisplayName: "Query table",
 		Description: "Run a bounded read-only query.",
-		BoundResource: ProviderActionBoundResource{
-			APIVersion: "databricks.railgrid.ai/v1alpha1",
-			Kind:       "Table",
-			Resource:   "tables",
-		},
 		InputSchema: &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"limit":{"type":"integer"}}}`)},
 		OutputSchema: &runtime.RawExtension{Raw: []byte(`{
   "type": "object",
@@ -91,33 +87,38 @@ func TestValidateProviderActionAndSchemaDigest(t *testing.T) {
 	}
 }
 
-func TestValidateProviderActionsRejectsMalformedDeclarations(t *testing.T) {
+func TestValidateProviderActionRejectsMalformedDeclarations(t *testing.T) {
 	cases := []struct {
 		name   string
-		mutate func(*ProviderActionSpec)
+		mutate func(*ProviderAction)
 		want   string
 	}{
-		{name: "invalid id", mutate: func(action *ProviderActionSpec) { action.ID = "query_table/latest" }, want: "id must match"},
-		{name: "missing input schema", mutate: func(action *ProviderActionSpec) { action.InputSchema = nil }, want: "inputSchema is required"},
-		{name: "invalid schema", mutate: func(action *ProviderActionSpec) { action.OutputSchema = &runtime.RawExtension{Raw: []byte(`[]`)} }, want: "schema must be a JSON object"},
-		{name: "invalid execution mode", mutate: func(action *ProviderActionSpec) { action.ExecutionMode = "stream" }, want: "executionMode"},
-		{name: "invalid limits", mutate: func(action *ProviderActionSpec) { action.Limits.TimeoutSeconds = 0 }, want: "timeoutSeconds"},
-		{name: "missing schema digest", mutate: func(action *ProviderActionSpec) { action.SchemaDigest = "" }, want: "schemaDigest"},
-		{name: "consent metadata without requirement", mutate: func(action *ProviderActionSpec) { action.Consent.Scope = "tenant" }, want: "prompt and scope"},
-		{name: "deprecation requires message", mutate: func(action *ProviderActionSpec) { action.Deprecation = &ProviderActionDeprecation{Deprecated: true} }, want: "message is required"},
+		{name: "invalid version", mutate: func(action *ProviderAction) { action.Version = "latest" }, want: "version must be v"},
+		{name: "a standard verb cannot name an action", mutate: func(action *ProviderAction) { action.Name = "get" }, want: "standard Kubernetes verb"},
+		{name: "a versioned name is refused", mutate: func(action *ProviderAction) { action.Name = "query_table/v1" }, want: "no version and no slash"},
+		{name: "missing input schema", mutate: func(action *ProviderAction) { action.InputSchema = nil }, want: "inputSchema is required"},
+		{name: "invalid schema", mutate: func(action *ProviderAction) { action.OutputSchema = &runtime.RawExtension{Raw: []byte(`[]`)} }, want: "schema must be a JSON object"},
+		{name: "invalid execution mode", mutate: func(action *ProviderAction) { action.ExecutionMode = "stream" }, want: "executionMode"},
+		{name: "invalid limits", mutate: func(action *ProviderAction) { action.Limits.TimeoutSeconds = 0 }, want: "timeoutSeconds"},
+		{name: "missing schema digest", mutate: func(action *ProviderAction) { action.SchemaDigest = "" }, want: "schemaDigest"},
+		{name: "consent metadata without requirement", mutate: func(action *ProviderAction) { action.Consent.Scope = "tenant" }, want: "prompt and scope"},
+		{name: "deprecation requires message", mutate: func(action *ProviderAction) { action.Deprecation = &ProviderActionDeprecation{Deprecated: true} }, want: "message is required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			action := testProviderAction()
 			tc.mutate(&action)
-			if err := ValidateProviderActions([]ProviderActionSpec{action}); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if err := ValidateProviderAction(action); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validation error = %v, want substring %q", err, tc.want)
 			}
 		})
 	}
+}
 
-	duplicate := testProviderAction()
-	if err := ValidateProviderActions([]ProviderActionSpec{duplicate, duplicate}); err == nil || !strings.Contains(err.Error(), "duplicate action ID") {
-		t.Fatalf("duplicate validation error = %v, want duplicate action ID", err)
+// The catalogued id is derived from the name and the version, so nothing
+// declares it and nothing has to parse it apart again.
+func TestProviderActionIDIsDerived(t *testing.T) {
+	if got := testProviderAction().ID(); got != "query_table/v1" {
+		t.Fatalf("ID() = %q, want query_table/v1", got)
 	}
 }

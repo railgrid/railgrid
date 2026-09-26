@@ -156,7 +156,7 @@ func (r *engagementReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		logger.Info("purged an expired engagement", "edge", storeName)
 		// The record goes with the rows: it is rebuilt from the workspace's
-		// edge watch if the edge ever comes back.
+		// next edge reconcile if the edge ever comes back.
 		if err := r.client.Delete(ctx, engagement); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("deleting engagement %s: %w", engagement.Name, err)
 		}

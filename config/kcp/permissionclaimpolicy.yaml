@@ -1,0 +1,77 @@
+# Copyright 2026 The Railgrid Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# GENERATED FILE — DO NOT EDIT.
+#
+# Written by hack/generate-permission-claim-policy.mjs from the provider
+# manifests. Regenerate with:
+#   make permission-claim-policy [EXTERNAL_PROVIDERS_DIR=../providers]
+# `make verify-provider-contract` re-runs it with --check, so a new
+# spec.dependencies[].composes[] entry that nobody whitelisted fails there.
+#
+# spec.claims[].groups  comes from each provider's manifest.yaml
+#                       spec.dependencies[].composes[].group.
+# spec.claims[].claimer comes from spec.resources[].group on that provider's
+#                       generated APIExport (config/kcp/apiexport-*.yaml) — the
+#                       manifest names the export, not the group it serves, and
+#                       the two differ for most providers.
+# spec.providers        is the identity the hub mints for every provider:
+#                       ServiceAccount default/provider in the provider's own
+#                       workspace root:railgrid:providers/<name> (see
+#                       pkg/hub/providers/provision.go and heartbeat_auth.go
+#                       ProviderSAUsername). Every *.railgrid.ai APIExport here
+#                       is applied by that identity, from the provider's own
+#                       `init`.
+#
+#                       TODO(permissionclaimpolicy): a plain ServiceAccount
+#                       username is logical-cluster-scoped in kcp, so this
+#                       subject also matches a default/provider ServiceAccount
+#                       a tenant creates in their own workspace. kcp's
+#                       disambiguated form
+#                       system:kcp:serviceaccount:{cluster}:{ns}:{name} cannot
+#                       be written statically ({cluster} is assigned at
+#                       runtime). Confirm with kcp whether the policy should
+#                       accept a cluster-qualified subject, or whether the
+#                       admission check already scopes the match to the
+#                       exporting workspace.
+#
+# Generated from 10 provider manifest(s), 11 composes entries:
+#   providers/agents
+#   providers/app-studio
+#   providers/code
+#   providers/edges
+#   providers/infrastructure
+#   providers/kuery
+#   providers/quickstart
+#   external:providers/databricks
+#   external:providers/factory
+#   external:providers/planner
+apiVersion: admin.kcp.io/v1alpha1
+kind: PermissionClaimPolicy
+metadata:
+  name: railgrid
+spec:
+  claims:
+  - claimer: agents.railgrid.ai
+    groups:
+    - infrastructure.railgrid.ai
+  - claimer: ai.railgrid.ai
+    groups:
+    - code.railgrid.ai
+    - infrastructure.railgrid.ai
+  - claimer: factory.providers.railgrid.ai
+    groups:
+    - code.railgrid.ai
+    - edges.railgrid.ai
+    - planner.providers.railgrid.ai
+  - claimer: kuery.providers.railgrid.ai
+    groups:
+    - edges.railgrid.ai
+  providers:
+  - kind: User
+    name: "system:serviceaccount:default:provider"

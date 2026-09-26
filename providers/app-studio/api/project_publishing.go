@@ -836,8 +836,8 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 	if s.hubBase == "" {
 		return publishingMember{}, fmt.Errorf("hub URL is not configured; cannot invite members")
 	}
-	if id.orgUUID == "" || id.workspaceUUID == "" || id.token == "" {
-		return publishingMember{}, fmt.Errorf("trusted organization, workspace, and bearer identity are required to invite members")
+	if id.orgUUID == "" || id.workspaceUUID == "" || id.user == "" {
+		return publishingMember{}, fmt.Errorf("trusted organization, workspace, and caller identity are required to invite members")
 	}
 	payload, err := json.Marshal(map[string]any{"user": email, "role": "member", "invite": true})
 	if err != nil {
@@ -850,10 +850,7 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 		return publishingMember{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+id.token)
-	req.Header.Set("X-Railgrid-Org", id.orgUUID)
-	req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
-	req.Header.Set("X-Railgrid-User", id.user)
+	s.setHubCallerHeaders(req.Header, id)
 	client := s.publishingHTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -957,8 +954,8 @@ func (s *Server) currentPublishingMembers(ctx context.Context, id identity) ([]p
 	if s.hubBase == "" {
 		return nil, fmt.Errorf("hub URL is not configured; cannot validate organization membership")
 	}
-	if id.orgUUID == "" || id.workspaceUUID == "" || id.token == "" {
-		return nil, fmt.Errorf("trusted organization, workspace, and bearer identity are required for membership validation")
+	if id.orgUUID == "" || id.workspaceUUID == "" || id.user == "" {
+		return nil, fmt.Errorf("trusted organization, workspace, and caller identity are required for membership validation")
 	}
 	paths := []string{
 		hubapi.OrgMembershipsPath(id.orgUUID),
@@ -974,10 +971,7 @@ func (s *Server) currentPublishingMembers(ctx context.Context, id identity) ([]p
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+id.token)
-		req.Header.Set("X-Railgrid-Org", id.orgUUID)
-		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
-		req.Header.Set("X-Railgrid-User", id.user)
+		s.setHubCallerHeaders(req.Header, id)
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("membership lookup: %w", err)

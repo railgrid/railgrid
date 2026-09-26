@@ -17,7 +17,6 @@ limitations under the License.
 package tunnel
 
 import (
-	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -25,7 +24,9 @@ import (
 	"github.com/railgrid/provider-sdk/dataplane"
 )
 
-func testServer(edgeProxyPublicPath string) *Server {
+// testServer is a Server with the three connectable kinds and nothing else
+// wired: no kcp, no callers, no tunnels. Tests set what they need.
+func testServer() *Server {
 	kube := schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "kubernetesclusters"}
 	linux := schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "linuxservers"}
 	mac := schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "macosservers"}
@@ -35,15 +36,17 @@ func testServer(edgeProxyPublicPath string) *Server {
 			linux.Resource: {GVR: linux, Kind: "LinuxServer"},
 			mac.Resource:   {GVR: mac, Kind: "MacOSServer"},
 		},
-		group:               "edges.railgrid.ai",
-		version:             "v1alpha1",
-		edgeProxyPublicPath: edgeProxyPublicPath,
+		group:   "edges.railgrid.ai",
+		version: "v1alpha1",
 	}
 }
 
+// An edge's status.URL is the hub-relative kube path of its default verb: a
+// kcp custom subresource on this provider's export, which the CLI externalizes
+// against the hub host and kcp routes back here.
 func TestEdgeProxyStatusURL(t *testing.T) {
-	const base = "/services/providers/edges/" + DataPlaneRoot
-	s := testServer(base)
+	s := testServer()
+	const base = "/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1"
 
 	cases := []struct {
 		name    string
@@ -57,20 +60,27 @@ func TestEdgeProxyStatusURL(t *testing.T) {
 			gvr:     s.kinds["kubernetesclusters"].GVR,
 			cluster: "11tcw27t4rdtnacy",
 			obj:     "dev-edge-kube-1",
-			want:    base + "/clusters/11tcw27t4rdtnacy/kubernetesclusters/dev-edge-kube-1/k8s",
+			want:    base + "/kubernetesclusters/dev-edge-kube-1/k8s",
 		},
 		{
 			name:    "linux server maps to ssh subresource",
 			gvr:     s.kinds["linuxservers"].GVR,
 			cluster: "11tcw27t4rdtnacy",
 			obj:     "dev-edge-srv-1",
-			want:    base + "/clusters/11tcw27t4rdtnacy/linuxservers/dev-edge-srv-1/ssh",
+			want:    base + "/linuxservers/dev-edge-srv-1/ssh",
 		},
 		{
 			name:    "macOS server has no consumer data-plane URL",
 			gvr:     s.kinds["macosservers"].GVR,
 			cluster: "11tcw27t4rdtnacy",
 			obj:     "dev-edge-mac-1",
+			want:    "",
+		},
+		{
+			name:    "a workspace path is not a cluster ID and yields no URL",
+			gvr:     s.kinds["linuxservers"].GVR,
+			cluster: "root:railgrid:tenants:acme",
+			obj:     "dev-edge-srv-1",
 			want:    "",
 		},
 	}
@@ -85,18 +95,18 @@ func TestEdgeProxyStatusURL(t *testing.T) {
 				return
 			}
 
-			// The CLI externalizes status.URL against the hub host; the hub
-			// backend proxy then strips /services/providers/edges and hands
-			// the provider the rest verbatim, which is exactly what
-			// dataplane.ParsePath must accept. Assert that round-trip so the
-			// inverse pair cannot drift.
-			stripped := strings.TrimPrefix(got, "/services/providers/edges")
-			parsed, ok := dataplane.ParsePath(DataPlaneRoot, stripped)
-			if !ok {
-				t.Fatalf("ParsePath(%q) failed to parse the URL this Server produced", stripped)
+			// The path a shard forwards for this URL is exactly this path, so
+			// the parser the serve adapter runs must accept what this Server
+			// produced. Assert the round-trip so the inverse pair cannot drift.
+			parsed, err := dataplane.ParseSubresourcePath(got)
+			if err != nil {
+				t.Fatalf("ParseSubresourcePath(%q) refused the URL this Server produced: %v", got, err)
 			}
 			if parsed.ClusterID != tc.cluster || parsed.Resource != tc.gvr.Resource || parsed.Name != tc.obj {
 				t.Fatalf("round-trip mismatch: got %+v", parsed)
+			}
+			if parsed.Group != s.group || parsed.APIVersion != s.version {
+				t.Fatalf("status.URL names %s/%s, want %s/%s", parsed.Group, parsed.APIVersion, s.group, s.version)
 			}
 			if !verbServed(parsed.Resource, parsed.Verb) {
 				t.Fatalf("status.URL names verb %q, which this provider does not serve", parsed.Verb)
@@ -105,9 +115,48 @@ func TestEdgeProxyStatusURL(t *testing.T) {
 	}
 }
 
-func TestEdgeProxyStatusURLEmptyWhenUnconfigured(t *testing.T) {
-	s := testServer("")
-	if got := s.edgeProxyStatusURL(s.kinds["kubernetesclusters"].GVR, "c", "n"); got != "" {
-		t.Fatalf("expected empty URL when edgeProxyPublicPath is unset, got %q", got)
+// The agent-tunnel route is parsed exactly as sent: a traversal segment, a
+// workspace path or a wrong verb is refused rather than cleaned.
+func TestParseAgentPath(t *testing.T) {
+	cases := []struct {
+		path                    string
+		ok                      bool
+		cluster, resource, name string
+	}{
+		{path: "/agent/clusters/11tcw27t4rdtnacy/linuxservers/edge-1/proxy", ok: true, cluster: "11tcw27t4rdtnacy", resource: "linuxservers", name: "edge-1"},
+		{path: "/agent/clusters/11tcw27t4rdtnacy/linuxservers/edge-1/ssh"},
+		{path: "/agent/clusters/11tcw27t4rdtnacy/linuxservers/edge-1/proxy/extra"},
+		{path: "/agent/clusters/11tcw27t4rdtnacy/linuxservers/../proxy"},
+		{path: "/agent/clusters/11tcw27t4rdtnacy/linuxservers//proxy"},
+		{path: "/agent/clusters/root:railgrid:tenants:a/linuxservers/edge-1/proxy"},
+		{path: "/agent/proxy"},
+		{path: "/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/proxy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			cluster, resource, name, ok := parseAgentPath(tc.path)
+			if ok != tc.ok {
+				t.Fatalf("parseAgentPath(%q) ok=%v, want %v", tc.path, ok, tc.ok)
+			}
+			if ok && (cluster != tc.cluster || resource != tc.resource || name != tc.name) {
+				t.Fatalf("parseAgentPath(%q) = %q %q %q", tc.path, cluster, resource, name)
+			}
+		})
+	}
+}
+
+// The k8s verb's upstream path comes from the parsed route's tail, never from
+// searching the URL for "/k8s/": an object named after the verb cannot shift
+// where the agent path begins.
+func TestAgentK8sPath(t *testing.T) {
+	for tail, want := range map[string]string{
+		"":                   "/k8s/",
+		"api":                "/k8s/api",
+		"api/v1/pods":        "/k8s/api/v1/pods",
+		"apis/apps/v1/k8s/x": "/k8s/apis/apps/v1/k8s/x",
+	} {
+		if got := agentK8sPath(tail); got != want {
+			t.Errorf("agentK8sPath(%q) = %q, want %q", tail, got, want)
+		}
 	}
 }

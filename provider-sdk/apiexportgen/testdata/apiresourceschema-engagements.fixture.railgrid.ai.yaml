@@ -1,0 +1,10 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260919-abc1234.engagements.fixture.railgrid.ai
+spec:
+  group: fixture.railgrid.ai
+  names:
+    kind: Engagement
+    plural: engagements
+  scope: Cluster

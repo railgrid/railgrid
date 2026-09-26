@@ -269,11 +269,17 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 	// kcp-front-proxy. Configuring it only on the apiserver isn't enough —
 	// the front-proxy terminates the request first and would reject bearer
 	// tokens it doesn't know about with 401.
+	// RAILGRID_KCP_IMAGE overrides the kcp image for both containers, as
+	// "repository:tag". It is how a kcp pull-request build is tried end to end:
+	// kcp publishes one per PR commit to ghcr.io/kcp-dev/kcp-prs, tagged
+	// pr-<number>-<short sha>. Unset, the chart runs the tag pinned to go.mod.
+	kcpImage, kcpTag := kcpImageOverride()
 	kcpValues := map[string]any{
 		"externalHostname": kcpExternalHostname,
 		"externalPort":     fmt.Sprintf("%d", kcpExternalPort),
 		"kcp": map[string]any{
-			"tag": kcpImageTag,
+			"image": kcpImage,
+			"tag":   kcpTag,
 			"tokenAuth": map[string]any{
 				"enabled":  true,
 				"fileName": kcpTokenAuthFileName,
@@ -281,7 +287,8 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 			},
 		},
 		"kcpFrontProxy": map[string]any{
-			"tag": kcpImageTag,
+			"image": kcpImage,
+			"tag":   kcpTag,
 			"service": map[string]any{
 				"type":     "NodePort",
 				"nodePort": kcpNodePort,
@@ -782,4 +789,27 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 	}
 
 	return nil
+}
+
+// kcpImageDefaultRepository is the chart's own default; it is passed explicitly
+// so an override can replace the repository and not only the tag.
+const kcpImageDefaultRepository = "ghcr.io/kcp-dev/kcp"
+
+// KCPImageEnv names the environment variable that overrides the kcp image.
+const KCPImageEnv = "RAILGRID_KCP_IMAGE"
+
+// kcpImageOverride returns the kcp image repository and tag to deploy, from
+// RAILGRID_KCP_IMAGE when set and the pinned default otherwise. A value with no
+// tag keeps the pinned tag; a value with no repository keeps the default one.
+func kcpImageOverride() (repository, tag string) {
+	repository, tag = kcpImageDefaultRepository, kcpImageTag
+	raw := strings.TrimSpace(os.Getenv(KCPImageEnv))
+	if raw == "" {
+		return repository, tag
+	}
+	// The last colon separates the tag, so a registry port survives.
+	if i := strings.LastIndex(raw, ":"); i > 0 && !strings.Contains(raw[i+1:], "/") {
+		return raw[:i], raw[i+1:]
+	}
+	return raw, tag
 }

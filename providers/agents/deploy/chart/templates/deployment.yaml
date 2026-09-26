@@ -114,12 +114,26 @@ spec:
                   name: {{ .Values.hub.tokenSecretRef.name }}
                   key: {{ .Values.hub.tokenSecretRef.key }}
             {{- end }}
+            {{- if $catalogEntryConfigMap }}
+            # The same CatalogEntry the init container applies. serve reads it
+            # too: spec.dataPlane.verbs is the declaration of which
+            # "<resource>/<verb>" coordinates this provider answers on the path
+            # a kcp shard forwards for a custom subresource, so the routes
+            # cannot drift from what the APIExport declares.
+            - name: RAILGRID_CATALOGENTRY_FILE
+              value: /etc/railgrid/catalogentry/catalogentry.yaml
+            {{- end }}
           volumeMounts:
             # The onboarded workspace-admin kubeconfig; the SA token inside is
             # what the tenant client presents to reach tenant workspaces.
             - name: railgrid-provider-kubeconfig
               mountPath: /var/run/secrets/railgrid
               readOnly: true
+            {{- if $catalogEntryConfigMap }}
+            - name: catalogentry
+              mountPath: /etc/railgrid/catalogentry
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:

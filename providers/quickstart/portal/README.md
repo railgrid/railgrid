@@ -13,8 +13,10 @@ the embedded build output.
   `<railgrid-dashboard-tile-quickstart>`.
 - `src/element.ts` — the provider page. Lists and creates Greetings with
   `portalkit/kube.ts createKubeClient` over `/clusters/{id}`, and calls the
-  provider's one data-plane verb through `providerFetch`. Renders in light DOM
-  so the portal's CSS custom properties cascade in.
+  provider's one data-plane verb the same way — it is a kcp custom
+  subresource, addressed with the client's `verbPath(...)` and sent through
+  `providerFetch`; nothing goes to the hub's `/services/providers/` backend
+  proxy. Renders in light DOM so the portal's CSS custom properties cascade in.
 - `src/tile.ts` — the dashboard card, built on `portalkit/dashboardtile.ts`.
 - `src/portalkit/` — vendored copy of `provider-sdk/portalkit`. Never edit it:
   edit the canonical copy and run `make sync-portalkit`.

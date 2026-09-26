@@ -158,6 +158,24 @@ export function isKubeResourceUnavailable(error: unknown): boolean {
   return true
 }
 
+// pathSegment percent-encodes one path segment exactly as Go's url.PathEscape
+// does, which is what the provider SDK checks a segment against
+// (provider-sdk/dataplane validSegment: url.PathEscape(s) == s). The two
+// encoders disagree on a few characters — encodeURIComponent escapes
+// "$&+:=@" and leaves "!'()*" alone, Go does the reverse — and a segment
+// encoded the JavaScript way ("schedule%3Adaily") arrives with URL.RawPath set
+// and is refused, while the raw ":" would have been accepted.
+export function pathSegment(s: string): string {
+  return encodeURIComponent(s)
+    .replace(/%24/g, '$')
+    .replace(/%26/g, '&')
+    .replace(/%2B/g, '+')
+    .replace(/%3A/g, ':')
+    .replace(/%3D/g, '=')
+    .replace(/%40/g, '@')
+    .replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+}
+
 // kubeResourcePath builds /clusters/<cluster>/{api|apis/<group>}/<version>
 // [/namespaces/<ns>]/<resource>[/<name>][/<subresource>]. Every segment is
 // percent-encoded so a caller-supplied name cannot escape its slot.
@@ -168,7 +186,7 @@ export function kubeResourcePath(
 ): string {
   if (!cluster) throw new Error('kube client: cluster is required')
   if (!ref.version || !ref.resource) throw new Error('kube client: resource ref needs version and resource')
-  const seg = (s: string) => encodeURIComponent(s)
+  const seg = pathSegment
   let path = `/clusters/${seg(cluster)}`
   path += ref.group ? `/apis/${seg(ref.group)}/${seg(ref.version)}` : `/api/${seg(ref.version)}`
   if (opts.namespace) path += `/namespaces/${seg(opts.namespace)}`
@@ -176,6 +194,45 @@ export function kubeResourcePath(
   if (opts.name) path += `/${seg(opts.name)}`
   if (opts.subresource) path += `/${seg(opts.subresource)}`
   return path
+}
+
+// kubeVerbPath builds the path of a provider data-plane verb: the kcp custom
+// subresource "{resource}/{verb}" the provider publishes on its APIExport,
+//
+//   /clusters/<cluster>/apis/<group>/<version>/<resource>/<name>/<verb>[/<tail>][?component=<component>]
+//
+// which the browser reaches on the hub's kcp front door like any other kube
+// path (providerFetch injects the bearer). There is no hub-proxied grammar for
+// a verb any more; this is the only spelling. A verb on one component of a
+// multi-component object carries the component as the "component" query
+// parameter — kcp reads "<name>/<subresource>" and treats everything after
+// the verb as the verb's own tail, so it cannot travel in the path. Extra
+// query parameters (a proxy verb's own) go in opts.query. Every segment is
+// percent-encoded the way Go's url.PathEscape does (pathSegment), so a
+// caller-supplied name cannot escape its slot and the provider accepts the
+// bytes as sent.
+export function kubeVerbPath(
+  cluster: string,
+  ref: KubeResourceRef,
+  name: string,
+  verb: string,
+  opts: { component?: string; tail?: string; query?: Record<string, string | number | boolean | undefined> } = {},
+): string {
+  if (!name) throw new Error('kube client: name is required')
+  if (!verb || verb === 'status' || verb === 'scale') throw new Error(`kube client: ${JSON.stringify(verb)} is not a provider verb`)
+  if (!ref.group) throw new Error('kube client: a provider verb needs a group')
+  let path = kubeResourcePath(cluster, ref, { name, subresource: verb })
+  if (opts.tail) {
+    const tail = opts.tail.replace(/^\/+/, '')
+    if (tail) path += '/' + tail.split('/').map(pathSegment).join('/')
+  }
+  const params = new URLSearchParams()
+  if (opts.component) params.set('component', opts.component)
+  for (const [key, value] of Object.entries(opts.query ?? {})) {
+    if (value !== undefined && value !== '') params.set(key, String(value))
+  }
+  const query = params.toString()
+  return query ? `${path}?${query}` : path
 }
 
 export interface KubeDeleteOptions {
@@ -214,6 +271,11 @@ export interface KubeClientOptions {
 
 export interface KubeClient {
   readonly cluster: string
+  // verbPath is kubeVerbPath for this client's cluster: the URL a provider
+  // verb is fetched at (with the client's transport, which injects the
+  // bearer). Verbs are fetched by the caller, not through this client,
+  // because their bodies are the verb's own shape rather than a kube object.
+  verbPath(ref: KubeResourceRef, name: string, verb: string, opts?: { component?: string; tail?: string; query?: Record<string, string | number | boolean | undefined> }): string
   get<T extends KubeObject = KubeObject>(ref: KubeResourceRef, name: string, opts?: { namespace?: string; subresource?: string }): Promise<T>
   list<T extends KubeObject = KubeObject>(ref: KubeResourceRef, opts?: KubeListOptions): Promise<KubeList<T>>
   // listAll walks `continue` until exhaustion. Repeated or runaway cursors are
@@ -315,6 +377,10 @@ export function createKubeClient(options: KubeClientOptions): KubeClient {
 
   const client: KubeClient = {
     cluster,
+
+    verbPath(ref, name, verb, opts = {}) {
+      return kubeVerbPath(cluster, ref, name, verb, opts)
+    },
 
     get(ref, name, opts = {}) {
       if (!name) return Promise.reject(new Error('kube client: name is required'))

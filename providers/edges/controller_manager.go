@@ -285,9 +285,7 @@ func runEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *sd
 	// EdgeService per service; the validation reconciler checks configured
 	// credentials against the service and stamps status. Both share the tunnel
 	// ConnManager for agent dials.
-	if err := servicectrl.SetupWithManager(mgr, connManager, servicectrl.Options{
-		EdgeProxyPublicPath: edgeProxyPublicPath,
-	}); err != nil {
+	if err := servicectrl.SetupWithManager(mgr, connManager); err != nil {
 		return fmt.Errorf("EdgeService controllers: %w", err)
 	}
 

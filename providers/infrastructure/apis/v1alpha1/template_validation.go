@@ -24,8 +24,9 @@ import (
 )
 
 // componentNameRE constrains development / data-plane component names. They
-// become URL path segments (…/components/<name>/<verb>) and, by the backend
-// convention, graph resource ids — so they stay strict DNS-label-ish.
+// become the component query parameter of a verb (…/<verb>?component=<name>)
+// and, by the backend convention, graph resource ids — so they stay strict
+// DNS-label-ish.
 var componentNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // immutableImageRefRE accepts a complete container image reference pinned by

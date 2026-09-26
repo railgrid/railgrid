@@ -65,20 +65,27 @@ func TestProviderReadinessRequiresOrgOwnedBackendRoute(t *testing.T) {
 }
 
 func TestParseProviderActionsCanonicalCatalogShape(t *testing.T) {
-	parsed, err := ParseProviderActions([]providersv1alpha1.ProviderActionSpec{{
-		ID: "query_table/v1",
-		BoundResource: providersv1alpha1.ProviderActionBoundResource{
+	parsed, err := ParseProviderActions(&providersv1alpha1.ProviderExport{
+		Name: "databricks.providers.railgrid.ai",
+		Resources: []providersv1alpha1.ProviderExportResource{{
+			// The resource an action may receive is its parent entry: the
+			// apiVersion and kind are declared once, on the resource kcp routes
+			// the coordinate on.
+			Name:       "tables",
 			APIVersion: "databricks.railgrid.ai/v1alpha1",
 			Kind:       "Table",
-			Resource:   "tables",
-		},
-		InputSchema:   &runtime.RawExtension{Raw: []byte(`{"type":"object","additionalProperties":false}`)},
-		OutputSchema:  &runtime.RawExtension{Raw: []byte(`{"type":"object"}`)},
-		SchemaDigest:  "sha256:abc",
-		ExecutionMode: providersv1alpha1.ProviderActionExecutionSync,
-		Idempotency:   providersv1alpha1.ProviderActionIdempotencyKeyed,
-		Limits:        providersv1alpha1.ProviderActionLimits{TimeoutSeconds: 45, MaxInputBytes: 8192, MaxOutputBytes: 65536, MaxResultItems: 100},
-	}})
+			Actions: []providersv1alpha1.ProviderAction{{
+				Name:          "query_table",
+				Version:       "v1",
+				InputSchema:   &runtime.RawExtension{Raw: []byte(`{"type":"object","additionalProperties":false}`)},
+				OutputSchema:  &runtime.RawExtension{Raw: []byte(`{"type":"object"}`)},
+				SchemaDigest:  "sha256:abc",
+				ExecutionMode: providersv1alpha1.ProviderActionExecutionSync,
+				Idempotency:   providersv1alpha1.ProviderActionIdempotencyKeyed,
+				Limits:        providersv1alpha1.ProviderActionLimits{TimeoutSeconds: 45, MaxInputBytes: 8192, MaxOutputBytes: 65536, MaxResultItems: 100},
+			}},
+		}},
+	})
 	if err != nil {
 		t.Fatalf("parse provider actions: %v", err)
 	}
@@ -86,7 +93,7 @@ func TestParseProviderActionsCanonicalCatalogShape(t *testing.T) {
 		t.Fatalf("parsed actions = %#v, want one action", parsed)
 	}
 	action := parsed[0]
-	if action.Name != "query_table" || action.Version != "v1" {
+	if action.Name != "query_table" || action.Version != "v1" || action.ID() != "query_table/v1" {
 		t.Fatalf("action identity = %#v", action)
 	}
 	if action.Resource.APIVersion != "databricks.railgrid.ai/v1alpha1" || action.Resource.Kind != "Table" || action.Resource.Resource != "tables" {
@@ -104,14 +111,18 @@ func TestParseProviderActionsCanonicalCatalogShape(t *testing.T) {
 }
 
 func TestParseProviderActionsRejectsExternalSchemaReferences(t *testing.T) {
-	_, err := ParseProviderActions([]providersv1alpha1.ProviderActionSpec{{
-		ID: "query_table/v1",
-		BoundResource: providersv1alpha1.ProviderActionBoundResource{
-			APIVersion: "databricks.railgrid.ai/v1alpha1", Kind: "Table", Resource: "tables",
-		},
-		InputSchema:  &runtime.RawExtension{Raw: json.RawMessage(`{"type":"object","$ref":"https://attacker.invalid/schema"}`)},
-		OutputSchema: &runtime.RawExtension{Raw: json.RawMessage(`{"type":"object"}`)},
-	}})
+	_, err := ParseProviderActions(&providersv1alpha1.ProviderExport{
+		Name: "databricks.providers.railgrid.ai",
+		Resources: []providersv1alpha1.ProviderExportResource{{
+			Name: "tables", APIVersion: "databricks.railgrid.ai/v1alpha1", Kind: "Table",
+			Actions: []providersv1alpha1.ProviderAction{{
+				Name:         "query_table",
+				Version:      "v1",
+				InputSchema:  &runtime.RawExtension{Raw: json.RawMessage(`{"type":"object","$ref":"https://attacker.invalid/schema"}`)},
+				OutputSchema: &runtime.RawExtension{Raw: json.RawMessage(`{"type":"object"}`)},
+			}},
+		}},
+	})
 	if err == nil || !strings.Contains(err.Error(), "local fragment") {
 		t.Fatalf("external schema reference error = %v, want local-fragment rejection", err)
 	}

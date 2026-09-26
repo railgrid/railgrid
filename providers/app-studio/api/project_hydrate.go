@@ -74,8 +74,9 @@ type checkoutToolResult struct {
 // hydrateWorkspaceFromRepository is the shared repo→workspace core used by
 // the HTTP endpoint, the assistant tool, and repository import at project
 // creation. It reads the project repository's text tree through the Code
-// provider's checkout tool (as the caller — httpReq carries the caller's
-// Authorization) and writes it into the workspace: existing files are
+// provider's checkout tool (through the hub's MCP aggregate as the provider;
+// httpReq is the caller context it labels the call with) and writes it into
+// the workspace: existing files are
 // overwritten, workspace-only files are left in place. On success it kicks a
 // development sync so the running environment picks the tree up.
 func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity, p *aiv1alpha1.Project, httpReq *http.Request, ref string) (projectHydrateResponse, error) {
@@ -98,7 +99,7 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 		args["ref"] = ref
 	}
 	args = s.checkoutArgs(ctx, httpReq, id, args)
-	raw, err := callProjectMCPTool(ctx, s.mcpEndpoint(id.clusterID), httpReq, id.tenant, s.mcpInsecureSkipTLSVerify, projectToolCodeCheckoutRepository, args)
+	raw, err := callProjectMCPTool(ctx, s.mcpEndpoint(id.clusterID), s.hubRequest(httpReq, id), id.tenant, s.mcpInsecureSkipTLSVerify, projectToolCodeCheckoutRepository, args)
 	if err != nil {
 		return projectHydrateResponse{}, fmt.Errorf("checkout repository: %w", err)
 	}

@@ -59,11 +59,14 @@ const GROUP = 'agents.railgrid.ai'
 const VERSION = 'v1alpha1'
 export const API_VERSION = `${GROUP}/${VERSION}`
 
-const AGENTS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'agents' }
-const SCHEDULES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'schedules' }
-const CONNECTIONS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'connections' }
+// The bound kinds. Exported because a data-plane VERB is a custom subresource
+// on one of them — api.ts addresses `agents/{name}/chat` with the same ref it
+// lists agents with, so the two halves cannot name the kind differently.
+export const AGENTS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'agents' }
+export const SCHEDULES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'schedules' }
+export const CONNECTIONS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'connections' }
 const TOOLSETS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'toolsets' }
-const TRIGGERS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'triggers' }
+export const TRIGGERS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'triggers' }
 const SECRETS: KubeResourceRef = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
 // The workspace's aggregate MCP endpoint, owned by the hub and bound here. Its
 // status already says which providers it federates and whether each answered,
@@ -74,13 +77,13 @@ const MCPSERVERS: KubeResourceRef = { group: 'railgrid.ai', version: 'v1alpha1',
 // a run's phase, timings and cost are read off the object. What is not on the
 // object — the step-level tool trace and the answer — is Postgres, reached
 // through the `trace` verb.
-const RUNS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'runs' }
+export const RUNS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'runs' }
 // Model credentials are objects of their own: the endpoint configuration is on
 // the object, the API key is in the Secret it points at, and the provider's
 // reconciler writes the verdict. They used to be a Secret with a magic name
 // and the endpoint stuffed into its keys, which nothing could validate and
 // nothing could address a probe at.
-const MODELCREDENTIALS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'modelcredentials' }
+export const MODELCREDENTIALS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'modelcredentials' }
 // LABEL_AGENT mirrors api/runprojection.go. It is what makes "this agent's
 // runs" a server-side list rather than a filter over every run in the
 // workspace.

@@ -32,15 +32,21 @@ import (
 	kueryv1alpha1 "github.com/railgrid/provider-kuery/apis/v1alpha1"
 )
 
-// RunVerb is the data-plane verb, and therefore the SSAR subresource the hub
-// materializes a grant for: create on savedviews/run.
+// RunVerb is the data-plane verb: the kcp custom subresource savedviews/run
+// on kuery's APIExport. kcp authorizes the HTTP method as the RBAC verb on
+// that coordinate before it forwards the request here.
 const RunVerb = "run"
 
-// RunPathPrefix is the route main mounts. The grammar underneath it is
-// provider-sdk/dataplane's, not kuery's:
+// RunPath is the one route the verb is reached on — a kube path on whichever
+// kcp front door the caller holds a credential for, forwarded by the shard
+// with the caller's identity stamped in requestheader headers:
 //
-//	POST /dataplane/clusters/{clusterID}/savedviews/{name}/run
-const RunPathPrefix = "/" + dataplane.DataplaneRoot + "/clusters/"
+//	POST /clusters/{clusterID}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run
+//
+// There is no hub-proxied spelling. The grammar is provider-sdk/dataplane's;
+// serve's subresource adapter parses it and hands the route to the handler in
+// the request context (dataplane.RouteFrom).
+const RunPath = "/clusters/{clusterID}/apis/" + kueryv1alpha1.GroupName + "/" + kueryv1alpha1.Version + "/savedviews/{name}/run"
 
 // DefaultLimits bound one query's HTTP shape. The engine has its own caps
 // (30s, 10k rows, depth 20); these are the request and response envelope
@@ -64,19 +70,24 @@ type EngagementLister interface {
 
 // RunHandler serves the query verb.
 //
-// It is the only path from the outside world to the kuery store, and every
-// request through it is authorized twice as the caller before the engine is
-// touched: a GET of the addressed SavedView in the path's cluster proves the
-// caller is in that workspace and may see the view, and a
-// SelfSubjectAccessReview for create on savedviews/run proves they were
-// granted the verb on that name. Neither gate consults a header, so a forged
-// X-Railgrid-Cluster sent straight at the pod changes nothing — the path
-// cluster is what is gated, and a mismatch between the two is refused outright.
+// It is the only path from the outside world to the kuery store. On the verb
+// route kcp has already authenticated the caller and authorized the HTTP
+// method on savedviews/run with ordinary RBAC; what remains is visibility,
+// which dataplane.Gate settles with a SubjectAccessReview on the caller's
+// behalf before reading the SavedView AS THE PROVIDER through kuery's export
+// virtual workspace. There is no caller bearer on this path and the handler
+// never acts as the caller: everything after the gate runs with the provider
+// client the gate returned. Neither step consults a header — the cluster is
+// the one in the path the shard forwarded.
+//
+// The MCP tools reach the same executor with the caller's own bearer, the one
+// class the hub still proxies with a credential (RunSavedView).
 type RunHandler struct {
 	// Engine is the embedded kuery query engine.
 	Engine *engine.Engine
-	// Callers builds the caller-scoped client both gates run through.
-	Callers dataplane.CallerFactory
+	// Callers acts as the provider through its export virtual workspace on
+	// the verb route, and as a bearer-credentialed caller for MCP tools.
+	Callers dataplane.ProviderCallerFactory
 	// Engagements is the engaged-edge authority.
 	Engagements EngagementLister
 	// Limits bound the request and response; the zero value uses DefaultLimits.
@@ -94,19 +105,24 @@ type runInput struct {
 func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := klog.FromContext(r.Context())
 
-	req, ok := dataplane.ParseRequest(dataplane.DataplaneRoot, r)
-	if !ok || req.Resource != kueryv1alpha1.SavedViewsResource.Resource || req.Verb != RunVerb ||
-		req.Component != "" || req.Tail != "" {
+	route, ok := dataplane.RouteFrom(r.Context())
+	if !ok || route.Group != kueryv1alpha1.GroupName ||
+		route.Resource != kueryv1alpha1.SavedViewsResource.Resource || route.Verb != RunVerb ||
+		route.Component != "" || route.Tail != "" {
 		dataplane.WriteError(w, dataplane.ErrBadPath)
 		return
 	}
+	req := route.Request
 
-	view, caller, err := dataplane.Gate(r.Context(), r, h.Callers, kueryv1alpha1.SavedViewsResource, req)
+	view, provider, err := dataplane.Gate(r.Context(), h.Callers, kueryv1alpha1.SavedViewsResource, req)
 	if err != nil {
 		// The detail names the caller's workspace and the object; it stays here.
 		logger.V(2).Info("query verb refused", "cluster", req.ClusterID, "view", req.Name, "err", err.Error())
 		dataplane.WriteError(w, err)
 		return
+	}
+	if identity, ok := dataplane.ProxiedIdentityFrom(r.Context()); ok {
+		logger.V(4).Info("query verb", "cluster", req.ClusterID, "view", req.Name, "user", identity.User)
 	}
 
 	env := actionwire.New(r, "kuery", RunVerb, actionwire.ResourceRef{
@@ -120,7 +136,7 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if aerr != nil {
 			return nil, aerr
 		}
-		return h.execute(ctx, caller, view, req.ClusterID, raw)
+		return h.execute(ctx, provider, view, req.ClusterID, raw)
 	})
 }
 
@@ -131,12 +147,14 @@ func (h *RunHandler) limits() dataplane.Limits {
 	return h.Limits
 }
 
-// execute runs one already-gated query. view is what gate 1 returned — the
-// caller's own SavedView, read with the caller's own credential — so nothing
-// here is read with the provider's identity.
+// execute runs one already-gated query. view is what the gate returned, and
+// client is whoever the gate ran as: the provider on the verb route, the
+// caller on the MCP path. It is used for nothing but the best-effort
+// lastOpenedAt stamp; the query itself runs against the store, scoped to the
+// caller's workspace by the path cluster and its Engagement records.
 func (h *RunHandler) execute(
 	ctx context.Context,
-	caller dynamic.Interface,
+	client dynamic.Interface,
 	view *unstructured.Unstructured,
 	cluster string,
 	raw json.RawMessage,
@@ -179,7 +197,7 @@ func (h *RunHandler) execute(
 		return nil, &actionwire.Error{Code: "query_failed", Message: "the query could not be executed", Retryable: true}
 	}
 
-	h.stampLastOpened(ctx, caller, view)
+	h.stampLastOpened(ctx, client, view)
 	return status, nil
 }
 
@@ -214,15 +232,21 @@ func savedQuery(view *unstructured.Unstructured) json.RawMessage {
 	return encoded
 }
 
-// RunSavedView runs a query for a caller that did not arrive on the REST
-// route — the MCP tools — through exactly the same two gates.
+// RunSavedView runs a query for a caller that did not arrive on the verb
+// route — the MCP tools — through gates of the same meaning.
+//
+// MCP is the one class the hub still proxies with the caller's own bearer, so
+// here the caller is a credential rather than a stamped identity, and both
+// gates run AS THE CALLER: a real GET of the addressed SavedView proves the
+// caller is in that workspace and may see the view, and a
+// SelfSubjectAccessReview for create on savedviews/run proves they were
+// granted the verb kcp would otherwise have authorized on the kube path.
 //
 // The MCP transport has no data-plane path, so the workspace comes from the
 // X-Railgrid-Cluster header the aggregate's federation client injects. That is
 // addressing, not authorization: the caller client is built from the caller's
-// own bearer against that cluster, and both gates then run against it, so a
-// forged header buys a client whose GET and whose access review both fail. The
-// one thing it cannot do is disagree with a path, because there is none.
+// own bearer against that cluster, so a forged header buys a client whose GET
+// and whose access review both fail.
 //
 // viewName empty means the caller's own scratch view, created on first use.
 // query empty means run the named view as saved.
@@ -239,6 +263,9 @@ func (h *RunHandler) RunSavedView(
 	if !dataplane.IsClusterID(cluster) {
 		return nil, fmt.Errorf("%w: no usable %s on the request", dataplane.ErrBadPath, dataplane.HeaderCluster)
 	}
+	if h.Callers == nil {
+		return nil, fmt.Errorf("no caller factory configured")
+	}
 	caller, err := h.Callers.For(cluster, bearer)
 	if err != nil {
 		return nil, err
@@ -252,13 +279,7 @@ func (h *RunHandler) RunSavedView(
 		}
 	}
 
-	req := dataplane.Request{
-		ClusterID: cluster,
-		Resource:  kueryv1alpha1.SavedViewsResource.Resource,
-		Name:      viewName,
-		Verb:      RunVerb,
-	}
-	view, caller, err := dataplane.Gate(ctx, r, h.Callers, kueryv1alpha1.SavedViewsResource, req)
+	view, err := gateAsCaller(ctx, caller, viewName)
 	if err != nil {
 		return nil, err
 	}
@@ -272,6 +293,53 @@ func (h *RunHandler) RunSavedView(
 	return status, nil
 }
 
+// gateAsCaller is the MCP path's gate, run with the caller's own credential:
+// the SavedView must be readable by the caller in the addressed workspace and
+// not on its way out, and the caller must hold create on savedviews/run for
+// that name — the rule the hub materializes every data-plane grant as
+// (dataplane.SSARVerb). Every probe-shaped failure collapses to ErrDenied so
+// a tool call cannot learn whether a view exists from the answer.
+func gateAsCaller(ctx context.Context, caller dynamic.Interface, viewName string) (*unstructured.Unstructured, error) {
+	views := kueryv1alpha1.SavedViewsResource
+	view, err := caller.Resource(views).Get(ctx, viewName, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+			return nil, fmt.Errorf("%w: %s/%s: %w", dataplane.ErrDenied, views.Resource, viewName, err)
+		}
+		return nil, fmt.Errorf("reading %s/%s as the caller: %w", views.Resource, viewName, err)
+	}
+	if view.GetDeletionTimestamp() != nil {
+		return nil, fmt.Errorf("%w: %s/%s is being deleted", dataplane.ErrDenied, views.Resource, viewName)
+	}
+
+	review := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "authorization.k8s.io/v1",
+		"kind":       "SelfSubjectAccessReview",
+		"spec": map[string]any{
+			"resourceAttributes": map[string]any{
+				"group":       views.Group,
+				"version":     views.Version,
+				"resource":    views.Resource,
+				"subresource": RunVerb,
+				"name":        viewName,
+				"verb":        dataplane.SSARVerb,
+			},
+		},
+	}}
+	answered, err := caller.Resource(dataplane.SelfSubjectAccessReviews()).Create(ctx, review, metav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("access review for %s on %s/%s: %w", RunVerb, views.Resource, viewName, err)
+	}
+	allowed, _, err := unstructured.NestedBool(answered.Object, "status", "allowed")
+	if err != nil {
+		return nil, fmt.Errorf("access review has no status.allowed: %w", err)
+	}
+	if !allowed {
+		return nil, fmt.Errorf("%w: caller is not granted %s on %s/%s", dataplane.ErrDenied, RunVerb, views.Resource, viewName)
+	}
+	return view, nil
+}
+
 func (h *RunHandler) engagedEdges(ctx context.Context, cluster string) ([]string, error) {
 	if h.Engagements == nil {
 		return nil, fmt.Errorf("no engagement lister configured")
@@ -279,12 +347,13 @@ func (h *RunHandler) engagedEdges(ctx context.Context, cluster string) ([]string
 	return h.Engagements.EngagedEdges(ctx, cluster)
 }
 
-// stampLastOpened records the run on the view, as the caller. Best effort: a
-// query that ran is a query that succeeded, and losing the timestamp is a
-// cosmetic loss in the portal's "recently used" ordering.
-func (h *RunHandler) stampLastOpened(ctx context.Context, caller dynamic.Interface, view *unstructured.Unstructured) {
+// stampLastOpened records the run on the view — as the provider on the verb
+// route, as the caller on the MCP path. Best effort: a query that ran is a
+// query that succeeded, and losing the timestamp is a cosmetic loss in the
+// portal's "recently used" ordering.
+func (h *RunHandler) stampLastOpened(ctx context.Context, client dynamic.Interface, view *unstructured.Unstructured) {
 	patch := fmt.Sprintf(`{"status":{"lastOpenedAt":%q}}`, metav1.Now().UTC().Format(time.RFC3339))
-	_, err := caller.Resource(kueryv1alpha1.SavedViewsResource).
+	_, err := client.Resource(kueryv1alpha1.SavedViewsResource).
 		Patch(ctx, view.GetName(), types.MergePatchType, []byte(patch), metav1.PatchOptions{}, "status")
 	if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsForbidden(err) {
 		klog.FromContext(ctx).V(4).Info("could not stamp status.lastOpenedAt", "view", view.GetName(), "err", err.Error())

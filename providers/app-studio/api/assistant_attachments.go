@@ -316,13 +316,13 @@ func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http
 	// Location points at the verb that reads the receipt back, on the same
 	// grammar the caller used to create it. It used to name the retired
 	// /api route, which by now would have been an address that 404s.
-	if location, err := (dataplane.Request{
+	if location, err := verbPath(dataplane.Request{
 		ClusterID: id.clusterID,
 		Resource:  "projects",
 		Name:      mux.Vars(r)["project"],
 		Verb:      "attachments",
 		Tail:      created.ID,
-	}).Path(dataplane.DataplaneRoot); err == nil {
+	}); err == nil {
 		w.Header().Set("Location", location)
 	}
 	if newlyCreated {

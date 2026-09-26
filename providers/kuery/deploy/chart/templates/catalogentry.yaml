@@ -8,7 +8,7 @@
 # CatalogEntries in every workspace bound to providers.railgrid.ai, including
 # the provider's own, so a self-registered entry is seen.
 #
-# It only REFERENCES the APIExport (apiExport.name); the APIExport, its
+# It only REFERENCES the APIExport (spec.export.name); the APIExport, its
 # APIResourceSchemas, the APIExportEndpointSlice, and the bind grant are created
 # by the same init container. The hub no longer provisions anything from this
 # CatalogEntry.
@@ -31,75 +31,91 @@ data:
       version: {{ .Chart.AppVersion | quote }}
       category: "Observability"
       iconURL: "/ui/providers/kuery/icon.svg"
-      # Kuery syncs the edges a tenant already has, so edges must be enabled
-      # here first — and `composes` is what its engagement controller is
-      # allowed to do with them, accepted by the tenant at Enable and measured
-      # again by the hub's identity policy (clause E) on every mint. Read-only:
-      # list and watch to learn which edges exist, get because the edges data
-      # plane's first gate is a real GET of the addressed edge as the caller.
-      # Mirrors manifest.yaml.
-      dependencies:
-        - name: edges
-          composes:
-            - group: edges.railgrid.ai
-              resource: kubernetesclusters
-              verbs: ["get", "list", "watch"]
-      ui:
-        url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-        indexPath: "/"
-      backend:
-        url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-        # /readyz, not /healthz: readiness reports whether this provider can
-        # actually reach the APIExport virtual workspace it watches and, while
-        # a replica holds the controller lease, whether tenant workspaces are
-        # really being watched. /healthz answers "the process is up", which was
-        # true the whole time nothing reconciled.
-        healthPath: "/readyz"
 
-      # No edgeProxyAccess: kuery reaches each tenant's edges as a hub-minted
-      # identity owned by that workspace's kuery APIBinding, carrying the
-      # composition above plus `create` on kubernetesclusters/k8s for the edges
-      # it engages. Mirrors manifest.yaml.
-
-      apiExport:
+      # What kuery exports: one APIExport, one kind, one verb on it. Declaring
+      # the verb grants nothing — every call is still authorized on
+      # {resource}/{verb}, as the caller, by this provider's own gates. What it
+      # buys is the kcp custom subresource "savedviews/run" on the generated
+      # APIExport (routed here through the DataPlaneEndpointSlice) plus the
+      # "RunRequest" schema it names, the ability for a consumer provider to
+      # require the coordinate under ITS spec.requires, and a hub-mintable
+      # scoped-identity capability. Mirrors manifest.yaml.
+      export:
         name: "kuery.providers.railgrid.ai"
-        # NO permissionClaims AT ALL. No first-party (*.railgrid.ai) claim,
-        # because one pins a single APIExport identityHash for every consumer
-        # and breaks the moment an org self-hosts the edges provider — the
-        # composition above is how the engagement controller reaches an edge
-        # instead. And no serviceaccounts, secrets, clusterroles or
-        # clusterrolebindings: a provider does not mint identities, it asks the
-        # hub (docs/provider-connectivity-contract.md §"Scoped identities").
-      # Data-plane verbs this provider serves, declared so the coordinate is
-      # machine-readable. Declaring one grants and serves nothing: every call is
-      # still authorized by this provider's own caller-scoped SSAR on
-      # {resource}/{verb}. What the declaration buys is that the hub
-      # scoped-identity service can mint a capability for a verb it can verify
-      # exists (pkg/hub/identity/policy.go clause C), instead of consumers
-      # hardcoding a coordinate nobody validates.
-      dataPlane:
-        verbs:
-          - resource: savedviews
-            verb: run
-            description: "Run the saved view's query and return its result."
-            readOnly: true
-      # Lets an organization run this provider in its own cluster
-      # (docs/byo-providers.md). Keep manifest.yaml and
-      # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
-      # one that reaches production.
-      selfHosting:
-        supported: true
-        chart:
-          repository: "oci://ghcr.io/railgrid/charts"
-          name: "railgrid-kuery-provider"
-          version: {{ .Chart.Version | quote }}
-        namespace: "railgrid-provider-kuery"
-        releaseName: "kuery"
-        docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/kuery/deploy/chart/README.md"
-        # The chart carries its own values reference, so the portal can show it
-        # offline and for the version actually installed.
-        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
-        # No requiredValues: kuery pins no APIExport identity hashes — edge
-        # discovery rides each workspace's own edges binding, whichever copy
-        # of the edges provider that is.
+        resources:
+          - name: savedviews
+            apiVersion: "kuery.providers.railgrid.ai/v1alpha1"
+            kind: SavedView
+            verbs:
+              - name: run
+                description: "Run the saved view's query and return its result."
+                readOnly: true
+
+      # Everything kuery needs that it does not own — one list, and the only
+      # place the generated permission claims come from. Kuery syncs the edges a
+      # tenant already has, so naming `provider: edges` is both the dependency
+      # the hub refuses to enable without and the access its engagement
+      # controller is accepted for at Enable. Read-only on the kind; the
+      # kubernetesclusters/k8s coordinate carries no verbs, because the verb IS
+      # the capability and the generated claim spells every verb. No claim pins
+      # an identityHash, so each one resolves per consumer workspace and an org
+      # self-hosting the edges provider still works. And no serviceaccounts,
+      # secrets, clusterroles or clusterrolebindings: a provider does not mint
+      # identities, it asks the hub
+      # (docs/provider-connectivity-contract.md §"Scoped identities").
+      # Mirrors manifest.yaml.
+      requires:
+        - provider: edges
+          group: edges.railgrid.ai
+          resources:
+            - name: kubernetesclusters
+              verbs: [get, list, watch]
+            - name: kubernetesclusters/k8s
+        # Every provider that serves a custom subresource needs this one entry:
+        # on the shard-forwarded path there is no caller bearer, so the provider
+        # runs a SubjectAccessReview for the stamped caller through its own
+        # APIExport virtual workspace, and kcp serves that builtin there only
+        # for an export that claims it (hack/verify-provider-contract.mjs
+        # subresource-access-claim). No `provider`: no provider serves
+        # authorization.k8s.io and nothing has to be enabled first.
+        - group: authorization.k8s.io
+          resources:
+            - name: subjectaccessreviews
+              verbs: [create]
+
+      # Where the hub reaches kuery. No edgeProxyAccess: kuery CALLS each
+      # tenant's edges as itself through its own APIExport virtual workspace,
+      # under the claims above; nothing is minted per workspace. Mirrors
+      # manifest.yaml.
+      serving:
+        ui:
+          url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+          indexPath: "/"
+        backend:
+          url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+          # /readyz, not /healthz: readiness reports whether this provider can
+          # actually reach the APIExport virtual workspace it watches and, while
+          # a replica holds the controller lease, whether tenant workspaces are
+          # really being watched. /healthz answers "the process is up", which was
+          # true the whole time nothing reconciled.
+          healthPath: "/readyz"
+        # Lets an organization run this provider in its own cluster
+        # (docs/byo-providers.md). Keep manifest.yaml and
+        # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is
+        # the one that reaches production.
+        selfHosting:
+          supported: true
+          chart:
+            repository: "oci://ghcr.io/railgrid/charts"
+            name: "railgrid-kuery-provider"
+            version: {{ .Chart.Version | quote }}
+          namespace: "railgrid-provider-kuery"
+          releaseName: "kuery"
+          docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/kuery/deploy/chart/README.md"
+          # The chart carries its own values reference, so the portal can show it
+          # offline and for the version actually installed.
+          valuesDoc: |{{ .Files.Get "README.md" | nindent 12 }}
+          # No requiredValues: kuery pins no APIExport identity hashes — edge
+          # discovery rides each workspace's own edges binding, whichever copy
+          # of the edges provider that is.
 {{- end }}

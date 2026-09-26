@@ -18,7 +18,7 @@ package queryapi
 const QuerySpecSchema = `{
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "kuery QuerySpec",
-  "description": "A single query across every edge cluster engaged for your workspace. It is a SavedView's spec.query; run it with POST /dataplane/clusters/{clusterID}/savedviews/{name}/run and the result is QueryStatus.objects[].",
+  "description": "A single query across every edge cluster engaged for your workspace. It is a SavedView's spec.query; run it with POST /clusters/{clusterID}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/{name}/run (the savedviews/run subresource) and the result is QueryStatus.objects[].",
   "type": "object",
   "additionalProperties": false,
   "properties": {

@@ -21,7 +21,6 @@ import (
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
-	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // Compositions are the second thing a tenant consents to when enabling a
@@ -42,9 +41,9 @@ import (
 //
 // Unlike a hub-access capability, a composition carries no limits in the grant
 // entry. What bounds it is the declaration (the verbs in
-// spec.dependencies[].composes[].verbs), which the identity policy reads
-// fresh on every mint — so narrowing a chart narrows live identities on the
-// next refresh, and widening one is pending consent until an admin accepts it
+// spec.requires[].resources[].verbs), which the identity policy reads fresh on
+// every mint — so narrowing a chart narrows live identities on the next
+// refresh, and widening one is pending consent until an admin accepts it
 // again.
 
 // ComposeCapabilityPrefix marks a composition capability inside a Grant.
@@ -59,13 +58,25 @@ func ComposeCapability(group, resource string) string {
 // (group, resource). It reports false for any other capability, so a caller
 // iterating a grant can tell compositions from hub access without a second
 // list.
+//
+// The resource half may itself be a "<resource>/<verb>" coordinate: a
+// requirement on another provider names either a kind or one verb on a kind
+// (ProviderRequiredResource), and both are recorded as compositions. The group
+// is therefore the first segment and everything after it is the resource, so a
+// coordinate round-trips instead of failing to parse and disappearing from the
+// Enable dialog's composition list.
 func ParseComposeCapability(capability string) (group, resource string, ok bool) {
 	rest, found := strings.CutPrefix(capability, ComposeCapabilityPrefix)
 	if !found {
 		return "", "", false
 	}
 	group, resource, found = strings.Cut(rest, "/")
-	if !found || group == "" || resource == "" || strings.Contains(resource, "/") {
+	if !found || group == "" || resource == "" {
+		return "", "", false
+	}
+	// A resource is one segment, or a "<resource>/<verb>" coordinate. Anything
+	// deeper is not a coordinate this contract can name.
+	if strings.Count(resource, "/") > 1 {
 		return "", "", false
 	}
 	return group, resource, true
@@ -89,18 +100,25 @@ func (c CompositionRequirement) Ref() tenancyv1alpha1.CapabilityRef {
 	}
 }
 
-// DeclaredCompositions flattens a provider's dependency declarations into the
-// list an Enable dialog offers and an Enable request is checked against.
-func DeclaredCompositions(dependencies []providers.Dependency) []CompositionRequirement {
-	out := make([]CompositionRequirement, 0, len(dependencies))
-	for _, dep := range dependencies {
-		for _, composition := range dep.Composes {
-			out = append(out, CompositionRequirement{
-				Dependency: dep.Name,
-				Group:      composition.Group,
-				Resource:   composition.Resource,
-			})
+// DeclaredCompositions flattens a provider's requirements into the list an
+// Enable dialog offers and an Enable request is checked against.
+//
+// Only a requirement that NAMES a provider produces one. A requirement on a
+// platform builtin — authorization.k8s.io, the core group — belongs to no
+// provider, so there is no "this provider manages that provider's kinds here"
+// consent to ask for; it is an ordinary permission claim the tenant ticks in
+// the same dialog.
+func DeclaredCompositions(requires []providersv1alpha1.ProviderRequirement) []CompositionRequirement {
+	out := make([]CompositionRequirement, 0, len(requires))
+	for _, requirement := range providersv1alpha1.RequiredCoordinates(requires) {
+		if requirement.Provider == "" {
+			continue
 		}
+		out = append(out, CompositionRequirement{
+			Dependency: requirement.Provider,
+			Group:      requirement.Group,
+			Resource:   requirement.Resource,
+		})
 	}
 	return out
 }

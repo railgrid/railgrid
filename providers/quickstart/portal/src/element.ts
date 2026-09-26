@@ -1,6 +1,6 @@
 import { createKubeClient, type KubeClient, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 import { ic } from './portalkit/icons'
-import { providerFetch, serviceBase, type ProviderFetch } from './portalkit/tenant'
+import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 
 // QuickstartElement is the custom element the railgrid portal renders for this
 // provider — Pillar 3 of the provider contract, in the smallest form that is
@@ -28,10 +28,13 @@ export interface RailgridContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
   // tenant is the kcp logical-cluster ID of the active workspace. It is what
-  // addresses both kcp (/clusters/{tenant}) and the data-plane verb.
+  // addresses kcp (/clusters/{tenant}) — the bound CRs and the data-plane
+  // verb alike, because a verb is a kcp custom subresource on the same path.
   tenant?: string | null
   theme?: 'light' | 'dark' | 'system'
-  // basePath is this provider's UI mount, /ui/providers/quickstart.
+  // basePath is this provider's UI mount, /ui/providers/quickstart. This
+  // element does not need it: the hub's backend proxy under it is only for a
+  // provider's /oauth and /mcp routes, and the quickstart serves neither.
   basePath?: string
 }
 
@@ -128,17 +131,19 @@ export class QuickstartElement extends HTMLElement {
     }
   }
 
-  // The data-plane verb. This is the ONLY backend call the portal makes: the
-  // list and the create above go to kcp at /clusters/{tenant}, because a
-  // Greeting is a bound CR and a backend route that mirrored it would be a
-  // deviation even if it authorized correctly.
+  // The data-plane verb. It goes to the same place the list and the create
+  // above do — kcp, at /clusters/{tenant} — because a verb is a kcp custom
+  // subresource on the Greeting: greetings/{name}/greet. kcp authorizes the
+  // caller with ordinary RBAC and forwards the request to the provider. There
+  // is no hub-proxied spelling of a verb; the provider's backend URL is never
+  // addressed from here.
   private async _greet(name: string): Promise<void> {
     const ctx = this._ctx
     if (!ctx?.tenant) return
     this._busy = `greet:${name}`
     this._render()
     try {
-      const url = `${serviceBase(ctx.basePath || '')}/dataplane/clusters/${encodeURIComponent(ctx.tenant)}/greetings/${encodeURIComponent(name)}/greet`
+      const url = this._kube().verbPath(greetings, name, 'greet')
       const res = await providerFetch(ctx)(url, {
         method: 'POST',
         credentials: 'same-origin',
@@ -198,7 +203,7 @@ export class QuickstartElement extends HTMLElement {
             <h2 class="quickstart-panel-title">Greetings</h2>
             <span class="k-badge k-badge--muted">${this._items.length}</span>
           </div>
-          <p class="quickstart-meta">Greet calls the provider's one verb, gated twice as you.</p>
+          <p class="quickstart-meta">Greet calls the provider's one verb through kcp, authorized as you.</p>
           ${this._renderList()}
         </section>
       </div>

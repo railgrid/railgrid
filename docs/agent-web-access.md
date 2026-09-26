@@ -93,17 +93,21 @@ spec:
 No `baseURL`, no Secret. Reference the Connection from a toolset or agent and
 the built-in `web_search` tool is backed by your instance.
 
-Under the hood the client calls the instance's `proxy` verb on the
-infrastructure provider's data plane:
+Under the hood the client calls the instance's `proxy` verb — a kcp custom
+subresource on the infrastructure provider's `instances` — as the **agents
+provider itself**, through its own APIExport virtual workspace
+(`Callers.ExportVerbURL` + `ProviderHTTPClient`):
 
 ```
-GET <hub>/services/providers/infrastructure/dataplane/clusters/<cluster>/searxngs/<instance>/proxy/search?q=…&format=json
-Authorization: Bearer <the calling user's token>
+GET {vw}/clusters/<cluster>/apis/infrastructure.railgrid.ai/v1alpha1/instances/<instance>/proxy/search?q=…&format=json
 ```
 
-The bearer token is the **caller's own**, not a credential belonging to the
-instance — the data plane re-reads the instance as that caller and refuses if
-they have no permission on it. Nothing is minted, stored or rotated.
+The hop is authorized by the claim the agents provider declares
+(`spec.requires[]`, resource `instances/proxy` with no verbs of its own —
+the generated claim spells `verbs: ["*"]`) and the
+tenant accepted; kcp forwards it to infrastructure under the agents identity,
+and infrastructure's gate reads the instance as itself. No user credential is
+carried, and nothing is minted, stored or rotated for the instance.
 
 The response is parsed as `{"results": [{"title", "url", "content"}]}` and
 capped at 5 hits per query — the agent is expected to follow up with `web_fetch`

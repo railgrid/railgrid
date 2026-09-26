@@ -61,12 +61,12 @@ func (d *serviceProxyDialer) Dial(context.Context) (net.Conn, error) {
 	return local, nil
 }
 
-// svcRequest is the parsed class (a) route the handler would have produced.
+// svcRequest is the parsed class (a) route serve's adapter would have produced.
 func svcRequest(verb, tail string) dataplane.Request {
 	return dataplane.Request{ClusterID: "tenant-a", Resource: serviceResource, Name: "mac-service", Verb: verb, Tail: tail}
 }
 
-// svcObject is what gate 1 read as the caller: the Service the proxy acts on.
+// svcObject is what the gate read: the Service the proxy acts on.
 func svcObject(edgeKind, edgeName string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "edges.railgrid.ai/v1alpha1",
@@ -102,7 +102,7 @@ func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (
 	}))
 	t.Cleanup(kcp.Close)
 
-	s := testServer("/services/providers/edges/" + DataPlaneRoot)
+	s := testServer()
 	s.kcpConfig = &rest.Config{Host: kcp.URL}
 	s.tenantConfig = func(_ context.Context, gotCluster string) (*rest.Config, error) {
 		if gotCluster != cluster {
@@ -111,7 +111,6 @@ func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (
 		return s.kcpConfig, nil
 	}
 	s.edgeConnManager = NewConnManager()
-	s.tickets = newTicketStore()
 	s.logger = klog.Background()
 	d := &serviceProxyDialer{request: make(chan *http.Request, 1), errors: make(chan error, 1)}
 	if edgeKind == macOSServerKind {
@@ -123,7 +122,7 @@ func newServiceProxyTestServer(t *testing.T, edgeKind string, edgeName string) (
 func TestMacOSServiceProxyUsesTheMacTunnelAndHostLoopback(t *testing.T) {
 	s, dialer := newServiceProxyTestServer(t, macOSServerKind, "mac-1")
 	req := httptest.NewRequest(http.MethodGet,
-		"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy/api/ping", nil)
+		"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy/api/ping", nil)
 	rr := httptest.NewRecorder()
 
 	s.serveService(rr, req, svcRequest("proxy", "api/ping"), svcObject(macOSServerKind, "mac-1"))
@@ -154,13 +153,13 @@ func TestMacOSServiceProxyUsesTheMacTunnelAndHostLoopback(t *testing.T) {
 
 // ".../proxy" without the trailing slash used to reach the agent as "/svc",
 // which it does not route (bare 404). A browser is redirected to ".../proxy/"
-// (relative, so it survives the hub's path prefix); other methods are sent to
-// the service root.
+// (relative, so it resolves under the verb wherever the front door mounts
+// it); other methods are sent to the service root.
 func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 	t.Run("GET redirects to the slash form", func(t *testing.T) {
 		s, dialer := newServiceProxyTestServer(t, macOSServerKind, "mac-1")
 		req := httptest.NewRequest(http.MethodGet,
-			"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy?tab=1", nil)
+			"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy?tab=1", nil)
 		rr := httptest.NewRecorder()
 
 		s.serveService(rr, req, svcRequest("proxy", ""), svcObject(macOSServerKind, "mac-1"))
@@ -181,7 +180,7 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 		// No body: the in-memory agent answers without reading one, and
 		// net.Pipe is unbuffered.
 		req := httptest.NewRequest(http.MethodPost,
-			"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy", nil)
+			"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy", nil)
 		rr := httptest.NewRecorder()
 
 		s.serveService(rr, req, svcRequest("proxy", ""), svcObject(macOSServerKind, "mac-1"))
@@ -205,7 +204,7 @@ func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
 func TestServiceProxyRejectsUnknownEdgeKindBeforeDialing(t *testing.T) {
 	s, dialer := newServiceProxyTestServer(t, "UnexpectedKind", "mac-1")
 	req := httptest.NewRequest(http.MethodGet,
-		"/"+DataPlaneRoot+"/clusters/tenant-a/services/mac-service/proxy", nil)
+		"/clusters/tenant-a/apis/edges.railgrid.ai/v1alpha1/services/mac-service/proxy", nil)
 	rr := httptest.NewRecorder()
 
 	s.serveService(rr, req, svcRequest("proxy", ""), svcObject("UnexpectedKind", "mac-1"))

@@ -9,17 +9,20 @@
 // Package tools implements the built-in tool families agents can call during
 // a run: core (memory, self-scheduling, notify, ask), web (SSRF-guarded fetch
 // + search), and mcp (remote MCP servers, with a GitHub preset). Families are
-// pure functions over narrow interfaces so both execution paths — per-request
-// (tenant client, acting as the user) and background (APIExport virtual
-// workspace) — reuse them unchanged.
+// pure functions over narrow interfaces so both execution paths — a verb (the
+// gate's provider client) and background (APIExport virtual workspace), both
+// acting as the provider — reuse them unchanged.
 package tools
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/railgrid/provider-sdk/dataplane"
 
@@ -104,72 +107,88 @@ type SpawnPolicy struct {
 	MaxToolTurns     int
 }
 
+// VerbCaller addresses a verb ANOTHER provider serves — a custom subresource
+// this provider has claimed under spec.requires[].resources[] — through
+// this provider's own APIExport virtual workspace, with this provider's own
+// credential. *dataplane.Callers implements it; tests substitute a fake.
+type VerbCaller interface {
+	ExportVerbURL(ctx context.Context, gvr schema.GroupVersionResource, r dataplane.Request) (string, error)
+	ProviderHTTPClient() (*http.Client, error)
+}
+
 // DataPlane is what a tool needs to reach a tenant workload provisioned by the
 // infrastructure provider, over the platform-internal path rather than a public
 // hostname. See docs/platform-internal-networking.md.
 //
-// Token is the CALLER's bearer token: the data plane authorizes by re-reading
-// the instance as the caller. An interactive run supplies the human's token; a
-// background run supplies the AGENT's own ServiceAccount token, minted into the
-// tenant workspace (see api/agentidentity.go). Empty means neither was
-// available — the identity could not be provisioned — and instance-backed tools
-// report that rather than composing a call that 401s two hops away.
+// The call is made AS THIS PROVIDER: the infrastructure provider's
+// instances/proxy verb is a custom subresource the agents APIExport claims
+// (manifest.yaml spec.requires), so kcp serves it on this provider's own
+// virtual workspace, authorizes it against the claim the tenant accepted, and
+// forwards it to infrastructure impersonating this provider. No caller
+// credential travels: an interactive run and an unattended one reach an
+// instance the same way, and neither lends the agent a human's reach.
 type DataPlane struct {
-	HubBase   string
+	// ClusterID is the tenant workspace's kcp logical-cluster ID.
 	ClusterID string
-	Token     string
-	// Provider is the catalog name of the provider serving the instance kinds
-	// this run reaches, resolved from the TENANT's APIBinding for the instance
-	// API group (see api/crossprovider.go). It is not configuration and it is
-	// not a constant: which provider serves a group is a property of the
-	// workspace, and writing "infrastructure" here would hardcode another
-	// provider's name into this one.
-	Provider string
-	// Insecure skips TLS verification against the hub (dev self-signed certs).
-	Insecure bool
+	// Callers builds the URL and the HTTP client. Nil means this provider has
+	// no provider-scoped config (no kubeconfig), so instance-backed tools
+	// report that rather than composing a call that fails two hops away.
+	Callers VerbCaller
 }
 
 // Available reports whether a data-plane call can be made at all.
 func (d DataPlane) Available() bool {
-	return d.HubBase != "" && d.ClusterID != "" && d.Token != "" && d.Provider != ""
-}
-
-// ProxyURL composes the URL of an instance's `proxy` verb:
-//
-//	{hub}/services/providers/{provider}/dataplane/clusters/{cluster}/{resource}/{name}/proxy
-//
-// The path itself comes from dataplane.ProviderPath, so the grammar has one
-// implementation in the tree and a consumer cannot spell another provider's
-// route slightly differently from the way that provider parses it.
-//
-// The caller appends its own path, if the template's endpoint does not pin one.
-// It returns an error rather than a URL when the data plane is unusable, so
-// every caller reports the same precise reason instead of a bare 401 from two
-// hops away.
-func (d DataPlane) ProxyURL(kind, connName, resource, instance string) (string, error) {
-	if d.HubBase == "" || d.ClusterID == "" {
-		return "", fmt.Errorf("%s connection %q names instance %q, but this provider has no hub/workspace context to reach it", kind, connName, instance)
-	}
-	if d.Token == "" {
-		return "", fmt.Errorf("%s connection %q reaches instance %q over the platform data plane, which authorizes per caller, but this run has no identity — an interactive run uses yours, a background run uses the agent's own ServiceAccount, and provisioning that failed (check the provider log for \"identity unavailable\")", kind, connName, instance)
-	}
-	if d.Provider == "" {
-		return "", fmt.Errorf("%s connection %q names instance %q, but which provider serves %s in this workspace is not known yet — it is read from the workspace's own APIBinding by a caller who can list them, so open the agent in the portal once (or check that provider is enabled here)", kind, connName, instance, InstanceAPIGroup)
-	}
-	path, err := dataplane.ProviderPath(d.Provider, dataplane.DataplaneRoot, dataplane.Request{
-		ClusterID: d.ClusterID, Resource: resource, Name: instance, Verb: "proxy",
-	})
-	if err != nil {
-		return "", fmt.Errorf("%s connection %q addresses instance %q: %w", kind, connName, instance, err)
-	}
-	return strings.TrimRight(d.HubBase, "/") + path, nil
+	return d.ClusterID != "" && d.Callers != nil
 }
 
 // InstanceAPIGroup is the API group a Connection's instance reference lives in.
 // This IS a legitimate constant: it is the API contract between the two
 // providers, not a routing detail — an agent's Connection names an instance of
-// this group, and which provider serves that group is looked up per workspace.
+// this group, and the requirement in manifest.yaml names the same group.
 const InstanceAPIGroup = "infrastructure.railgrid.ai"
+
+// InstanceAPIVersion is the version the instances resource is served at.
+const InstanceAPIVersion = "v1alpha1"
+
+// ProxyURL composes the URL of an instance's `proxy` verb, through this
+// provider's export virtual workspace:
+//
+//	{vw}/clusters/{cluster}/apis/infrastructure.railgrid.ai/v1alpha1/{resource}/{name}/proxy[/{tail}]
+//
+// The path itself comes from dataplane.SubresourcePath (via ExportVerbURL), so
+// the grammar has one implementation in the tree and a consumer cannot spell
+// another provider's route slightly differently from the way that provider
+// parses it. tail is the upstream path beneath the verb ("" for the root, which
+// is where a template pinning its own upstream path is reached).
+//
+// It returns an error rather than a URL when the data plane is unusable, so
+// every caller reports the same precise reason instead of a bare failure from
+// two hops away.
+func (d DataPlane) ProxyURL(ctx context.Context, kind, connName, resource, instance, tail string) (string, error) {
+	if d.ClusterID == "" {
+		return "", fmt.Errorf("%s connection %q names instance %q, but this run has no workspace context to reach it", kind, connName, instance)
+	}
+	if d.Callers == nil {
+		return "", fmt.Errorf("%s connection %q reaches instance %q over the platform data plane as this provider, but the provider has no provider-scoped kubeconfig (RAILGRID_PROVIDER_KUBECONFIG), so instance-backed tools are unavailable", kind, connName, instance)
+	}
+	gvr := schema.GroupVersionResource{Group: InstanceAPIGroup, Version: InstanceAPIVersion, Resource: resource}
+	u, err := d.Callers.ExportVerbURL(ctx, gvr, dataplane.Request{
+		ClusterID: d.ClusterID, Resource: resource, Name: instance, Verb: "proxy", Tail: strings.Trim(tail, "/"),
+	})
+	if err != nil {
+		return "", fmt.Errorf("%s connection %q addresses instance %q: %w", kind, connName, instance, err)
+	}
+	return u, nil
+}
+
+// HTTPClient returns the client that authenticates a ProxyURL call as this
+// provider. It carries the provider kubeconfig's credential and TLS settings.
+func (d DataPlane) HTTPClient() (*http.Client, error) {
+	if d.Callers == nil {
+		return nil, fmt.Errorf("no provider-scoped config: the platform data plane is unavailable")
+	}
+	return d.Callers.ProviderHTTPClient()
+}
 
 // instanceRef reads the instance a Connection is bound to, with the resource
 // name the template's instance CRD uses. Empty instance means the connection is

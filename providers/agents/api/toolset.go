@@ -98,12 +98,12 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 				Trigger:     agentsv1alpha1.RunTriggerDelegation,
 				SourceName:  parentDeps.Agent.Name,
 				ParentRunID: parentDeps.RunID,
-				// The child acts as the same caller, so it inherits the data
-				// plane. Edges is deliberately NOT inherited (no endpoint), so
-				// this widens nothing: it only lets a delegated sub-agent use
-				// the same instance-backed tools its parent could.
+				// The child runs in the same workspace, so it inherits the data
+				// plane (reached as this provider, like the parent's). Edges is
+				// deliberately NOT inherited (no endpoint, no token), so this
+				// widens nothing: it only lets a delegated sub-agent use the
+				// same instance-backed tools its parent could.
 				ClusterID: parentDeps.DataPlane.ClusterID,
-				HubToken:  parentDeps.DataPlane.Token,
 			})
 			if err != nil {
 				return "", err
@@ -209,9 +209,9 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	// the hub, not a wired-in provider tool — it is always enabled, never opt-in.
 	// Interactive-only, and now checked rather than assumed: it acts as the
 	// calling user, which is only meaningful while a human is present to see what
-	// it does. That used to fall out of background runs carrying no token, but an
-	// API-invoked run carries the caller's token (it needs one for the data plane)
-	// while being unattended — so the class is the gate.
+	// it does. A data-plane verb carries no caller credential at all, so on that
+	// path the family is absent whatever the class; an MCP-invoked run carries
+	// the caller's bearer while being unattended — so the class is the gate too.
 	if interactive && run.EdgesEndpoint != "" && run.HubToken != "" {
 		sess, err := tools.ConnectMCPEndpoint(ctx, run.EdgesEndpoint, run.HubToken, "edges", run.EdgesInsecure)
 		if err != nil {

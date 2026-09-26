@@ -9,32 +9,40 @@
 package api
 
 // The provider's whole tenant-facing surface, expressed as data-plane verbs on
-// bound resources:
+// bound resources. Every verb is a kcp CUSTOM SUBRESOURCE — the APIExport
+// declares "{resource}/{verb}" — reached like any other kube path on the kcp
+// front door the caller holds a credential for:
 //
-//	/dataplane/clusters/{clusterID}/{resource}/{name}/{verb}[/{tail...}]
+//	/clusters/{clusterID}/apis/agents.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail...}]
 //
-// There is no /api/* facade any more and no bespoke /s2s/* route. Every call —
-// a signed-in user in the portal, an MCP client, another provider, a cron job —
-// arrives here and passes the same two gates from provider-sdk/dataplane, run
-// as the CALLER:
+// There is no /api/* facade, no bespoke /s2s/* route and no hub-proxied
+// spelling of a verb. kcp authenticates the caller, authorizes the HTTP method
+// as the RBAC verb on the {resource}/{verb} noun, and reverse-proxies the
+// request here with the caller's identity stamped in requestheader headers.
+// provider-sdk/serve's subresource adapter is the one parser in front of this
+// handler: it refuses a malformed path and an undeclared coordinate, reads the
+// stamped identity, and hands both to the handler in the request context.
 //
-//  1. a real GET of the addressed object in the path's cluster, which proves
-//     visibility and hands back the object;
-//  2. a SelfSubjectAccessReview for `create` on the virtual subresource
-//     {resource}/{verb}, scoped to the object's name.
+// What the handler then does is the contract's gate, run by provider-sdk/
+// dataplane: the caller must be able to SEE the addressed object, decided with
+// a SubjectAccessReview on the caller's behalf and then read AS THE PROVIDER
+// through its APIExport virtual workspace. There is no caller bearer on a verb,
+// so after the gate every handler acts as the provider: the client stashed on
+// the request context is the provider's, scoped to the path's cluster, and any
+// further question about the caller is dataplane.Authorize.
 //
 // That is why the service-to-service path could be deleted outright rather than
 // ported: a ServiceAccount holding `create` on `agents/run` in the tenant's
-// workspace passes exactly the same gates a human does, so the provider no
-// longer runs its own TokenReview + SubjectAccessReview against a bespoke
-// `agents/delegate` subresource, and no longer needs a cluster→workspace map in
-// Postgres to find the tenant behind a caller.
+// workspace passes exactly the same gate a human does, so the provider no
+// longer runs its own TokenReview against a bespoke `agents/delegate`
+// subresource, and no longer needs a cluster→workspace map to find the tenant
+// behind a caller — the path names the cluster.
 //
 // Handlers below are the same ones the /api/* mux used to call. The router
-// resolves the identity from the PATH (never from a header — the header is only
-// cross-checked by Gate) and stashes it, together with the gated object and the
-// caller-scoped client, on the request context; Server.identityFromRequest
-// picks it up so no handler has to know which route class it is serving.
+// resolves the identity from the PATH and the stamped caller, and stashes it,
+// together with the gated object and the provider client, on the request
+// context; Server.identityFromRequest picks it up so no handler has to know
+// how it was reached.
 
 import (
 	"context"
@@ -68,12 +76,16 @@ const (
 // verbRoute is one served verb.
 type verbRoute struct {
 	// methods are the HTTP methods this verb answers; anything else is 405.
+	// kcp authorizes the method as the RBAC verb on {resource}/{verb}; a
+	// grant on a verb coordinate is "*", so the method is this provider's to
+	// police.
 	methods []string
 	tail    tailPolicy
 	handler http.HandlerFunc
-	// stream and readOnly mirror dataPlane.verbs[].stream / .readOnly in the
-	// CatalogEntry. They are carried here so the declaration and the
-	// implementation are one edit apart and a test can prove they agree.
+	// stream and readOnly mirror the verb's .stream / .readOnly in the
+	// CatalogEntry's spec.export.resources[].verbs[]. They are carried here so
+	// the declaration and the implementation are one edit apart and a test can
+	// prove they agree.
 	stream   bool
 	readOnly bool
 }
@@ -85,9 +97,13 @@ type resourceRoutes struct {
 }
 
 // routes is the complete table. It is the single source of truth for what this
-// provider serves, and it must stay identical to spec.dataPlane.verbs in
-// manifest.yaml and deploy/chart/templates/catalogentry.yaml — TestDataPlaneVerbsMatchManifest
-// fails the build when they drift.
+// provider serves, and it must stay identical to spec.export.resources[].verbs
+// in manifest.yaml and deploy/chart/templates/catalogentry.yaml —
+// TestDataPlaneVerbsMatchManifest fails the build when they drift, on the verbs
+// and on the apiVersion/kind each resource binds them to. The manifest is ALSO
+// what serve's adapter dispatches from
+// (serve.SubresourcesFromCatalogEntryFile), so a verb missing from either side
+// is never reached.
 func (s *Server) routes() map[string]resourceRoutes {
 	get := []string{http.MethodGet}
 	post := []string{http.MethodPost}
@@ -136,17 +152,20 @@ func (s *Server) routes() map[string]resourceRoutes {
 	}
 }
 
-// DataPlane is the class-(a) handler serve.New mounts under /dataplane/. It
-// receives the path exactly as the caller sent it, so ParseRequest — not an
-// http.ServeMux — decides what ".." and "//" mean.
+// DataPlane is the class-(a) handler serve.New dispatches every declared
+// custom subresource to. It is reached only through serve's adapter, which has
+// parsed the shard-forwarded path and put the route and the stamped caller in
+// the request context; a request that arrives with no route did not come
+// through the adapter and is refused, whatever its URL says.
 func (s *Server) DataPlane() http.Handler {
 	table := s.routes()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		req, ok := dataplane.ParseRequest(dataplane.DataplaneRoot, r)
-		if !ok {
+		route, ok := dataplane.RouteFrom(r.Context())
+		if !ok || route.Group != agentsclient.AgentGVR.Group {
 			dataplane.WriteError(w, dataplane.ErrBadPath)
 			return
 		}
+		req := route.Request
 		// No verb here hangs off a component; a component form is a path this
 		// provider does not serve rather than one it serves differently.
 		if req.Component != "" {
@@ -155,15 +174,18 @@ func (s *Server) DataPlane() http.Handler {
 		}
 		resource, ok := table[req.Resource]
 		if !ok {
-			dataplane.WriteError(w, dataplane.ErrBadPath)
+			// The adapter only dispatches declared coordinates, so this is
+			// belt and braces: a verb this handler does not implement is not
+			// served.
+			http.NotFound(w, r)
 			return
 		}
-		route, ok := resource.verbs[req.Verb]
+		verb, ok := resource.verbs[req.Verb]
 		if !ok {
-			dataplane.WriteError(w, dataplane.ErrBadPath)
+			http.NotFound(w, r)
 			return
 		}
-		switch route.tail {
+		switch verb.tail {
 		case tailNone:
 			if req.Tail != "" {
 				dataplane.WriteError(w, dataplane.ErrBadPath)
@@ -176,16 +198,16 @@ func (s *Server) DataPlane() http.Handler {
 			}
 		case tailFree:
 		}
-		// Method is checked before the gates: a 405 is not a probe, the path
+		// Method is checked before the gate: a 405 is not a probe, the path
 		// already told the caller the verb exists.
-		if !slices.Contains(route.methods, r.Method) {
-			w.Header().Set("Allow", strings.Join(route.methods, ", "))
+		if !slices.Contains(verb.methods, r.Method) {
+			w.Header().Set("Allow", strings.Join(verb.methods, ", "))
 			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed",
-				"this verb answers "+strings.Join(route.methods, ", "))
+				"this verb answers "+strings.Join(verb.methods, ", "))
 			return
 		}
 
-		object, caller, err := dataplane.Gate(r.Context(), r, s.callers, resource.gvr, req)
+		object, provider, err := dataplane.Gate(r.Context(), s.callers, resource.gvr, req)
 		if err != nil {
 			// The detail stays here: WriteError answers with the status text
 			// alone so a refusal cannot be used to probe for objects.
@@ -194,28 +216,31 @@ func (s *Server) DataPlane() http.Handler {
 			return
 		}
 
-		id := s.dataPlaneIdentity(r, req)
+		id := s.dataPlaneIdentity(r.Context(), req)
 		r = r.WithContext(withGate(r.Context(), &gateInfo{
-			request: req, object: object, caller: caller, identity: id,
+			request: req, object: object, provider: provider, identity: id,
 		}))
 		// The handlers predate the grammar and read their subject from path
 		// values; keep that contract rather than rewriting sixteen signatures.
 		r.SetPathValue("name", req.Name)
 		r.SetPathValue("tail", req.Tail)
-		route.handler(w, r)
+		verb.handler(w, r)
 	})
 }
 
 // gateInfo is everything the router resolved for a gated request.
 type gateInfo struct {
 	request dataplane.Request
-	// object is what gate 1 read, as the caller. A handler that later acts with
-	// the provider's own identity pins this object's UID or spec rather than
-	// re-reading and trusting the second read.
+	// object is what the gate read, as the provider, once the caller's
+	// visibility of it was settled. A handler acts on this object rather than
+	// re-reading and trusting a second read.
 	object *unstructured.Unstructured
-	// caller is the caller-scoped dynamic client gate 1 used.
-	caller dynamic.Interface
-	// identity is the tenant context derived from the PATH plus the bearer.
+	// provider is the client the gate returned: THIS PROVIDER, through its
+	// APIExport virtual workspace, scoped to the path's cluster. There is no
+	// caller credential on a verb, so it is the only client a handler has.
+	provider dynamic.Interface
+	// identity is the tenant context derived from the PATH plus the caller
+	// kcp stamped.
 	identity identity
 }
 
@@ -234,19 +259,21 @@ func gateFrom(ctx context.Context) (*gateInfo, bool) {
 
 // dataPlaneIdentity builds the tenant context for a gated request.
 //
-// The cluster comes from the PATH, which is authoritative (Gate has already
-// refused a request whose X-Railgrid-Cluster disagreed with it). That is what
-// lets a caller with no hub-injected identity headers at all — another
-// provider's ServiceAccount, a job — use the same route as a signed-in user.
-func (s *Server) dataPlaneIdentity(r *http.Request, req dataplane.Request) identity {
-	bearer, _, user, _ := dataplane.Identity(r)
+// The cluster comes from the PATH, which is authoritative: serve's adapter
+// parsed it and set the addressing header from it. The user is the identity
+// kcp stamped — the same one the gate decided with — and is used for labels
+// and audit lines, never as a trust root. There is no bearer: a verb never
+// carries one, so the org/workspace scope the store is keyed on is resolved
+// per cluster (resolveClusterScope) rather than read as the caller.
+func (s *Server) dataPlaneIdentity(ctx context.Context, req dataplane.Request) identity {
 	id := identity{
 		tenant:    req.ClusterID,
 		clusterID: req.ClusterID,
-		user:      user,
-		token:     bearer,
 	}
-	s.resolveWorkspace(r.Context(), &id)
+	if caller, ok := dataplane.ProxiedIdentityFrom(ctx); ok {
+		id.user = caller.User
+	}
+	s.resolveClusterScope(ctx, &id)
 	return id
 }
 
@@ -272,9 +299,9 @@ func gatedRunAgent(r *http.Request) (string, bool) {
 
 // ---- the other Pillar 2 route classes ---------------------------------------
 //
-// These are not data-plane verbs and are deliberately NOT reachable under
-// /dataplane/: they are mounted by provider-sdk/serve as their own classes and
-// are exported only so main can hand each one to the right Options field.
+// These are not data-plane verbs and are deliberately NOT reachable as custom
+// subresources: they are mounted by provider-sdk/serve as their own classes
+// and are exported only so main can hand each one to the right Options field.
 
 // OAuthCallback serves GET /oauth/callback — class (d). Anonymous by design:
 // the signed state parameter is the authentication, because the identity

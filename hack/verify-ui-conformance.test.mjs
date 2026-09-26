@@ -639,7 +639,7 @@ test('keeps resource section cards bounded and supports headerless sections', ()
 
 test('keeps platform-admin flat lists and navigation on shared host patterns', () => {
   const root = new URL('../portal/src/pages/bonkers/', import.meta.url)
-  for (const file of ['ProvidersSection.vue', 'IdentitiesSection.vue', 'UsersSection.vue']) {
+  for (const file of ['OrgsSection.vue', 'ProvidersSection.vue', 'UsersSection.vue']) {
     const source = fs.readFileSync(new URL(file, root), 'utf8')
     assert.match(source, /import ResourceTable from '@\/portalkit\/ResourceTable\.vue'/)
     assert.match(source, /<ResourceTable/)
@@ -649,17 +649,15 @@ test('keeps platform-admin flat lists and navigation on shared host patterns', (
   }
 
   const providers = fs.readFileSync(new URL('ProvidersSection.vue', root), 'utf8')
-  const identities = fs.readFileSync(new URL('IdentitiesSection.vue', root), 'utf8')
   assert.match(providers, /provider\.registered \? \(provider\.ready \? 'ready' : 'not ready'\) : ''/)
   assert.match(providers, /:status="providerFlag\(row, 'ready'\) \? 'ready' : 'not ready'"/)
-  assert.match(identities, /\[row\.path, row\.group, row\.resource, row\.export\]/)
 
   const store = fs.readFileSync(new URL('../portal/src/stores/admin.ts', import.meta.url), 'utf8')
   const shell = fs.readFileSync(new URL('../portal/src/pages/BonkersPage.vue', import.meta.url), 'utf8')
   const appLayout = fs.readFileSync(new URL('../portal/src/components/AppLayout.vue', import.meta.url), 'utf8')
   const navigationDock = fs.readFileSync(new URL('../portal/src/composables/useNavigationDock.ts', import.meta.url), 'utf8')
   assert.match(store, /const loaded = ref\(false\)/)
-  assert.match(store, /identities\.value = i\s+loaded\.value = true/)
+  assert.match(store, /providers\.value = p\s+loaded\.value = true/)
   assert.match(shell, /import \{ useSidebarExpansion \} from '@\/composables\/useSidebarExpansion'/)
   assert.match(shell, /:class="sidebarExpanded \? 'w-48' : 'w-14'"/)
   assert.match(appLayout, /const \{ sidebarExpanded, toggleSidebar \} = useSidebarExpansion\(\)/)

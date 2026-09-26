@@ -70,23 +70,18 @@ func TestMaterializeAutomaticProjectIntegrationsDiscoversActionsIdempotently(t *
 		return []providerCatalogEntry{
 			{
 				Name: "databricks", Ready: true,
-				Actions: []providerCatalogAction{
-					{ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest,
-						BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-						Consent:       providerCatalogActionConsent{Required: true}},
-					{ID: "update_table/v1", SchemaDigest: "sha256:" + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-						BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource}},
-					{ID: "deprecated/v1", SchemaDigest: testProjectActionSchemaDigest,
-						BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-						Deprecation:   &providerCatalogDeprecation{Deprecated: true}},
-					{ID: "invalid/v1", SchemaDigest: "sha256:bad",
-						BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource}},
-				},
+				Export: testDatabricksTableExport([]providerCatalogAction{
+					{Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
+						Consent: providerCatalogActionConsent{Required: true}},
+					{Name: "update_table", Version: "v1", SchemaDigest: "sha256:" + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
+					{Name: "deprecated", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
+						Deprecation: &providerCatalogDeprecation{Deprecated: true}},
+					{Name: "invalid", Version: "v1", SchemaDigest: "sha256:bad"},
+				}),
 			},
-			{Name: "offline", Ready: false, Actions: []providerCatalogAction{{
-				ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest,
-				BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-			}}},
+			{Name: "offline", Ready: false, Export: testDatabricksTableExport([]providerCatalogAction{{
+				Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
+			}})},
 		}, nil
 	}
 	c := asclient.NewFromDynamic(dyn)
@@ -349,10 +344,9 @@ func TestMaterializeAutomaticProjectIntegrationsCatalogAndListFailuresAreBestEff
 		t.Fatalf("catalog failure result = project %p, err %v; want unchanged actionless turn state", got, err)
 	}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
-		return []providerCatalogEntry{{Name: "databricks", Ready: true, Actions: []providerCatalogAction{{
-			ID: "query_table/v1", SchemaDigest: testProjectActionSchemaDigest,
-			BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource},
-		}}}}, nil
+		return []providerCatalogEntry{{Name: "databricks", Ready: true, Export: testDatabricksTableExport([]providerCatalogAction{{
+			Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
+		}})}}, nil
 	}
 	dyn.PrependReactor("list", databricksTableResource, func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("provider resource list unavailable")
@@ -381,12 +375,10 @@ func automaticIntegrationTestServer(t *testing.T, project *aiv1alpha1.Project, n
 	}, objects...)
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
-		return []providerCatalogEntry{{Name: projectIntegrationProviderDatabricks, Ready: true, Actions: []providerCatalogAction{
-			{ID: projectIntegrationActionQueryTable + "/" + projectIntegrationActionVersionV1, SchemaDigest: testProjectActionSchemaDigest,
-				BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource}},
-			{ID: "update_table/v1", SchemaDigest: "sha256:" + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-				BoundResource: providerCatalogBoundResource{APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource}},
-		}}}, nil
+		return []providerCatalogEntry{{Name: projectIntegrationProviderDatabricks, Ready: true, Export: testDatabricksTableExport([]providerCatalogAction{
+			{Name: projectIntegrationActionQueryTable, Version: projectIntegrationActionVersionV1, SchemaDigest: testProjectActionSchemaDigest},
+			{Name: "update_table", Version: "v1", SchemaDigest: "sha256:" + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
+		})}}, nil
 	}
 	return server, asclient.NewFromDynamic(dyn)
 }

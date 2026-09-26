@@ -17,6 +17,7 @@ limitations under the License.
 package proxy
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -107,5 +108,31 @@ func TestWriteOrgWorkspaceForbidden(t *testing.T) {
 	msg, _ := status["message"].(string)
 	if msg == "" {
 		t.Error("message should be a non-empty hint about the hub REST surface")
+	}
+}
+
+func TestWebsocketBearerReadsTheKubernetesSubprotocol(t *testing.T) {
+	token := "test:user-default"
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(token))
+	r := httptest.NewRequest(http.MethodGet, "/clusters/x/apis/edges.railgrid.ai/v1alpha1/linuxservers/box/ssh", nil)
+	r.Header.Set("Connection", "Upgrade")
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Add("Sec-WebSocket-Protocol", "railgrid.ssh.v1, base64url.bearer.authorization.k8s.io."+encoded)
+	got, ok := websocketBearer(r)
+	if !ok || got != token {
+		t.Fatalf("websocketBearer = %q, %v; want %q, true", got, ok, token)
+	}
+	// Not an upgrade: the subprotocol header means nothing.
+	plain := httptest.NewRequest(http.MethodGet, "/clusters/x", nil)
+	plain.Header.Set("Sec-WebSocket-Protocol", "base64url.bearer.authorization.k8s.io."+encoded)
+	if _, ok := websocketBearer(plain); ok {
+		t.Fatal("a non-upgrade request yielded a websocket bearer")
+	}
+	// Malformed encoding is a refusal, not an empty token.
+	bad := httptest.NewRequest(http.MethodGet, "/clusters/x", nil)
+	bad.Header.Set("Upgrade", "websocket")
+	bad.Header.Set("Sec-WebSocket-Protocol", "base64url.bearer.authorization.k8s.io.%%%")
+	if _, ok := websocketBearer(bad); ok {
+		t.Fatal("a malformed subprotocol yielded a bearer")
 	}
 }

@@ -12,11 +12,12 @@ package mcpserver
 // template-declared data-plane verbs (sync, log, restart) on a development-mode
 // instance, so an MCP agent can edit source locally and hot-reload it in the
 // sandbox without building an image; dev_exec runs one command against the
-// synced workspace through the typed exec capability. The calls go through
-// the provider's own /dataplane/* handler IN-PROCESS (deps.DataPlane) — the
-// same caller-token authorization, template-contract resolution, and runtime
-// proxying as the hub HTTP route; these tools only add addressing (cluster ID
-// from the request identity) and workspacePath file routing on top.
+// synced workspace through the typed exec capability. The calls go out to the
+// hub front door as kcp custom subresources (deps.Verbs), with the caller's
+// own bearer — the one way a verb is reached, so kcp's RBAC, the provider's
+// gate, template-contract resolution and runtime proxying are all the real
+// thing; these tools only add addressing (cluster ID from the request
+// identity, component as ?component=) and workspacePath file routing on top.
 
 import (
 	"context"
@@ -26,8 +27,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"path"
 	"slices"
 	"sort"
@@ -55,6 +54,11 @@ const (
 
 	devSyncEncodingUTF8   = "utf-8"
 	devSyncEncodingBase64 = "base64"
+
+	// devVerbResponseMaxBytes bounds what one verb may answer with. A log
+	// buffer is the largest (the agent caps it well below this); everything
+	// else is a small JSON object.
+	devVerbResponseMaxBytes = 16 << 20
 )
 
 type devSyncFile struct {
@@ -206,7 +210,7 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 		// dev_sync is incremental, so a component that already runs applied
 		// source keeps its manifest and may receive a partial sync.
 		established := func(component string) bool {
-			agent, _, ok := readDevAgentStatus(ctx, deps.DataPlane, ident, target.resource, in.Instance, component)
+			agent, _, ok := readDevAgentStatus(ctx, deps.Verbs, ident, target.resource, in.Instance, component)
 			return ok && (agent.SourceRevision > 0 || agent.Running)
 		}
 		if err := validateDevSyncToolchains(routed, target.components, established); err != nil {
@@ -214,11 +218,11 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 		}
 		// Checked for every component before any is synced, so an old agent
 		// never receives (and never writes) base64 text as file content.
-		if err := requireDevSyncEncodings(ctx, deps.DataPlane, ident, target, in.Instance, routed); err != nil {
+		if err := requireDevSyncEncodings(ctx, deps.Verbs, ident, target, in.Instance, routed); err != nil {
 			return nil, devSyncOutput{}, err
 		}
 
-		components, err := pushDevSync(ctx, deps.DataPlane, ident, target, in.Instance, routed, restart)
+		components, err := pushDevSync(ctx, deps.Verbs, ident, target, in.Instance, routed, restart)
 		if err != nil {
 			return nil, devSyncOutput{}, err
 		}
@@ -243,7 +247,7 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 		if err != nil {
 			return nil, devExecOutput{}, err
 		}
-		out, err := runDevExec(ctx, deps.DataPlane, ident, target.resource, in.Instance, component, in)
+		out, err := runDevExec(ctx, deps.Verbs, ident, target.resource, in.Instance, component, in)
 		if err != nil {
 			return nil, devExecOutput{}, err
 		}
@@ -271,7 +275,7 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 		if maxBytes > devLogMaxBytes {
 			maxBytes = devLogMaxBytes
 		}
-		body, status, err := callDataPlane(ctx, deps.DataPlane, ident, http.MethodGet, target.resource, in.Instance, component, "log", nil, nil)
+		body, status, err := callDataPlane(ctx, deps.Verbs, ident, http.MethodGet, target.resource, in.Instance, component, "log", nil, nil)
 		if err != nil {
 			return nil, devLogsOutput{}, err
 		}
@@ -303,7 +307,7 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 		if err != nil {
 			return nil, devRestartOutput{}, err
 		}
-		body, status, err := callDataPlane(ctx, deps.DataPlane, ident, http.MethodPost, target.resource, in.Instance, component, "restart", []byte(`{}`), nil)
+		body, status, err := callDataPlane(ctx, deps.Verbs, ident, http.MethodPost, target.resource, in.Instance, component, "restart", []byte(`{}`), nil)
 		if err != nil {
 			return nil, devRestartOutput{}, err
 		}
@@ -320,7 +324,7 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 // instance, template without a development block, instance not provisioned
 // in development mode.
 func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceName string) (devTarget, error) {
-	if deps.DataPlane == nil {
+	if deps.Verbs == nil {
 		return devTarget{}, fmt.Errorf("the development data plane is not available on this provider deployment")
 	}
 	if strings.TrimSpace(instanceName) == "" {
@@ -382,7 +386,7 @@ func requireDevComponent(target devTarget, component string) (string, error) {
 // pushDevSync sends each component only the files routed to it. Components
 // that received no files are not called at all: a file-less sync would still
 // run the agent's reload/restart policy and stamp nothing useful.
-func pushDevSync(ctx context.Context, dp http.Handler, ident identity, target devTarget, instance string, routed map[string][]devSyncFile, restart string) (map[string]devSyncComponentResult, error) {
+func pushDevSync(ctx context.Context, verbs VerbCaller, ident identity, target devTarget, instance string, routed map[string][]devSyncFile, restart string) (map[string]devSyncComponentResult, error) {
 	out := map[string]devSyncComponentResult{}
 	for _, component := range sortedDevComponents(target.components) {
 		files := routed[component]
@@ -393,7 +397,7 @@ func pushDevSync(ctx context.Context, dp http.Handler, ident identity, target de
 		if err != nil {
 			return nil, fmt.Errorf("encode %s sync payload: %w", component, err)
 		}
-		body, status, err := callDataPlane(ctx, dp, ident, http.MethodPost, target.resource, instance, component, "sync", payload, nil)
+		body, status, err := callDataPlane(ctx, verbs, ident, http.MethodPost, target.resource, instance, component, "sync", payload, nil)
 		if err != nil {
 			return nil, fmt.Errorf("component %s: %w", component, err)
 		}
@@ -473,7 +477,7 @@ type devAgentStatus struct {
 // base64 text itself as the file content, so a component that does not
 // advertise support — or whose status cannot be read — fails the whole call,
 // naming the files that cannot be sent.
-func requireDevSyncEncodings(ctx context.Context, dp http.Handler, ident identity, target devTarget, instance string, routed map[string][]devSyncFile) error {
+func requireDevSyncEncodings(ctx context.Context, verbs VerbCaller, ident identity, target devTarget, instance string, routed map[string][]devSyncFile) error {
 	var problems []string
 	for _, component := range sortedDevComponents(target.components) {
 		var binaries []string
@@ -485,7 +489,7 @@ func requireDevSyncEncodings(ctx context.Context, dp http.Handler, ident identit
 		if len(binaries) == 0 {
 			continue
 		}
-		reason, ok := devComponentSupportsBase64(ctx, dp, ident, target.resource, instance, component)
+		reason, ok := devComponentSupportsBase64(ctx, verbs, ident, target.resource, instance, component)
 		if ok {
 			continue
 		}
@@ -499,8 +503,8 @@ func requireDevSyncEncodings(ctx context.Context, dp http.Handler, ident identit
 
 // devComponentSupportsBase64 reads the component's dev-agent status and
 // reports whether it decodes base64 sync entries; reason explains a false.
-func devComponentSupportsBase64(ctx context.Context, dp http.Handler, ident identity, resource, instance, component string) (string, bool) {
-	agent, reason, ok := readDevAgentStatus(ctx, dp, ident, resource, instance, component)
+func devComponentSupportsBase64(ctx context.Context, verbs VerbCaller, ident identity, resource, instance, component string) (string, bool) {
+	agent, reason, ok := readDevAgentStatus(ctx, verbs, ident, resource, instance, component)
 	if !ok {
 		return reason, false
 	}
@@ -512,8 +516,8 @@ func devComponentSupportsBase64(ctx context.Context, dp http.Handler, ident iden
 
 // readDevAgentStatus reads the component's dev-agent status through the
 // "process" data-plane verb; reason explains a false.
-func readDevAgentStatus(ctx context.Context, dp http.Handler, ident identity, resource, instance, component string) (devAgentStatus, string, bool) {
-	body, status, err := callDataPlane(ctx, dp, ident, http.MethodGet, resource, instance, component, "process", nil, nil)
+func readDevAgentStatus(ctx context.Context, verbs VerbCaller, ident identity, resource, instance, component string) (devAgentStatus, string, bool) {
+	body, status, err := callDataPlane(ctx, verbs, ident, http.MethodGet, resource, instance, component, "process", nil, nil)
 	if err != nil {
 		return devAgentStatus{}, "status unavailable: " + err.Error(), false
 	}
@@ -544,7 +548,7 @@ func devWorkspacePath(component kro.TemplateDevelopmentComponent, rel string) st
 // runDevExec drives the component exec capability with action "run" (start
 // and wait) and no source revision, so the provider runs against the revision
 // the component has applied and reports it back.
-func runDevExec(ctx context.Context, dp http.Handler, ident identity, resource, instance, component string, in devExecInput) (devExecOutput, error) {
+func runDevExec(ctx context.Context, verbs VerbCaller, ident identity, resource, instance, component string, in devExecInput) (devExecOutput, error) {
 	if len(in.Argv) == 0 || strings.TrimSpace(in.Argv[0]) == "" {
 		return devExecOutput{}, fmt.Errorf("argv is required — pass the command and its arguments, e.g. [\"npm\",\"test\"] or [\"sh\",\"-c\",\"npm test | tail -50\"]")
 	}
@@ -559,7 +563,7 @@ func runDevExec(ctx context.Context, dp http.Handler, ident identity, resource, 
 	if key := strings.TrimSpace(in.IdempotencyKey); key != "" {
 		headers = http.Header{"Idempotency-Key": []string{key}}
 	}
-	body, status, err := callDataPlane(ctx, dp, ident, http.MethodPost, resource, instance, component, "exec", payload, headers)
+	body, status, err := callDataPlane(ctx, verbs, ident, http.MethodPost, resource, instance, component, "exec", payload, headers)
 	if err != nil {
 		return devExecOutput{}, err
 	}
@@ -579,47 +583,64 @@ func runDevExec(ctx context.Context, dp http.Handler, ident identity, resource, 
 	return out, nil
 }
 
-// callDataPlane drives the provider's own data-plane handler in-process with
-// a synthesized request: same path shape and identity headers as the hub
-// route, so authorization (caller token → instance RBAC), contract method
-// allowlisting, and runtime proxying are all reused rather than duplicated.
-// extra carries verb-specific headers (e.g. Idempotency-Key); it can never
-// override the caller identity headers, which are set last.
-func callDataPlane(ctx context.Context, dp http.Handler, ident identity, method, resource, name, component, verb string, payload []byte, extra http.Header) ([]byte, int, error) {
+// callDataPlane invokes one data-plane verb on an instance the one way a verb
+// is reached: as a kcp custom subresource on the hub front door
+// (/clusters/{id}/apis/infrastructure.railgrid.ai/v1alpha1/{resource}/{name}/{verb}?component=…),
+// as the caller, with the bearer the hub's MCP aggregate forwarded. kcp
+// authorizes it with the caller's RBAC and forwards it to the serving provider
+// with the caller stamped, so authorization, contract method allowlisting and
+// runtime proxying are the verb's own rather than a replay of them. extra
+// carries verb-specific headers (e.g. Idempotency-Key); it can never carry
+// the credential, which the verb caller sets from the identity alone.
+//
+// The response body is read whole and bounded: every dev verb answers with a
+// small JSON object or a log buffer the caller trims further.
+func callDataPlane(ctx context.Context, verbs VerbCaller, ident identity, method, resource, name, component, verb string, payload []byte, extra http.Header) ([]byte, int, error) {
+	if verbs == nil {
+		return nil, 0, fmt.Errorf("the development data plane is not available on this provider deployment")
+	}
 	if strings.TrimSpace(ident.clusterID) == "" {
 		return nil, 0, fmt.Errorf("no workspace cluster on this request (X-Railgrid-Cluster missing) — cannot address the development data plane")
 	}
-	p := "/dataplane/clusters/" + url.PathEscape(ident.clusterID) +
-		"/" + url.PathEscape(resource) + "/" + url.PathEscape(name)
-	if component != "" {
-		p += "/components/" + url.PathEscape(component)
+	if strings.TrimSpace(ident.token) == "" {
+		return nil, 0, fmt.Errorf("no bearer token on this request — the MCP request must carry the caller's credentials")
 	}
-	p += "/" + url.PathEscape(verb)
+	p, err := sdkdataplane.SubresourcePath(infrav1alpha1.GroupName, infrav1alpha1.Version, sdkdataplane.Request{
+		ClusterID: ident.clusterID,
+		Resource:  resource,
+		Name:      name,
+		Component: component,
+		Verb:      verb,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("address %s on %s/%s (component %q): %w", verb, resource, name, component, err)
+	}
 
+	headers := make(http.Header, len(extra)+1)
+	for key, values := range extra {
+		if strings.EqualFold(key, "Authorization") {
+			continue
+		}
+		headers[http.CanonicalHeaderKey(key)] = append([]string(nil), values...)
+	}
 	var body io.Reader
 	if payload != nil {
 		body = strings.NewReader(string(payload))
+		headers.Set("Content-Type", "application/json")
 	}
-	req := httptest.NewRequest(method, p, body).WithContext(ctx)
-	for name, values := range extra {
-		for _, value := range values {
-			req.Header.Add(name, value)
-		}
+	resp, err := verbs.DoVerb(ctx, ident.token, method, p, body, headers)
+	if err != nil {
+		return nil, 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+ident.token)
-	// The hub injects both, and the data plane refuses a request whose path
-	// cluster disagrees with the header. Setting the header from the same
-	// clusterID that built the path keeps the replay identical to a real
-	// proxied call instead of relying on the header being absent.
-	req.Header.Set(sdkdataplane.HeaderCluster, ident.clusterID)
-	req.Header.Set(sdkdataplane.HeaderTenant, ident.tenant)
-	req.Header.Set(sdkdataplane.HeaderUser, ident.user)
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, devVerbResponseMaxBytes+1))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read %s response: %w", verb, err)
 	}
-	rec := httptest.NewRecorder()
-	dp.ServeHTTP(rec, req)
-	return rec.Body.Bytes(), rec.Code, nil
+	if len(data) > devVerbResponseMaxBytes {
+		return nil, 0, fmt.Errorf("%s response exceeds %d bytes", verb, devVerbResponseMaxBytes)
+	}
+	return data, resp.StatusCode, nil
 }
 
 // routeDevSyncFiles groups files by development component: a component whose

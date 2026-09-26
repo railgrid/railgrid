@@ -65,77 +65,178 @@ type providerDTO struct {
 	// flow. Empty for entries that declare none.
 	Description string `json:"description,omitempty"`
 	Version     string `json:"version,omitempty"`
-	Ready       bool   `json:"ready"`
-	// ReadinessReason and ReadinessMessage are present only when Ready is
-	// false. Values come from Provider.Readiness and are safe for end users.
-	ReadinessReason  string `json:"readinessReason,omitempty"`
-	ReadinessMessage string `json:"readinessMessage,omitempty"`
-	HasUI            bool   `json:"hasUI"`
-	HasBackend       bool   `json:"hasBackend"`
-	IconURL          string `json:"iconURL,omitempty"`
-	// MainJSIntegrity is the SRI pin ("sha384-<base64>") for
-	// /ui/providers/{name}/main.js. The portal sets it as the script's
-	// integrity attribute so the browser refuses a bundle that differs from
-	// the one the hub hashed at registration. Empty when the hub has no pin
-	// (builtin routes or a failed hash fetch); the portal then loads the
-	// bundle unpinned and logs a warning. Always empty for an org-owned
-	// provider: its bundle URL and pin are issued per load by
-	// POST /api/providers/{name}/ui-grant (ui_grant.go).
-	MainJSIntegrity string `json:"mainJSIntegrity,omitempty"`
-	// BuiltinRoute, when set, tells the portal to render the named Vue
-	// route inside its own SPA instead of loading /main.js as a custom
-	// element. Set on first-party providers shipped with the portal (mcp,
-	// kubernetes-edges, server-edges).
-	BuiltinRoute string `json:"builtinRoute,omitempty"`
-	// Children are sub-nav entries the portal renders indented under
-	// this provider in the side nav.
-	Children []navChildDTO `json:"children,omitempty"`
 	// Category groups this entry in the portal's nav and catalog page.
 	// Empty means top-level / uncategorized. Free-form string; providers
 	// in the same category render under one heading.
 	Category string `json:"category,omitempty"`
-	// Dependencies are providers that must be enabled in the current
-	// workspace before this provider can be enabled.
-	Dependencies []dependencyDTO `json:"dependencies,omitempty"`
-	// APIExport coordinates the portal needs to construct a tenant-side
-	// APIBinding when the user clicks Enable. Empty when the provider does
-	// not declare an APIExport (UI/backend-only providers).
-	APIExportPath string `json:"apiExportPath,omitempty"`
-	APIExportName string `json:"apiExportName,omitempty"`
-	// APIGroups are the API groups this provider actually serves, as the hub
-	// read them from spec.resources[].group on its APIExport. They are what
-	// the scoped-identity policy resolves group ownership against, and they
-	// usually differ from apiExportName (`edges.providers.railgrid.ai` serves
-	// `edges.railgrid.ai`), so showing both is what makes a refused
-	// cross-provider rule diagnosable. Empty means the hub has not managed to
-	// read the export yet; see the CatalogEntry's APIGroupsUnknown condition.
-	APIGroups []string `json:"apiGroups,omitempty"`
-	// PermissionClaims mirror the CatalogEntry.spec.apiExport.permissionClaims.
-	// The portal shows these in the Enable confirmation dialog so users see
-	// what the provider's controllers will be able to access in their
-	// workspace before they accept.
-	PermissionClaims []permissionClaimDTO `json:"permissionClaims,omitempty"`
-	// HubAccess mirrors CatalogEntry.spec.hubAccess: hub REST capabilities
-	// the provider requests, each with the reason the Enable dialog shows.
-	// None applies until the tenant accepts it.
-	HubAccess []providersv1alpha1.ProviderHubAccess `json:"hubAccess,omitempty"`
+	IconURL  string `json:"iconURL,omitempty"`
+	Ready    bool   `json:"ready"`
+	// ReadinessReason and ReadinessMessage are present only when Ready is
+	// false. Values come from Provider.Readiness and are safe for end users.
+	ReadinessReason  string `json:"readinessReason,omitempty"`
+	ReadinessMessage string `json:"readinessMessage,omitempty"`
 	// Builtin is true for first-party providers (those that registered via
 	// providers.RegisterBuiltin) regardless of how they surface their UI
-	// (legacy BuiltinRoute or new LocalUIAssets custom element). The portal
+	// (legacy builtinRoute or new LocalUIAssets custom element). The portal
 	// uses this flag to skip the "Enable" / APIBinding gate that third-
 	// party providers require before appearing in the side nav.
 	Builtin bool `json:"builtin,omitempty"`
-	// Actions is the provider's public, versioned action catalog. It carries
-	// only discovery and consent policy metadata; provider transport URLs and
-	// credentials are intentionally not exposed here.
+
+	// The four sections below mirror CatalogEntry.spec one for one, with the
+	// same JSON names, so a portal reading this response and an operator
+	// reading `kubectl get catalogentry -o yaml` see the same shape.
+
+	// Export is what a tenant may call once it enables this provider: the
+	// APIExport to bind, and the resources it serves with the verbs and actions
+	// on each. Absent for a provider that exports no API of its own.
+	Export *providerExportDTO `json:"export,omitempty"`
+	// Requires is everything this provider needs that it does not own, exactly
+	// as declared. The portal renders one consent line per entry in the Enable
+	// dialog; an entry naming a provider is also a dependency edge, so the
+	// provider it names must be enabled in the workspace first. Nothing here is
+	// granted by being declared.
+	Requires []providersv1alpha1.ProviderRequirement `json:"requires,omitempty"`
+	// Serving is where the hub reaches this provider. A section is present only
+	// when the provider offers it: serving.ui present means it has a
+	// micro-frontend, serving.backend present means the hub proxies a backend
+	// for it, exactly as in the spec.
+	Serving *providerServingDTO `json:"serving,omitempty"`
+	// Hub is what the provider asks of the hub itself. Absent when it asks
+	// nothing.
+	Hub *providerHubDTO `json:"hub,omitempty"`
+}
+
+// providerExportDTO is the provider's callable surface as the catalog API
+// publishes it: the export a tenant binds, plus the coordinates on it.
+type providerExportDTO struct {
+	// Name is the APIExport name a tenant APIBinding references. It is not an
+	// API group; see APIGroups.
+	Name string `json:"name"`
+	// Path is the kcp workspace path hosting the export — hub-derived, not
+	// declared, and what the portal needs to construct the tenant-side
+	// APIBinding when the user clicks Enable.
+	Path string `json:"path,omitempty"`
+	// APIGroups are the API groups this provider actually serves, as the hub
+	// read them from spec.resources[].group on the APIExport itself. They are
+	// what the scoped-identity policy resolves group ownership against, and they
+	// usually differ from Name (`edges.providers.railgrid.ai` serves
+	// `edges.railgrid.ai`), so publishing both is what makes a refused
+	// cross-provider rule diagnosable. Empty means the hub has not managed to
+	// read the export yet; see the CatalogEntry's APIGroupsUnknown condition.
+	APIGroups []string `json:"apiGroups,omitempty"`
+	// Resources are the kinds carrying a verb or an action. A resource with
+	// neither is an ordinary CR kind reached through kcp and is not listed here.
+	Resources []providerExportResourceDTO `json:"resources,omitempty"`
+}
+
+// providerExportResourceDTO is one exported kind with the coordinates on it.
+// The apiVersion and kind are declared once here rather than repeated on every
+// action, so a consumer can address a coordinate without knowing the
+// provider's group.
+type providerExportResourceDTO struct {
+	Name       string `json:"name"`
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	// Verbs are the unversioned calls: streaming, proxying, and anything whose
+	// request and response are the verb's own business. Declaring one grants
+	// nothing — the provider still authorizes every call with its own SSAR —
+	// but it is what a consumer reads to learn the {resource}/{verb} coordinate
+	// it needs granted, instead of hardcoding one.
+	Verbs []providerVerbDTO `json:"verbs,omitempty"`
+	// Actions are the versioned, schema'd calls. They carry only discovery and
+	// consent policy metadata; provider transport URLs and credentials are
+	// intentionally not exposed here.
 	Actions []providerActionDTO `json:"actions,omitempty"`
-	// DataPlaneVerbs is the provider's declared data-plane verb surface:
-	// which verbs it serves on which of its own resources. Like Actions it is
-	// discovery metadata only — declaring a verb grants nothing, and the
-	// provider still authorizes every call with its own SSAR — but it is what
-	// a consumer reads to learn the {resource}/{verb} coordinate it needs
-	// granted, instead of hardcoding one.
-	DataPlaneVerbs []providerDataPlaneVerbDTO `json:"dataPlaneVerbs,omitempty"`
+}
+
+// providerVerbDTO is one declared verb as the catalog API publishes it.
+type providerVerbDTO struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Stream      bool   `json:"stream,omitempty"`
+	ReadOnly    bool   `json:"readOnly,omitempty"`
+}
+
+// providerActionDTO is the stable portal-facing projection of a provider
+// action. Keep this separate from the CatalogEntry wire type so the hub can
+// evolve its registry without exposing backend routing details. The nested
+// policy types retain the catalog's exact JSON shape.
+type providerActionDTO struct {
+	// ID is the action's catalogued identity, "<name>/<version>" — the string
+	// grants, consent records and the assistant catalog key on. It is derived
+	// from name and version, which are also published so a caller does not have
+	// to split it.
+	ID            string                                       `json:"id"`
+	Name          string                                       `json:"name"`
+	Version       string                                       `json:"version"`
+	DisplayName   string                                       `json:"displayName"`
+	Description   string                                       `json:"description,omitempty"`
+	InputSchema   json.RawMessage                              `json:"inputSchema"`
+	OutputSchema  json.RawMessage                              `json:"outputSchema"`
+	SchemaDigest  string                                       `json:"schemaDigest"`
+	ExecutionMode string                                       `json:"executionMode"`
+	ReadOnly      bool                                         `json:"readOnly"`
+	Risk          providersv1alpha1.ProviderActionRisk         `json:"risk"`
+	Idempotency   string                                       `json:"idempotency"`
+	Limits        providersv1alpha1.ProviderActionLimits       `json:"limits"`
+	Consent       providersv1alpha1.ProviderActionConsent      `json:"consent"`
+	Deprecation   *providersv1alpha1.ProviderActionDeprecation `json:"deprecation,omitempty"`
+}
+
+// providerServingDTO mirrors CatalogEntry.spec.serving. Presence is the signal,
+// as it is in the spec: a section the provider does not offer is omitted.
+type providerServingDTO struct {
+	UI          *providerUIDTO          `json:"ui,omitempty"`
+	Backend     *providerBackendDTO     `json:"backend,omitempty"`
+	SelfHosting *providerSelfHostingDTO `json:"selfHosting,omitempty"`
+}
+
+// providerUIDTO is present exactly when the provider has a micro-frontend the
+// portal can render — an external bundle, embedded assets, or an in-tree route.
+// The declared URL is deliberately never published: it names an in-cluster
+// address the browser cannot reach and must not learn.
+type providerUIDTO struct {
+	// BuiltinRoute, when set, tells the portal to render the named Vue route
+	// inside its own SPA instead of loading /main.js as a custom element.
+	BuiltinRoute string `json:"builtinRoute,omitempty"`
+	// Children are sub-nav entries the portal renders indented under this
+	// provider in the side nav.
+	Children []navChildDTO `json:"children,omitempty"`
+	// MainJSIntegrity is the SRI pin ("sha384-<base64>") for
+	// /ui/providers/{name}/main.js. The portal sets it as the script's
+	// integrity attribute so the browser refuses a bundle that differs from the
+	// one the hub hashed at registration. Empty when the hub has no pin
+	// (builtin routes, or a failed hash fetch); the portal then loads the
+	// bundle unpinned and logs a warning. Always empty for an org-owned
+	// provider: its bundle URL and pin are issued per load by
+	// POST /api/providers/{name}/ui-grant (ui_grant.go).
+	MainJSIntegrity string `json:"mainJSIntegrity,omitempty"`
+}
+
+// providerBackendDTO is present exactly when the hub reverse-proxies
+// /services/providers/{name}/* for this provider. It carries no address for
+// the same reason the UI does not.
+type providerBackendDTO struct{}
+
+// providerSelfHostingDTO is present only for a platform provider that publishes
+// enough deployment metadata for an organization to run its own copy: an
+// org-owned entry IS someone's self-hosted copy already, and offering to
+// self-host it again would be a loop. The chart coordinates themselves are not
+// projected here — they reach the user through the install instructions the
+// register endpoint returns, which are rendered per organization.
+type providerSelfHostingDTO struct {
+	Supported bool `json:"supported"`
+	// DocsURL is provider-specific setup guidance, surfaced next to the
+	// self-host action.
+	DocsURL string `json:"docsURL,omitempty"`
+}
+
+// providerHubDTO mirrors CatalogEntry.spec.hub: what the provider asks of the
+// hub itself, as opposed to of kcp.
+type providerHubDTO struct {
+	// Access are hub REST capabilities the provider requests, each with the
+	// reason the Enable dialog shows. None applies until a tenant accepts it.
+	Access []providersv1alpha1.ProviderHubAccess `json:"access,omitempty"`
 	// AssistantSkills contains validated inline App Studio packages. This
 	// response is their only distribution surface; no provider runtime URL or
 	// credential is projected into this shape.
@@ -145,36 +246,6 @@ type providerDTO struct {
 	// Org-owned entries additionally require a membership verified against the
 	// caller's UserMembershipIndex.
 	AssistantSkills []providerAssistantSkillDTO `json:"assistantSkills,omitempty"`
-	// SelfHostable is true when this provider publishes enough deployment
-	// metadata for an organization to run its own copy. It drives the portal's
-	// Self-Hosting tab. The chart coordinates themselves are not projected
-	// here — they reach the user through the install instructions the register
-	// endpoint returns, which are rendered per organization.
-	SelfHostable bool `json:"selfHostable,omitempty"`
-	// SelfHostingDocsURL is provider-specific setup guidance, surfaced next to
-	// the self-host action.
-	SelfHostingDocsURL string `json:"selfHostingDocsURL,omitempty"`
-}
-
-// providerActionDTO is the stable portal-facing projection of a provider
-// action. Keep this separate from the CatalogEntry wire type so the hub can
-// evolve its registry without exposing backend or virtual-workspace routing
-// details. The nested policy types retain the catalog's exact JSON shape.
-type providerActionDTO struct {
-	ID            string                                        `json:"id"`
-	DisplayName   string                                        `json:"displayName"`
-	Description   string                                        `json:"description,omitempty"`
-	BoundResource providersv1alpha1.ProviderActionBoundResource `json:"boundResource"`
-	InputSchema   json.RawMessage                               `json:"inputSchema"`
-	OutputSchema  json.RawMessage                               `json:"outputSchema"`
-	SchemaDigest  string                                        `json:"schemaDigest"`
-	ExecutionMode string                                        `json:"executionMode"`
-	ReadOnly      bool                                          `json:"readOnly"`
-	Risk          providersv1alpha1.ProviderActionRisk          `json:"risk"`
-	Idempotency   string                                        `json:"idempotency"`
-	Limits        providersv1alpha1.ProviderActionLimits        `json:"limits"`
-	Consent       providersv1alpha1.ProviderActionConsent       `json:"consent"`
-	Deprecation   *providersv1alpha1.ProviderActionDeprecation  `json:"deprecation,omitempty"`
 }
 
 type providerAssistantSkillDTO struct {
@@ -188,35 +259,6 @@ type providerAssistantSkillDTO struct {
 type providerAssistantSkillResource struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
-}
-
-type permissionClaimDTO struct {
-	Group        string   `json:"group,omitempty"`
-	Resource     string   `json:"resource"`
-	Verbs        []string `json:"verbs,omitempty"`
-	TenantScoped bool     `json:"tenantScoped,omitempty"`
-	// MatchLabels mirrors the claim's selector. Absent means the claim covers
-	// every object of that resource in the workspace; present means it reaches
-	// only the objects carrying these labels. The Enable dialog shows the
-	// difference, because "this provider may read your Secrets" and "this
-	// provider may read the Secrets it wrote" are not the same consent.
-	MatchLabels map[string]string `json:"matchLabels,omitempty"`
-}
-
-type dependencyDTO struct {
-	Name string `json:"name"`
-	// Composes mirrors CatalogEntry.spec.dependencies[].composes: the
-	// dependency's kinds this provider creates and manages in the tenant
-	// workspace. The Enable dialog renders one consent line per entry; none
-	// of it applies until a workspace or org admin accepts it.
-	Composes []compositionDTO `json:"composes,omitempty"`
-}
-
-// compositionDTO is one composed kind.
-type compositionDTO struct {
-	Group    string   `json:"group"`
-	Resource string   `json:"resource"`
-	Verbs    []string `json:"verbs,omitempty"`
 }
 
 // listResponse wraps the list to leave room for future fields (paging, etc.).
@@ -323,78 +365,10 @@ func listHandlerFunc(reg *Registry) http.Handler {
 			if iconURL == "" && p.UIURL != nil && p.OrgUUID == "" {
 				iconURL = "/ui/providers/" + p.Name + "/icon.svg"
 			}
-			var claims []permissionClaimDTO
-			for _, c := range p.PermissionClaims {
-				claims = append(claims, permissionClaimDTO{
-					Group:        c.Group,
-					Resource:     c.Resource,
-					Verbs:        append([]string(nil), c.Verbs...),
-					TenantScoped: c.TenantScoped,
-					MatchLabels:  copyLabels(c.MatchLabels),
-				})
-			}
-			var children []navChildDTO
-			for _, c := range p.Children {
-				children = append(children, navChildDTO(c))
-			}
-			var dependencies []dependencyDTO
-			for _, d := range p.Dependencies {
-				dependency := dependencyDTO{Name: d.Name}
-				for _, composition := range d.Composes {
-					dependency.Composes = append(dependency.Composes, compositionDTO{
-						Group:    composition.Group,
-						Resource: composition.Resource,
-						Verbs:    append([]string(nil), composition.Verbs...),
-					})
-				}
-				dependencies = append(dependencies, dependency)
-			}
-			actions := make([]providerActionDTO, 0, len(p.Actions))
-			for _, action := range p.Actions {
-				actions = append(actions, providerActionDTO{
-					ID:          action.ID,
-					DisplayName: action.DisplayName,
-					Description: action.Description,
-					BoundResource: providersv1alpha1.ProviderActionBoundResource{
-						APIVersion: action.Resource.APIVersion,
-						Kind:       action.Resource.Kind,
-						Resource:   action.Resource.Resource,
-					},
-					InputSchema:   append(json.RawMessage(nil), action.InputSchema...),
-					OutputSchema:  append(json.RawMessage(nil), action.OutputSchema...),
-					SchemaDigest:  action.SchemaDigest,
-					ExecutionMode: action.ExecutionMode,
-					ReadOnly:      action.ReadOnly,
-					Risk:          action.Risk,
-					Idempotency:   action.Idempotency,
-					Limits: providersv1alpha1.ProviderActionLimits{
-						TimeoutSeconds: action.Limits.TimeoutSeconds,
-						MaxInputBytes:  action.Limits.MaxInputBytes,
-						MaxOutputBytes: action.Limits.MaxOutputBytes,
-						MaxResultItems: action.Limits.MaxResultItems,
-					},
-					Consent:     action.Consent,
-					Deprecation: action.Deprecation.DeepCopy(),
-				})
-			}
-			assistantSkills := make([]providerAssistantSkillDTO, 0, len(p.AssistantSkills))
-			for _, skill := range p.AssistantSkills {
-				resources := make([]providerAssistantSkillResource, 0, len(skill.Resources))
-				for _, resource := range skill.Resources {
-					resources = append(resources, providerAssistantSkillResource(resource))
-				}
-				assistantSkills = append(assistantSkills, providerAssistantSkillDTO{
-					PackageName: skill.PackageName,
-					Version:     skill.Version,
-					Digest:      skill.Digest,
-					Skill:       skill.Skill,
-					Resources:   resources,
-				})
-			}
 			// Only a platform provider can be a builtin — builtins ship inside
 			// the hub binary, so an Org cannot register one, and matching an
 			// org-owned provider by name here would wrongly grant it the
-			// builtin affordances (no permission-claim dialog).
+			// builtin affordances (no Enable dialog).
 			_, isBuiltin := BuiltinByName(p.Name)
 			isBuiltin = isBuiltin && p.OrgUUID == ""
 			scope := ScopeGlobal
@@ -410,31 +384,16 @@ func listHandlerFunc(reg *Registry) http.Handler {
 				DisplayName:      displayName,
 				Description:      p.Description,
 				Version:          p.Version,
+				Category:         p.Category,
+				IconURL:          iconURL,
 				Ready:            ready,
 				ReadinessReason:  readinessReason,
 				ReadinessMessage: readinessMessage,
-				HasUI:            p.UIURL != nil || p.BuiltinRoute != "" || p.LocalUIAssets != nil,
-				HasBackend:       p.BackendURL != nil,
-				IconURL:          iconURL,
-				MainJSIntegrity:  p.MainJSIntegrity,
-				BuiltinRoute:     p.BuiltinRoute,
-				Children:         children,
-				Category:         p.Category,
-				Dependencies:     dependencies,
-				APIExportPath:    p.APIExportPath,
-				APIExportName:    p.APIExportName,
-				APIGroups:        p.APIGroups,
-				PermissionClaims: claims,
-				HubAccess:        p.HubAccess,
 				Builtin:          isBuiltin,
-				Actions:          actions,
-				DataPlaneVerbs:   dataPlaneVerbDTOs(p.DataPlaneVerbs),
-				AssistantSkills:  assistantSkills,
-				// Only platform providers are offered for self-hosting: an
-				// org-owned entry IS someone's self-hosted copy already, and
-				// offering to self-host it again would be a loop.
-				SelfHostable:       p.OrgUUID == "" && p.SelfHosting.Installable(),
-				SelfHostingDocsURL: selfHostingDocsURL(p),
+				Export:           exportDTO(p),
+				Requires:         cloneProviderRequirements(p.Requires),
+				Serving:          servingDTO(p),
+				Hub:              hubDTO(p),
 			})
 		}
 
@@ -455,23 +414,110 @@ func listHandlerFunc(reg *Registry) http.Handler {
 	})
 }
 
-// providerDataPlaneVerbDTO is one declared data-plane verb as the catalog API
-// publishes it.
-type providerDataPlaneVerbDTO struct {
-	Resource    string `json:"resource"`
-	Verb        string `json:"verb"`
-	Description string `json:"description,omitempty"`
-	Stream      bool   `json:"stream,omitempty"`
-	ReadOnly    bool   `json:"readOnly,omitempty"`
-}
-
-func dataPlaneVerbDTOs(verbs []ProviderDataPlaneVerb) []providerDataPlaneVerbDTO {
-	if len(verbs) == 0 {
+// exportDTO projects the provider's declared export surface. Nil for a
+// provider that exports no API of its own, which the portal reads as "there is
+// nothing here to enable".
+func exportDTO(p Provider) *providerExportDTO {
+	if p.APIExportName == "" {
 		return nil
 	}
-	out := make([]providerDataPlaneVerbDTO, 0, len(verbs))
-	for _, verb := range verbs {
-		out = append(out, providerDataPlaneVerbDTO(verb))
+	out := &providerExportDTO{
+		Name:      p.APIExportName,
+		Path:      p.APIExportPath,
+		APIGroups: append([]string(nil), p.APIGroups...),
+	}
+	if p.Export == nil {
+		return out
+	}
+	out.Resources = make([]providerExportResourceDTO, 0, len(p.Export.Resources))
+	for _, resource := range p.Export.Resources {
+		entry := providerExportResourceDTO{
+			Name:       resource.Name,
+			APIVersion: resource.APIVersion,
+			Kind:       resource.Kind,
+		}
+		for _, verb := range resource.Verbs {
+			entry.Verbs = append(entry.Verbs, providerVerbDTO{
+				Name:        verb.Name,
+				Description: verb.Description,
+				Stream:      verb.Stream,
+				ReadOnly:    verb.ReadOnly,
+			})
+		}
+		for _, action := range resource.Actions {
+			entry.Actions = append(entry.Actions, providerActionDTO{
+				ID:            action.ID(),
+				Name:          action.Name,
+				Version:       action.Version,
+				DisplayName:   action.DisplayName,
+				Description:   action.Description,
+				InputSchema:   schemaBytes(action.InputSchema),
+				OutputSchema:  schemaBytes(action.OutputSchema),
+				SchemaDigest:  action.SchemaDigest,
+				ExecutionMode: string(action.ExecutionMode),
+				ReadOnly:      action.ReadOnly,
+				Risk:          action.Risk,
+				Idempotency:   string(action.Idempotency),
+				Limits:        action.Limits,
+				Consent:       action.Consent,
+				Deprecation:   action.Deprecation.DeepCopy(),
+			})
+		}
+		out.Resources = append(out.Resources, entry)
+	}
+	return out
+}
+
+// servingDTO projects where the hub reaches the provider, as presence: a
+// section the provider does not offer is omitted, and the whole block is when
+// it offers none.
+func servingDTO(p Provider) *providerServingDTO {
+	out := &providerServingDTO{}
+	if p.UIURL != nil || p.BuiltinRoute != "" || p.LocalUIAssets != nil {
+		ui := &providerUIDTO{
+			BuiltinRoute:    p.BuiltinRoute,
+			MainJSIntegrity: p.MainJSIntegrity,
+		}
+		for _, c := range p.Children {
+			ui.Children = append(ui.Children, navChildDTO(c))
+		}
+		out.UI = ui
+	}
+	if p.BackendURL != nil {
+		out.Backend = &providerBackendDTO{}
+	}
+	// Only platform providers are offered for self-hosting: an org-owned entry
+	// IS someone's self-hosted copy already, and offering to self-host it again
+	// would be a loop.
+	if p.OrgUUID == "" && p.SelfHosting.Installable() {
+		out.SelfHosting = &providerSelfHostingDTO{Supported: true, DocsURL: selfHostingDocsURL(p)}
+	}
+	if out.UI == nil && out.Backend == nil && out.SelfHosting == nil {
+		return nil
+	}
+	return out
+}
+
+// hubDTO projects what the provider asks of the hub itself.
+func hubDTO(p Provider) *providerHubDTO {
+	if len(p.HubAccess) == 0 && len(p.AssistantSkills) == 0 {
+		return nil
+	}
+	out := &providerHubDTO{
+		Access: append([]providersv1alpha1.ProviderHubAccess(nil), p.HubAccess...),
+	}
+	for _, skill := range p.AssistantSkills {
+		resources := make([]providerAssistantSkillResource, 0, len(skill.Resources))
+		for _, resource := range skill.Resources {
+			resources = append(resources, providerAssistantSkillResource(resource))
+		}
+		out.AssistantSkills = append(out.AssistantSkills, providerAssistantSkillDTO{
+			PackageName: skill.PackageName,
+			Version:     skill.Version,
+			Digest:      skill.Digest,
+			Skill:       skill.Skill,
+			Resources:   resources,
+		})
 	}
 	return out
 }

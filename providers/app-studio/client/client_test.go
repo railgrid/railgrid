@@ -36,7 +36,7 @@ import (
 
 func scopedClient(t *testing.T, proxy *tenanttest.Server) *Client {
 	t.Helper()
-	scope, err := proxy.Client().For("cluster-id", "caller-token")
+	scope, err := proxy.Client().For("cluster-id")
 	if err != nil {
 		t.Fatalf("create tenant scope: %v", err)
 	}
@@ -92,8 +92,8 @@ status:
 	if len(patches) != 1 || patches[0].Subresource != "status" || patches[0].Path != "/clusters/cluster-id/apis/ai.railgrid.ai/v1alpha1/projects/complete-project/status" {
 		t.Fatalf("patch requests = %#v, want one merge patch on the status subresource", patches)
 	}
-	if patches[0].Bearer != "caller-token" {
-		t.Fatalf("patch bearer = %q, want caller token", patches[0].Bearer)
+	if patches[0].Bearer != tenanttest.ProviderBearer {
+		t.Fatalf("patch bearer = %q, want the provider's credential", patches[0].Bearer)
 	}
 	if stored := proxy.Get(ProjectGVR, "", "complete-project"); stored == nil || stored.Object["status"].(map[string]any)["phase"] != "Ready" {
 		t.Fatalf("stored project = %#v, want status.phase Ready", stored)
@@ -179,8 +179,8 @@ func TestProjectDeleteUsesNativeUIDPrecondition(t *testing.T) {
 				if got, want := r.URL.Path, "/clusters/cluster-id/apis/ai.railgrid.ai/v1alpha1/projects/demo"; got != want {
 					t.Fatalf("delete path = %q, want %q", got, want)
 				}
-				if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {
-					t.Fatalf("Authorization = %q, want caller token", got)
+				if got := r.Header.Get("Authorization"); got != "Bearer "+tenanttest.ProviderBearer {
+					t.Fatalf("Authorization = %q, want the provider's credential", got)
 				}
 				var opts metav1.DeleteOptions
 				if err := json.NewDecoder(r.Body).Decode(&opts); err != nil {
@@ -201,7 +201,7 @@ func TestProjectDeleteUsesNativeUIDPrecondition(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 
-			scope, err := tenant.NewClient(server.URL, false).For("cluster-id", "caller-token")
+			scope, err := tenant.NewClient(tenanttest.Callers(server.URL)).For("cluster-id")
 			if err != nil {
 				t.Fatalf("create tenant scope: %v", err)
 			}

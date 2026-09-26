@@ -212,12 +212,19 @@ func TestMain(m *testing.M) {
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"EDGES_WORKSPACE_PATH="+edgesWorkspacePath,
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files"),
+		// A verb exists only as a declared kcp custom subresource, so init
+		// reads the manifest for the coordinates the export publishes, and the
+		// DataPlaneEndpointSlice those coordinates route through needs the
+		// address this suite actually serves on.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "edges", "manifest.yaml"),
+		"RAILGRID_DATAPLANE_URL=http://127.0.0.1:"+providerPort,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
 	if err := initCmd.Run(); err != nil {
+		tail := tailInitLog(initLog.Name(), 60)
 		cleanup()
-		fmt.Fprintf(os.Stderr, "edges init failed: %v (log: %s)\n", err, initLog.Name())
+		fmt.Fprintf(os.Stderr, "edges init failed: %v (log: %s)\n%s\n", err, initLog.Name(), tail)
 		os.Exit(1)
 	}
 
@@ -237,6 +244,9 @@ func TestMain(m *testing.M) {
 		// what a deployed provider does.
 		"RAILGRID_HUB_INSECURE=true",
 		"RAILGRID_PROVIDER_NAME=edges",
+		// serve refuses to start without the manifest: it is where the
+		// "<resource>/<verb>" coordinates it answers come from.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "edges", "manifest.yaml"),
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"RAILGRID_DEV_MODE=true",
 	)
@@ -292,8 +302,8 @@ func applyEdgesManifests() error {
 				return fmt.Errorf("%s: unexpected kind %q", file, obj.GetKind())
 			}
 			if obj.GetKind() == "CatalogEntry" {
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url")
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url")
+				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "ui", "url")
+				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "backend", "url")
 			}
 			deadline := time.Now().Add(90 * time.Second)
 			for {
@@ -493,4 +503,20 @@ func ctxWithTimeout(t *testing.T, d time.Duration) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// tailInitLog returns the last n lines of a bootstrap log, so a failure reports
+// what went wrong instead of only an exit status. It must be read BEFORE
+// cleanup, which removes the data directory; CI does not upload that directory
+// either, so stderr is the only place the reason survives.
+func tailInitLog(path string, n int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(" + err.Error() + ")"
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

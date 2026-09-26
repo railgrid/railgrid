@@ -41,7 +41,7 @@ const __props = ${JSON.stringify(props)}
 const defineProps = () => __props
 const defineEmits = () => (...args) => emitted.push(args)
 ${body}
-export { acceptedComposition, canAcceptComposition, compositionLabel, compositions, compositionKey, onConfirm, toggleComposition, emitted }
+export { acceptedComposition, canAcceptComposition, claims, compositionLabel, compositions, compositionKey, onConfirm, toggleComposition, verbsLabel, emitted }
 `
   const { outputText } = ts.transpileModule(harness, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
@@ -49,23 +49,27 @@ export { acceptedComposition, canAcceptComposition, compositionLabel, compositio
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
 }
 
-// App Studio's real declaration.
+// App Studio's real declaration. One spec.requires[] list holds both kinds of
+// requirement: the entries naming a provider are the compositions, the one
+// naming none is an ordinary platform claim and must not appear among them.
 const provider = {
   name: 'app-studio',
   displayName: 'App Studio',
-  permissionClaims: [],
-  dependencies: [
+  requires: [
     {
-      name: 'infrastructure',
-      composes: [{ group: 'infrastructure.railgrid.ai', resource: 'instances', verbs: ['get', 'list', 'watch', 'create', 'update', 'delete'] }],
+      provider: 'infrastructure',
+      group: 'infrastructure.railgrid.ai',
+      resources: [{ name: 'instances', verbs: ['get', 'list', 'watch', 'create', 'update', 'delete'] }],
     },
     {
-      name: 'code',
-      composes: [
-        { group: 'code.railgrid.ai', resource: 'repositories', verbs: ['get', 'list', 'watch', 'create', 'update'] },
-        { group: 'code.railgrid.ai', resource: 'repositorycommits', verbs: ['get', 'list', 'watch'] },
+      provider: 'code',
+      group: 'code.railgrid.ai',
+      resources: [
+        { name: 'repositories', verbs: ['get', 'list', 'watch', 'create', 'update'] },
+        { name: 'repositorycommits', verbs: ['get', 'list', 'watch'] },
       ],
     },
+    { group: 'authorization.k8s.io', resources: [{ name: 'subjectaccessreviews', verbs: ['create'] }] },
   ],
 }
 
@@ -74,7 +78,8 @@ test('a workspace admin accepts every declared composition by default', async ()
   d.onConfirm()
   const [event, claims, hub, composed] = d.emitted.at(-1)
   assert.equal(event, 'confirm')
-  assert.deepEqual(claims, [])
+  // The entry naming no provider is a claim, not a composition.
+  assert.deepEqual(claims, [{ group: 'authorization.k8s.io', resource: 'subjectaccessreviews' }])
   assert.deepEqual(hub, [])
   assert.deepEqual(composed, [
     { provider: 'infrastructure', group: 'infrastructure.railgrid.ai', resource: 'instances' },
@@ -113,8 +118,43 @@ test('the consent text says what the provider will do, and read-only says read',
 })
 
 test('a provider that declares no composition offers none', async () => {
-  const d = await loadDialog({ provider: { name: 'kuery', displayName: 'Kuery', permissionClaims: [] }, orgRole: 'admin', workspaceRole: 'admin' })
+  const d = await loadDialog({ provider: { name: 'kuery', displayName: 'Kuery', requires: [] }, orgRole: 'admin', workspaceRole: 'admin' })
   assert.deepEqual(d.compositions.value, [])
   d.onConfirm()
   assert.deepEqual(d.emitted.at(-1)[3], [])
+})
+
+test('a verb coordinate is never described as read-only or verbless', async () => {
+  // A "<resource>/<verb>" requirement carries no verbs — the call IS the
+  // capability, and the generated claim spells every verb.
+  const d = await loadDialog({
+    provider: {
+      name: 'app-studio',
+      displayName: 'App Studio',
+      requires: [{ provider: 'code', group: 'code.railgrid.ai', resources: [{ name: 'repositories/commit' }] }],
+    },
+    orgRole: 'admin',
+    workspaceRole: 'admin',
+  })
+  const [commit] = d.compositions.value
+  assert.match(d.compositionLabel(commit), /^Create and manage Repositories\/commit \(code\) in this workspace$/)
+  assert.equal(d.verbsLabel(commit), 'the call itself')
+  d.onConfirm()
+  assert.deepEqual(d.emitted.at(-1)[3], [{ provider: 'code', group: 'code.railgrid.ai', resource: 'repositories/commit' }])
+})
+
+test('a core-group requirement reads as a claim on the core group', async () => {
+  const d = await loadDialog({
+    provider: {
+      name: 'app-studio',
+      displayName: 'App Studio',
+      requires: [{ resources: [{ name: 'secrets', verbs: ['get', 'list'], selector: { matchLabels: { 'railgrid.ai/owner': 'app-studio' } } }] }],
+    },
+    orgRole: 'admin',
+    workspaceRole: 'admin',
+  })
+  assert.deepEqual(d.compositions.value, [])
+  assert.deepEqual(d.claims.value.map((c) => `${c.group}/${c.resource}`), ['/secrets'])
+  d.onConfirm()
+  assert.deepEqual(d.emitted.at(-1)[1], [{ group: '', resource: 'secrets' }])
 })

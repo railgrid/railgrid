@@ -91,10 +91,12 @@ type commitOutcome struct {
 
 // commitWorkspace pushes dirty workspace files to git when the project is
 // idle. Two clients, as everywhere in this package: c is the manager's client
-// over this provider's APIExport virtual workspace, which owns the Project and
-// is where the pending-commit pointer is written; tc is the tenant-workspace
-// client authenticated as the project identity, which is where a
-// RepositoryCommit is read. token is that same identity's bearer.
+// over this provider's APIExport virtual workspace, which owns the Project,
+// is where the pending-commit pointer is written, and — since RepositoryCommit
+// became a claimed kind — is also where an in-flight commit is read. tc is the
+// tenant-workspace client authenticated as the project identity, used for the
+// one thing a claim cannot give: reading the workspace's APIBinding to address
+// the Code provider, and carrying token on the action call itself.
 //
 // Asking for the commit is the one thing here that is not a CR write, and
 // deliberately: a RepositoryCommit is a POINTER at a source bundle held in the
@@ -103,10 +105,10 @@ type commitOutcome struct {
 // stores the bundle and creates the CR in one step and returns that CR's
 // name, which this loop then follows over the RepositoryCommit watch — which
 // is why the declared composition on repositorycommits still carries no
-// create, and why the project identity carries the verb as a clause-C grant
-// instead (commitaction.go, identity.go).
-func (r *Reconciler) commitWorkspace(ctx context.Context, c, tc client.Client, token string, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
-	if r.Workspace == nil || r.HubBase == "" {
+// create, and why the verb itself is claimed instead (repositories/commit in
+// manifest.yaml spec.requires; commitaction.go).
+func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (commitOutcome, error) {
+	if r.Workspace == nil || r.Callers == nil {
 		return commitOutcome{}, nil // commit convergence not wired (REST-only dev)
 	}
 	b := p.Spec.Repository
@@ -158,7 +160,7 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c, tc client.Client, t
 		return commitOutcome{dirty: true}, fmt.Errorf("read pending commit: %w", err)
 	}
 	if hasPending {
-		resolved, err := r.resolvePendingCommit(ctx, c, tc, p, scope, pending)
+		resolved, err := r.resolvePendingCommit(ctx, c, p, scope, pending)
 		if err != nil || !resolved {
 			return commitOutcome{dirty: true}, err
 		}
@@ -178,13 +180,12 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c, tc client.Client, t
 		return commitOutcome{dirty: true}, nil // an assistant turn owns the workspace; its end is signalled
 	}
 
-	// The project's own hub-minted identity is what asks for the commit: the
-	// Code provider's gates admit it on `get` of the Repository plus `create`
-	// on repositories/commit, and the commit is therefore authorized as the
-	// project rather than as this provider. No identity (no hub configured)
-	// means no commit path — the files stay dirty and are committed once
-	// there is one.
-	if strings.TrimSpace(token) == "" || tc == nil || r.HubBase == "" {
+	// This provider is what asks for the commit, through its own export
+	// virtual workspace under the repositories/commit claim the tenant
+	// accepted; the Code provider's gate admits it as a foreign provider whose
+	// claim is the authorization. No provider credential means no commit path
+	// — the files stay dirty and are committed once there is one.
+	if r.Callers == nil {
 		return commitOutcome{dirty: true, retry: true}, nil
 	}
 
@@ -208,7 +209,7 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c, tc client.Client, t
 	for _, f := range bundle.files {
 		writtenPaths = append(writtenPaths, f["path"])
 	}
-	created, err := r.requestCommit(ctx, tc, token, clusterOf(p), b.RepositoryRef, string(repo.GetUID()), bundle, commitMessage(writtenPaths, bundle.deletePaths))
+	created, err := r.requestCommit(ctx, clusterOf(p), b.RepositoryRef, string(repo.GetUID()), bundle, commitMessage(writtenPaths, bundle.deletePaths))
 	if err != nil {
 		return commitOutcome{dirty: true}, fmt.Errorf("commit workspace: %w", err)
 	}
@@ -379,28 +380,23 @@ func shortSHA(sha string) string {
 // repositoryCommitGVK is the Code provider's RepositoryCommit resource.
 var repositoryCommitGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: "v1alpha1", Kind: "RepositoryCommit"}
 
-// readRepositoryCommit reads one RepositoryCommit by name as the project
-// identity: a Get when the identity holds a named grant, otherwise the
-// composition's unnamed list, reduced to the requested name. A commit absent
-// from that list is reported as NotFound, exactly as the Get would.
-func readRepositoryCommit(ctx context.Context, tc client.Client, name string) (*unstructured.Unstructured, error) {
+// readRepositoryCommit reads one RepositoryCommit by name through the
+// manager's client for the request's cluster.
+//
+// It used to be a Get with a fallback to the composition's unnamed list,
+// because the project identity could hold no named grant on a commit that did
+// not exist when the identity was last minted, and a Get on it came back 403.
+// The claim has no such shape: it carries get, list and watch on
+// repositorycommits for every workspace that accepted it, unconditioned on any
+// name, so a plain Get is the whole read and a missing commit is a plain
+// NotFound the caller already handles by clearing the pending pointer.
+func readRepositoryCommit(ctx context.Context, c client.Client, name string) (*unstructured.Unstructured, error) {
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(repositoryCommitGVK)
-	err := tc.Get(ctx, types.NamespacedName{Name: name}, obj)
-	if err == nil || !apierrors.IsForbidden(err) {
-		return obj, err
+	if err := c.Get(ctx, types.NamespacedName{Name: name}, obj); err != nil {
+		return nil, err
 	}
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(repositoryCommitGVK.GroupVersion().WithKind(repositoryCommitGVK.Kind + "List"))
-	if listErr := tc.List(ctx, list); listErr != nil {
-		return nil, fmt.Errorf("%w (and listing commits instead: %v)", err, listErr)
-	}
-	for i := range list.Items {
-		if list.Items[i].GetName() == name {
-			return &list.Items[i], nil
-		}
-	}
-	return nil, apierrors.NewNotFound(schema.GroupResource{Group: repositoryCommitGVK.Group, Resource: "repositorycommits"}, name)
+	return obj, nil
 }
 
 // patchProjectAnnotation sets (or, with an empty value, removes) one
@@ -449,18 +445,23 @@ func (r *Reconciler) clearPendingCommit(ctx context.Context, scope workspace.Sco
 // so a fresh commit may be sent). A still-running commit stays recorded and
 // is re-read when its watch event arrives.
 //
-// The read is tc — the tenant workspace, as the project identity — while every
-// write here is c, the Project's own virtual workspace. The identity's grant on
-// repositorycommits is the composition's unnamed `list`/`watch`: a named `get`
-// on THIS commit cannot be minted before the commit exists, and the identity
-// is not re-minted per commit. So a Get that the workspace refuses falls back
-// to the list the identity does hold, filtered to the one name. An identity
-// that has since been refreshed with the name keeps using the cheaper Get.
-func (r *Reconciler) resolvePendingCommit(ctx context.Context, c, tc client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (bool, error) {
-	if c == nil || tc == nil {
+// One client now: c, the manager's client over this provider's APIExport
+// virtual workspace. The read and the writes were split before because
+// repositorycommits were reachable only inside the tenant workspace, as the
+// project identity, on the composition's unnamed list/watch. The export claims
+// the kind with get/list/watch and kcp resolves that claim per consumer
+// workspace, so the commit arrives on the same client the Project does and a
+// commit created after the identity was last minted is no longer a special
+// case.
+//
+// A workspace that has not accepted the claim answers with a RESTMapper miss,
+// not a 404, so it is NOT mistaken for "the commit is gone": the pending
+// pointer survives, the failure is returned, and the controller retries.
+func (r *Reconciler) resolvePendingCommit(ctx context.Context, c client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (bool, error) {
+	if c == nil {
 		return false, nil
 	}
-	obj, err := readRepositoryCommit(ctx, tc, pending.Name)
+	obj, err := readRepositoryCommit(ctx, c, pending.Name)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Printf("app-studio project %s: pending RepositoryCommit %s is gone; a fresh commit will be sent", scope.ProjectName, pending.Name)

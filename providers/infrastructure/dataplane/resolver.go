@@ -169,7 +169,7 @@ func Resolve(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.U
 }
 
 // ResolveComponent resolves a component-scoped verb
-// (…/components/<component>/<verb>). Resolution and namespace confinement are
+// (…/<name>/<verb>?component=<component>). Resolution and namespace confinement are
 // identical to instance-level verbs; only the endpoint lookup gains a level.
 func ResolveComponent(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, component, verb string) (ResolvedTarget, error) {
 	if contract == nil {

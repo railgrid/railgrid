@@ -149,7 +149,7 @@ for (const [index, caller] of callers.entries()) {
     caller.toastCalls.length = 0
     caller.tenantStore.orgUUID = 'org-a'
     caller.tenantStore.workspaceUUID = 'workspace-a'
-    const provider = { name: 'edges', displayName: 'Edges', permissionClaims: [] }
+    const provider = { name: 'edges', displayName: 'Edges', requires: [] }
     const pending = deferred()
     caller.providerStore.enable = () => pending.promise
     caller.dialogRevision.value += 1
@@ -174,7 +174,7 @@ for (const [index, caller] of callers.entries()) {
     caller.toastCalls.length = 0
     caller.tenantStore.orgUUID = 'org-a'
     caller.tenantStore.workspaceUUID = 'workspace-a'
-    const provider = { name: 'code', displayName: 'Code', permissionClaims: [] }
+    const provider = { name: 'code', displayName: 'Code', requires: [] }
     const pending = deferred()
     caller.providerStore.enable = () => pending.promise
     caller.dialogRevision.value += 1

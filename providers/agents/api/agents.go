@@ -601,7 +601,11 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		Creds: c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
 		RunID:     runID,
 		SessionID: req.SessionID, Task: req.Message, Trigger: agentsv1alpha1.RunTriggerChat,
-		EdgesEndpoint: s.aggregateMCPEndpoint(r.Context(), id), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+		// No EdgesEndpoint and no HubToken: a verb carries no caller
+		// credential, and the edges family dials the hub's aggregate MCP
+		// endpoint AS THE CALLING USER — there is nobody to dial it as. The
+		// run still reaches instance-backed tools, as this provider (see
+		// dataPlaneFor).
 		// ClusterID addresses the tenant workspace on the data plane — without
 		// it an instance-backed tool (self-hosted search, a browser instance)
 		// has no way to compose its URL.

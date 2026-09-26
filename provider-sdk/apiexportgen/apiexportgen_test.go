@@ -23,52 +23,51 @@ import (
 	"testing"
 )
 
-func TestParseManifestReadsTheCatalogEntry(t *testing.T) {
-	decl, err := LoadManifest(filepath.Join("testdata", "manifest.yaml"))
+func TestParseExportReadsTheCatalogEntry(t *testing.T) {
+	decl, err := LoadExport(filepath.Join("testdata", "manifest.yaml"))
 	if err != nil {
-		t.Fatalf("LoadManifest: %v", err)
+		t.Fatalf("LoadExport: %v", err)
 	}
 	if decl.Name != "fixture.providers.railgrid.ai" {
 		t.Errorf("name = %q, want fixture.providers.railgrid.ai", decl.Name)
 	}
-	if len(decl.PermissionClaims) != 3 {
-		t.Fatalf("claims = %d, want 3", len(decl.PermissionClaims))
-	}
-	if got := decl.PermissionClaims[2]; got.Group != "rbac.authorization.k8s.io" || got.Resource != "clusterroles" {
-		t.Errorf("third claim = %+v", got)
-	}
-	if !decl.PermissionClaims[0].TenantScoped {
-		t.Error("tenantScoped was dropped while parsing")
-	}
 }
 
-func TestParseManifestRejectsAManifestWithoutAnExport(t *testing.T) {
-	if _, err := ParseManifest([]byte("kind: Secret\n")); err == nil || !strings.Contains(err.Error(), "no kind: CatalogEntry") {
+func TestParseExportRejectsAManifestWithoutAnExport(t *testing.T) {
+	if _, err := ParseExport([]byte("kind: Secret\n")); err == nil || !strings.Contains(err.Error(), "no kind: CatalogEntry") {
 		t.Fatalf("err = %v, want a missing-CatalogEntry error", err)
 	}
-	if _, err := ParseManifest([]byte("kind: CatalogEntry\nspec:\n  displayName: x\n")); err == nil || !strings.Contains(err.Error(), "spec.apiExport.name") {
-		t.Fatalf("err = %v, want a missing-apiExport error", err)
+	if _, err := ParseExport([]byte("kind: CatalogEntry\nspec:\n  displayName: x\n")); err == nil || !strings.Contains(err.Error(), "spec.export.name") {
+		t.Fatalf("err = %v, want a missing-export error", err)
 	}
 }
 
 // The export shape is the contract with kcp: an empty group is omitted rather
-// than written as "", tenantScoped never reaches the APIExport, and no
-// identityHash is written (install stamps it per installation).
+// than written as "", no tenant-scope field reaches the APIExport (everything
+// under spec.requires is tenant-scoped by definition and kcp has no
+// counterpart), and no identityHash is written.
 func TestExportClaimsUseTheKCPShape(t *testing.T) {
-	claims := ExportClaims([]PermissionClaim{
-		{Resource: "secrets", Verbs: []string{"get", "list"}, TenantScoped: true},
-		{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get"}},
-		{Resource: "namespaces"},
+	claims, err := ExportClaims([]Requirement{
+		{Resources: []RequiredResource{
+			{Name: "secrets", Verbs: []string{"get", "list"}},
+			{Name: "serviceaccounts", Verbs: []string{"get"}},
+		}},
+		{Group: "rbac.authorization.k8s.io", Resources: []RequiredResource{
+			{Name: "clusterroles", Verbs: []string{"get"}},
+		}},
 	})
+	if err != nil {
+		t.Fatalf("ExportClaims: %v", err)
+	}
 	if len(claims) != 3 {
 		t.Fatalf("claims = %d, want 3", len(claims))
 	}
 	first := claims[0].(map[string]any)
 	if _, ok := first["group"]; ok {
-		t.Errorf("empty group was written: %+v", first)
+		t.Errorf("the core group was written: %+v", first)
 	}
 	if _, ok := first["tenantScoped"]; ok {
-		t.Errorf("tenantScoped leaked into the APIExport: %+v", first)
+		t.Errorf("a tenant-scope field leaked into the APIExport: %+v", first)
 	}
 	if _, ok := first["identityHash"]; ok {
 		t.Errorf("identityHash must be left to install: %+v", first)
@@ -76,11 +75,113 @@ func TestExportClaimsUseTheKCPShape(t *testing.T) {
 	if got := first["verbs"].([]any); len(got) != 2 || got[0] != "get" {
 		t.Errorf("verbs = %+v", got)
 	}
-	if got := claims[1].(map[string]any)["group"]; got != "rbac.authorization.k8s.io" {
+	if got := claims[2].(map[string]any)["group"]; got != "rbac.authorization.k8s.io" {
 		t.Errorf("group = %v", got)
 	}
-	if _, ok := claims[2].(map[string]any)["verbs"]; ok {
-		t.Errorf("an empty verb list must be omitted: %+v", claims[2])
+}
+
+// A verb coordinate claims the verb WHOLE: kcp authorizes the HTTP method as
+// the RBAC verb on a custom subresource, so the claim spells every verb rather
+// than guessing which method the serving provider chose.
+func TestExportClaimsSpellEveryVerbOnAVerbCoordinate(t *testing.T) {
+	claims, err := ExportClaims([]Requirement{{
+		Provider: "infrastructure",
+		Group:    "infrastructure.railgrid.ai",
+		Resources: []RequiredResource{
+			{Name: "instances", Verbs: []string{"get", "create"}},
+			{Name: "instances/exec"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("ExportClaims: %v", err)
+	}
+	coordinate := claims[1].(map[string]any)
+	if coordinate["resource"] != "instances/exec" || coordinate["group"] != "infrastructure.railgrid.ai" {
+		t.Fatalf("coordinate claim = %+v", coordinate)
+	}
+	verbs, ok := coordinate["verbs"].([]any)
+	if !ok || len(verbs) != 1 || verbs[0] != "*" {
+		t.Errorf("verbs = %+v, want the wildcard kcp's claim authorizer accepts", coordinate["verbs"])
+	}
+	// The provider name drives the hub's Enable ordering and has no place on
+	// an APIExport.
+	if _, ok := coordinate["provider"]; ok {
+		t.Errorf("the provider name leaked into the APIExport: %+v", coordinate)
+	}
+}
+
+// A group belongs to one provider, so spec.requires holds ONE entry per group.
+// A second entry is a lost edit, not something to merge: whichever list is read
+// second would silently disappear, and the export would claim less than its
+// author wrote.
+func TestExportClaimsRefusesARepeatedGroup(t *testing.T) {
+	_, err := ExportClaims([]Requirement{
+		{Provider: "code", Group: "code.railgrid.ai", Resources: []RequiredResource{{Name: "repositories", Verbs: []string{"get"}}}},
+		{Group: "rbac.authorization.k8s.io", Resources: []RequiredResource{{Name: "clusterroles", Verbs: []string{"get"}}}},
+		{Provider: "code", Group: "code.railgrid.ai", Resources: []RequiredResource{{Name: "connections", Verbs: []string{"get"}}}},
+	})
+	if err == nil {
+		t.Fatal("a repeated group was accepted")
+	}
+	if !strings.Contains(err.Error(), "code.railgrid.ai") || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("err does not name the repeated group: %v", err)
+	}
+	// The core group is a group too, even though it is written as an absent
+	// `group` field on both entries.
+	_, err = ExportClaims([]Requirement{
+		{Resources: []RequiredResource{{Name: "secrets", Verbs: []string{"get"}}}},
+		{Resources: []RequiredResource{{Name: "configmaps", Verbs: []string{"get"}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "core") {
+		t.Errorf("err = %v, want the core group refused as a repeat", err)
+	}
+}
+
+// kcp refuses an APIExport claiming one group/resource more than once, so the
+// generator refuses it first, naming the coordinate.
+func TestExportClaimsRefusesADuplicateResourceInOneGroup(t *testing.T) {
+	_, err := ExportClaims([]Requirement{{
+		Group: "code.railgrid.ai",
+		Resources: []RequiredResource{
+			{Name: "repositories", Verbs: []string{"get"}},
+			{Name: "repositories", Verbs: []string{"get", "list"}},
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "repositories") {
+		t.Fatalf("err = %v, want a duplicate-resource refusal", err)
+	}
+}
+
+// Everything the CatalogEntry contract forbids on a requirement is refused
+// here as well, rather than generating a claim that says more (or less) than
+// its author did.
+func TestExportClaimsRefusesWhatTheContractForbids(t *testing.T) {
+	for name, requirement := range map[string]Requirement{
+		"verbs on a verb coordinate": {
+			Group:     "infrastructure.railgrid.ai",
+			Resources: []RequiredResource{{Name: "instances/exec", Verbs: []string{"create"}}},
+		},
+		"selector on a verb coordinate": {
+			Group: "infrastructure.railgrid.ai",
+			Resources: []RequiredResource{{
+				Name:     "instances/exec",
+				Selector: &LabelSelector{MatchLabels: map[string]string{"a": "b"}},
+			}},
+		},
+		"a plain resource with no verbs": {
+			Group:     "infrastructure.railgrid.ai",
+			Resources: []RequiredResource{{Name: "instances"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ExportClaims([]Requirement{requirement})
+			if err == nil {
+				t.Fatal("the declaration was accepted")
+			}
+			if !strings.Contains(err.Error(), requirement.Resources[0].Name) {
+				t.Errorf("err does not name the resource: %v", err)
+			}
+		})
 	}
 }
 
@@ -100,7 +201,10 @@ metadata:
   name: fixture.providers.railgrid.ai
 spec:
   permissionClaims:
-  - resource: secrets
+  - defaultSelector:
+      matchLabels:
+        railgrid.ai/owner: fixture
+    resource: secrets
     verbs:
     - get
     - list
@@ -114,6 +218,16 @@ spec:
     verbs:
     - get
     - create
+  - group: edges.railgrid.ai
+    resource: kubernetesclusters
+    verbs:
+    - get
+    - list
+    - watch
+  - group: edges.railgrid.ai
+    resource: kubernetesclusters/kubeconfig
+    verbs:
+    - '*'
   resources:
   - group: fixture.railgrid.ai
     name: widgets
@@ -223,16 +337,18 @@ func TestSchemaNamesAreSorted(t *testing.T) {
 // — kcp ignores an unknown field on a claim and serves the claim unscoped, so
 // the provider would keep blanket access with a manifest that says otherwise.
 func TestExportClaimsRenderTheSelectorAsDefaultSelector(t *testing.T) {
-	claims := ExportClaims([]PermissionClaim{
+	claims, err := ExportClaims([]Requirement{{Resources: []RequiredResource{
 		{
-			Resource:     "secrets",
-			Verbs:        []string{"get"},
-			TenantScoped: true,
-			Selector:     &PermissionClaimSelector{MatchLabels: map[string]string{"railgrid.ai/owner": "fixture"}},
+			Name:     "secrets",
+			Verbs:    []string{"get"},
+			Selector: &LabelSelector{MatchLabels: map[string]string{"railgrid.ai/owner": "fixture"}},
 		},
-		{Resource: "configmaps", Verbs: []string{"get"}},
-		{Resource: "namespaces", Verbs: []string{"get"}, Selector: &PermissionClaimSelector{}},
-	})
+		{Name: "configmaps", Verbs: []string{"get"}},
+		{Name: "namespaces", Verbs: []string{"get"}, Selector: &LabelSelector{}},
+	}}})
+	if err != nil {
+		t.Fatalf("ExportClaims: %v", err)
+	}
 
 	scoped := claims[0].(map[string]any)
 	if _, ok := scoped["selector"]; ok {
@@ -271,15 +387,15 @@ kind: CatalogEntry
 metadata:
   name: fixture
 spec:
-  apiExport:
+  export:
     name: fixture.providers.railgrid.ai
-    permissionClaims:
-      - resource: secrets
-        verbs: [get]
-        tenantScoped: true
-        selector:
-          matchLabels:
-            railgrid.ai/owner: fixture
+  requires:
+    - resources:
+        - name: secrets
+          verbs: [get]
+          selector:
+            matchLabels:
+              railgrid.ai/owner: fixture
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -290,5 +406,66 @@ spec:
 	if !strings.Contains(string(content), "defaultSelector:") ||
 		!strings.Contains(string(content), "railgrid.ai/owner: fixture") {
 		t.Fatalf("the selector did not reach the generated export:\n%s", content)
+	}
+}
+
+// --- spec.requires, the one source of the claims -----------------------------
+
+func TestParseRequirementsReadsEveryGroupInManifestOrder(t *testing.T) {
+	requirements, err := LoadRequirements(filepath.Join("testdata", "manifest.yaml"))
+	if err != nil {
+		t.Fatalf("LoadRequirements: %v", err)
+	}
+	if len(requirements) != 3 {
+		t.Fatalf("requirements = %d, want 3: %+v", len(requirements), requirements)
+	}
+	if got := requirements[0]; got.Group != "" || got.Provider != "" || len(got.Resources) != 2 {
+		t.Errorf("first requirement = %+v, want the core group's two claims", got)
+	}
+	if got := requirements[0].Resources[0]; got.Selector == nil || got.Selector.MatchLabels["railgrid.ai/owner"] != "fixture" {
+		t.Errorf("the core secrets selector was dropped while parsing: %+v", got)
+	}
+	if got := requirements[2]; got.Provider != "edges" || got.Group != "edges.railgrid.ai" {
+		t.Errorf("third requirement = %+v", got)
+	}
+	// A verb coordinate carries no verbs: the generated claim spells them all.
+	if got := requirements[2].Resources[1]; got.Name != "kubernetesclusters/kubeconfig" || len(got.Verbs) != 0 {
+		t.Errorf("verb coordinate = %+v", got)
+	}
+}
+
+// A manifest that needs nothing from anybody must yield no requirements rather
+// than an error: a self-contained provider is a normal provider.
+func TestParseRequirementsToleratesAManifestWithoutRequirements(t *testing.T) {
+	requirements, err := ParseRequirements([]byte("kind: CatalogEntry\nspec:\n  export:\n    name: x\n"))
+	if err != nil {
+		t.Fatalf("ParseRequirements: %v", err)
+	}
+	if len(requirements) != 0 {
+		t.Errorf("requirements = %+v, want none", requirements)
+	}
+}
+
+// The refusal reaches the generator, not just the helper: a manifest that
+// repeats a group fails codegen with the group named.
+func TestGenerateFailsOnARepeatedGroupInRequires(t *testing.T) {
+	manifest := writeFixture(t, "manifest.yaml", `kind: CatalogEntry
+spec:
+  export:
+    name: fixture.providers.railgrid.ai
+  requires:
+    - provider: code
+      group: code.railgrid.ai
+      resources:
+        - name: repositories
+          verbs: [get]
+    - provider: code
+      group: code.railgrid.ai
+      resources:
+        - name: repositories/commit
+`)
+	_, err := Generate(Options{ManifestPath: manifest})
+	if err == nil || !strings.Contains(err.Error(), "code.railgrid.ai") {
+		t.Fatalf("err = %v, want a repeated-group refusal naming the group", err)
 	}
 }

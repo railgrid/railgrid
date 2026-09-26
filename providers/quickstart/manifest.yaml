@@ -7,8 +7,9 @@
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
 #
 # For local dev with the provider binary running on the host machine:
-#   - spec.ui.url / spec.backend.url point at host.docker.internal or the
-#     loopback the hub can reach. Override below as needed.
+#   - spec.serving.ui.url / spec.serving.backend.url point at
+#     host.docker.internal or the loopback the hub can reach. Override below as
+#     needed.
 #
 # For in-cluster deployment, change the URLs to the Service DNS, e.g.
 #   url: http://quickstart.providers.svc.cluster.local:8081
@@ -22,6 +23,11 @@
 # APIExport tenants APIBind to, and a routing entry backing
 # /ui/providers/<name>/* and /services/providers/<name>/*.
 #
+# Past the display metadata the spec answers four questions, one section each:
+# export (what does it export?), requires (what does it need that it does not
+# own?), serving (where does the hub reach it?) and hub (what does it ask of
+# the hub itself?).
+#
 # spec:
 #   displayName              Title on the portal catalog card + side nav. [required]
 #   description              Short blurb on the catalog card.
@@ -29,26 +35,52 @@
 #   version                  Provider/chart version (informational).
 #   category                 Groups the entry under a portal nav heading.
 #   iconURL                  Portal-relative icon path (served via the UI proxy).
-#   serviceAccountNamespace  Host namespace the provider Deployment runs in;
-#                            the hub writes railgrid-provider-kubeconfig here.
-#   ui:                      Micro-frontend (omit for a UI-less provider).
-#     url                      Address the hub reverse-proxies for
-#                              /ui/providers/<name>/* (exclusive with builtinRoute).
-#     indexPath                Default landing path within the UI (default "/").
-#     builtinRoute             Portal renders an in-tree route by this name
-#                              instead of loading a bundle (first-party providers).
-#     children[]               Sub-nav entries: {displayName, builtinRoute}.
-#   backend:                 Custom HTTP backend (omit for CR-only providers).
-#     url                      Address proxied at /services/providers/<name>/*
-#                              (NOT for CRD traffic — CRs flow through kcp).
-#     healthPath               GET path that gates the BackendHealthy status.
-#   apiExport:               The provider's kcp APIExport.
+#   export:                  The provider's kcp APIExport — one per provider.
 #     name                     Fully-qualified APIExport name tenants APIBind to.
-#     permissionClaims[]       Access the provider needs in tenant workspaces:
-#                              {resource, group, verbs, tenantScoped}. tenantScoped:
-#                              true auto-accepts on Enable.
-#     schemas[]                Inline APIResourceSchemas to install ({groupResource,
-#                              body}); [] = pure broker, no CRDs leak to tenants.
+#                              NOT an API group: an export may serve several,
+#                              so each resource below names its own apiVersion.
+#     resources[]              The kinds this export serves, each
+#                              {name, apiVersion, kind} carrying the verbs[] and
+#                              actions[] served ON it. Everything a tenant may
+#                              call is here and nowhere else. A resource with
+#                              neither verbs nor actions is an ordinary CR kind
+#                              tenants read and write through kcp and needs no
+#                              entry at all — list one only to hang a verb or an
+#                              action off it.
+#   requires[]               Everything this provider needs that it does not own:
+#                            another provider's kinds and verbs, and the platform
+#                            builtins. One entry per API group (a repeated group
+#                            is a validation error), each becoming one permission
+#                            claim on the generated APIExport. `provider:` names
+#                            the CatalogEntry that serves the group and makes the
+#                            entry a dependency edge; omit it for a platform
+#                            builtin, and omit `group` entirely for the core
+#                            group. A plain resource requires `verbs`; a
+#                            "<resource>/<verb>" coordinate must omit them,
+#                            because the verb IS the capability. Everything here
+#                            is tenant-scoped by definition and reaches a
+#                            workspace only once someone accepted it on Enable.
+#   serving:                 Where the hub reaches this provider.
+#     ui                       Micro-frontend (omit for a UI-less provider):
+#                              url (the address the hub reverse-proxies for
+#                              /ui/providers/<name>/*), indexPath (default "/"),
+#                              builtinRoute (portal renders an in-tree route by
+#                              this name instead of loading a bundle, for
+#                              first-party providers) and children[] sub-nav
+#                              entries {displayName, builtinRoute}.
+#     backend                  Custom HTTP backend (omit for CR-only providers):
+#                              url (proxied at /services/providers/<name>/* —
+#                              MCP, OAuth, webhooks, the agent tunnel and health
+#                              only, NEVER CRD or verb traffic, which flows
+#                              through kcp) and healthPath (the GET that gates
+#                              the BackendHealthy status).
+#     selfHosting              Helm coordinates that let an organization run its
+#                              own copy of this provider.
+#   hub:                     What the provider asks of the hub itself, as opposed
+#                            to of kcp: hub.access (REST capabilities exercised
+#                            with a delegated token) and hub.assistantSkills
+#                            (skill packages the hub republishes). Quickstart
+#                            asks for neither, so the section is omitted.
 # ════════════════════════════════════════════════════════════════════════
 ---
 apiVersion: providers.railgrid.ai/v1alpha1
@@ -62,52 +94,80 @@ spec:
   version: "0.1.0"
   category: "Demo"
   iconURL: "/ui/providers/quickstart/icon.svg"
-  ui:
-    url: "http://localhost:8081"
-    indexPath: "/"
-  backend:
-    # healthPath gates the hub's BackendHealthy. It points at /readyz, not
-    # /healthz: the hub should call this provider unhealthy when its watches
-    # are dead, not only when the process is gone.
-    url: "http://localhost:8081"
-    healthPath: "/readyz"
   # Provider-owned APIExport. The provider's own `init` applies the schemas,
   # creates this APIExport and its APIExportEndpointSlice, and grants tenants
   # the right to bind it; the hub's Enable flow then creates the APIBinding in
   # the tenant's workspace after checking membership.
   #
-  # No permissionClaims: this provider reconciles only the Greetings its own
-  # APIExport serves, so it needs no access in tenant workspaces beyond that.
-  # A claim added here must be added to init_cmd.go and
-  # deploy/chart/templates/catalogentry.yaml in the same change
-  # (hack/verify-provider-contract.mjs checks the three copies agree).
-  apiExport:
+  # `greetings` is listed only to hang the greet verb off it — the kind itself
+  # is an ordinary CR tenants read and write through kcp. The verb is declared
+  # here so the coordinate is machine-readable; declaring it grants nothing:
+  # every call is still authorized by kcp as `create` on {resource}/{verb} with
+  # ordinary RBAC, then gated for visibility by this provider. What the
+  # declaration buys, per verb: codegen emits the kcp custom subresource
+  # "<resource>/<verb>" on the generated APIExport (the shard routes it to this
+  # provider through its DataPlaneEndpointSlice) together with the
+  # "<Verb>Request" schema the entry names; a consumer provider can require the
+  # coordinate under spec.requires[].resources[] and have it claimed on ITS
+  # export; and the hub scoped-identity service (pkg/hub/identity/policy.go
+  # clause C) can mint a capability only for a verb it can verify exists. None
+  # of this is a permission claim of this provider: a claim names another
+  # export's resources, never one's own verbs.
+  export:
     name: "quickstart.providers.railgrid.ai"
-  # Data-plane verbs this provider serves, declared so the coordinate is
-  # machine-readable. Declaring one grants and serves nothing: every call is
-  # still authorized by this provider's own caller-scoped SSAR on
-  # {resource}/{verb}. What the declaration buys is that the hub
-  # scoped-identity service can mint a capability for a verb it can verify
-  # exists (pkg/hub/identity/policy.go clause C), instead of consumers
-  # hardcoding a coordinate nobody validates.
-  dataPlane:
-    verbs:
-      - resource: greetings
-        verb: greet
-        description: "Return the greeting this Greeting describes."
-        readOnly: true
-  # Self-hosting: lets an organization run its own copy of this provider in its
-  # own cluster instead of using the platform's. The hub renders per-org install
-  # instructions from these coordinates (see docs/byo-providers.md), so the
-  # provider describes its deployment once here rather than every org
-  # reverse-engineering it. Keep in lockstep with
-  # deploy/chart/templates/catalogentry.yaml — that copy is the one that reaches
-  # production.
-  selfHosting:
-    supported: true
-    chart:
-      repository: "oci://ghcr.io/railgrid/charts"
-      name: "railgrid-quickstart-provider"
-    namespace: "railgrid-provider-quickstart"
-    releaseName: "quickstart"
-    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/quickstart/deploy/chart/README.md"
+    resources:
+      - name: greetings
+        apiVersion: "quickstart.providers.railgrid.ai/v1alpha1"
+        kind: Greeting
+        verbs:
+          - name: greet
+            description: "Return the greeting this Greeting describes."
+            readOnly: true
+  # Everything this provider needs from a group it does not own. It reconciles
+  # only the Greetings its own APIExport serves, so the single entry below is
+  # not about data at all. An entry added here must be added to
+  # deploy/chart/templates/catalogentry.yaml in the same change
+  # (hack/verify-provider-contract.mjs checks the copies agree).
+  #
+  # Every provider that serves a custom subresource needs this one claim: on
+  # the shard-forwarded path there is no caller bearer, so the provider runs a
+  # SubjectAccessReview for the stamped caller through its own APIExport virtual
+  # workspace, and kcp serves that builtin there only for an export that claims
+  # it (hack/verify-provider-contract.mjs subresource-access-claim). Built-in
+  # review API: no identityHash, verb create only, and no `provider` because
+  # authorization.k8s.io is a platform builtin nothing has to enable first. The
+  # claim is tenant-scoped like every requirement — the VW confines each review
+  # to the tenant's OWN workspace.
+  requires:
+    - group: authorization.k8s.io
+      resources:
+        - name: subjectaccessreviews
+          verbs: [create]
+  # Where the hub reaches this provider: the micro-frontend it proxies, the
+  # backend origin for the non-kcp route classes, and whether an organization
+  # may run its own copy.
+  serving:
+    ui:
+      url: "http://localhost:8081"
+      indexPath: "/"
+    backend:
+      # healthPath gates the hub's BackendHealthy. It points at /readyz, not
+      # /healthz: the hub should call this provider unhealthy when its watches
+      # are dead, not only when the process is gone.
+      url: "http://localhost:8081"
+      healthPath: "/readyz"
+    # Self-hosting: lets an organization run its own copy of this provider in
+    # its own cluster instead of using the platform's. The hub renders per-org
+    # install instructions from these coordinates (see docs/byo-providers.md),
+    # so the provider describes its deployment once here rather than every org
+    # reverse-engineering it. Keep in lockstep with
+    # deploy/chart/templates/catalogentry.yaml — that copy is the one that
+    # reaches production.
+    selfHosting:
+      supported: true
+      chart:
+        repository: "oci://ghcr.io/railgrid/charts"
+        name: "railgrid-quickstart-provider"
+      namespace: "railgrid-provider-quickstart"
+      releaseName: "quickstart"
+      docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/quickstart/deploy/chart/README.md"

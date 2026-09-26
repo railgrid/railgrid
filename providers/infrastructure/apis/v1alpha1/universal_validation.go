@@ -185,10 +185,10 @@ func validateUniversalDataPlane(dataPlane *TemplateDataPlane) error {
 		return fmt.Errorf("universal coding sandbox data plane must be confined to the runtime namespace and control secret status paths")
 	}
 	if len(dataPlane.Endpoints) != 1 {
-		return fmt.Errorf("universal coding sandbox data plane must declare only the status endpoint")
+		return fmt.Errorf("universal coding sandbox data plane must declare only the runtime-status endpoint")
 	}
-	if got, ok := dataPlane.Endpoints["status"]; !ok || !reflect.DeepEqual(got, TemplateDataPlaneEndpoint{FromStatus: true}) {
-		return fmt.Errorf("universal coding sandbox status endpoint must be fromStatus-only")
+	if got, ok := dataPlane.Endpoints["runtime-status"]; !ok || !reflect.DeepEqual(got, TemplateDataPlaneEndpoint{FromStatus: true}) {
+		return fmt.Errorf("universal coding sandbox runtime-status endpoint must be fromStatus-only")
 	}
 	if len(dataPlane.Components) != 1 {
 		return fmt.Errorf("universal coding sandbox data plane must declare only the workspace component")

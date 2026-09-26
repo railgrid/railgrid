@@ -12,7 +12,7 @@ You may obtain a copy of the License at
 // the canonical (and only) cross-provider path for pushing file contents,
 // since commit bundles live on the code provider's own filesystem. The Project
 // reconciler uses it as the project's ServiceAccount (the HTTP layer keeps its
-// own caller-token MCP path in api/).
+// own MCP path in api/, made as the provider with its hub token).
 //
 // Talks to the hub's AGGREGATE MCP endpoint (the per-tenant "default"
 // MCPServer), with provider-namespaced tool names (code__commit_files). The

@@ -207,7 +207,7 @@ address, self-hosted providers will install and then sit idle.
 The flow above covers a provider an org wrote itself. The more common case is an
 org wanting to run **the platform's own provider** in its cluster — its own
 edges, its own Application Templates. A provider declares how it is deployed in
-`CatalogEntry.spec.selfHosting`, and the hub renders per-organization install
+`CatalogEntry.spec.serving.selfHosting`, and the hub renders per-organization install
 instructions from it:
 
 ```yaml
@@ -247,7 +247,7 @@ For the full reference, the chart **embeds its own README**:
 valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
 ```
 
-which lands in `spec.selfHosting.valuesDoc` and renders inline in the portal.
+which lands in `spec.serving.selfHosting.valuesDoc` and renders inline in the portal.
 Embedding rather than linking buys three things:
 
 - it works in an air-gapped or private-repo install;
@@ -304,15 +304,12 @@ tell the two apart rather than showing both as plain "Enabled".
 | `providerKubeconfig.secretName` | fixed — the charts hardcode data key `kubeconfig` |
 | `catalogEntry.enabled=true` | so the copy self-registers into the org's workspace |
 | `hub.url` | the hub's external URL; must be reachable from the org's cluster |
-| identity hashes | resolved from the target APIExport, org's copy preferred |
 | `{{workspacePath}}`, `{{namespace}}`, `{{releaseName}}`, `{{kubeconfigSecret}}`, `{{kubeconfigSecretKey}}`, `{{hubURL}}` | substituted into a recipe's literal values |
 
-Identity-hash resolution is the one that matters most. It is the only required
-value a person cannot reasonably produce by hand — today it is copied out of an
-admin debug view — and getting it wrong yields a provider that binds
-successfully and then silently sees none of the resources it claimed. When the
-hub cannot resolve one it emits a visible placeholder and a warning rather than
-a command that looks correct.
+There are no identity hashes to fill in: every claim is identity-agnostic and
+kcp resolves it against the copy of the dependency each workspace binds. A
+value the hub cannot fill is emitted as a visible placeholder with a warning
+rather than as a command that looks correct.
 
 Rendering never fails. A provider with incomplete metadata still produces steps,
 with placeholders and warnings for the gaps: the alternative leaves the user
@@ -330,13 +327,12 @@ All nine, each embedding its own chart values reference:
 | `infrastructure` | none — self-bootstrap values use `{{workspacePath}}` / `{{kubeconfigSecret}}` |
 | `code` | none |
 | `databricks` | none |
-| `kuery` | none — claims no first-party resources; edge discovery acts as a per-workspace ServiceAccount through each tenant's own edges binding, so no identity hashes are involved |
-| `app-studio` | none — claims no first-party resources at all; its reconcilers act as workspace ServiceAccounts through each tenant's own bindings, so no identity hashes are involved |
+| `kuery` | none — its edges claim is identity-agnostic and resolves to whichever edges copy each workspace bound |
+| `app-studio` | none — its infrastructure and code claims are identity-agnostic and resolve per workspace |
 | `agents` | `store.databaseURLSecretRef.name` — Postgres is its only hard dependency, and the hub cannot invent your database |
 
-Identity hashes are declared with `identityFor` rather than as literals, so the
-hub resolves them per organization — preferring the org's own copy of that
-provider when it self-hosts one too.
+A recipe value is a literal or a `{{placeholder}}` the hub substitutes; there
+is nothing per-organization for the hub to resolve beyond those.
 
 Adding one to another provider means editing **both** `manifest.yaml` and
 `deploy/chart/templates/catalogentry.yaml` — the chart copy is the one that
@@ -490,7 +486,7 @@ What an Org gets is deliberately narrow.
   below.
 - **Hub REST access needs explicit consent.** The delegated token reaches no
   hub REST route except the capabilities the provider declares in
-  `spec.hubAccess` (today: reading member lists, adding members) and an org
+  `spec.hub.access` (today: reading member lists, adding members) and an org
   admin accepted in the Enable dialog for that workspace. Unlike platform
   providers, an org-owned provider never gets these by default. The grant is
   keyed by the provider's owner org as well as its name, so a self-hosted copy
@@ -640,8 +636,10 @@ in URL paths.
   therefore never set `HeartbeatRequired`, leaving readiness resting on endpoint
   validity. An org-scoped heartbeat path is future work.
 - **The provider UI is portable, through a grant.** `/services/providers/{name}`
-  resolves in the caller's Org and routes an org-owned provider over its edge
-  tunnel. `/ui/providers/{name}` cannot do the same by itself: the bundle is
+  (MCP, OAuth, webhooks, health — a verb is a kcp custom subresource on
+  `/clusters/{id}/apis/…`, reached through kcp's own routing) resolves in the
+  caller's Org and routes an org-owned provider over its edge tunnel.
+  `/ui/providers/{name}` cannot do the same by itself: the bundle is
   loaded with a plain `<script src>`
   ([ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue)), which carries
   no `Authorization` header, so there is no identity on an asset GET to scope

@@ -82,7 +82,7 @@ function revokeProviderBootstrapGeneration(doc: Document, name: string, generati
 
 export interface ProviderScriptOptions {
   // Subresource Integrity metadata ("sha384-...") the hub computed for this
-  // bundle at registration (catalog `mainJSIntegrity`). When present the
+  // bundle at registration (catalog `serving.ui.mainJSIntegrity`). When present the
   // browser refuses a /main.js whose content differs; the ?v= cache-buster is
   // irrelevant to that check because SRI hashes the response body, not the
   // URL. When absent the bundle loads unpinned, which is logged: a provider

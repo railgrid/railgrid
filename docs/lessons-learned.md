@@ -216,8 +216,11 @@ grants `system:authenticated`, so org-scoped catalogs are a UI illusion: a
 user who learns another org's UUID can hand-craft an APIBinding to that org's
 provider export and kcp admission allows it. All tenancy enforcement lives in
 the hub REST layer; kcp's admission has a flat view. The designed kcp-native
-wall — MaximalPermissionPolicy — was never built; a hand-rolled
-`tenantScoped` flag on claims is the actual safety mechanism.
+wall — MaximalPermissionPolicy — was never built. The stopgap was a
+hand-rolled `tenantScoped` flag on claims; that flag is gone as of 2026-09-25,
+because everything a provider declares under `spec.requires` is tenant-scoped
+by definition, and the actual safety mechanisms are now the label `selector` on
+a claim and the per-requirement acceptance at Enable.
 (`byo-providers.md` known gaps — "the most important gap to close",
 `providers.md` decision 10)
 
@@ -275,7 +278,7 @@ CR name appears in no binding. (`app-studio-publishing.md`,
 
 ### 23. Virtual subresources that no server serves are kcp RBAC's best trick.
 
-`agents/delegate`, `instances/access`, `tables/query_table` — RBAC
+`agents/delegate`, `instances/access`, `tables/query-table` — RBAC
 coordinates with no storage behind them. Granting a capability *is* writing
 the rule; revoking removes it; `resourceNames` scopes it per object; `kubectl
 get clusterrole` audits it. We learned this the expensive way: Provider

@@ -213,7 +213,7 @@ func enableProviderWithRetry(ctx context.Context, api *devHubAPI, orgUUID, wsUUI
 			last = err.Error()
 			return false, nil
 		}
-		if prov == nil || prov.APIExportName == "" {
+		if prov == nil || prov.exportName() == "" {
 			last = "provider " + name + " is not registered on the hub yet"
 			return false, nil
 		}

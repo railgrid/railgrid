@@ -211,7 +211,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 98,
+      "line": 94,
       "column": 20,
       "match": "#0b0c11",
       "reference": "design.quality.exceptions",
@@ -220,7 +220,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 99,
+      "line": 95,
       "column": 20,
       "match": "#c8c8d0",
       "reference": "design.quality.exceptions",
@@ -229,7 +229,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 100,
+      "line": 96,
       "column": 16,
       "match": "#8b6bff",
       "reference": "design.quality.exceptions",
@@ -238,7 +238,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 101,
+      "line": 97,
       "column": 29,
       "match": "#8b6bff33",
       "reference": "design.quality.exceptions",
@@ -247,7 +247,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 102,
+      "line": 98,
       "column": 15,
       "match": "#0b0c11",
       "reference": "design.quality.exceptions",
@@ -256,7 +256,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 103,
+      "line": 99,
       "column": 13,
       "match": "#f87171",
       "reference": "design.quality.exceptions",
@@ -265,7 +265,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 104,
+      "line": 100,
       "column": 15,
       "match": "#34d399",
       "reference": "design.quality.exceptions",
@@ -274,7 +274,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 105,
+      "line": 101,
       "column": 16,
       "match": "#fbbf24",
       "reference": "design.quality.exceptions",
@@ -283,7 +283,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 106,
+      "line": 102,
       "column": 14,
       "match": "#60a5fa",
       "reference": "design.quality.exceptions",
@@ -292,7 +292,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 107,
+      "line": 103,
       "column": 17,
       "match": "#a78bfa",
       "reference": "design.quality.exceptions",
@@ -301,7 +301,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 108,
+      "line": 104,
       "column": 14,
       "match": "#22d3ee",
       "reference": "design.quality.exceptions",
@@ -310,7 +310,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 109,
+      "line": 105,
       "column": 15,
       "match": "#c8c8d0",
       "reference": "design.quality.exceptions",
@@ -319,7 +319,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 110,
+      "line": 106,
       "column": 21,
       "match": "#404050",
       "reference": "design.quality.exceptions",
@@ -328,7 +328,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 111,
+      "line": 107,
       "column": 19,
       "match": "#fca5a5",
       "reference": "design.quality.exceptions",
@@ -337,7 +337,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 112,
+      "line": 108,
       "column": 21,
       "match": "#6ee7b7",
       "reference": "design.quality.exceptions",
@@ -346,7 +346,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 113,
+      "line": 109,
       "column": 22,
       "match": "#fcd34d",
       "reference": "design.quality.exceptions",
@@ -355,7 +355,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 114,
+      "line": 110,
       "column": 20,
       "match": "#93c5fd",
       "reference": "design.quality.exceptions",
@@ -364,7 +364,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 115,
+      "line": 111,
       "column": 23,
       "match": "#c4b5fd",
       "reference": "design.quality.exceptions",
@@ -373,7 +373,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 116,
+      "line": 112,
       "column": 20,
       "match": "#67e8f9",
       "reference": "design.quality.exceptions",
@@ -382,7 +382,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 117,
+      "line": 113,
       "column": 21,
       "match": "#f0f0f5",
       "reference": "design.quality.exceptions",
@@ -391,7 +391,7 @@
     {
       "rule": "raw-color",
       "path": "portal/src/components/TerminalInstance.vue",
-      "line": 255,
+      "line": 249,
       "column": 65,
       "match": "#0b0c11",
       "reference": "design.quality.exceptions",

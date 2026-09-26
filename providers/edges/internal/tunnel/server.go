@@ -29,6 +29,7 @@ import (
 
 	"github.com/railgrid/provider-edges/internal/kcpurl"
 	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/identityclient"
 	"github.com/railgrid/provider-sdk/revdial"
 )
@@ -100,17 +101,13 @@ type Server struct {
 	// staticTokens is a TEST-ONLY set of bearer tokens the agent-ingress handler
 	// accepts in place of an agent credential when there is no kcp config to
 	// validate one against. It is only populated through
-	// Config.AllowStaticTokenBypass, which main.go never sets; consumer-egress
-	// authorization (edgeproxy / services) never consults it. Every caller of the
-	// data plane goes through authorizeFn (TokenReview + SubjectAccessReview),
-	// including hub static-token users, whose identity kcp resolves natively.
+	// Config.AllowStaticTokenBypass, which main.go never sets; the consumer
+	// data plane never consults it — a verb carries no bearer at all, kcp
+	// authenticated its caller before forwarding.
 	staticTokens map[string]struct{}
 
-	// allowStaticTokenBypass mirrors Config.AllowStaticTokenBypass. It is the
-	// ONLY thing that lets the consumer-egress data plane serve without a kcp
-	// credential: with it unset and kcpConfig nil the edgeproxy / service
-	// handlers refuse every request (503) rather than serving unauthorized
-	// bearers. main.go never sets it, so production always fails closed.
+	// allowStaticTokenBypass mirrors Config.AllowStaticTokenBypass, for the
+	// agent-ingress class only. main.go never sets it.
 	allowStaticTokenBypass bool
 
 	// allowUnverifiedSSHHostKey is the provider-wide legacy escape hatch that
@@ -118,9 +115,10 @@ type Server struct {
 	// unverified. Logged at V(0) on startup and on every use.
 	allowUnverifiedSSHHostKey bool
 
-	// hubExternalURL is embedded into agent kubeconfigs. hubInternalURL is used
-	// for internal MCP→edgeproxy calls to avoid CDN loops; falls back to
-	// hubExternalURL when empty.
+	// hubExternalURL is embedded into agent credential bundles. hubInternalURL
+	// is used for the aggregate MCP endpoint's calls back through the hub to
+	// the k8s verb, to avoid CDN loops; falls back to hubExternalURL when
+	// empty.
 	hubExternalURL string
 	hubInternalURL string
 
@@ -128,13 +126,6 @@ type Server struct {
 	// agent re-enters through for revdial pickup connections, e.g.
 	// /services/providers/edges/agent/proxy.
 	agentPickupPath string
-
-	// edgeProxyPublicPath is the PUBLIC consumer-egress base (behind the hub
-	// backend proxy) for the k8s/ssh subresources, e.g.
-	// /services/providers/edges/edgeproxy. It is stamped into an edge's
-	// status.URL (see edgeProxyStatusURL) so CLI clients can reach the edge
-	// through the hub. Empty disables URL stamping.
-	edgeProxyPublicPath string
 
 	// authorizeFn performs delegated authn/authz against kcp for the AGENT
 	// ingress class (f), where the credential is an edge ServiceAccount the
@@ -153,15 +144,10 @@ type Server struct {
 	// enrolment bundle so it can verify the hub it was told to call.
 	hubCAData []byte
 
-	// tickets holds the short-lived, single-object WebSocket tickets the
-	// browser terminal presents as a Sec-WebSocket-Protocol subprotocol,
-	// because a browser cannot set Authorization on an upgrade. See ticket.go.
-	tickets *ticketStore
-
-	// gateFn runs the consumer data plane's two gates (class (a)), as the
-	// caller and with the caller's credential only. Nil means gateAsCaller,
-	// which is the only implementation outside tests.
-	gateFn gateFnType
+	// callers is what the consumer data plane gates with; see Config.Callers.
+	// Nil means every verb is refused with 503: there is nothing to run the
+	// access review with, and anonymous is not a fallback.
+	callers dataplane.ProviderCallerFactory
 
 	// registry/replicaID/relayToken enable multi-replica tunnel routing (see
 	// EnableReplicaRouting). All nil/empty in single-replica mode.
@@ -222,12 +208,15 @@ type Config struct {
 	// AgentPickupPath is the public revdial pickup path the agent re-enters
 	// through, e.g. /services/providers/edges/agent/proxy (required).
 	AgentPickupPath string
-	// EdgeProxyPublicPath is the public consumer-egress base stamped into an
-	// edge's status.URL, e.g. /services/providers/edges/edgeproxy. Empty
-	// disables status.URL stamping (the CLI kubeconfig/ssh commands then have
-	// no URL to externalize).
-	EdgeProxyPublicPath string
-	KCPConfig           *rest.Config
+	KCPConfig       *rest.Config
+	// Callers acts as the provider through its export virtual workspace when
+	// a verb is gated: kcp forwards a custom subresource with the caller's
+	// identity stamped and no bearer, so dataplane.Gate needs a
+	// dataplane.ProviderCallerFactory to run the access review on the
+	// caller's behalf and read the object as the provider. Nil refuses every
+	// verb (503). The MCP class (b) also uses it, as a plain CallerFactory,
+	// for the bearer the hub aggregate forwards.
+	Callers dataplane.ProviderCallerFactory
 	// StaticTokens are TEST-ONLY bearer tokens accepted as an agent credential
 	// on the agent-ingress path when KCPConfig is nil. They are rejected unless
 	// AllowStaticTokenBypass is set, and never combine with a KCPConfig: with a
@@ -281,15 +270,14 @@ func New(cfg Config) (*Server, error) {
 		group:                     group,
 		version:                   version,
 		edgeConnManager:           NewConnManager(),
-		tickets:                   newTicketStore(),
 		kcpConfig:                 cfg.KCPConfig,
+		callers:                   cfg.Callers,
 		staticTokens:              tokenSet,
 		allowStaticTokenBypass:    cfg.AllowStaticTokenBypass,
 		hubExternalURL:            cfg.HubExternalURL,
 		hubInternalURL:            cfg.HubInternalURL,
 		hubCAData:                 cfg.HubCAData,
 		agentPickupPath:           cfg.AgentPickupPath,
-		edgeProxyPublicPath:       cfg.EdgeProxyPublicPath,
 		allowUnverifiedSSHHostKey: cfg.AllowUnverifiedSSHHostKey,
 		authorizeFn:               authorize,
 		logger:                    cfg.Logger.WithName("edge-tunnel"),
@@ -319,28 +307,24 @@ func (p *Server) tenantConfigFor(ctx context.Context, cluster string) (*rest.Con
 	return cfg, nil
 }
 
-// denyIfAuthorizationUnavailable fails the consumer-egress data plane CLOSED
-// when there is no kcp credential to run the delegated TokenReview +
-// SubjectAccessReview against.
+// denyIfAuthorizationUnavailable fails the consumer data plane CLOSED when
+// there is nothing to gate with: no provider caller factory means no
+// SubjectAccessReview on the caller's behalf and no read of the parent object.
 //
-// Without it the edgeproxy / service handlers wrapped their authorization in
-// `if p.kcpConfig != nil`, so a provider that started without a usable kcp
-// kubeconfig — including one whose RAILGRID_PROVIDER_KUBECONFIG is set but
-// unreadable, which loadKCPConfig silently degrades to nil — served the data
-// plane to any non-empty bearer. The handlers are mounted unconditionally, so
-// "no kcp config" must mean "refuse traffic", not "skip the check".
-//
-// The single exception is the test-only AllowStaticTokenBypass, which main.go
-// never sets: unit tests exercise the tunnel plane with no kcp at all.
+// A provider that started without a usable kcp kubeconfig — including one
+// whose RAILGRID_PROVIDER_KUBECONFIG is set but unreadable, which
+// loadKCPConfig silently degrades to nil — has no factory. The handlers are
+// mounted unconditionally, so "no kcp config" must mean "refuse traffic", not
+// "skip the check"; there is no bypass on this path, test-only or otherwise.
 //
 // Returns true when the request was answered and the caller must stop.
 func (p *Server) denyIfAuthorizationUnavailable(w http.ResponseWriter, r *http.Request) bool {
-	if p.kcpConfig != nil || p.allowStaticTokenBypass {
+	if p.callers != nil {
 		return false
 	}
 	// V(0): an operator needs to see this without raising verbosity — the data
 	// plane is up but rejecting everything.
-	p.logger.Info("refusing data-plane request: kcp delegated authorization is unavailable (no kcp credential)",
+	p.logger.Info("refusing data-plane request: no provider caller factory to gate with (no kcp credential)",
 		"method", r.Method, "path", r.URL.Path)
 	http.Error(w, "authorization unavailable", http.StatusServiceUnavailable)
 	return true
@@ -378,11 +362,16 @@ func (p *Server) AgentIngressHandler() http.Handler {
 	return p.buildEdgeAgentProxyHandler()
 }
 
-// EdgeProxyHandler serves the consumer data plane: Pillar 2 class (a).
-// Mounted (behind the hub backend proxy) at
-// /services/providers/edges/dataplane/, with the path UNMODIFIED:
+// EdgeProxyHandler serves the consumer data plane: Pillar 2 class (a), every
+// verb this provider declares, as kcp custom subresources on its APIExport.
+// It is reached only through provider-sdk/serve's subresource adapter
+// (serve.Options.DataPlane + Subresources), which parses the path a kcp shard
+// forwards,
 //
-//	/dataplane/clusters/{cluster}/{resource}/{name}/{verb}[/{tail}]
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail}]
+//
+// checks the coordinate against the manifest, and hands this handler the
+// route and the stamped caller in the request context with the URL untouched.
 func (p *Server) EdgeProxyHandler() http.Handler {
 	return p.buildEdgesProxyHandler()
 }

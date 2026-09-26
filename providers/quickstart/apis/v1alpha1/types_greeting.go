@@ -27,11 +27,12 @@ import (
 // renders it for a caller.
 //
 // Cluster-scoped, like every other data-plane-addressed provider kind in the
-// tree. That is not a style choice: the data-plane grammar
-// (/dataplane/clusters/{id}/{resource}/{name}/{verb}) has no namespace
-// segment, so dataplane.Gate addresses the object by name alone. A namespaced
-// kind cannot be the target of a verb without inventing a dialect, which is
-// exactly what provider-sdk/dataplane exists to stop.
+// tree. That is not a style choice: a verb is a kcp custom subresource
+// (/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}) and the
+// grammar provider-sdk/dataplane parses has no namespace segment, so
+// dataplane.Gate addresses the object by name alone. A namespaced kind cannot
+// be the target of a verb without inventing a dialect, which is exactly what
+// provider-sdk/dataplane exists to stop.
 //
 // +crd
 // +genclient

@@ -25,27 +25,36 @@ You may obtain a copy of the License at
 // The template-switch handler deletes replaced instances while it still holds
 // the old spec, and the ownerReference covers Project deletion.
 //
-// Two clients, split by whose API surface the object lives on:
+// Two clients, split by WHAT the call is rather than by who owns the kind:
 //
-//   - the Project itself — spec, status, finalizers, annotations — rides the
-//     multicluster manager's client for the request's cluster, which is this
-//     provider's own ServiceAccount over its APIExport virtual workspace. It
-//     owns the kind; nothing else is involved.
-//   - everything belonging to a DEPENDENCY — the bound Instances, the backing
-//     Repository, an in-flight RepositoryCommit — rides a client on the tenant
-//     workspace itself ({hub}/clusters/{cluster}), authenticated as the
-//     project's hub-minted scoped identity (identity.go). The virtual
-//     workspace does not serve those kinds, deliberately: claiming a
-//     first-party group pins one serving APIExport identityHash for every
-//     consuming workspace at once, so a workspace bound to an org-owned
-//     infrastructure or code provider would be served nothing. Acting inside
-//     the workspace through its own bindings works for whichever copy it bound.
+//   - every ordinary Kubernetes verb — on the Project itself and on the three
+//     kinds this provider's APIExport CLAIMS (Instances, Repositories,
+//     RepositoryCommits) — rides the multicluster manager's client for the
+//     request's cluster, which is this provider's own ServiceAccount over its
+//     APIExport virtual workspace. A claimed resource is served through that
+//     same virtual workspace in every consumer workspace that accepted the
+//     claim, so the objects arrive on the client that is already in hand.
+//   - a call that is NOT a Kubernetes verb — asking the Code provider's data
+//     plane for a commit, staging a large bundle, reaching the workspace's MCP
+//     aggregate, or a data-plane verb on an instance — still rides the
+//     project's hub-minted scoped identity (identity.go) on the tenant path
+//     ({hub}/clusters/{cluster}). A permission claim grants OBJECTS; it is not
+//     a bearer token another provider's HTTP data plane would accept. The one
+//     Kubernetes read left on that path is the workspace's own APIBinding,
+//     which nothing claims and which says where the Code provider answers
+//     (commitaction.go).
+//
+// The claims themselves carry NO identityHash. kcp resolves them per consumer
+// workspace against a cluster-scoped PermissionClaimPolicy that pairs this
+// export's group with the claimed group, so a workspace bound to an org-owned
+// infrastructure or code provider is served ITS copy — which is exactly what
+// pinning an identityHash used to make impossible, and why these kinds were
+// reached through the tenant path before.
 //
 // Convergence is event-driven: the dependency kinds are watched per tenant
-// workspace through package tenantwatch, with the same identity token, and the
-// HTTP/assistant layer signals the reconciler through package reconcilesignal
-// when a turn ends or files change. Nothing is polled: a reconcile happens
-// because something happened.
+// workspace through package tenantwatch, and the HTTP/assistant layer signals
+// the reconciler through package reconcilesignal when a turn ends or files
+// change. Nothing is polled: a reconcile happens because something happened.
 package project
 
 import (
@@ -73,11 +82,11 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	"github.com/railgrid/provider-sdk/tenantaccess"
-
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/bindings"
 	"github.com/railgrid/provider-app-studio/controller/tenantwatch"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
+	"github.com/railgrid/provider-app-studio/internal/crossprovider"
 	"github.com/railgrid/provider-app-studio/internal/projectledger"
 	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
 	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
@@ -158,61 +167,56 @@ type Reconciler struct {
 	// unchanged skip is logged once rather than on every reconcile.
 	noticeMu    sync.Mutex
 	skipNotices map[string]string
-	// HubBase / HubInsecure address the hub for the commit action calls
-	// (commitaction.go) and for the tenant-path client below.
+	// HubBase / HubInsecure address the hub for what is still the hub's own:
+	// the identity service (Identities). Cross-provider verbs do not go
+	// through the hub any more.
 	HubBase     string
 	HubInsecure bool
-	// Identities mints the per-project identity this loop acts as inside the
-	// tenant workspace, and which the project's own workload presents
-	// elsewhere. Nil means there is no hub to ask (REST-only dev): the
-	// cross-provider half of the reconcile is then skipped and the Project's
-	// own convergence carries on.
+	// Callers is this provider's caller factory: how the commit and
+	// stage-commit-bundle verbs on the Code provider are called — through
+	// App Studio's own APIExport virtual workspace, as App Studio, under the
+	// claims the tenant accepted (commitaction.go). Nil means there is no
+	// provider credential (REST-only dev): commits are then deferred and
+	// everything else converges.
+	Callers codecommit.Caller
+	// Identities mints the per-project identity the project's own WORKLOAD
+	// presents on its instance's data-plane verbs and to the workspace's MCP
+	// aggregate. It is no longer how the claimed kinds are read or written
+	// (those ride the manager's client over this provider's APIExport virtual
+	// workspace), nor how this loop commits (that is Callers). Nil means there
+	// is no hub to ask (REST-only dev).
 	Identities *scopedidentity.Cache
-	// TenantClientFor is a test seam for the workspace client: a client on the
-	// tenant's own API surface, authenticated as the project identity.
-	// Production leaves it nil and dials {HubBase}/clusters/{cluster}.
-	TenantClientFor func(clusterName, token string) (client.Client, error)
-	// noIdentityNotices remembers which projects were already told about a
-	// missing hub, so a REST-only deployment logs once per project rather than
-	// on every pass.
-	noIdentityNotices sync.Map
+	// noCallersNotices remembers which projects were already told about a
+	// missing provider credential, so a REST-only deployment logs once per
+	// project rather than on every pass.
+	noCallersNotices sync.Map
 }
 
-// tenantClient builds the client every dependency read and write goes through:
-// the tenant's own API surface, as the project identity. There is no
-// claimed-virtual-workspace fallback, because the virtual workspace does not
-// serve those kinds — see the package comment.
-func (r *Reconciler) tenantClient(clusterName, token string) (client.Client, error) {
-	if r.TenantClientFor != nil {
-		return r.TenantClientFor(clusterName, token)
+// crossProviderAccess prepares the DATA-PLANE half of a reconcile: it mints
+// the project's own identity (for the workload, not for this loop) and engages
+// the per-workspace dependency watch, and reports whether the commit call can
+// be made at all. false with a nil error means there is no provider credential
+// to call the Code provider with; the caller defers the commit rather than
+// failing, and the project is told so once.
+//
+// The claimed kinds do not come through here. Instances, Repositories and
+// RepositoryCommits are read and written with the manager's client, so a
+// project whose identity cannot be minted still converges its runtime.
+func (r *Reconciler) crossProviderAccess(ctx context.Context, clusterName string, p *aiv1alpha1.Project) (bool, error) {
+	if _, err := r.identityToken(ctx, clusterName, p); err != nil {
+		return false, fmt.Errorf("project identity: %w", err)
 	}
-	return tenantaccess.NewClient(r.HubBase, clusterName, token, r.HubInsecure)
-}
-
-// crossProviderAccess resolves the identity token and the workspace client the
-// dependency half of a reconcile needs. An empty token with a nil error means
-// there is no hub to ask: the caller skips that half rather than failing, and
-// the project is told so once.
-func (r *Reconciler) crossProviderAccess(ctx context.Context, clusterName string, p *aiv1alpha1.Project) (client.Client, string, error) {
-	token, err := r.identityToken(ctx, clusterName, p)
-	if err != nil {
-		return nil, "", fmt.Errorf("project identity: %w", err)
-	}
-	if token == "" {
-		if _, told := r.noIdentityNotices.LoadOrStore(clusterName+"/"+p.Name, struct{}{}); !told {
-			log.Printf("WARNING app-studio project %s: no hub identity service is configured (RAILGRID_HUB_URL), so its instances, repository and commits cannot be converged; the Project itself still reconciles", p.Name)
+	// The per-workspace dependency watch lists and watches the composed kinds
+	// through this provider's export (see package tenantwatch). Once per
+	// cluster; later calls are no-ops until a watcher fails.
+	r.Watches.Ensure(clusterName, dependencyKinds...)
+	if r.Callers == nil {
+		if _, told := r.noCallersNotices.LoadOrStore(clusterName+"/"+p.Name, struct{}{}); !told {
+			log.Printf("WARNING app-studio project %s: no provider credential is configured (RAILGRID_PROVIDER_KUBECONFIG), so its workspace cannot be committed to git; its instances and repository still converge through the APIExport permission claim", p.Name)
 		}
-		return nil, "", nil
+		return false, nil
 	}
-	tc, err := r.tenantClient(clusterName, token)
-	if err != nil {
-		return nil, "", fmt.Errorf("tenant client: %w", err)
-	}
-	// The same identity that writes the dependency objects watches them for
-	// this workspace (once per cluster; later calls are no-ops until a watcher
-	// fails and a different token is offered).
-	r.Watches.Ensure(clusterName, token, dependencyKinds...)
-	return tc, token, nil
+	return true, nil
 }
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -364,18 +368,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Everything below that touches a dependency's objects acts as the
-	// project's hub-minted identity, inside the tenant workspace. Without one
-	// there is no path to those kinds at all, so that half is skipped.
-	tc, token, err := r.crossProviderAccess(ctx, clusterName, &p)
+	// The identity is minted here for the project's workload, and the
+	// dependency watch is engaged. A deployment with no provider credential
+	// still converges everything that is an ordinary Kubernetes verb on a
+	// claimed kind: only the commit call is deferred.
+	canCommit, err := r.crossProviderAccess(ctx, clusterName, &p)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if tc == nil {
-		return ctrl.Result{}, nil
-	}
 
 	// Converge each bound instance, folding observed state per environment.
+	// Instances are a CLAIMED kind: they are served to this provider's own
+	// APIExport virtual workspace in every workspace that accepted the claim,
+	// so they ride c — the same client the Project itself does.
 	instancesNeedRetry := false
 	liveStatuses := make([]aiv1alpha1.ProjectEnvironmentStatus, 0, len(bound))
 	for _, env := range bound {
@@ -400,7 +405,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 					continue
 				}
 			}
-			obj, err := r.ensureInstance(ctx, tc, &p, effectiveBinding)
+			obj, err := r.ensureInstance(ctx, c, &p, effectiveBinding)
 			switch {
 			case apierrors.IsInvalid(err) || bindings.IsInvalidBinding(err):
 				// The API server rejects the spec, or the binding cannot even
@@ -419,6 +424,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 				// and commit convergence below, which is exactly why workspace
 				// changes stopped reaching git. Mark the binding pending,
 				// remember to retry soon, and keep going.
+				//
+				// A workspace that has not accepted the instances claim lands
+				// here too, as a RESTMapper miss rather than an object 404,
+				// and degrades the same way an unreachable workspace does: the
+				// binding reads pending, the reason is logged once a pass, and
+				// the controller's backoff keeps retrying until the binding
+				// catches up with the claim.
+				if crossprovider.ClaimUnaccepted(err) {
+					log.Printf("app-studio project %s: workspace %s does not serve %s yet (the APIExport permission claim is not accepted); binding %q stays pending and will be retried: %v", p.Name, clusterName, crossprovider.InstancesResource, binding.Name, err)
+				}
 				log.Printf("app-studio project %s: instance for binding %q not converged (will retry): %v", p.Name, binding.Name, err)
 				instancesNeedRetry = true
 				bindingStatuses = append(bindingStatuses, bindings.StatusFromObject(binding, nil))
@@ -461,11 +476,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// creates the repo on the git host), then keep git in step with the
 	// workspace. A commit failure is retried with backoff, not escalated —
 	// instances must keep converging regardless.
-	repo, err := r.ensureRepository(ctx, tc, &p)
+	repo, err := r.ensureRepository(ctx, c, &p)
 	if err != nil {
+		if crossprovider.ClaimUnaccepted(err) {
+			log.Printf("app-studio project %s: workspace %s does not serve %s yet (the APIExport permission claim is not accepted); the repository will be converged when it does: %v", p.Name, clusterName, crossprovider.RepositoriesResource, err)
+		}
 		return ctrl.Result{}, fmt.Errorf("repository: %w", err)
 	}
-	commit, err := r.commitWorkspace(ctx, c, tc, token, &p, repo)
+	var commit commitOutcome
+	if canCommit {
+		commit, err = r.commitWorkspace(ctx, c, &p, repo)
+	}
 	if err != nil {
 		log.Printf("app-studio project %s: commit convergence: %v", p.Name, err)
 		commit.retry = true
@@ -803,39 +824,40 @@ func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha
 	}
 
 	if instanceFinalizer {
-		// Steps 2 and 3 share one workspace client, and both are skipped
-		// together when there is no identity to act as — the same deployment
-		// that never created any of it.
+		// Steps 2 and 3 go through c, the manager's client: Repositories and
+		// Instances are claimed kinds, served into this provider's own virtual
+		// workspace wherever the claim was accepted.
 		//
-		// Teardown goes through the tenant-path client like every other
-		// dependency write. Blocking on the identity is deliberate: a
-		// claimed-VW path treated an unserved resource's 404 as "already
-		// gone" and released the finalizer over live instances.
+		// What must NOT happen here is the failure this path was once built to
+		// avoid: an unserved resource answers with a RESTMapper miss, and
+		// reading that as "already gone" would release the finalizer over live
+		// instances. apierrors.IsNotFound is false for that error, so the
+		// deletes below return it, the finalizer stays on, and the chain is
+		// retried from the top — but it is checked explicitly so the reason is
+		// in the log rather than inferred from a mapper error.
 		bound := providerBindings(p)
 		if len(bound) > 0 || p.Spec.Repository != nil {
-			tc, _, err := r.crossProviderAccess(ctx, clusterName, p)
-			if err != nil {
+			if err := r.settleRepository(ctx, c, p); err != nil {
+				if crossprovider.ClaimUnaccepted(err) {
+					log.Printf("app-studio project %s: workspace %s does not serve %s (the APIExport permission claim is not accepted); keeping the finalizer and retrying rather than releasing it over a live repository: %v", p.Name, clusterName, crossprovider.RepositoriesResource, err)
+				}
 				return ctrl.Result{}, err
 			}
-			if tc == nil {
-				log.Printf("app-studio project %s: releasing the instance finalizer without teardown because no hub identity is configured", p.Name)
-			} else {
-				if err := r.settleRepository(ctx, tc, p); err != nil {
-					return ctrl.Result{}, err
-				}
-				for _, env := range bound {
-					for _, binding := range env.bindings {
-						want, _, err := bindings.Desired(p, binding)
-						if err != nil {
-							// Un-buildable desired state also means nothing was created.
-							continue
+			for _, env := range bound {
+				for _, binding := range env.bindings {
+					want, _, err := bindings.Desired(p, binding)
+					if err != nil {
+						// Un-buildable desired state also means nothing was created.
+						continue
+					}
+					obj := &unstructured.Unstructured{}
+					obj.SetGroupVersionKind(want.GroupVersionKind())
+					obj.SetName(want.GetName())
+					if err := c.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+						if crossprovider.ClaimUnaccepted(err) {
+							log.Printf("app-studio project %s: workspace %s does not serve %s (the APIExport permission claim is not accepted); keeping the finalizer and retrying rather than releasing it over live instances: %v", p.Name, clusterName, crossprovider.InstancesResource, err)
 						}
-						obj := &unstructured.Unstructured{}
-						obj.SetGroupVersionKind(want.GroupVersionKind())
-						obj.SetName(want.GetName())
-						if err := tc.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-							return ctrl.Result{}, fmt.Errorf("deleting instance for binding %q: %w", binding.Name, err)
-						}
+						return ctrl.Result{}, fmt.Errorf("deleting instance for binding %q: %w", binding.Name, err)
 					}
 				}
 			}
@@ -858,7 +880,7 @@ func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha
 	if err := r.releaseIdentity(ctx, clusterName, p); err != nil {
 		log.Printf("app-studio project %s: releasing the project identity: %v", p.Name, err)
 	}
-	r.noIdentityNotices.Delete(clusterName + "/" + p.Name)
+	r.noCallersNotices.Delete(clusterName + "/" + p.Name)
 
 	// Step 6.
 	if scope, ok := scopeOf(p); ok {

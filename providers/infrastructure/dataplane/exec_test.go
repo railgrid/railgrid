@@ -104,10 +104,23 @@ func execRequest(t *testing.T, action ExecAction) *http.Request {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest(http.MethodPost, PathPrefix+"clusters/ws/instances/app/components/backend/exec", strings.NewReader(string(raw)))
-	r.Header.Set("Authorization", "Bearer "+callerToken)
+	r := execRequestAt(t, "", string(raw))
 	r.Header.Set("Idempotency-Key", "run-1")
 	return r
+}
+
+// execRequestAt is the exec verb on the backend component of the fixture
+// instance, as it reaches the handler through serve's adapter: kube path with
+// the component as a query parameter, the stamped caller and the parsed route
+// in the context. suffix is appended to the path (a tail exec must refuse).
+func execRequestAt(t *testing.T, suffix, body string) *http.Request {
+	t.Helper()
+	target := verbPath(t, execCluster, "instances", "app", "backend", "exec")
+	if suffix != "" {
+		path, query, _ := strings.Cut(target, "?")
+		target = path + suffix + "?" + query
+	}
+	return stamped(http.MethodPost, target, testUser, strings.NewReader(body))
 }
 
 // execCluster is the logical cluster the exec fixtures live in; the instance's
@@ -117,7 +130,7 @@ const execCluster = "ws"
 func newExecHandlerFor(t *testing.T, instance *unstructured.Unstructured, executor *fakeExecutor, development *fakeDevelopmentGetter) *Handler {
 	t.Helper()
 	return NewHandler(
-		callersIn(execCluster, nil, instance),
+		callersIn(execCluster, instance),
 		&fakeContractGetter{contract: execContract()},
 		&fakeRuntime{},
 		WithExec(executor),
@@ -259,9 +272,9 @@ func TestHandlerExecAllowsReadyRuntimeAndPassesPlatformDevelopment(t *testing.T)
 	if executor.startCall.IdempotencyKey != "run-1" || executor.startCall.Request.RequestID != "run-1" {
 		t.Fatalf("idempotency = %q / %q", executor.startCall.IdempotencyKey, executor.startCall.Request.RequestID)
 	}
-	// The run is keyed on the caller's own bearer and the addressed
+	// The run is keyed on the caller kcp stamped and the addressed
 	// component, both taken from the gated request and never from a body.
-	if executor.startCall.CallerKey != execCallerKey(callerToken) || executor.startCall.Component != "backend" {
+	if executor.startCall.CallerKey != execCallerKey(testCaller) || executor.startCall.Component != "backend" {
 		t.Fatalf("exec call context = callerKey %q component %q", executor.startCall.CallerKey, executor.startCall.Component)
 	}
 	if !strings.Contains(rec.Body.String(), `"truncated":true`) {
@@ -272,7 +285,7 @@ func TestHandlerExecAllowsReadyRuntimeAndPassesPlatformDevelopment(t *testing.T)
 func TestHandlerExecRecordsActivityAfterAuthorization(t *testing.T) {
 	rt := &activityRuntime{fakeRuntime: &fakeRuntime{}}
 	h := NewHandler(
-		callersIn(execCluster, nil, execInstance()),
+		callersIn(execCluster, execInstance()),
 		&fakeContractGetter{contract: execContract()},
 		rt,
 		WithExec(&fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running"}}),
@@ -312,8 +325,8 @@ func TestHandlerExecRejectsMissingIdempotencyAndTail(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing key status = %d, want 400", rec.Code)
 	}
-	r = execRequest(t, ExecActionStart)
-	r.URL.Path += "/tail"
+	r = execRequestAt(t, "/tail", `{"action":"start","requestID":"run-1","sourceRevision":1,"sourceDigest":"sha256:source","argv":["true"]}`)
+	r.Header.Set("Idempotency-Key", "run-1")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	if rec.Code != http.StatusBadRequest {
@@ -325,7 +338,7 @@ func TestHandlerExecRejectsMissingIdempotencyAndTail(t *testing.T) {
 // rather than answer as though the command had run.
 func TestHandlerExecRequiresExecutor(t *testing.T) {
 	h := NewHandler(
-		callersIn(execCluster, nil, execInstance()),
+		callersIn(execCluster, execInstance()),
 		&fakeContractGetter{contract: execContract()},
 		&fakeRuntime{},
 		WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}),
@@ -397,15 +410,14 @@ func fastExecRun(t *testing.T, budget time.Duration) {
 }
 
 func newScriptedExecHandler(executor Executor, rt *fakeRuntime) *Handler {
-	return NewHandler(callersIn(execCluster, nil, execInstance()), &fakeContractGetter{contract: execContract()}, rt,
+	return NewHandler(callersIn(execCluster, execInstance()), &fakeContractGetter{contract: execContract()}, rt,
 		WithExec(executor),
 		WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}))
 }
 
 func postExec(t *testing.T, h *Handler, body, idempotencyKey string) *httptest.ResponseRecorder {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodPost, PathPrefix+"clusters/ws/instances/app/components/backend/exec", strings.NewReader(body))
-	r.Header.Set("Authorization", "Bearer "+callerToken)
+	r := execRequestAt(t, "", body)
 	if idempotencyKey != "" {
 		r.Header.Set("Idempotency-Key", idempotencyKey)
 	}

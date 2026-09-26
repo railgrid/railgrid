@@ -1,0 +1,101 @@
+# Copyright 2026 The Railgrid Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# The endpoint object kcp resolves a custom subresource through.
+#
+# An APIExport entry named "<resource>/<verb>" carries
+# storage.virtual.reference: {apiGroup, kind, name}. kcp resolves that reference
+# in the APIExport's OWN workspace, reads the object unstructured, and expects
+# status.endpoints[] to be a list of kcp Endpoint values
+# (pkg/endpointslice.ListEndpointsFromUnstructured). Any kind with that status
+# shape works, and it must NOT be kcp's own APIExportEndpointSlice: that one
+# publishes the URL of kcp's APIExport virtual workspace, while a railgrid
+# data-plane verb is served by the provider's own HTTP server.
+#
+# One instance per provider, named after the provider's APIExport.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: dataplaneendpointslices.dataplane.railgrid.ai
+spec:
+  group: dataplane.railgrid.ai
+  names:
+    kind: DataPlaneEndpointSlice
+    listKind: DataPlaneEndpointSliceList
+    plural: dataplaneendpointslices
+    singular: dataplaneendpointslice
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    schema:
+      openAPIV3Schema:
+        description: |-
+          DataPlaneEndpointSlice publishes the base URL of the provider's own
+          data-plane server, in the shape kcp reads a virtual-workspace endpoint
+          from. It is written by provider-sdk/install at bootstrap; nothing
+          reconciles it afterwards.
+        type: object
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec carries nothing kcp reads; the URL lives in status.
+            type: object
+            properties:
+              apiExport:
+                description: |-
+                  apiExport is the name of the APIExport whose subresource
+                  entries reference this slice. It is informational: kcp resolves
+                  the reference from the export, not from here.
+                type: string
+          status:
+            type: object
+            properties:
+              endpoints:
+                description: |-
+                  endpoints are the URLs serving this provider's custom
+                  subresources, read by kcp exactly as it reads an
+                  APIExportEndpointSlice's.
+                type: array
+                items:
+                  type: object
+                  required:
+                  - url
+                  properties:
+                    url:
+                      description: url is the base URL of the serving workspace.
+                      type: string
+                      minLength: 1
+                    shards:
+                      description: |-
+                        shards says which kcp shards this URL serves. A single
+                        server for the whole installation sets matchAll, without
+                        which kcp adopts a URL only when it already carries the
+                        serving shard's own prefix.
+                      type: object
+                      properties:
+                        matchAll:
+                          type: boolean
+                        selector:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+    additionalPrinterColumns:
+    - name: URL
+      type: string
+      jsonPath: .status.endpoints[0].url
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp

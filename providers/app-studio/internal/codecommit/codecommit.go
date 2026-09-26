@@ -8,24 +8,32 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package codecommit asks the Code provider to commit files, on the data-plane
-// grammar, for whoever is asking.
+// Package codecommit asks the Code provider to commit files, as App Studio,
+// through App Studio's own APIExport virtual workspace.
 //
 // There is exactly one way to commit a project's files and this is it. Two
-// callers use it and they differ only in whose bearer token they hold:
+// callers use it:
 //
-//   - the Project reconciler (controller/project), as the project's own
-//     hub-minted identity, converging the workspace's dirty set when the
-//     project is idle;
-//   - the assistant's commit_project_files tool (api), as the human who asked
-//     for the commit, through the bearer that authenticated them to App Studio.
+//   - the Project reconciler (controller/project), converging the workspace's
+//     dirty set when the project is idle;
+//   - the assistant's commit_project_files tool (api), when the human asked
+//     for the commit.
 //
-// Neither is special. The Code provider authorizes both with the same two
-// gates — a real GET of the Repository as the caller, then `create` on the
-// `repositories/commit` subresource — so "who may commit" is a question its
-// RBAC answers about the caller, not a question App Studio answers about
-// itself. That is the whole reason this is one package: two copies of the
-// request would be two chances to authorize differently.
+// Both make the call AS THIS PROVIDER. `repositories/commit` and
+// `repositories/stage-commit-bundle` are kcp custom subresources the Code
+// provider publishes on its export; App Studio CLAIMS them (manifest.yaml
+// spec.requires[].resources[]), the tenant accepts the claim at Enable,
+// and kcp serves each on App Studio's virtual workspace at
+//
+//	<export VW>/clusters/{tenant}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb}
+//
+// authorizing the call against the claim, resolving it to whichever Code copy
+// the workspace bound, and forwarding it there impersonating App Studio. The
+// Code gate sees a foreign provider whose claim is the authorization; the
+// human's identity does not travel. Who may ask App Studio to commit is
+// decided on App Studio's side — the caller passed the gate on the Project's
+// own verb — and "may App Studio commit here" is the claim the tenant
+// accepted.
 //
 // What used to be here instead, on the assistant's side, was the
 // `code__commit_files` MCP tool: a tools/call through the tenant's MCP
@@ -41,7 +49,7 @@ You may obtain a copy of the License at
 // the same pending commit.
 //
 // Files larger than the catalogue's 1 MiB input ceiling go up first through
-// `stage_commit_bundle` (the Code provider's uncatalogued large-upload verb,
+// `stage-commit-bundle` (the Code provider's uncatalogued large-upload verb,
 // docs/provider-actions.md §"Uncatalogued large-upload verbs") and the commit
 // then names the handle. A small commit skips the extra round trip.
 package codecommit
@@ -49,13 +57,14 @@ package codecommit
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/railgrid/provider-sdk/dataplane"
 
@@ -64,11 +73,15 @@ import (
 
 const (
 	// Action and StageBundleAction are the two verbs this package invokes on a
-	// Repository. They are named here and in the project identity's clause-C
-	// rules (controller/project/identity.go), and nowhere else.
+	// Repository. They are named here, in manifest.yaml's spec.requires entries
+	// (repositories/commit, repositories/stage-commit-bundle) and in the
+	// project identity's clause-C rules (controller/project/identity.go), and
+	// nowhere else.
 	Action            = "commit"
-	StageBundleAction = "stage_commit_bundle"
-	// ActionVersion is the version segment of the action route.
+	StageBundleAction = "stage-commit-bundle"
+	// ActionVersion is the commit action's contract version. It is not part of
+	// the kube path — the Code provider restores it from its own declaration —
+	// and is kept for the identity rules that still name it.
 	ActionVersion = "v1"
 
 	// InlineMaxBytes is the catalogued input ceiling for commit/v1
@@ -113,12 +126,7 @@ type Ref struct {
 // different object fails closed instead of committing into a stranger's
 // repository.
 type Request struct {
-	// Provider is the name the tenant's workspace binds the Code APIExport
-	// under — read from that workspace's APIBinding, never a constant.
-	Provider string
-	// Token is the caller's bearer. Which caller is the only difference
-	// between this package's two users.
-	Token   string
+	// Cluster is the tenant workspace's logical-cluster ID.
 	Cluster string
 
 	RepositoryRef string
@@ -129,23 +137,28 @@ type Request struct {
 	Files   []File
 }
 
-// Client talks to the hub the provider is reachable behind.
+// Caller is what this package needs of the provider's caller factory
+// (*dataplane.Callers): the URL of a claimed verb through this provider's
+// export virtual workspace, and an HTTP client authenticating as the provider.
+type Caller interface {
+	ExportVerbURL(ctx context.Context, gvr schema.GroupVersionResource, r dataplane.Request) (string, error)
+	ProviderHTTPClient() (*http.Client, error)
+}
+
+// RepositoriesGVR is the Code kind the two verbs hang off.
+var RepositoriesGVR = schema.GroupVersionResource{Group: crossprovider.CodeAPIGroup, Version: "v1alpha1", Resource: crossprovider.RepositoriesResource}
+
+// Client reaches the Code provider's verbs as this provider.
 type Client struct {
-	// HubBase is the hub origin; the action route is appended to it.
-	HubBase string
-	// Insecure skips hub TLS verification — the same RAILGRID_HUB_INSECURE
-	// dev opt-in every other hub client here honours.
-	Insecure bool
-	// HTTP overrides the transport in tests. Nil builds one per call from
-	// HubBase/Insecure.
-	HTTP *http.Client
+	// Callers addresses and authenticates the call. Required.
+	Callers Caller
 }
 
 // Commit asks the Code provider for one commit and returns the
 // RepositoryCommit it created. It does not wait for that commit to land.
 func (c *Client) Commit(ctx context.Context, req Request) (Ref, error) {
-	if c == nil || strings.TrimSpace(c.HubBase) == "" {
-		return Ref{}, fmt.Errorf("no hub configured to reach the Code provider with")
+	if c == nil || c.Callers == nil {
+		return Ref{}, fmt.Errorf("no provider credential configured to reach the Code provider with")
 	}
 	if len(req.Files) == 0 {
 		return Ref{}, fmt.Errorf("a commit needs at least one file")
@@ -188,7 +201,7 @@ func (c *Client) Commit(ctx context.Context, req Request) (Ref, error) {
 	return out.Commit, nil
 }
 
-// StagedBundle is the handle stage_commit_bundle returns.
+// StagedBundle is the handle stage-commit-bundle returns.
 type StagedBundle struct {
 	BundleRef    string `json:"bundleRef"`
 	BundleDigest string `json:"bundleDigest"`
@@ -216,28 +229,29 @@ func (c *Client) stage(ctx context.Context, req Request) (StagedBundle, error) {
 
 // invoke POSTs one action envelope and decodes its result.
 func (c *Client) invoke(ctx context.Context, req Request, action string, body []byte, out any) error {
-	route, err := dataplane.ProviderPath(req.Provider, dataplane.ActionsRoot, dataplane.Request{
+	endpoint, err := c.Callers.ExportVerbURL(ctx, RepositoriesGVR, dataplane.Request{
 		ClusterID: req.Cluster,
 		Resource:  crossprovider.RepositoriesResource,
 		Name:      req.RepositoryRef,
 		Verb:      action,
-		Version:   ActionVersion,
 	})
 	if err != nil {
-		return fmt.Errorf("addressing %s on provider %q: %w", action, req.Provider, err)
+		return fmt.Errorf("addressing %s on the Code provider: %w", action, err)
+	}
+	client, err := c.Callers.ProviderHTTPClient()
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
 	}
 	callCtx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
-	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, strings.TrimRight(c.HubBase, "/")+route, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+req.Token)
-	httpReq.Header.Set(dataplane.HeaderCluster, req.Cluster)
 
-	resp, err := c.httpClient().Do(httpReq)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
@@ -271,16 +285,4 @@ func (c *Client) invoke(ctx context.Context, req Request, action string, body []
 		return fmt.Errorf("%s: %w", action, err)
 	}
 	return nil
-}
-
-func (c *Client) httpClient() *http.Client {
-	if c.HTTP != nil {
-		return c.HTTP
-	}
-	return &http.Client{
-		Timeout: Timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: c.Insecure}, //nolint:gosec // dev opt-in, same knob as every other hub client here
-		},
-	}
 }

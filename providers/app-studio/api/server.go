@@ -14,16 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package api serves the App Studio projects REST + LLM surface. It runs in
-// the standalone provider binary: the hub's backend proxy forwards
-// /services/providers/app-studio/* here (stripping that prefix), injecting the
-// verified X-Railgrid-Tenant/X-Railgrid-User headers and forwarding the caller's
-// bearer token. Every request therefore acts as the calling user against the
-// tenant's kcp workspace — there is no provider service-account escalation.
+// Package api serves the App Studio data-plane verbs and the assistant. It
+// runs in the standalone provider binary: every verb is a kcp custom
+// subresource on this provider's APIExport, which a kcp shard authorizes with
+// ordinary RBAC and reverse-proxies here with the caller's identity stamped
+// in requestheader headers. There is no caller bearer: after the gate decides
+// the caller may see the addressed object, a handler acts AS THE PROVIDER
+// through its APIExport virtual workspace, and any further question about
+// the caller is a SubjectAccessReview on their behalf (dataplane.Authorize).
 package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -35,7 +38,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/railgrid/provider-sdk/dataplane"
-	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -79,37 +81,42 @@ type Server struct {
 	actionsCABundleErr error
 	// providerActionCatalogResolver is a test seam for the authenticated hub
 	// catalog lookup. Production leaves it nil so grants always resolve via
-	// GET /api/providers using the caller's bearer token.
+	// GET /api/providers, as the provider (hubToken).
 	providerActionCatalogResolver providerActionCatalogResolver
-	mcpInsecureSkipTLSVerify      bool
-	previewInsecureSkipTLSVerify  bool
-	assistantEngine               projectAssistantEngine
+	// hubToken is the bearer this provider presents on the hub's OWN REST API
+	// and MCP aggregate — the provider catalog, the membership rosters, the
+	// browser-session handoff, the workspace MCP endpoint. Those are not
+	// data-plane verbs and are still reached on the hub; a verb carries no
+	// caller credential to forward there, so they are made as the provider,
+	// with the kcp-authenticated caller's name as the X-Railgrid-User label.
+	hubToken                     string
+	mcpInsecureSkipTLSVerify     bool
+	previewInsecureSkipTLSVerify bool
+	assistantEngine              projectAssistantEngine
 	// assistantThreadTitleGenerator is a test seam for the detached, one-shot
 	// title request. Production leaves it nil and uses the connected project LLM.
 	assistantThreadTitleGenerator func(context.Context, *asclient.Client, string) (string, error)
 	// projectClientFor is an optional test seam for handlers that need a
-	// workspace-scoped Project client without a hub proxy endpoint.
-	// Production leaves it nil and uses clientFor's caller-scoped proxy path.
+	// workspace-scoped Project client without a provider credential.
+	// Production leaves it nil and uses clientFor's provider-scoped client.
 	projectClientFor func(identity) (*asclient.Client, error)
-	// tenantWorkspaces maps the cluster ID the hub identifies a tenant by to
-	// the workspace's path / org / workspace UUIDs, read from kcp as the
-	// caller. Nil without a hub URL; identity then carries no org/workspace
-	// scope.
+	// tenantWorkspaces maps the cluster ID a verb's path names to the
+	// workspace's path / org / workspace UUIDs, read from kcp through this
+	// provider's export virtual workspace. Nil without a provider credential;
+	// identity then carries no org/workspace scope.
 	tenantWorkspaces workspaceLookup
-	// tenantActors resolves the AUTHENTICATED caller behind a request's
-	// bearer, through a SelfSubjectReview on the request's own cluster. It is
-	// the only source of identity.actor; X-Railgrid-User is a label.
+	// tenantActors is a TEST SEAM over the caller kcp stamped. Production
+	// leaves it nil: the actor is dataplane.ProxiedIdentity.User, and
+	// X-Railgrid-User is a label.
 	tenantActors actorLookup
-	// tenantProviders resolves which provider serves a dependency's APIExport
-	// in a given workspace, from that workspace's own APIBindings. Every
-	// cross-provider URL is built from it, so a self-hosted copy of a
-	// dependency is reached by the name the tenant enabled rather than by a
-	// constant compiled in here.
+	// tenantProviders reports whether a dependency is enabled in a workspace,
+	// by whether its claimed kinds are served through this provider's export.
 	tenantProviders providerLookup
-	// callers builds the caller-scoped client the data plane's two gates run
-	// through. It holds no provider credential at all: the only way a
-	// data-plane request is authorized is the caller's own bearer.
-	callers dataplane.CallerFactory
+	// callers is this provider's caller factory: it acts as the provider in a
+	// tenant workspace (the gate, every handler's client) and calls the verbs
+	// of other providers this one has claimed, through its own export
+	// virtual workspace. Nil fails every verb closed.
+	callers providerCallers
 	// llmDiscoveryHTTPClient is a narrow test seam for credential-scoped model
 	// catalog requests. Production uses a redirect-denying bounded client.
 	llmDiscoveryHTTPClient *http.Client
@@ -200,8 +207,8 @@ type Server struct {
 	projectThumbnailWorkersUp   bool
 	// publishingMembershipFetcher is a test seam for the hub-mediated
 	// membership lookup used by the publishing API. Production resolves the
-	// current org/workspace membership through hubBase with the caller's bearer
-	// token; App Studio never treats an email address as a grant identity.
+	// current org/workspace membership through hubBase as the provider
+	// (hubToken); App Studio never treats an email address as a grant identity.
 	publishingMembershipFetcher func(context.Context, identity) ([]publishingMember, error)
 	// publishingMemberInviter is the matching test seam for invite-by-email:
 	// production POSTs the hub org-membership endpoint with invite semantics
@@ -241,10 +248,6 @@ func NewWithWorkspaceContext(parent context.Context, tenantClient *tenant.Client
 		attachmentDraftRetention: store.DefaultAttachmentDraftRetention,
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
-		tenantWorkspaces:         workspaceLookupFor(tenantClient, hubBase, mcpInsecureSkipTLSVerify),
-		tenantActors:             actorLookupFor(hubBase, mcpInsecureSkipTLSVerify),
-		tenantProviders:          providerLookupFor(hubBase, mcpInsecureSkipTLSVerify),
-		callers:                  callerFactoryFor(hubBase, mcpInsecureSkipTLSVerify),
 		hubPublicURL:             strings.TrimSpace(os.Getenv("RAILGRID_HUB_PUBLIC_URL")),
 		actionsExternalURL:       strings.TrimSpace(os.Getenv("RAILGRID_ACTIONS_EXTERNAL_URL")),
 		actionsCABundle:          actionsCABundle,
@@ -379,26 +382,45 @@ func (s *Server) attachmentRetention() time.Duration {
 	return s.attachmentDraftRetention
 }
 
-// clientFor builds a workspace-scoped client acting as the caller, talking to
-// the hub's kcp proxy for the caller's current workspace cluster.
+// clientFor builds a workspace-scoped client acting AS THE PROVIDER in the
+// caller's workspace cluster, through this provider's export virtual
+// workspace. When the request came through the dispatcher it is the very
+// client the gate read the addressed object with.
 func (s *Server) clientFor(id identity) (*asclient.Client, error) {
 	if s.projectClientFor != nil {
 		return s.projectClientFor(id)
 	}
-	scope, err := s.tenant.For(id.clusterID, id.token)
+	if id.provider != nil {
+		return asclient.NewFromScope(tenant.NewScopeFromDynamic(id.provider)), nil
+	}
+	if s.tenant == nil {
+		return nil, errors.New("no provider credential configured; cannot act in the tenant workspace")
+	}
+	scope, err := s.tenant.For(id.clusterID)
 	if err != nil {
 		return nil, err
 	}
 	return asclient.NewFromScope(scope), nil
 }
 
-// workspaceLookupFor returns the kcp-backed workspace lookup for a hub, or nil
-// when the server has no hub to ask (bare dev / tests).
-func workspaceLookupFor(tenantClient *tenant.Client, hubBase string, insecure bool) workspaceLookup {
-	if tenantClient == nil || strings.TrimSpace(hubBase) == "" {
+// tenantClientFor wraps the caller factory as the tenant client handlers
+// build their per-cluster scope from.
+func tenantClientFor(callers dataplane.ProviderCallerFactory) *tenant.Client {
+	if callers == nil {
 		return nil
 	}
-	return tenantaccess.NewWorkspaceResolver(hubBase, insecure, 0).Resolve
+	return tenant.NewClient(callers)
+}
+
+// SetHubToken installs the bearer this provider presents on the hub's own REST
+// API and MCP aggregate (see Server.hubToken).
+func (s *Server) SetHubToken(token string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hubToken = hubTokenFrom(token)
 }
 
 // requireProjectClient resolves the caller identity and a workspace-scoped
@@ -417,12 +439,12 @@ func (s *Server) requireProjectClient(w http.ResponseWriter, r *http.Request) (*
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required for this endpoint — cluster "+id.clusterID+" is an organization workspace; select a workspace first")
 		return nil, identity{}, false
 	}
-	if s.tenant == nil && s.projectClientFor == nil {
-		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant client not configured — provider has no hub URL")
+	if s.tenant == nil && s.projectClientFor == nil && id.provider == nil {
+		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant client not configured — provider has no kcp credential")
 		return nil, identity{}, false
 	}
 	if id.clusterID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Railgrid-Cluster missing) — the hub did not resolve a cluster for this workspace")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request — the path names no logical cluster")
 		return nil, identity{}, false
 	}
 	if id.user == "" {

@@ -48,9 +48,11 @@ test('initialises against a host that exposes fetch and no token', async () => {
   assert.notEqual(api.value, null, 'api must be created from ctx.fetch alone')
   await query({ limit: 1 })
   assert.equal(calls.length, 1, 'the query must go through the host transport')
+  // The verb is a kube path on the kcp front door, never the hub's
+  // /services/providers/ backend proxy.
   assert.equal(
     calls[0].input,
-    `/services/providers/kuery/dataplane/clusters/${cluster}/savedviews/${savedView.value}/run`,
+    `/clusters/${cluster}/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/${savedView.value}/run`,
   )
 })
 

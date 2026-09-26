@@ -58,8 +58,12 @@ func newTestServer(t *testing.T) http.Handler {
 		MCP:       echoHandler("mcp"),
 		DataPlane: echoHandler("dataplane"),
 		Actions:   echoHandler("actions"),
-		HubOnly:   map[string]http.Handler{"/workload-identities/review": echoHandler("hubonly")},
-		OAuth:     echoHandler("oauth"),
+		Subresources: map[string]serve.SubresourceRoute{
+			"greetings/greet":    {},
+			"repositories/build": {Action: true, Version: "v1"},
+		},
+		HubOnly: map[string]http.Handler{"/workload-identities/review": echoHandler("hubonly")},
+		OAuth:   echoHandler("oauth"),
 		Extra: []serve.Route{
 			{Prefix: serve.AgentPrefix, Class: serve.ClassAgentTunnel, Handler: echoHandler("agent")},
 			{Prefix: serve.WebhooksPrefix, Class: serve.ClassWebhook, Handler: echoHandler("webhook")},
@@ -74,7 +78,11 @@ func newTestServer(t *testing.T) http.Handler {
 func get(t *testing.T, handler http.Handler, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
+	request := httptest.NewRequest(method, path, nil)
+	// What a kcp shard stamps onto a forwarded custom subresource; harmless
+	// on every other class.
+	request.Header.Set(dataplane.HeaderRemoteUser, "alice")
+	handler.ServeHTTP(recorder, request)
 	return recorder
 }
 
@@ -90,8 +98,8 @@ func TestEveryClassIsRoutedToItsOwnHandler(t *testing.T) {
 		class string // "" means the portal answered
 		body  string // substring expected when class is ""
 	}{
-		{name: "(a) data-plane verb", path: "/dataplane/clusters/aaaaaaaaaaaaaaaa/greetings/hello/greet", class: "dataplane"},
-		{name: "(a') action", path: "/actions/clusters/aaaaaaaaaaaaaaaa/repositories/r/build/v1", class: "actions"},
+		{name: "(a) data-plane verb", path: "/clusters/aaaaaaaaaaaaaaaa/apis/example.railgrid.ai/v1alpha1/greetings/hello/greet", class: "dataplane"},
+		{name: "(a') action", path: "/clusters/aaaaaaaaaaaaaaaa/apis/example.railgrid.ai/v1alpha1/repositories/r/build", class: "actions"},
 		{name: "(b) mcp", path: "/mcp", class: "mcp"},
 		{name: "(b) mcp sse", path: "/mcp/sse", class: "mcp"},
 		{name: "(c) readyz", path: "/readyz", class: "readyz"},
@@ -122,7 +130,7 @@ func TestEveryClassIsRoutedToItsOwnHandler(t *testing.T) {
 				t.Fatalf("GET %s: answered by %q, want %q", tc.path, got.Class, tc.class)
 			}
 			if got.Path != tc.path {
-				t.Fatalf("GET %s: handler saw path %q", tc.path, got.Path)
+				t.Fatalf("GET %s: handler saw path %q; the URL must arrive unmodified", tc.path, got.Path)
 			}
 		})
 	}
@@ -157,9 +165,6 @@ func TestGrammarPrefixesReachTheHandlerUnrewritten(t *testing.T) {
 	handler := newTestServer(t)
 
 	for _, path := range []string{
-		"/dataplane/x/../y",
-		"/dataplane/clusters/aaaaaaaaaaaaaaaa/greetings/hello//greet",
-		"/actions/x/../y",
 		"/agent/x/../y",
 		"/webhooks/x/../y",
 	} {
@@ -229,6 +234,11 @@ func TestNewRefuses(t *testing.T) {
 				{Prefix: serve.AgentPrefix, Class: "portal", Handler: ok},
 			}},
 			want: "only",
+		},
+		{
+			name:    "a data-plane handler with no declared coordinates",
+			options: serve.Options{Name: "p", Readiness: ok, DataPlane: ok},
+			want:    "no Subresources declared",
 		},
 		{
 			name:    "a hub-only route the hub proxy would not deny",
@@ -305,17 +315,20 @@ var greetings = schema.GroupVersionResource{Group: "example.railgrid.ai", Versio
 
 // greetActions is the minimal action handler from the dataplane README. It is
 // here so the suite runs against a handler mounted in a real serve.New server
-// rather than against a bare mux: the grammar prefixes have to survive the
-// server, not just the parser.
-type greetActions struct{ callers dataplane.CallerFactory }
+// rather than bare: the adapter, not the handler, parses the path and
+// restores the action's version.
+type greetActions struct {
+	callers dataplane.ProviderCallerFactory
+}
 
 func (g *greetActions) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	req, ok := dataplane.ParseRequest(dataplane.ActionsRoot, r)
-	if !ok || req.Resource != greetings.Resource || req.Version != "v1" || req.Tail != "" {
+	route, ok := dataplane.RouteFrom(r.Context())
+	if !ok || route.Resource != greetings.Resource || route.Version != "v1" || route.Tail != "" {
 		dataplane.WriteError(w, dataplane.ErrBadPath)
 		return
 	}
-	object, _, err := dataplane.Gate(r.Context(), r, g.callers, greetings, req)
+	req := route.Request
+	object, _, err := dataplane.Gate(r.Context(), g.callers, greetings, req)
 	if err != nil {
 		dataplane.WriteError(w, err)
 		return
@@ -339,12 +352,11 @@ func (g *greetActions) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func TestServerIsDataPlaneConformant(t *testing.T) {
 	callers := &conformance.FakeCallers{
 		Cluster:   conformanceCluster,
-		Token:     "caller-token",
+		User:      "alice@railgrid.test",
 		Objects:   []*unstructured.Unstructured{greeting("hello")},
 		ListKinds: map[schema.GroupVersionResource]string{greetings: "GreetingList"},
 		Allow: func(a conformance.Attributes) bool {
-			return a.Verb == dataplane.SSARVerb && a.Group == greetings.Group &&
-				a.Resource == greetings.Resource && a.Subresource == "greet"
+			return a.Verb == "get" && a.Group == greetings.Group && a.Resource == greetings.Resource && a.Name == "hello"
 		},
 	}
 
@@ -353,21 +365,24 @@ func TestServerIsDataPlaneConformant(t *testing.T) {
 		Readiness: echoHandler("readyz"),
 		Portal:    testPortal(),
 		Actions:   &greetActions{callers: callers},
+		Subresources: map[string]serve.SubresourceRoute{
+			"greetings/greet": {Action: true, Version: "v1"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("serve.New: %v", err)
 	}
 
-	base := "/actions/clusters/" + conformanceCluster + "/greetings/hello/"
+	base := "/clusters/" + conformanceCluster + "/apis/" + greetings.Group + "/" + greetings.Version + "/greetings/hello/"
 	conformance.Test(t, handler, conformance.Fixtures{
 		Callers:     callers,
-		GrantedPath: base + "greet/v1",
-		DeniedPath:  base + "shout/v1",
+		GrantedPath: base + "greet",
+		DeniedPath:  base + "shout", // declared nowhere, so the adapter never dispatches it
 		MalformedPaths: []string{
-			"/actions/clusters/" + conformanceCluster + "/greetings/../greet/v1",
-			"/actions/clusters/" + conformanceCluster + "/greetings/hello//v1",
-			"/actions/clusters/root:railgrid:tenants:acme/greetings/hello/greet/v1",
-			base + "greet",
+			"/clusters/" + conformanceCluster + "/apis/" + greetings.Group + "/" + greetings.Version + "/greetings/../greet",
+			"/clusters/" + conformanceCluster + "/apis/" + greetings.Group + "/" + greetings.Version + "/greetings/hello//greet",
+			"/clusters/root:railgrid:tenants:acme/apis/" + greetings.Group + "/" + greetings.Version + "/greetings/hello/greet",
+			base + "status",
 		},
 		MaxInputBytes:  4096,
 		ExpectEnvelope: true,

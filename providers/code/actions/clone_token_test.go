@@ -6,92 +6,47 @@
 package actions
 
 import (
-	"context"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	api "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
-	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/dataplane/conformance"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
-// A grant is per (resource, action), and mint_clone_token is bound to a
-// Repository: a caller who may clone one repository has been told nothing
-// about any other repository the same Connection reaches, and a caller who may
-// read branches may not take a credential away with it.
-func TestCloneTokenIsGrantedPerRepositoryAction(t *testing.T) {
-	const cluster = "tenant-id"
-	repo := &api.Repository{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository"},
-		ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo-uid"},
-		Spec:       api.RepositorySpec{ConnectionRef: "git", Name: "product"},
-		Status:     api.RepositoryStatus{RepoID: "123", CloneURL: "https://github.com/example/product.git"},
-	}
-	conn := &api.Connection{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Connection"},
-		ObjectMeta: metav1.ObjectMeta{Name: "git", UID: "conn-uid"},
-		Spec:       api.ConnectionSpec{Provider: api.ProviderGitHub, Type: api.CredentialTypePAT, Owner: "example", SecretRef: api.LocalSecretReference{Name: "git-key"}},
-	}
-	secret := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "v1", "kind": "Secret",
-		"metadata": map[string]any{"name": "git-key", "namespace": "default"},
-		"data":     map[string]any{"token": base64.StdEncoding.EncodeToString([]byte("provider-secret"))},
-	}}
-
-	newServer := func(allow func(conformance.Attributes) bool) (*Server, *conformance.FakeCallers, *dynamicfake.FakeDynamicClient) {
-		provider := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), actionObject(t, repo), actionObject(t, conn), secret)
-		callers := &conformance.FakeCallers{
-			Cluster:   cluster,
-			Token:     "caller-token",
-			Objects:   []*unstructured.Unstructured{actionObject(t, repo)},
-			ListKinds: map[schema.GroupVersionResource]string{repositories: "RepositoryList"},
-			Allow:     allow,
-		}
-		server := New(callers, func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error) {
-			return provider, nil
-		}, backend.NewRegistry())
-		return server, callers, provider
+// mint-clone-token is bound to a Repository: kcp authorizes `create` on
+// repositories/mint-clone-token before forwarding, and the gate here asks only
+// whether the caller can see THAT Repository. What comes back is a clone
+// credential, read and minted as the provider — the caller never holds the
+// Connection's own credential, which is the whole reason the action exists.
+func TestCloneTokenIsGatedOnRepositoryVisibility(t *testing.T) {
+	newServer := func(allow func(conformance.Attributes) bool) (*Server, *conformance.FakeCallers) {
+		callers := newCallers(allow, actionObject(t, testRepository()), actionObject(t, testConnection()), testSecret())
+		return New(callers, backend.NewRegistry()), callers
 	}
 
-	path := "/actions/clusters/" + cluster + "/repositories/product/" + MintCloneToken + "/v1"
+	path := kubePath(testCluster, "repositories", "product", MintCloneToken)
 	body := `{"input":{"repositoryUID":"repo-uid","connectionUID":"conn-uid"}}`
 	invoke := func(server *Server) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-		request.Header.Set("Authorization", "Bearer caller-token")
-		request.Header.Set(dataplane.HeaderCluster, cluster)
 		recorder := httptest.NewRecorder()
-		server.ServeHTTP(recorder, request)
+		server.ServeHTTP(recorder, actionRequest(http.MethodPost, path, strings.NewReader(body), testUser))
 		return recorder
 	}
 
-	// A grant on another repository action does not reach this one.
-	readOnly, _, provider := newServer(func(a conformance.Attributes) bool {
-		return a.Verb == dataplane.SSARVerb && a.Resource == "repositories" && a.Subresource == "branches"
-	})
-	if recorder := invoke(readOnly); recorder.Code == http.StatusOK {
-		t.Fatalf("a branches grant minted a clone token: %s", recorder.Body.String())
+	// A caller who cannot see the Repository learns nothing and reaches no
+	// Secret.
+	denied, callers := newServer(allowGet("connections", "git"))
+	if recorder := invoke(denied); recorder.Code != http.StatusNotFound {
+		t.Fatalf("a caller who cannot see the repository got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	for _, action := range provider.Actions() {
-		if action.GetResource().Resource == "secrets" {
-			t.Fatal("a denied caller reached the credential Secret")
-		}
+	if readSecrets(providerClient(t, callers)) {
+		t.Fatal("a denied caller reached the credential Secret")
 	}
 
-	// The matching grant does, and what comes back is a clone credential.
-	granted, callers, _ := newServer(func(a conformance.Attributes) bool {
-		return a.Verb == dataplane.SSARVerb && a.Resource == "repositories" && a.Subresource == MintCloneToken
-	})
+	// A caller who can does, and what comes back is a clone credential.
+	granted, _ := newServer(allowGet("repositories", "product"))
 	recorder := invoke(granted)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("granted mint: got %d, body %s", recorder.Code, recorder.Body.String())
@@ -113,23 +68,11 @@ func TestCloneTokenIsGrantedPerRepositoryAction(t *testing.T) {
 	if envelope.Result.Scoped {
 		t.Fatal("a PAT-backed credential was reported as scoped")
 	}
-	// The credential is the provider's to read, never the caller's: the whole
-	// reason it sits behind an action is that the consumer must not hold it.
-	callerClient, err := callers.For(cluster, callers.Token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, action := range callerClient.(*dynamicfake.FakeDynamicClient).Actions() {
-		if action.GetResource().Resource == "secrets" {
-			t.Fatal("the caller's own identity read the credential Secret")
-		}
-	}
 }
 
-// The identity fences are the same ones every repository action has: what gate
-// 1 returned must still be what the provider reads with its own identity.
+// The identity fences are the same ones every repository action has: what the
+// caller says it saw must still be what the provider reads.
 func TestCloneTokenPinsRepositoryAndConnectionIdentity(t *testing.T) {
-	const cluster = "tenant-id"
 	for _, test := range []struct {
 		name  string
 		input string
@@ -141,43 +84,15 @@ func TestCloneTokenPinsRepositoryAndConnectionIdentity(t *testing.T) {
 		{"unknown member", `{"repositoryUID":"repo-uid","connectionUID":"conn-uid","branch":"main"}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repo := &api.Repository{
-				TypeMeta:   metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository"},
-				ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo-uid"},
-				Spec:       api.RepositorySpec{ConnectionRef: "git", Name: "product"},
-				Status:     api.RepositoryStatus{RepoID: "123", CloneURL: "https://github.com/example/product.git"},
-			}
-			conn := &api.Connection{
-				TypeMeta:   metav1.TypeMeta{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Connection"},
-				ObjectMeta: metav1.ObjectMeta{Name: "git", UID: "conn-uid"},
-				Spec:       api.ConnectionSpec{Provider: api.ProviderGitHub, Type: api.CredentialTypePAT, Owner: "example", SecretRef: api.LocalSecretReference{Name: "git-key"}},
-			}
-			secret := &unstructured.Unstructured{Object: map[string]any{
-				"apiVersion": "v1", "kind": "Secret",
-				"metadata": map[string]any{"name": "git-key", "namespace": "default"},
-				"data":     map[string]any{"token": base64.StdEncoding.EncodeToString([]byte("provider-secret"))},
-			}}
-			provider := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), actionObject(t, repo), actionObject(t, conn), secret)
-			callers := &conformance.FakeCallers{
-				Cluster:   cluster,
-				Token:     "caller-token",
-				Objects:   []*unstructured.Unstructured{actionObject(t, repo)},
-				ListKinds: map[schema.GroupVersionResource]string{repositories: "RepositoryList"},
-				Allow: func(a conformance.Attributes) bool {
-					return a.Verb == dataplane.SSARVerb && a.Resource == "repositories" && a.Subresource == MintCloneToken
-				},
-			}
-			server := New(callers, func(context.Context, string, schema.GroupVersionResource, string) (dynamic.Interface, error) {
-				return provider, nil
-			}, backend.NewRegistry())
-
-			request := httptest.NewRequest(http.MethodPost, "/actions/clusters/"+cluster+"/repositories/product/"+MintCloneToken+"/v1", strings.NewReader(`{"input":`+test.input+`}`))
-			request.Header.Set("Authorization", "Bearer caller-token")
-			request.Header.Set(dataplane.HeaderCluster, cluster)
+			callers := newCallers(allowGet("repositories", "product"), actionObject(t, testRepository()), actionObject(t, testConnection()), testSecret())
+			server := New(callers, backend.NewRegistry())
 			recorder := httptest.NewRecorder()
-			server.ServeHTTP(recorder, request)
+			server.ServeHTTP(recorder, actionRequest(http.MethodPost, kubePath(testCluster, "repositories", "product", MintCloneToken), strings.NewReader(`{"input":`+test.input+`}`), testUser))
 			if recorder.Code == http.StatusOK {
 				t.Fatalf("%s produced a credential: %s", test.name, recorder.Body.String())
+			}
+			if readSecrets(providerClient(t, callers)) {
+				t.Fatalf("%s reached the credential Secret", test.name)
 			}
 		})
 	}

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	sdkinstall "github.com/railgrid/provider-sdk/install"
 
@@ -38,15 +39,17 @@ const (
 //     tenant-visible API. See the install package.
 //
 // kuery's APIExport (config/kcp/apiexport-kuery.providers.railgrid.ai.yaml,
-// generated from manifest.yaml) carries NO permission claims at all.
+// generated from manifest.yaml) carries no HAND-WRITTEN permission claim: every
+// claim on it is derived from manifest.yaml spec.requires, which is the one
+// place kuery declares what it needs that it does not own.
 //
-// No first-party (*.railgrid.ai) claim, because such a claim must pin the
-// serving APIExport's identityHash and an export pins exactly one identity per
-// claimed resource — for every consuming workspace at once — which breaks the
-// moment one org self-hosts the edges provider while others use the platform
-// copy. What the engagement controller needs on an edge is declared as a
-// COMPOSITION instead (manifest.yaml spec.dependencies[].composes) and reached
-// through a hub-minted scoped identity acting inside each tenant workspace.
+// And none of those claims PINS an identityHash. A pinned first-party
+// (*.railgrid.ai) claim fixes exactly one serving identity per claimed resource
+// — for every consuming workspace at once — which breaks the moment one org
+// self-hosts the edges provider while others use the platform copy. An unpinned
+// claim is resolved per consumer workspace against whatever export that
+// workspace actually bound, which is what lets the engagement controller reach
+// an edge through kuery's own export virtual workspace.
 //
 // And no built-in types either: those existed only to provision a
 // ServiceAccount, a ClusterRole, a binding and a token Secret by hand. A
@@ -67,23 +70,24 @@ func runInitCmd(ctx context.Context) error {
 	if kcpDir == "" {
 		kcpDir = "/etc/railgrid/kcp"
 	}
-	// Per-installation APIExport identity hashes for first-party claim groups,
-	// as "group=hash,group=hash". Empty for this provider: it claims nothing,
-	// so there is no hash to stamp.
-	identityHashes, err := sdkinstall.ParseIdentityHashes(os.Getenv("RAILGRID_IDENTITY_HASHES"))
-	if err != nil {
-		return err
-	}
-
-	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
+	// The same lookup serve uses to derive its custom-subresource routes
+	// (catalogentry.go), so init and serve can never read a different
+	// declaration. Empty → skip.
+	catalogEntryFile := catalogEntryPath()
+	// Where kcp reverse-proxies a custom subresource request to. Empty means
+	// "spec.serving.backend.url of the CatalogEntry above", which is right whenever the
+	// chart runs init; a harness that registers the CatalogEntry itself (the
+	// Makefile's install-provider-* target, the provider e2e) has no file to
+	// read it from and sets this instead.
+	dataPlaneURL := strings.TrimSpace(os.Getenv("RAILGRID_DATAPLANE_URL"))
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:           config,
 		ExportName:       apiExportName,
 		WorkspacePath:    workspacePath,
 		KCPDir:           kcpDir,
-		IdentityHashes:   identityHashes,
 		CatalogEntryFile: catalogEntryFile,
+		DataPlaneURL:     dataPlaneURL,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}

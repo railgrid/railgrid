@@ -23,19 +23,14 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
-// Options configures the servicectrl controllers.
-type Options struct {
-	// EdgeProxyPublicPath is the public consumer-egress base (behind the hub
-	// backend proxy), e.g. /services/providers/edges/edgeproxy. Stamped into
-	// Service status.URL. Empty disables URL stamping.
-	EdgeProxyPublicPath string
-}
-
 // SetupWithManager registers both Service controllers on the multicluster
-// manager, sharing the tunnel ConnManager for agent dials.
-func SetupWithManager(mgr mcmanager.Manager, connManager ConnManager, opts Options) error {
+// manager, sharing the tunnel ConnManager for agent dials. The validation
+// reconciler stamps each Service's status.URL / status.mcpURL with the
+// hub-relative kube path of its verbs; nothing about that is configurable,
+// because the grammar has one spelling.
+func SetupWithManager(mgr mcmanager.Manager, connManager ConnManager) error {
 	if err := SetupDiscoveryWithManager(mgr, connManager); err != nil {
 		return err
 	}
-	return SetupValidationWithManager(mgr, connManager, opts.EdgeProxyPublicPath)
+	return SetupValidationWithManager(mgr, connManager)
 }

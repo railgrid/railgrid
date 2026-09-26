@@ -14,15 +14,20 @@
 // subresources. The tunnel Server dispatches by the resource segment in the URL
 // path, so both kinds share one pod, one APIExport, one CatalogEntry.
 //
-// Routes (all behind the hub backend proxy at /services/providers/edges/*).
-// The whole surface is built by provider-sdk/serve, which takes one handler
-// per Pillar 2 route class and refuses anything that is not one:
+// Routes. The whole surface is built by provider-sdk/serve, which takes one
+// handler per Pillar 2 route class and refuses anything that is not one:
 //
 //   - /healthz, /readyz                                 (c) liveness, readiness
-//   - /mcp, /mcp/sse                                    (b) provider MCP projection
-//   - /dataplane/clusters/{cluster}/{resource}/{name}/{verb}[/{tail}]
-//     (a) consumer egress: k8s | ssh | mcp | proxy | ticket
-//   - /agent/clusters/{cluster}/{resource}/{name}/proxy (f) agent control tunnel
+//   - /mcp, /mcp/sse                                    (b) provider MCP projection,
+//     behind the hub backend proxy at /services/providers/edges/mcp
+//   - /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail}]
+//     (a) consumer data plane: k8s | ssh | mcp | proxy | agent-token |
+//     ssh-credentials | addon-credentials — every verb is a kcp custom
+//     subresource on this provider's APIExport, addressed on the hub's kcp
+//     front door and reverse-proxied here by the serving shard with the
+//     caller's identity stamped; there is no hub-proxied spelling
+//   - /agent/clusters/{cluster}/{resource}/{name}/proxy (f) agent control tunnel,
+//     behind the hub backend proxy at /services/providers/edges/agent/*
 //   - /agent/proxy?revdial.dialer=<id>                  (f) revdial pickup (single-replica)
 //   - /agent/proxy/{replica}?revdial.dialer=<id>        (f) replica-addressed pickup
 //   - everything else                                   the portal bundle
@@ -55,6 +60,7 @@ import (
 
 	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 	sdktunnel "github.com/railgrid/provider-edges/internal/tunnel"
+	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/hubclient"
 	"github.com/railgrid/provider-sdk/identityclient"
 	"github.com/railgrid/provider-sdk/serve"
@@ -65,20 +71,16 @@ import (
 const heartbeatVersion = "0.1.0"
 
 // providerPublicBase is the path prefix (behind the hub backend proxy) this
-// provider is reachable at. Both the agent-ingress and consumer-egress mounts
-// hang off it, and it is the prefix embedded into each edge's status.URL so CLI
-// clients can reach the edgeproxy through the hub.
+// provider is reachable at for the classes the hub still proxies: the agent
+// tunnel and MCP. The consumer data plane is not one of them — a verb is a kcp
+// custom subresource, and an edge's status.URL carries its hub-relative kube
+// path (/clusters/{id}/apis/edges.railgrid.ai/...) rather than anything under
+// this prefix.
 const providerPublicBase = "/services/providers/edges"
 
 // agentPickupPath is the public revdial pickup path (behind the hub backend
 // proxy) the agent re-enters through for this provider.
 const agentPickupPath = providerPublicBase + "/" + sdktunnel.AgentRoot + "/proxy"
-
-// edgeProxyPublicPath is the public consumer-egress base, stamped into edge
-// and Service status.URL. It is the shared class (a) root: the provider-private
-// "/edgeproxy" mount is gone, because provider-sdk/serve mounts the data plane
-// at /dataplane/ and refuses to register anything else.
-const edgeProxyPublicPath = providerPublicBase + "/" + sdktunnel.DataPlaneRoot
 
 func main() {
 	if len(os.Args) > 1 {
@@ -214,8 +216,22 @@ func runServe(opts serveOptions) error {
 
 	// Tunnel plane. The provider owns the ConnManager and terminates agent
 	// reverse tunnels in-process; with replica routing enabled below, peer
-	// replicas relay to whichever replica holds a tunnel. Both prefixes sit
-	// behind the hub backend proxy at /services/providers/edges/*.
+	// replicas relay to whichever replica holds a tunnel.
+	//
+	// The provider's own connection is what every verb is gated with: kcp
+	// forwards a custom subresource with the caller's identity stamped and no
+	// bearer, so the gate runs the access review on the caller's behalf and
+	// reads the object as the provider, through the export virtual workspace.
+	// Without a kcp credential there is no factory, and the data plane
+	// refuses every request (503) rather than serving ungated.
+	var providerCallers dataplane.ProviderCallerFactory
+	if kcpConfig != nil {
+		pc, err := dataplane.NewCallerFactory(kcpConfig, dataplane.WithProviderConfig(kcpConfig, apiExportName))
+		if err != nil {
+			return fmt.Errorf("provider caller factory: %w", err)
+		}
+		providerCallers = pc
+	}
 	tsrv, err := sdktunnel.New(sdktunnel.Config{
 		Kinds: []sdktunnel.KindConfig{
 			{GVR: edgesv1alpha1.KubernetesClusterGVR, Kind: "KubernetesCluster"},
@@ -223,8 +239,8 @@ func runServe(opts serveOptions) error {
 			{GVR: edgesv1alpha1.MacOSServerGVR, Kind: "MacOSServer"},
 		},
 		AgentPickupPath:           agentPickupPath,
-		EdgeProxyPublicPath:       edgeProxyPublicPath,
 		KCPConfig:                 kcpConfig,
+		Callers:                   providerCallers,
 		HubExternalURL:            hubExternalURL,
 		HubInternalURL:            os.Getenv("RAILGRID_HUB_INTERNAL_URL"),
 		HubCAData:                 hubCA,
@@ -319,10 +335,22 @@ func runServe(opts serveOptions) error {
 	// The whole HTTP surface, one handler per Pillar 2 route class.
 	// provider-sdk/serve refuses anything that is not a class — there is no
 	// /api/*, no unauthenticated /catalog, and no provider-private root: the
-	// consumer data plane is class (a) at /dataplane/ and the agent tunnel is
-	// class (f) at /agent/. Both receive the path EXACTLY as the caller sent
-	// it, so dataplane.ParseRequest — not an http.ServeMux — decides what
-	// ".." and "//" mean.
+	// consumer data plane is class (a), reached only as kcp custom
+	// subresources through serve's adapter at /clusters/, and the agent tunnel
+	// is class (f) at /agent/. Both receive the path EXACTLY as the caller
+	// sent it, so the grammar — not an http.ServeMux — decides what ".." and
+	// "//" mean.
+	//
+	// Which "<resource>/<verb>" coordinates exist is read from the
+	// CatalogEntry manifest this image ships, so the routes cannot drift from
+	// the declaration. No manifest means no data plane at all, and serve.New
+	// refuses a DataPlane handler with nothing to reach it through — so a
+	// missing manifest is a startup error, not a silently verb-less provider.
+	subresources, err := subresourceRoutes(log)
+	if err != nil {
+		return fmt.Errorf("custom subresource routes: %w", err)
+	}
+
 	serveOpts := serve.Options{
 		Name:      "edges",
 		Readiness: vwhealth.Handler(vwState),
@@ -331,9 +359,11 @@ func runServe(opts serveOptions) error {
 		// X-Railgrid-Cluster). Exposes kube tools across the tenant's connected
 		// KubernetesCluster edges AND the tools of every Ready Service.
 		MCP: tsrv.RootMCPHandler(),
-		// (a) Consumer egress: the declared verbs on the edge kinds and on
-		// published Services.
-		DataPlane: tsrv.EdgeProxyHandler(),
+		// (a) Consumer data plane: the declared verbs on the edge kinds and on
+		// published Services, dispatched by serve's subresource adapter from
+		// the path a kcp shard forwards.
+		DataPlane:    tsrv.EdgeProxyHandler(),
+		Subresources: subresources,
 		// (f) Agent ingress: control tunnel + revdial pickup.
 		Extra: []serve.Route{{
 			Prefix:  serve.AgentPrefix,
@@ -411,8 +441,8 @@ func runServe(opts serveOptions) error {
 // chain and can end in nil.
 //
 // A nil result does NOT unmount the data plane: the tunnel handlers are always
-// mounted and instead refuse every consumer-egress request with 503, because
-// there is no kcp credential to authorize bearers against (see
+// mounted and instead refuse every verb with 503, because there is no
+// provider caller factory to gate with (see
 // tunnel.Server.denyIfAuthorizationUnavailable).
 func loadKCPConfig(log logr.Logger) *rest.Config {
 	if p := os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"); p != "" {

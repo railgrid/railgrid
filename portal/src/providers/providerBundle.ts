@@ -14,7 +14,7 @@ export type GrantFetch = (
 //
 // A platform provider's bundle is a fixed same-origin URL the loader derives
 // from the name and catalog version, pinned with the SRI hash the hub computed
-// at registration (catalog mainJSIntegrity). An org-owned ("bring your own")
+// at registration (catalog serving.ui.mainJSIntegrity). An org-owned ("bring your own")
 // provider runs in the organization's own cluster behind its edge tunnel, and
 // the hub cannot serve that bundle to an anonymous <script src>: the platform
 // edges provider refuses tunnel requests without a bearer, and the hub has no
@@ -58,11 +58,11 @@ export function isOrgOwnedProvider(entry: Pick<ProviderDTO, 'scope' | 'ownerOrg'
 // against the organization's own backend — wrong rather than broken, which
 // is the harder failure to notice.
 export async function resolveProviderBundle(
-  entry: Pick<ProviderDTO, 'name' | 'scope' | 'ownerOrg' | 'mainJSIntegrity'>,
+  entry: Pick<ProviderDTO, 'name' | 'scope' | 'ownerOrg' | 'serving'>,
   fetchImpl: GrantFetch,
 ): Promise<ProviderBundle> {
   if (!isOrgOwnedProvider(entry)) {
-    return { integrity: entry.mainJSIntegrity || undefined }
+    return { integrity: entry.serving?.ui?.mainJSIntegrity || undefined }
   }
   const res = await fetchImpl(`/api/providers/${encodeURIComponent(entry.name)}/ui-grant`, {
     method: 'POST',

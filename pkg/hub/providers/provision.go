@@ -865,30 +865,6 @@ func (p *Provisioner) EnsureProviderWorkspace(ctx context.Context, name string) 
 	return cluster, nil
 }
 
-// ResolveAPIExportIdentityHash returns the kcp identity hash an APIExport
-// publishes in its status, or "" when it cannot be read.
-//
-// Self-hosted providers need this for permission claims against first-party
-// groups: kcp validates a claim's identityHash against the export it targets,
-// and a wrong one yields a binding that succeeds while the provider sees none
-// of the resources it claimed. Resolving it here is what stops that value from
-// being a manual copy out of an admin debug view.
-func (p *Provisioner) ResolveAPIExportIdentityHash(ctx context.Context, workspacePath, exportName string) (string, error) {
-	if workspacePath == "" || exportName == "" {
-		return "", fmt.Errorf("ResolveAPIExportIdentityHash: workspacePath and exportName are required")
-	}
-	cl, err := p.clientFor(workspacePath)
-	if err != nil {
-		return "", err
-	}
-	export, err := cl.Resource(apiExportGVR).Get(ctx, exportName, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("getting APIExport %s in %s: %w", exportName, workspacePath, err)
-	}
-	hash, _, _ := unstructured.NestedString(export.Object, "status", "identityHash")
-	return hash, nil
-}
-
 // ResolveAPIExportGroups returns the API groups an APIExport serves, read from
 // spec.resources[].group on the live object in the provider's workspace,
 // deduped and sorted.

@@ -22,8 +22,9 @@ not render a standalone component:
   reads `railgrid:portal:tenant`; `tenantHeaders({ token, json })` emits
   `Accept`, optional JSON content type, bearer authorization, `X-Railgrid-Org`, and
   `X-Railgrid-Workspace`; `serviceBase()` rewrites `/ui/providers/*` to
-  `/services/providers/*`. Callers never re-inline these headers. Cluster-in-
-  path portals use their separate bearer-token model.
+  `/services/providers/*`, for `/oauth` and `/mcp` only. Callers never
+  re-inline these headers. Bound CRs and their verbs are addressed by cluster
+  in the path through `kube.ts` (`createKubeClient`, `kubeVerbPath`).
 - `page-state.ts` and Vue `useDelayedLoading.ts` preserve truthful first-read,
   background-refresh, stale, error, retry, and delayed-loading semantics. A
   useful snapshot stays visible during background work; loading indicators do

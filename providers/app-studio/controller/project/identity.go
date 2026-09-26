@@ -10,32 +10,33 @@ You may obtain a copy of the License at
 
 package project
 
-// The per-project identity: the ONE credential everything a project needs
-// presents, whether the actor is the project's own workload or this
-// provider's reconciler converging that project's dependencies.
+// The per-project identity: the credential a project presents to things that
+// are NOT the Kubernetes API — another provider's HTTP data plane, its
+// declared actions, and the workspace's MCP aggregate.
 //
-// There is deliberately no second credential. The reconciler could have used
-// the provider's own ServiceAccount over its APIExport virtual workspace, and
-// for one commit it did — but serving the dependency kinds there means
-// CLAIMING them, and a claim on a first-party (*.railgrid.ai) group pins the
-// exact APIExport that serves it by identityHash, for every consuming
-// workspace at once. A workspace that binds an org-owned infrastructure or
-// code provider is then served nothing, silently. Acting INSIDE the tenant
-// workspace instead — at {hub}/clusters/{cluster}, through the workspace's own
-// APIBindings — is authorized by that workspace's RBAC, which is true of
-// whichever copy it bound. See docs/app-studio-runtime-decoupling.md and
+// It used to be the credential for the dependency OBJECTS too. The reconciler
+// could not use the provider's own ServiceAccount over its APIExport virtual
+// workspace, because serving those kinds there meant CLAIMING them, and a
+// claim on a first-party (*.railgrid.ai) group had to pin the exact APIExport
+// that serves it by identityHash, for every consuming workspace at once — so a
+// workspace that binds an org-owned infrastructure or code provider was served
+// nothing, silently.
+//
+// kcp now resolves a claim with no identityHash per CONSUMER workspace, when a
+// cluster-scoped PermissionClaimPolicy pairs the claiming export's group with
+// the claimed group. App Studio's APIExport therefore claims instances,
+// repositories and repositorycommits outright, and the reconcilers read and
+// write them with the manager's client, in whichever workspace accepted the
+// claim, against whichever copy of the dependency that workspace bound. See
+// docs/app-studio-runtime-decoupling.md and
 // internal/crossprovider/composition.go.
 //
-// So the token this file mints carries three things at once:
+// What is left here is everything a claim cannot express, because a claim
+// grants objects and not a bearer token:
 //
-//   - the COMPOSITION the CatalogEntry declares on each dependency
-//     (spec.dependencies[].composes, accepted by the tenant at Enable): what
-//     the reconcilers do to Instances, Repositories and RepositoryCommits in
-//     this workspace, and what the per-workspace dependency watch lists and
-//     watches (controller/tenantwatch);
 //   - asking the Code provider to commit the workspace, on the action grammar
 //     (commitaction.go): `create` on repositories/commit — and on
-//     repositories/stage_commit_bundle, for a payload past the catalogue's
+//     repositories/stage-commit-bundle, for a payload past the catalogue's
 //     1 MiB input ceiling — so the commit is authorized as the project rather
 //     than as this provider, and the provider writes the RepositoryCommit
 //     itself;
@@ -45,6 +46,13 @@ package project
 //   - the project's workload calling a data-plane verb on its own instance,
 //     where the serving provider re-reads the addressed object AS THE CALLER
 //     (gate 1) before it will run anything (gate 2).
+//
+// The REQUIREMENT rules (spec.requires) are still minted with
+// it, and for two reasons that outlive the move: gate 1 on every action above
+// is a real GET of the addressed object as this subject, so the name-scoped
+// reads have to be there for the verbs to be usable at all; and the
+// per-workspace dependency watch still runs on the tenant path with this token
+// (controller/tenantwatch).
 //
 // It ASKS THE HUB for that credential instead of minting it:
 //
@@ -126,17 +134,17 @@ const (
 //	workspace assistant sandbox file read/write
 //
 // The infrastructure provider declares all eight in its CatalogEntry
-// (providers/infrastructure/manifest.yaml spec.dataPlane.verbs); the hub's
+// (providers/infrastructure/manifest.yaml spec.export.resources[].verbs); the hub's
 // policy (clause C) will only mint a capability for a verb it can verify
-// exists there. `status` is declared there too and is deliberately absent
-// here: nothing in this provider calls it.
+// exists there. `runtime-status` is declared there too and is deliberately
+// absent here: nothing in this provider calls it.
 var instanceDataPlaneVerbs = []string{"env", "exec", "log", "process", "proxy", "restart", "sync", "workspace"}
 
 // codeConnectionActions are the code-provider actions App Studio invokes on a
-// Connection. There is exactly one: `mint_registry_token`
+// Connection. There is exactly one: `mint-registry-token`
 // (api/project_promote.go), which issues the image-pull credential a
 // promotion needs.
-var codeConnectionActions = []string{"mint_registry_token"}
+var codeConnectionActions = []string{"mint-registry-token"}
 
 // codeRepositoryActions are the code-provider actions App Studio invokes on
 // the project's Repository, as clause-C {resource}/{verb} capabilities.
@@ -145,7 +153,7 @@ var codeConnectionActions = []string{"mint_registry_token"}
 //	                     (commit.go). The provider writes the CR itself once
 //	                     this grant is proven, which is why the composition on
 //	                     repositorycommits still carries no create.
-//	stage_commit_bundle  uploads a payload past the catalogue's 1 MiB input
+//	stage-commit-bundle  uploads a payload past the catalogue's 1 MiB input
 //	                     ceiling and hands back the handle `commit` names. It
 //	                     is UNCATALOGUED (docs/provider-actions.md
 //	                     §"Uncatalogued large-upload verbs"): App Studio cannot
@@ -187,12 +195,15 @@ func projectOwner(p *aiv1alpha1.Project, clusterName string) identityclient.Owne
 //     Both by name; a background identity has no interactive caller to have
 //     warmed a cache for it, and listing would hand it the full inventory of
 //     what the tenant has enabled.
-//   - E (composition): what THIS PROVIDER'S RECONCILERS do to the dependency
-//     objects inside the workspace, bounded by the composition the CatalogEntry
-//     declares and the tenant accepted at Enable
-//     (internal/crossprovider/composition.go). Unnamed create/list/watch,
+//   - E (composition): the dependency objects inside the workspace, bounded by
+//     the composition the CatalogEntry declares and the tenant accepted at
+//     Enable (internal/crossprovider/composition.go). Unnamed create/list/watch,
 //     because RBAC ignores resourceNames on a collection request; name-scoped
-//     get/update/delete on the objects this project is actually bound to.
+//     get/update/delete on the objects this project is actually bound to. The
+//     reconcilers no longer converge those objects on this token, nor watch
+//     them with it — the APIExport claims the kinds — but the named half is
+//     what the serving provider's gate re-reads as when the WORKLOAD calls a
+//     clause-C verb below.
 //   - B (foreign read): `get` on the named Connection this project was created
 //     from. Not composed — nothing writes a Connection — but gate 1 on the
 //     serving side is a real GET as the caller, so an identity that cannot see
@@ -207,9 +218,10 @@ func projectOwner(p *aiv1alpha1.Project, clusterName string) identityclient.Owne
 // owner of the kind.
 //
 // A project with no bindings still gets clause D and the unnamed half of the
-// composition: reaching the aggregate, resolving where a dependency answers,
-// and watching a workspace for the objects that are about to exist are not
-// access to any particular object.
+// composition: reaching the aggregate and resolving where a dependency answers
+// are not access to any particular object. (This provider's own calls no
+// longer read those APIBindings — they address verbs through the export
+// virtual workspace — so clause D now serves only the workload.)
 func projectIdentityRules(p *aiv1alpha1.Project) []rbacv1.PolicyRule {
 	rules := []rbacv1.PolicyRule{
 		{
@@ -227,38 +239,27 @@ func projectIdentityRules(p *aiv1alpha1.Project) []rbacv1.PolicyRule {
 			}),
 			Verbs: []string{"get"},
 		},
-		crossprovider.InstanceCollectionRule(),
-		crossprovider.RepositoryCollectionRule(),
-		crossprovider.RepositoryCommitCollectionRule(),
 	}
 
-	// The named half of the instance composition, plus clause C on the same
-	// objects: one rule per (resource, verb), because the subresource is the
-	// coordinate a data-plane grant is expressed on.
-	//
-	// A binding is normally on the infrastructure provider's one instance kind,
-	// which is what the composition declares. A binding that records some other
-	// resource is outside it and gets a plain clause-B read instead of the
-	// composed write verbs — a template this provider was never declared to
-	// compose is not one it may converge.
+	// No composition rule of any shape: the composed kinds (Instances,
+	// Repositories, RepositoryCommits) are read, watched and written as the
+	// provider through App Studio's own export virtual workspace, under the
+	// identity-agnostic claims the tenant accepted. What the identity still
+	// carries is what the OTHER provider's data plane checks when this project
+	// calls a verb on one of its objects: a named clause-B read of the object
+	// (gate 1) and the clause-C create on {resource}/{verb} (gate 2).
 	instances := projectInstanceNames(p)
 	for _, resource := range sortedKeys(instances) {
 		names := instances[resource]
 		if len(names) == 0 {
 			continue
 		}
-		if resource == crossprovider.InstancesResource {
-			if rule, ok := crossprovider.InstanceObjectRule(names); ok {
-				rules = append(rules, rule)
-			}
-		} else {
-			rules = append(rules, rbacv1.PolicyRule{
-				APIGroups:     []string{infraAPIGroup},
-				Resources:     []string{resource},
-				ResourceNames: names,
-				Verbs:         []string{"get"},
-			})
-		}
+		rules = append(rules, rbacv1.PolicyRule{
+			APIGroups:     []string{infraAPIGroup},
+			Resources:     []string{resource},
+			ResourceNames: names,
+			Verbs:         []string{"get"},
+		})
 		for _, verb := range instanceDataPlaneVerbs {
 			rules = append(rules, rbacv1.PolicyRule{
 				APIGroups:     []string{infraAPIGroup},
@@ -270,9 +271,12 @@ func projectIdentityRules(p *aiv1alpha1.Project) []rbacv1.PolicyRule {
 	}
 
 	if repository := projectRepositoryRef(p); repository != "" {
-		if rule, ok := crossprovider.RepositoryObjectRule([]string{repository}); ok {
-			rules = append(rules, rule)
-		}
+		rules = append(rules, rbacv1.PolicyRule{
+			APIGroups:     []string{codeAPIGroup},
+			Resources:     []string{crossprovider.RepositoriesResource},
+			ResourceNames: []string{repository},
+			Verbs:         []string{"get"},
+		})
 		// Clause C on the same object: the verbs the commit pass invokes.
 		for _, action := range codeRepositoryActions {
 			rules = append(rules, rbacv1.PolicyRule{
@@ -288,9 +292,12 @@ func projectIdentityRules(p *aiv1alpha1.Project) []rbacv1.PolicyRule {
 	// the next mint carries the read and the one after it drops it again —
 	// which is the whole point of restating the rules on every refresh.
 	if commit := projectPendingCommitRef(p); commit != "" {
-		if rule, ok := crossprovider.RepositoryCommitObjectRule([]string{commit}); ok {
-			rules = append(rules, rule)
-		}
+		rules = append(rules, rbacv1.PolicyRule{
+			APIGroups:     []string{codeAPIGroup},
+			Resources:     []string{crossprovider.RepositoryCommitsResource},
+			ResourceNames: []string{commit},
+			Verbs:         []string{"get"},
+		})
 	}
 	if connection := projectConnectionRef(p); connection != "" {
 		rules = append(rules, rbacv1.PolicyRule{
@@ -375,10 +382,11 @@ func projectPendingCommitRef(p *aiv1alpha1.Project) string {
 // a rebinding rebuilds the source and the next token carries the new grant.
 //
 // An empty token with no error means there is no hub to ask (REST-only dev).
-// The caller degrades rather than failing: everything the provider does inside
-// its OWN virtual workspace — the Project, its status, its finalizers — keeps
-// converging, and only the cross-provider half is skipped, because without an
-// identity there is no workspace client to do it with.
+// The caller degrades rather than failing: everything reached with the
+// manager's client — the Project, its status, its finalizers, and the claimed
+// Instances, Repositories and RepositoryCommits — keeps converging. Only what
+// genuinely needs a bearer is skipped: the commit call to the Code provider's
+// data plane, and the tenant-path dependency watch.
 func (r *Reconciler) identityToken(ctx context.Context, clusterName string, p *aiv1alpha1.Project) (string, error) {
 	if !r.Identities.Enabled() {
 		return "", nil

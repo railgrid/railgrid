@@ -1366,7 +1366,7 @@ func TestPollProjectAssistantProcessStatusWaitsForCurrentAttemptPort(t *testing.
 		})
 	}))
 	defer upstream.Close()
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, callers: newTestCallers(nil, upstream.URL)}
 	process, supported, err := pollProjectAssistantProcessStatusWithTiming(
 		context.Background(),
 		server,
@@ -1396,7 +1396,7 @@ func TestPollProjectAssistantProcessStatusMarksFirstWarmupTimeoutOperational(t *
 		})
 	}))
 	defer upstream.Close()
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, callers: newTestCallers(nil, upstream.URL)}
 	ref := dataPlaneRef{Resource: "applications", Name: "demo", Component: "backend"}
 	process, _, err := pollProjectAssistantProcessStatusWithTiming(
 		context.Background(), server, identity{clusterID: "root"}, ref,
@@ -2092,45 +2092,6 @@ func TestProjectAssistantRuntimeStatusAndPreviewWorkflowsReportNotConfiguredWith
 				t.Fatalf("blockers = %#v, want runtime provider blocker", decoded["blockers"])
 			}
 		})
-	}
-}
-
-func TestProjectAssistantPreviewURLWorkflowIgnoresInternalAppStudioPreviewPath(t *testing.T) {
-	project := projectWithRepository("demo-repo", "demo", "github")
-	project.Name = "demo"
-	project.UID = "test-project-uid-demo"
-	project.Status.Environments = []aiv1alpha1.ProjectEnvironmentStatus{{
-		Name: "development",
-		Bindings: []aiv1alpha1.ProjectProviderBindingStatus{{
-			Name:       "dev",
-			Provider:   "app-studio",
-			PreviewURL: "/services/providers/app-studio/api/projects/demo/preview/",
-		}},
-	}}
-	result, err := formatProjectAssistantPreviewURLResult(context.Background(), projectAssistantRuntimeWorkflowInput{Project: project})
-	if err != nil {
-		t.Fatalf("formatProjectAssistantPreviewURLResult returned error: %v", err)
-	}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		t.Fatalf("encode result: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("decode result: %v\n%s", err, raw)
-	}
-	if got := projectToolString(decoded["status"]); got != "not_configured" {
-		t.Fatalf("status = %q, want not_configured", got)
-	}
-	if got := projectToolString(decoded["previewURL"]); got != "" {
-		t.Fatalf("previewURL = %q, want empty for internal app-studio preview path", got)
-	}
-	runtime, ok := decoded["runtime"].(map[string]any)
-	if !ok {
-		t.Fatalf("runtime = %#v, want object", decoded["runtime"])
-	}
-	if got := projectToolString(runtime["url"]); got != "" {
-		t.Fatalf("runtime.url = %q, want empty for internal app-studio preview path", got)
 	}
 }
 

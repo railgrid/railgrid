@@ -127,10 +127,27 @@ func printRow(tw *tabwriter.Writer, cols ...string) {
 	_, _ = fmt.Fprintln(tw, strings.Join(cols, "\t"))
 }
 
+// hubRelativeEdgePath reports whether an edge's status.URL path is one the
+// hub serves, and so may be re-rooted onto the hub's public address.
+//
+// The edges provider stamps status.URL as the kube path of the edge's
+// data-plane verb — a custom subresource on its APIExport, reached through
+// the hub's kcp front door:
+//
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/{name}/k8s
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/linuxservers/{name}/ssh
+//
+// /services/ covers the hub's own backend-proxy surfaces (the agent tunnel,
+// MCP), which carry no verbs but are hub-relative all the same.
+func hubRelativeEdgePath(path string) bool {
+	return strings.HasPrefix(path, "/clusters/") || strings.HasPrefix(path, "/services/")
+}
+
 // externalizeEdgeURLFromConfig replaces the host in an edge URL with the hub's
-// external address from a rest.Config. edge.Status.URL may use an internal host
-// (e.g. localhost) for kcp mount resolution; this function swaps in the hub's
-// public address so the URL is accessible from the user's machine.
+// external address from a rest.Config. edge.Status.URL may be a bare path, or
+// use an internal host (e.g. localhost) for in-cluster resolution; this
+// function swaps in the hub's public address so the URL is reachable from the
+// user's machine.
 func externalizeEdgeURLFromConfig(edgeURL string, config *rest.Config) (string, error) {
 	parsed, err := url.Parse(edgeURL)
 	if err != nil {
@@ -142,8 +159,7 @@ func externalizeEdgeURLFromConfig(edgeURL string, config *rest.Config) (string, 
 		return edgeURL, nil //nolint:nilerr // can't parse hub host, return as-is
 	}
 
-	// Only externalize if the path looks like an edges-proxy path.
-	if !strings.HasPrefix(parsed.Path, "/services/") {
+	if !hubRelativeEdgePath(parsed.Path) {
 		return edgeURL, nil
 	}
 
@@ -176,7 +192,7 @@ func externalizeEdgeURL(edgeURL string, rawConfig *clientcmdapi.Config) (string,
 
 	// status.URL may be a full URL with an internal host, or a bare path when
 	// the provider has no public host configured; both become hub-relative.
-	if !strings.HasPrefix(parsed.Path, "/services/") {
+	if !hubRelativeEdgePath(parsed.Path) {
 		return edgeURL, nil
 	}
 

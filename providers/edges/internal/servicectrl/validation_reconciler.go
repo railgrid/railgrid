@@ -50,6 +50,7 @@ import (
 	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 	"github.com/railgrid/provider-edges/internal/haclient"
 	"github.com/railgrid/provider-edges/internal/svccatalog"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 const (
@@ -68,9 +69,8 @@ const (
 // ValidationReconciler validates a Service's credentials against the
 // service (Home Assistant: GET /api/config) and stamps status.URL + conditions.
 type ValidationReconciler struct {
-	mgr                 mcmanager.Manager
-	connManager         ConnManager
-	edgeProxyPublicPath string
+	mgr         mcmanager.Manager
+	connManager ConnManager
 
 	// retryMu guards retry: the current backoff delay per Service, keyed by
 	// cluster + name. Absent means the last probe succeeded (or never ran).
@@ -84,8 +84,8 @@ type ValidationReconciler struct {
 // probeRetryInitial) and a Ready Service is re-validated every
 // validationResyncInterval. It also watches Secrets so an edited auth token is
 // re-validated immediately rather than on the next resync.
-func SetupValidationWithManager(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string) error {
-	r := newValidationReconciler(mgr, connManager, edgeProxyPublicPath)
+func SetupValidationWithManager(mgr mcmanager.Manager, connManager ConnManager) error {
+	r := newValidationReconciler(mgr, connManager)
 	builder := mcbuilder.ControllerManagedBy(mgr).
 		Named("service-validation").
 		For(&edgesv1alpha1.Service{}).
@@ -156,12 +156,11 @@ func (r *ValidationReconciler) servicesOnEdge(ctx context.Context, key string) [
 	return requests
 }
 
-func newValidationReconciler(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string) *ValidationReconciler {
+func newValidationReconciler(mgr mcmanager.Manager, connManager ConnManager) *ValidationReconciler {
 	return &ValidationReconciler{
-		mgr:                 mgr,
-		connManager:         connManager,
-		edgeProxyPublicPath: edgeProxyPublicPath,
-		retry:               map[string]time.Duration{},
+		mgr:         mgr,
+		connManager: connManager,
+		retry:       map[string]time.Duration{},
 	}
 }
 
@@ -529,24 +528,29 @@ func (r *ValidationReconciler) projectCatalog(es *edgesv1alpha1.Service, cluster
 	es.Status.MCPURL = r.verbURL(cluster, es.Name, "mcp")
 }
 
-// statusURL builds the externalized svc-proxy base for a Service, on the
-// shared data-plane grammar:
+// statusURL builds the hub-relative kube path of a Service's proxy verb, the
+// custom subresource this provider publishes on its APIExport:
 //
-//	{edgeProxyPublicPath}/clusters/{cluster}/services/{name}/proxy
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/proxy
+//
+// A client swaps in the hub host and lands on the kcp front door, which routes
+// the verb back to this provider.
 func (r *ValidationReconciler) statusURL(cluster, name string) string {
-	if r.edgeProxyPublicPath == "" {
-		return ""
-	}
 	return r.verbURL(cluster, name, "proxy")
 }
 
-// verbURL renders one data-plane coordinate for a Service.
+// verbURL renders one data-plane coordinate for a Service through the one
+// renderer of the grammar. It returns "" for a coordinate that cannot be
+// rendered (a name that would not parse back), so status carries no URL rather
+// than a broken one.
 func (r *ValidationReconciler) verbURL(cluster, name, verb string) string {
-	if r.edgeProxyPublicPath == "" {
+	path, err := dataplane.SubresourcePath(edgesv1alpha1.GroupName, edgesv1alpha1.Version, dataplane.Request{
+		ClusterID: cluster, Resource: "services", Name: name, Verb: verb,
+	})
+	if err != nil {
 		return ""
 	}
-	return fmt.Sprintf("%s/clusters/%s/services/%s/%s",
-		strings.TrimRight(r.edgeProxyPublicPath, "/"), cluster, name, verb)
+	return path
 }
 
 func schemeString(s edgesv1alpha1.ServiceScheme) string {

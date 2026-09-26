@@ -48,7 +48,7 @@ Open follow-ups recorded by the implementation:
   `Run` schema changes (PR 5) and the edges kind doc-comment fixes; apigen
   derives the name from HEAD and refuses to reuse one for changed content.
 - Code provider `repositories/commit/v1` (plus the declared
-  `stage_commit_bundle` verb for payloads over the 1 MiB catalog ceiling)
+  `stage-commit-bundle` verb for payloads over the 1 MiB catalog ceiling)
   landed; App Studio's reconciler and the assistant's commit tool commit
   through it (§9 Cut D.1).
 - App Studio composition (§9 Cut C part 4) landed on hub-minted scoped
@@ -88,6 +88,136 @@ Companion to [providers.md](../providers.md),
 [provider-authoring-plan.md](./provider-authoring-plan.md).
 
 ---
+
+## Status update 2026-09-25 — data-plane verbs are APIExport-only
+
+The "second entry point" this plan introduced in §0.2 — the same verb served
+both as a kcp custom subresource and on the hub-proxied grammar
+`/services/providers/{name}/{dataplane,actions}/clusters/{id}/{resource}/{name}/{verb}`
+— is gone. The custom subresource is the **only** transport. Landed on
+`adjust.providers`:
+
+**Removed.**
+
+- The hub-proxied grammar as a route class. `provider-sdk/serve` mounts no
+  `/dataplane/` or `/actions/` prefix; `serve.New` errors on a `DataPlane` or
+  `Actions` handler set without `Subresources` to reach it through.
+- `dataplane.ParsePath`, `ParseRequest`, `DataplaneRoot`, `ActionsRoot`,
+  `ProviderPath`, `Request.Path` and the caller-bearer two-gate path through
+  `Gate`. The parser is `ParseSubresourceRequest`; the gate is a
+  `SubjectAccessReview` on the stamped caller, then a read **as the provider**
+  through its export virtual workspace; `dataplane.Identity` (bearer +
+  `X-Railgrid-Cluster`) survives for the MCP class only.
+- Hub-side path-cluster authorization and path-derived `X-Railgrid-Cluster`
+  injection in `pkg/hub/providers/proxy.go`. The backend proxy injects the
+  caller's *resolved* workspace only, and strips `X-Remote-*`.
+- The edges `ticket` verb. A browser WebSocket presents the bearer as the
+  Kubernetes `base64url.bearer.authorization.k8s.io.<token>` subprotocol;
+  the hub's kcp proxy reads it for the membership check and forwards the
+  upgrade untouched (`pkg/server/proxy/proxy.go`, `websocketBearer`).
+- String-built cross-provider URLs. A provider calls another provider's verb
+  **as itself** through its own export virtual workspace
+  (`Callers.ExportVerbURL` + `ProviderHTTPClient`), on a
+  `spec.dependencies[].composes[]` entry naming `"{resource}/{verb}"` with
+  `verbs: ["*"]`. The end-user identity is not carried across providers.
+
+**Changed.**
+
+- The grammar is `/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}[/{tail}][?component={c}]`
+  (`pkg/apiurl.ProviderVerbPath`, `EdgeVerbPath`; portalkit `kubeVerbPath`).
+  The component of a multi-component object is the `component` query
+  parameter; an action's `/v<n>` is not in the path and the `serve` adapter
+  restores it from the manifest table.
+- Grants on a verb coordinate are minted with verbs `*`
+  (`pkg/hub/serviceaccounts/workload_identity.go`, `pkg/hub/identity/policy.go`
+  clause C): kcp maps the HTTP method onto the RBAC verb, so `create` alone
+  would admit only POSTs.
+- An org-owned provider's backend hop goes through kcp at the edges
+  `services/{name}/proxy` verb, as the hub, with the delegated token in
+  `X-Railgrid-Upstream-Authorization` (`pkg/hub/providers/proxy_edge.go`).
+- Streaming verbs pass through kcp's reverse proxy; the shard request
+  deadline is the ceiling on one streamed response. The embedded kcp sets it
+  to one hour (`pkg/hub/kcp/embedded.go`, `providerVerbRequestTimeout`); an
+  external kcp needs `--request-timeout`.
+- The `railgrid` CLI addresses verbs on the hub's `/clusters/{id}/apis/…`;
+  an edge kubeconfig's `server` URL and `status.URL` are kube paths.
+
+**What remains on the hub's `/services/providers/{name}/*` backend proxy:**
+MCP (`/mcp`, `/mcp/sse`), browser OAuth (`/oauth/*`), signed webhooks
+(`/webhooks/*`), the agent tunnel (`/agent/*`), health, and the hub-only
+`/workload-identities/*`. The UI proxy `/ui/providers/{name}/*` is unchanged.
+Portals use `serviceBase()` for `/oauth` and `/mcp` only.
+
+The §0.2 sketch and the per-provider sections below are the record of the
+intermediate state; the current contract is
+[provider-connectivity-contract.md](../provider-connectivity-contract.md).
+
+## Status update 2026-09-25 — the CatalogEntry contract is four sections
+
+Landing alongside the change above, on `adjust.providers`: `CatalogEntrySpec`
+was restructured so it answers four questions, one section each, instead of
+scattering the same facts across seven top-level fields. The sections are
+
+- **`spec.export`** — what a tenant may call: the APIExport's `name`, plus
+  `resources[]`, each `{name, apiVersion, kind}` carrying the `verbs[]` and
+  `actions[]` served **on that resource**. A resource with neither is an
+  ordinary CR kind and is not listed at all.
+- **`spec.requires`** — everything the provider needs that it does not own, in
+  ONE list keyed by API group. It replaces both halves of the old split
+  (claims *and* compositions), so the two can no longer disagree.
+- **`spec.serving`** — where the hub reaches it: `ui`, `backend`,
+  `selfHosting`.
+- **`spec.hub`** — what it asks of the hub itself: `access`,
+  `assistantSkills`.
+
+**Field mapping.**
+
+| old | new |
+|---|---|
+| `spec.apiExport.name` | `spec.export.name` |
+| `spec.apiExport.schemas[]` | gone — the provider's `init` applies the generated schemas from `RAILGRID_KCP_DIR` |
+| `spec.apiExport.permissionClaims[]` | `spec.requires[]` |
+| `spec.dataPlane.verbs[{resource,verb,…}]` | `spec.export.resources[name=resource].verbs[{name=verb,…}]` |
+| `spec.actions[{id:"n/vN", boundResource:{apiVersion,kind,resource}}]` | `spec.export.resources[name=resource]{apiVersion,kind}.actions[{name:"n",version:"vN"}]` |
+| `spec.dependencies[{name,composes:[{group,resource,verbs}]}]` | `spec.requires[{provider:name, group, resources:[{name:resource, verbs}]}]` |
+| a `composes[]` entry whose resource is `"r/v"` | `spec.requires[].resources[{name:"r/v"}]` with **no** verbs |
+| `spec.ui` / `spec.backend` / `spec.selfHosting` | `spec.serving.ui` / `.backend` / `.selfHosting` |
+| `spec.hubAccess` | `spec.hub.access` |
+| `spec.assistantSkills` | `spec.hub.assistantSkills` |
+
+Three rules fell out of the merge and are enforced, not conventions:
+`spec.requires` is keyed by group, so a repeated group is a validation error
+rather than something to merge; a `"<resource>/<verb>"` coordinate carries no
+`verbs` and no `selector`, because the verb *is* the capability and the
+generated claim spells every verb; and `tenantScoped` is **gone** — everything
+under `requires` is tenant-scoped by definition. A claim on core `secrets`
+still requires a `selector`.
+
+Two new checks in `hack/verify-provider-contract.mjs` exist because the merged
+list can now be cross-checked where the split one could not: `requires-group`
+(a requirement naming a `provider` names a group that provider actually
+**serves**, not its APIExport name) and `requires-verb` (a `"r/v"` coordinate
+names a verb or action the owning provider **declares** in its own
+`spec.export`). `export-group` checks the other direction: every
+`spec.export.resources[].apiVersion` names a group the generated APIExport
+serves.
+
+**Operational consequence.** The change is **in place on `v1alpha1`**: there is
+no `v1alpha2`, no conversion webhook, no dual-read and no "accept either shape"
+fallback anywhere in Go, YAML or TypeScript. A CatalogEntry in the old shape
+simply does not validate, so it drops out of the hub registry with the provider
+unroutable. Every provider must **re-apply its CatalogEntry** — for a chart,
+that is a `helm upgrade` carrying the new `catalogentry.yaml`; for the
+Makefile's `install-provider-<name>` path, a re-apply of `manifest.yaml`. This
+is a redeploy, not a data migration: nothing rewrites stored objects, and
+`schemaDigest` values are unchanged because the digest covers the action
+schemas only.
+
+Tenant `APIBinding`s are untouched by the restructure — the claims generated
+from `spec.requires` are the same claims the old two lists generated — so
+`POST /api/admin/providers/{name}/claims/reaccept` is needed only where a
+provider took the opportunity to widen or narrow what it requires, exactly as
+before.
 
 ## How to read this
 
@@ -299,7 +429,7 @@ that way and fix the verb.
    `:132,142,499,507`.
 2. **Document the carve-outs — S.** Move the transient bundle/snapshot store
    rationale from README into `docs/code-provider-architecture.md` and cite
-   the Pillar 1 carve-out; catalogue `stage_snapshot` in the manifest with a
+   the Pillar 1 carve-out; catalogue `stage-snapshot` in the manifest with a
    `largeUpload: true` flag or move its exception into
    `docs/provider-actions.md`. Fix the "four schemas / six kinds / eleven
    actions" counts.
@@ -718,7 +848,7 @@ shippable cuts, each of which leaves the product working.
    (`api/dataplane_client.go:29-73` string removed); replaced by the
    consumer-side helper §0.2 ships.
 4. Registry pull secret: consumes the typed `Instance.spec.imagePullSecretRef`
-   from §4.6 and a code-provider action `connections/{n}/mint_registry_token/v1`
+   from §4.6 and a code-provider action `connections/{n}/mint-registry-token/v1`
    that mints a scoped pull token; `api/project_promote.go:66-127` stops
    reading the code `Connection` Secret.
 5. `/metrics` moves off the public backend port to an internal listener.

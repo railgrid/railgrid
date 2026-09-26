@@ -150,7 +150,7 @@ func declaredActions(p providers.Provider) []DeclaredAction {
 	out := make([]DeclaredAction, 0, len(p.Actions))
 	for _, a := range p.Actions {
 		out = append(out, DeclaredAction{
-			ID:          a.ID,
+			ID:          a.ID(),
 			Name:        a.Name,
 			Version:     a.Version,
 			DisplayName: a.DisplayName,
@@ -173,24 +173,33 @@ func declaredActions(p providers.Provider) []DeclaredAction {
 	return out
 }
 
-// declaredVerbs projects a registry record's declared data-plane verbs into
-// the discovery view. The coordinate is spelled "<resource>/<verb>": the same
+// declaredVerbs projects the verbs a registry record's export declares into the
+// discovery view. The coordinate is spelled "<resource>/<verb>": the same
 // string the hub uses for the RBAC subresource and for a scoped-identity
 // capability, so what a client reads here is what an operator would grant.
+//
+// Actions are NOT included: they are their own view (declaredActions), with a
+// schema and a consent policy a client has to reason about before invoking
+// anything.
 func declaredVerbs(p providers.Provider) []DeclaredVerb {
-	if len(p.DataPlaneVerbs) == 0 {
+	if p.Export == nil {
 		return nil
 	}
-	out := make([]DeclaredVerb, 0, len(p.DataPlaneVerbs))
-	for _, v := range p.DataPlaneVerbs {
-		out = append(out, DeclaredVerb{
-			Coordinate:  v.Resource + "/" + v.Verb,
-			Resource:    v.Resource,
-			Verb:        v.Verb,
-			Description: v.Description,
-			Stream:      v.Stream,
-			ReadOnly:    v.ReadOnly,
-		})
+	out := make([]DeclaredVerb, 0, len(p.Export.Resources))
+	for _, resource := range p.Export.Resources {
+		for _, v := range resource.Verbs {
+			out = append(out, DeclaredVerb{
+				Coordinate:  resource.Name + "/" + v.Name,
+				Resource:    resource.Name,
+				Verb:        v.Name,
+				Description: v.Description,
+				Stream:      v.Stream,
+				ReadOnly:    v.ReadOnly,
+			})
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

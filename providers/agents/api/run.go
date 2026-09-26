@@ -123,10 +123,10 @@ type runCheckpoint struct {
 }
 
 // taskRun bundles everything one agent execution needs. Creds reads the model
-// credential (per-request: tenant client acting as the user; background: the
-// virtual-workspace getter). ParentRunID links sub-agent (delegation) runs.
-// Edges* configure the optional hub-MCP edges family (interactive runs only —
-// it authenticates as the calling user).
+// credential (a verb: the gate's provider client; background: the
+// virtual-workspace getter — both act as the provider). ParentRunID links
+// sub-agent (delegation) runs. Edges* configure the optional hub-MCP edges
+// family, which needs a caller credential and so exists only on the MCP class.
 type taskRun struct {
 	Creds llm.CredentialResolver
 	CR    tools.CRAccess
@@ -174,16 +174,18 @@ type taskRun struct {
 	approveUsed *bool
 
 	EdgesEndpoint string // hub mcpserver MCP URL ("" → edges family absent)
-	// HubToken is the CALLER's bearer token for the hub. It authenticates the
-	// edges MCP dial AND the infrastructure data plane, so anything reaching a
-	// tenant workload through the platform needs it. Empty on background runs,
-	// which have no user to act as.
+	// HubToken authenticates the edges MCP dial against the hub. It is the
+	// caller's bearer on the MCP class (the one route that still carries one)
+	// and the agent's own minted identity on a background run; a data-plane
+	// verb has neither, so it is empty there and edges is absent. It plays no
+	// part in reaching instance-backed tools any more: those are called as
+	// this provider through its export virtual workspace (dataPlaneFor).
 	HubToken      string
 	EdgesInsecure bool
 
-	// ClusterID is the tenant workspace's kcp logical-cluster ID, used with the
-	// caller's token to address instance-backed tools over the infrastructure
-	// provider's data plane.
+	// ClusterID is the tenant workspace's kcp logical-cluster ID, which
+	// addresses instance-backed tools on the infrastructure provider's
+	// instances/proxy verb through this provider's export virtual workspace.
 	ClusterID string
 
 	OnDelta     func(string)
@@ -264,7 +266,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		Store: s.store, Scope: scope, Agent: agent, CR: run.CR,
 		Secrets: run.Creds, ConnSecretName: connectionSecretName,
 		RunID:     runID,
-		DataPlane: s.dataPlaneFor(ctx, run),
+		DataPlane: s.dataPlaneFor(run),
 	}, run)
 	defer closeTools()
 
@@ -407,9 +409,10 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 }
 
 // startDetachedRun pre-creates a Pending run record and executes the task in a
-// detached goroutine as the calling user, so run-now endpoints return 202 with
-// a runID immediately instead of blocking the HTTP request on the whole agent
-// loop. Output is delivered to the run's notify channel when it finishes, like
+// detached goroutine through the client the request resolved (the gate's
+// provider client on a verb; the caller-credentialed one on the MCP class),
+// so run-now endpoints return 202 with a runID immediately instead of blocking
+// the HTTP request on the whole agent loop. Output is delivered to the run's notify channel when it finishes, like
 // a real background fire.
 func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id identity, agent *agentsv1alpha1.Agent, tr taskRun) string {
 	runID := uuid.NewString()
@@ -456,17 +459,14 @@ func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id id
 }
 
 // dataPlaneFor describes how instance-backed tools reach tenant workloads for
-// this run. A run with no identity is unusable by design — the tool reports
-// that precisely rather than failing at the hub — and so is one in a workspace
-// where nothing is known to serve the instance API group.
-func (s *Server) dataPlaneFor(ctx context.Context, run taskRun) tools.DataPlane {
-	return tools.DataPlane{
-		HubBase:   s.cfg.HubURL,
-		ClusterID: run.ClusterID,
-		Token:     run.HubToken,
-		Provider:  s.providerForAPIGroup(ctx, run.ClusterID, run.HubToken, tools.InstanceAPIGroup),
-		Insecure:  s.cfg.HubInsecure,
-	}
+// this run: the infrastructure provider's instances/proxy verb, claimed on this
+// provider's own export and called through its virtual workspace AS THIS
+// PROVIDER. The identity of whoever started the run does not enter into it —
+// an interactive run and an unattended one reach an instance the same way. A
+// provider with no provider-scoped config is unusable by design; the tool
+// reports that precisely rather than failing two hops away.
+func (s *Server) dataPlaneFor(run taskRun) tools.DataPlane {
+	return tools.DataPlane{ClusterID: run.ClusterID, Callers: s.verbCallers}
 }
 
 // runCallbacks chains the caller's streaming callbacks with transcript

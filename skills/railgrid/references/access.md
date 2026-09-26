@@ -230,10 +230,11 @@ are refused at the gate. Request, limits and errors:
 Enable semantics: the hub resolves org-scoped providers first (they shadow
 platform providers of the same name), rejects providers without an
 APIExport (built-ins are implicitly enabled), returns 409 listing missing
-dependencies, builds claims only from the provider's declared
-`permissionClaims` (you choose accept or reject per resource), then creates
+dependencies (the providers named by `spec.requires[].provider`), builds claims
+only from the provider's declared
+`spec.requires` (you choose accept or reject per resource), then creates
 the kcp `APIBinding` named after the provider. If the provider declares
-`hubAccess` (hub REST capabilities its delegated token may use, e.g. App
+`spec.hub.access` (hub REST capabilities its delegated token may use, e.g. App
 Studio reading member lists and inviting), `acceptedHubAccess` records which
 you accept in a `Grant` (org-scoped ones need an org admin; unaccepted ones are
 refused with a 403 naming the capability). Source:
@@ -247,12 +248,23 @@ embedded bearer on static-token hubs. `?install=krew` swaps the command to
 ## 7. Provider catalog fields that matter
 
 `GET /api/providers` items: `name`, `displayName`, `scope` (`global`|`org`),
-`ready`, `readinessReason`, `apiExportPath`, `apiExportName` (empty means
-nothing to bind), `permissionClaims`, `edgeProxyAccess`, `dependencies`,
-`builtin`, `category`, `children`, and for actions `actions[]` with
-`name`, `version`, `boundResource`, `inputSchema`, `outputSchema`,
-`schemaDigest`, `readOnly`, `risk`, `limits`, `consent`, `deprecation`.
-Provider skills appear as `assistantSkills[]`.
+`ready`, `readinessReason`, `builtin`, `category`, `iconURL`, plus the same four
+sections as the CatalogEntry spec:
+
+- `export` — `name` (the APIExport to bind; absent means nothing to bind),
+  `path`, `apiGroups` (the groups it actually serves, which are not the export
+  name), and `resources[]`. Each resource is `{name, apiVersion, kind}` with
+  `verbs[]` (`name`, `description`, `stream`, `readOnly`) and `actions[]`
+  (`id` = `name/version`, `name`, `version`, `displayName`, `inputSchema`,
+  `outputSchema`, `schemaDigest`, `executionMode`, `readOnly`, `risk`,
+  `idempotency`, `limits`, `consent`, `deprecation`). The action's bound
+  resource is the parent entry, not a field on the action.
+- `requires[]` — what to accept at Enable: per API group, the `provider` that
+  serves it and the `resources[]` (`name`, `verbs`, `selector`) it needs. An
+  entry naming a `provider` is also a dependency edge.
+- `serving` — `ui` (`url`/`builtinRoute`, `indexPath`, `children`,
+  `mainJSIntegrity`), `backend`, `selfHosting`.
+- `hub` — `access[]` and `assistantSkills[]` (provider skill packages).
 
 ## 8. Kube REST by cluster
 

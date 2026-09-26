@@ -34,6 +34,8 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
 )
@@ -110,12 +112,13 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 	if r := findRule(t, rules, "edges.railgrid.ai", "kubernetesclusters"); r == nil {
 		t.Fatal("missing edges rule")
 	}
-	// The edges data plane gates create on {resource}/{verb}, never a bare
-	// verb on the object (providers/edges/internal/tunnel/grammar.go).
+	// The edges data plane is kcp custom subresources {resource}/{verb}; the
+	// grant is the wildcard on the coordinate (kcp maps the HTTP method onto
+	// the RBAC verb), never a bare verb on the object.
 	k8s := findRule(t, rules, "edges.railgrid.ai", "kubernetesclusters/k8s")
-	if k8s == nil || !slices.Equal(k8s.Verbs, []string{"create"}) ||
+	if k8s == nil || !slices.Equal(k8s.Verbs, dataplane.SubresourceVerbs) ||
 		!slices.Equal(k8s.Resources, []string{"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp"}) {
-		t.Fatalf("edges data-plane rule = %+v, want create on kubernetesclusters/{k8s,ssh,mcp}", k8s)
+		t.Fatalf("edges data-plane rule = %+v, want every kcp verb on kubernetesclusters/{k8s,ssh,mcp}", k8s)
 	}
 	for _, r := range rules {
 		if slices.Contains(r.APIGroups, "edges.railgrid.ai") && slices.Contains(r.Verbs, "proxy") {
@@ -124,12 +127,12 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 	}
 
 	exec := findRule(t, rules, "infrastructure.railgrid.ai", "instances/exec")
-	if exec == nil || !slices.Equal(exec.Verbs, []string{"create"}) {
-		t.Fatalf("exec rule = %+v, want create", exec)
+	if exec == nil || !slices.Equal(exec.Verbs, dataplane.SubresourceVerbs) {
+		t.Fatalf("exec rule = %+v, want every kcp verb", exec)
 	}
 	action := findRule(t, rules, "infrastructure.railgrid.ai", "instances/restart")
-	if action == nil || !slices.Equal(action.Verbs, []string{"create"}) {
-		t.Fatalf("action rule = %+v, want create", action)
+	if action == nil || !slices.Equal(action.Verbs, dataplane.SubresourceVerbs) {
+		t.Fatalf("action rule = %+v, want every kcp verb", action)
 	}
 	if r := findRule(t, rules, "databricks.railgrid.ai", "tables/query_table"); r != nil {
 		t.Fatalf("action for an unbound resource must not be granted: %+v", r)
@@ -183,8 +186,8 @@ func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
 	}
 	for key, resources := range want {
 		r := findRule(t, edges, "edges.railgrid.ai", key)
-		if r == nil || !slices.Equal(r.Verbs, []string{"create"}) || !slices.Equal(r.Resources, resources) {
-			t.Fatalf("%s rule = %+v, want create on %v", key, r, resources)
+		if r == nil || !slices.Equal(r.Verbs, dataplane.SubresourceVerbs) || !slices.Equal(r.Resources, resources) {
+			t.Fatalf("%s rule = %+v, want every kcp verb on %v", key, r, resources)
 		}
 	}
 	for _, r := range edges {
@@ -213,9 +216,9 @@ func TestBuildRules_AgentsGrantsOnlyModelCredentialProbes(t *testing.T) {
 	assertNoWildcards(t, rules)
 
 	probe := findRule(t, rules, "agents.railgrid.ai", "modelcredentials/test")
-	if probe == nil || !slices.Equal(probe.Verbs, []string{"create"}) ||
+	if probe == nil || !slices.Equal(probe.Verbs, dataplane.SubresourceVerbs) ||
 		!slices.Equal(probe.Resources, []string{"modelcredentials/test", "modelcredentials/discover"}) {
-		t.Fatalf("agents data-plane rule = %+v, want create on modelcredentials/{test,discover}", probe)
+		t.Fatalf("agents data-plane rule = %+v, want every kcp verb on modelcredentials/{test,discover}", probe)
 	}
 	// The retired coordinates, and everything else the data plane serves that
 	// an MCP token has no business invoking.
@@ -266,7 +269,20 @@ func TestBuildRules_ReadOnlyStripsWriteVerbs(t *testing.T) {
 	assertNoWildcards(t, rules)
 
 	for _, r := range rules {
+		// A verb coordinate ({resource}/{verb}) is an invocation grant and
+		// carries every kcp verb whatever the server's mode; only rules on
+		// the objects themselves are stripped to reads.
+		if slices.Equal(r.Verbs, dataplane.SubresourceVerbs) {
+			for _, res := range r.Resources {
+				if !strings.Contains(res, "/") {
+					t.Fatalf("readOnly rule grants every verb on an object, not a coordinate: %+v", r)
+				}
+			}
+			continue
+		}
 		for _, v := range writeVerbs {
+			// A bare create is a review (SelfSubjectAccessReview), not a write
+			// on a bound object.
 			if slices.Contains(r.Verbs, v) && !slices.Equal(r.Verbs, []string{"create"}) {
 				t.Fatalf("readOnly rule carries write verb %q: %+v", v, r)
 			}
@@ -320,47 +336,54 @@ func TestBuildRules_EmptyBindingsStillYieldsRole(t *testing.T) {
 	}
 }
 
-func TestActionGrantsFromSpec(t *testing.T) {
-	got := actionGrantsFromSpec([]providersv1alpha1.ProviderActionSpec{
-		{ID: "query_table/v1", ReadOnly: true, BoundResource: providersv1alpha1.ProviderActionBoundResource{APIVersion: "databricks.railgrid.ai/v1alpha1", Resource: "tables"}},
-		{ID: "bad", BoundResource: providersv1alpha1.ProviderActionBoundResource{APIVersion: "x/v1"}}, // no resource
+func TestActionGrantsFromExport(t *testing.T) {
+	got := actionGrantsFromExport(&providersv1alpha1.ProviderExport{
+		Name: "databricks.providers.railgrid.ai",
+		Resources: []providersv1alpha1.ProviderExportResource{{
+			Name: "tables", APIVersion: "databricks.railgrid.ai/v1alpha1", Kind: "Table",
+			Actions: []providersv1alpha1.ProviderAction{{Name: "query_table", Version: "v1", ReadOnly: true}},
+		}, {
+			// No group in the apiVersion: nothing to key a grant on.
+			Name: "broken", APIVersion: "v1", Kind: "Broken",
+			Actions: []providersv1alpha1.ProviderAction{{Name: "poke", Version: "v1"}},
+		}},
 	})
 	want := []ActionGrant{{Group: "databricks.railgrid.ai", Resource: "tables", Name: "query_table", ReadOnly: true}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("grants = %+v, want %+v", got, want)
 	}
+	if got := actionGrantsFromExport(nil); len(got) != 0 {
+		t.Fatalf("a provider with no export granted %+v", got)
+	}
 }
 
-// Action IDs are documented as "<name>/<version>". An ID without a version
-// segment is malformed, and granting it would put a subresource in the role
-// that no provider ever reviews.
-// The parser enforces the documented "<name>/vN" shape itself, mirroring the
-// CRD pattern, because pattern validation does not retro-validate objects
-// that predate the marker: a legacy entry must not be granted just because
-// it is stored.
-func TestActionGrantsFromSpec_SkipsIDsWithoutAVersion(t *testing.T) {
-	res := providersv1alpha1.ProviderActionBoundResource{APIVersion: "infrastructure.railgrid.ai/v1alpha1", Resource: "instances"}
-	for _, id := range []string{
-		"restart", "restart/", "  restart  ", "/v1", "",
-		// A slash with something after it is not enough: the version must be
-		// v followed by a non-zero-led number, exactly as the CRD requires.
-		"restart/latest", "restart/1", "restart/v0", "restart/v01", "restart/v1alpha1",
-		"restart/v123456789", // nine digits, one past the CRD bound
-		"Restart/v1",         // name must be lowercase
-		"restart/v1/v2",
+// The coordinate a provider reviews is the action's NAME — the version is not
+// in any path. The parser enforces the documented name shape itself, mirroring
+// the CRD pattern, because pattern validation does not retro-validate objects
+// that predate the marker: a legacy entry must not be granted just because it
+// is stored.
+func TestActionGrantsFromExport_SkipsMalformedNames(t *testing.T) {
+	grantsFor := func(name string) []ActionGrant {
+		return actionGrantsFromExport(&providersv1alpha1.ProviderExport{
+			Name: "infrastructure.providers.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderExportResource{{
+				Name: "instances", APIVersion: "infrastructure.railgrid.ai/v1alpha1", Kind: "Instance",
+				Actions: []providersv1alpha1.ProviderAction{{Name: name, Version: "v1"}},
+			}},
+		})
+	}
+	for _, name := range []string{
+		"", "restart/v1", "restart/", "/restart", "Restart", "1restart", "restart.now",
+		strings.Repeat("a", 64),
 	} {
-		got := actionGrantsFromSpec([]providersv1alpha1.ProviderActionSpec{{ID: id, BoundResource: res}})
-		if len(got) != 0 {
-			t.Fatalf("ID %q granted %+v, want skipped", id, got)
+		if got := grantsFor(name); len(got) != 0 {
+			t.Fatalf("name %q granted %+v, want skipped", name, got)
 		}
 	}
-	for _, id := range []string{"restart/v1", "restart/v12345678", "query_table/v2", "a/v1", "  restart/v1  "} {
-		got := actionGrantsFromSpec([]providersv1alpha1.ProviderActionSpec{{ID: id, BoundResource: res}})
-		if len(got) != 1 {
-			t.Fatalf("well-formed ID %q = %+v, want exactly one grant", id, got)
-		}
-		if want := strings.TrimSpace(id)[:strings.Index(strings.TrimSpace(id), "/")]; got[0].Name != want {
-			t.Fatalf("ID %q granted name %q, want %q", id, got[0].Name, want)
+	for _, name := range []string{"restart", "query_table", "a", "development-logs", strings.Repeat("a", 63)} {
+		got := grantsFor(name)
+		if len(got) != 1 || got[0].Name != name {
+			t.Fatalf("well-formed name %q = %+v, want exactly one grant on it", name, got)
 		}
 	}
 }

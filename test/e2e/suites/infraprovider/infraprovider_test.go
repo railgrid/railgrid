@@ -114,11 +114,11 @@ func applyProviderManifests() error {
 				// The committed manifest targets the dev-loop port (:8082);
 				// this suite runs the binary on its own port.
 				overrideURL := "http://localhost:" + providerPort
-				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url"); err != nil {
-					return fmt.Errorf("%s: override spec.ui.url: %w", file, err)
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "ui", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.serving.ui.url: %w", file, err)
 				}
-				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url"); err != nil {
-					return fmt.Errorf("%s: override spec.backend.url: %w", file, err)
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "backend", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.serving.backend.url: %w", file, err)
 				}
 			}
 			// The hub reports /readyz before the admin/catalog APIs in

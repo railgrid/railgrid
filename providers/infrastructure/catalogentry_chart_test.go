@@ -74,35 +74,35 @@ var chartOverrides = []chartOverride{{
 }, {
 	// ui.url and backend.url: the manifest points at the host binary's dev
 	// port, the chart at the in-cluster Service it installs.
-	match: `    url: "http://localhost:8082"`,
+	match: `      url: "http://localhost:8082"`,
 	replace: []string{
-		`    url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"`,
+		`      url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"`,
 	},
 	want: 2,
 }, {
 	// selfHosting.chart.version is the version a self-hoster installs, which
 	// only the chart knows.
-	match: `      name: "railgrid-infrastructure-provider"`,
+	match: `        name: "railgrid-infrastructure-provider"`,
 	replace: []string{
-		`      name: "railgrid-infrastructure-provider"`,
-		`      version: {{ .Chart.Version | quote }}`,
+		`        name: "railgrid-infrastructure-provider"`,
+		`        version: {{ .Chart.Version | quote }}`,
 	},
 	want: 1,
 }, {
 	// The chart carries its own values reference so the portal can show it
 	// offline, for the version actually installed.
-	match: `    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/deploy/chart/README.md"`,
+	match: `      docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/deploy/chart/README.md"`,
 	replace: []string{
-		`    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/deploy/chart/README.md"`,
-		`    valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}`,
+		`      docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/deploy/chart/README.md"`,
+		`      valuesDoc: |{{ .Files.Get "README.md" | nindent 12 }}`,
 	},
 	want: 1,
 }, {
 	// Carried from THIS platform's own configuration, not a literal: the gate
 	// speaks the hub's app-access protocol, so a self-hosted copy running a
 	// different build can fail against this hub.
-	match:   `        value: ghcr.io/railgrid/railgrid-access-proxy:latest`,
-	replace: []string{`        value: {{ .Values.publishing.accessProxyImage | quote }}`},
+	match:   `          value: ghcr.io/railgrid/railgrid-access-proxy:latest`,
+	replace: []string{`          value: {{ .Values.publishing.accessProxyImage | quote }}`},
 	want:    1,
 }}
 

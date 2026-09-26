@@ -16,9 +16,10 @@ You may obtain a copy of the License at
 // the hostname — that is what defeats DNS rebinding.
 //
 // web_search rides the workspace's shared searxng instance (the Studio
-// singleton, controller/studio) through the infrastructure data plane with
-// the caller's bearer — the instance has no public URL and no credential of
-// its own; the caller's railgrid RBAC on the instance is the gate.
+// singleton, controller/studio) through the infrastructure data plane as this
+// provider, under the instances/proxy claim — the instance has no public URL
+// and no credential of its own; the caller already passed the gate on the
+// Project verb that started the turn.
 
 package api
 
@@ -140,7 +141,7 @@ func projectAssistantWebFetch(ctx context.Context, raw string) (string, error) {
 }
 
 // projectAssistantWebSearch queries the workspace's shared search backend
-// through the data plane as the caller.
+// through the data plane as the provider.
 func (s *Server) projectAssistantWebSearch(ctx context.Context, req projectAssistantToolCallRequest, query string) (string, error) {
 	if strings.TrimSpace(query) == "" {
 		return "", fmt.Errorf("query is required")

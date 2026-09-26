@@ -95,10 +95,10 @@ func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, d
 //
 // permissions, when non-empty, asks GitHub to issue the token with LESS than
 // the installation holds — the documented way to get a narrow, short-lived
-// credential out of an App. It is how mint_registry_token hands out a
+// credential out of an App. It is how mint-registry-token hands out a
 // packages:read token instead of the credential that can also push code — a
 // pull secret sits on a runtime cluster for as long as the workload does, so
-// it must not be able to do anything but pull — and how mint_clone_token hands
+// it must not be able to do anything but pull — and how mint-clone-token hands
 // out a contents:read token that can fetch one repository and nothing more.
 func (r CredentialResolver) installationToken(ctx context.Context, conn *api.Connection, data map[string][]byte, permissions map[string]string) (string, time.Time, error) {
 	appID, err := strconv.ParseInt(strings.TrimSpace(string(data["appID"])), 10, 64)

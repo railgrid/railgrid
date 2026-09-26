@@ -9,20 +9,51 @@
 # GENERATED FILE — DO NOT EDIT.
 #
 # Written by provider-sdk/cmd/apiexportgen from two inputs:
-#   metadata.name, spec.permissionClaims  <- manifest.yaml spec.apiExport
-#   spec.resources                        <- kcp apigen (hack/apigen.sh)
-# Regenerate with: make codegen-<provider>-provider. spec.permissionClaims
-# carries no identityHash: provider-sdk/install stamps one per installation for
-# first-party (*.railgrid.ai) claim groups.
+#   metadata.name                         <- manifest.yaml spec.export.name
+#   spec.permissionClaims                 <- manifest.yaml spec.requires
+#   spec.resources                        <- kcp apigen (hack/apigen.sh), plus
+#                                            one "<resource>/<verb>" custom
+#                                            subresource per manifest.yaml
+#                                            spec.export.resources[].verbs[] and
+#                                            spec.export.resources[].actions[]
+#                                            entry, naming the schema apigen
+#                                            minted for the verb's
+#                                            "<Verb>Request" kind
+# Regenerate with: make codegen-<provider>-provider. No claim carries an
+# identityHash: kcp resolves a first-party claim per consumer workspace against
+# whatever export that workspace bound (PermissionClaimPolicy admits it).
 apiVersion: apis.kcp.io/v1alpha2
 kind: APIExport
 metadata:
   name: kuery.providers.railgrid.ai
 spec:
-  permissionClaims: []
+  permissionClaims:
+  - group: edges.railgrid.ai
+    resource: kubernetesclusters
+    verbs:
+    - get
+    - list
+    - watch
+  - group: edges.railgrid.ai
+    resource: kubernetesclusters/k8s
+    verbs:
+    - '*'
+  - group: authorization.k8s.io
+    resource: subjectaccessreviews
+    verbs:
+    - create
   resources:
   - group: kuery.providers.railgrid.ai
     name: savedviews
-    schema: v260919-b1e9b5e6.savedviews.kuery.providers.railgrid.ai
+    schema: v260925-98850485.savedviews.kuery.providers.railgrid.ai
     storage:
       crd: {}
+  - group: kuery.providers.railgrid.ai
+    name: savedviews/run
+    schema: v260924-87f1980f.run.kuery.providers.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: kuery.providers.railgrid.ai

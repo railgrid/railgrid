@@ -94,16 +94,17 @@ federates `infrastructure` or `code`. Its tools surface as `edges__*`.
   [`mcp_service.go`](https://github.com/railgrid/railgrid/blob/main/providers/edges/internal/tunnel/mcp_service.go),
   fresh per request, from the edges the **caller** can see in the addressed
   workspace.
-- **Reaching one edge's own MCP endpoint** is a declared data-plane verb, not a
-  separate mount:
+- **Reaching one edge's own MCP endpoint** is a declared data-plane verb — a
+  kcp custom subresource on the hub's kcp front door, not a separate mount:
 
   ```
-  /services/providers/edges/dataplane/clusters/{clusterID}/{resource}/{name}/mcp
+  /clusters/{clusterID}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/mcp
   ```
 
   where `{resource}` is `kubernetesclusters` or `services`
   (`providers/edges/internal/tunnel/grammar.go`, `VerbMCP`; declared in
-  `providers/edges/manifest.yaml` under `spec.dataPlane.verbs`). It is
+  `providers/edges/manifest.yaml` under that resource's
+  `spec.export.resources[].verbs`). It is
   authorized like every other verb: a real `GET` of the object as the caller,
   then a `SelfSubjectAccessReview` for **`create` on `{resource}/mcp`**,
   name-scoped. The old `/agent`-mounted per-edge MCP route and the wildcard
@@ -171,8 +172,10 @@ railgrid://providers/capabilities      application/json
 
 Its scope is exactly federation's scope: one entry per **Ready** provider
 **visible to the verified caller's Org**, in the same sorted enumeration order,
-projected by `RegistryEnumerator` from `spec.actions` and
-`spec.dataPlane.verbs`. A provider that declares neither is omitted rather than
+projected by `RegistryEnumerator` from `spec.export.resources[]` — the
+`verbs[]` and `actions[]` on each. Each projected action still carries a
+`boundResource`, derived from the resource entry it hangs off rather than
+declared on the action. A provider that declares neither is omitted rather than
 listed empty.
 
 ```json
@@ -468,10 +471,11 @@ There is one way in: **be a provider**. Tools cannot be compiled into the hub.
    Do all tenant work **as that token**, scoped to that workspace — never with a
    provider-wide service account.
 4. **A tool is a projection, not a third access path.** Every tool must wrap a
-   read the caller could have done through the bound CR, or a declared verb it
-   invokes through `provider-sdk/dataplane` with the same two gates. A tool may
-   not hold a credential or reach a coordinate the caller would not be granted
-   directly.
+   read the caller could have done through the bound CR, or a declared verb
+   the caller could have invoked as a custom subresource on `/clusters/{id}`
+   — run through the same executor and the same authorization as the verb. A
+   tool may not hold a credential or reach a coordinate the caller would not
+   be granted directly.
 5. Your tools appear in the aggregate as `<your-provider>__<tool>`
    automatically, on the **one** aggregate endpoint; clients do not add each
    provider separately.

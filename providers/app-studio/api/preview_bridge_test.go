@@ -323,7 +323,7 @@ spec:
 
 func setPreviewBridgeTestHeaders(request *http.Request, actor, clusterID string) {
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+actor+"-token")
+	request = stampTestCaller(request, testUserForToken(actor+"-token"))
 	request.Header.Set("X-Railgrid-User", actor)
 	request.Header.Set("X-Railgrid-Tenant", clusterID)
 	request.Header.Set("X-Railgrid-Cluster", clusterID)

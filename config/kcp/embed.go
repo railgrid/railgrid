@@ -43,6 +43,22 @@ var RailgridWorkspaceFS embed.FS
 //go:embed workspace-system-controllers.yaml workspace-system-providers.yaml workspace-system-tenants.yaml
 var SystemWorkspaceFS embed.FS
 
+// PermissionClaimPolicyFS contains the generated kcp PermissionClaimPolicy
+// (group admin.kcp.io), written by hack/generate-permission-claim-policy.mjs
+// from every provider manifest's spec.requires[] entries that name a provider.
+//
+// It is applied only when the cluster actually serves the API — see
+// pkg/hub/bootstrap.InstallPermissionClaimPolicy. The type is unmerged in kcp
+// (kcp-dev/kcp#4385), so this stays a YAML blob the hub applies through the
+// dynamic client: nothing here compiles against it.
+//
+//go:embed permissionclaimpolicy.yaml
+var PermissionClaimPolicyFS embed.FS
+
+// PermissionClaimPolicyFile is the name of the single file in
+// PermissionClaimPolicyFS.
+const PermissionClaimPolicyFile = "permissionclaimpolicy.yaml"
+
 // ProvidersFS contains the platform APIResourceSchemas + APIExports applied to
 // root:railgrid:system:controllers (the single home for all platform exports).
 //

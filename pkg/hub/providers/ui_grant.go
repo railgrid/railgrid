@@ -225,7 +225,7 @@ func (p *ProviderProxy) SetUIGrantKeys(keys serviceaccounts.ProofKeySource) {
 
 // orgUIOverEdge reports whether prov's UI can be carried by its edge route.
 // The route fronts the Service the provider published as its backend, so the
-// UI has to be served by that same authority: a spec.ui.url on another host
+// UI has to be served by that same authority: a spec.serving.ui.url on another host
 // has nothing to land on. Path prefixes may differ (they are appended per
 // request); only scheme and host must match.
 func orgUIOverEdge(prov Provider) bool {
@@ -234,7 +234,7 @@ func orgUIOverEdge(prov Provider) bool {
 }
 
 // orgUIAssetPath is the provider-relative path of one UI asset: the
-// spec.ui.url path prefix, then the path after /ui/providers/{name} — the same
+// spec.serving.ui.url path prefix, then the path after /ui/providers/{name} — the same
 // join the direct UI proxy makes for a platform provider.
 func orgUIAssetPath(prov Provider, rest string) string {
 	return singleJoiningSlash(prov.UIURL.Path, rest)
@@ -284,14 +284,14 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "provider not ready: "+name, http.StatusServiceUnavailable)
 		return
 	}
-	hop, err := resolveEdgeHop(p.reg, prov)
+	hop, err := p.resolveEdgeHop(prov)
 	switch {
 	case errors.Is(err, errEdgeRouteUnusable):
 		p.log.Info("org-owned provider has no usable edge route yet", "provider", prov.Name, "org", prov.OrgUUID)
 		http.Error(w, "provider backend is not routable yet: "+name, http.StatusServiceUnavailable)
 		return
 	case err != nil:
-		p.log.Info("edge transport unavailable: the platform edges provider has no backend", "provider", prov.Name, "org", prov.OrgUUID)
+		p.log.Info("edge transport unavailable: the platform edges provider is not ready or kcp is not wired", "provider", prov.Name, "org", prov.OrgUUID)
 		http.Error(w, "edge transport unavailable for provider: "+name, http.StatusServiceUnavailable)
 		return
 	}
@@ -318,6 +318,7 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 
 	rp := &httputil.ReverseProxy{
 		FlushInterval: -1,
+		Transport:     hop.transport,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = dst.Scheme
 			req.URL.Host = dst.Host
@@ -332,9 +333,10 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 			req.Header.Del("X-Railgrid-User")
 			req.Header.Del("X-Railgrid-Tenant")
 			req.Header.Del("X-Railgrid-Cluster")
+			stripShardIdentityHeaders(req.Header)
 			req.Header.Set("X-Railgrid-User", claims.User)
 			p.setHeaders(req, prov.Name, basePath)
-			setDelegatedAuthorization(req.Header, token)
+			setDelegatedUpstreamAuthorization(req.Header, token)
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			// The URL carries a grant, so a shared cache must never keep this

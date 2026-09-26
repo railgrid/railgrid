@@ -165,7 +165,7 @@ func (s *Server) callProjectBuildWorkflow(ctx context.Context, id identity, http
 	endpoint := s.mcpEndpoint(id.clusterID)
 	errorsByCandidate := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		raw, err := callProjectMCPTool(ctx, endpoint, httpReq, id.tenant, s.mcpInsecureSkipTLSVerify, toolName, cloneProjectBuildWorkflowArgs(args, candidate))
+		raw, err := callProjectMCPTool(ctx, endpoint, s.hubRequest(httpReq, id), id.tenant, s.mcpInsecureSkipTLSVerify, toolName, cloneProjectBuildWorkflowArgs(args, candidate))
 		if err == nil {
 			return raw, nil
 		}

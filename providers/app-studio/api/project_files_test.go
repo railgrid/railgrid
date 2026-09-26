@@ -71,7 +71,7 @@ func (f *projectFilesFixture) request(method, target string, body io.Reader, hea
 	request := httptest.NewRequest(method, target, body)
 	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
 	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
-	request.Header.Set("Authorization", "Bearer test-token")
+	request = stampTestCaller(request, testUserForToken("test-token"))
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	for key, value := range headers {
 		request.Header.Set(key, value)

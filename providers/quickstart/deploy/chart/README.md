@@ -16,12 +16,18 @@ chart mounts it into **both** containers as `RAILGRID_PROVIDER_KUBECONFIG`:
   then creates the APIExportEndpointSlice the controller watches and the bind
   grant;
 - the `provider` container watches tenant workspaces through the APIExport
-  virtual workspace, and lends the config's host and CA — never its bearer — to
-  the per-request clients the `greet` data-plane verb authorizes through.
+  virtual workspace, and acts as the provider through that same virtual
+  workspace when the `greet` verb — a kcp custom subresource kcp forwards to
+  it with the caller's identity stamped, never a bearer — decides visibility
+  with a SubjectAccessReview on the caller's behalf and reads the Greeting.
 
 Without the Secret the pod still serves the portal, but no `Greeting` is ever
-reconciled and the verb is disabled. The readiness probe is `/readyz` (watches
-are live), separate from the `/healthz` liveness probe (the process is up).
+reconciled and the verb fails closed. The rendered CatalogEntry is mounted on
+both containers as `RAILGRID_CATALOGENTRY_FILE`: `init` applies it, and `serve`
+reads `spec.export.resources[].verbs` from it to know which custom subresources
+exist — without it there is no data plane and `serve` refuses to start. The readiness
+probe is `/readyz` (watches are live), separate from the `/healthz` liveness
+probe (the process is up).
 
 - **On the platform**, an admin mints it during provider onboarding.
 - **Running it yourself**, railgrid creates the workspace, mints the credential,

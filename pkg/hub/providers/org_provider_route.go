@@ -39,13 +39,16 @@ import (
 // OrgProviderRoute is how one hub-originated request reaches one org-owned
 // provider's backend on behalf of one caller.
 type OrgProviderRoute struct {
-	// BaseURL addresses the provider's backend root through the platform
-	// edges provider. Append the provider-relative path (e.g. "/mcp").
+	// BaseURL addresses the provider's backend root on kcp's front door,
+	// through the edges provider's services/{name}/proxy custom subresource.
+	// Append the provider-relative path (e.g. "/mcp").
 	BaseURL string
-	// Transport sends requests addressed under BaseURL with the caller's
-	// delegated token as Authorization, whatever Authorization the request
-	// carried. It refuses any request not addressed under BaseURL, so the
-	// delegated token cannot be pointed anywhere else.
+	// Transport sends requests addressed under BaseURL authenticated to kcp
+	// as the hub, carrying the caller's delegated token as the upstream
+	// Authorization the edges service proxy presents to the provider —
+	// whatever Authorization the request carried. It refuses any request
+	// not addressed under BaseURL, so the delegated token cannot be pointed
+	// anywhere else.
 	Transport http.RoundTripper
 }
 
@@ -67,7 +70,7 @@ func (p *ProviderProxy) OrgProviderRoute(ctx context.Context, prov Provider, cal
 	if prov.OrgUUID == "" {
 		return OrgProviderRoute{}, fmt.Errorf("provider %q: %w", prov.Name, errNotOrgOwned)
 	}
-	hop, err := resolveEdgeHop(p.reg, prov)
+	hop, err := p.resolveEdgeHop(prov)
 	if err != nil {
 		return OrgProviderRoute{}, fmt.Errorf("provider %q: %w", prov.Name, err)
 	}
@@ -79,7 +82,7 @@ func (p *ProviderProxy) OrgProviderRoute(ctx context.Context, prov Provider, cal
 	return OrgProviderRoute{
 		BaseURL: base.String(),
 		Transport: &delegatedEdgeTransport{
-			base:     http.DefaultTransport,
+			base:     hop.transport,
 			scheme:   base.Scheme,
 			host:     base.Host,
 			basePath: base.Path,
@@ -115,15 +118,16 @@ func (t *delegatedEdgeTransport) RoundTrip(req *http.Request) (*http.Response, e
 	// credential that proves it is the delegated token, never the bearer the
 	// hub received.
 	out.Header.Del("X-Railgrid-User")
+	stripShardIdentityHeaders(out.Header)
 	if t.user != "" {
 		out.Header.Set("X-Railgrid-User", t.user)
 	}
-	setDelegatedAuthorization(out.Header, t.token)
+	setDelegatedUpstreamAuthorization(out.Header, t.token)
 	return t.base.RoundTrip(out)
 }
 
-// addressed reports whether u targets this transport's edge hop: the edges
-// provider's backend, under the edge-proxy path of this provider's Service,
+// addressed reports whether u targets this transport's edge hop: kcp's front
+// door, under the services/{name}/proxy verb path of this provider's Service,
 // with no dot-segments that could climb out of it.
 func (t *delegatedEdgeTransport) addressed(u *url.URL) bool {
 	if u == nil || u.Scheme != t.scheme || u.Host != t.host || u.User != nil {

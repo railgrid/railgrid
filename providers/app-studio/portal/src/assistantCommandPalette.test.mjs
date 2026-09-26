@@ -168,7 +168,7 @@ test('builds a kube REST list request from validated Provider Action identifiers
     resource: 'instances',
   }, 'root:org:ws')
   assert.deepEqual(built.ref, { group: 'infrastructure.railgrid.ai', version: 'v1alpha1', resource: 'instances' })
-  assert.equal(built.path, '/clusters/root%3Aorg%3Aws/apis/infrastructure.railgrid.ai/v1alpha1/instances')
+  assert.equal(built.path, '/clusters/root:org:ws/apis/infrastructure.railgrid.ai/v1alpha1/instances')
 
   const requests = []
   const fetcher = async (url, init) => {
@@ -212,18 +212,23 @@ test('rejects malformed catalog identifiers and path injection attempts', async 
 
 test('keeps only Ready providers with valid non-deprecated actions and deduplicates bound types', async () => {
   const { assistantResourceProviders } = await vite.ssrLoadModule('/src/assistantResources.ts')
-  const action = (id, boundResource, deprecated = false) => ({ id, boundResource, deprecation: { deprecated } })
+  // A bound type is now a property of the export resource entry the actions
+  // hang off, so two actions on one kind yield one type without deduplication,
+  // a kind whose only action is deprecated yields none, and a verb-only kind is
+  // not a bound type at all.
+  const action = (name, deprecated = false) => ({ id: `${name}/v1`, name, version: 'v1', deprecation: { deprecated } })
+  const resource = (name, apiVersion, kind, actions) => ({ name, apiVersion, kind, actions })
   const providers = assistantResourceProviders([{
-    name: 'zeta', displayName: 'Zeta', ready: true, hasUI: true, hasBackend: true,
-    actions: [
-      action('read', { apiVersion: 'zeta.example.io/v1', kind: 'Widget', resource: 'widgets' }),
-      action('update', { apiVersion: 'zeta.example.io/v1', kind: 'Widget', resource: 'widgets' }),
-      action('old', { apiVersion: 'zeta.example.io/v1', kind: 'Legacy', resource: 'legacies' }, true),
-      action('bad', { apiVersion: 'zeta.example.io/v1', kind: 'Bad', resource: 'bad query' }),
-    ],
+    name: 'zeta', displayName: 'Zeta', ready: true,
+    export: { name: 'zeta.providers.example.io', resources: [
+      resource('widgets', 'zeta.example.io/v1', 'Widget', [action('read'), action('update')]),
+      resource('legacies', 'zeta.example.io/v1', 'Legacy', [action('old', true)]),
+      resource('bad query', 'zeta.example.io/v1', 'Bad', [action('bad')]),
+      { name: 'streams', apiVersion: 'zeta.example.io/v1', kind: 'Stream', verbs: [{ name: 'follow', stream: true }] },
+    ] },
   }, {
-    name: 'alpha', displayName: 'Alpha', ready: false, hasUI: true, hasBackend: true,
-    actions: [action('read', { apiVersion: 'alpha.example.io/v1', kind: 'Thing', resource: 'things' })],
+    name: 'alpha', displayName: 'Alpha', ready: false,
+    export: { name: 'alpha.providers.example.io', resources: [resource('things', 'alpha.example.io/v1', 'Thing', [action('read')])] },
   }])
   assert.deepEqual(providers.map(({ name }) => name), ['zeta'])
   assert.deepEqual(providers[0].resourceTypes.map(({ kind }) => kind), ['Widget'])
@@ -231,13 +236,10 @@ test('keeps only Ready providers with valid non-deprecated actions and deduplica
 
 test('sorts resource types deterministically when kind and API version tie', async () => {
   const { assistantResourceProviders } = await vite.ssrLoadModule('/src/assistantResources.ts')
-  const bound = (resource) => ({ apiVersion: 'demo.example.io/v1', kind: 'Table', resource })
+  const tableResource = (name) => ({ name, apiVersion: 'demo.example.io/v1', kind: 'Table', actions: [{ id: `${name}/v1`, name, version: 'v1' }] })
   const [provider] = assistantResourceProviders([{
-    name: 'demo', displayName: 'Demo', ready: true, hasUI: true, hasBackend: true,
-    actions: [
-      { id: 'z', boundResource: bound('z-tables') },
-      { id: 'a', boundResource: bound('a-tables') },
-    ],
+    name: 'demo', displayName: 'Demo', ready: true,
+    export: { name: 'demo.providers.example.io', resources: [tableResource('z-tables'), tableResource('a-tables')] },
   }])
   assert.deepEqual(provider.resourceTypes.map(({ resource }) => resource), ['a-tables', 'z-tables'])
 })
@@ -262,8 +264,8 @@ test('retains successful resource groups when another type fails and sanitizes w
   }
   const result = await discoverAssistantResources({ tenant: 'root:org:ws', token: 'secret' }, types, fetcher)
   assert.deepEqual(requests.sort(), [
-    '/clusters/root%3Aorg%3Aws/apis/demo.example.io/v1/gadgets',
-    '/clusters/root%3Aorg%3Aws/apis/demo.example.io/v1/widgets',
+    '/clusters/root:org:ws/apis/demo.example.io/v1/gadgets',
+    '/clusters/root:org:ws/apis/demo.example.io/v1/widgets',
   ])
   assert.deepEqual(result.groups.map(({ type }) => type.kind), ['Widget'])
   assert.deepEqual(result.groups[0].items.map(({ resourceRef }) => resourceRef.name), ['alpha', 'zulu'])

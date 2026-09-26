@@ -50,7 +50,6 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
-	"github.com/railgrid/provider-app-studio/internal/crossprovider"
 	"github.com/railgrid/provider-sdk/claimscope"
 	"github.com/railgrid/provider-sdk/dataplane"
 )
@@ -73,14 +72,11 @@ const registryPullSecretOwner = "infrastructure"
 
 // codeRegistryTokenAction is the Code provider action that issues an
 // image-pull credential for a Connection's registry.
-const (
-	codeRegistryTokenAction  = "mint_registry_token"
-	codeRegistryTokenVersion = "v1"
-	// codeAPIExportName is the APIExport the Code provider serves. Which
-	// provider serves it in a given workspace comes from that workspace's
-	// APIBinding (provider_binding.go), never from a constant.
-	codeAPIExportName = crossprovider.CodeAPIExport
-)
+// It is a kcp custom subresource on the Code export, connections/mint-registry-token,
+// which App Studio requires (manifest.yaml spec.requires) and calls through its own
+// export virtual workspace as itself; the action's contract version is not in
+// the path (the Code provider restores it from its declaration).
+const codeRegistryTokenAction = "mint-registry-token"
 
 // registryTokenResult is the action's output: a pull credential and what is
 // known about it. The Connection's own credential is not in here and never
@@ -148,7 +144,7 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 		annotations["ai.railgrid.ai/registry-token-expires-at"] = credential.ExpiresAt
 	}
 	// The owner label is the hand-over, not decoration. This Secret is
-	// written here as the caller and then READ by the infrastructure provider,
+	// written here as the provider and then READ by the infrastructure provider,
 	// whose `secrets` claim is selector-scoped to its own name, so it is
 	// stamped railgrid.ai/owner: infrastructure rather than app-studio: an
 	// unlabelled — or app-studio-labelled — pull Secret is invisible to the
@@ -191,26 +187,24 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 	return name, nil
 }
 
-// mintProjectRegistryToken invokes code's mint_registry_token action on the
-// Connection, as the caller, at the coordinate this workspace's binding says
-// the Code provider answers on.
+// mintProjectRegistryToken invokes code's mint-registry-token action on the
+// Connection, as this provider, at the coordinate kcp serves the claimed verb
+// on App Studio's export virtual workspace.
 func (s *Server) mintProjectRegistryToken(ctx context.Context, id identity, connection, connectionUID string) (registryTokenResult, error) {
 	if strings.TrimSpace(connectionUID) == "" {
 		return registryTokenResult{}, fmt.Errorf("connection %q has no UID to pin the action to", connection)
 	}
-	provider, err := s.providerFor(ctx, id, codeAPIExportName)
-	if err != nil {
-		return registryTokenResult{}, err
+	if s.callers == nil {
+		return registryTokenResult{}, fmt.Errorf("no provider credential configured; cannot reach the Code provider")
 	}
-	route, err := dataplane.ProviderPath(provider, dataplane.ActionsRoot, dataplane.Request{
+	endpoint, err := s.callers.ExportVerbURL(ctx, codeConnectionsGVR, dataplane.Request{
 		ClusterID: id.clusterID,
 		Resource:  codeConnectionsGVR.Resource,
 		Name:      connection,
 		Verb:      codeRegistryTokenAction,
-		Version:   codeRegistryTokenVersion,
 	})
 	if err != nil {
-		return registryTokenResult{}, fmt.Errorf("addressing %s on provider %q: %w", codeRegistryTokenAction, provider, err)
+		return registryTokenResult{}, fmt.Errorf("addressing %s on the Code provider: %w", codeRegistryTokenAction, err)
 	}
 	payload, err := json.Marshal(map[string]any{"input": map[string]any{"connectionUID": connectionUID}})
 	if err != nil {
@@ -218,24 +212,12 @@ func (s *Server) mintProjectRegistryToken(ctx context.Context, id identity, conn
 	}
 	callCtx, cancel := context.WithTimeout(ctx, dataPlaneCallTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, strings.TrimRight(s.hubBase, "/")+route, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return registryTokenResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	if token := strings.TrimSpace(id.token); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	if id.clusterID != "" {
-		req.Header.Set(dataplane.HeaderCluster, id.clusterID)
-	}
-	if id.orgUUID != "" {
-		req.Header.Set("X-Railgrid-Org", id.orgUUID)
-	}
-	if id.workspaceUUID != "" {
-		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
-	}
 	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
 		return registryTokenResult{}, fmt.Errorf("minting a registry pull token: %w", err)

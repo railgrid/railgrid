@@ -58,12 +58,5 @@ func APIExport(kcpDir string) (*unstructured.Unstructured, error) {
 	if name := export.GetName(); name != APIExportName {
 		return nil, fmt.Errorf("%s declares APIExport %q, want %q; re-run make codegen-infrastructure-provider", path, name, APIExportName)
 	}
-	hashes, err := sdkinstall.ParseIdentityHashes(os.Getenv("RAILGRID_IDENTITY_HASHES"))
-	if err != nil {
-		return nil, err
-	}
-	if err := sdkinstall.StampIdentityHashes(export, hashes); err != nil {
-		return nil, err
-	}
 	return export, nil
 }

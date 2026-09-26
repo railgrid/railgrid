@@ -25,13 +25,13 @@ import (
 // a coupling by Secret layout rather than by contract
 // (cross-provider-simplification §2.1).
 //
-// mint_registry_token replaces both. The credential stays inside Code, the
+// mint-registry-token replaces both. The credential stays inside Code, the
 // consumer asks for exactly what it needs, and what comes back is a PULL
 // credential: for a GitHub App connection a fresh installation token issued
 // with packages:read alone and about an hour to live, which is the narrowest
 // thing GitHub will hand out.
 
-// RegistryPullPermissions is what mint_registry_token asks a GitHub App
+// RegistryPullPermissions is what mint-registry-token asks a GitHub App
 // installation for. A pull secret sits on a runtime cluster for as long as the
 // workload does, so it must be able to read packages and nothing else — not
 // contents, not workflows, not metadata writes.

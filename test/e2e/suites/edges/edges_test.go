@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
@@ -149,7 +150,9 @@ func TestACatalogProvisioning(t *testing.T) {
 }
 
 // TestBAPIProvidersDTO asserts the edges provider surfaces on the hub's
-// /api/providers DTO with the Edges category and its apiExport path.
+// /api/providers DTO with the Edges category and its export section — the
+// APIExport name a tenant binds, the workspace path hosting it, and the API
+// groups the hub read off the export itself.
 func TestBAPIProvidersDTO(t *testing.T) {
 	body := httpGetJSON(t, hubURL+"/api/providers", staticToken)
 	items, _ := body["items"].([]any)
@@ -169,8 +172,23 @@ func TestBAPIProvidersDTO(t *testing.T) {
 	if e["ready"] != true {
 		t.Errorf("edges ready = %v, want true", e["ready"])
 	}
-	if e["apiExportPath"] != edgesWorkspacePath {
-		t.Errorf("apiExportPath = %v, want %s", e["apiExportPath"], edgesWorkspacePath)
+	export, _ := e["export"].(map[string]any)
+	if export == nil {
+		t.Fatalf("DTO carries no export section; edges exports an API: %v", e)
+	}
+	if export["name"] != edgesAPIExportName {
+		t.Errorf("export.name = %v, want %s", export["name"], edgesAPIExportName)
+	}
+	if export["path"] != edgesWorkspacePath {
+		t.Errorf("export.path = %v, want %s", export["path"], edgesWorkspacePath)
+	}
+	// export.apiGroups is what the hub read off the APIExport itself, and it
+	// differs from the export name: `edges.providers.railgrid.ai` serves
+	// `edges.railgrid.ai`. Empty means the hub never managed to read it, which
+	// is the fail-closed state the scoped-identity policy refuses on.
+	groups, _ := export["apiGroups"].([]any)
+	if len(groups) == 0 {
+		t.Errorf("export.apiGroups is empty; the hub never resolved the groups edges serves: %v", export)
 	}
 	if e["category"] != "Edges" {
 		t.Errorf("category = %v, want Edges", e["category"])
@@ -259,11 +277,11 @@ func TestCTenantEnableAndCRsUsable(t *testing.T) {
 }
 
 // TestDEdgeProxyAuthBoundary proves the Enable-time edge-proxy grant end-to-end
-// against real kcp on the NEW decoupled path: the provider SA token targeting a
-// tenant's edgeproxy is 403 before the grant and 502 after (authorization runs
-// before the tunnel lookup, so a missing tunnel means auth PASSED). Adapted from
-// the pre-decouple hub-served test, now against
-// /services/providers/edges/dataplane/... with group edges.railgrid.ai.
+// against real kcp: the provider SA token addressing a tenant edge's k8s verb
+// — a kcp custom subresource on the edges APIExport, reached on the hub's kcp
+// front door at /clusters/{id}/apis/edges.railgrid.ai/v1alpha1/... — is denied
+// before the grant and 502 after (the gate runs before the tunnel lookup, so a
+// missing tunnel means authorization PASSED).
 func TestDEdgeProxyAuthBoundary(t *testing.T) {
 	workspaceGVR := schema.GroupVersionResource{Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces"}
 
@@ -350,13 +368,13 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 	//
 	// It used to target a deliberately non-existent one, on the premise that
 	// "authorization runs before the tunnel lookup". That is no longer true:
-	// provider-sdk/dataplane's gate reads the addressed object AS THE CALLER
-	// first and only then issues the SSAR, so a name that does not exist is
-	// denied at gate 1 whatever the grant says — the probe would read 404
-	// before and after the grant and prove nothing. Pointing it at a real edge
-	// that no agent has connected is what separates the two states: denied
-	// (404) without the grant, past both gates and failing at the tunnel
-	// lookup (502) with it.
+	// kcp authorizes the verb, then provider-sdk/dataplane's gate reviews the
+	// caller's visibility of the addressed object and reads it as the
+	// provider, so a name that does not exist is denied at the gate whatever
+	// the grant says — the probe would read 404 before and after the grant
+	// and prove nothing. Pointing it at a real edge that no agent has
+	// connected is what separates the two states: denied (404) without the
+	// grant, past the gate and failing at the tunnel lookup (502) with it.
 	if _, err := tenant.Resource(kubernetesClusterGVR).Create(ctxWithTimeout(t, 10*time.Second), &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "edges.railgrid.ai/v1alpha1",
 		"kind":       "KubernetesCluster",
@@ -401,10 +419,11 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		t.Fatal("provider SA token never appeared")
 	}
 
-	// The edge exists but has no agent, so a request that passes both gates
+	// The edge exists but has no agent, so a request that passes the gate
 	// dies at the tunnel lookup — which is exactly the signal this test reads.
-	proxyURL := hubURL + "/services/providers/edges/dataplane/clusters/" + tenantWS +
-		"/kubernetesclusters/e2e-engage/k8s/api"
+	// The verb is a kube path on the hub's kcp front door; the tail after
+	// "k8s" is the Kubernetes API path the edge is asked for.
+	proxyURL := apiurl.EdgeVerbURL(hubURL, "kubernetes", tenantWS, "e2e-engage", "k8s") + "/api"
 	probe := func() int {
 		req, _ := http.NewRequest(http.MethodGet, proxyURL, nil)
 		req.Header.Set("Authorization", "Bearer "+saToken)
@@ -417,16 +436,17 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	// 1. No grant → authorization must fail, and the refusal must be 404.
+	// 1. No grant → authorization must fail without disclosure.
 	//
-	// 404, not 403: provider-sdk/dataplane answers ErrDenied with
-	// StatusNotFound so a denial does not disclose whether the addressed edge
-	// exists (dataplane/errors.go; the quickstart suite pins the same rule for
-	// its greet verb). The edge here DOES exist, which is what makes the
-	// non-disclosure real: an unauthorized caller cannot tell it apart from a
-	// name that was never registered.
-	if code := probe(); code != http.StatusNotFound {
-		t.Fatalf("expected 404 before grant, got %d", code)
+	// kcp refuses the verb with 403 (RBAC on kubernetesclusters/k8s) before
+	// the request ever reaches the provider; a caller who holds the verb but
+	// cannot see the edge is refused by the provider's gate with 404
+	// (provider-sdk/dataplane answers ErrDenied with StatusNotFound so a
+	// denial does not disclose whether the addressed edge exists). Both are
+	// "denied"; neither is the 502 that only a request past the gate can
+	// produce.
+	if code := probe(); code != http.StatusForbidden && code != http.StatusNotFound {
+		t.Fatalf("expected 403 or 404 before grant, got %d", code)
 	}
 
 	// 2. Materialize the grant in the tenant workspace exactly as the Enable
@@ -447,24 +467,24 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 			// "access" on "/" satisfies kcp's workspaceContentAuthorizer for
 			// the foreign SA.
 			map[string]any{"nonResourceURLs": []any{"/"}, "verbs": []any{"access"}},
-			// Gate 1 reads the addressed object as the caller, so `get` on the
-			// kind is what lets the request past it at all.
+			// The gate reviews the caller's `get` on the addressed object, so
+			// `get` on the kind is what lets the request past it at all.
 			map[string]any{
 				"apiGroups": []any{"edges.railgrid.ai"},
 				"resources": []any{"kubernetesclusters", "linuxservers"},
 				"verbs":     []any{"get", "list", "watch"},
 			},
-			// Gate 2 is a SelfSubjectAccessReview for `create` on the
-			// {resource}/{verb} COORDINATE — kubernetesclusters/k8s, not the
-			// old wildcard `proxy` on the kind. The remediation replaced one
-			// verb that covered k8s, ssh, service proxy and MCP alike with the
-			// declared coordinates in spec.dataPlane.verbs, so a grant of
-			// `proxy` now authorizes nothing and the request is refused at
-			// gate 2 (providers/edges/internal/tunnel/edges_proxy_builder.go).
+			// kcp authorizes the verb itself: the HTTP method mapped onto the
+			// RBAC verb on the {resource}/{verb} COORDINATE —
+			// kubernetesclusters/k8s, not the old wildcard `proxy` on the
+			// kind — so a grant on a verb coordinate is the wildcard verb,
+			// exactly as the hub materializes one. kubectl's GET/LIST/WATCH
+			// through k8s and an SSH upgrade are all covered by it; a grant
+			// of `proxy` on the kind authorizes nothing.
 			map[string]any{
 				"apiGroups": []any{"edges.railgrid.ai"},
 				"resources": []any{"kubernetesclusters/k8s", "kubernetesclusters/ssh", "linuxservers/k8s", "linuxservers/ssh"},
-				"verbs":     []any{"create"},
+				"verbs":     []any{"*"},
 			},
 			// The provider validates+authorizes the caller with its own
 			// credential, so it must be able to create TokenReviews +
@@ -505,16 +525,25 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		code := probe()
 		return code == http.StatusBadGateway, fmt.Sprintf("status=%d (want 502)", code)
 	}) {
+		// A gate refusal is a 404 on the wire whether the caller was denied, the
+		// addressed object could not be read, or the review never ran, so the
+		// provider's own account of it is the only way to tell them apart.
+		// Which hop answered decides the cause: no provider line at all means
+		// the request never got past kcp, and the hub's own log says whether it
+		// forwarded the call.
+		t.Logf("hub log for the probe:\n%s", grepLog(hubLogPath, "e2e-engage", 25))
+		t.Logf("edges-provider log for the probe:\n%s", grepLog(providerLogPath, "e2e-engage", 25))
 		t.Fatal("edgeproxy never authorized the provider SA after grant")
 	}
 
-	// 4. Revoke → denied again (404, per the non-disclosure rule above).
+	// 4. Revoke → denied again (403 from kcp, or 404 per the non-disclosure
+	// rule above).
 	if err := tenantAdmin.Resource(clusterRoleBindingGVR).Delete(ctxWithTimeout(t, 5*time.Second), grantName, metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete ClusterRoleBinding: %v", err)
 	}
 	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
 		code := probe()
-		return code == http.StatusNotFound, fmt.Sprintf("status=%d (want 404)", code)
+		return code == http.StatusForbidden || code == http.StatusNotFound, fmt.Sprintf("status=%d (want 403 or 404)", code)
 	}) {
 		t.Fatal("edgeproxy still authorizes the provider SA after revocation")
 	}

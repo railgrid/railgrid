@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -35,8 +37,8 @@ import (
 
 // The suite works in one tenant workspace, created through the REST API the
 // portal uses. It is created once (TestA…) and every later test reuses it: the
-// composition acceptance is recorded per workspace, so a fresh workspace per
-// test would hide the transition from refused to admitted.
+// bindings and the Enable-time acceptances are recorded per workspace, so a
+// fresh workspace per test would be a different world for each clause.
 var (
 	orgUUID       string
 	workspaceUUID string
@@ -112,14 +114,14 @@ func mintIdentity(t *testing.T, req identityRequest) (int, identityResponse, str
 }
 
 // ---------------------------------------------------------------------------
-// Tests. They are ordered by name because the workspace, the binding and the
-// composition acceptance build on each other.
+// Tests. They are ordered by name because the workspace, the bindings and the
+// Enable-time acceptances build on each other.
 // ---------------------------------------------------------------------------
 
 // TestATenantWorkspaceAndEnable builds the world the rest of the suite mints
 // in: a workspace, the fixture dependency enabled in it, then quickstart
-// enabled WITHOUT accepting the composition. Not accepting is the point — it is
-// the state TestE measures the refusal in.
+// enabled WITHOUT accepting its requirement. Not accepting is the point — TestE
+// shows that accepting it does not change what may be minted either way.
 func TestATenantWorkspaceAndEnable(t *testing.T) {
 	orgUUID = personalOrgUUID(t)
 	workspaceUUID = createWorkspace(t, orgUUID, "identity-e2e")
@@ -280,7 +282,7 @@ func TestCRuleOutsidePolicyIsRefused(t *testing.T) {
 		name: "a write on another provider's objects",
 		rule: policyRule{APIGroups: []string{fixtureGroup}, Resources: []string{fixturePlainResource}, Verbs: []string{"delete"}, ResourceNames: []string{"a-gadget"}},
 		code: "foreign_write_forbidden",
-		why:  "only get is minted outside clause E",
+		why:  "clause B mints get and nothing else on another provider's kinds",
 	}, {
 		name: "list on another provider's group",
 		rule: policyRule{APIGroups: []string{fixtureGroup}, Resources: []string{fixturePlainResource}, Verbs: []string{"list"}, ResourceNames: []string{"a-gadget"}},
@@ -386,98 +388,284 @@ func TestDRefreshReturnsANewTokenForTheSameAccount(t *testing.T) {
 	}
 }
 
-// TestEComposition is clause E end to end: declared but unaccepted is refused
-// with composition_not_granted, accepting it at Enable admits exactly the
-// declared verbs, and a verb the declaration omits is still refused.
-func TestEComposition(t *testing.T) {
+// subresourceVerbs is the RBAC verb set a grant on a verb coordinate carries —
+// provider-sdk/dataplane.SubresourceVerbs, spelled out here for the same reason
+// the wire types above are: this suite is a client of the contract, and a change
+// to that set must break the test rather than follow it silently.
+//
+// Every verb, not `create` alone: kcp authorizes a call on a custom subresource
+// by mapping the HTTP METHOD onto an RBAC verb, and which method a provider's
+// verb uses is that provider's transport detail. A grant that named only
+// `create` would admit a POST and 403 the GET the same coordinate serves.
+var subresourceVerbs = []string{"create", "delete", "get", "list", "patch", "update", "watch"}
+
+// TestEForeignAccessToTheFixtureProvider is the cross-provider half of the
+// policy, end to end.
+//
+// There is no composition clause any more. What quickstart DECLARES it requires
+// (spec.requires naming the fixture) is a permission claim on quickstart's OWN
+// APIExport, accepted by the tenant at Enable and served by kcp on quickstart's
+// virtual workspace — read and written as the provider itself, with nothing
+// minted. So this test asserts three different things about the same fixture
+// group:
+//
+//	clause C  — a coordinate the fixture DECLARES (widgets/spin) is minted
+//	            name-scoped, and the rule carries every subresource verb.
+//	clause B  — get on a NAMED Widget is minted; list is not, and neither is a
+//	            Widget the rule did not name.
+//	no clause — the required kind itself is not writable through a minted
+//	            identity, before or after the tenant accepts the requirement.
+func TestEForeignAccessToTheFixtureProvider(t *testing.T) {
 	requireWorkspace(t)
+	// One owner per clause. The ServiceAccount an identity gets is a hash of
+	// (provider, kind, owner name, owner UID) and nothing else, so two mints for
+	// the same owner are the same identity and the second REPLACES the first
+	// one's rules — which is the refresh TestD pins, and would silently overwrite
+	// the grant a sibling subtest is about to inspect.
 	createGreeting(t, "identity-owner", "hello from the identity suite")
+	createGreeting(t, "identity-coordinate", "clause C hangs off me")
+	createGreeting(t, "identity-foreign-read", "clause B hangs off me")
+	// Two Widgets, written by the TENANT: the workspace owns the objects of
+	// every provider it enabled, and the identity under test is granted one of
+	// them by name.
+	createWidget(t, "granted-widget")
+	createWidget(t, "other-widget")
 
-	composed := policyRule{
-		APIGroups: []string{fixtureGroup},
-		Resources: []string{fixtureResource},
-		// create/list/watch are the unnamed class: RBAC cannot name-scope them,
-		// and the workspace is the bound scope.
-		Verbs: []string{"create", "list", "watch"},
-	}
-	request := identityRequest{
-		Owner:      greetingOwner("identity-owner"),
-		ClusterID:  tenantCluster,
-		Rules:      []policyRule{composed},
-		TTLSeconds: int64(shortTTL / time.Second),
-	}
+	coordinate := fixtureResource + "/" + fixtureVerb
 
-	t.Run("refused until a workspace admin accepts it", func(t *testing.T) {
-		code, resp, raw := mintIdentity(t, request)
-		if code != http.StatusForbidden {
-			t.Fatalf("status = %d, want 403 before acceptance: %s", code, raw)
-		}
-		if resp.Code != "composition_not_granted" {
-			t.Fatalf("refusal code = %q, want composition_not_granted (message: %s)", resp.Code, resp.Message)
-		}
-	})
-
-	t.Run("a verb the declaration omits stays refused", func(t *testing.T) {
+	t.Run("a verb the fixture does not declare is refused", func(t *testing.T) {
+		// The refusal that matters most: the coordinate is well-formed, the
+		// fixture is bound, the rule is name-scoped — everything clause C wants
+		// except a declaration. `teleport` appears in no CatalogEntry, so no
+		// capability for it can exist, and the hub says which provider failed to
+		// declare it rather than refusing anonymously.
 		code, resp, raw := mintIdentity(t, identityRequest{
-			Owner: request.Owner, ClusterID: tenantCluster,
+			Owner: greetingOwner("identity-owner"), ClusterID: tenantCluster,
 			Rules: []policyRule{{
-				APIGroups: []string{fixtureGroup}, Resources: []string{fixtureResource},
-				Verbs: []string{"delete"}, ResourceNames: []string{"a-widget"},
+				APIGroups:     []string{fixtureGroup},
+				Resources:     []string{fixtureResource + "/" + fixtureUndeclaredVerb},
+				Verbs:         []string{"create"},
+				ResourceNames: []string{"granted-widget"},
 			}},
 		})
-		if code != http.StatusForbidden || resp.Code != "composition_verb_not_declared" {
-			t.Fatalf("status/code = %d/%q, want 403/composition_verb_not_declared: %s", code, resp.Code, raw)
+		if code != http.StatusForbidden || resp.Code != "undeclared_verb" {
+			t.Fatalf("status/code = %d/%q, want 403/undeclared_verb: %s", code, resp.Code, raw)
+		}
+		if !strings.Contains(resp.Message, fixtureName) || !strings.Contains(resp.Message, fixtureUndeclaredVerb) {
+			t.Errorf("refusal message %q names neither the owning provider nor the verb; a provider debugging its own request learns nothing", resp.Message)
 		}
 	})
 
-	// Accept it, the way the Enable dialog does. Verbs are never sent: they
-	// come from the declaration, read fresh at mint time.
+	t.Run("a resource the fixture declares no verbs on has no coordinates", func(t *testing.T) {
+		// gadgets is in the same group and is served by the same export, but the
+		// fixture hangs nothing off it, so every coordinate on it is undeclared.
+		code, resp, raw := mintIdentity(t, identityRequest{
+			Owner: greetingOwner("identity-owner"), ClusterID: tenantCluster,
+			Rules: []policyRule{{
+				APIGroups:     []string{fixtureGroup},
+				Resources:     []string{fixturePlainResource + "/" + fixtureVerb},
+				Verbs:         []string{"create"},
+				ResourceNames: []string{"a-gadget"},
+			}},
+		})
+		if code != http.StatusForbidden || resp.Code != "undeclared_verb" {
+			t.Fatalf("status/code = %d/%q, want 403/undeclared_verb: %s", code, resp.Code, raw)
+		}
+	})
+
+	t.Run("an unnamed coordinate is refused", func(t *testing.T) {
+		// A declared coordinate is still not a workspace-wide capability: every
+		// foreign rule names the objects it covers.
+		code, resp, raw := mintIdentity(t, identityRequest{
+			Owner: greetingOwner("identity-owner"), ClusterID: tenantCluster,
+			Rules: []policyRule{{
+				APIGroups: []string{fixtureGroup},
+				Resources: []string{coordinate},
+				Verbs:     []string{"create"},
+			}},
+		})
+		if code != http.StatusForbidden || resp.Code != "unnamed_foreign_rule" {
+			t.Fatalf("status/code = %d/%q, want 403/unnamed_foreign_rule: %s", code, resp.Code, raw)
+		}
+	})
+
+	t.Run("a rule mixing a kind and a coordinate is refused", func(t *testing.T) {
+		// Their verb vocabularies are disjoint — clause B mints `get`, clause C
+		// mints the whole subresource set — so the caller splits the rule
+		// instead of the hub guessing which half it meant.
+		code, resp, raw := mintIdentity(t, identityRequest{
+			Owner: greetingOwner("identity-owner"), ClusterID: tenantCluster,
+			Rules: []policyRule{{
+				APIGroups:     []string{fixtureGroup},
+				Resources:     []string{fixtureResource, coordinate},
+				Verbs:         []string{"get"},
+				ResourceNames: []string{"granted-widget"},
+			}},
+		})
+		if code != http.StatusForbidden || resp.Code != "multi_group_rule" {
+			t.Fatalf("status/code = %d/%q, want 403/multi_group_rule: %s", code, resp.Code, raw)
+		}
+	})
+
+	// Clause C, admitted. The request asks for `create` alone; the rule minted
+	// must carry every subresource verb, because the coordinate IS the grant.
+	var mintedSA string
+	t.Run("a declared coordinate is minted with the full verb set", func(t *testing.T) {
+		code, resp, raw := mintIdentity(t, identityRequest{
+			Owner:     greetingOwner("identity-coordinate"),
+			ClusterID: tenantCluster,
+			Rules: []policyRule{{
+				APIGroups:     []string{fixtureGroup},
+				Resources:     []string{coordinate},
+				Verbs:         []string{"create"},
+				ResourceNames: []string{"granted-widget"},
+			}},
+			TTLSeconds: int64(shortTTL / time.Second),
+		})
+		if code != http.StatusOK {
+			t.Fatalf("POST /api/identities = %d, want 200 for the declared coordinate %s: %s", code, coordinate, raw)
+		}
+		mintedSA = resp.ServiceAccount
+
+		// The coordinate cannot be CALLED here — the fixture serves no process,
+		// and its hand-built APIExport publishes no custom subresource — so the
+		// grant itself is the assertion. The ClusterRole the hub wrote into the
+		// tenant workspace is the authoritative record of what was minted;
+		// serviceaccounts.WorkloadIdentityRoleName names it after the account.
+		tenant := kcpDynamic(t, tenantCluster, adminToken)
+		var role *unstructured.Unstructured
+		if !waitForCondition(t, 60*time.Second, func() (bool, string) {
+			got, err := tenant.Resource(clusterRoleGVR).Get(ctxWithTimeout(t, 10*time.Second), resp.ServiceAccount+"-access", metav1.GetOptions{})
+			if err != nil {
+				return false, err.Error()
+			}
+			role = got
+			return true, ""
+		}) {
+			t.Fatalf("ClusterRole %s-access was never written", resp.ServiceAccount)
+		}
+		rules, _, _ := unstructured.NestedSlice(role.Object, "rules")
+		var found bool
+		for _, raw := range rules {
+			rule, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			resources, _, _ := unstructured.NestedStringSlice(rule, "resources")
+			if len(resources) != 1 || resources[0] != coordinate {
+				continue
+			}
+			found = true
+			verbs, _, _ := unstructured.NestedStringSlice(rule, "verbs")
+			sorted := append([]string(nil), verbs...)
+			sort.Strings(sorted)
+			if !reflect.DeepEqual(sorted, subresourceVerbs) {
+				t.Errorf("minted verbs on %s = %v, want %v: a verb coordinate is granted whole, not as the one method the caller happened to ask for",
+					coordinate, verbs, subresourceVerbs)
+			}
+			names, _, _ := unstructured.NestedStringSlice(rule, "resourceNames")
+			if !reflect.DeepEqual(names, []string{"granted-widget"}) {
+				t.Errorf("minted resourceNames on %s = %v, want [granted-widget]: the full verb set is admissible only because the rule is name-scoped", coordinate, names)
+			}
+		}
+		if !found {
+			t.Fatalf("the minted ClusterRole carries no rule on %s: %v", coordinate, rules)
+		}
+	})
+
+	// Clause B, admitted: get on a NAMED Widget, and nothing wider.
+	t.Run("get on a named foreign object is minted and is name-scoped", func(t *testing.T) {
+		code, resp, raw := mintIdentity(t, identityRequest{
+			Owner:     greetingOwner("identity-foreign-read"),
+			ClusterID: tenantCluster,
+			Rules: []policyRule{{
+				APIGroups:     []string{fixtureGroup},
+				Resources:     []string{fixtureResource},
+				Verbs:         []string{"get"},
+				ResourceNames: []string{"granted-widget"},
+			}},
+			TTLSeconds: int64(shortTTL / time.Second),
+		})
+		if code != http.StatusOK {
+			t.Fatalf("POST /api/identities = %d, want 200 for clause B: %s", code, raw)
+		}
+		// A different owner is a different identity, so clause B's grant cannot
+		// have overwritten the coordinate rule asserted above.
+		if resp.ServiceAccount == mintedSA {
+			t.Errorf("the clause B identity landed on the clause C account %s; an identity is per OWNER, and these are two owners", mintedSA)
+		}
+		minted := kcpDynamic(t, tenantCluster, resp.Token)
+		if !waitForCondition(t, 60*time.Second, func() (bool, string) {
+			_, err := minted.Resource(widgetGVR).Get(ctxWithTimeout(t, 10*time.Second), "granted-widget", metav1.GetOptions{})
+			if err != nil {
+				return false, err.Error()
+			}
+			return true, ""
+		}) {
+			t.Fatal("the minted token could not GET the Widget it was granted by name")
+		}
+		if _, err := minted.Resource(widgetGVR).Get(ctxWithTimeout(t, 15*time.Second), "other-widget", metav1.GetOptions{}); !apierrors.IsForbidden(err) {
+			t.Errorf("the minted token read a Widget outside its resourceNames: err = %v, want Forbidden", err)
+		}
+		if _, err := minted.Resource(widgetGVR).List(ctxWithTimeout(t, 15*time.Second), metav1.ListOptions{}); !apierrors.IsForbidden(err) {
+			t.Errorf("the minted token listed Widgets: err = %v, want Forbidden — RBAC does not apply resourceNames to a collection, which is why list is never minted here", err)
+		}
+	})
+
+	// The requirement, before and after the tenant accepts it. Writing another
+	// provider's kind is what spec.requires is FOR, and it is reached as the
+	// provider itself through its own virtual workspace — never through a minted
+	// identity. Accepting the requirement must not change that.
+	write := identityRequest{
+		Owner:     greetingOwner("identity-owner"),
+		ClusterID: tenantCluster,
+		Rules: []policyRule{{
+			APIGroups: []string{fixtureGroup},
+			Resources: []string{fixtureResource},
+			Verbs:     []string{"create", "list", "watch"},
+		}},
+		TTLSeconds: int64(shortTTL / time.Second),
+	}
+	t.Run("a declared requirement mints nothing while undecided", func(t *testing.T) {
+		code, resp, raw := mintIdentity(t, write)
+		if code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403: quickstart requires %s/%s, and a requirement is not a mintable rule: %s",
+				code, fixtureGroup, fixtureResource, raw)
+		}
+		if resp.Code != "unnamed_foreign_rule" {
+			t.Errorf("refusal code = %q, want unnamed_foreign_rule (message: %s)", resp.Code, resp.Message)
+		}
+	})
+
+	// Accept it, the way the Enable dialog does. Verbs are never sent: they come
+	// from the declaration.
 	enableProvider(t, providerName, []acceptedComposition{{
 		Provider: fixtureName, Group: fixtureGroup, Resource: fixtureResource,
 	}})
 
-	t.Run("admitted once accepted", func(t *testing.T) {
-		var resp identityResponse
-		if !waitForCondition(t, 60*time.Second, func() (bool, string) {
-			code, out, raw := mintIdentity(t, request)
-			if code == http.StatusOK {
-				resp = out
-				return true, ""
-			}
-			return false, fmt.Sprintf("status %d: %s", code, raw)
-		}) {
-			t.Fatal("the composition was accepted but never admitted")
+	t.Run("accepting the requirement still mints nothing", func(t *testing.T) {
+		// The acceptance is real — it is what puts the claim on quickstart's
+		// APIBinding, and the enableProvider call above would have failed if the
+		// requirement were not declared on the provider it names. It is still
+		// not a rule the policy will mint: a provider that wants to write a
+		// Widget does it through its OWN virtual workspace, as itself.
+		code, resp, raw := mintIdentity(t, write)
+		if code != http.StatusForbidden || resp.Code != "unnamed_foreign_rule" {
+			t.Fatalf("status/code = %d/%q, want 403/unnamed_foreign_rule after acceptance: an accepted requirement must not change what /api/identities mints, because there is no composition clause: %s",
+				code, resp.Code, raw)
 		}
-
-		// The capability is real: the identity creates an object of the
-		// dependency's kind in this workspace, which is the thing clause E
-		// exists to allow and clause B forbids.
-		minted := kcpDynamic(t, tenantCluster, resp.Token)
-		widget := &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": fixtureGroup + "/v1alpha1",
-			"kind":       "Widget",
-			"metadata":   map[string]any{"name": "composed-widget"},
-			"spec":       map[string]any{"size": "small"},
+		// Name-scoping it does not help either: clause B mints `get` and only
+		// `get` on another provider's kinds, whatever the tenant accepted.
+		named := write
+		named.Rules = []policyRule{{
+			APIGroups:     []string{fixtureGroup},
+			Resources:     []string{fixtureResource},
+			Verbs:         []string{"create"},
+			ResourceNames: []string{"granted-widget"},
 		}}
-		if !waitForCondition(t, 60*time.Second, func() (bool, string) {
-			_, err := minted.Resource(widgetGVR).Create(ctxWithTimeout(t, 15*time.Second), widget, metav1.CreateOptions{})
-			if err == nil || apierrors.IsAlreadyExists(err) {
-				return true, ""
-			}
-			return false, err.Error()
-		}) {
-			t.Fatal("the composed identity could not create a Widget in the workspace")
-		}
-		t.Cleanup(func() {
-			admin := kcpDynamic(t, tenantCluster, adminToken)
-			_ = admin.Resource(widgetGVR).Delete(ctxWithTimeout(t, 10*time.Second), "composed-widget", metav1.DeleteOptions{})
-		})
-
-		// `delete` was never declared, so it was never granted — the grant
-		// widens nothing beyond the declaration.
-		err := minted.Resource(widgetGVR).Delete(ctxWithTimeout(t, 15*time.Second), "composed-widget", metav1.DeleteOptions{})
-		if !apierrors.IsForbidden(err) {
-			t.Errorf("the composed identity deleted a Widget: err = %v, want Forbidden (delete is not declared)", err)
+		code, resp, raw = mintIdentity(t, named)
+		if code != http.StatusForbidden || resp.Code != "foreign_write_forbidden" {
+			t.Fatalf("status/code = %d/%q, want 403/foreign_write_forbidden even name-scoped: %s", code, resp.Code, raw)
 		}
 	})
 }
@@ -617,15 +805,22 @@ func requireWorkspace(t *testing.T) {
 	}
 }
 
+// acceptedComposition is one accepted entry of the provider's spec.requires
+// that NAMES a provider — the kinds of somebody else this provider reconciles.
+// Verbs are never sent: they come from the declaration, read fresh, so a caller
+// cannot widen one by asking.
 type acceptedComposition struct {
+	// Provider is the DEPENDENCY whose kind is required, not the provider being
+	// enabled.
 	Provider string `json:"provider"`
 	Group    string `json:"group"`
 	Resource string `json:"resource"`
 }
 
 // enableProvider drives POST .../providers/{name}/enable as the tenant, which
-// is what creates the APIBinding and records the composition decisions in the
-// workspace's Grant. Idempotent, as the endpoint is.
+// is what creates the APIBinding, accepts the permission claims spec.requires
+// generates, and records the decisions in the workspace's Grant. Idempotent, as
+// the endpoint is.
 func enableProvider(t *testing.T, name string, compositions []acceptedComposition) {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
@@ -752,6 +947,34 @@ func createGreeting(t *testing.T, name, message string) {
 	}) {
 		t.Fatalf("create Greeting %s in %s never succeeded", name, tenantCluster)
 	}
+}
+
+// createWidget writes one of the FIXTURE provider's objects, as the tenant. The
+// workspace owns the objects of every provider it enabled, so the tenant is who
+// creates them; the identity under test is granted one of them by name and must
+// not reach the other.
+func createWidget(t *testing.T, name string) {
+	t.Helper()
+	tenant := kcpDynamic(t, tenantCluster, staticToken)
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": fixtureGroup + "/v1alpha1",
+		"kind":       "Widget",
+		"metadata":   map[string]any{"name": name},
+		"spec":       map[string]any{"size": "small"},
+	}}
+	if !waitForCondition(t, 90*time.Second, func() (bool, string) {
+		_, err := tenant.Resource(widgetGVR).Create(ctxWithTimeout(t, 10*time.Second), object, metav1.CreateOptions{})
+		if err == nil || apierrors.IsAlreadyExists(err) {
+			return true, ""
+		}
+		return false, err.Error()
+	}) {
+		t.Fatalf("create Widget %s in %s never succeeded", name, tenantCluster)
+	}
+	t.Cleanup(func() {
+		admin := kcpDynamic(t, tenantCluster, adminToken)
+		_ = admin.Resource(widgetGVR).Delete(ctxWithTimeout(t, 10*time.Second), name, metav1.DeleteOptions{})
+	})
 }
 
 func hubDo(t *testing.T, method, path, token string, body []byte) (int, string) {

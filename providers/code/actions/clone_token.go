@@ -11,24 +11,24 @@ import (
 	"time"
 
 	"github.com/railgrid/provider-sdk/actionwire"
-	"github.com/railgrid/provider-sdk/dataplane"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/dynamic"
 )
 
-// MintCloneToken is mint_registry_token's repository-bound sibling: it hands a
+// MintCloneToken is mint-registry-token's repository-bound sibling: it hands a
 // consumer a short-lived, read-only git clone credential for ONE repository,
 // so the consumer never holds the Connection's own push-capable credential.
 //
 // It is bound to a Repository, not to a Connection, because that is the unit
-// being granted: gate 2 asks about repositories/mint_clone_token, so a grant
-// to clone one repository says nothing about any other repository the same
-// Connection reaches. Factory calls it when it dispatches an attempt and
+// being granted: kcp authorizes `create` on repositories/mint-clone-token, so
+// a grant to clone one repository says nothing about any other repository the
+// same Connection reaches. Factory calls it when it dispatches an attempt and
 // passes the result to the runner, which clones with it and nothing else.
 //
 // See tenant/clone_token.go for what is minted and why.
-const MintCloneToken = "mint_clone_token"
+const MintCloneToken = "mint-clone-token"
 
-// cloneTokenInput is the repositories/mint_clone_token/v1 input, the same
+// cloneTokenInput is the repositories/mint-clone-token/v1 input, the same
 // shape every other repository action takes. The UIDs pin what the caller saw
 // to what this provider reads with its own identity, so an object deleted and
 // recreated under the same name between the two reads fails rather than being
@@ -40,7 +40,7 @@ type cloneTokenInput struct {
 	ConnectionUID string `json:"connectionUID"`
 }
 
-// CloneTokenOutput is what mint_clone_token returns: a clone credential and
+// CloneTokenOutput is what mint-clone-token returns: a clone credential and
 // its metadata — never the Connection's own credential, and never anything
 // about the Secret it came from.
 type CloneTokenOutput struct {
@@ -61,20 +61,21 @@ type CloneTokenOutput struct {
 	Scoped bool `json:"scoped"`
 }
 
-// mintCloneToken runs the action. The gates have already passed; visible is
-// the Repository as the caller sees it.
+// mintCloneToken runs the action. The gate has already passed; visible is the
+// provider's read of the Repository and provider acts as this provider in the
+// request's cluster.
 //
 // It takes its own input and never reaches a git host through the backend
 // registry: what it needs is the Connection's credential material, not a
 // resolved credential, so it pins the binding itself rather than going through
 // resolve() — which would mint the Connection's FULL installation token on the
 // way to minting a narrowed one.
-func (s *Server) mintCloneToken(ctx context.Context, req dataplane.Request, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
+func (s *Server) mintCloneToken(ctx context.Context, provider dynamic.Interface, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
 	var in cloneTokenInput
 	if err := decodeStrict(raw, &in); err != nil {
 		return nil, wireError("invalid_action_input")
 	}
-	binding, err := s.pinRepositoryBinding(ctx, req.ClusterID, req.Name, visible, in.RepositoryUID, in.ConnectionUID, in.Repository)
+	binding, err := s.pinRepositoryBinding(ctx, provider, visible, in.RepositoryUID, in.ConnectionUID, in.Repository)
 	if err != nil {
 		return nil, wireError("action_forbidden")
 	}

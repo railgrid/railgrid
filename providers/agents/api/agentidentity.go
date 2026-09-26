@@ -10,10 +10,12 @@ package api
 
 // Per-agent identity for unattended runs.
 //
-// An interactive run acts as the human driving it: their bearer reaches the
-// platform data plane, which authorizes by re-reading the target instance as
-// them. A scheduled, heartbeat, wakeup or inbound-channel run has no human, so
-// it needs an identity of its own.
+// Instance-backed tools no longer need it: they reach the infrastructure
+// provider's instances/proxy verb as THIS PROVIDER, through the claim on its
+// own export (tools.DataPlane), whoever started the run. What still needs a
+// per-agent identity is anything the agent dials on the hub with a bearer of
+// its own — today the edges MCP family on a background run — so the minted
+// identity remains, scoped as below.
 //
 // It ASKS THE HUB for one. That is the whole change from what was here before,
 // and it is not cosmetic:
@@ -55,6 +57,7 @@ import (
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/railgrid/provider-sdk/identityclient"
@@ -63,6 +66,19 @@ import (
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/tools"
 )
+
+// APIBindingGVR is kcp's APIBinding, which every enabled provider has one of
+// in the tenant's workspace. The minted identity is granted a get on the one
+// named after the infrastructure provider (clause D below).
+var APIBindingGVR = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
+
+// ProviderNameForAPIGroup is the conventional name of the provider serving an
+// API group: the group's first label, which is what the hub names a provider's
+// APIBinding after when it enables it (pkg/hub/restapi/providers_enable.go).
+func ProviderNameForAPIGroup(group string) string {
+	name, _, _ := strings.Cut(group, ".")
+	return name
+}
 
 // instanceVerbs are the data-plane verbs an agent may be granted on an
 // Instance it reaches. They are the coordinates the infrastructure provider
@@ -205,8 +221,8 @@ func (a *agentIdentities) rulesFor(ctx context.Context, dyn dynamic.Interface, a
 	}
 	rules := []rbacv1.PolicyRule{{
 		// Clause D. The binding is named after the provider that serves the
-		// group (see crossprovider.go), and the MCPServer is the conventional
-		// default one.
+		// group (ProviderNameForAPIGroup), and the MCPServer is the
+		// conventional default one.
 		APIGroups:     []string{APIBindingGVR.Group},
 		Resources:     []string{APIBindingGVR.Resource},
 		ResourceNames: []string{ProviderNameForAPIGroup(tools.InstanceAPIGroup)},

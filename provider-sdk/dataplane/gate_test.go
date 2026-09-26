@@ -3,11 +3,10 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
 
-// The gate tests live in the external test package so they can use the
-// conformance fake, which imports dataplane.
 package dataplane_test
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +23,7 @@ import (
 
 const (
 	testCluster = "aaaaaaaaaaaaaaaa"
-	testToken   = "caller-token"
+	testUser    = "alice@railgrid.test"
 )
 
 var greetings = schema.GroupVersionResource{Group: "example.railgrid.ai", Version: "v1alpha1", Resource: "greetings"}
@@ -40,57 +39,44 @@ func greeting(name string) *unstructured.Unstructured {
 func newFakeCallers(allow func(conformance.Attributes) bool, objects ...*unstructured.Unstructured) *conformance.FakeCallers {
 	return &conformance.FakeCallers{
 		Cluster:   testCluster,
-		Token:     testToken,
+		User:      testUser,
 		Objects:   objects,
 		ListKinds: map[schema.GroupVersionResource]string{greetings: "GreetingList"},
 		Allow:     allow,
 	}
 }
 
-func allowVerb(verb string) func(conformance.Attributes) bool {
+// canSee grants visibility of one object: the review Gate runs is "get" on
+// the parent, on the caller's behalf.
+func canSee(name string) func(conformance.Attributes) bool {
 	return func(a conformance.Attributes) bool {
-		return a.Verb == dataplane.SSARVerb && a.Group == greetings.Group &&
-			a.Resource == greetings.Resource && a.Subresource == verb
+		return a.Verb == "get" && a.Group == greetings.Group && a.Resource == greetings.Resource && a.Name == name
 	}
 }
 
-func gateRequest(t *testing.T, cluster, verb string, headers map[string]string) (*http.Request, dataplane.Request) {
-	t.Helper()
-	path := "/actions/clusters/" + cluster + "/greetings/hello/" + verb + "/v1"
-	r := httptest.NewRequest(http.MethodPost, path, nil)
-	r.Header.Set("Authorization", "Bearer "+testToken)
-	r.Header.Set(dataplane.HeaderCluster, cluster)
-	for key, value := range headers {
-		if value == "" {
-			r.Header.Del(key)
-			continue
-		}
-		r.Header.Set(key, value)
-	}
-	req, ok := dataplane.ParseRequest(dataplane.ActionsRoot, r)
-	if !ok {
-		t.Fatalf("fixture path %q does not parse", path)
-	}
-	return r, req
+func stamped(user string) context.Context {
+	return dataplane.WithProxiedIdentity(context.Background(), dataplane.ProxiedIdentity{User: user, Groups: []string{"system:authenticated"}})
+}
+
+func request(cluster, verb string) dataplane.Request {
+	return dataplane.Request{ClusterID: cluster, Resource: greetings.Resource, Name: "hello", Verb: verb, Version: "v1"}
 }
 
 func TestGateAllows(t *testing.T) {
-	callers := newFakeCallers(allowVerb("greet"), greeting("hello"))
-	r, req := gateRequest(t, testCluster, "greet", nil)
-
-	object, caller, err := dataplane.Gate(t.Context(), r, callers, greetings, req)
+	callers := newFakeCallers(canSee("hello"), greeting("hello"))
+	object, provider, err := dataplane.Gate(stamped(testUser), callers, greetings, request(testCluster, "greet"))
 	if err != nil {
 		t.Fatalf("Gate: %v", err)
 	}
 	if object.GetName() != "hello" || string(object.GetUID()) != "uid-hello" {
 		t.Fatalf("Gate returned %q/%q, want the addressed object", object.GetName(), object.GetUID())
 	}
-	if caller == nil {
-		t.Fatal("Gate returned no caller client")
+	if provider == nil {
+		t.Fatal("Gate returned no provider client")
 	}
-	// The handler is meant to be able to keep working as the caller.
-	if _, err := caller.Resource(greetings).Get(t.Context(), "hello", metav1.GetOptions{}); err != nil {
-		t.Fatalf("returned caller client cannot read: %v", err)
+	// The handler keeps working as the provider, in the addressed cluster.
+	if _, err := provider.Resource(greetings).Get(t.Context(), "hello", metav1.GetOptions{}); err != nil {
+		t.Fatalf("returned provider client cannot read: %v", err)
 	}
 }
 
@@ -98,67 +84,62 @@ func TestGateDenials(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		callers *conformance.FakeCallers
-		cluster string
-		verb    string
-		headers map[string]string
+		ctx     context.Context
+		req     dataplane.Request
 		want    error
 		status  int
 	}{{
-		name:    "verb not granted",
-		callers: newFakeCallers(allowVerb("greet"), greeting("hello")),
-		cluster: testCluster,
-		verb:    "shout",
+		name:    "caller cannot see the object",
+		callers: newFakeCallers(canSee("hello"), greeting("hello")),
+		ctx:     stamped(conformance.StrangerUser),
+		req:     request(testCluster, "greet"),
 		want:    dataplane.ErrDenied,
 		status:  http.StatusNotFound,
 	}, {
-		name:    "object not visible",
-		callers: newFakeCallers(allowVerb("greet")),
-		cluster: testCluster,
-		verb:    "greet",
+		name:    "object does not exist",
+		callers: newFakeCallers(canSee("hello")),
+		ctx:     stamped(testUser),
+		req:     request(testCluster, "greet"),
 		want:    dataplane.ErrDenied,
 		status:  http.StatusNotFound,
 	}, {
 		name:    "foreign cluster",
-		callers: newFakeCallers(allowVerb("greet"), greeting("hello")),
-		cluster: conformance.ForeignCluster,
-		verb:    "greet",
+		callers: newFakeCallers(canSee("hello"), greeting("hello")),
+		ctx:     stamped(testUser),
+		req:     request(conformance.ForeignCluster, "greet"),
 		want:    dataplane.ErrDenied,
 		status:  http.StatusNotFound,
 	}, {
 		name:    "nothing granted at all",
 		callers: newFakeCallers(nil, greeting("hello")),
-		cluster: testCluster,
-		verb:    "greet",
+		ctx:     stamped(testUser),
+		req:     request(testCluster, "greet"),
 		want:    dataplane.ErrDenied,
 		status:  http.StatusNotFound,
 	}, {
-		name:    "no bearer",
-		callers: newFakeCallers(allowVerb("greet"), greeting("hello")),
-		cluster: testCluster,
-		verb:    "greet",
-		headers: map[string]string{"Authorization": ""},
-		want:    dataplane.ErrNoBearer,
+		name:    "no stamped caller",
+		callers: newFakeCallers(canSee("hello"), greeting("hello")),
+		ctx:     context.Background(),
+		req:     request(testCluster, "greet"),
+		want:    dataplane.ErrNoCaller,
 		status:  http.StatusUnauthorized,
 	}, {
-		name:    "non-bearer authorization scheme",
-		callers: newFakeCallers(allowVerb("greet"), greeting("hello")),
-		cluster: testCluster,
-		verb:    "greet",
-		headers: map[string]string{"Authorization": "Basic dXNlcjpwdw=="},
-		want:    dataplane.ErrNoBearer,
+		name:    "empty caller",
+		callers: newFakeCallers(canSee("hello"), greeting("hello")),
+		ctx:     stamped(""),
+		req:     request(testCluster, "greet"),
+		want:    dataplane.ErrNoCaller,
 		status:  http.StatusUnauthorized,
 	}, {
-		name:    "cluster header disagrees with the path",
-		callers: newFakeCallers(allowVerb("greet"), greeting("hello")),
-		cluster: testCluster,
-		verb:    "greet",
-		headers: map[string]string{dataplane.HeaderCluster: conformance.ForeignCluster},
-		want:    dataplane.ErrClusterMismatch,
+		name:    "workspace path instead of a cluster",
+		callers: newFakeCallers(canSee("hello"), greeting("hello")),
+		ctx:     stamped(testUser),
+		req:     request("root:railgrid:tenants:acme", "greet"),
+		want:    dataplane.ErrBadPath,
 		status:  http.StatusBadRequest,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, req := gateRequest(t, tc.cluster, tc.verb, tc.headers)
-			_, _, err := dataplane.Gate(t.Context(), r, tc.callers, greetings, req)
+			_, _, err := dataplane.Gate(tc.ctx, tc.callers, greetings, tc.req)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Gate error = %v, want %v", err, tc.want)
 			}
@@ -174,33 +155,41 @@ func TestGateDeniesAnObjectBeingDeleted(t *testing.T) {
 	now := metav1.NewTime(time.Now())
 	doomed.SetDeletionTimestamp(&now)
 
-	callers := newFakeCallers(allowVerb("greet"), doomed)
-	r, req := gateRequest(t, testCluster, "greet", nil)
-	if _, _, err := dataplane.Gate(t.Context(), r, callers, greetings, req); !errors.Is(err, dataplane.ErrDenied) {
+	callers := newFakeCallers(canSee("hello"), doomed)
+	if _, _, err := dataplane.Gate(stamped(testUser), callers, greetings, request(testCluster, "greet")); !errors.Is(err, dataplane.ErrDenied) {
 		t.Fatalf("Gate on a deleted object = %v, want ErrDenied", err)
 	}
 }
 
-func TestGateHonoursTenantHeaderFallback(t *testing.T) {
-	callers := newFakeCallers(allowVerb("greet"), greeting("hello"))
-
-	// A workspace path in X-Railgrid-Tenant is not an identity this package
-	// can compare, so it is ignored rather than turned into a mismatch.
-	r, req := gateRequest(t, testCluster, "greet", map[string]string{
-		dataplane.HeaderCluster: "",
-		dataplane.HeaderTenant:  "root:railgrid:tenants:acme",
-	})
-	if _, _, err := dataplane.Gate(t.Context(), r, callers, greetings, req); err != nil {
-		t.Fatalf("Gate with a path-shaped tenant header: %v", err)
+func TestGateNeedsAFactory(t *testing.T) {
+	if _, _, err := dataplane.Gate(stamped(testUser), nil, greetings, request(testCluster, "greet")); err == nil {
+		t.Fatal("Gate accepted a nil factory")
 	}
+}
 
-	// A cluster ID there is compared like X-Railgrid-Cluster would be.
-	r, req = gateRequest(t, testCluster, "greet", map[string]string{
-		dataplane.HeaderCluster: "",
-		dataplane.HeaderTenant:  conformance.ForeignCluster,
+func TestAuthorizeAsksAboutTheStampedCaller(t *testing.T) {
+	callers := newFakeCallers(func(a conformance.Attributes) bool {
+		return a.User == testUser && a.Verb == "update" && a.Resource == greetings.Resource && a.Subresource == "status" && a.Name == "hello"
+	}, greeting("hello"))
+	provider, err := callers.AsProvider(testCluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := dataplane.ProxiedIdentity{User: testUser}
+	allowed, err := dataplane.Authorize(t.Context(), provider, identity, dataplane.ResourceAttributes{
+		Group: greetings.Group, Version: greetings.Version, Resource: greetings.Resource, Subresource: "status", Name: "hello", Verb: "update",
 	})
-	if _, _, err := dataplane.Gate(t.Context(), r, callers, greetings, req); !errors.Is(err, dataplane.ErrClusterMismatch) {
-		t.Fatalf("Gate with a foreign tenant header = %v, want ErrClusterMismatch", err)
+	if err != nil || !allowed {
+		t.Fatalf("Authorize = %v, %v; want allowed", allowed, err)
+	}
+	allowed, err = dataplane.Authorize(t.Context(), provider, identity, dataplane.ResourceAttributes{
+		Group: greetings.Group, Version: greetings.Version, Resource: greetings.Resource, Name: "hello", Verb: "delete",
+	})
+	if err != nil || allowed {
+		t.Fatalf("Authorize(delete) = %v, %v; want denied", allowed, err)
+	}
+	if _, err := dataplane.Authorize(t.Context(), provider, dataplane.ProxiedIdentity{}, dataplane.ResourceAttributes{}); !errors.Is(err, dataplane.ErrNoCaller) {
+		t.Fatalf("Authorize with no caller = %v, want ErrNoCaller", err)
 	}
 }
 

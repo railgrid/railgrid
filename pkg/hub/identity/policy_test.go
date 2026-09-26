@@ -12,8 +12,11 @@ package identity
 
 import (
 	"errors"
+	"slices"
+	"sort"
 	"testing"
 
+	"github.com/railgrid/provider-sdk/dataplane"
 	rbacv1 "k8s.io/api/rbac/v1"
 )
 
@@ -26,8 +29,6 @@ type fakeCatalog struct {
 	// dataPlane is the second half of the union DeclaredVerbs returns:
 	// spec.dataPlane.verbs, which is where exec/proxy/ssh/delegate live.
 	dataPlane map[string][]string
-	// composes is spec.dependencies[].composes, keyed by declaring provider.
-	composes map[string][]Composition
 }
 
 func (c fakeCatalog) GroupOwner(apiGroup string) (string, bool) {
@@ -48,24 +49,6 @@ func (c fakeCatalog) ExportedGroups(provider string) []string {
 func (c fakeCatalog) DeclaredVerbs(provider, resource string) []string {
 	key := provider + "/" + resource
 	return append(append([]string(nil), c.verbs[key]...), c.dataPlane[key]...)
-}
-
-func (c fakeCatalog) Compositions(provider string) []Composition {
-	return append([]Composition(nil), c.composes[provider]...)
-}
-
-// fakeCompositions is the tenant's consent: which (provider, group, resource)
-// a workspace accepted.
-type fakeCompositions struct {
-	granted map[string]bool
-	err     error
-}
-
-func (f fakeCompositions) IsComposed(clusterID, provider, group, resource string) (bool, error) {
-	if f.err != nil {
-		return false, f.err
-	}
-	return f.granted[clusterID+"|"+provider+"|"+group+"/"+resource], nil
 }
 
 type fakeBindings struct {
@@ -100,41 +83,9 @@ func testPolicy() *Policy {
 			"edges/services":           {"proxy", "mcp"},
 			"agents/agents":            {"chat", "run", "delegate"},
 		},
-		composes: map[string][]Composition{
-			"app-studio": {
-				{Dependency: "infrastructure", Group: "infrastructure.railgrid.ai", Resource: "instances",
-					Verbs: []string{"get", "list", "watch", "create", "update", "delete"}},
-				{Dependency: "code", Group: "code.railgrid.ai", Resource: "repositories",
-					Verbs: []string{"get", "list", "watch", "create", "update"}},
-				{Dependency: "code", Group: "code.railgrid.ai", Resource: "repositorycommits",
-					Verbs: []string{"get", "list", "watch"}},
-			},
-			// A composition declared on the WRONG dependency: the group is
-			// exported by infrastructure, not by code.
-			"misdeclared": {
-				{Dependency: "code", Group: "infrastructure.railgrid.ai", Resource: "instances",
-					Verbs: []string{"get", "create"}},
-			},
-			// Declared, never accepted anywhere.
-			"ungranted": {
-				{Dependency: "infrastructure", Group: "infrastructure.railgrid.ai", Resource: "instances",
-					Verbs: []string{"get", "create"}},
-			},
-			// Declared on a dependency that is not bound in cluster-1.
-			"unbound-dep": {
-				{Dependency: "unbound", Group: "unbound.railgrid.ai", Resource: "widgets",
-					Verbs: []string{"get", "create"}},
-			},
-		},
 	}, fakeBindings{bound: map[string]bool{
 		"edges": true, "agents": true, "infrastructure": true, "databricks": true,
 		"factory": true, "code": true,
-	}}, fakeCompositions{granted: map[string]bool{
-		"cluster-1|app-studio|infrastructure.railgrid.ai/instances":  true,
-		"cluster-1|app-studio|code.railgrid.ai/repositories":         true,
-		"cluster-1|app-studio|code.railgrid.ai/repositorycommits":    true,
-		"cluster-1|misdeclared|infrastructure.railgrid.ai/instances": true,
-		"cluster-1|unbound-dep|unbound.railgrid.ai/widgets":          true,
 	}})
 }
 
@@ -263,12 +214,6 @@ func TestPolicyTable(t *testing.T) {
 			wantCode:  CodeUnnamedForeign,
 		},
 		{
-			name:      "only create is minted on a foreign verb subresource",
-			requester: "agents",
-			rule:      rule("databricks.railgrid.ai", []string{"tables/query_table"}, []string{"get"}, []string{"sales"}),
-			wantCode:  CodeForeignWrite,
-		},
-		{
 			name:      "a foreign rule may not mix resources and verb subresources",
 			requester: "agents",
 			rule:      rule("databricks.railgrid.ai", []string{"tables", "tables/query_table"}, []string{"create"}, []string{"sales"}),
@@ -345,7 +290,7 @@ func TestPolicyRefusesForeignGroupOfAnUnboundProvider(t *testing.T) {
 	policy := NewPolicy(fakeCatalog{groups: map[string]string{
 		"agents.railgrid.ai":         "agents",
 		"infrastructure.railgrid.ai": "infrastructure",
-	}}, fakeBindings{bound: map[string]bool{}}, fakeCompositions{})
+	}}, fakeBindings{bound: map[string]bool{}})
 	_, err := policy.Authorize("agents", "cluster-1", []rbacv1.PolicyRule{
 		rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"get"}, []string{"search-1"}),
 	})
@@ -359,7 +304,7 @@ func TestPolicyRefusesForeignGroupWhenBindingsCannotBeChecked(t *testing.T) {
 	policy := NewPolicy(fakeCatalog{groups: map[string]string{
 		"agents.railgrid.ai":         "agents",
 		"infrastructure.railgrid.ai": "infrastructure",
-	}}, nil, fakeCompositions{})
+	}}, nil)
 	_, err := policy.Authorize("agents", "cluster-1", []rbacv1.PolicyRule{
 		rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"get"}, []string{"search-1"}),
 	})
@@ -457,10 +402,12 @@ func TestPolicyAdmitsDeclaredDataPlaneVerbs(t *testing.T) {
 			wantCode:  CodeUnnamedForeign,
 		},
 		{
-			name:      "only create reaches a data-plane coordinate",
+			// The coordinate is the capability: whatever verb the requester
+			// spells, the full verb set is minted, because kcp maps the HTTP
+			// method a verb uses onto the RBAC verb.
+			name:      "any verb on a data-plane coordinate mints every kcp verb",
 			requester: "agents",
 			rule:      rule("infrastructure.railgrid.ai", []string{"instances/exec"}, []string{"get"}, []string{"search-1"}),
-			wantCode:  CodeForeignWrite,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -469,8 +416,10 @@ func TestPolicyAdmitsDeclaredDataPlaneVerbs(t *testing.T) {
 				if err != nil {
 					t.Fatalf("rule was refused: %v", err)
 				}
-				if len(got) != 1 || len(got[0].Verbs) != 1 || got[0].Verbs[0] != "create" {
-					t.Fatalf("minted rule = %#v", got)
+				want := append([]string(nil), dataplane.SubresourceVerbs...)
+				sort.Strings(want)
+				if len(got) != 1 || !slices.Equal(got[0].Verbs, want) {
+					t.Fatalf("minted rule = %#v, want every kcp verb on the coordinate", got)
 				}
 				return
 			}
@@ -662,238 +611,12 @@ func TestPolicyPlatformAllowlist(t *testing.T) {
 func TestPlatformAllowlistIsNotWidenedByOwningTheGroup(t *testing.T) {
 	policy := NewPolicy(fakeCatalog{groups: map[string]string{
 		"coordination.k8s.io": "rogue",
-	}}, fakeBindings{bound: map[string]bool{"rogue": true}}, fakeCompositions{})
+	}}, fakeBindings{bound: map[string]bool{"rogue": true}})
 	_, err := policy.Authorize("rogue", "cluster-1", []rbacv1.PolicyRule{
 		rule("coordination.k8s.io", []string{"leases"}, []string{"get", "list", "watch"}, nil),
 	})
 	var refusal Refusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("a platform group was widened through clause A: %v", err)
-	}
-}
-
-// TestPolicyCompositionClause is clause E: a provider may create and manage
-// another provider's kinds in a tenant workspace when it DECLARED the
-// composition and a workspace or org admin ACCEPTED it. Every adjacent
-// refusal is here too, because the value of the clause is entirely in what it
-// does not admit.
-//
-// The declarations under test are App Studio's real ones (see
-// providers/app-studio/manifest.yaml): instances with get,list,watch,create,
-// update,delete; repositories with get,list,watch,create,update; and
-// repositorycommits read-only.
-func TestPolicyCompositionClause(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		requester string
-		cluster   string
-		rule      rbacv1.PolicyRule
-		wantCode  string // empty = admitted
-	}{
-		// --- the shapes App Studio actually needs ---
-		{
-			name:      "create is minted unnamed: RBAC cannot name-scope a create",
-			requester: "app-studio",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, nil),
-		},
-		{
-			name:      "list and watch are minted unnamed, bounded to this one workspace",
-			requester: "app-studio",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"list", "watch"}, nil),
-		},
-		{
-			name:      "get, update and delete are minted on named objects",
-			requester: "app-studio",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"get", "update", "delete"}, []string{"proj-1"}),
-		},
-		{
-			name:      "a second dependency's kind is minted on its own declaration",
-			requester: "app-studio",
-			rule:      rule("code.railgrid.ai", []string{"repositories"}, []string{"create"}, nil),
-		},
-		{
-			name:      "a read-only composition is minted for its read verbs",
-			requester: "app-studio",
-			rule:      rule("code.railgrid.ai", []string{"repositorycommits"}, []string{"list", "watch"}, nil),
-		},
-
-		// --- the adjacent refusals ---
-		{
-			name:      "a verb the composition does not declare is refused",
-			requester: "app-studio",
-			rule:      rule("code.railgrid.ai", []string{"repositories"}, []string{"delete"}, []string{"repo-1"}),
-			wantCode:  CodeCompositionVerbNotDeclared,
-		},
-		{
-			name:      "a write verb on a read-only composition is refused",
-			requester: "app-studio",
-			rule:      rule("code.railgrid.ai", []string{"repositorycommits"}, []string{"create"}, nil),
-			wantCode:  CodeCompositionVerbNotDeclared,
-		},
-		{
-			name:      "a verb outside the composition vocabulary is refused",
-			requester: "app-studio",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"deletecollection"}, nil),
-			wantCode:  CodeCompositionVerbNotDeclared,
-		},
-		{
-			name:      "a composition declared on the wrong dependency is refused",
-			requester: "misdeclared",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, nil),
-			wantCode:  CodeCompositionNotDeclared,
-		},
-		{
-			name:      "a declared composition whose dependency is not bound here is refused",
-			requester: "unbound-dep",
-			rule:      rule("unbound.railgrid.ai", []string{"widgets"}, []string{"create"}, nil),
-			wantCode:  CodeUnboundProvider,
-		},
-		{
-			name:      "a declared composition nobody accepted is refused",
-			requester: "ungranted",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, nil),
-			wantCode:  CodeCompositionNotGranted,
-		},
-		{
-			name:      "an acceptance in another workspace does not carry over",
-			requester: "app-studio",
-			cluster:   "cluster-2",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, nil),
-			wantCode:  CodeCompositionNotGranted,
-		},
-		{
-			name:      "create may not be name-scoped: it would authorize nothing",
-			requester: "app-studio",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, []string{"proj-1"}),
-			wantCode:  CodeCompositionShape,
-		},
-		{
-			name:      "get without names is refused even under a composition",
-			requester: "app-studio",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"get"}, nil),
-			wantCode:  CodeCompositionShape,
-		},
-		{
-			name:      "the two verb classes may not share a rule",
-			requester: "app-studio",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create", "update"}, []string{"proj-1"}),
-			wantCode:  CodeCompositionShape,
-		},
-		{
-			name:      "a wildcard is refused before the clause is reached",
-			requester: "app-studio",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"*"}, nil),
-			wantCode:  CodeWildcard,
-		},
-		{
-			name:      "a wildcard resource is refused before the clause is reached",
-			requester: "app-studio",
-			rule:      rule("infrastructure.railgrid.ai", []string{"*"}, []string{"create"}, nil),
-			wantCode:  CodeWildcard,
-		},
-		{
-			name:      "a provider that declares nothing does not reach the clause",
-			requester: "agents",
-			rule:      rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, nil),
-			wantCode:  CodeUnnamedForeign,
-		},
-		{
-			name:      "a composed provider still cannot touch the core group",
-			requester: "app-studio",
-			rule:      rule("", []string{"secrets"}, []string{"get"}, []string{"s"}),
-			wantCode:  CodeCoreGroup,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cluster := tc.cluster
-			if cluster == "" {
-				cluster = "cluster-1"
-			}
-			got, err := testPolicy().Authorize(tc.requester, cluster, []rbacv1.PolicyRule{tc.rule})
-			if tc.wantCode == "" {
-				if err != nil {
-					t.Fatalf("rule was refused: %v", err)
-				}
-				if len(got) != 1 {
-					t.Fatalf("got %d rules, want 1", len(got))
-				}
-				return
-			}
-			var refusal Refusal
-			if !errors.As(err, &refusal) {
-				t.Fatalf("want refusal %q, got err=%v rules=%v", tc.wantCode, err, got)
-			}
-			if refusal.Code != tc.wantCode {
-				t.Fatalf("refusal code = %q, want %q (reason: %s)", refusal.Code, tc.wantCode, refusal.Reason)
-			}
-		})
-	}
-}
-
-// A rule mixing a composed kind with an ordinary foreign read must NOT be
-// claimed by clause E: declaring a composition may never cost a provider the
-// name-scoped read it already had under clause B.
-func TestCompositionDoesNotNarrowForeignRead(t *testing.T) {
-	got, err := testPolicy().Authorize("app-studio", "cluster-1", []rbacv1.PolicyRule{
-		rule("infrastructure.railgrid.ai", []string{"instances", "templates"}, []string{"get"}, []string{"proj-1"}),
-	})
-	if err != nil {
-		t.Fatalf("a mixed rule was refused: %v", err)
-	}
-	if len(got) != 1 || len(got[0].Verbs) != 1 || got[0].Verbs[0] != "get" {
-		t.Fatalf("clause B should have admitted the mixed rule as a named get, got %#v", got)
-	}
-}
-
-// Without a consent reader the hub refuses every composition rather than
-// presuming an acceptance it cannot see — the same stance a nil
-// BindingChecker takes.
-func TestCompositionWithoutGrantReaderIsRefused(t *testing.T) {
-	policy := NewPolicy(fakeCatalog{
-		groups:   map[string]string{"infrastructure.railgrid.ai": "infrastructure"},
-		composes: map[string][]Composition{"app-studio": {{Dependency: "infrastructure", Group: "infrastructure.railgrid.ai", Resource: "instances", Verbs: []string{"create"}}}},
-	}, fakeBindings{bound: map[string]bool{"infrastructure": true}}, nil)
-	_, err := policy.Authorize("app-studio", "cluster-1", []rbacv1.PolicyRule{
-		rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, nil),
-	})
-	var refusal Refusal
-	if !errors.As(err, &refusal) || refusal.Code != CodeCompositionNotGranted {
-		t.Fatalf("want %s, got %v", CodeCompositionNotGranted, err)
-	}
-}
-
-// A grant read that fails is an error, not a refusal: the caller should retry
-// rather than be told the tenant declined.
-func TestCompositionGrantReadErrorSurfaces(t *testing.T) {
-	policy := NewPolicy(fakeCatalog{
-		groups:   map[string]string{"infrastructure.railgrid.ai": "infrastructure"},
-		composes: map[string][]Composition{"app-studio": {{Dependency: "infrastructure", Group: "infrastructure.railgrid.ai", Resource: "instances", Verbs: []string{"create"}}}},
-	}, fakeBindings{bound: map[string]bool{"infrastructure": true}}, fakeCompositions{err: errors.New("boom")})
-	_, err := policy.Authorize("app-studio", "cluster-1", []rbacv1.PolicyRule{
-		rule("infrastructure.railgrid.ai", []string{"instances"}, []string{"create"}, nil),
-	})
-	var refusal Refusal
-	if err == nil || errors.As(err, &refusal) {
-		t.Fatalf("a grant read failure must surface as an error, got %v", err)
-	}
-}
-
-func TestSplitTenantWorkspacePath(t *testing.T) {
-	for _, tc := range []struct {
-		path    string
-		org, ws string
-		ok      bool
-	}{
-		{path: "root:railgrid:tenants:org-1:ws-1", org: "org-1", ws: "ws-1", ok: true},
-		{path: "root:railgrid:tenants:org-1", ok: false},
-		{path: "root:railgrid:tenants:org-1:providers", ok: false},
-		{path: "root:railgrid:tenants:org-1:providers:app-studio", ok: false},
-		{path: "root:railgrid:providers:app-studio", ok: false},
-		{path: "", ok: false},
-	} {
-		org, ws, ok := SplitTenantWorkspacePath(tc.path)
-		if ok != tc.ok || org != tc.org || ws != tc.ws {
-			t.Fatalf("SplitTenantWorkspacePath(%q) = (%q, %q, %v), want (%q, %q, %v)", tc.path, org, ws, ok, tc.org, tc.ws, tc.ok)
-		}
 	}
 }

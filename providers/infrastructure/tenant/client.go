@@ -9,9 +9,12 @@
 package tenant
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -38,8 +41,9 @@ type ClientFactory struct {
 	baseHost string
 	baseTLS  rest.TLSClientConfig
 
-	mu  sync.RWMutex
-	hot map[string]dynamic.Interface
+	mu   sync.RWMutex
+	hot  map[string]dynamic.Interface
+	http map[string]*http.Client
 }
 
 // NewClientFactory reuses the provider's existing kcp connection (base) for
@@ -69,7 +73,87 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 		baseHost: baseHost,
 		baseTLS:  tls,
 		hot:      make(map[string]dynamic.Interface),
+		http:     make(map[string]*http.Client),
 	}
+}
+
+// verbPathPrefix is where every provider data-plane verb lives on the front
+// door: a kcp custom subresource under /clusters/{id}/apis/….
+const verbPathPrefix = "/clusters/"
+
+// DoVerb sends one request for a provider data-plane verb — a kcp custom
+// subresource, provider-sdk/dataplane.SubresourcePath — to the same front
+// door the tenant clients use, authenticating as the caller with token. kcp
+// authorizes the verb with the caller's RBAC and forwards it to the owning
+// provider (which may be this very process) with the caller's identity
+// stamped; nothing here acts as the provider.
+//
+// path must be the kube path, leading /clusters/{id} included; headers may
+// carry verb-specific extras but never the credential, which is set from
+// token alone. The caller owns the response body.
+func (f *ClientFactory) DoVerb(ctx context.Context, token, method, path string, body io.Reader, headers http.Header) (*http.Response, error) {
+	if f == nil {
+		return nil, fmt.Errorf("tenant client factory is unavailable")
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, fmt.Errorf("no bearer token on request — cannot act on the tenant's behalf")
+	}
+	if !strings.HasPrefix(path, verbPathPrefix) {
+		return nil, fmt.Errorf("verb path %q is not a kcp custom-subresource path under %s", path, verbPathPrefix)
+	}
+	client, err := f.httpClientFor(token)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, f.baseHost+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("verb request: %w", err)
+	}
+	for name, values := range headers {
+		if strings.EqualFold(name, "Authorization") {
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("verb %s %s: %w", method, path, err)
+	}
+	return resp, nil
+}
+
+// httpClientFor is the bearer-authenticated HTTP client for the front door,
+// cached per token like the dynamic clients so a stable token reuses one
+// transport.
+func (f *ClientFactory) httpClientFor(token string) (*http.Client, error) {
+	key := hashToken(token)
+
+	f.mu.RLock()
+	client, ok := f.http[key]
+	f.mu.RUnlock()
+	if ok {
+		return client, nil
+	}
+
+	client, err := rest.HTTPClientFor(&rest.Config{
+		Host:            f.baseHost,
+		BearerToken:     token,
+		TLSClientConfig: f.baseTLS,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("http client for the front door: %w", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if existing, ok := f.http[key]; ok {
+		return existing, nil
+	}
+	f.http[key] = client
+	return client, nil
 }
 
 // For returns a dynamic client scoped to the workspace's logical-cluster ID,

@@ -53,7 +53,10 @@ cluster edge and 'railgrid ssh' opens a shell on a server edge.
   railgrid edge list
   railgrid edge get my-cluster -o yaml
   railgrid edge kubeconfig my-cluster -o ./my-cluster.kubeconfig
-  railgrid edge delete my-vps`,
+  railgrid edge delete my-vps
+
+A cluster and a server may share a name. Commands that work on either kind then
+ask for the type as a qualifier: 'railgrid edge get server/minis'.`,
 	}
 
 	cmd.AddCommand(
@@ -293,6 +296,9 @@ func newEdgeJoinCommandCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}
+			// A qualified reference ("server/minis") may have named the edge;
+			// everything downstream wants the plain name.
+			name = edge.GetName()
 
 			joinToken := getNestedString(*edge, "status", "joinToken")
 			if joinToken == "" {
@@ -515,10 +521,13 @@ func newEdgeDeleteCommand() *cobra.Command {
 				return err
 			}
 
-			_, gvr, err := getEdgeByName(ctx, dynClient, name)
+			edge, gvr, err := getEdgeByName(ctx, dynClient, name)
 			if err != nil {
 				return err
 			}
+			// A qualified reference ("server/minis") may have named the edge;
+			// everything downstream wants the plain name.
+			name = edge.GetName()
 			if !yes {
 				ok, err := confirm(cmd, fmt.Sprintf("Delete edge %q? This cannot be undone.", name))
 				if err != nil {
@@ -560,13 +569,23 @@ func completeEdgeNamesOfType(cmd *cobra.Command, edgeType, toComplete string) ([
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	// Without a type filter a name shared by two kinds has to be qualified to
+	// address a single edge, so offer the qualified forms for those.
+	dupes := map[string]bool{}
+	if edgeType == "" {
+		dupes = duplicateEdgeNames(items)
+	}
 	var names []string
 	for i := range items {
 		if edgeType != "" && edgeTypeOf(&items[i]) != edgeType {
 			continue
 		}
-		if strings.HasPrefix(items[i].GetName(), toComplete) {
-			names = append(names, items[i].GetName())
+		name := items[i].GetName()
+		if dupes[name] {
+			name = edgeTypeOf(&items[i]) + "/" + name
+		}
+		if strings.HasPrefix(name, toComplete) {
+			names = append(names, name)
 		}
 	}
 	return names, cobra.ShellCompDirectiveNoFileComp

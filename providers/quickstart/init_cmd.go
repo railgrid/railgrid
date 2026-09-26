@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -42,16 +43,16 @@ func runInitCmd(ctx context.Context) error {
 	if kcpDir == "" {
 		kcpDir = "/etc/railgrid/kcp"
 	}
-	// Per-installation APIExport identity hashes for first-party claim groups,
-	// as "group=hash,group=hash". Empty for this provider: it claims only
-	// built-in types, which need no hash.
-	identityHashes, err := sdkinstall.ParseIdentityHashes(os.Getenv("RAILGRID_IDENTITY_HASHES"))
-	if err != nil {
-		return err
-	}
 	// CatalogEntry self-registration: the provider applies its own CatalogEntry
-	// into its workspace (the hub watches it there). Empty → skip.
-	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
+	// into its workspace (the hub watches it there). Empty → skip. The same
+	// lookup serve uses to derive its custom-subresource routes (catalogentry.go),
+	// so init and serve can never read a different declaration.
+	catalogEntryFile := catalogEntryPath()
+	// Where kcp reverse-proxies a custom subresource request to. Empty means
+	// "spec.serving.backend.url of the CatalogEntry above", which is right whenever the
+	// chart runs init; a harness that registers the CatalogEntry itself (the
+	// provider e2e does) has no file to read it from and sets this instead.
+	dataPlaneURL := strings.TrimSpace(os.Getenv("RAILGRID_DATAPLANE_URL"))
 
 	// Bootstrap applies, idempotently and in order: the APIResourceSchemas in
 	// KCPDir, the generated APIExport beside them, the APIExportEndpointSlice
@@ -63,15 +64,17 @@ func runInitCmd(ctx context.Context) error {
 	// There is no claim list here, and there is no place to put one: a
 	// permission claim is written in manifest.yaml and nowhere else, codegen
 	// turns it into deploy/chart/files/apiexport.yaml, and init applies that
-	// file as it stands. This provider claims nothing — it reconciles only the
-	// Greetings its own APIExport serves.
+	// file as it stands. This provider claims no data — it reconciles only the
+	// Greetings its own APIExport serves; its one claim is the built-in
+	// subjectaccessreviews review API the greet subresource's proxied gate runs
+	// through the export virtual workspace.
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:           config,
 		ExportName:       apiExportName,
 		WorkspacePath:    workspacePath,
 		KCPDir:           kcpDir,
-		IdentityHashes:   identityHashes,
 		CatalogEntryFile: catalogEntryFile,
+		DataPlaneURL:     dataPlaneURL,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}

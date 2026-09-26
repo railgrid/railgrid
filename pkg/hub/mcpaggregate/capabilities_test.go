@@ -105,7 +105,7 @@ func newCapFixture(t *testing.T) *capFixture {
 	reg.Upsert(providers.Provider{
 		Name: "code", DisplayName: "Code", BackendURL: codeURL, EndpointsValid: true,
 		Actions: []providers.ProviderAction{{
-			ID: "branches/v1", Name: "branches", Version: "v1",
+			Name: "branches", Version: "v1",
 			DisplayName: "List branches", Description: "List a bounded page of branch names.",
 			Resource: providers.ProviderActionResource{
 				APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository", Resource: "repositories",
@@ -121,9 +121,15 @@ func newCapFixture(t *testing.T) *capFixture {
 	})
 	reg.Upsert(providers.Provider{
 		Name: "infrastructure", DisplayName: "Infrastructure", BackendURL: infraURL, EndpointsValid: true,
-		DataPlaneVerbs: []providers.ProviderDataPlaneVerb{
-			{Resource: "instances", Verb: "log", Description: "Stream the instance's logs.", Stream: true, ReadOnly: true},
-			{Resource: "instances", Verb: "exec", Description: "Run a command in the instance.", Stream: true},
+		Export: &providersv1alpha1.ProviderExport{
+			Name: "infrastructure.providers.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderExportResource{{
+				Name: "instances", APIVersion: "infrastructure.railgrid.ai/v1alpha1", Kind: "Instance",
+				Verbs: []providersv1alpha1.ProviderVerb{
+					{Name: "log", Description: "Stream the instance's logs.", Stream: true, ReadOnly: true},
+					{Name: "exec", Description: "Run a command in the instance.", Stream: true},
+				},
+			}},
 		},
 	})
 	// Declares neither an action nor a verb: it federates its tools but has
@@ -132,7 +138,7 @@ func newCapFixture(t *testing.T) *capFixture {
 	// Another Org's provider: never visible to org A, contract included.
 	reg.Upsert(providers.Provider{
 		Name: "billing", OrgUUID: orgB, BackendURL: otherOrgURL, EndpointsValid: true,
-		Actions: []providers.ProviderAction{{ID: "invoice/v1", Name: "invoice", Version: "v1"}},
+		Actions: []providers.ProviderAction{{Name: "invoice", Version: "v1"}},
 	})
 
 	return &capFixture{handler: New(Options{

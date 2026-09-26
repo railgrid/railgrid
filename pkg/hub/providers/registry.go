@@ -65,11 +65,17 @@ type Provider struct {
 	// Description is the CatalogEntry's short blurb. The portal renders it on
 	// catalog cards and in the first-run welcome flow, where it is the only
 	// thing telling a new user what the provider actually does.
-	Description  string
-	IconURL      string // optional, defaults to /ui/providers/{name}/icon.svg
-	Category     string // optional grouping in the portal nav; empty = top-level
-	Dependencies []Dependency
-	UIURL        *url.URL // proxy target for /ui/providers/{name}/*; nil → 404
+	Description string
+	IconURL     string // optional, defaults to /ui/providers/{name}/icon.svg
+	Category    string // optional grouping in the portal nav; empty = top-level
+	// Requires mirrors CatalogEntry.spec.requires verbatim: everything this
+	// provider needs that it does not own, keyed by API group. It is the single
+	// source for both the permission claims a tenant accepts at Enable
+	// (providersv1alpha1.RequiredCoordinates) and the dependency edges the hub
+	// checks before enabling (providersv1alpha1.Dependencies) — the two used to
+	// be separate declarations that had to be merged.
+	Requires []providersv1alpha1.ProviderRequirement
+	UIURL    *url.URL // proxy target for /ui/providers/{name}/*; nil → 404
 	// MainJSIntegrity is the SRI pin ("sha384-<base64>") of the bundle the
 	// portal loads from /ui/providers/{name}/main.js, computed by the catalog
 	// reconciler from the same source the UI proxy serves. Empty when the hub
@@ -83,23 +89,29 @@ type Provider struct {
 	BackendHealthRequired bool
 	BackendHealthy        bool
 	Actions               []ProviderAction
-	// DataPlaneVerbs mirrors CatalogEntry.spec.dataPlane.verbs: the verbs this
-	// provider serves on its own resources. Declaring one serves nothing — the
-	// provider still enforces it with its own SSAR — but it is what makes the
+	// Export mirrors CatalogEntry.spec.export: the APIExport name and the
+	// resources it serves, with the verbs and actions on each. It is kept as the
+	// API type rather than remirrored, because everything that walks a
+	// provider's callable surface already has helpers on it —
+	// Export.Coordinates(), Export.Resource(), providersv1alpha1
+	// .ProviderDeclaredVerbs — and a hub-side copy would have to be kept in step
+	// with them by hand. Nil for a provider that exports no API of its own.
+	//
+	// Declaring a verb or an action serves nothing — the provider still
+	// enforces every call with its own SSAR — but it is what makes the
 	// {resource}/{verb} coordinate machine-readable, which is what lets the
-	// hub scoped-identity service mint a capability for it.
-	DataPlaneVerbs []ProviderDataPlaneVerb
+	// hub's scoped-identity service mint a capability for it.
+	Export *providersv1alpha1.ProviderExport
 	// AssistantSkills contains only validated, provider-supplied inline App
 	// Studio packages. It intentionally carries no provider URL, credential, or
 	// runtime handle; the authenticated catalog API is the sole distribution
 	// boundary.
-	AssistantSkills  []ProviderAssistantSkill
-	BuiltinRoute     string     // when set, portal renders this Vue route instead of loading /main.js
-	Children         []NavChild // sub-nav entries surfaced indented under this provider
-	Version          string     // CatalogEntry.spec.version (chart-declared)
-	APIExportPath    string     // kcp workspace path hosting the APIExport (e.g. root:railgrid:providers:cost)
-	APIExportName    string     // APIExport name (e.g. cost.providers.railgrid.ai)
-	PermissionClaims []PermissionClaim
+	AssistantSkills []ProviderAssistantSkill
+	BuiltinRoute    string     // when set, portal renders this Vue route instead of loading /main.js
+	Children        []NavChild // sub-nav entries surfaced indented under this provider
+	Version         string     // CatalogEntry.spec.version (chart-declared)
+	APIExportPath   string     // kcp workspace path hosting the APIExport (e.g. root:railgrid:providers:cost)
+	APIExportName   string     // APIExport name (e.g. cost.providers.railgrid.ai)
 	// APIGroups are the API groups this provider SERVES, read by the catalog
 	// reconciler from spec.resources[].group on the provider's own APIExport
 	// (apis.kcp.io/v1alpha2, named APIExportName, in APIExportPath) — deduped
@@ -123,7 +135,7 @@ type Provider struct {
 	// hub renders per-organization install instructions. Nil when the provider
 	// is platform-operated only.
 	SelfHosting *SelfHosting
-	// HubAccess mirrors CatalogEntry.spec.hubAccess: the hub REST
+	// HubAccess mirrors CatalogEntry.spec.hub.access: the hub REST
 	// capabilities the provider requests. Declaring grants nothing; they are
 	// enforced only as accepted by a tenant (pkg/hub/hubaccess).
 	HubAccess []providersv1alpha1.ProviderHubAccess
@@ -171,7 +183,7 @@ type Provider struct {
 	// it nil and rely on UIURL.
 	LocalUIAssets fs.FS
 
-	// EndpointsValid is true when spec.ui.url/spec.backend.url parsed cleanly
+	// EndpointsValid is true when spec.serving.ui.url/spec.serving.backend.url parsed cleanly
 	// and at least one endpoint was declared (or LocalUIAssets is set).
 	// The catalog controller sets this; the sweeper does not touch it.
 	EndpointsValid bool
@@ -197,26 +209,7 @@ type Provider struct {
 	HeartbeatStale bool
 }
 
-// Dependency mirrors CatalogEntry.spec.dependencies so the portal and hub can
-// gate provider enablement without coupling callers to CRD types.
-type Dependency struct {
-	Name string
-	// Composes mirrors CatalogEntry.spec.dependencies[].composes: the
-	// dependency's kinds this provider's reconcilers create and manage in the
-	// tenant workspace. Declaring one grants nothing — it is what the Enable
-	// dialog asks an admin to consent to, and what the scoped-identity policy
-	// measures a requested rule against (clause E).
-	Composes []Composition
-}
-
-// Composition is one composed kind of a dependency provider.
-type Composition struct {
-	Group    string
-	Resource string
-	Verbs    []string
-}
-
-// SelfHosting mirrors CatalogEntry.spec.selfHosting: how an organization runs
+// SelfHosting mirrors CatalogEntry.spec.serving.selfHosting: how an organization runs
 // its own copy of this provider. Nil when the provider does not offer it.
 type SelfHosting struct {
 	Supported    bool
@@ -236,9 +229,6 @@ type SelfHosting struct {
 type SelfHostingValue struct {
 	Name        string
 	Description string
-	// IdentityFor names an APIExport whose identity hash is this value; the hub
-	// resolves it so the installer never has to copy one by hand.
-	IdentityFor string
 	Value       string
 }
 
@@ -279,24 +269,15 @@ func (p Provider) Ready() bool {
 	return ready
 }
 
-// PermissionClaim mirrors CatalogEntry.spec.apiExport.permissionClaims so the
-// portal can render the Enable confirmation dialog without coupling to the
-// CRD types.
-type PermissionClaim struct {
-	Group        string
-	Resource     string
-	Verbs        []string
-	TenantScoped bool
-	// MatchLabels mirrors the claim's spec selector: the label set a claimed
-	// object must carry for the provider to see or write it. Empty means the
-	// claim covers every object of the resource in the workspace, which the
-	// contract allows only outside ScopedCoreResources
-	// (provider-sdk/install). It is what the hub writes onto the accepted
-	// claim's selector in the tenant's APIBinding.
-	MatchLabels map[string]string
+// Coordinates is every {resource}/{verb} this provider publishes, verbs then
+// actions, each carrying its parent resource's apiVersion and kind. It is the
+// flat form everything that walks a provider's callable surface wants, and it
+// is derived rather than stored so it cannot drift from Export.
+func (p Provider) Coordinates() []providersv1alpha1.ProviderCoordinate {
+	return p.Export.Coordinates()
 }
 
-// NavChild mirrors CatalogEntry.spec.ui.children — a single sub-nav
+// NavChild mirrors CatalogEntry.spec.serving.ui.children — a single sub-nav
 // entry the portal renders indented under its parent provider.
 type NavChild struct {
 	DisplayName  string
@@ -309,7 +290,6 @@ type NavChild struct {
 // transport and the portal's consent UI. It deliberately does not retain
 // provider transport URLs on each action.
 type ProviderAction struct {
-	ID              string
 	Name            string
 	Version         string
 	DisplayName     string
@@ -329,19 +309,16 @@ type ProviderAction struct {
 	Deprecation     *providersv1alpha1.ProviderActionDeprecation
 }
 
-// ProviderDataPlaneVerb is the registry's view of one declared data-plane
-// verb. It carries no schema: a data-plane verb is a coordinate and a
-// transport, not a request/response contract (that is what an action is).
-type ProviderDataPlaneVerb struct {
-	Resource    string
-	Verb        string
-	Description string
-	Stream      bool
-	ReadOnly    bool
-}
+// ID is the action's catalogued identity, "<name>/<version>" — the string
+// grants, consent records and the assistant catalog key on. It mirrors
+// providersv1alpha1.ProviderAction.ID so the hub never stores a second spelling
+// of it.
+func (a ProviderAction) ID() string { return a.Name + "/" + a.Version }
 
 // ProviderActionResource identifies the provider-owned resource an action is
 // allowed to receive. The request's resourceRef must match all three fields.
+// It is the action's parent ProviderExportResource: the coordinate kcp routes
+// on is (that resource, this action's name).
 type ProviderActionResource struct {
 	APIVersion string
 	Kind       string
@@ -374,49 +351,55 @@ type ProviderAssistantSkillResource struct {
 	Content string
 }
 
-// ParseProviderActions normalizes the typed CatalogEntry action list and
+// ParseProviderActions normalizes every action the export declares and
 // compiles both schemas with the full JSON Schema implementation. Callers must
 // handle the error: admitting an action without compiled validators would make
 // the router fail open on malformed catalog metadata.
-func ParseProviderActions(actions []providersv1alpha1.ProviderActionSpec) ([]ProviderAction, error) {
-	out := make([]ProviderAction, 0, len(actions))
-	for _, action := range actions {
-		parts := strings.SplitN(strings.TrimSpace(action.ID), "/", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("action ID %q is invalid", action.ID)
+//
+// An action is declared ON the resource it is served on, so the resource it may
+// receive comes from its parent entry rather than from a bound-resource block of
+// its own — the two can no longer disagree.
+func ParseProviderActions(export *providersv1alpha1.ProviderExport) ([]ProviderAction, error) {
+	if export == nil {
+		return nil, nil
+	}
+	out := make([]ProviderAction, 0, len(export.Resources))
+	for _, resource := range export.Resources {
+		for _, action := range resource.Actions {
+			id := action.ID()
+			inputSchema := schemaBytes(action.InputSchema)
+			outputSchema := schemaBytes(action.OutputSchema)
+			inputValidator, err := CompileProviderActionSchema(inputSchema, id+"/input")
+			if err != nil {
+				return nil, fmt.Errorf("action %q inputSchema: %w", id, err)
+			}
+			outputValidator, err := CompileProviderActionSchema(outputSchema, id+"/output")
+			if err != nil {
+				return nil, fmt.Errorf("action %q outputSchema: %w", id, err)
+			}
+			out = append(out, ProviderAction{
+				Name: action.Name, Version: action.Version,
+				DisplayName: action.DisplayName, Description: action.Description,
+				Resource: ProviderActionResource{
+					APIVersion: resource.APIVersion,
+					Kind:       resource.Kind,
+					Resource:   resource.Name,
+				},
+				InputSchema: inputSchema, OutputSchema: outputSchema,
+				InputValidator: inputValidator, OutputValidator: outputValidator,
+				SchemaDigest: action.SchemaDigest, ExecutionMode: string(action.ExecutionMode),
+				ReadOnly: action.ReadOnly, Risk: action.Risk,
+				Idempotency: string(action.Idempotency),
+				Limits: ProviderActionLimits{
+					TimeoutSeconds: action.Limits.TimeoutSeconds,
+					MaxInputBytes:  action.Limits.MaxInputBytes,
+					MaxOutputBytes: action.Limits.MaxOutputBytes,
+					MaxResultItems: action.Limits.MaxResultItems,
+				},
+				Consent:     action.Consent,
+				Deprecation: action.Deprecation.DeepCopy(),
+			})
 		}
-		inputSchema := schemaBytes(action.InputSchema)
-		outputSchema := schemaBytes(action.OutputSchema)
-		inputValidator, err := CompileProviderActionSchema(inputSchema, action.ID+"/input")
-		if err != nil {
-			return nil, fmt.Errorf("action %q inputSchema: %w", action.ID, err)
-		}
-		outputValidator, err := CompileProviderActionSchema(outputSchema, action.ID+"/output")
-		if err != nil {
-			return nil, fmt.Errorf("action %q outputSchema: %w", action.ID, err)
-		}
-		out = append(out, ProviderAction{
-			ID: parts[0] + "/" + parts[1], Name: parts[0], Version: parts[1],
-			DisplayName: action.DisplayName, Description: action.Description,
-			Resource: ProviderActionResource{
-				APIVersion: action.BoundResource.APIVersion,
-				Kind:       action.BoundResource.Kind,
-				Resource:   action.BoundResource.Resource,
-			},
-			InputSchema: inputSchema, OutputSchema: outputSchema,
-			InputValidator: inputValidator, OutputValidator: outputValidator,
-			SchemaDigest: action.SchemaDigest, ExecutionMode: string(action.ExecutionMode),
-			ReadOnly: action.ReadOnly, Risk: action.Risk,
-			Idempotency: string(action.Idempotency),
-			Limits: ProviderActionLimits{
-				TimeoutSeconds: action.Limits.TimeoutSeconds,
-				MaxInputBytes:  action.Limits.MaxInputBytes,
-				MaxOutputBytes: action.Limits.MaxOutputBytes,
-				MaxResultItems: action.Limits.MaxResultItems,
-			},
-			Consent:     action.Consent,
-			Deprecation: action.Deprecation.DeepCopy(),
-		})
 	}
 	return out, nil
 }
@@ -668,6 +651,19 @@ func (r *Registry) Upsert(p Provider) {
 	r.byKey[key] = &cp
 }
 
+// cloneProviderRequirements deep-copies the requirement list so a snapshot
+// never aliases the registry's verb slices or selector maps.
+func cloneProviderRequirements(in []providersv1alpha1.ProviderRequirement) []providersv1alpha1.ProviderRequirement {
+	if in == nil {
+		return nil
+	}
+	out := make([]providersv1alpha1.ProviderRequirement, len(in))
+	for i := range in {
+		in[i].DeepCopyInto(&out[i])
+	}
+	return out
+}
+
 func cloneProviderAssistantSkills(in []ProviderAssistantSkill) []ProviderAssistantSkill {
 	if in == nil {
 		return nil
@@ -683,18 +679,8 @@ func cloneProviderAssistantSkills(in []ProviderAssistantSkill) []ProviderAssista
 }
 
 func cloneProvider(p Provider) Provider {
-	p.Dependencies = append([]Dependency(nil), p.Dependencies...)
-	for i := range p.Dependencies {
-		p.Dependencies[i].Composes = append([]Composition(nil), p.Dependencies[i].Composes...)
-		for j := range p.Dependencies[i].Composes {
-			p.Dependencies[i].Composes[j].Verbs = append([]string(nil), p.Dependencies[i].Composes[j].Verbs...)
-		}
-	}
-	p.PermissionClaims = append([]PermissionClaim(nil), p.PermissionClaims...)
-	for i := range p.PermissionClaims {
-		p.PermissionClaims[i].Verbs = append([]string(nil), p.PermissionClaims[i].Verbs...)
-		p.PermissionClaims[i].MatchLabels = copyLabels(p.PermissionClaims[i].MatchLabels)
-	}
+	p.Requires = cloneProviderRequirements(p.Requires)
+	p.Export = p.Export.DeepCopy()
 	p.APIGroups = append([]string(nil), p.APIGroups...)
 	p.Children = append([]NavChild(nil), p.Children...)
 	p.HubAccess = append([]providersv1alpha1.ProviderHubAccess(nil), p.HubAccess...)
@@ -843,17 +829,4 @@ func ParseURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("url %q must be absolute (scheme + host)", raw)
 	}
 	return u, nil
-}
-
-// copyLabels returns an independent copy of a claim selector's label set, or
-// nil for an empty one, so a snapshot never aliases the registry's map.
-func copyLabels(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
 }

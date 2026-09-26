@@ -113,7 +113,7 @@ Exact strings are in backticks; `…` marks elided detail.
 | `railgrid sandbox sync` → `skipping N binary file(s); <i>/<c>'s dev agent does not advertise base64 sync …` | That sandbox's agent can't take binaries | Nothing to do client-side; see the App Studio row above |
 | Exec prints `Invalid URL … 127.0.0.1:undefined` | Code read `$PORT`, which exec doesn't always get | Name the port (8080 unless the template says otherwise) |
 | Exec → 400 `start argv[N] must be non-empty, at most 4096 bytes` | One argument over 4 KiB | Pass data through a synced file instead of argv |
-| `GET …/dataplane/…/components/<c>/status` → 405 `method GET not allowed for verb <c>/status` | Component status is the `process` verb | `GET …/components/<c>/process` (or `railgrid sandbox status <i> <c>`) |
+| `GET …/instances/<i>/status?component=<c>` → 405 or 404 | Component status is the `process` verb; the component is the `component` query parameter | `GET …/instances/<i>/process?component=<c>` (or `railgrid sandbox status <i> <c>`) |
 | Instance `Valid=True` but an input has no effect (e.g. `connections` → no `DATABASE_URL`) | The template doesn't declare that key; undeclared keys are accepted silently. Hubs of every scope can run older catalogs: `connections` arrived in `simple-webapp` 0.3.0 and `worker`/`cron-job` 0.2.0 | `kubectl get template <t> -o jsonpath='{.spec.version} {.spec.schema.properties}'`; use a template that declares it, or change the design (never pass the credential through `env`) |
 | Instance `Valid=False` / `InvalidValues` | `spec.values` violates the template schema | `describe_template` |
 | Instance Ready but no `status.url` | Template `exposure: internal`; not latency | Never poll for a URL |
@@ -172,7 +172,7 @@ Reference timeline for one App Studio project, measured on a dev hub
 
 | From → to | Took |
 |---|---|
-| `POST /api/projects` → repository ready | ~10 s |
+| `POST …/studios/studio/create-project` → repository ready | ~10 s |
 | create → scaffold commit `Succeeded` | 15–40 s |
 | create → dev instance Ready | ~2.5 min |
 | `code__commit_files` → commit recorded | ~7 s |

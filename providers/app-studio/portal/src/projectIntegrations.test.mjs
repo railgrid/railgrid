@@ -20,13 +20,17 @@ const {
 } = await import(moduleURL)
 
 const digest = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+// The coordinate an action is bound to now lives on its parent export resource:
+// the entry declares apiVersion and kind once, next to the plural name.
 const boundResource = { apiVersion: 'example.railgrid.ai/v1', kind: 'Table', resource: 'tables' }
 
 function action(id, overrides = {}) {
+  const [name, version] = id.split('/')
   return {
     id,
+    name,
+    version,
     displayName: id,
-    boundResource,
     schemaDigest: digest,
     readOnly: true,
     risk: 'low',
@@ -35,21 +39,47 @@ function action(id, overrides = {}) {
   }
 }
 
-test('selects only Ready providers with current, digest-backed actions', () => {
-  const ready = { name: 'ready', displayName: 'Ready', ready: true, hasUI: false, hasBackend: true, actions: [action('query/v1')] }
-  const unready = { name: 'unready', displayName: 'Unready', ready: false, hasUI: false, hasBackend: true, actions: [action('query/v1')] }
-  const deprecated = { name: 'deprecated', displayName: 'Deprecated', ready: true, hasUI: false, hasBackend: true, actions: [action('query/v1', { deprecation: { deprecated: true } })] }
-  const invalidDigest = { name: 'invalid', displayName: 'Invalid', ready: true, hasUI: false, hasBackend: true, actions: [action('query/v1', { schemaDigest: 'sha256:old' })] }
+// One export section carrying the given actions on example.railgrid.ai/v1 Table.
+function exportWith(...actions) {
+  return { name: 'example.providers.railgrid.ai', resources: [{ name: 'tables', apiVersion: 'example.railgrid.ai/v1', kind: 'Table', actions }] }
+}
 
+function bound(action) {
+  return { ...boundResource, action }
+}
+
+test('selects only Ready providers with current, digest-backed actions', () => {
+  const ready = { name: 'ready', displayName: 'Ready', ready: true, export: exportWith(action('query/v1')) }
+  const unready = { name: 'unready', displayName: 'Unready', ready: false, export: exportWith(action('query/v1')) }
+  const deprecated = { name: 'deprecated', displayName: 'Deprecated', ready: true, export: exportWith(action('query/v1', { deprecation: { deprecated: true } })) }
+  const invalidDigest = { name: 'invalid', displayName: 'Invalid', ready: true, export: exportWith(action('query/v1', { schemaDigest: 'sha256:old' })) }
+  const noExport = { name: 'no-export', displayName: 'No export', ready: true }
+
+  const selected = readyProviderActions([unready, invalidDigest, deprecated, noExport, ready])
+  assert.deepEqual(selected.map(({ provider, action }) => `${provider.name}:${action.id}`), ['ready:query/v1'])
+  // Each selection carries its parent resource's coordinate, which is the only
+  // place the catalog publishes it.
   assert.deepEqual(
-    readyProviderActions([unready, invalidDigest, deprecated, ready]).map(({ provider, action: selected }) => `${provider.name}:${selected.id}`),
-    ['ready:query/v1'],
+    selected.map(({ apiVersion, kind, resource }) => ({ apiVersion, kind, resource })),
+    [boundResource],
   )
 })
 
+test('an export resource missing part of its coordinate publishes no grantable action', () => {
+  const provider = {
+    name: 'partial', displayName: 'Partial', ready: true,
+    export: { name: 'partial.providers.railgrid.ai', resources: [
+      { name: 'tables', apiVersion: 'example.railgrid.ai/v1', actions: [action('query/v1')] },
+      { name: '', apiVersion: 'example.railgrid.ai/v1', kind: 'Table', actions: [action('describe/v1')] },
+      { name: 'views', apiVersion: 'example.railgrid.ai/v1', kind: 'View', verbs: [{ name: 'render' }] },
+    ] },
+  }
+  assert.deepEqual(readyProviderActions([provider]), [])
+})
+
 test('builds an exact resource grant from immutable catalog metadata', () => {
-  const provider = { name: 'databricks', displayName: 'Databricks', ready: true, hasUI: false, hasBackend: true }
-  const payload = buildProjectIntegrationCreatePayload(provider, action('query_table/v1'), ' sales ', ' orders ', false)
+  const provider = { name: 'databricks', displayName: 'Databricks', ready: true }
+  const payload = buildProjectIntegrationCreatePayload(provider, bound(action('query_table/v1')), ' sales ', ' orders ', false)
 
   assert.deepEqual(payload, {
     alias: 'sales',

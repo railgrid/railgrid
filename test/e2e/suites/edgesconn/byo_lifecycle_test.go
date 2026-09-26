@@ -290,7 +290,9 @@ func writeCatalogEntry(t *testing.T, cl dynamic.Interface, name, backendURL stri
 		"metadata":   map[string]any{"name": name},
 		"spec": map[string]any{
 			"displayName": name,
-			"backend":     map[string]any{"url": backendURL, "healthPath": "/healthz"},
+			"serving": map[string]any{
+				"backend": map[string]any{"url": backendURL, "healthPath": "/healthz"},
+			},
 		},
 	}}
 	if _, err := cl.Resource(catalogEntryGVR).Create(ctxWithTimeout(t, 30*time.Second), entry, metav1.CreateOptions{}); err != nil {

@@ -47,12 +47,12 @@ import (
 // never leaves the workspace, and the answer is the same one the reconciler
 // writes to status.
 
-// gatedModelCredential returns the ModelCredential the data-plane gates read
-// for this request, plus a caller-scoped client.
+// gatedModelCredential returns the ModelCredential the data-plane gate read
+// for this request, plus the provider client it read it with.
 //
-// The object comes off the gate rather than being re-read: gate 1 already GET
-// it as the caller, and re-reading would be a second read whose result the
-// caller's grant did not cover.
+// The object comes off the gate rather than being re-read: the gate settled
+// the caller's visibility of it and read it as the provider, and re-reading
+// would be a second read the caller's visibility was not checked for.
 func (s *Server) gatedModelCredential(w http.ResponseWriter, r *http.Request) (*agentsv1alpha1.ModelCredential, *agentsclient.Client, bool) {
 	c, _, ok := s.requireClient(w, r)
 	if !ok {
@@ -72,9 +72,11 @@ func (s *Server) gatedModelCredential(w http.ResponseWriter, r *http.Request) (*
 }
 
 // resolveGatedProfile turns the gated credential into the profile to probe,
-// reading its Secret AS THE CALLER. A Secret the caller cannot read is a
-// failed probe with recovery copy, not a 500: it is the ordinary
-// half-finished state (the object saved, the Secret not).
+// reading its Secret AS THE PROVIDER through its export virtual workspace —
+// which shows it only Secrets carrying the railgrid.ai/owner: agents label
+// (manifest.yaml). A Secret the provider cannot read is a failed probe with
+// recovery copy, not a 500: it is the ordinary half-finished state (the
+// object saved, the Secret not, or saved without the owner label).
 func (s *Server) resolveGatedProfile(w http.ResponseWriter, r *http.Request) (*agentsv1alpha1.ModelCredential, *agentsclient.Client, llm.Profile, bool) {
 	cred, c, ok := s.gatedModelCredential(w, r)
 	if !ok {

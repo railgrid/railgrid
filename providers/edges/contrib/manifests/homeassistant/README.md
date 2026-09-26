@@ -68,7 +68,7 @@ the token is wrong.
 
 ```sh
 curl -H "Authorization: Bearer $USER_TOKEN" \
-  "https://<hub>/services/providers/edges/dataplane/clusters/<cluster>/services/ha-kube/proxy/api/config"
+  "https://<hub>/clusters/<cluster>/apis/edges.railgrid.ai/v1alpha1/services/ha-kube/proxy/api/config"
 ```
 
 Then an agent granted the `edges` tool family sees `edges__ha_kube_ha_states`,

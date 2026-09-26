@@ -13,7 +13,7 @@ import (
 
 func TestEnvelopePreservesNullResultsAndExclusiveErrors(t *testing.T) {
 	r := httptest.NewRequest("POST", "/", nil)
-	e := New(r, "code", "find_pull_request", ResourceRef{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository", Resource: "repositories", Name: "repo"})
+	e := New(r, "code", "find-pull-request", ResourceRef{APIVersion: "code.railgrid.ai/v1alpha1", Kind: "Repository", Resource: "repositories", Name: "repo"})
 	data, err := e.Success(nil)
 	if err != nil {
 		t.Fatal(err)

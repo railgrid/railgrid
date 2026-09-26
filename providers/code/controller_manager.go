@@ -59,7 +59,7 @@ import (
 
 // endpointSliceName is the APIExportEndpointSlice the multicluster provider
 // watches to discover tenant workspaces. By convention it matches the
-// provider's APIExport name (manifest.yaml spec.apiExport.name).
+// provider's APIExport name (manifest.yaml spec.export.name).
 const endpointSliceName = install.APIExportEndpointSliceName
 
 // controllerLeaseName gates the reconcilers on a Lease in the provider

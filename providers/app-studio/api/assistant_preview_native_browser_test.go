@@ -370,7 +370,7 @@ func TestProjectAssistantBrowserSessionOwnerIncludesProjectAndCaller(t *testing.
 }
 
 func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -401,7 +401,7 @@ func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
 }
 
 func TestProjectAssistantNativeBrowserFirstNonNavigationStartsAtPreview(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	defer server.browserSessions.closeAll()
 	var toolCalls []string
@@ -444,7 +444,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 
 	server := &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		hubBase:                      hub.URL,
+		hubBase: hub.URL, callers: newTestCallers(nil, hub.URL),
 		hubPublicURL:                 hub.URL,
 		previewInsecureSkipTLSVerify: true,
 	}
@@ -526,7 +526,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 }
 
 func TestProjectAssistantNativeBrowserFirstNavigationIsNotDuplicated(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	defer server.browserSessions.closeAll()
 	var toolCalls []string
@@ -667,7 +667,7 @@ func TestProjectEinoAssistantBrowserDiscoveryCachesAcrossModelBoundariesAndCheck
 }
 
 func TestProjectAssistantNativeBrowserManagedSessionSurvivesModelRefresh(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", previewInspector: &fakeProjectAssistantPreviewInspector{}}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, ""), previewInspector: &fakeProjectAssistantPreviewInspector{}}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	var initializeCalls int
 	configurePreviewInteractionBrowserTestServer(t, server, func(method, _ string) {
@@ -722,7 +722,7 @@ func TestProjectAssistantNativeBrowserManagedSessionSurvivesModelRefresh(t *test
 }
 
 func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -807,7 +807,7 @@ func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *tes
 }
 
 func TestProjectAssistantLegacyInspectionCannotCloseManagedSessionAtModelBoundary(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -930,7 +930,7 @@ func TestProjectAssistantNativeBrowserMutationReportsUnknownAndFailsClosedWhenSa
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 			server.browserSessions = newProjectAssistantBrowserSessionManager()
 			configurePreviewInteractionBrowserTestServer(t, server, nil)
 			server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -1095,7 +1095,7 @@ func TestProjectAssistantBrowserSessionManagerScopesRefsAndCatalogsByWorkspace(t
 }
 
 func TestProjectAssistantNativeBrowserReadRetriesLostSessionOnce(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -1166,7 +1166,7 @@ func TestProjectAssistantNativeBrowserReadRetriesLostSessionOnce(t *testing.T) {
 }
 
 func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	manager := newProjectAssistantBrowserSessionManager()
 	server.browserSessions = manager
 	defer manager.closeAll()
@@ -1259,7 +1259,7 @@ func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t
 }
 
 func TestProjectAssistantNativeBrowserLostReadWithPendingInteractionIsUnverifiable(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -1367,7 +1367,7 @@ func TestProjectAssistantNativeBrowserLostReadWithPendingInteractionIsUnverifiab
 }
 
 func TestProjectAssistantNativeBrowserMutationDoesNotReplayLostSession(t *testing.T) {
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {

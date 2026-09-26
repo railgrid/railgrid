@@ -234,7 +234,7 @@ func TestValidateDevelopment(t *testing.T) {
 					Components: map[string]TemplateDevelopmentComponent{"frontend": devComponent("web")},
 				},
 				DataPlane: &TemplateDataPlane{
-					Endpoints: map[string]TemplateDataPlaneEndpoint{"status": {FromStatus: true}},
+					Endpoints: map[string]TemplateDataPlaneEndpoint{"runtime-status": {FromStatus: true}},
 					Components: map[string]TemplateDataPlaneComponent{
 						"frontend": {Endpoints: map[string]TemplateDataPlaneEndpoint{"sync": {ServicePath: "status.x", Port: "control"}}},
 					},

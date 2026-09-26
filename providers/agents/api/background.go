@@ -796,8 +796,11 @@ func (b *background) scopeFor(ctx context.Context, clusterID, agentName string) 
 	if ref, ok, _ := b.server.store.GetTenantRef(ctx, clusterID); ok {
 		return store.Scope{OrgUUID: ref.OrgUUID, WorkspaceUUID: ref.WorkspaceUUID, AgentName: agentName}
 	}
-	log.Printf("background: no tenant mapping for cluster %s yet — run recorded under fallback scope (open the agents UI once to map it)", clusterID)
-	return store.Scope{OrgUUID: "unmapped", WorkspaceUUID: clusterID, AgentName: agentName}
+	// The same cluster-keyed fallback a data-plane verb uses
+	// (resolveClusterScope), so the rows a run writes are the rows the portal
+	// reads. An MCP caller, the one class that still resolves the workspace
+	// as a user, records the mapping when it comes through.
+	return store.Scope{OrgUUID: unmappedOrg, WorkspaceUUID: clusterID, AgentName: agentName}
 }
 
 // PurgeAgentData removes a deleted Agent's rows from the provider store —

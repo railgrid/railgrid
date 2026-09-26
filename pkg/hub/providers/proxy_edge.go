@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
@@ -229,14 +231,26 @@ func issueDelegatedToken(ctx context.Context, issuer DelegatedTokenIssuer, prov 
 }
 
 // setDelegatedAuthorization replaces whatever Authorization h carries with the
-// delegated token, or removes it when token is empty (an anonymous probe).
-// Every path that talks to a provider on a caller's behalf without forwarding
-// their bearer ends here, so "the bearer that arrived never crosses" is one
-// line rather than one line per path.
+// delegated token, or removes it when there is none (an anonymous probe). It
+// is the direct path's substitution, for a platform provider the
+// DelegationPolicy selects: the provider reads the bearer itself.
 func setDelegatedAuthorization(h http.Header, token string) {
 	h.Del("Authorization")
 	if token != "" {
 		h.Set("Authorization", "Bearer "+token)
+	}
+}
+
+// setDelegatedUpstreamAuthorization is the edge hop's substitution. The hop
+// itself authenticates to kcp as the hub, so the request's Authorization is
+// dropped outright; the delegated token travels as the upstream Authorization
+// the edges service proxy presents to the org-owned provider
+// (dataplane.HeaderUpstreamAuthorization), or nothing for an anonymous probe.
+func setDelegatedUpstreamAuthorization(h http.Header, token string) {
+	h.Del("Authorization")
+	h.Del(dataplane.HeaderUpstreamAuthorization)
+	if token != "" {
+		h.Set(dataplane.HeaderUpstreamAuthorization, "Bearer "+token)
 	}
 }
 
@@ -257,11 +271,14 @@ var (
 )
 
 // edgeHop is where an org-owned provider's backend is reached from the hub:
-// the PLATFORM edges provider's backend, at the edge-proxy path of the
-// hub-owned Service fronting the provider in the tenant's cluster.
+// kcp's front door, at the edges provider's services/{name}/proxy custom
+// subresource for the hub-owned Service fronting the provider in the tenant's
+// cluster. kcp forwards it to the PLATFORM edges provider, which carries it
+// down the tunnel.
 type edgeHop struct {
-	target url.URL
-	route  EdgeRoute
+	target    url.URL
+	transport http.RoundTripper
+	route     EdgeRoute
 }
 
 // resolveEdgeHop finds the edge hop for prov. It never falls back to
@@ -270,20 +287,25 @@ type edgeHop struct {
 //
 // The tunnel is platform infrastructure, so the edges provider is resolved from
 // the PLATFORM registry, never org-scoped: an org supplying the transport for
-// its own traffic would sit on both ends of the trust boundary.
-func resolveEdgeHop(reg *Registry, prov Provider) (edgeHop, error) {
+// its own traffic would sit on both ends of the trust boundary. kcp resolves
+// the export behind the tenant's APIBinding itself; the registry check here is
+// the hub's own readiness gate on that provider.
+func (p *ProviderProxy) resolveEdgeHop(prov Provider) (edgeHop, error) {
 	if !prov.EdgeRoute.Usable() {
 		return edgeHop{}, errEdgeRouteUnusable
 	}
-	edges, ok := reg.Get(EdgesProviderName)
-	if !ok || edges.BackendURL == nil {
+	edges, ok := p.reg.Get(EdgesProviderName)
+	if !ok || !edges.Ready() {
 		return edgeHop{}, errEdgeTransportUnavailable
 	}
-	return edgeHop{target: *edges.BackendURL, route: *prov.EdgeRoute}, nil
+	if p.kcpFrontDoor == nil || p.kcpTransport == nil {
+		return edgeHop{}, errEdgeTransportUnavailable
+	}
+	return edgeHop{target: *p.kcpFrontDoor, transport: p.kcpTransport, route: *prov.EdgeRoute}, nil
 }
 
-// url returns the edges-provider URL that carries rest (a path relative to the
-// provider's backend root) through the tunnel. The query is left to the caller.
+// url returns the kcp URL that carries rest (a path relative to the provider's
+// backend root) through the tunnel. The query is left to the caller.
 func (h edgeHop) url(rest string) *url.URL {
 	u := h.target
 	u.Path = singleJoiningSlash(h.target.Path, h.route.EdgeProxyPath(rest))
@@ -306,7 +328,7 @@ func (h edgeHop) url(rest string) *url.URL {
 // never a fallback to BackendURL — so the bearer substitution in
 // delegatedAuthorization covers every request such a provider can receive.
 func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, prov Provider, rest string) {
-	hop, err := resolveEdgeHop(p.reg, prov)
+	hop, err := p.resolveEdgeHop(prov)
 	switch {
 	case errors.Is(err, errEdgeRouteUnusable):
 		// Recorded but not yet resolvable — the workspace's cluster ID is
@@ -317,7 +339,7 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 		http.Error(w, "provider backend is not routable yet: "+prov.Name, http.StatusServiceUnavailable)
 		return
 	case err != nil:
-		p.log.Info("edge transport unavailable: the platform edges provider has no backend",
+		p.log.Info("edge transport unavailable: the platform edges provider is not ready or kcp is not wired",
 			"provider", prov.Name, "org", prov.OrgUUID)
 		http.Error(w, "edge transport unavailable for provider: "+prov.Name, http.StatusServiceUnavailable)
 		return
@@ -332,10 +354,11 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 	basePath := p.pathPrefix + "/" + prov.Name
 
 	rp := &httputil.ReverseProxy{
-		// Same reason as the direct path, and more acute here: the dataplane
-		// log verb streams, and an unflushed reverse proxy in front of a
-		// tunnel turns "tail my logs" into "hang". See E-7.
+		// Same reason as the direct path, and more acute here: a streaming
+		// response behind a tunnel and an unflushed reverse proxy turns
+		// "tail my logs" into "hang". See E-7.
 		FlushInterval: -1,
+		Transport:     hop.transport,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = dst.Scheme
 			req.URL.Host = dst.Host
@@ -347,10 +370,13 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 			// provider at the far end of the tunnel, and the agent forwards
 			// them untouched (E-6).
 			p.setHeaders(req, prov.Name, basePath)
-			// The caller's hub token stops here. What the tenant's cluster
-			// receives is the delegated ServiceAccount token, or nothing for
-			// an anonymous probe — never the bearer that arrived.
-			setDelegatedAuthorization(req.Header, delegated)
+			// The caller's hub token stops here. The hop to kcp
+			// authenticates as the hub (hop.transport); what the tenant's
+			// cluster receives, as the upstream Authorization the edges
+			// service proxy presents to the provider, is the delegated
+			// ServiceAccount token — or nothing for an anonymous probe —
+			// never the bearer that arrived.
+			setDelegatedUpstreamAuthorization(req.Header, delegated)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.log.Error(err, "edge upstream error",

@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -88,18 +89,29 @@ func TestAddonCredentialsBoundaries(t *testing.T) {
 				w.WriteHeader(500)
 			}))
 			defer api.Close()
-			s := testServer("/services/providers/edges/dataplane")
+			s := testServer()
 			s.logger = klog.Background()
 			s.kcpConfig = &rest.Config{Host: api.URL}
 			s.tenantConfig = func(context.Context, string) (*rest.Config, error) { return &rest.Config{Host: api.URL}, nil }
-			s.gateFn = func(context.Context, *Server, string, dataplane.Request) (*unstructured.Unstructured, error) {
-				if tc.gateDenied {
-					return nil, dataplane.ErrDenied
-				}
-				return &unstructured.Unstructured{}, nil
+			// The agent is gated like every caller: kcp stamped its identity,
+			// and the gate reviews whether it may see its own edge. A denied
+			// review is the "gate denied" case.
+			agent := "system:serviceaccount:default:edge-mac"
+			s.callers = &conformance.FakeCallers{
+				Cluster: "tenant",
+				User:    agent,
+				Objects: []*unstructured.Unstructured{edgeObject(macOSServerResource, "MacOSServer", "mac")},
+				Allow: func(a conformance.Attributes) bool {
+					return !tc.gateDenied && a.Verb == "get" && a.Resource == macOSServerResource && a.Name == "mac"
+				},
 			}
-			req := httptest.NewRequest("POST", "/dataplane/clusters/tenant/macosservers/mac/addon-credentials", strings.NewReader(tc.body))
-			req.Header.Set("Authorization", "Bearer edge-token")
+			req := httptest.NewRequest("POST", "/clusters/tenant/apis/edges.railgrid.ai/v1alpha1/macosservers/mac/addon-credentials", strings.NewReader(tc.body))
+			route, err := dataplane.ParseSubresourceRequest(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := dataplane.WithProxiedIdentity(req.Context(), dataplane.ProxiedIdentity{User: agent})
+			req = req.WithContext(dataplane.WithRoute(ctx, route))
 			rr := httptest.NewRecorder()
 			s.buildEdgesProxyHandler().ServeHTTP(rr, req)
 			if rr.Code != tc.want || reads != tc.reads || writes != tc.writes {

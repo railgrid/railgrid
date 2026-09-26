@@ -6,6 +6,12 @@ you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 */
 
 package providers
@@ -28,7 +34,7 @@ type EdgeRoute struct {
 	// WorkspaceUUID is the team workspace holding the edge and the Service.
 	WorkspaceUUID string
 	// Cluster is that workspace's kcp logical-cluster ID, which is what the
-	// edges proxy path addresses. Resolved by the catalog reconciler; a route
+	// edges verb path addresses. Resolved by the catalog reconciler; a route
 	// with an empty Cluster is not usable and is treated as absent.
 	Cluster string
 	// EdgeName is the KubernetesCluster edge whose agent carries the tunnel.
@@ -48,16 +54,18 @@ func (e *EdgeRoute) Usable() bool {
 	return e != nil && e.Cluster != "" && e.ServiceName != ""
 }
 
-// EdgeProxyPath returns the path on the edges provider that carries one request
-// to this provider's backend, with rest appended.
+// EdgeProxyPath returns the kcp path that carries one request to this
+// provider's backend, with rest appended: the edges provider's
+// services/{name}/proxy custom subresource in the route's workspace,
 //
-// The hub does not make a second HTTP hop through its own front door for this:
-// it rewrites the target to the edges provider's own backend and hands it the
-// path that provider's handler expects, which is EdgeServiceProxyPath minus the
-// /services/providers prefix the hub would have stripped anyway.
+//	/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{service}/proxy{rest}
+//
+// The hub dials kcp for this hop exactly as any other caller of a verb would:
+// kcp authorizes it and reverse-proxies it to the edges provider, which
+// carries it down the tunnel. There is no hub→provider grammar left to take
+// instead.
 func (e *EdgeRoute) EdgeProxyPath(rest string) string {
-	full := apiurl.EdgeServiceProxyPath(e.Cluster, e.ServiceName, "proxy")
-	base := strings.TrimPrefix(full, apiurl.PathPrefixProvidersProxy+"/"+EdgesProviderName)
+	base := apiurl.EdgeServiceProxyPath(e.Cluster, e.ServiceName, "proxy")
 	if rest == "" || rest == "/" {
 		return base
 	}

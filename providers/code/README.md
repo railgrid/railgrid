@@ -62,6 +62,17 @@ this provider pod
    │      └ kubeconfig: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
    │
    └  MCP (AS THE CALLER, caller's own bearer token)
+
+kubectl / consumer provider
+   │  kcp credential
+   ▼
+kcp front door (hub /clusters/{id}, or a consumer's own export VW)
+   │  authenticates the caller, authorizes `create` on {resource}/{verb},
+   │  reverse-proxies with the caller stamped in X-Remote-User/-Group
+   ▼
+this provider pod /clusters/{id}/apis/code.railgrid.ai/v1alpha1/{resource}/{name}/{verb}
+   └  Provider Actions (gate: SubjectAccessReview as the caller; then AS THE
+      PROVIDER through the APIExport VW — no bearer on this path)
 ```
 
 CRUD does **not** go through this pod's HTTP surface: the portal drives every CR —
@@ -103,9 +114,10 @@ Tiltfile, not the pod-based `Tiltfile.cluster` flow.
 `make run-provider-code` auto-sources `providers/code/.env` (gitignored) so
 GitHub OAuth + other dev env reach the provider — copy `.env.example` to `.env`
 to enable "Connect with GitHub" locally. There is no identity bypass, in dev or
-anywhere else: every MCP and action request is identified by its
-`Authorization: Bearer` header and `X-Railgrid-Cluster`, so a local run goes
-through the hub proxy the same way a deployed one does.
+anywhere else: every MCP request is identified by its `Authorization: Bearer`
+header and `X-Railgrid-Cluster` through the hub proxy, and every action by the
+identity kcp stamps when it forwards the custom subresource, so a local run
+goes through the same doors a deployed one does.
 
 ## Connecting an account
 
@@ -128,29 +140,43 @@ PR and merge observations, checks/reviews (including inline comments and check
 annotations), issue comments, review replies, and canonical Runner snapshot
 verification/publication. No engineering scheduling or approval policy lives here.
 
-POST an envelope `{ "input": { ... } }` to
-`/services/providers/code/actions/clusters/{cluster}/repositories/{name}/{action}/v1`.
-Every input includes `repository` (canonical owner/name), `repositoryUID`, and
-`connectionUID`. The caller needs Repository `get` and `create` on the
-`repositories/<action>` subresource for that resource name. Code resolves
-credentials through its provider export only after those checks, pins the
-recorded upstream repository ID, and rejects replacement or redirection. Tenant
-callers need no Secret access. Responses use the shared Provider Action
+Every action is a kcp custom subresource on the `code.providers.railgrid.ai`
+APIExport (`provider-sdk/dataplane`). POST an envelope `{ "input": { ... } }`
+to it on whichever kcp front door the caller holds a credential for — the hub's
+`/clusters/{cluster}` for a user or a tenant ServiceAccount, a consumer
+provider's own export virtual workspace for a claimed verb:
+
+```
+/clusters/{cluster}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{action}
+```
+
+The contract version is not in the path; the CatalogEntry pins it as the
+action's own `version` field, and the action's id is the derived
+`{name}/{version}`. Every input includes `repository` (canonical owner/name),
+`repositoryUID`, and `connectionUID`. kcp authorizes `create` on the
+`repositories/<action>` subresource with ordinary RBAC before forwarding, and
+Code then asks a SubjectAccessReview whether the stamped caller may `get` that
+Repository. There is no bearer on this path: after that gate Code acts as the
+provider through its own export virtual workspace, pins the input's UIDs and
+owner/name against what it read, and rejects replacement or redirection before
+opening any credential Secret. Tenant callers need no Secret access, and a
+consumer provider (App Studio) reaches these verbs as a foreign provider whose
+accepted `requires` claim on `code.railgrid.ai` is the authorization. Responses use the shared Provider Action
 envelope: `requestID`, provider/action identity, `resourceRef`, and exactly one
 of `result` or `error`. `X-Request-ID` supplies the correlation ID.
 The CatalogEntry advertises the fifteen bounded
 action schemas and their digests.
 
 One of the fifteen is bound to a `Connection` instead of a `Repository`:
-`mint_registry_token/v1` issues a short-lived image-pull credential for the
+`mint-registry-token/v1` issues a short-lived image-pull credential for the
 connection's container registry, so a consumer that has to pull an image built
 from a tenant's repository never reads this provider's `Connection` Secret to
-get one. It is gated on `connections/mint_registry_token`, which no repository
+get one. It is gated on `connections/mint-registry-token`, which no repository
 grant reaches. See
 [docs/code-provider-architecture.md](../../docs/code-provider-architecture.md)
-§"`mint_registry_token`".
+§"`mint-registry-token`".
 
-`mint_clone_token/v1` is its repository-bound sibling: it returns
+`mint-clone-token/v1` is its repository-bound sibling: it returns
 `{remoteURL, username, token, expiresAt?, scoped}` — a short-lived, read-only
 git clone credential for ONE repository, so a managed runner can clone the
 tenant's repository itself instead of relying on a checkout that happens to
@@ -161,7 +187,7 @@ OAuth connection cannot be narrowed by any GitHub API, so the stored token is
 returned with `scoped: false`. `remoteURL` never carries the credential inline,
 and a connection holding no token still reports the remote with an empty
 `token` so a public repository clones anonymously. It is gated on
-`repositories/mint_clone_token`, per repository.
+`repositories/mint-clone-token`, per repository.
 
 `commit/v1` is the one repository action that does not talk to a git host.
 It writes the files it is handed into this provider's own bundle store and
@@ -171,7 +197,7 @@ The commit controller applies it; a consumer follows the CR's phase. Input is
 `{repositoryUID, message?, branch?, files[]}` with each file as
 `{path, content, encoding?, delete?}` (`encoding` is `utf-8` or `base64`), or
 `{repositoryUID, message?, branch?, bundleRef, bundleDigest}` for a payload
-staged through `stage_commit_bundle`. The MCP `commit_files` tool is the same
+staged through `stage-commit-bundle`. The MCP `commit_files` tool is the same
 executor (`commitexec`) behind an MCP projection, so the two paths cannot
 drift.
 
@@ -182,17 +208,19 @@ be accepted on the wire and then silently dropped. Adding one starts at
 `apis/v1alpha1/types_repositorycommit.go` and `backend.RepositoryCommitInput`,
 not at the action schema.
 
-Git bundles use a separate bounded upload: `stage_snapshot`, at the same route
-shape and behind the same two gates, with its own `create` grant on
-`repositories/stage_snapshot`. It accepts a snapshot containing `baseCommit`,
+Git bundles use a separate bounded upload: `stage-snapshot`, at the same route
+shape and behind the same gate, with its own `create` grant on
+`repositories/stage-snapshot`. It accepts a snapshot containing `baseCommit`,
 `commit`, `tree`, and a base64 `bundle` (25 MiB decoded maximum) and returns a
-`bundleRef` that `prepare_snapshot` and `publish_snapshot` name instead of an
-inline bundle. Source trees use the second: `stage_commit_bundle`, gated on
-`repositories/stage_commit_bundle`, which stores a file list (48 MiB decoded,
+`bundleRef` that `prepare-snapshot` and `publish-snapshot` name instead of an
+inline bundle. Source trees use the second: `stage-commit-bundle`, gated on
+`repositories/stage-commit-bundle`, which stores a file list (48 MiB decoded,
 500 files) and returns the `bundleRef`/`bundleDigest` pair `commit` names.
 These two are the provider's only **uncatalogued** verbs: a body that
-large cannot be declared under `CatalogEntry.spec.actions[].limits`, which caps
-`maxInputBytes` at 1 MiB. The exception and the four conditions a verb must
+large cannot be declared under a catalogued action's `limits`, which caps
+`maxInputBytes` at 1 MiB, so they are declared as plain `verbs` on
+`repositories` instead (`spec.export.resources[]`) — which keeps their
+coordinate grantable without pretending a schema exists. The exception and the four conditions a verb must
 meet to claim it are in
 [docs/provider-actions.md](../../docs/provider-actions.md) §"Uncatalogued
 large-upload verbs"; the handle's scoping, TTL and quotas, and why the store is
@@ -358,12 +386,13 @@ Notes:
   a self-signed cert and no static heartbeat token. For a real heartbeat token,
   create a Secret and set `hub.tokenSecretRef.name`/`.key` instead.
 - `catalogEntry.enabled=false` means the chart does **not** manage the
-  CatalogEntry — the hub uses whatever `backend.url` the existing CatalogEntry
-  declares. **Make sure that `backend.url` points at this deployment's Service**
+  CatalogEntry — the hub uses whatever `spec.serving.backend.url` the existing
+  CatalogEntry declares. **Make sure that it points at this deployment's Service**
   (`http://code-railgrid-code-provider.<namespace>.svc.cluster.local:8083`); a stale
   namespace there makes the hub→provider proxy return **502** (and the OAuth
   button stays hidden). Leaving `catalogEntry.enabled=true` lets the init
-  container keep `backend.url` in sync with the release namespace automatically.
+  container keep `spec.serving.backend.url` in sync with the release namespace
+  automatically.
 - After install, verify the OAuth probe returns `{"enabled":true}`:
   ```sh
   curl -s https://railgrid.example.com/services/providers/code/oauth/github/config

@@ -12,299 +12,405 @@ spec:
   version: {{ .Chart.AppVersion | quote }}
   category: "AI"
   iconURL: "/ui/providers/app-studio/icon.svg"
-  # Dependencies, and what this provider COMPOSES from each of them. `name` is
-  # the enable-time guard; `composes` is the (group, resource, verbs) this
-  # provider's reconcilers need on that dependency's objects inside the tenant
-  # workspace, accepted at Enable and admitted into the hub-minted scoped
-  # identities the reconcilers act as. Deliberately NOT a permission claim: a
-  # first-party claim pins one serving APIExport identityHash for every
-  # consumer at once and breaks a workspace bound to an org-owned copy.
-  # Identical to manifest.yaml, which is the source of truth.
-  dependencies:
-    - name: infrastructure
-      composes:
-        - group: infrastructure.railgrid.ai
-          resource: instances
-          verbs: ["get", "list", "watch", "create", "update", "delete"]
-    - name: code
-      composes:
-        - group: code.railgrid.ai
-          resource: repositories
-          verbs: ["get", "list", "watch", "create", "update", "delete"]
-        - group: code.railgrid.ai
-          resource: repositorycommits
-          verbs: ["get", "list", "watch"]
-  ui:
-    url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
-    indexPath: "/"
-  backend:
-    # The hub backend proxy forwards /services/providers/app-studio/* here,
-    # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the
-    # caller's bearer token. The provider serves /dataplane/* (the verbs
-    # below), /healthz (liveness) and /readyz (controller-aware readiness).
-    # There is no /api/* surface: provider-sdk/serve refuses to register one.
-    url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
-    healthPath: "/readyz"
-  # Reference-only: the APIExport, schemas, slice, and bind grant are created by
-  # this chart's init container (provider `init`, via the railgrid-provider-sdk).
-  apiExport:
+
+  # What App Studio exports: one APIExport, and the three kinds it serves with
+  # the verbs callable on each.
+  #
+  # Every verb becomes the kcp custom subresource "<resource>/<verb>" on the
+  # generated APIExport (codegen emits it, with the "<Verb>Request" schema the
+  # entry names), and that is the ONLY way a verb is reached: kcp authorizes the
+  # HTTP method as the RBAC verb on the coordinate (a grant is "*") and forwards
+  # the call to this provider through its DataPlaneEndpointSlice with the
+  # caller's identity stamped. The apiVersion is declared once per resource, so a
+  # consumer can address a coordinate without knowing this provider's group.
+  #
+  # Declaring a verb grants nothing; what remains this provider's own gate is
+  # visibility — a SubjectAccessReview on the caller's behalf for `get` on the
+  # addressed object — after which the handler acts as the provider. A consumer
+  # provider can require the coordinate under ITS spec.requires[].resources[] (as
+  # this manifest does below for infrastructure's and code's verbs), and the hub
+  # scoped-identity service (pkg/hub/identity/policy.go clause C) can mint a
+  # capability only for a verb it can verify exists. None of this is a
+  # requirement of this provider: a requirement names another export's resources,
+  # never one's own verbs. Kept in lockstep with api/dataplane_table.go by
+  # TestDataPlaneVerbsMatchManifest, and with
+  # deploy/chart/templates/catalogentry.yaml by manifest-chart-parity
+  # (hack/verify-provider-contract.mjs).
+  export:
     name: "ai.railgrid.ai"
-    # Keep in sync with manifest.yaml — the hub writes these into the tenant
-    # APIBinding at Enable time; a claim missing here is silently denied at
-    # reconcile.
-    permissionClaims:
-      # Built-in types ONLY — deliberately no first-party (*.railgrid.ai)
-      # claims: those pin one APIExport identityHash for every consumer at
-      # once and break mixed platform/self-hosted dependency deployments.
-      # What the reconcilers need on a dependency is the composition declared
-      # above, reached through per-project/per-studio identities minted by the
-      # hub and acting through each workspace's own bindings.
-      #
-      # No serviceaccounts / clusterroles / clusterrolebindings: a provider
-      # does not mint identities, it asks the hub
-      # (docs/provider-connectivity-contract.md §"Scoped identities").
-      # Secrets, and ONLY the ones labelled railgrid.ai/owner: app-studio —
-      # the LLM model credentials named by Studio spec.llm.models[].secretRef
-      # (portal/src/llmRegistry.ts stamps the label). The
-      # "<prod-instance>-registry" image-pull Secret a promotion mints is
-      # stamped railgrid.ai/owner: infrastructure instead, because the
-      # infrastructure provider is what reads it, so it falls outside this
-      # claim by design.
-      - resource: secrets
-        verbs: ["get", "list", "watch", "create", "update", "delete"]
-        tenantScoped: true
-        selector:
-          matchLabels:
-            railgrid.ai/owner: app-studio
-  # Data-plane verbs this provider serves. Identical to manifest.yaml, which is
-  # the source of truth (AGENTS.md §5.1); the chart copy is the one that
-  # reaches production.
-  dataPlane:
-    verbs:
-      - resource: projects
-        verb: view
-        description: "Read the project's joined view: the CR, live instance status and the commit ledger."
-        readOnly: true
-      - resource: projects
-        verb: set-repository
-        description: "Bind or rebind the project's source repository."
-      - resource: projects
-        verb: set-template
-        description: "Bind or rebind the project's application template."
-      - resource: projects
-        verb: thumbnail
-        description: "Read the project's preview thumbnail."
-        readOnly: true
-      - resource: projects
-        verb: promote
-        description: "Deploy the selected release to production."
-      - resource: projects
-        verb: promotion
-        description: "Read the current production rollout."
-        readOnly: true
-      - resource: projects
-        verb: releases
-        description: "List the project's releases."
-        readOnly: true
-      - resource: projects
-        verb: checkpoints
-        description: "List the assistant's workspace checkpoints."
-        readOnly: true
-      - resource: projects
-        verb: hydrate-workspace
-        description: "Rebuild the development workspace from the repository."
-      - resource: projects
-        verb: restore-workspace
-        description: "Restore the development workspace to a checkpoint."
-      - resource: projects
-        verb: scaffold
-        description: "Re-seed the project's scaffold from its template."
-      - resource: projects
-        verb: sync-development
-        description: "Push the working tree to the development sandbox."
-      - resource: projects
-        verb: restart-development
-        description: "Restart the development sandbox's workload."
-      - resource: projects
-        verb: development-logs
-        description: "Stream the development sandbox's logs."
-        stream: true
-        readOnly: true
-      - resource: projects
-        verb: development-status
-        description: "Read the development sandbox's live status."
-        readOnly: true
-      - resource: projects
-        verb: authorize-development-preview
-        description: "Mint a short-lived authorization for the development preview."
-      - resource: projects
-        verb: files
-        description: "List files in the project's working tree."
-        readOnly: true
-      - resource: projects
-        verb: files-content
-        description: "Read, write or delete one file in the working tree; the tail carries its path."
-      - resource: projects
-        verb: files-raw
-        description: "Read one file's bytes verbatim; the tail carries its path."
-        readOnly: true
-      - resource: projects
-        verb: files-upload
-        description: "Upload files into the working tree."
-      - resource: projects
-        verb: preview
-        description: "Read, set or reset who may reach the development preview."
-      - resource: projects
-        verb: preview-grants
-        description: "List, create or revoke individual preview grants."
-      - resource: projects
-        verb: publishing
-        description: "Read, publish or unpublish the production app."
-      - resource: projects
-        verb: publishing-members
-        description: "List the people a published app may be shared with."
-        readOnly: true
-      - resource: projects
-        verb: publishing-grants
-        description: "List, create or revoke individual publishing grants."
-      - resource: projects
-        verb: preview-bridge-sessions
-        description: "Open or close a sandboxed preview-bridge session."
-      - resource: projects
-        verb: integrations
-        description: "List, add, edit or remove the project's provider integrations."
-      - resource: projects
-        verb: integration-actions
-        description: "Invoke a bound provider's action through an integration."
-      - resource: projects
-        verb: approval-mode
-        description: "Read or change the assistant's approval mode."
-      - resource: projects
-        verb: attachments
-        description: "List, upload or delete assistant attachments."
-      - resource: projects
-        verb: skills
-        description: "List the assistant skills available to the project."
-        readOnly: true
-      - resource: projects
-        verb: skill-detail
-        description: "Read one skill's detail by id."
-        readOnly: true
-      - resource: projects
-        verb: skills-create
-        description: "Create a project-owned assistant skill."
-      - resource: projects
-        verb: skills-import
-        description: "Import a project-owned assistant skill."
-      - resource: projects
-        verb: skills-activation
-        description: "Activate or deactivate a skill for the project."
-      - resource: projects
-        verb: skill-export
-        description: "Export a project-owned skill; the tail carries its package name."
-        readOnly: true
-      - resource: projects
-        verb: skill
-        description: "Read, update or delete a project-owned skill; the tail carries its package name."
-      - resource: projects
-        verb: sessions
-        description: "List the project's assistant conversations."
-        readOnly: true
-      - resource: projects
-        verb: create-session
-        description: "Start a new assistant conversation."
-      - resource: projects
-        verb: adopt-session
-        description: "Create the Session projection for a conversation that has none."
-      - resource: sessions
-        verb: edit
-        description: "Rename or archive the conversation."
-      - resource: sessions
-        verb: discard
-        description: "Delete the conversation and purge its transcript."
-      - resource: sessions
-        verb: items
-        description: "Read the conversation's transcript."
-        readOnly: true
-      - resource: sessions
-        verb: events
-        description: "Stream the conversation's events."
-        stream: true
-        readOnly: true
-      - resource: sessions
-        verb: turn
-        description: "Start a new assistant turn."
-      - resource: sessions
-        verb: review
-        description: "Start a review turn."
-      - resource: sessions
-        verb: active-turn
-        description: "Read the in-flight turn, if any."
-        readOnly: true
-      - resource: sessions
-        verb: turn-status
-        description: "Read one turn's status; the tail carries the turn id."
-        readOnly: true
-      - resource: sessions
-        verb: steer
-        description: "Steer the in-flight turn; the tail carries the turn id."
-      - resource: sessions
-        verb: interrupt
-        description: "Interrupt the in-flight turn; the tail carries the turn id."
-      - resource: sessions
-        verb: continue
-        description: "Continue a paused turn; the tail carries the turn id."
-      - resource: sessions
-        verb: approval
-        description: "Answer a turn's approval request; the tail carries the turn id."
-      - resource: sessions
-        verb: input
-        description: "Answer a turn's input request; the tail carries the turn id."
-      - resource: studios
-        verb: create-project
-        description: "Create a project in this workspace."
-      - resource: studios
-        verb: create-project-stream
-        description: "Create a project, streaming its progress."
-        stream: true
-      - resource: studios
-        verb: create-readiness
-        description: "Report whether this workspace can create a project yet."
-        readOnly: true
-      - resource: studios
-        verb: plan
-        description: "Plan a project from a prompt before creating it."
-      - resource: studios
-        verb: development-templates
-        description: "List the templates a project may be created from."
-        readOnly: true
-      - resource: studios
-        verb: import-repositories
-        description: "List repositories this workspace may import a project from."
-        readOnly: true
-      - resource: studios
-        verb: discover-models
-        description: "Discover the models a configured LLM provider offers."
-      - resource: studios
-        verb: test-model
-        description: "Test a configured LLM connection."
-  # Hub REST capabilities App Studio uses with the delegated token the hub
-  # hands it in place of the caller's bearer: publishing validates grantees
-  # against the org and workspace rosters, and sharing with a new email adds
-  # them to the org as a member. Tenants accept these on Enable
-  # (docs/providers.md, "Hub access"). Keep manifest.yaml in sync.
-  hubAccess:
-    - capability: memberships.read
-      scope: org
-      reason: "Check that people you share an app with belong to your organization."
-    - capability: memberships.read
-      scope: workspace
-      reason: "Check that people you share an app with belong to this workspace."
-    - capability: memberships.invite
-      scope: org
-      maxRole: member
-      allowInvite: true
-      reason: "Add people you share an app with to your organization as members, inviting them by email if they have no account yet."
+    resources:
+      - name: projects
+        apiVersion: ai.railgrid.ai/v1alpha1
+        kind: Project
+        verbs:
+          - name: view
+            description: "Read the project's joined view: the CR, live instance status and the commit ledger."
+            readOnly: true
+          - name: set-repository
+            description: "Bind or rebind the project's source repository."
+          - name: set-template
+            description: "Bind or rebind the project's application template."
+          - name: thumbnail
+            description: "Read the project's preview thumbnail."
+            readOnly: true
+          - name: promote
+            description: "Deploy the selected release to production."
+          - name: promotion
+            description: "Read the current production rollout."
+            readOnly: true
+          - name: releases
+            description: "List the project's releases."
+            readOnly: true
+          - name: checkpoints
+            description: "List the assistant's workspace checkpoints."
+            readOnly: true
+          - name: hydrate-workspace
+            description: "Rebuild the development workspace from the repository."
+          - name: restore-workspace
+            description: "Restore the development workspace to a checkpoint."
+          - name: scaffold
+            description: "Re-seed the project's scaffold from its template."
+          - name: sync-development
+            description: "Push the working tree to the development sandbox."
+          - name: restart-development
+            description: "Restart the development sandbox's workload."
+          - name: development-logs
+            description: "Stream the development sandbox's logs."
+            stream: true
+            readOnly: true
+          - name: development-status
+            description: "Read the development sandbox's live status."
+            readOnly: true
+          - name: authorize-development-preview
+            description: "Mint a short-lived authorization for the development preview."
+          - name: files
+            description: "List files in the project's working tree."
+            readOnly: true
+          - name: files-content
+            description: "Read, write or delete one file in the working tree; the tail carries its path."
+          - name: files-raw
+            description: "Read one file's bytes verbatim; the tail carries its path."
+            readOnly: true
+          - name: files-upload
+            description: "Upload files into the working tree."
+          - name: preview
+            description: "Read, set or reset who may reach the development preview."
+          - name: preview-grants
+            description: "List, create or revoke individual preview grants."
+          - name: publishing
+            description: "Read, publish or unpublish the production app."
+          - name: publishing-members
+            description: "List the people a published app may be shared with."
+            readOnly: true
+          - name: publishing-grants
+            description: "List, create or revoke individual publishing grants."
+          - name: preview-bridge-sessions
+            description: "Open or close a sandboxed preview-bridge session."
+          - name: integrations
+            description: "List, add, edit or remove the project's provider integrations."
+          - name: integration-actions
+            description: "Invoke a bound provider's action through an integration."
+          - name: approval-mode
+            description: "Read or change the assistant's approval mode."
+          - name: attachments
+            description: "List, upload or delete assistant attachments."
+          - name: skills
+            description: "List the assistant skills available to the project."
+            readOnly: true
+          - name: skill-detail
+            description: "Read one skill's detail by id."
+            readOnly: true
+          - name: skills-create
+            description: "Create a project-owned assistant skill."
+          - name: skills-import
+            description: "Import a project-owned assistant skill."
+          - name: skills-activation
+            description: "Activate or deactivate a skill for the project."
+          - name: skill-export
+            description: "Export a project-owned skill; the tail carries its package name."
+            readOnly: true
+          - name: skill
+            description: "Read, update or delete a project-owned skill; the tail carries its package name."
+          - name: sessions
+            description: "List the project's assistant conversations."
+            readOnly: true
+          - name: create-session
+            description: "Start a new assistant conversation."
+          - name: adopt-session
+            description: "Create the Session projection for a conversation that has none."
+      - name: sessions
+        apiVersion: ai.railgrid.ai/v1alpha1
+        kind: Session
+        verbs:
+          - name: edit
+            description: "Rename or archive the conversation."
+          - name: discard
+            description: "Delete the conversation and purge its transcript."
+          - name: items
+            description: "Read the conversation's transcript."
+            readOnly: true
+          - name: events
+            description: "Stream the conversation's events."
+            stream: true
+            readOnly: true
+          - name: turn
+            description: "Start a new assistant turn."
+          - name: review
+            description: "Start a review turn."
+          - name: active-turn
+            description: "Read the in-flight turn, if any."
+            readOnly: true
+          - name: turn-status
+            description: "Read one turn's status; the tail carries the turn id."
+            readOnly: true
+          - name: steer
+            description: "Steer the in-flight turn; the tail carries the turn id."
+          - name: interrupt
+            description: "Interrupt the in-flight turn; the tail carries the turn id."
+          - name: continue
+            description: "Continue a paused turn; the tail carries the turn id."
+          - name: approval
+            description: "Answer a turn's approval request; the tail carries the turn id."
+          - name: input
+            description: "Answer a turn's input request; the tail carries the turn id."
+      - name: studios
+        apiVersion: ai.railgrid.ai/v1alpha1
+        kind: Studio
+        verbs:
+          - name: create-project
+            description: "Create a project in this workspace."
+          - name: create-project-stream
+            description: "Create a project, streaming its progress."
+            stream: true
+          - name: create-readiness
+            description: "Report whether this workspace can create a project yet."
+            readOnly: true
+          - name: plan
+            description: "Plan a project from a prompt before creating it."
+          - name: development-templates
+            description: "List the templates a project may be created from."
+            readOnly: true
+          - name: import-repositories
+            description: "List repositories this workspace may import a project from."
+            readOnly: true
+          - name: discover-models
+            description: "Discover the models a configured LLM provider offers."
+          - name: test-model
+            description: "Test a configured LLM connection."
+
+  # Everything App Studio needs that it does not own — ONE list, keyed by API
+  # group, and the only place the generated permission claims come from.
+  #
+  # Naming a `provider` is also the enable-time guard: that provider must already
+  # be enabled in a tenant workspace before App Studio can be. The resources
+  # under it are the second half — what this provider's own reconcilers need on
+  # that provider's objects INSIDE the tenant workspace, which the tenant accepts
+  # at Enable.
+  #
+  # Every entry becomes one identity-agnostic claim on the generated APIExport
+  # (provider-sdk/apiexportgen; claims-parity in
+  # hack/verify-provider-contract.mjs checks both directions). kcp resolves such
+  # a claim per consumer workspace, against whichever infrastructure or code
+  # export that workspace bound, and admits it because the platform's
+  # PermissionClaimPolicy (hack/generate-permission-claim-policy.mjs, applied by
+  # the hub at start-up) pairs ai.railgrid.ai with those two groups. So the
+  # reconcilers read, watch and write required kinds through this provider's own
+  # APIExport virtual workspace, as the provider; nothing is minted for them. A
+  # per-project identity remains only for the verbs the commit path calls on the
+  # Code provider (repositories/commit, its bundle staging), which are not
+  # claims. See docs/app-studio-runtime-decoupling.md.
+  #
+  # What each required kind is for:
+  #   instances          created for a project's bound environments and for the
+  #                      workspace's shared search/browser backends; converged
+  #                      on drift; deleted on the owner's finalizer; listed and
+  #                      watched so readiness arrives as an event.
+  #   repositories       created with autoInit and converged; NEVER deleted —
+  #                      they hold user code and outlive the project.
+  #   repositorycommits  listed, watched and read only: the CR is created by
+  #                      the Code provider itself, behind its
+  #                      repositories/commit verb, because it is a pointer at
+  #                      a source bundle only that provider can store. App
+  #                      Studio holds the COORDINATE (a clause-C capability on
+  #                      the project's Repository), not create on the kind.
+  #
+  # Keep identical to deploy/chart/templates/catalogentry.yaml, and in step
+  # with internal/crossprovider/composition.go.
+  requires:
+    - provider: infrastructure
+      group: infrastructure.railgrid.ai
+      resources:
+        - name: instances
+          verbs: ["get", "list", "watch", "create", "update", "delete"]
+        # The catalog of workload shapes an Instance is provisioned from. App
+        # Studio reads it to prepare a project's detail view, to resolve the
+        # template a binding names, and for the assistant's template tool
+        # (api/project_template.go, api/assistant_workflow.go). Read-only: a
+        # Template belongs to the infrastructure provider's catalog.
+        - name: templates
+          verbs: ["get", "list", "watch"]
+        # The verbs App Studio calls on a workload Instance — the development
+        # data plane (logs, sync, restart, exec, env, process, the sandbox
+        # workspace protocol, the open proxy). Each is a custom subresource the
+        # infrastructure provider publishes; a claim on the resource does not
+        # carry its subresources, so each is required as its own coordinate and
+        # kcp serves it on App Studio's virtual workspace, forwarding it to
+        # infrastructure under App Studio's identity.
+        #
+        # No verbs on a coordinate: the verb IS the capability. kcp authorizes
+        # the HTTP METHOD as the RBAC verb on a custom subresource (GET for log,
+        # POST for sync, DELETE for a proxied session), so the generated claim
+        # spells every verb rather than guessing one.
+        - name: instances/log
+        - name: instances/sync
+        - name: instances/restart
+        - name: instances/proxy
+        - name: instances/env
+        - name: instances/process
+        - name: instances/exec
+        - name: instances/workspace
+    - provider: code
+      group: code.railgrid.ai
+      resources:
+        - name: repositories
+          verbs: ["get", "list", "watch", "create", "update", "delete"]
+        - name: repositorycommits
+          verbs: ["get", "list", "watch"]
+        # Git connections: listed when a project picks one to create its
+        # repository from, read back when a view resolves its connectionRef
+        # (api/code_repository.go). Read-only — a connection is the tenant's to
+        # create, and its credential never reaches this provider.
+        - name: connections
+          verbs: ["get", "list", "watch"]
+        # The Code coordinates App Studio calls as itself: the commit verb (and
+        # its large-upload staging verb) on a project's Repository, from both the
+        # Project reconciler and the assistant's commit tool
+        # (internal/codecommit), and the registry pull-token mint on a
+        # Connection when a project is promoted (api/project_promote.go). Each
+        # sits under the kind above it: kcp serves a custom subresource only for
+        # an export that also claims the parent.
+        - name: repositories/commit
+        - name: repositories/stage-commit-bundle
+        - name: connections/mint-registry-token
+    # Every provider that serves a custom subresource needs this one entry: on
+    # the shard-forwarded path there is no caller bearer, so the provider runs a
+    # SubjectAccessReview for the stamped caller through its own APIExport
+    # virtual workspace, and kcp serves that builtin there only for an export
+    # that claims it (hack/verify-provider-contract.mjs
+    # subresource-access-claim). Built-in review API: no `provider`, because no
+    # provider serves authorization.k8s.io and nothing has to be enabled first;
+    # verb create only. Everything under requires is tenant-scoped by
+    # definition, and the VW confines each review to the tenant's OWN workspace.
+    - group: authorization.k8s.io
+      resources:
+        - name: subjectaccessreviews
+          verbs: [create]
+    # No group means the core group. BUILT-IN TYPES ONLY here — the first-party
+    # (*.railgrid.ai) entries are the two above.
+    #
+    # No serviceaccounts, clusterroles or clusterrolebindings: a provider does
+    # not mint identities, it asks the hub, and a claim on those types is a
+    # contract violation rather than a design choice
+    # (docs/provider-connectivity-contract.md §"Scoped identities").
+    #
+    # Secrets, and ONLY the ones labelled railgrid.ai/owner: app-studio.
+    # Two names, both in the tenant workspace's "default" namespace:
+    #
+    #   railgrid-projects-llm-<modelID>  one per configured LLM model, named
+    #                                    by Studio spec.llm.models[].secretRef.
+    #                                    Written by the tenant through this
+    #                                    provider's portal, AS THE CALLER
+    #                                    (portal/src/llmRegistry.ts), and read
+    #                                    by the Studio reconciler through the
+    #                                    export to report `configured` — so it
+    #                                    stays inside the claim and the portal
+    #                                    stamps the owner label. An unlabelled
+    #                                    one is invisible here and never
+    #                                    becomes `configured`.
+    #   <prod-instance>-registry         the dockerconfigjson image-pull
+    #                                    credential a promotion mints from the
+    #                                    Code provider and the production
+    #                                    Instance references in
+    #                                    spec.imagePullSecretRef
+    #                                    (api/project_promote.go). It is
+    #                                    written as the caller and READ BY THE
+    #                                    INFRASTRUCTURE PROVIDER, so it is
+    #                                    stamped railgrid.ai/owner:
+    #                                    infrastructure — the label IS the
+    #                                    hand-over — and consequently falls
+    #                                    outside this claim by design.
+    #
+    # kcp claims are per resource, not per name, so the label is what stands in
+    # for those names: without the selector this claim is read-write on EVERY
+    # Secret in EVERY workspace that enables this provider, which is the
+    # side-door docs/cross-provider-simplification.md X-4 closes, and what
+    # claim-selector (hack/verify-provider-contract.mjs) refuses. No other
+    # provider's Secrets are read: the hub mints no rule on the core group for
+    # anyone, and this provider reads no dependency's credential
+    # (cross-provider-simplification §2.1).
+    - resources:
+        - name: secrets
+          verbs: ["get", "list", "watch", "create", "update", "delete"]
+          selector:
+            matchLabels:
+              railgrid.ai/owner: app-studio
+
+  # Where the hub reaches App Studio.
+  serving:
+    ui:
+      url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
+      indexPath: "/"
+    backend:
+      # The hub backend proxy reaches this address for /healthz (liveness) and
+      # /readyz (controller-aware readiness). The verbs above are NOT reached
+      # this way: each is a kcp custom subresource on the APIExport, forwarded
+      # by the kcp shard to the DataPlaneEndpointSlice's address as
+      # /clusters/{id}/apis/ai.railgrid.ai/v1alpha1/{resource}/{name}/{verb}
+      # with the caller's identity stamped in X-Remote-* headers and no bearer.
+      # There is no /api/* or /dataplane/* surface: provider-sdk/serve refuses
+      # to register one.
+      url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
+      healthPath: "/readyz"
+    # Lets an organization run this provider in its own cluster
+    # (docs/byo-providers.md). Keep manifest.yaml and
+    # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
+    # one that reaches production.
+    selfHosting:
+      supported: true
+      chart:
+        repository: "oci://ghcr.io/railgrid/charts"
+        name: "railgrid-app-studio-provider"
+        version: {{ .Chart.Version | quote }}
+      namespace: "railgrid-provider-app-studio"
+      releaseName: "app-studio"
+      docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/app-studio/deploy/chart/README.md"
+      # The chart carries its own values reference, so the portal can show it
+      # offline and for the version actually installed.
+      valuesDoc: |{{ .Files.Get "README.md" | nindent 8 }}
+      # No requiredValues: app-studio pins no APIExport identity hashes — its
+      # required claims are identity-agnostic and resolve per workspace to
+      # whichever infrastructure/code copy that workspace bound.
+
+  # What App Studio asks of the hub itself, as opposed to of kcp.
+  hub:
+    # Hub REST capabilities App Studio uses with the delegated token the hub
+    # hands it in place of the caller's bearer: publishing validates grantees
+    # against the org and workspace rosters, and sharing with a new email adds
+    # them to the org as a member. Tenants accept these on Enable
+    # (docs/providers.md, "Hub access"). Keep
+    # deploy/chart/templates/catalogentry.yaml in sync.
+    access:
+      - capability: memberships.read
+        scope: org
+        reason: "Check that people you share an app with belong to your organization."
+      - capability: memberships.read
+        scope: workspace
+        reason: "Check that people you share an app with belong to this workspace."
+      - capability: memberships.invite
+        scope: org
+        maxRole: member
+        allowInvite: true
+        reason: "Add people you share an app with to your organization as members, inviting them by email if they have no account yet."
 {{- end -}}
 
 {{- if .Values.catalogEntry.enabled -}}
@@ -318,7 +424,7 @@ spec:
 # CatalogEntries in every workspace bound to providers.railgrid.ai, including
 # the provider's own, so a self-registered entry is seen.
 #
-# It only REFERENCES the APIExport (apiExport.name); the APIExport, its
+# It only REFERENCES the APIExport (spec.export.name); the APIExport, its
 # APIResourceSchemas, the APIExportEndpointSlice, and the bind grant are created
 # by the same init container. The hub no longer provisions anything from this
 # CatalogEntry.
@@ -332,23 +438,4 @@ data:
   catalogentry.yaml: |
 {{ include "appstudio.catalogEntry" . | indent 4 }}
 {{- end }}
-      # Lets an organization run this provider in its own cluster
-      # (docs/byo-providers.md). Keep manifest.yaml and
-      # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
-      # one that reaches production.
-      selfHosting:
-        supported: true
-        chart:
-          repository: "oci://ghcr.io/railgrid/charts"
-          name: "railgrid-app-studio-provider"
-          version: {{ .Chart.Version | quote }}
-        namespace: "railgrid-provider-app-studio"
-        releaseName: "app-studio"
-        docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/app-studio/deploy/chart/README.md"
-        # The chart carries its own values reference, so the portal can show it
-        # offline and for the version actually installed.
-        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
-        # No requiredValues: app-studio pins no APIExport identity hashes —
-        # the reconcilers reach infrastructure/code through each workspace's
-        # own bindings, whichever copy that is.
 {{- end }}

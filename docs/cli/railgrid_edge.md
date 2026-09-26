@@ -15,6 +15,9 @@ cluster edge and 'railgrid ssh' opens a shell on a server edge.
   railgrid edge kubeconfig my-cluster -o ./my-cluster.kubeconfig
   railgrid edge delete my-vps
 
+A cluster and a server may share a name. Commands that work on either kind then
+ask for the type as a qualifier: 'railgrid edge get server/minis'.
+
 ```
 railgrid edge [flags]
 ```

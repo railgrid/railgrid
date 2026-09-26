@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { X, ShieldCheck, ShieldAlert, Loader2 } from 'lucide-vue-next'
-import type { ProviderDTO, PermissionClaim, HubAccessRequest, AcceptedHubAccess, AcceptedComposition } from '@/stores/providers'
+import type { ProviderDTO, AcceptedClaim, HubAccessRequest, AcceptedHubAccess, AcceptedComposition } from '@/stores/providers'
 
 const props = defineProps<{
   provider: ProviderDTO | null
@@ -20,13 +20,26 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   cancel: []
-  confirm: [accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[], acceptCompositions: AcceptedComposition[]]
+  confirm: [accept: AcceptedClaim[], acceptHubAccess: AcceptedHubAccess[], acceptCompositions: AcceptedComposition[]]
 }>()
 
-// A composition is one kind of ANOTHER provider that this provider's
-// reconcilers create and manage in this workspace. It is flattened out of
-// provider.dependencies[].composes[] so the list reads as one decision per
-// kind, which is how it is recorded and how it can be withdrawn.
+// Both lists below come out of the ONE declaration, provider.requires[], and
+// are told apart by a single rule: an entry that NAMES a provider is a
+// composition — kinds of that provider this one creates and manages here,
+// recorded in the workspace's Grant — and an entry that names none is a claim
+// on a platform or core group, accepted on the APIBinding itself. Each is
+// flattened to one decision per resource, which is how it is recorded and how
+// it can be withdrawn.
+
+// ClaimOption is one platform/core requirement the user decides on.
+interface ClaimOption {
+  group: string
+  resource: string
+  verbs: string[]
+}
+
+// CompositionOption is the same for a requirement that names a provider; that
+// provider is the OWNER of the kind, not the one being enabled.
 interface CompositionOption {
   provider: string
   group: string
@@ -34,9 +47,10 @@ interface CompositionOption {
   verbs: string[]
 }
 
-// One boolean per claim, indexed by claim key. tenantScoped claims default
-// to accepted; non-tenantScoped default to rejected so the user has to
-// explicitly opt-in to anything that escapes their workspace.
+// One boolean per claim, indexed by claim key. Everything under requires is
+// tenant-scoped by definition — the provider only ever reaches these kinds
+// inside this workspace — so each starts accepted and the user unticks what
+// they will not grant.
 const accepted = ref<Record<string, boolean>>({})
 const dialogRef = ref<HTMLElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
@@ -49,7 +63,7 @@ const dismissTitle = computed(() => props.busy
   ? 'Dismiss dialog; request continues'
   : 'Close dialog')
 
-const claimKey = (c: PermissionClaim) => `${c.group ?? ''}/${c.resource}`
+const claimKey = (c: ClaimOption) => `${c.group}/${c.resource}`
 const hubKey = (h: HubAccessRequest) => `${h.capability}/${h.scope}`
 const compositionKey = (c: CompositionOption) => `${c.provider}|${c.group}/${c.resource}`
 
@@ -62,13 +76,22 @@ function canAcceptComposition(): boolean {
 }
 
 // A composition that can only read is described as reading. Anything else
-// creates or changes objects, and says so.
+// creates or changes objects, and says so — including a "<resource>/<verb>"
+// coordinate, which carries no verb list because the call IS the capability.
 function compositionLabel(c: CompositionOption): string {
-  const readOnly = c.verbs.every((v) => v === 'get' || v === 'list' || v === 'watch')
+  const readOnly = c.verbs.length > 0 && c.verbs.every((v) => v === 'get' || v === 'list' || v === 'watch')
   const kind = c.resource.charAt(0).toUpperCase() + c.resource.slice(1)
   return readOnly
     ? `Read ${kind} (${c.provider}) in this workspace`
     : `Create and manage ${kind} (${c.provider}) in this workspace`
+}
+
+// What to print for a requirement's verbs. A "<resource>/<verb>" coordinate
+// declares none — the verb is the capability, and the generated claim spells
+// every verb — so calling that "none" would describe it as harmless.
+function verbsLabel(c: { resource: string; verbs: string[] }): string {
+  if (c.verbs.length) return c.verbs.join(', ')
+  return c.resource.includes('/') ? 'the call itself' : 'none'
 }
 
 // One boolean per requested hub capability. Those the caller may accept
@@ -104,12 +127,12 @@ watch(
   (p) => {
     if (!p) return
     const next: Record<string, boolean> = {}
-    for (const c of p.permissionClaims ?? []) {
-      next[claimKey(c)] = !!c.tenantScoped
+    for (const c of claimsOf(p)) {
+      next[claimKey(c)] = true
     }
     accepted.value = next
     const nextHub: Record<string, boolean> = {}
-    for (const h of p.hubAccess ?? []) {
+    for (const h of p.hub?.access ?? []) {
       nextHub[hubKey(h)] = canAcceptHub(h)
     }
     acceptedHub.value = nextHub
@@ -122,13 +145,35 @@ watch(
   { immediate: true },
 )
 
-const hubAccess = computed(() => props.provider?.hubAccess ?? [])
+const hubAccess = computed(() => props.provider?.hub?.access ?? [])
 
+// The requires[] entries that name no provider: claims on a platform group or
+// the core group, which the hub accepts or rejects on the APIBinding itself.
+function claimsOf(p: ProviderDTO | null): ClaimOption[] {
+  const out: ClaimOption[] = []
+  for (const requirement of p?.requires ?? []) {
+    if (requirement.provider) continue
+    for (const resource of requirement.resources ?? []) {
+      out.push({ group: requirement.group ?? '', resource: resource.name, verbs: resource.verbs ?? [] })
+    }
+  }
+  return out
+}
+
+// The requires[] entries that DO name a provider: kinds of that provider this
+// one manages here, decided by a workspace or org admin and recorded in the
+// workspace's Grant.
 function compositionsOf(p: ProviderDTO | null): CompositionOption[] {
   const out: CompositionOption[] = []
-  for (const dependency of p?.dependencies ?? []) {
-    for (const c of dependency.composes ?? []) {
-      out.push({ provider: dependency.name, group: c.group, resource: c.resource, verbs: c.verbs ?? [] })
+  for (const requirement of p?.requires ?? []) {
+    if (!requirement.provider) continue
+    for (const resource of requirement.resources ?? []) {
+      out.push({
+        provider: requirement.provider,
+        group: requirement.group ?? '',
+        resource: resource.name,
+        verbs: resource.verbs ?? [],
+      })
     }
   }
   return out
@@ -148,12 +193,9 @@ function toggleHub(h: HubAccessRequest) {
   acceptedHub.value = { ...acceptedHub.value, [k]: !acceptedHub.value[k] }
 }
 
-const claims = computed(() => props.provider?.permissionClaims ?? [])
-const hasUntrustedAccepted = computed(() =>
-  claims.value.some((c) => !c.tenantScoped && accepted.value[claimKey(c)]),
-)
+const claims = computed(() => claimsOf(props.provider))
 
-function toggle(c: PermissionClaim) {
+function toggle(c: ClaimOption) {
   if (props.busy) return
   const k = claimKey(c)
   accepted.value = { ...accepted.value, [k]: !accepted.value[k] }
@@ -161,7 +203,9 @@ function toggle(c: PermissionClaim) {
 
 function onConfirm() {
   if (!props.provider || props.busy) return
-  const accept = claims.value.filter((c) => accepted.value[claimKey(c)])
+  const accept = claims.value
+    .filter((c) => accepted.value[claimKey(c)])
+    .map((c) => ({ group: c.group, resource: c.resource }))
   const acceptHub = hubAccess.value
     .filter((h) => canAcceptHub(h) && acceptedHub.value[hubKey(h)])
     .map((h) => ({ capability: h.capability, scope: h.scope }))
@@ -261,17 +305,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <span>{{ error }}</span>
         </div>
 
-        <div v-if="claims.length === 0" class="rounded-lg border border-border-subtle bg-surface-overlay/50 px-3 py-4 text-center text-xs text-text-muted">
+        <!-- Nothing at all under requires[]: no platform claim and no
+             composition. A provider with compositions but no platform claim
+             still has something to review, just further down. -->
+        <div v-if="claims.length === 0 && compositions.length === 0" class="rounded-lg border border-border-subtle bg-surface-overlay/50 px-3 py-4 text-center text-xs text-text-muted">
           This provider does not request access to any tenant resources.
           Clicking Enable provider will bind its APIs into your workspace.
         </div>
 
-        <ul v-else class="space-y-2">
+        <ul v-else-if="claims.length" class="space-y-2">
           <li
             v-for="c in claims"
             :key="claimKey(c)"
-            class="rounded-lg border bg-surface-overlay/30 px-3 py-2"
-            :class="c.tenantScoped ? 'border-border-subtle' : 'border-warning/30'"
+            class="rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2"
           >
             <label class="k-checkbox-hit flex cursor-pointer items-start gap-3">
               <input
@@ -283,18 +329,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               />
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
-                  <ShieldCheck v-if="c.tenantScoped" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
-                  <ShieldAlert v-else class="h-3.5 w-3.5 text-warning" :stroke-width="2" />
+                  <ShieldCheck class="h-3.5 w-3.5 text-success" :stroke-width="2" />
                   <span class="font-mono text-[11px] text-text-primary">
                     {{ c.group ? `${c.group}/` : '' }}{{ c.resource }}
                   </span>
                 </div>
                 <p class="mt-0.5 text-[10px] text-text-muted">
-                  Verbs: <span class="font-mono">{{ (c.verbs ?? []).join(', ') || 'none' }}</span>
-                </p>
-                <p v-if="!c.tenantScoped" class="mt-1 text-[10px] text-warning">
-                  Not marked tenant-scoped — provider could reach beyond your workspace.
-                  Only accept if you trust the chart vendor.
+                  Verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
                 </p>
               </div>
             </label>
@@ -326,7 +367,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   <span class="text-[11px] text-text-primary">{{ compositionLabel(c) }}</span>
                   <p class="mt-0.5 font-mono text-[10px] text-text-muted">{{ c.group }}/{{ c.resource }}</p>
                   <p class="mt-0.5 text-[10px] text-text-muted">
-                    Verbs: <span class="font-mono">{{ c.verbs.join(', ') || 'none' }}</span>
+                    Verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
                   </p>
                   <p v-if="!canAcceptComposition()" class="mt-1 text-[10px] text-warning">
                     Only a workspace or organization admin can decide this; enabling leaves it as it is.
@@ -373,11 +414,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           </ul>
         </div>
 
-        <div v-if="hasUntrustedAccepted" class="mt-3 rounded-md border border-warning/30 bg-warning-subtle px-3 py-2 text-[11px] text-warning">
-          You've accepted at least one claim that isn't tenant-scoped. The
-          provider's controllers will be able to read or write the indicated
-          resources cluster-wide subject to its MaximalPermissionPolicy.
-        </div>
       </div>
 
       <div class="flex items-center justify-end gap-2 border-t border-border-subtle px-4 py-3">

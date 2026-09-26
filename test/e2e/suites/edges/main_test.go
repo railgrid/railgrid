@@ -67,6 +67,13 @@ var (
 	kcpServer   string // https://127.0.0.1:<port> (admin kubeconfig)
 	adminToken  string // kcp admin token (from .kcp/admin.kubeconfig)
 	staticToken = "test:user-default"
+
+	// providerLogPath lets a test report what the provider itself said about a
+	// request it refused. A gate refusal is a 404 on the wire by design, so the
+	// status alone cannot say whether the caller was denied, the object was
+	// unreadable, or the review never ran.
+	providerLogPath string
+	hubLogPath      string
 )
 
 const (
@@ -110,7 +117,8 @@ func TestMain(m *testing.M) {
 	}
 	keepData := os.Getenv("RAILGRID_E2E_KEEP_DATA") == "true"
 
-	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
+	hubLogPath = filepath.Join(dataDir, "hub.log")
+	hubLog, _ := os.Create(hubLogPath)
 	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "railgrid-hub"),
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
@@ -178,19 +186,27 @@ func TestMain(m *testing.M) {
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"EDGES_WORKSPACE_PATH="+edgesWorkspacePath,
 		"RAILGRID_KCP_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files"),
+		// A verb exists only as a declared kcp custom subresource, so init
+		// reads the manifest for the coordinates the export publishes, and the
+		// DataPlaneEndpointSlice those coordinates route through needs the
+		// address this suite actually serves on.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "edges", "manifest.yaml"),
+		"RAILGRID_DATAPLANE_URL=http://127.0.0.1:"+providerPort,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
 	if err := initCmd.Run(); err != nil {
+		tail := tailInitLog(initLog.Name(), 60)
 		cleanup()
-		fmt.Fprintf(os.Stderr, "edges init failed: %v (log: %s)\n", err, initLog.Name())
+		fmt.Fprintf(os.Stderr, "edges init failed: %v (log: %s)\n%s\n", err, initLog.Name(), tail)
 		os.Exit(1)
 	}
 
 	// Serve. Unlike the quickstart provider, the edges serve process needs the
 	// runtime kubeconfig at serve time (the tunnel token validation + the edge
 	// controller manager both read the provider's kcp credential).
-	provLog, _ := os.Create(filepath.Join(dataDir, "provider.log"))
+	providerLogPath = filepath.Join(dataDir, "provider.log")
+	provLog, _ := os.Create(providerLogPath)
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "serve")
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
@@ -198,6 +214,9 @@ func TestMain(m *testing.M) {
 		"RAILGRID_HUB_EXTERNAL_URL="+hubURL,
 		"RAILGRID_HUB_TOKEN="+staticToken,
 		"RAILGRID_HUB_INSECURE=true",
+		// serve refuses to start without the manifest: it is where the
+		// "<resource>/<verb>" coordinates it answers come from.
+		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "edges", "manifest.yaml"),
 		"RAILGRID_PROVIDER_NAME=edges",
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"RAILGRID_DEV_MODE=true",
@@ -259,8 +278,8 @@ func applyEdgesManifests() error {
 				return fmt.Errorf("%s: unexpected kind %q", file, obj.GetKind())
 			}
 			if obj.GetKind() == "CatalogEntry" {
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url")
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url")
+				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "ui", "url")
+				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "backend", "url")
 			}
 			deadline := time.Now().Add(90 * time.Second)
 			for {
@@ -411,4 +430,48 @@ func ctxWithTimeout(t *testing.T, d time.Duration) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// tailInitLog returns the last n lines of a bootstrap log, so a failure reports
+// what went wrong instead of only an exit status. It must be read BEFORE
+// cleanup, which removes the data directory; CI does not upload that directory
+// either, so stderr is the only place the reason survives.
+func tailInitLog(path string, n int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(" + err.Error() + ")"
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// grepLog returns the last n lines of the log at path that mention needle,
+// truncated. Tailing is useless on these logs: one line can be a whole API
+// object, so the last few lines cover a few milliseconds. Matching on the thing
+// under test is what finds the request among them.
+func grepLog(path, needle string, n int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(" + err.Error() + ")"
+	}
+	var hits []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		if len(line) > 400 {
+			line = line[:400] + "...(truncated)"
+		}
+		hits = append(hits, line)
+	}
+	if len(hits) == 0 {
+		return "(no line mentions " + needle + ")"
+	}
+	if len(hits) > n {
+		hits = hits[len(hits)-n:]
+	}
+	return strings.Join(hits, "\n")
 }

@@ -18,7 +18,7 @@ limitations under the License.
 // the hub REST capabilities a provider may exercise with the delegated user
 // token the hub hands it in place of the caller's bearer.
 //
-// A provider requests capabilities in its CatalogEntry (spec.hubAccess) from
+// A provider requests capabilities in its CatalogEntry (spec.hub.access) from
 // a closed set this package owns; it never names routes. A tenant accepts
 // them when enabling the provider, which records a Grant for the provider. The
 // Gate admits a delegated call only for a route that maps to a capability the

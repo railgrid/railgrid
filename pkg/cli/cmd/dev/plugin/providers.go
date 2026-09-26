@@ -553,18 +553,57 @@ type devCatalogClaim struct {
 	Resource string `json:"resource"`
 }
 
+// devCatalogComposition is one accepted composition: a kind of the provider it
+// names that this provider manages in the workspace.
+type devCatalogComposition struct {
+	Provider string `json:"provider"`
+	Group    string `json:"group,omitempty"`
+	Resource string `json:"resource"`
+}
+
 type devHubAccess struct {
 	Capability string `json:"capability"`
 	Scope      string `json:"scope"`
 }
 
+// devCatalogRequirement is one entry of the catalog's requires[]: everything
+// the provider needs from one API group it does not own. An entry that names a
+// provider is a composition; one that does not is an ordinary permission claim
+// on a platform builtin.
+type devCatalogRequirement struct {
+	Provider  string                       `json:"provider,omitempty"`
+	Group     string                       `json:"group,omitempty"`
+	Resources []devCatalogRequiredResource `json:"resources,omitempty"`
+}
+
+type devCatalogRequiredResource struct {
+	Name string `json:"name"`
+}
+
+type devCatalogExport struct {
+	Name string `json:"name"`
+}
+
+type devCatalogHub struct {
+	Access []devHubAccess `json:"access,omitempty"`
+}
+
 type devCatalogProvider struct {
-	Name             string            `json:"name"`
-	Ready            bool              `json:"ready"`
-	ReadinessMessage string            `json:"readinessMessage,omitempty"`
-	APIExportName    string            `json:"apiExportName,omitempty"`
-	PermissionClaims []devCatalogClaim `json:"permissionClaims,omitempty"`
-	HubAccess        []devHubAccess    `json:"hubAccess,omitempty"`
+	Name             string                  `json:"name"`
+	Ready            bool                    `json:"ready"`
+	ReadinessMessage string                  `json:"readinessMessage,omitempty"`
+	Export           *devCatalogExport       `json:"export,omitempty"`
+	Requires         []devCatalogRequirement `json:"requires,omitempty"`
+	Hub              *devCatalogHub          `json:"hub,omitempty"`
+}
+
+// exportName is the APIExport a tenant binds, or "" for a provider that
+// exports no API of its own and so never goes through Enable.
+func (p *devCatalogProvider) exportName() string {
+	if p == nil || p.Export == nil {
+		return ""
+	}
+	return p.Export.Name
 }
 
 func tenantHeaders(orgUUID, wsUUID string) map[string]string {
@@ -580,12 +619,33 @@ func (c *devHubAPI) listProviders(ctx context.Context, orgUUID, wsUUID string) (
 }
 
 // enableProvider creates the APIBinding for the provider in the workspace,
-// accepting every claim and hub capability it declares (this is a dev
+// accepting every requirement and hub capability it declares (this is a dev
 // environment). The status is returned so the caller can back off on 409
 // ("provider workspace not provisioned yet") the same way the portal does.
 func (c *devHubAPI) enableProvider(ctx context.Context, orgUUID, wsUUID string, prov devCatalogProvider) (int, error) {
 	name := prov.Name
-	body := map[string]any{"acceptedClaims": prov.PermissionClaims, "acceptedHubAccess": prov.HubAccess}
+	claims := []devCatalogClaim{}
+	compositions := []devCatalogComposition{}
+	for _, requirement := range prov.Requires {
+		for _, resource := range requirement.Resources {
+			if requirement.Provider != "" {
+				compositions = append(compositions, devCatalogComposition{
+					Provider: requirement.Provider, Group: requirement.Group, Resource: resource.Name,
+				})
+				continue
+			}
+			claims = append(claims, devCatalogClaim{Group: requirement.Group, Resource: resource.Name})
+		}
+	}
+	var hubAccess []devHubAccess
+	if prov.Hub != nil {
+		hubAccess = prov.Hub.Access
+	}
+	body := map[string]any{
+		"acceptedClaims":       claims,
+		"acceptedCompositions": compositions,
+		"acceptedHubAccess":    hubAccess,
+	}
 	path := fmt.Sprintf("/api/orgs/%s/workspaces/%s/providers/%s/enable", orgUUID, wsUUID, name)
 	return c.do(ctx, http.MethodPost, path, tenantHeaders(orgUUID, wsUUID), body, nil)
 }

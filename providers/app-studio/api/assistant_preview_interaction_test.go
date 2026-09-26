@@ -147,8 +147,9 @@ func TestInteractProjectDevelopmentPreviewCheckpointsDirtySandboxBeforeBrowser(t
 	project.Name = "shop"
 	project.UID = "project-uid"
 	project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "application"}
-	id := identity{clusterID: "cluster", token: "token", orgUUID: "org", workspaceUUID: "ws"}
+	id := identity{clusterID: "cluster", orgUUID: "org", workspaceUUID: "ws"}
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "http://sandbox.test", false)
+	server.callers = newTestCallers(nil, "")
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
 	server.tenantProviders = defaultTestProviders
@@ -222,8 +223,9 @@ func TestInteractProjectDevelopmentPreviewFailsClosedOnCheckpointConflict(t *tes
 	project := &aiv1alpha1.Project{}
 	project.Name = "shop"
 	project.UID = "project-uid"
-	id := identity{clusterID: "cluster", token: "token", orgUUID: "org", workspaceUUID: "ws"}
+	id := identity{clusterID: "cluster", orgUUID: "org", workspaceUUID: "ws"}
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "http://sandbox.test", false)
+	server.callers = newTestCallers(nil, "")
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
 	server.tenantProviders = defaultTestProviders

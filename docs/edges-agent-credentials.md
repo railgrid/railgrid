@@ -35,12 +35,15 @@ upgrade response: base64 of
   "hubURL": "https://hub.example.com", "caCertData": "…",
   "provider": "edges", "clusterID": "2hx82dl9ncmepp5l",
   "resource": "linuxservers", "name": "edge-1",
-  "refreshPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/agent-token",
-  "sshCredentialsPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/ssh-credentials",
-  "addonCredentialsPath": "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/linuxservers/edge-1/addon-credentials"
+  "refreshPath": "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/agent-token",
+  "sshCredentialsPath": "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/ssh-credentials",
+  "addonCredentialsPath": "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/addon-credentials"
 }
 ```
 
+Each path is a declared verb on the edge — a kcp custom subresource on the
+edges APIExport, reached on the hub's kcp front door like any kube path; kcp
+authorizes the agent's own identity for it and forwards to the provider.
 The **hub URL and the addressing tuple travel with the token**, and the routes
 are rendered by the provider that serves them. Nothing about where this
 provider lives is compiled into the agent, so a provider that moves — a renamed
@@ -54,10 +57,14 @@ the edge.
 ## Rotation
 
 `POST {hubURL}{refreshPath}` with the credential in hand. It is an ordinary
-declared data-plane verb, `{resource}/agent-token`, gated like every other:
+declared data-plane verb, `{resource}/agent-token`, a kcp custom subresource
+gated like every other:
 
-1. **Gate 1** — a real GET of the agent's own edge, as the agent.
-2. **Gate 2** — an SSAR for `create` on `{resource}/agent-token`, name-scoped.
+1. **kcp** authorizes the agent's identity for `{resource}/agent-token` on
+   this edge's name (RBAC on the coordinate, verbs `*`) and forwards the
+   request with the identity stamped.
+2. **The gate** runs a `SubjectAccessReview` for `get` on the agent's own edge
+   on that identity's behalf, then reads the edge as the provider.
 
 Exactly one identity in the workspace satisfies both: this edge's. The provider
 then re-mints through `identityclient` with its **own** credential, because the
@@ -155,7 +162,7 @@ add-on (`linuxservers`, `macosservers`):
 | publish the runner token | `{"addon": "<name>", "uid": "<addon uid>", "token": "<bearer>"}` | `204`, the token Secret written |
 
 The verb is `{resource}/addon-credentials`, and which half runs is decided by
-which member the body carries. It runs the ordinary two gates as the agent, and
+which member the body carries. It runs the ordinary gate for the agent, and
 then **one more check that is the point of the design**: the named `Addon` must
 have a `spec.edgeRef` pointing back at the edge in the path. The agent names an
 add-on and nothing else — not a namespace, not a key; the auth reference it
@@ -201,8 +208,8 @@ exports, so the hub admits the request whole:
 
 | Rule | Scope |
 |---|---|
-| `get` on `{resource}` | this edge only (gate 1) |
-| `create` on `{resource}/{addon-credentials,agent-token,k8s,mcp,proxy,ssh,ssh-credentials}` | this edge only (gate 2) |
+| `get` on `{resource}` | this edge only (the gate's visibility review) |
+| `*` on `{resource}/{addon-credentials,agent-token,k8s,mcp,proxy,ssh,ssh-credentials}` | this edge only (kcp's RBAC on the verb subresource; `*` because kcp maps the HTTP method onto the verb) |
 | `get,update,patch` on `{resource}/status` | this edge only |
 | `list,watch` on `{resource}` | kind-wide — RBAC cannot name-scope a collection request |
 | `get,list,watch,update,patch` on `placements(/status)` | workload plane |

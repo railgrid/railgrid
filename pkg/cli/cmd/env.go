@@ -52,7 +52,8 @@ REST and MCP APIs as you, and print them as shell exports:
   CLUSTER    kcp cluster of the active workspace
   ORG, WS    org and workspace UUIDs (the X-Railgrid-Org / X-Railgrid-Workspace headers)
   TOKEN      your bearer token (OIDC tokens expire; re-run to refresh)
-  AS         App Studio REST base ($HUB/services/providers/app-studio)
+  AS         App Studio API base ($HUB/clusters/$CLUSTER/apis/ai.railgrid.ai/v1alpha1);
+             its verbs are custom subresources, e.g. $AS/projects/<name>/view
   MCP_URL    the workspace's aggregate MCP endpoint
   MCP_TOKEN  a long-lived token for MCP_URL
 
@@ -60,7 +61,7 @@ Load them with:
 
   eval "$(railgrid env)"
   curl -s -H "Authorization: Bearer $TOKEN" -H "X-Railgrid-Org: $ORG" \
-    -H "X-Railgrid-Workspace: $WS" "$AS/api/projects"`,
+    -H "X-Railgrid-Workspace: $WS" "$AS/projects"`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runEnv(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), target, asJSON, noMCP)
@@ -90,7 +91,7 @@ func runEnv(ctx context.Context, out, errOut io.Writer, target hubTarget, asJSON
 		Org:          s.Org.UUID,
 		Workspace:    s.WS.UUID,
 		Token:        token,
-		AppStudioURL: s.appStudioURL(),
+		AppStudioURL: appStudioAPIURL(s),
 	}
 	mcpState := "skipped"
 	if !noMCP {

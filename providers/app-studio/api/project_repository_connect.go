@@ -118,7 +118,7 @@ func (s *Server) putProjectRepository(w http.ResponseWriter, r *http.Request) {
 		p.Annotations["ai.railgrid.ai/org-uuid"] = id.orgUUID
 		p.Annotations["ai.railgrid.ai/workspace-uuid"] = id.workspaceUUID
 	}
-	// Even an idempotent retry requires update permission as the caller.
+	// Even an idempotent retry is a real update, as the provider.
 	updated, err := c.Projects().Update(r.Context(), p, metav1.UpdateOptions{})
 	if err != nil {
 		writeProjectError(w, err)

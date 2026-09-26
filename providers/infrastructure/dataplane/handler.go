@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 
@@ -35,45 +36,39 @@ import (
 	sdk "github.com/railgrid/provider-sdk/dataplane"
 )
 
-// PathPrefix is where the handler is mounted on the provider's serve mux. It
-// is reached through the hub backend proxy at
-// /services/providers/infrastructure/dataplane/... with the caller's bearer
-// token forwarded as-is and X-Railgrid-* identity headers injected. The
-// spelling comes from provider-sdk/dataplane so there is one of it in the
-// tree.
-const PathPrefix = "/" + sdk.DataplaneRoot + "/"
-
 // instancesGVR is the only resource this data plane serves. The flattened API
 // has a single tenant-facing kind, so every verb — instance-level and
-// component-level alike — is a virtual subresource of it, and gate 2 asks
-// about instances/{verb} in both forms: one grant covers
-// .../instances/{name}/{verb} and .../instances/{name}/components/{c}/{verb},
-// because a component is an addressing detail of the same object and not a
-// separate thing to grant.
+// component-level alike — is a kcp custom subresource "instances/{verb}" of
+// it: one grant covers .../instances/{name}/{verb} with and without
+// ?component=, because a component is an addressing detail of the same object
+// and not a separate thing to grant.
 var instancesGVR = schema.GroupVersionResource{
 	Group:    "infrastructure.railgrid.ai",
 	Version:  "v1alpha1",
 	Resource: infrav1alpha1.InstancesResource,
 }
 
-// Handler serves a template's declared data-plane verbs as subresources on a
-// workload instance:
+// Handler serves a template's declared data-plane verbs as kcp custom
+// subresources on a workload instance, reached on the kcp front door as
 //
-//	/dataplane/clusters/<id>/instances/<name>/<verb>[/<caller-path...>]
-//	/dataplane/clusters/<id>/instances/<name>/components/<c>/<verb>[/<caller-path...>]
+//	/clusters/<id>/apis/infrastructure.railgrid.ai/v1alpha1/instances/<name>/<verb>[/<caller-path...>][?component=<c>]
 //
-// e.g. /dataplane/clusters/rgl3jcl2cfl3xa5p/instances/my-site-dev/components/app/log
+// e.g. /clusters/rgl3jcl2cfl3xa5p/apis/infrastructure.railgrid.ai/v1alpha1/instances/my-site-dev/log?component=app
 //
-// The grammar and both gates come from provider-sdk/dataplane: ParseRequest
-// owns the path (including every refusal the contract requires) and Gate runs
-// the caller's own GET of the Instance and the caller's own SSAR for `create`
-// on instances/{verb}. What stays here is what only this provider knows:
-// resolving the verb against the template contract the *authorized* Instance
-// names, confining it to the runtime namespace that Instance owns, and
+// kcp authenticates the caller, authorizes the verb with ordinary RBAC and
+// reverse-proxies the request here with the caller's identity stamped in
+// requestheader headers. serve's subresource adapter has already parsed the
+// path (every refusal the contract requires) and put the route and the caller
+// in the request context; the grammar and the gate come from
+// provider-sdk/dataplane. Gate decides the caller's visibility of the Instance
+// with a SubjectAccessReview on their behalf and reads the object as the
+// provider. What stays here is what only this provider knows: resolving the
+// verb against the template contract the *authorized* Instance names,
+// confining it to the runtime namespace that Instance owns, and
 // reverse-proxying to the runtime cluster. Consumers therefore never hold a
-// runtime credential.
+// runtime credential, and no caller credential ever reaches this handler.
 type Handler struct {
-	callers     sdk.CallerFactory
+	callers     sdk.ProviderCallerFactory
 	contracts   ContractGetter
 	development DevelopmentGetter
 	runtime     Runtime
@@ -106,10 +101,12 @@ func WithDevelopmentGetter(getter DevelopmentGetter) HandlerOption {
 }
 
 // NewHandler wires the handler. Any nil dependency makes the data plane report
-// 503 (the serve process runs without a runtime/kcp config in dev). If the
+// 503 (the serve process runs without a runtime cluster in dev). callers must
+// be able to act as the provider through its export virtual workspace: with
+// no caller bearer on a verb, that is the only client the gate has. If the
 // contract getter also implements DevelopmentGetter it is used automatically
 // for exec calls.
-func NewHandler(callers sdk.CallerFactory, contracts ContractGetter, runtime Runtime, options ...HandlerOption) *Handler {
+func NewHandler(callers sdk.ProviderCallerFactory, contracts ContractGetter, runtime Runtime, options ...HandlerOption) *Handler {
 	h := &Handler{callers: callers, contracts: contracts, runtime: runtime}
 	if getter, ok := contracts.(DevelopmentGetter); ok {
 		h.development = getter
@@ -129,36 +126,41 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	logger := klog.FromContext(r.Context()).WithName("infrastructure-dataplane")
 
-	req, ok := sdk.ParseRequest(sdk.DataplaneRoot, r)
+	// The route is what serve's subresource adapter parsed; a request that
+	// carries none did not come through the adapter and nothing else is
+	// entitled to say what it addresses.
+	route, ok := sdk.RouteFrom(r.Context())
 	if !ok {
 		sdk.WriteError(w, sdk.ErrBadPath)
 		return
 	}
+	req := route.Request
 	// The flattened API serves exactly one instance resource; anything else
 	// is an address from the retired per-template era. Answer it the way a
 	// denied request is answered, so the route set is not enumerable.
-	if req.Resource != instancesGVR.Resource {
+	if route.Group != instancesGVR.Group || req.Resource != instancesGVR.Resource {
 		sdk.WriteError(w, sdk.ErrDenied)
 		return
 	}
 
-	// 1+2. Both gates, as the caller: a real GET of the Instance (visibility,
-	// and the authoritative object everything below is resolved from) and an
-	// SSAR for `create` on instances/{verb}. Every verb is gated, not just
-	// exec; a component verb collapses to the same subresource.
-	instance, _, err := sdk.Gate(r.Context(), r, h.callers, instancesGVR, req)
+	// 1. The gate: the caller kcp stamped must be able to see the Instance
+	// (a SubjectAccessReview on their behalf), which is then read as the
+	// provider — the authoritative object everything below is resolved from.
+	// The verb grant itself is not repeated: kcp authorized instances/{verb}
+	// with ordinary RBAC before it forwarded the request, and a component
+	// verb collapses onto the same subresource.
+	instance, _, err := sdk.Gate(r.Context(), h.callers, instancesGVR, req)
 	if err != nil {
 		// The detail stays provider-side; the caller learns only the status.
 		logger.V(3).Info("data-plane request refused", "verb", req.Verb, "component", req.Component, "instance", req.Name, "err", err)
 		sdk.WriteError(w, err)
 		return
 	}
-	// Gate has already accepted the credential, so this cannot fail. Only the
-	// bearer is taken: X-Railgrid-User is a display label the provider does
-	// not read, and nothing here is authorized from a header.
-	bearer, _, _, _ := sdk.Identity(r)
+	// Gate has already accepted the identity, so it is present. It is a
+	// label (who started an exec session), never a credential.
+	caller, _ := sdk.ProxiedIdentityFrom(r.Context())
 
-	// 3. Resolve the data-plane contract of the instance's template. The
+	// 2. Resolve the data-plane contract of the instance's template. The
 	// template name comes from the instance the caller was just authorized
 	// on — never from a request field.
 	templateName, _, _ := unstructured.NestedString(instance.Object, "spec", "template")
@@ -181,11 +183,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// generic endpoint proxy, even if a template happens to declare an endpoint
 	// with the same verb or Upgrade=true.
 	if req.Verb == "exec" {
-		h.serveExec(w, r, bearer, req, templateName, contract, instance)
+		h.serveExec(w, r, caller, req, templateName, contract, instance)
 		return
 	}
 
-	// 4+5. Method allowlist, then resolve the verb to a concrete runtime
+	// 3+4. Method allowlist, then resolve the verb to a concrete runtime
 	// target (namespace-confined). Component verbs differ only in lookup.
 	var target ResolvedTarget
 	if req.Component != "" {
@@ -210,20 +212,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6a. A status verb is served straight from the instance status — no hop.
+	// 5a. A status verb is served straight from the instance status — no hop.
 	if target.FromStatus {
 		writeInstanceStatus(w, instance)
 		return
 	}
 
-	// 6b. Reverse-proxy to the runtime Service the provider owns. The public
+	// 5b. Reverse-proxy to the runtime Service the provider owns. The public
 	// preview HTTPRoute is created declaratively by the template's RGD, so
 	// there is no per-request route reconciliation gate here — this internal
-	// hop only needs the runtime Service.
+	// hop only needs the runtime Service. The tail is what the caller
+	// addressed beneath the verb (the proxy verb's upstream path).
 	serveProxy(w, r, h.runtime, target, req.Tail)
 }
 
-func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, bearer string, req sdk.Request, templateName string, contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured) {
+// verbQuery is the part of the query string that belongs to the verb:
+// everything the caller sent except the component parameter, which addresses
+// the object and has already been parsed onto the route.
+func verbQuery(r *http.Request) url.Values {
+	q := r.URL.Query()
+	q.Del(sdk.ComponentQuery)
+	return q
+}
+
+func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, caller sdk.ProxiedIdentity, req sdk.Request, templateName string, contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured) {
 	if req.Component == "" {
 		http.Error(w, "exec is only available for a declared component", http.StatusNotFound)
 		return
@@ -232,7 +244,7 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, bearer strin
 		http.Error(w, "exec requires POST", http.StatusMethodNotAllowed)
 		return
 	}
-	if req.Tail != "" || r.URL.RawQuery != "" {
+	if req.Tail != "" || len(verbQuery(r)) != 0 {
 		http.Error(w, "exec does not accept a caller path or query", http.StatusBadRequest)
 		return
 	}
@@ -313,7 +325,7 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, bearer strin
 		}
 		revision, digest, err := fetchComponentSource(r.Context(), h.runtime, statusTarget)
 		if errors.Is(err, errNoAppliedSource) {
-			http.Error(w, fmt.Sprintf("sourceRevision is required for %s: component %q reports no applied source revision — sync its workspace first (dev_sync, or POST .../components/%s/sync), wait for any dependency reload to finish, then retry; or pass sourceRevision and sourceDigest explicitly", reqBody.Action, req.Component, req.Component), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("sourceRevision is required for %s: component %q reports no applied source revision — sync its workspace first (dev_sync, or POST .../instances/<name>/sync?component=%s), wait for any dependency reload to finish, then retry; or pass sourceRevision and sourceDigest explicitly", reqBody.Action, req.Component, req.Component), http.StatusBadRequest)
 			return
 		}
 		if err != nil {
@@ -331,7 +343,7 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, bearer strin
 		Capability:       component.Exec,
 		WorkingDir:       workingDir,
 		WorkspacePath:    strings.TrimSpace(dev.WorkspacePath),
-		CallerKey:        execCallerKey(bearer),
+		CallerKey:        execCallerKey(caller),
 		RuntimeNamespace: runtimeNamespace,
 		ControlTarget:    controlTarget,
 		Request:          reqBody,

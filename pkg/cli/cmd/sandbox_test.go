@@ -166,19 +166,26 @@ func TestBuildSyncFilesLimits(t *testing.T) {
 	}
 }
 
-// dataPlanePrefix is the fake hub path of instance shop-dev on cluster cl-b.
-const dataPlanePrefix = "/services/providers/infrastructure/dataplane/clusters/cl-b/instances/shop-dev"
+// dataPlanePrefix is the fake hub path of instance shop-dev on cluster cl-b:
+// its data-plane verbs are kube custom subresources under it, and the
+// component travels as the ?component= query parameter (which net/http
+// patterns ignore, so one handler per verb serves every component).
+const dataPlanePrefix = "/clusters/cl-b/apis/infrastructure.railgrid.ai/v1alpha1/instances/shop-dev"
 
 func TestSandboxSyncSendsAuthoritativeDigest(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.useKubeconfig("cl-b")
-	hub.handle("GET "+dataPlanePrefix+"/components/api/process", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("GET "+dataPlanePrefix+"/process", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, map[string]any{"running": true, "sourceRevision": 1})
 	})
 	var got syncRequest
-	hub.handle("POST "+dataPlanePrefix+"/components/api/sync", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("POST "+dataPlanePrefix+"/sync", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Railgrid-Workspace") != "ws-b1" {
 			http.Error(w, "missing workspace header", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Query().Get("component") != "api" {
+			http.Error(w, "component must travel as the query parameter, got "+r.URL.String(), http.StatusBadRequest)
 			return
 		}
 		_ = json.NewDecoder(r.Body).Decode(&got)
@@ -219,7 +226,7 @@ func TestSandboxSyncBinaryGating(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			hub := newFakeHub(t)
 			hub.useKubeconfig("cl-b")
-			hub.handle("GET "+dataPlanePrefix+"/components/api/process", func(w http.ResponseWriter, r *http.Request) {
+			hub.handle("GET "+dataPlanePrefix+"/process", func(w http.ResponseWriter, r *http.Request) {
 				st := map[string]any{"running": true}
 				if tc.encodings != nil {
 					st["syncEncodings"] = tc.encodings
@@ -228,7 +235,7 @@ func TestSandboxSyncBinaryGating(t *testing.T) {
 			})
 			var got syncRequest
 			var rawBody []byte
-			hub.handle("POST "+dataPlanePrefix+"/components/api/sync", func(w http.ResponseWriter, r *http.Request) {
+			hub.handle("POST "+dataPlanePrefix+"/sync", func(w http.ResponseWriter, r *http.Request) {
 				var buf bytes.Buffer
 				_, _ = buf.ReadFrom(r.Body)
 				rawBody = buf.Bytes()
@@ -288,14 +295,14 @@ func TestSandboxExecStartsAndPolls(t *testing.T) {
 
 	hub := newFakeHub(t)
 	hub.useKubeconfig("cl-b")
-	hub.handle("GET "+dataPlanePrefix+"/components/api/process", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("GET "+dataPlanePrefix+"/process", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, map[string]any{"running": true, "sourceRevision": 42, "sourceDigest": "abc"})
 	})
 	var mu sync.Mutex
 	polls := 0
 	var start execRequest
 	var startKey string
-	hub.handle("POST "+dataPlanePrefix+"/components/api/exec", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("POST "+dataPlanePrefix+"/exec", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		var req execRequest
@@ -335,7 +342,7 @@ func TestSandboxExecStartsAndPolls(t *testing.T) {
 func TestSandboxExecRequiresAuthoritativeSync(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.useKubeconfig("cl-b")
-	hub.handle("GET "+dataPlanePrefix+"/components/api/process", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("GET "+dataPlanePrefix+"/process", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, map[string]any{"running": true})
 	})
 	_, err := runSandboxExec(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, hubTarget{}, "shop-dev", "api", []string{"ls"}, "", time.Minute)
@@ -400,12 +407,12 @@ func TestSandboxExecHintForAppStudioInstance(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			hub := newFakeHub(t)
 			hub.useKubeconfig("cl-b")
-			hub.handle("GET "+dataPlanePrefix+"/components/api/process", func(w http.ResponseWriter, r *http.Request) {
+			hub.handle("GET "+dataPlanePrefix+"/process", func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(w, map[string]any{"running": true})
 			})
 			hub.handle("GET "+instanceAPIPath, tc.instance)
 			if tc.project != nil {
-				hub.handle("GET "+appStudioPrefix+"/shop", tc.project)
+				hub.handle("GET "+appStudioAPIPrefix+"/projects/shop", tc.project)
 			}
 			_, err := runSandboxExec(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, hubTarget{}, "shop-dev", "api", []string{"ls"}, "", time.Minute)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -452,7 +459,7 @@ func TestPrintProcessStatusSyncLine(t *testing.T) {
 func TestSandboxStatusCommand(t *testing.T) {
 	hub := newFakeHub(t)
 	path := hub.useKubeconfig("cl-b")
-	hub.handle("GET "+dataPlanePrefix+"/status", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("GET "+dataPlanePrefix+"/runtime-status", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, map[string]any{"phase": "Ready", "url": "https://shop-dev.example.com", "conditions": []map[string]any{{"type": "Ready", "status": "True", "reason": "AllGood"}}})
 	})
 	root := NewRootCommand()

@@ -32,11 +32,11 @@ func sandboxRunnerContract() *infrav1alpha1.TemplateDataPlane {
 		RuntimeNamespacePath: "status.runtimeNamespace",
 		TokenSecretPath:      "status.controlSecretRef",
 		Endpoints: map[string]infrav1alpha1.TemplateDataPlaneEndpoint{
-			"log":     {ServicePath: "status.controlServiceRef", Port: "control", UpstreamPath: "/logs", Methods: []string{"GET"}, Stream: true},
-			"sync":    {ServicePath: "status.controlServiceRef", Port: "control", UpstreamPath: "/sync", Methods: []string{"POST"}},
-			"restart": {ServicePath: "status.controlServiceRef", Port: "control", UpstreamPath: "/restart", Methods: []string{"POST"}},
-			"proxy":   {ServicePath: "status.previewServiceRef", Port: "preview", UpstreamPath: "/", Methods: []string{"GET", "POST", "HEAD"}, Upgrade: true},
-			"status":  {FromStatus: true},
+			"log":            {ServicePath: "status.controlServiceRef", Port: "control", UpstreamPath: "/logs", Methods: []string{"GET"}, Stream: true},
+			"sync":           {ServicePath: "status.controlServiceRef", Port: "control", UpstreamPath: "/sync", Methods: []string{"POST"}},
+			"restart":        {ServicePath: "status.controlServiceRef", Port: "control", UpstreamPath: "/restart", Methods: []string{"POST"}},
+			"proxy":          {ServicePath: "status.previewServiceRef", Port: "preview", UpstreamPath: "/", Methods: []string{"GET", "POST", "HEAD"}, Upgrade: true},
+			"runtime-status": {FromStatus: true},
 		},
 	}
 }
@@ -111,7 +111,7 @@ func TestResolvePreviewProxy(t *testing.T) {
 }
 
 func TestResolveFromStatus(t *testing.T) {
-	got, err := Resolve(sandboxRunnerContract(), runnerInstance("ns"), "status")
+	got, err := Resolve(sandboxRunnerContract(), runnerInstance("ns"), "runtime-status")
 	if err != nil {
 		t.Fatalf("Resolve(status) error: %v", err)
 	}
@@ -201,8 +201,8 @@ func TestMethodAllowed(t *testing.T) {
 		{"sync", http.MethodPost, true},
 		{"sync", http.MethodGet, false},
 		{"proxy", http.MethodHead, true},
-		{"status", http.MethodGet, true}, // FromStatus, empty Methods => GET
-		{"status", http.MethodPost, false},
+		{"runtime-status", http.MethodGet, true}, // FromStatus, empty Methods => GET
+		{"runtime-status", http.MethodPost, false},
 		{"unknown", http.MethodGet, false},
 	} {
 		if got := MethodAllowed(contract, tc.verb, tc.method); got != tc.want {

@@ -19,15 +19,22 @@ with optional MCP tool use against their workspace. Projects are stored as
 transcripts persist in the provider's message store (Postgres in production and
 local dev, with explicit in-memory mode available only for throwaway UI work).
 
-The provider acts **as the calling user**: the hub's backend proxy forwards
-`/services/providers/app-studio/*` with the verified `X-Railgrid-Tenant` /
-`X-Railgrid-Cluster` (both the workspace's kcp logical-cluster ID) and
-`X-Railgrid-User` headers and the caller's bearer token, and the provider builds a
-per-request, token-scoped client (see `tenant/`). The organization / workspace
-UUIDs that key App Studio's durable state, and the tenant path handed to a
-project's Provider Actions identity, are read from kcp (the workspace's
-`LogicalCluster`, as the caller) rather than parsed from a header. There is no
-provider service-account escalation.
+Every tenant-facing call is a **data-plane verb**: a kcp custom subresource
+`{resource}/{verb}` App Studio publishes on its APIExport, reached on the hub's
+kcp front door like any other API path —
+`/clusters/{id}/apis/ai.railgrid.ai/v1alpha1/{projects|sessions|studios}/{name}/{verb}`.
+kcp authenticates the caller, authorizes the HTTP method as the RBAC verb on
+the coordinate, and reverse-proxies the request here with the caller's identity
+stamped in `X-Remote-*` headers; there is no hub-proxied grammar and **no
+caller bearer**. After the gate (a `SubjectAccessReview` on the caller's behalf
+proving they may see the addressed object), a handler acts **as the provider**
+through App Studio's APIExport virtual workspace (see `tenant/`); any further
+question about the caller is another access review, never a caller-scoped
+client. The actor recorded on threads, attachments, approvals and audit rows is
+the kcp-authenticated user. The organization / workspace UUIDs that key App
+Studio's durable state, and the tenant path handed to a project's Provider
+Actions identity, are read from kcp (the workspace's `APIBinding` for this
+export, through the virtual workspace) rather than parsed from a header.
 
 ## Start with or without Git
 
@@ -62,11 +69,11 @@ can proceed independently. `PUT /api/projects/{project}/repository` accepts
 | API types | `apis/ai/v1alpha1/` — the `Project`, `Session`, and `Studio` CRD types (deepcopy generated) |
 | Typed client | `client/` — trimmed dynamic client for the Project resource |
 | Tenant client | `tenant/` — token-forwarding `ClientFactory` (host+TLS from the provider kubeconfig, caller token per request) |
-| Cross-provider reach | `internal/crossprovider/` — the dependency coordinates and the composition the reconcilers are granted; `controller/{project,studio}/identity.go` mint it, `controller/tenantwatch/` watches with it |
+| Cross-provider reach | `internal/crossprovider/` — the dependency coordinates and the requirements the reconcilers are granted; `controller/{project,studio}/identity.go` mint it, `controller/tenantwatch/` watches with it |
 | Message store | `store/` — Postgres + in-memory + envelope-encryption implementations |
 | Development runtime | `api/development_*` + `api/dataplane_client.go` — template-selected development instances, component-aware sync, restart/log/status calls, and edge-checked preview authorization |
 | Portal | `portal/` — the Vue micro-frontend (`<railgrid-provider-app-studio>`), embedded via `assets.go` |
-| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.railgrid.ai`) + Project/Session/Studio schemas + the Code and Infrastructure dependencies with what this provider composes from each + exactly one tenant-scoped permission claim, on `secrets` |
+| Registration | `manifest.yaml` — CatalogEntry: `spec.export` (the `ai.railgrid.ai` APIExport with `projects`, `sessions` and `studios` and the verbs on each), `spec.requires` (one entry per API group: Infrastructure, Code, `authorization.k8s.io`, and the label-selected core `secrets`), `spec.serving` and `spec.hub` |
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
 | CI (mirror) | `.github/workflows/{image,chart}.yaml` — publish the image + chart to GHCR (run only in the mirror) |
 
@@ -89,7 +96,7 @@ remote skill registry. Provider packages are read-only system skills qualified
 as `providers/<provider>/<packageName>`.
 
 Provider package distribution and provider/action enablement are separate. A
-validated `CatalogEntry.spec.assistantSkills` entry is distributed through the
+validated `CatalogEntry.spec.hub.assistantSkills` entry is distributed through the
 authenticated hub `/api/providers` catalog. It follows the system-skill default
 of enabled, and each project may disable or re-enable it. The package's version
 and canonical `sha256:` digest are retained in the same catalog snapshot used
@@ -140,7 +147,7 @@ Environment variables consumed by the binary:
 | Var | Purpose |
 |---|---|
 | `PORT` | Listen port (default `8081`) |
-| `RAILGRID_HUB_URL` | Hub base URL for caller-scoped tenant workspace access (kcp proxy), catalog lookup, and Provider Actions forwarding |
+| `RAILGRID_HUB_URL` | Hub base URL for the hub's own REST API (provider catalog, membership rosters, browser-session handoff) and the workspace MCP aggregate, called as the provider with its hub token |
 | `RAILGRID_HUB_PUBLIC_URL` | Browser-reachable HTTPS hub origin for private preview authorization redirects and one-use browser-session handoffs; may differ from the internal `RAILGRID_HUB_URL`, and private browser inspection fails closed when unset or invalid |
 | `RAILGRID_HUB_TOKEN` | Bearer token for the heartbeat |
 | `RAILGRID_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
@@ -449,7 +456,7 @@ source in the same repository commit.
 The background convergence loop takes a different route to the same place: the
 Project reconciler (`controller/project/commit.go`) invokes the Code provider's
 `repositories/commit/v1` **action** as the project identity, staging oversized
-payloads through `repositories/stage_commit_bundle`, and follows the
+payloads through `repositories/stage-commit-bundle`, and follows the
 `RepositoryCommit` the action names over the watch it already runs. The two
 surfaces share the workspace settlement ledger, so neither double-commits what
 the other settled; moving the assistant's tool onto the same action is open
@@ -509,18 +516,25 @@ App Studio only GETs the referenced object while reconciling and never creates,
 updates, owns, or deletes it. Integrations are managed through
 `/api/projects/{project}/integrations` (GET/POST), removed with DELETE on the
 alias, and invoked with POST on `{alias}/invoke`. On create or reactivation,
-App Studio resolves the caller-scoped `/api/providers` catalog and records a
+App Studio resolves the hub's `/api/providers` catalog (as the provider) and records a
 server-owned `schemaDigest`, `grantedBy`, and `grantedAt` for every exact
 action/resource grant. Revocation preserves that grant audit and records
 `revokedBy`/`revokedAt`; reactivation requires fresh catalog verification and
 consent when declared.
 
 Invocation re-verifies the persisted grant digest against the live catalog
-(`409` on drift), then forwards `{"input": ...}` to the provider's
-data-plane action route through the hub backend proxy —
-`/services/providers/{provider}/actions/clusters/{cluster}/{resource}/{name}/{action}/{version}`.
-The route is composed from the hub base plus the grant's bound resource; App
-Studio never learns a provider URL or embeds provider transport logic.
+(`409` on drift), then forwards `{"input": ...}` to the bound provider's action
+as **App Studio**, through App Studio's own APIExport virtual workspace, at the
+kube path of the custom subresource
+`/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/{action}` (the
+contract version is the serving provider's declaration, not a path segment).
+kcp authorizes the call against the claim App Studio's export carries on that
+coordinate, so an integration's action must be one App Studio has claimed
+(`manifest.yaml` `spec.requires[].resources[]`); the caller's identity
+travels as a label only. The route is composed from the coordinate the catalog
+publishes the action on — its parent `spec.export.resources[]` entry's
+`apiVersion`, `kind` and plural name;
+App Studio never learns a provider URL or embeds provider transport logic.
 Caller credentials, provider backend URLs, resource overrides, and raw SQL
 are rejected.
 

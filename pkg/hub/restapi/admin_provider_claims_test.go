@@ -19,6 +19,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	hubproviders "github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
@@ -35,21 +36,38 @@ func newAdminTestServer(t *testing.T, mgr *Manager) *httptest.Server {
 	return httptest.NewServer(r)
 }
 
-// agentsProvider is the registry record the migration reads: the claim set
+// agentsProvider is the registry record the migration reads: the requirements
 // that motivated the endpoint (agents adding tokenreviews/subjectaccessreviews
-// for its service-to-service path), plus one claim that is NOT tenant-scoped
-// so the filter has something to drop.
+// for its service-to-service path), plus one requirement that NAMES a provider
+// so the filter has a composition to leave to tenant consent.
 func agentsProvider() hubproviders.Provider {
 	return hubproviders.Provider{
 		Name:          "agents",
 		APIExportPath: kcppaths.ProviderPath("agents"),
 		APIExportName: "agents",
-		PermissionClaims: []hubproviders.PermissionClaim{
-			{Resource: "secrets", Verbs: []string{"get", "list", "watch", "create", "update", "delete"}, TenantScoped: true},
-			{Group: "authentication.k8s.io", Resource: "tokenreviews", Verbs: []string{"create"}, TenantScoped: true},
-			{Group: "authorization.k8s.io", Resource: "subjectaccessreviews", Verbs: []string{"create"}, TenantScoped: true},
-			{Group: "apis.kcp.io", Resource: "apiexports", Verbs: []string{"get"}},
-		},
+		Requires: []providersv1alpha1.ProviderRequirement{{
+			Resources: []providersv1alpha1.ProviderRequiredResource{{
+				Name:     "secrets",
+				Verbs:    []providersv1alpha1.ProviderRequiredVerb{"get", "list", "watch", "create", "update", "delete"},
+				Selector: &providersv1alpha1.ProviderLabelSelector{MatchLabels: map[string]string{"railgrid.ai/owner": "agents"}},
+			}},
+		}, {
+			Group: "authentication.k8s.io",
+			Resources: []providersv1alpha1.ProviderRequiredResource{{
+				Name: "tokenreviews", Verbs: []providersv1alpha1.ProviderRequiredVerb{"create"},
+			}},
+		}, {
+			Group: "authorization.k8s.io",
+			Resources: []providersv1alpha1.ProviderRequiredResource{{
+				Name: "subjectaccessreviews", Verbs: []providersv1alpha1.ProviderRequiredVerb{"create"},
+			}},
+		}, {
+			Provider: "code",
+			Group:    "code.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderRequiredResource{{
+				Name: "repositories", Verbs: []providersv1alpha1.ProviderRequiredVerb{"get"},
+			}},
+		}},
 	}
 }
 
@@ -94,8 +112,9 @@ func TestReacceptProviderClaims_MigratesEveryBindingThenIsIdempotent(t *testing.
 	if got.Updated != 3 || got.Unchanged != 0 || len(got.Failed) != 0 {
 		t.Fatalf("counts: got updated=%d unchanged=%d failed=%v, want 3/0/none", got.Updated, got.Unchanged, got.Failed)
 	}
-	// Only the tenant-scoped claims are applied: a claim a tenant's binding
-	// does not grant has no business being written onto it.
+	// Only the requirements that name no provider are applied unconditionally.
+	// The composition on code is a consent the tenant gave (or did not), so it
+	// is left to the workspace's Grant rather than re-accepted on its behalf.
 	wantClaims := []ReacceptedClaim{
 		{Resource: "secrets", Verbs: []string{"get", "list", "watch", "create", "update", "delete"}},
 		{Group: "authentication.k8s.io", Resource: "tokenreviews", Verbs: []string{"create"}},
@@ -158,9 +177,8 @@ func TestReacceptProviderClaims_RefusesToClearClaims(t *testing.T) {
 	seedEnabled(ops, wsKey{"org-a", "ws-1"})
 	reg := hubproviders.NewRegistry()
 	prov := agentsProvider()
-	prov.PermissionClaims = []hubproviders.PermissionClaim{
-		{Group: "apis.kcp.io", Resource: "apiexports", Verbs: []string{"get"}}, // not tenant-scoped
-	}
+	// Nothing declared at all: the hub has not observed the CatalogEntry yet.
+	prov.Requires = nil
 	reg.Upsert(prov)
 	mgr.WithProviderRegistry(reg)
 	srv := newAdminTestServer(t, mgr)

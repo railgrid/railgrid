@@ -169,35 +169,25 @@ func TestProjectIdentityRulesCarryTheDeclaredComposition(t *testing.T) {
 		t.Fatalf("clause D APIBinding grant = %#v (ok=%v)", apibindings, ok)
 	}
 
-	// Clause E: the composition, per dependency kind.
+	// No composition rule of any shape: the composed kinds ride the export
+	// virtual workspace as the provider. The identity keeps a clause-B named
+	// read of each object whose data plane it calls, for that plane's gate 1.
 	for _, tc := range []struct {
-		group          string
-		resource       string
-		collection     string
-		object         string
-		names          string
-		wantObjectRule bool
+		group, resource, names string
 	}{
-		{infraAPIGroup, "instances", "create,list,watch", "get,update,delete", "demo-dev,demo-prod", true},
-		{codeAPIGroup, "repositories", "create,list,watch", "get,update,delete", "demo-repo", true},
-		// Repositories are never deleted: they hold user code and outlive the
-		// project, so no delete is asked for and none can be granted.
-		{codeAPIGroup, "repositorycommits", "list,watch", "", "", false},
+		{infraAPIGroup, "instances", "demo-dev,demo-prod"},
+		{codeAPIGroup, "repositories", "demo-repo"},
 	} {
-		collection, ok := ruleFor(rules, tc.group, tc.resource, false)
-		if !ok || verbs(collection) != tc.collection {
-			t.Fatalf("%s collection rule = %#v (ok=%v), want verbs %s", tc.resource, collection, ok, tc.collection)
+		if rule, ok := ruleFor(rules, tc.group, tc.resource, false); ok {
+			t.Fatalf("%s carries an unnamed rule %#v; collection access rides the export virtual workspace, not the identity", tc.resource, rule)
 		}
 		object, ok := ruleFor(rules, tc.group, tc.resource, true)
-		if ok != tc.wantObjectRule {
-			t.Fatalf("%s object rule present = %v, want %v", tc.resource, ok, tc.wantObjectRule)
+		if !ok || verbs(object) != "get" || namesOf(object) != tc.names {
+			t.Fatalf("%s named read = %#v (ok=%v), want get on %s", tc.resource, object, ok, tc.names)
 		}
-		if !ok {
-			continue
-		}
-		if verbs(object) != tc.object || namesOf(object) != tc.names {
-			t.Fatalf("%s object rule = %#v, want verbs %s on %s", tc.resource, object, tc.object, tc.names)
-		}
+	}
+	if rule, ok := ruleFor(rules, codeAPIGroup, "repositorycommits", false); ok {
+		t.Fatalf("repositorycommits carries an unnamed rule %#v; the commit is read as the provider", rule)
 	}
 
 	// Clause C: one create per declared data-plane verb, on the bound
@@ -225,9 +215,6 @@ func TestProjectIdentityRulesCarryTheDeclaredComposition(t *testing.T) {
 			t.Fatalf("repositories/%s is not name-scoped: %#v", action, rule.ResourceNames)
 		}
 	}
-	if commits, ok := ruleFor(rules, codeAPIGroup, "repositorycommits", false); !ok || strings.Contains(verbs(commits), "create") {
-		t.Fatalf("repositorycommits composition = %#v (ok=%v); the provider creates the commit, not this identity", commits, ok)
-	}
 
 	// Clause B and C on the Connection: read it, and ask it for a registry
 	// token. Nothing composes a Connection — nothing here writes one.
@@ -235,7 +222,7 @@ func TestProjectIdentityRulesCarryTheDeclaredComposition(t *testing.T) {
 	if !ok || verbs(connection) != "get" || namesOf(connection) != "github-main" {
 		t.Fatalf("clause B connection read = %#v (ok=%v)", connection, ok)
 	}
-	mint, ok := ruleFor(rules, codeAPIGroup, "connections/mint_registry_token", true)
+	mint, ok := ruleFor(rules, codeAPIGroup, "connections/mint-registry-token", true)
 	if !ok || verbs(mint) != "create" || namesOf(mint) != "github-main" {
 		t.Fatalf("clause C registry-token action = %#v (ok=%v)", mint, ok)
 	}
@@ -283,21 +270,16 @@ func TestProjectIdentityRulesCarryTheDeclaredComposition(t *testing.T) {
 	}
 }
 
-// A project with no bindings still reaches the aggregate, can still resolve
-// where its dependencies answer, and can still watch the workspace for the
-// objects it is about to create. None of that is access to any object.
+// A project with no bindings still reaches the aggregate and can still resolve
+// where its dependencies answer — and nothing else: no rule on a dependency's
+// group at all, named or unnamed. Watching for the objects it is about to
+// create rides the export virtual workspace, not this identity.
 func TestProjectIdentityRulesWithoutBindings(t *testing.T) {
 	rules := projectIdentityRules(&aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "empty", UID: "u"}})
 	for _, rule := range rules {
-		if len(rule.ResourceNames) == 0 {
-			continue
-		}
 		if rule.APIGroups[0] == infraAPIGroup || rule.APIGroups[0] == codeAPIGroup {
-			t.Fatalf("an unbound project names an object on a dependency: %#v", rule)
+			t.Fatalf("an unbound project holds a rule on a dependency's group: %#v", rule)
 		}
-	}
-	if _, ok := ruleFor(rules, infraAPIGroup, "instances", false); !ok {
-		t.Fatal("an unbound project cannot watch for the instance it is about to create")
 	}
 }
 

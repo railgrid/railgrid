@@ -93,12 +93,18 @@ func TestCatalogReconciler_PreservesChartOwnedUIRoutingForBuiltinName(t *testing
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "App Studio from Chart",
 			Description: "Persistent AI project workspace.",
-			Dependencies: []providersv1alpha1.ProviderDependency{
-				{Name: "code"},
-			},
-			UI: &providersv1alpha1.ProviderUI{
+			Requires: []providersv1alpha1.ProviderRequirement{{
+				Provider: "code",
+				Group:    "code.railgrid.ai",
+				Resources: []providersv1alpha1.ProviderRequiredResource{{
+					Name:  "repositories",
+					Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbGet},
+				}},
+			}},
+			Export: &providersv1alpha1.ProviderExport{Name: "ai.providers.railgrid.ai"},
+			Serving: &providersv1alpha1.ProviderServing{UI: &providersv1alpha1.ProviderUI{
 				URL: "http://app-studio.invalid",
-			},
+			}},
 		},
 	}
 
@@ -123,8 +129,8 @@ func TestCatalogReconciler_PreservesChartOwnedUIRoutingForBuiltinName(t *testing
 	if got.LocalUIAssets != nil {
 		t.Fatal("expected chart-owned provider to keep proxy routing, not embedded assets")
 	}
-	if len(got.Dependencies) != 1 || got.Dependencies[0].Name != "code" {
-		t.Fatalf("Dependencies = %#v, want [code]", got.Dependencies)
+	if deps := providersv1alpha1.Dependencies(got.Requires); len(deps) != 1 || deps[0] != "code" {
+		t.Fatalf("Dependencies = %#v, want [code]", deps)
 	}
 	// The portal's catalog cards and first-run welcome flow render this; if the
 	// reconciler drops it, both fall back to showing a bare provider name.
@@ -151,11 +157,21 @@ func TestCatalogReconcilerRejectsInvalidActionDeclarations(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "invalid-actions"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Invalid actions",
-			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
-			Actions: []providersv1alpha1.ProviderActionSpec{{
-				ID:          "query_table/latest",
-				DisplayName: "Invalid action",
-			}},
+			Serving:     &providersv1alpha1.ProviderServing{UI: &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"}},
+
+			Export: &providersv1alpha1.ProviderExport{
+				Name: "invalid.providers.railgrid.ai",
+				Resources: []providersv1alpha1.ProviderExportResource{{
+					Name:       "tables",
+					APIVersion: "invalid.railgrid.ai/v1alpha1",
+					Kind:       "Table",
+					Actions: []providersv1alpha1.ProviderAction{{
+						Name:        "query_table",
+						Version:     "latest",
+						DisplayName: "Invalid action",
+					}},
+				}},
+			},
 		},
 	}
 
@@ -181,8 +197,8 @@ func TestCatalogReconcilerRejectsInvalidActionDeclarations(t *testing.T) {
 		t.Fatalf("conditions = %#v, want one Ready condition", updated.Status.Conditions)
 	}
 	condition := updated.Status.Conditions[0]
-	if condition.Type != "Ready" || condition.Status != metav1.ConditionFalse || condition.Reason != "InvalidActions" {
-		t.Fatalf("condition = %#v, want Ready=False/InvalidActions", condition)
+	if condition.Type != "Ready" || condition.Status != metav1.ConditionFalse || condition.Reason != "InvalidExport" {
+		t.Fatalf("condition = %#v, want Ready=False/InvalidExport", condition)
 	}
 }
 
@@ -206,11 +222,11 @@ func TestCatalogReconcilerOmitsInvalidAssistantSkillAndKeepsValidSibling(t *test
 		ObjectMeta: metav1.ObjectMeta{Name: "skills"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Skills",
-			UI:          &providersv1alpha1.ProviderUI{URL: "http://skills.invalid"},
-			AssistantSkills: []providersv1alpha1.ProviderAssistantSkillSpec{
+			Serving:     &providersv1alpha1.ProviderServing{UI: &providersv1alpha1.ProviderUI{URL: "http://skills.invalid"}},
+			Hub: &providersv1alpha1.ProviderHub{AssistantSkills: []providersv1alpha1.ProviderAssistantSkillSpec{
 				invalid,
 				valid,
-			},
+			}},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -243,7 +259,7 @@ func TestCatalogReconcilerDoesNotRewriteUnchangedStatus(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Cost",
-			Backend:     &providersv1alpha1.ProviderBackend{URL: "http://cost.invalid"},
+			Serving:     &providersv1alpha1.ProviderServing{Backend: &providersv1alpha1.ProviderBackend{URL: "http://cost.invalid"}},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -286,7 +302,7 @@ func TestCatalogReconcilerAdoptsStatusHeartbeat(t *testing.T) {
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
-			Backend: &providersv1alpha1.ProviderBackend{URL: "http://cost.invalid"},
+			Serving: &providersv1alpha1.ProviderServing{Backend: &providersv1alpha1.ProviderBackend{URL: "http://cost.invalid"}},
 		},
 		Status: providersv1alpha1.CatalogEntryStatus{
 			LastHeartbeat:   &beat,
@@ -322,7 +338,7 @@ func TestCatalogReconcilerBackendHealthGatesReadyAndRecovers(t *testing.T) {
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "code", Generation: 2},
 		Spec: providersv1alpha1.CatalogEntrySpec{
-			Backend: &providersv1alpha1.ProviderBackend{URL: "http://code.invalid", HealthPath: "/readyz"},
+			Serving: &providersv1alpha1.ProviderServing{Backend: &providersv1alpha1.ProviderBackend{URL: "http://code.invalid", HealthPath: "/readyz"}},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -384,7 +400,7 @@ func TestCatalogReconcilerDoesNotDirectlyProbeOrgOwnedBackend(t *testing.T) {
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "database"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
-			Backend: &providersv1alpha1.ProviderBackend{URL: "http://tenant-controlled.invalid", HealthPath: "/readyz"},
+			Serving: &providersv1alpha1.ProviderServing{Backend: &providersv1alpha1.ProviderBackend{URL: "http://tenant-controlled.invalid", HealthPath: "/readyz"}},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -422,7 +438,7 @@ func TestCatalogReconcilerRetriesOrgOwnedEdgeRouteAndRecovers(t *testing.T) {
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "database"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
-			Backend: &providersv1alpha1.ProviderBackend{URL: "http://database.tenant.svc", HealthPath: "/readyz"},
+			Serving: &providersv1alpha1.ProviderServing{Backend: &providersv1alpha1.ProviderBackend{URL: "http://database.tenant.svc", HealthPath: "/readyz"}},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -538,7 +554,7 @@ func TestCatalogReconcilerSweepsRotatedProviderCredentials(t *testing.T) {
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
-			APIExport: &providersv1alpha1.ProviderAPIExport{Name: "cost.providers.railgrid.ai"},
+			Export: &providersv1alpha1.ProviderExport{Name: "cost.providers.railgrid.ai"},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -577,7 +593,7 @@ func TestCatalogReconcilerSurvivesASweepFailure(t *testing.T) {
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
-			APIExport: &providersv1alpha1.ProviderAPIExport{Name: "cost.providers.railgrid.ai"},
+			Export: &providersv1alpha1.ProviderExport{Name: "cost.providers.railgrid.ai"},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -600,15 +616,15 @@ func TestCatalogReconcilerSurvivesASweepFailure(t *testing.T) {
 	}
 }
 
-// TestCatalogReconcilerRejectsCompositionOnAForeignGroup: a provider may only
-// declare that it composes kinds of a group the named dependency actually
-// serves. Pointing a composition at somebody else's group would make the
-// Enable dialog describe one provider's API while the grant reached another's.
+// TestCatalogReconcilerRejectsRequirementOnAForeignGroup: a provider may only
+// attribute a group to the provider that actually serves it. Pointing a
+// requirement at somebody else's group would make the Enable dialog describe one
+// provider's API while the grant reached another's.
 //
-// The dependency here has the shape every real provider has — an export named
-// after the provider, kinds in a different group — so the check cannot pass by
-// comparing the two names.
-func TestCatalogReconcilerRejectsCompositionOnAForeignGroup(t *testing.T) {
+// The named provider here has the shape every real provider has — an export
+// named after the provider, kinds in a different group — so the check cannot
+// pass by comparing the two names.
+func TestCatalogReconcilerRejectsRequirementOnAForeignGroup(t *testing.T) {
 	reg := NewRegistry()
 	reg.Upsert(Provider{
 		Name:          "code",
@@ -620,13 +636,15 @@ func TestCatalogReconcilerRejectsCompositionOnAForeignGroup(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "app-studio-composer"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "App Studio",
-			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
-			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "app-studio.railgrid.ai"},
-			Dependencies: []providersv1alpha1.ProviderDependency{{
-				Name: "code",
-				Composes: []providersv1alpha1.ProviderComposition{{
-					Group: "infrastructure.railgrid.ai", Resource: "instances",
-					Verbs: []providersv1alpha1.ProviderCompositionVerb{"create"},
+			Serving:     &providersv1alpha1.ProviderServing{UI: &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"}},
+
+			Export: &providersv1alpha1.ProviderExport{Name: "app-studio.railgrid.ai"},
+			Requires: []providersv1alpha1.ProviderRequirement{{
+				Provider: "code",
+				Group:    "infrastructure.railgrid.ai",
+				Resources: []providersv1alpha1.ProviderRequiredResource{{
+					Name:  "instances",
+					Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbCreate},
 				}},
 			}},
 		},
@@ -643,32 +661,34 @@ func TestCatalogReconcilerRejectsCompositionOnAForeignGroup(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if _, ok := reg.Get("app-studio-composer"); ok {
-		t.Fatal("a composition on a group the dependency does not serve must not enter the registry")
+		t.Fatal("a requirement on a group the named provider does not serve must not enter the registry")
 	}
 	var updated providersv1alpha1.CatalogEntry
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "app-studio-composer"}, &updated); err != nil {
 		t.Fatalf("get updated entry: %v", err)
 	}
-	if len(updated.Status.Conditions) != 1 || updated.Status.Conditions[0].Reason != "InvalidCompositions" {
-		t.Fatalf("conditions = %#v, want Ready=False/InvalidCompositions", updated.Status.Conditions)
+	if len(updated.Status.Conditions) != 1 || updated.Status.Conditions[0].Reason != "InvalidRequirements" {
+		t.Fatalf("conditions = %#v, want Ready=False/InvalidRequirements", updated.Status.Conditions)
 	}
 }
 
 // A wildcard is refused on shape alone, with no registry lookup involved.
-func TestCatalogReconcilerRejectsWildcardComposition(t *testing.T) {
+func TestCatalogReconcilerRejectsWildcardRequirement(t *testing.T) {
 	reg := NewRegistry()
 	scheme := newProviderTestScheme(t)
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "wildcard-composer"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Wildcard",
-			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
-			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "wildcard.railgrid.ai"},
-			Dependencies: []providersv1alpha1.ProviderDependency{{
-				Name: "infrastructure",
-				Composes: []providersv1alpha1.ProviderComposition{{
-					Group: "infrastructure.railgrid.ai", Resource: "*",
-					Verbs: []providersv1alpha1.ProviderCompositionVerb{"create"},
+			Serving:     &providersv1alpha1.ProviderServing{UI: &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"}},
+
+			Export: &providersv1alpha1.ProviderExport{Name: "wildcard.railgrid.ai"},
+			Requires: []providersv1alpha1.ProviderRequirement{{
+				Provider: "infrastructure",
+				Group:    "infrastructure.railgrid.ai",
+				Resources: []providersv1alpha1.ProviderRequiredResource{{
+					Name:  "*",
+					Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbCreate},
 				}},
 			}},
 		},
@@ -679,25 +699,28 @@ func TestCatalogReconcilerRejectsWildcardComposition(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if _, ok := reg.Get("wildcard-composer"); ok {
-		t.Fatal("a wildcard composition must not enter the registry")
+		t.Fatal("a wildcard requirement must not enter the registry")
 	}
 }
 
-// A composition without an APIExport of the provider's own is refused: only a
-// provider with its own API surface has reconcilers to compose with.
-func TestCatalogReconcilerRejectsCompositionWithoutOwnExport(t *testing.T) {
+// A requirement on another provider, declared without an export of one's own,
+// is refused: only a provider with its own API surface has reconcilers that
+// would write another provider's objects into a tenant workspace.
+func TestCatalogReconcilerRejectsRequirementWithoutOwnExport(t *testing.T) {
 	reg := NewRegistry()
 	scheme := newProviderTestScheme(t)
 	entry := &providersv1alpha1.CatalogEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "exportless-composer"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Exportless",
-			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
-			Dependencies: []providersv1alpha1.ProviderDependency{{
-				Name: "infrastructure",
-				Composes: []providersv1alpha1.ProviderComposition{{
-					Group: "infrastructure.railgrid.ai", Resource: "instances",
-					Verbs: []providersv1alpha1.ProviderCompositionVerb{"create"},
+			Serving:     &providersv1alpha1.ProviderServing{UI: &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"}},
+
+			Requires: []providersv1alpha1.ProviderRequirement{{
+				Provider: "infrastructure",
+				Group:    "infrastructure.railgrid.ai",
+				Resources: []providersv1alpha1.ProviderRequiredResource{{
+					Name:  "instances",
+					Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbCreate},
 				}},
 			}},
 		},
@@ -708,13 +731,13 @@ func TestCatalogReconcilerRejectsCompositionWithoutOwnExport(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if _, ok := reg.Get("exportless-composer"); ok {
-		t.Fatal("a composition without spec.apiExport must not enter the registry")
+		t.Fatal("a requirement on another provider without spec.export must not enter the registry")
 	}
 }
 
 // The happy path: a valid declaration reaches the registry and the API, verbs
 // and all, so a consumer reads what to ask for instead of guessing.
-func TestCatalogReconcilerProjectsCompositions(t *testing.T) {
+func TestCatalogReconcilerProjectsRequirements(t *testing.T) {
 	reg := NewRegistry()
 	reg.Upsert(Provider{
 		Name:          "infrastructure",
@@ -726,14 +749,20 @@ func TestCatalogReconcilerProjectsCompositions(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "valid-composer"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Valid",
-			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
-			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "valid.railgrid.ai"},
-			Dependencies: []providersv1alpha1.ProviderDependency{{
-				Name: "infrastructure",
-				Composes: []providersv1alpha1.ProviderComposition{{
-					Group: "infrastructure.railgrid.ai", Resource: "instances",
-					Verbs: []providersv1alpha1.ProviderCompositionVerb{"get", "list", "watch", "create", "update", "delete"},
-				}},
+			Serving:     &providersv1alpha1.ProviderServing{UI: &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"}},
+
+			Export: &providersv1alpha1.ProviderExport{Name: "valid.railgrid.ai"},
+			Requires: []providersv1alpha1.ProviderRequirement{{
+				Provider: "infrastructure",
+				Group:    "infrastructure.railgrid.ai",
+				Resources: []providersv1alpha1.ProviderRequiredResource{
+					{Name: "instances", Verbs: []providersv1alpha1.ProviderRequiredVerb{
+						providersv1alpha1.RequiredVerbGet, providersv1alpha1.RequiredVerbList,
+						providersv1alpha1.RequiredVerbWatch, providersv1alpha1.RequiredVerbCreate,
+						providersv1alpha1.RequiredVerbUpdate, providersv1alpha1.RequiredVerbDelete,
+					}},
+					{Name: "instances/exec"},
+				},
 			}},
 		},
 	}
@@ -743,12 +772,23 @@ func TestCatalogReconcilerProjectsCompositions(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	prov, ok := reg.Get("valid-composer")
-	if !ok || len(prov.Dependencies) != 1 || len(prov.Dependencies[0].Composes) != 1 {
-		t.Fatalf("registry entry = %#v, want one dependency with one composition", prov.Dependencies)
+	if !ok || len(prov.Requires) != 1 || len(prov.Requires[0].Resources) != 2 {
+		t.Fatalf("registry entry = %#v, want one requirement with two coordinates", prov.Requires)
 	}
-	composition := prov.Dependencies[0].Composes[0]
-	if composition.Group != "infrastructure.railgrid.ai" || composition.Resource != "instances" || len(composition.Verbs) != 6 {
-		t.Fatalf("composition = %#v", composition)
+	coordinates := providersv1alpha1.RequiredCoordinates(prov.Requires)
+	if len(coordinates) != 2 {
+		t.Fatalf("coordinates = %#v, want two claims", coordinates)
+	}
+	if coordinates[0].Group != "infrastructure.railgrid.ai" || coordinates[0].Resource != "instances" || len(coordinates[0].Verbs) != 6 {
+		t.Fatalf("kind claim = %#v", coordinates[0])
+	}
+	// A verb coordinate carries no verbs of its own: the verb IS the capability.
+	if !coordinates[1].Coordinate || coordinates[1].Resource != "instances/exec" || len(coordinates[1].Verbs) != 0 {
+		t.Fatalf("verb coordinate = %#v", coordinates[1])
+	}
+	// The same declaration is also the dependency edge the Enable flow checks.
+	if deps := providersv1alpha1.Dependencies(prov.Requires); len(deps) != 1 || deps[0] != "infrastructure" {
+		t.Fatalf("dependencies = %#v, want [infrastructure]", deps)
 	}
 }
 
@@ -810,7 +850,7 @@ func TestCatalogReconcilerReadsAPIGroupsFromTheAPIExport(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "edges"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Edges",
-			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "edges.providers.railgrid.ai"},
+			Export:      &providersv1alpha1.ProviderExport{Name: "edges.providers.railgrid.ai"},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -870,7 +910,7 @@ func TestCatalogReconcilerReportsUnknownAPIGroups(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "edges"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Edges",
-			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "edges.providers.railgrid.ai"},
+			Export:      &providersv1alpha1.ProviderExport{Name: "edges.providers.railgrid.ai"},
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -923,7 +963,7 @@ func TestCatalogReconcilerKeepsLastKnownAPIGroupsOnAReadFailure(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "edges"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Edges",
-			APIExport:   &providersv1alpha1.ProviderAPIExport{Name: "edges.providers.railgrid.ai"},
+			Export:      &providersv1alpha1.ProviderExport{Name: "edges.providers.railgrid.ai"},
 		},
 		Status: providersv1alpha1.CatalogEntryStatus{APIGroups: []string{"edges.railgrid.ai"}},
 	}

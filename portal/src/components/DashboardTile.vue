@@ -72,17 +72,19 @@ const canRetryInDocument = computed(() => canReloadProviderScriptInDocument(prop
 const tagFor = (name: string) => `railgrid-dashboard-tile-${name}`
 
 // Route the tile's "Open" link and sub-page shortcuts point at. Mirrors the
-// side nav's rule (providers.ts): built-in providers route to /{builtinRoute},
+// side nav's rule (providers.ts): built-in providers route to their
+// serving.ui.builtinRoute,
 // everything else to /providers/{name}, with children hung off that. Used by
 // the fallback body so a provider without its own tile element is still a
 // useful launcher rather than a blank card.
+const builtinRoute = computed(() => props.provider.serving?.ui?.builtinRoute ?? '')
 const parentTo = computed(() =>
-  scopePath(props.provider.builtinRoute ? `/${props.provider.builtinRoute}` : `/providers/${props.provider.name}`),
+  scopePath(builtinRoute.value ? `/${builtinRoute.value}` : `/providers/${props.provider.name}`),
 )
 const quickLinks = computed(() =>
-  (props.provider.children ?? []).map((c) => ({
+  (props.provider.serving?.ui?.children ?? []).map((c) => ({
     label: c.displayName,
-    to: props.provider.builtinRoute ? scopePath(`/${c.builtinRoute}`) : `${parentTo.value}/${c.builtinRoute}`,
+    to: builtinRoute.value ? scopePath(`/${c.builtinRoute}`) : `${parentTo.value}/${c.builtinRoute}`,
   })),
 )
 

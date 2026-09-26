@@ -19,6 +19,10 @@ export function tenantHeaders(context: RailgridContext | null): Record<string, s
 /**
  * useKueryApi builds the query client for the current context.
  *
+ * The verb is a kube path on the kcp front door (api.ts runPath), sent
+ * through the host's providerFetch like the SavedView reads; the service base
+ * (serviceBase) is for /oauth and /mcp only and plays no part here.
+ *
  * Every query is the run verb on a SavedView, so the client needs a view to
  * run as. A caller that is showing a saved view passes its name; the default
  * is the signed-in user's scratch view, which the playground creates with the
@@ -39,7 +43,6 @@ export function useKueryApi(
     // stops exposing it.
     return request.ready && view
       ? createKueryApi({
-          basePath: request.basePath,
           cluster: request.cluster,
           savedView: view,
           headers: request.headers,

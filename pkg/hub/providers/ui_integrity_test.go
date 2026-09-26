@@ -72,7 +72,7 @@ func TestCatalogReconcilerPinsProviderUIBundle(t *testing.T) {
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "Cost",
 			Version:     "1.0.0",
-			UI:          &providersv1alpha1.ProviderUI{URL: server.URL + "/ui"},
+			Serving:     &providersv1alpha1.ProviderServing{UI: &providersv1alpha1.ProviderUI{URL: server.URL + "/ui"}},
 		},
 	}
 	c := fake.NewClientBuilder().

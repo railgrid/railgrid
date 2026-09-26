@@ -14,8 +14,9 @@ Claude / Cursor / similar MCP clients:
 The configuration hints then carry the workspace's long-lived MCP token from
 the hub's connect endpoint, which also works after an OIDC login.
 
-Use --edge to print the per-edge MCP endpoint URL (single Kubernetes edge):
-  https://railgrid.example.com/services/providers/edges/agent/root:railgrid:user-default/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp
+Use --edge to print the per-edge MCP endpoint URL (single Kubernetes edge),
+the edge's "mcp" verb on the hub's kcp front door:
+  https://railgrid.example.com/clusters/11tcw27t4rdtnacy/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-edge/mcp
 
 The previous per-kind MCP endpoints (--name for KubernetesMCP,
 --linux-name for LinuxMCP) were removed; their tools now appear on the

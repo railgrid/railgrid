@@ -13,8 +13,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
-	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -32,9 +30,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpcore "github.com/kcp-dev/sdk/apis/core"
+
+	"k8s.io/client-go/rest"
 
 	"github.com/railgrid/provider-sdk/sharding"
 
@@ -44,169 +45,108 @@ import (
 	kueryv1alpha1 "github.com/railgrid/provider-kuery/apis/v1alpha1"
 )
 
-// TestEdgeProxyURL pins the rule that the coordinate comes from what the
-// edges provider PUBLISHED on the edge, not from a format string kuery keeps
-// its own copy of. A hub-relative status.url is externalized; an absolute one
-// is taken as is; a missing one is an error, because guessing is how the old
-// inlined pattern outlived the grammar it was copied from.
-func TestEdgeProxyURL(t *testing.T) {
-	const published = "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/kubernetesclusters/edge-1/k8s"
-
-	got, err := edgeProxyURL("https://hub.example.com/", "2hx82dl9ncmepp5l", "edge-1", published)
+// TestEdgeConfigReachesTheEdgeThroughKuerysExport pins the data path: an edge's
+// Kubernetes API is reached THROUGH kuery's own export virtual workspace, as
+// the provider — kubernetesclusters/k8s is a custom subresource the tenant
+// accepted kuery's claim on — never through the hub and never as a minted
+// per-workspace identity.
+func TestEdgeConfigReachesTheEdgeThroughKuerysExport(t *testing.T) {
+	const endpoint = "https://kcp.example:6443/services/apiexport/abc123/kuery.providers.railgrid.ai"
+	c := &Controller{cfg: Config{
+		ExportEndpoint: func(context.Context) (string, error) { return endpoint + "/", nil },
+		ProviderRESTConfig: func(target string) (*rest.Config, error) {
+			return &rest.Config{Host: target, BearerToken: "provider-token", TLSClientConfig: rest.TLSClientConfig{Insecure: true}}, nil
+		},
+	}}
+	cfg, err := c.edgeConfig(context.Background(), "2hx82dl9ncmepp5l", "edge-1")
 	if err != nil {
-		t.Fatalf("edgeProxyURL: %v", err)
+		t.Fatalf("edgeConfig: %v", err)
 	}
-	if want := "https://hub.example.com" + published; got != want {
-		t.Fatalf("edgeProxyURL = %q, want %q", got, want)
-	}
-
-	// A self-hosted copy of the edges provider publishes its own coordinate,
-	// under its own provider name; the consumer follows it without knowing.
-	const selfHosted = "/services/providers/acme-edges/dataplane/clusters/2hx82dl9ncmepp5l/kubernetesclusters/edge-1/k8s"
-	got, err = edgeProxyURL("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", selfHosted)
-	if err != nil {
-		t.Fatalf("edgeProxyURL (self-hosted): %v", err)
-	}
-	if want := "https://hub.example.com" + selfHosted; got != want {
-		t.Fatalf("edgeProxyURL (self-hosted) = %q, want %q", got, want)
-	}
-
-	if _, err := edgeProxyURL("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", "  "); err == nil {
-		t.Fatal("an edge with no published status.url must be an error, not a guessed URL")
-	}
-	if _, err := edgeProxyURL("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", "not-a-path"); err == nil {
-		t.Fatal("an unusable status.url must be an error")
-	}
-}
-
-// TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity pins the data-path
-// credential: the workspace's hub-minted engagement identity, never the
-// provider SA bearer. The provider SA's home is the provider workspace; the
-// edges proxy TokenReviews such a foreign SA in its home cluster, which the
-// hub's kcp proxy re-roots onto the edges provider's own workspace (doubled
-// /clusters path → 404 → 403). A token minted in the CONSUMER workspace
-// authenticates natively.
-//
-// The token is not pinned into the config either: it is resolved per request,
-// because an engaged edge's informers outlive any one TTL'd token.
-func TestEdgeProxyConfigAuthenticatesAsWorkspaceIdentity(t *testing.T) {
-	const published = "/services/providers/edges/dataplane/clusters/2hx82dl9ncmepp5l/kubernetesclusters/edge-1/k8s"
-	identity := &staticCredential{token: "minted-token"}
-	cfg, err := edgeProxyConfig("https://hub.example.com", "2hx82dl9ncmepp5l", "edge-1", published, identity, true)
-	if err != nil {
-		t.Fatalf("edgeProxyConfig: %v", err)
-	}
-
-	if want := "https://hub.example.com" + published; cfg.Host != want {
+	if want := endpoint + "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/edge-1/k8s"; cfg.Host != want {
 		t.Fatalf("Host = %q, want %q", cfg.Host, want)
 	}
-	if cfg.BearerToken != "" || cfg.BearerTokenFile != "" || cfg.AuthProvider != nil || cfg.ExecProvider != nil {
-		t.Fatal("the edgeproxy config must carry no standing credential: the identity supplies one per request")
-	}
-	if cfg.WrapTransport == nil {
-		t.Fatal("the edgeproxy config carries no identity transport, so nothing would authenticate")
-	}
-	if !cfg.Insecure {
-		t.Fatal("insecure=true must carry over to the data path (RAILGRID_HUB_INSECURE)")
+	if cfg.BearerToken != "provider-token" || !cfg.Insecure {
+		t.Fatal("the provider's own credential and TLS settings must carry over: the claim is the authorization, the credential is kuery's")
 	}
 	if cfg.QPS != 50 || cfg.Burst != 100 {
 		t.Fatalf("QPS/Burst = %v/%v, want 50/100", cfg.QPS, cfg.Burst)
 	}
-
-	// The wrapper is what actually presents the identity.
-	recorded := ""
-	rt := cfg.WrapTransport(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		recorded = req.Header.Get("Authorization")
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
-	}))
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.Host, nil)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	if _, err := rt.RoundTrip(request); err != nil {
-		t.Fatalf("round trip: %v", err)
-	}
-	if recorded != "Bearer minted-token" {
-		t.Fatalf("Authorization = %q, want the workspace identity's token", recorded)
-	}
-
-	strict, err := edgeProxyConfig("https://hub.example.com", "c", "e", published, identity, false)
-	if err != nil {
-		t.Fatalf("edgeProxyConfig (strict): %v", err)
-	}
-	if strict.Insecure {
-		t.Fatal("insecure=false must keep TLS verification on")
-	}
 }
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-// identityFor is what binds a reconcile to a credential. It is keyed on the
-// APIBinding's UID, so a workspace that disables and re-enables kuery gets a
-// new identity rather than inheriting the old one's grant.
-func TestIdentityForIsPerBinding(t *testing.T) {
-	const cluster = "btykuuy2789iyolq"
-	c := &Controller{identities: map[string]*workspaceIdentity{}}
-
-	binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Name: "kuery", UID: "b-1"}}
-	first := c.identityFor(binding, cluster)
-	if again := c.identityFor(binding, cluster); again != first {
-		t.Fatal("the same binding must reuse its identity, so its watch is not re-dialled")
-	}
-
-	recreated := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Name: "kuery", UID: "b-2"}}
-	if next := c.identityFor(recreated, cluster); next == first {
-		t.Fatal("a recreated binding must not inherit its predecessor's identity")
-	}
-}
-
-// A workspace that disables kuery has its identity revoked rather than left to
-// expire: the APIBinding is gone, so the token should stop working now.
-func TestDropClusterReleasesTheIdentity(t *testing.T) {
+// A workspace that has not accepted kuery's permission claim on the edges
+// provider's clusters is where an edge read now fails — kcp serves a claimed
+// resource through the claiming export's virtual workspace only for consumers
+// that accepted it, so such a workspace simply contributes no edges.
+//
+// That must degrade the way an unreachable workspace does: named, logged and
+// looked at again, never an error that crash-loops a reconciler and never a
+// process that declines to start.
+func TestWorkspaceWithoutTheAcceptedClaimIsRetriedNotFailed(t *testing.T) {
 	ctx := context.Background()
-	hub := &fakeIdentityHub{}
-	c := &Controller{
-		identityCache: newIdentityCache(hub.client(t)),
-		identities:    map[string]*workspaceIdentity{},
-		edgeWatches:   map[string]edgeWatch{},
-		engaged:       map[string]engagedEdge{},
-		registry: NewRegistryWithClient(ctrlfake.NewClientBuilder().
-			WithScheme(NewScheme()).
-			WithStatusSubresource(&kueryv1alpha1.Engagement{}).
-			Build()),
-	}
 	const cluster = "btykuuy2789iyolq"
-	identity := c.identityFor(&apiskcpv1alpha2.APIBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "kuery", UID: "b-1"},
-	}, cluster)
-	if _, err := identity.Token(ctx); err != nil {
-		t.Fatalf("token: %v", err)
-	}
 
-	c.dropCluster(ctx, cluster)
-
-	hub.mu.Lock()
-	deletes := len(hub.deletes)
-	hub.mu.Unlock()
-	if deletes != 1 {
-		t.Fatalf("deletes = %d, want the identity revoked on disable", deletes)
+	scheme := NewScheme()
+	if err := apiskcpv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
 	}
-	if len(c.identities) != 0 {
-		t.Fatalf("identities after dropCluster = %d, want 0", len(c.identities))
-	}
-}
-
-func TestStripClusterSuffix(t *testing.T) {
-	cases := map[string]string{
-		"https://hub:9443/clusters/root:railgrid:providers:kuery": "https://hub:9443",
-		"https://hub:9443": "https://hub:9443",
-	}
-	for in, want := range cases {
-		if got := stripClusterSuffix(in); got != want {
-			t.Fatalf("stripClusterSuffix(%q) = %q, want %q", in, got, want)
+	binding := func(accepted bool) *apiskcpv1alpha2.APIBinding {
+		b := &apiskcpv1alpha2.APIBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "kuery",
+				UID:         "b-1",
+				Annotations: map[string]string{"kcp.io/cluster": cluster},
+			},
+			Spec: apiskcpv1alpha2.APIBindingSpec{
+				Reference: apiskcpv1alpha2.BindingReference{
+					Export: &apiskcpv1alpha2.ExportBindingReference{Name: "kuery.providers.railgrid.ai"},
+				},
+			},
 		}
+		if accepted {
+			b.Status.AppliedPermissionClaims = []apiskcpv1alpha2.ScopedPermissionClaim{{
+				PermissionClaim: apiskcpv1alpha2.PermissionClaim{
+					GroupResource: apiskcpv1alpha2.GroupResource{Group: edgesAPIGroup, Resource: edgesResource},
+					Verbs:         []string{"get", "list", "watch"},
+				},
+			}}
+		}
+		return b
+	}
+
+	for _, tc := range []struct {
+		name     string
+		accepted bool
+		want     time.Duration
+	}{
+		{name: "claim not accepted yet", accepted: false, want: claimWaitRetry},
+		{name: "claim accepted", accepted: true, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(binding(tc.accepted)).Build()
+			c := &Controller{
+				cfg:      Config{APIExportName: "kuery.providers.railgrid.ai"},
+				observed: map[string]edgeObservation{},
+				engaged:  map[string]engagedEdge{},
+				wanted:   map[string]string{},
+				registry: NewRegistryWithClient(ctrlfake.NewClientBuilder().
+					WithScheme(NewScheme()).
+					WithStatusSubresource(&kueryv1alpha1.Engagement{}).
+					Build()),
+				clusterClientFor: func(context.Context, multicluster.ClusterName) (client.Client, error) {
+					return workspace, nil
+				},
+			}
+
+			result, err := c.Reconcile(ctx, edgeRequest(cluster, "kuery"))
+			if err != nil {
+				t.Fatalf("Reconcile: %v, want a wait rather than an error", err)
+			}
+			if result.RequeueAfter != tc.want {
+				t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, tc.want)
+			}
+			// Nothing is minted either way: the claim governs the objects and
+			// the call alike, and the credential is the provider's own.
+		})
 	}
 }
 
@@ -310,8 +250,8 @@ func TestVerifyTenantClusterDropsEngagementOnInvalidBinding(t *testing.T) {
 			WithScheme(NewScheme()).
 			WithStatusSubresource(&kueryv1alpha1.Engagement{}).
 			Build()),
-		edgeWatches: map[string]edgeWatch{},
-		wanted:      map[string]string{},
+		observed: map[string]edgeObservation{},
+		wanted:   map[string]string{},
 		engaged: map[string]engagedEdge{
 			storeName: {
 				cancel:   func() { cancelled = true },

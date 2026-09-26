@@ -8,15 +8,19 @@
 // provider backend has to run because it needs the engine, a server-held
 // credential, or Postgres-backed state that is not a kcp object at all.
 //
-// Every one of those verbs is now addressed the same way, on the data-plane
-// grammar the provider contract defines:
+// Every one of those verbs is a kcp CUSTOM SUBRESOURCE on the bound kind —
+// "{resource}/{verb}" on the agents APIExport — and is addressed like any other
+// kube path on the hub's kcp front door, built by portalkit's kubeVerbPath:
 //
-//	/services/providers/agents/dataplane/clusters/{cluster}/{resource}/{name}/{verb}
+//	/clusters/{cluster}/apis/agents.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail}]
 //
-// There is no /api/* surface left. The cluster is railgridContext.tenant — the
-// same kcp logical-cluster ID the kube half addresses — so both halves move
-// together on a workspace switch and neither can be pointed at a workspace the
-// other is not looking at.
+// kcp authenticates the caller, authorizes the verb with ordinary RBAC and
+// forwards the request to the provider. There is no /api/* surface left and no
+// hub-proxied spelling of a verb; only /oauth/providers and /mcp still go
+// through the hub's service proxy (serviceBase). The cluster is
+// railgridContext.tenant — the same kcp logical-cluster ID the kube half
+// addresses — so both halves move together on a workspace switch and neither
+// can be pointed at a workspace the other is not looking at.
 //
 // A consequence worth stating: the grammar addresses an OBJECT, so the feeds
 // that used to be workspace-wide (activity, inbox, usage, the event stream) are
@@ -37,9 +41,9 @@
 // those win. portalkit/tenant.ts's localStorage copy is the fallback for the
 // (brief) window before the host has pushed a context.
 //
-// Every backend call carries the Bearer token plus the X-Railgrid-Org /
-// X-Railgrid-Workspace headers the hub's tenant middleware requires; every kcp
-// call carries the same token against /clusters/<tenant>.
+// Every call — verb or object — goes through the host-owned transport
+// (providerFetch), which injects the Bearer token; the X-Railgrid-Org /
+// X-Railgrid-Workspace headers still ride on the few hub-proxied calls.
 
 import type {
   Agent,
@@ -73,8 +77,9 @@ import type {
   UsageResponse,
 } from './types'
 
+import { kubeVerbPath, type KubeResourceRef } from './portalkit/kube'
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
-import { Resources } from './resources'
+import { AGENTS, CONNECTIONS, MODELCREDENTIALS, RUNS, Resources, SCHEDULES, TRIGGERS } from './resources'
 
 export type { Tenant }
 export { ResourceError } from './resources'
@@ -144,8 +149,10 @@ export class ApiClient {
     return this.ctx
   }
 
-  // The host passes basePath as /ui/providers/agents; the backend lives under
-  // the service-proxy path (portalkit/tenant.serviceBase rewrites the prefix).
+  // The host passes basePath as /ui/providers/agents; the two routes that are
+  // not kcp API traffic — /oauth/providers and /mcp — live under the hub's
+  // service-proxy path (portalkit/tenant.serviceBase rewrites the prefix). A
+  // verb is never addressed this way: see verb().
   private url(path: string): string {
     return serviceBase(this.ctx?.basePath || '/ui/providers/agents') + path
   }
@@ -165,19 +172,42 @@ export class ApiClient {
   }
 
   /**
-   * dp builds one data-plane route:
-   * /dataplane/clusters/{cluster}/{resource}/{name}/{verb}[/{tail}][?query]
+   * verb builds the kube path of one data-plane verb — the custom subresource
+   * `{resource}/{verb}` on the named object:
    *
-   * `tail` is passed already-encoded because some verbs take several segments
-   * (a run id plus `wait`). `name` is the object the provider's two gates will
-   * authorize against, so it is never a client-side filter — it is the subject.
+   *   /clusters/{cluster}/apis/agents.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail}][?query]
+   *
+   * It is fetched as-is: a kube path is rooted at the portal origin, and the
+   * host transport injects the bearer. `name` is the object kcp authorizes
+   * the verb on and the provider's gate checks visibility of, so it is never
+   * a client-side filter — it is the subject. `tail` is raw; kubeVerbPath
+   * encodes each segment.
    */
-  private dp(resource: string, name: string, verb: string, tail = '', query = ''): string {
+  private verb(ref: KubeResourceRef, name: string, verb: string, opts: { query?: Record<string, string | number | boolean | undefined> } = {}): string {
     const cluster = this.cluster()
     if (!cluster) throw new ApiError(400, 'no workspace selected')
-    if (!name) throw new ApiError(400, `a ${resource.replace(/s$/, '')} name is required`)
-    const suffix = tail ? `/${tail}` : ''
-    return `/dataplane/clusters/${enc(cluster)}/${resource}/${enc(name)}/${verb}${suffix}${query}`
+    if (!name) throw new ApiError(400, `a ${ref.resource.replace(/s$/, '')} name is required`)
+    return kubeVerbPath(cluster, ref, name, verb, opts)
+  }
+
+  /**
+   * verbTail appends the one tail segment a verb takes (a session id, an inbox
+   * item id) to a verb path, unencoded.
+   *
+   * kubeVerbPath's own `tail` option percent-encodes each segment, but the
+   * provider's parser refuses a path that ARRIVED percent-encoded
+   * (dataplane.ParseSubresourceRequest) and accepts exactly the segments Go's
+   * url.PathEscape leaves untouched — which is where a session id such as
+   * "schedule:daily" lives (":" is legal in a path segment; encoded as %3A it
+   * would be refused). So the segment is checked here against that same rule
+   * and sent as-is; anything else is refused with the answer the provider
+   * would give.
+   */
+  private verbTail(path: string, tail: string): string {
+    if (!tail || tail === '.' || tail === '..' || !VERB_TAIL_SEGMENT.test(tail)) {
+      throw new ApiError(400, `${JSON.stringify(tail)} is not a valid path segment`)
+    }
+    return `${path}/${tail}`
   }
 
   // agentNames are the agents this caller can see. Every fan-out below is
@@ -279,14 +309,33 @@ export class ApiClient {
     return new ApiError(r.status, body?.error?.message || body?.message || r.statusText || `HTTP ${r.status}`)
   }
 
+  // get and send take a hub-proxied path (/oauth/providers) and rewrite it
+  // under the service proxy; getVerb, sendVerb and listVerb take a kube path
+  // from verb() and fetch it as-is.
   async get<T>(path: string): Promise<T> {
-    const r = await this.fetch(this.url(path), { credentials: 'same-origin', headers: this.headers(false) })
+    return this.getURL(this.url(path))
+  }
+
+  async send<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    return this.sendURL(method, this.url(path), body, signal)
+  }
+
+  private getVerb<T>(path: string): Promise<T> {
+    return this.getURL(path)
+  }
+
+  private sendVerb<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    return this.sendURL(method, path, body, signal)
+  }
+
+  private async getURL<T>(url: string): Promise<T> {
+    const r = await this.fetch(url, { credentials: 'same-origin', headers: this.headers(false) })
     if (!r.ok) throw await this.fail(r)
     return r.json() as Promise<T>
   }
 
-  async send<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    const r = await this.fetch(this.url(path), {
+  private async sendURL<T>(method: string, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const r = await this.fetch(url, {
       method,
       credentials: 'same-origin',
       headers: this.headers(body !== undefined),
@@ -297,10 +346,10 @@ export class ApiClient {
     return (r.status === 204 ? (undefined as unknown) : await r.json()) as T
   }
 
-  // list<T> unwraps the standard { items: [...] } list envelope, tolerating a
-  // missing body.
-  async list<T>(path: string): Promise<T[]> {
-    const res = await this.get<{ items?: T[] }>(path)
+  // listVerb unwraps the standard { items: [...] } list envelope a verb
+  // answers with, tolerating a missing body.
+  private async listVerb<T>(path: string): Promise<T[]> {
+    const res = await this.getVerb<{ items?: T[] }>(path)
     return res.items || []
   }
 
@@ -314,11 +363,11 @@ export class ApiClient {
   deleteAgent = (name: string): Promise<void> => this.resources.deleteAgent(name)
 
   listSessions = (agent: string): Promise<SessionMeta[]> =>
-    this.list<SessionMeta>(this.dp('agents', agent, 'sessions'))
+    this.listVerb<SessionMeta>(this.verb(AGENTS, agent, 'sessions'))
   deleteSession = (agent: string, session: string): Promise<void> =>
-    this.send('DELETE', this.dp('agents', agent, 'session', enc(session)))
+    this.sendVerb('DELETE', this.verbTail(this.verb(AGENTS, agent, 'session'), session))
   listMessages = (agent: string, session: string, limit = 200): Promise<TranscriptMessage[]> =>
-    this.list<TranscriptMessage>(this.dp('agents', agent, 'messages', '', `?session=${enc(session)}&limit=${limit}`))
+    this.listVerb<TranscriptMessage>(this.verb(AGENTS, agent, 'messages', { query: { session, limit } }))
 
   // Model credentials are ModelCredential objects in the tenant workspace,
   // written through kcp; the API key stays in the Secret each one points at.
@@ -345,14 +394,14 @@ export class ApiClient {
    * surfaces as a 404 in someone's chat window.
    */
   testCredential = (name: string, model?: string): Promise<CredentialTestResult> =>
-    this.send('POST', this.dp('modelcredentials', name, 'test'), model ? { model } : undefined)
+    this.sendVerb('POST', this.verb(MODELCREDENTIALS, name, 'test'), model ? { model } : undefined)
   /**
    * discoverCredential asks the endpoint what it serves. It also refreshes the
    * object's status.models, so the list a person just saw and the list the
    * object reports are the same one.
    */
   discoverCredential = (name: string): Promise<CredentialTestResult> =>
-    this.send('POST', this.dp('modelcredentials', name, 'discover'))
+    this.sendVerb('POST', this.verb(MODELCREDENTIALS, name, 'discover'))
 
   // The curated catalog is compiled-in reference data — prices, context
   // windows, capabilities — with no tenant content, so it ships in the bundle
@@ -371,7 +420,7 @@ export class ApiClient {
   // workspace would otherwise fault the dashboard on its first render.
   usage = async (days: number): Promise<UsageResponse> => {
     const parts = await this.settleAll((agent) =>
-      this.get<UsageResponse>(this.dp('agents', agent, 'usage', '', `?days=${days}`)),
+      this.getVerb<UsageResponse>(this.verb(AGENTS, agent, 'usage', { query: { days } })),
     )
     return mergeUsage(days, parts)
   }
@@ -392,11 +441,11 @@ export class ApiClient {
     this.resources.patchConnection(name, body)
   deleteConnection = (name: string): Promise<void> => this.resources.deleteConnection(name)
   testConnection = (name: string): Promise<unknown> =>
-    this.send('POST', this.dp('connections', name, 'test'))
+    this.sendVerb('POST', this.verb(CONNECTIONS, name, 'test'))
   enableInbound = (name: string): Promise<{ webhookURL: string; registered: boolean; note: string }> =>
-    this.send('POST', this.dp('connections', name, 'enable-inbound'), { publicBaseURL: location.origin })
+    this.sendVerb('POST', this.verb(CONNECTIONS, name, 'enable-inbound'), { publicBaseURL: location.origin })
   oauthAuthorize = (name: string): Promise<{ authorizeURL: string }> =>
-    this.send('POST', this.dp('connections', name, 'authorize'), { publicBaseURL: location.origin })
+    this.sendVerb('POST', this.verb(CONNECTIONS, name, 'authorize'), { publicBaseURL: location.origin })
   // Which platform-wide OAuth apps the operator configured is a fact about the
   // deployment with no object to hang a verb on, so it lives with the rest of
   // the browser OAuth flow under /oauth/.
@@ -420,18 +469,18 @@ export class ApiClient {
   deleteSchedule = (name: string): Promise<void> => this.resources.deleteSchedule(name)
   // Run-now is asynchronous: 202 + the runID to follow in Activity.
   runSchedule = (name: string): Promise<{ runID: string }> =>
-    this.send('POST', this.dp('schedules', name, 'run'))
+    this.sendVerb('POST', this.verb(SCHEDULES, name, 'run'))
 
   listTriggers = (): Promise<Trigger[]> => this.resources.listTriggers()
   createTrigger = (body: TriggerCreate): Promise<Trigger> => this.resources.createTrigger(body)
   patchTrigger = (name: string, body: TriggerPatch): Promise<Trigger> => this.resources.patchTrigger(name, body)
   deleteTrigger = (name: string): Promise<void> => this.resources.deleteTrigger(name)
   runTrigger = (name: string): Promise<{ runID: string }> =>
-    this.send('POST', this.dp('triggers', name, 'run'))
+    this.sendVerb('POST', this.verb(TRIGGERS, name, 'run'))
 
   listInbox = async (): Promise<InboxItem[]> => {
     const pages = await this.settleAll((agent) =>
-      this.list<InboxItem>(this.dp('agents', agent, 'inbox')),
+      this.listVerb<InboxItem>(this.verb(AGENTS, agent, 'inbox')),
     )
     const items = pages.flat()
     for (const item of items) if (item.id && item.agentName) this.inboxAgents.set(item.id, item.agentName)
@@ -439,7 +488,7 @@ export class ApiClient {
   }
   resolveInbox = async (id: string, decision: 'approve' | 'deny' | 'answer', response?: string): Promise<InboxItem> => {
     const agent = await this.agentForInboxItem(id)
-    return this.send('POST', this.dp('agents', agent, 'inbox-resolve', enc(id)), { decision, response })
+    return this.sendVerb('POST', this.verbTail(this.verb(AGENTS, agent, 'inbox-resolve'), id), { decision, response })
   }
 
   // Runs are objects. Listing them, reading one and deleting one are kube
@@ -471,7 +520,7 @@ export class ApiClient {
     const summary = runSummaryFromObject(object)
     let trace: Partial<RunDetail> = {}
     try {
-      trace = await this.get<RunDetail>(this.dp('runs', id, 'trace'))
+      trace = await this.getVerb<RunDetail>(this.verb(RUNS, id, 'trace'))
     } catch (e) {
       // A run whose rows have been purged, or a caller without the trace grant,
       // still gets the object. An empty trace is a true statement about what we
@@ -494,11 +543,11 @@ export class ApiClient {
   }
 
   cancelRun = (id: string): Promise<{ id: string; cancelling: boolean }> =>
-    this.send('POST', this.dp('runs', id, 'cancel'))
+    this.sendVerb('POST', this.verb(RUNS, id, 'cancel'))
 
   /** waitRun blocks until the run settles. For a caller with no watch to hold. */
   waitRun = (id: string, timeoutSeconds = 60): Promise<RunDetail> =>
-    this.get<RunDetail>(this.dp('runs', id, 'wait', '', `?timeoutSeconds=${timeoutSeconds}`))
+    this.getVerb<RunDetail>(this.verb(RUNS, id, 'wait', { query: { timeoutSeconds } }))
 
   deleteRun = (id: string): Promise<void> => this.resources.deleteRun(id)
 
@@ -506,9 +555,11 @@ export class ApiClient {
 
   // chatStream POSTs a message and yields parsed SSE frames as they arrive. The
   // caller drives the loop and applies deltas/tool events/errors. `signal`
-  // aborts the fetch so a Stop button can drop the stream immediately.
+  // aborts the fetch so a Stop button can drop the stream immediately. The
+  // stream rides the kube path like every other verb: kcp's reverse proxy
+  // flushes as the provider writes.
   async *chatStream(agent: string, message: string, sessionID: string, signal?: AbortSignal): AsyncGenerator<SSEEvent> {
-    const r = await this.fetch(this.url(this.dp('agents', agent, 'chat')), {
+    const r = await this.fetch(this.verb(AGENTS, agent, 'chat'), {
       method: 'POST',
       credentials: 'same-origin',
       headers: this.headers(true),
@@ -523,10 +574,9 @@ export class ApiClient {
   // see, as one merged stream.
   //
   // It is a plain fetch rather than EventSource because EventSource cannot send
-  // the Authorization / X-Railgrid-* headers the hub proxy requires. onOpen
-  // fires as soon as any stream's response headers are in, which is the real
-  // liveness signal — the server may legitimately send no parsable event for
-  // minutes.
+  // the Authorization header the kcp front door requires. onOpen fires as soon
+  // as any stream's response headers are in, which is the real liveness signal
+  // — the server may legitimately send no parsable event for minutes.
   //
   // One connection per agent is the cost of the grammar addressing an object:
   // the caller was authorized to watch THIS agent, not the workspace. It is
@@ -558,7 +608,7 @@ export class ApiClient {
     for (const name of names) {
       void (async () => {
         try {
-          const r = await this.fetch(this.url(this.dp('agents', name, 'events')), {
+          const r = await this.fetch(this.verb(AGENTS, name, 'events'), {
             credentials: 'same-origin',
             headers: this.headers(false),
             signal,
@@ -592,6 +642,13 @@ export class ApiClient {
     if (failure && !signal.aborted) throw failure
   }
 }
+
+// VERB_TAIL_SEGMENT is the set of characters Go's url.PathEscape leaves as they
+// are in a path segment: RFC 3986 unreserved plus the sub-delims and ":" / "@"
+// a segment may carry. It is the provider's rule for a tail segment
+// (provider-sdk/dataplane validSegment), mirrored so the client refuses what
+// the server would.
+const VERB_TAIL_SEGMENT = /^[A-Za-z0-9\-._~!$&'()*+:=@]+$/
 
 // MAX_EVENT_STREAMS caps the fan-out. A workspace with more agents than this
 // polls for the rest, which is what the store already does whenever the stream
@@ -707,7 +764,6 @@ function mergeUsage(days: number, parts: UsageResponse[]): UsageResponse {
   }
 }
 
-const enc = encodeURIComponent
 
 // readSSE turns a byte stream into parsed SSE events.
 //

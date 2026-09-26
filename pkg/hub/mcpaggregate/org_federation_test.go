@@ -31,7 +31,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/railgrid/provider-sdk/dataplane"
 
+	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
@@ -49,7 +51,7 @@ const (
 
 // seenRequest is what one fake backend observed about one inbound request.
 type seenRequest struct {
-	path, method, authorization, user, tenant, cluster string
+	path, method, authorization, upstream, user, tenant, cluster string
 }
 
 // backendLog records requests a fake backend received.
@@ -64,6 +66,7 @@ func (l *backendLog) add(r *http.Request, method string) {
 	l.reqs = append(l.reqs, seenRequest{
 		path: r.URL.Path, method: method,
 		authorization: r.Header.Get("Authorization"),
+		upstream:      r.Header.Get(dataplane.HeaderUpstreamAuthorization),
 		user:          r.Header.Get("X-Railgrid-User"),
 		tenant:        r.Header.Get("X-Railgrid-Tenant"),
 		cluster:       r.Header.Get("X-Railgrid-Cluster"),
@@ -130,10 +133,12 @@ func (f *fakeIssuer) tuples() []string {
 	return append([]string(nil), f.calls...)
 }
 
-// edgePath is where the platform edges provider serves a tunnelled request to
-// an org-owned provider's Service (providers.EdgeRoute.EdgeProxyPath).
+// edgePath is the kcp path that carries a tunnelled request to an org-owned
+// provider's Service: the edges provider's services/{name}/proxy custom
+// subresource (providers.EdgeRoute.EdgeProxyPath). The fixture's edges server
+// stands in for kcp's front door here.
 func edgePath(cluster, service string) string {
-	return "/dataplane/clusters/" + cluster + "/services/" + service + "/proxy"
+	return apiurl.EdgeServiceProxyPath(cluster, service, "proxy")
 }
 
 type orgFixture struct {
@@ -230,6 +235,8 @@ func newOrgFixture(t *testing.T) *orgFixture {
 
 	backendProxy := providers.NewBackendProxy(reg, logr.Discard())
 	backendProxy.SetDelegatedTokenIssuer(f.issuer)
+	kcpFrontDoor, _ := url.Parse(edgesURL.String())
+	backendProxy.SetKCPFrontDoor(kcpFrontDoor, http.DefaultTransport)
 
 	f.handler = New(Options{
 		Providers: RegistryEnumerator(reg, backendProxy, logr.Discard()),
@@ -306,14 +313,20 @@ func assertOrgRequestsDelegated(t *testing.T, reqs []seenRequest, wantToken, wan
 	t.Helper()
 	n := 0
 	for _, r := range reqs {
-		if !strings.HasPrefix(r.path, "/dataplane/") {
+		if !strings.HasPrefix(r.path, "/clusters/") {
 			continue
 		}
 		n++
-		if r.authorization != "Bearer "+wantToken {
-			t.Errorf("org-owned provider request %s %s carried Authorization %q, want the delegated token %q", r.method, r.path, r.authorization, wantToken)
+		// The hop to kcp authenticates as the hub (the transport's business);
+		// the delegated token is the upstream Authorization the edges service
+		// proxy presents to the org-owned provider.
+		if r.authorization != "" {
+			t.Errorf("org-owned provider request %s %s carried Authorization %q on the kcp hop, want none", r.method, r.path, r.authorization)
 		}
-		if _, isCallerBearer := callers[strings.TrimPrefix(r.authorization, "Bearer ")]; isCallerBearer {
+		if r.upstream != "Bearer "+wantToken {
+			t.Errorf("org-owned provider request %s %s carried %s %q, want the delegated token %q", r.method, r.path, dataplane.HeaderUpstreamAuthorization, r.upstream, wantToken)
+		}
+		if _, isCallerBearer := callers[strings.TrimPrefix(r.upstream, "Bearer ")]; isCallerBearer {
 			t.Errorf("a caller's own bearer reached an org-owned provider (%s)", r.path)
 		}
 		if r.user != wantUser {
@@ -376,8 +389,8 @@ func TestOrgMemberFederatesOwnProvidersOverEdge(t *testing.T) {
 	for _, r := range f.edges.all() {
 		if r.method == "tools/call" {
 			calls++
-			if r.authorization != "Bearer "+infraToken {
-				t.Fatalf("tools/call to the org provider carried Authorization %q", r.authorization)
+			if r.upstream != "Bearer "+infraToken {
+				t.Fatalf("tools/call to the org provider carried %s %q, want the delegated token", dataplane.HeaderUpstreamAuthorization, r.upstream)
 			}
 		}
 	}

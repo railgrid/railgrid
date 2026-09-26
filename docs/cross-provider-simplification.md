@@ -3,12 +3,36 @@
 **Status:** Largely implemented — see "Status after remediation" below. The
 August 2026 audit body is retained as history.
 **Owner:** TBD
-**Last updated:** 2026-09-19 (status section); audit body 2026-08-08
+**Last updated:** 2026-09-25 (CatalogEntry contract note); 2026-09-19 (status
+section); audit body 2026-08-08
+
+> **2026-09-25 — the CatalogEntry contract was restructured.** `CatalogEntrySpec`
+> is now four sections: `export` (the APIExport's name plus its resources, each
+> carrying the `verbs[]` and `actions[]` served on it), `requires` (one list,
+> keyed by API group, for everything the provider does not own — it replaced
+> both `spec.apiExport.permissionClaims` and `spec.dependencies[].composes[]`),
+> `serving` and `hub`. Field paths named in the audit body below are the old
+> ones and are kept as written; the mapping is in
+> [roadmap/provider-contract-remediation.md](./roadmap/provider-contract-remediation.md)
+> §"Status update 2026-09-25 — the CatalogEntry contract is four sections".
+> The audit's "verbs exist nowhere machine-readable" gap (§ below) is closed:
+> both verbs and actions are declared per resource under `spec.export`.
 **Reads as a delta on:** [providers.md](./providers.md),
 [provider-connectivity-contract.md](./provider-connectivity-contract.md),
 [provider-actions.md](./provider-actions.md)
 
 ---
+
+> **Superseded in part (2026-09-25).** Data-plane verbs and actions are now
+> reachable **only** as kcp custom subresources on the provider's APIExport
+> (`/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}`). The
+> hub-proxied grammar `/services/providers/{name}/{dataplane,actions}/clusters/…`,
+> the caller-bearer "two gates", `X-Railgrid-Cluster` on a verb and
+> `dataplane.ParsePath`/`ProviderPath` described below no longer exist; the hub's
+> backend proxy carries MCP, browser OAuth, signed webhooks, the agent tunnel
+> and health only. The current contract is
+> [provider-connectivity-contract.md](./provider-connectivity-contract.md)
+> §"Pillar 2 route classes"; this document is kept as the dated record.
 
 ## Status after remediation (2026-09-19)
 
@@ -25,7 +49,7 @@ August 2026 audit body is retained as history.
 |---|---|---|---|
 | M1 | Bound CRs via APIBinding | **unchanged** — still the healthy core | — |
 | M2 | Provider SA + endpoint slice + claims | **unchanged in mechanics, single-sourced in declaration.** A claim is written once, in `manifest.yaml`; `provider-sdk/cmd/apiexportgen` stamps the APIExport; `init` applies schemas + export from `RAILGRID_KCP_DIR` and adds only `identityHash` at runtime | `hack/verify-provider-contract.mjs` (`claims-parity`, `export-copy`), `providers/*/init_cmd.go` |
-| M3 | Blanket `secrets` claims as a credential side-door | **closed (2026-09-20).** Every surviving `secrets` claim is label-scoped to `railgrid.ai/owner: <provider>` via kcp's `defaultSelector`; kuery and factory claim nothing; every Secret writer stamps the label; `verify-provider-contract` refuses an unscoped core claim | `providers/*/manifest.yaml` `permissionClaims[].selector`, `provider-sdk/claimscope`, `hack/verify-provider-contract.mjs` (`claim-selector`) |
+| M3 | Blanket `secrets` claims as a credential side-door | **closed (2026-09-20).** Every surviving `secrets` claim is label-scoped to `railgrid.ai/owner: <provider>` via kcp's `defaultSelector`; kuery and factory claim nothing; every Secret writer stamps the label; `verify-provider-contract` refuses an unscoped core claim | `providers/*/manifest.yaml` `requires[].resources[].selector`, `provider-sdk/claimscope`, `hack/verify-provider-contract.mjs` (`claim-selector`) |
 | M4 | Hub backend-proxy data-plane paths, in four dialects | **collapsed to one.** `provider-sdk/dataplane` owns the grammar, the two gates and the limits; `provider-sdk/serve` owns the server layout and refuses anything outside it. Every in-tree provider serves through `serve.New`. `/edgeproxy/…/apis/…`, `/s2s/*` and the ad-hoc `/api/*` surfaces are gone, not aliased | `provider-sdk/dataplane/{path,gate,serve}.go`, `provider-sdk/serve/serve.go`, `providers/*/main.go` |
 | M5 | MCP as a third access path | **demoted to a projection.** The aggregate verifies the bearer and its right to the addressed cluster *before* fan-out, and enumerates for that verified caller; per-edge MCP is now an ordinary data-plane verb, not its own mount | `pkg/hub/mcpaggregate/verifier.go`, `pkg/hub/mcpaggregate/enumerator.go`, `providers/edges/internal/tunnel/grammar.go` (`VerbMCP`) |
 | M6 | Provider Actions as a hub router | **deleted.** `pkg/hub/provideractions` no longer exists; an action is a verb under `dataplane.ActionsRoot` on the ordinary backend proxy, authorized by the same two gates. `spec.virtualWorkspace` is retired from the CatalogEntry type | `pkg/hub/server.go:431-434`, `provider-sdk/dataplane/path.go` (`ActionsRoot`) |
@@ -38,7 +62,7 @@ August 2026 audit body is retained as history.
 
 1. **Foreign credential via the Secrets side-door — closed.** App Studio no
    longer reads code's `Connection` Secret. It invokes code's
-   `mint_registry_token` action **as the caller**, then writes its own
+   `mint-registry-token` action **as the caller**, then writes its own
    `dockerconfigjson` Secret and names it on the Instance's
    `spec.imagePullSecretRef`
    (`providers/app-studio/api/project_promote.go:56-61,66-68,87-103,172-185`).
@@ -305,7 +329,7 @@ dedicated hub routers, no second URL field, no reserved-path denials needed
 - Streaming/proxy verbs: on the resource contract, as today
   (`Template.spec.dataPlane.endpoints{}` —
   [types_template.go:459](../providers/infrastructure/apis/v1alpha1/types_template.go)).
-- Typed request/response verbs ("actions"): in `CatalogEntry.spec.actions`
+- Typed request/response verbs ("actions"): in `CatalogEntry.spec.export.resources[].actions`
   exactly as PR #499 built it — schemas, canonical digest, limits, consent,
   deprecation, validated fail-closed by the hub registry
   ([apis/providers/v1alpha1/actions.go](../apis/providers/v1alpha1/actions.go)).
@@ -327,9 +351,9 @@ Humans and workload SAs pass the identical gates. There is no hub-side grant
 authorizer; **grants are kcp RBAC rules**:
 
 ```yaml
-# "this workload may run query_table on Table trips"
+# "this workload may run query-table on Table trips"
 - apiGroups: ["databricks.railgrid.ai"]
-  resources: ["tables/query_table"]
+  resources: ["tables/query-table"]
   verbs: ["create"]
   resourceNames: ["trips"]
 ```
@@ -468,11 +492,11 @@ Anchors: [server.go:206,355,358](../pkg/hub/server.go),
 **Phase 1 — Provider Actions onto the P2 grammar (reshapes PR #499). DONE on
 this branch.**
 Move the databricks action route to
-`/services/providers/databricks/actions/clusters/{clusterID}/tables/{name}/query_table/v1`;
+`/services/providers/databricks/actions/clusters/{clusterID}/tables/{name}/query-table/v1`;
 add the verb SSAR; extend
 [project_scope.go](../pkg/hub/workloadidentity/project_scope.go) to collect
 `allowedActions` and [ensureWorkloadRBAC](../pkg/hub/serviceaccounts/workload_identity.go)
-to emit `tables/query_table` rules; delete
+to emit `tables/query-table` rules; delete
 [provideractions/handler.go](../pkg/hub/provideractions/handler.go) +
 [authorizer.go](../pkg/hub/provideractions/authorizer.go) and the `/actions`
 proxy reservation; retire `virtualWorkspace.url` (X-3) and put

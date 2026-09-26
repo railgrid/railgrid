@@ -60,7 +60,7 @@ values, and the platform stamps (`expose.fqdn`, `railgridCluster`,
 | apiserver validates/defaults instance specs against the per-template CRD schema (incl. injected `railgridMode`/`railgridActions*`) | the instance controller runs the same machinery (`instancespec` package: structural schema + defaults + CEL over the effective schema) and reports `Valid=False/InvalidValues` instead of rejecting at admission |
 | kro fork watches per-template GVRs across kcp workspaces (`multicluster` + `--deploy-to-local-runtime`) | kro runs SINGLE-CLUSTER on the runtime cluster; the instance controller materializes a per-template kro CR (Namespaced, in `<cluster>-default`) per Instance and mirrors its status back |
 | application controller with a hardcoded per-kind table (`{oidc, optionalExposure, gateRequired}` per GVK) stamps fqdn + bridges secrets | same behavior in `controller/instance`, with the per-kind treatment derived from the Template (exposure class + schema shape) |
-| data plane addressed `/dataplane/clusters/<ws>/<plural>/<name>/<verb>` | only `<plural>` = `instances`; the contract resolves via the fetched instance's `spec.template` |
+| data plane addressed by per-template `<plural>` in the verb path | only `<plural>` = `instances` (`…/instances/<name>/<verb>` as a kcp custom subresource); the contract resolves via the fetched instance's `spec.template` |
 | consumers enumerate plurals in permission claims (`applications`, `searxngs`, …) | one claim: `instances` |
 
 ## The instance controller (`providers/infrastructure/controller/instance`)
@@ -98,7 +98,8 @@ secrets, release.
   payload that used to be the whole per-template spec goes under `values`
   verbatim (including `railgridMode`, `railgridActions*`, `access`).
 - **Claims**: `instances` + (already unclaimed, caller-RBAC) `templates`.
-- **Data plane**: `/services/providers/infrastructure/dataplane/clusters/<clusterID>/instances/<name>/<verb>`.
+- **Data plane**: `/clusters/<clusterID>/apis/infrastructure.railgrid.ai/v1alpha1/instances/<name>/<verb>[?component=<c>]`
+  — each declared verb is a kcp custom subresource on the infrastructure APIExport.
 - **Access gate SAR**: `get` on `instances/<name>` subresource `access`
   (templates' access-proxy env now says `RAILGRID_ACCESS_PROXY_INSTANCE_RESOURCE=instances`).
 - **Template names** (`searxng`, `browser`, `application`, …) remain the

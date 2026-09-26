@@ -2474,8 +2474,10 @@ const providerTools = computed<ProviderTool[]>(() => {
   if (!providerCatalogMatchesCurrentContext()) return []
   const out: ProviderTool[] = []
   for (const provider of providers.value) {
-    if (!provider.ready || !provider.hasUI || provider.name === 'app-studio') continue
-    for (const child of provider.children ?? []) {
+    // serving.ui present IS "this provider has a portal UI"; its children are
+    // the sub-pages the workbench can open as tools.
+    if (!provider.ready || !provider.serving?.ui || provider.name === 'app-studio') continue
+    for (const child of provider.serving.ui.children ?? []) {
       if (!isProjectToolProviderView(provider, child)) continue
       out.push({
         id: `${provider.name}/${child.builtinRoute}`,

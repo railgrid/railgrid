@@ -77,7 +77,7 @@ func (s *Server) projectLedgerFor(id identity) workspace.Ledger {
 	if s == nil {
 		return nil
 	}
-	if s.projectClientFor == nil && (s.tenant == nil || id.clusterID == "" || id.token == "") {
+	if s.projectClientFor == nil && id.provider == nil && (s.tenant == nil || id.clusterID == "") {
 		return nil
 	}
 	return &lazyProjectLedger{build: func() (workspace.Ledger, error) {

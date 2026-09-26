@@ -19,26 +19,30 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/railgrid/provider-sdk/dataplane"
+
+	"github.com/railgrid/provider-app-studio/internal/crossprovider"
 )
 
 // App Studio no longer holds a kubeconfig to the runtime cluster. The live
 // development data plane (logs, file sync, restart, preview readiness) is
-// served by the infrastructure provider as subresources on the workload
-// instance, reached through the hub backend proxy:
+// served by the infrastructure provider as kcp custom subresources on the
+// workload Instance — instances/{verb} — and App Studio calls them the one way
+// a provider calls another provider's verb: through its OWN APIExport virtual
+// workspace, as itself, at
 //
-//	{hub}/services/providers/{provider}/dataplane/clusters/{cluster}/{resource}/{name}/{verb}
-//	{hub}/…/{resource}/{name}/components/{component}/{verb}   (multi-tier templates)
+//	<export VW>/clusters/{cluster}/apis/infrastructure.railgrid.ai/v1alpha1/instances/{name}/{verb}[/{tail}][?component={component}]
 //
-// Neither half of that path is written here any more. {provider} is resolved
-// from the tenant's APIBinding for the infrastructure APIExport
-// (provider_binding.go), so a workspace running its own copy is reached by
-// the name it enabled; the rest is rendered by dataplane.ProviderPath, which
-// is the same grammar the serving provider parses with.
-//
-// The caller's bearer token is forwarded as-is; the infra provider authorizes
-// the request as that caller (a GET of the Instance, then an SSAR for
-// `create` on instances/{verb}) and owns the runtime-cluster credential. See
+// Each verb is a claim on this provider's export (manifest.yaml
+// spec.requires[].resources[], the "instances/<verb>" coordinate, whose
+// generated claim spells every verb) that the tenant accepted at Enable. kcp authorizes the call against that claim,
+// resolves it to whichever infrastructure copy the workspace bound, and
+// forwards it there impersonating App Studio; the infrastructure gate sees a
+// foreign provider whose claim is the authorization. The caller's identity
+// does not travel — cross-provider work is done as the provider — and the
+// infrastructure provider owns the runtime-cluster credential. See
 // docs/app-studio-runtime-decoupling.md and
 // docs/app-studio-template-sandboxes.md §3.
 const (
@@ -58,6 +62,10 @@ const (
 	dataPlaneMaxResponseBytes = 96 << 20
 )
 
+// infrastructureGroupVersion is the API the infrastructure provider serves its
+// Instance kind (and its verbs) under.
+var infrastructureGroupVersion = schema.GroupVersion{Group: crossprovider.InfrastructureAPIGroup, Version: "v1alpha1"}
+
 // dataPlaneRef addresses one data-plane target: an instance of a resource,
 // optionally scoped to one of its components. An empty Component addresses
 // instance-level verbs.
@@ -67,21 +75,23 @@ type dataPlaneRef struct {
 	Component string
 }
 
-// dataPlaneURL composes the hub URL for a data-plane verb on the provider
-// this workspace binds for infrastructure.
+// dataPlaneURL composes the URL of a data-plane verb on the infrastructure
+// object ref, through this provider's export virtual workspace.
 //
 // tail (with a leading slash, and optionally a "?query") is what the open
 // "proxy" verb addresses beyond the verb; the control verbs leave it empty.
-// The path is rendered by dataplane.ProviderPath, which refuses any segment
+// The path is rendered by dataplane.SubresourceURL, which refuses any segment
 // that would not parse back to the same request on the serving side — so a
-// component name with a slash in it fails here rather than rerouting the call.
+// component name with a slash in it fails here rather than rerouting the
+// call. The component travels as the ?component= query parameter, never in
+// the path (kcp would read it as a subresource named "components").
 func (s *Server) dataPlaneURL(ctx context.Context, id identity, ref dataPlaneRef, verb, tail string) (string, error) {
-	provider, err := s.providerFor(ctx, id, infraAPIExportName)
-	if err != nil {
-		return "", err
+	if s == nil || s.callers == nil {
+		return "", fmt.Errorf("no provider credential configured; cannot reach the infrastructure data plane")
 	}
 	path, query, _ := strings.Cut(strings.TrimPrefix(tail, "/"), "?")
-	route, err := dataplane.ProviderPath(provider, dataplane.DataplaneRoot, dataplane.Request{
+	gvr := infrastructureGroupVersion.WithResource(ref.Resource)
+	u, err := s.callers.ExportVerbURL(ctx, gvr, dataplane.Request{
 		ClusterID: id.clusterID,
 		Resource:  ref.Resource,
 		Name:      ref.Name,
@@ -90,27 +100,27 @@ func (s *Server) dataPlaneURL(ctx context.Context, id identity, ref dataPlaneRef
 		Tail:      path,
 	})
 	if err != nil {
-		return "", fmt.Errorf("addressing %s/%s %s on provider %q: %w", ref.Resource, ref.Name, verb, provider, err)
+		return "", fmt.Errorf("addressing %s/%s %s: %w", ref.Resource, ref.Name, verb, err)
 	}
-	u := strings.TrimRight(s.hubBase, "/") + route
 	if query != "" {
-		u += "?" + query
+		if strings.Contains(u, "?") {
+			u += "&" + query
+		} else {
+			u += "?" + query
+		}
 	}
 	return u, nil
 }
 
-// newDataPlaneRequest builds a data-plane request authenticated as the
-// caller (the same bearer token the caller authenticated to App Studio with).
+// newDataPlaneRequest builds a data-plane request authenticated as THIS
+// provider, addressed through its export virtual workspace.
 func (s *Server) newDataPlaneRequest(ctx context.Context, method string, id identity, ref dataPlaneRef, verb, tail string, body io.Reader) (*http.Request, error) {
-	if strings.TrimSpace(s.hubBase) == "" {
-		return nil, fmt.Errorf("hub URL is not configured; cannot reach the infrastructure data plane")
-	}
 	if strings.TrimSpace(id.clusterID) == "" {
 		return nil, fmt.Errorf("no workspace cluster on request; cannot address the development runtime")
 	}
 	// An empty resource or name would produce a URL with a hollow path segment
-	// and surface as a confusing 404/bad-gateway from the hub — fail fast with
-	// the real cause instead.
+	// and surface as a confusing 404 from kcp — fail fast with the real cause
+	// instead.
 	if strings.TrimSpace(ref.Resource) == "" || strings.TrimSpace(ref.Name) == "" {
 		return nil, fmt.Errorf("development target is incomplete (resource %q, name %q); the project's template binding did not resolve", ref.Resource, ref.Name)
 	}
@@ -122,32 +132,30 @@ func (s *Server) newDataPlaneRequest(ctx context.Context, method string, id iden
 	if err != nil {
 		return nil, err
 	}
-	if token := strings.TrimSpace(id.token); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	// The hub's provider proxy resolves the caller's scope from these headers
-	// exactly as it does for the portal. An org-owned (BYO) infrastructure
-	// provider is reached over the edge tunnel with a delegated token minted
-	// in the selected workspace, and the hub refuses that call with
-	// "a workspace selection (X-Railgrid-Workspace) is required" when the
-	// selection is missing. Without them every sandbox sync, exec, restart and
-	// log fetch against a tenant-hosted runtime fails with that 403 while the
-	// preview edge itself stays reachable.
-	if org := strings.TrimSpace(id.orgUUID); org != "" {
-		req.Header.Set("X-Railgrid-Org", org)
-	}
-	if ws := strings.TrimSpace(id.workspaceUUID); ws != "" {
-		req.Header.Set("X-Railgrid-Workspace", ws)
+	// Who asked, for the far end's logs. It authorizes nothing: kcp
+	// authorizes this call against App Studio's claim, as App Studio.
+	if user := strings.TrimSpace(id.user); user != "" {
+		req.Header.Set(dataplane.HeaderUser, user)
 	}
 	return req, nil
 }
 
-// sandboxDataPlaneClient returns an HTTP client for data-plane calls, honoring
-// the same TLS-skip knob the MCP client uses for hub-internal addressing.
+// sandboxDataPlaneClient returns an HTTP client for data-plane calls: the
+// provider's own credential and TLS settings (dataplane.Callers.
+// ProviderHTTPClient), bounded by timeout (0 leaves the call to its context).
 func (s *Server) sandboxDataPlaneClient(timeout time.Duration) *http.Client {
 	if s != nil && s.sandboxDataPlaneClientFactory != nil {
 		return s.sandboxDataPlaneClientFactory(timeout)
 	}
+	if s != nil && s.callers != nil {
+		if client, err := s.callers.ProviderHTTPClient(); err == nil {
+			bounded := *client
+			bounded.Timeout = timeout
+			return &bounded
+		}
+	}
+	// No provider credential: the request itself already failed to build
+	// (dataPlaneURL refuses), so this client is never asked to authenticate.
 	return &http.Client{Timeout: timeout, Transport: projectMCPTransport(s.mcpInsecureSkipTLSVerify)}
 }
 

@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	sdk "github.com/railgrid/provider-sdk/dataplane"
 )
 
 // ExecAction is the lifecycle operation requested by an exec call. Commands
@@ -112,9 +113,10 @@ type ExecCall struct {
 	// WorkspacePath is the project-relative component prefix used when the
 	// caller computed SourceDigest. It comes from the platform-owned Template.
 	WorkspacePath string
-	// CallerKey is a one-way digest of the forwarded caller token. It binds
-	// poll/cancel to the principal that started the session without exposing a
-	// runtime credential to the live component agent.
+	// CallerKey is a one-way digest of the caller's identity as kcp stamped
+	// it (there is no caller credential on a verb). It binds poll/cancel to
+	// the principal that started the session without exposing anything about
+	// that principal to the live component agent.
 	CallerKey string
 	// RuntimeNamespace is read from the instance status at the contract's
 	// RuntimeNamespacePath. It is provider-resolved and never request supplied.
@@ -127,8 +129,11 @@ type ExecCall struct {
 	IdempotencyKey string
 }
 
-func execCallerKey(token string) string {
-	sum := sha256.Sum256([]byte(token))
+// execCallerKey derives ExecCall.CallerKey from the proxied identity: the user
+// name kcp authenticated, plus the logical cluster a ServiceAccount lives in,
+// so two providers' identically named ServiceAccounts never share a session.
+func execCallerKey(caller sdk.ProxiedIdentity) string {
+	sum := sha256.Sum256([]byte(caller.ClusterName() + "\x00" + caller.User))
 	return fmt.Sprintf("%x", sum[:])
 }
 

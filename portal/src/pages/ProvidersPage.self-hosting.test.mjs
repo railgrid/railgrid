@@ -21,7 +21,7 @@ const source = await readFile(new URL('./ProvidersPage.vue', import.meta.url), '
 test('self-hosting Edges prerequisite uses catalog-owned availability states', () => {
   assert.match(source, /const edgesProvider = computed\(\(\) => providers\.byName\('edges'\)\)/)
   assert.match(source, /if \(!edges\) return 'absent'/)
-  assert.match(source, /return edges\.ready && edges\.hasUI \? 'ready' : 'unready'/)
+  assert.match(source, /return edges\.ready && !!edges\.serving\?\.ui \? 'ready' : 'unready'/)
 })
 
 test('only a ready Edges portal receives the provider deep link', () => {

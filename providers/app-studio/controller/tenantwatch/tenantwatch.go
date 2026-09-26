@@ -14,23 +14,29 @@ You may obtain a copy of the License at
 // and turns their events into reconcile requests for the owning Project or
 // Studio.
 //
-// Why not builder.Watches on the multicluster manager: the manager's
-// wildcard watch rides App Studio's APIExport virtual workspace, which only
-// serves the kinds the export claims. App Studio deliberately claims NO
-// first-party (*.railgrid.ai) kinds (init_cmd.go; docs/lessons-learned.md
-// 9 and 14) — a claim pins one serving identityHash for every consumer,
-// which breaks the moment an org self-hosts a dependency. The reconcilers
-// therefore already act through each workspace's OWN bindings as a
-// HUB-MINTED per-project/per-studio scoped identity
-// (controller/project/identity.go, provider-sdk/identityclient), reaching
-// the workspace at {hub}/clusters/{cluster}; this package watches through
-// that same path, with that same identity, and needs no claim at all.
+// The reconcilers READ AND WRITE these kinds on the multicluster manager's
+// own client: App Studio's APIExport claims all three, with no identityHash,
+// and kcp resolves such a claim per consumer workspace against a
+// cluster-scoped PermissionClaimPolicy. What this package still owns is the
+// EVENT SOURCE, and it stays on the tenant path on purpose.
 //
-// The identity's own rules are what make the watch legal: the composition
+// builder.Watches on the multicluster manager would put the events on the
+// manager's WILDCARD informer over the virtual workspace, and a controller
+// does not start until its sources sync — so a wildcard watch that cannot
+// establish itself would take the reconcilers down with it, for every
+// workspace, including the ones that are perfectly healthy. Watching each
+// workspace separately keeps a failure where it belongs: one cluster's
+// watcher, retried, while the rest keep converging.
+//
+// The identity's own rules are what make that watch legal: the composition
 // the CatalogEntry declares on each dependency (manifest.yaml
-// spec.dependencies[].composes) carries UNNAMED list and watch on the
+// spec.requires) carries UNNAMED list and watch on the
 // dependency kinds, which is the one shape a collection request can be
 // authorized by — RBAC does not apply resourceNames to a list or a watch.
+// The reconcilers reach the workspace at {hub}/clusters/{cluster} as a
+// HUB-MINTED per-project/per-studio scoped identity for their data-plane
+// calls (controller/project/identity.go, provider-sdk/identityclient); this
+// package borrows the same token.
 //
 // Lifecycle: a Source is engaged per cluster by the multicluster controller
 // (ForCluster), which is when the Hub learns the cluster's queue. Watchers
@@ -91,7 +97,7 @@ type Mapper func(ctx context.Context, c client.Client, evt Event) []types.Namesp
 
 // Dialer builds the dynamic client that watches one workspace cluster as the
 // given identity token (tenantaccess.NewDynamicClient in production).
-type Dialer func(cluster, token string) (dynamic.Interface, error)
+type Dialer func(cluster string) (dynamic.Interface, error)
 
 // Hub multiplexes per-cluster watchers to every engaged Source.
 type Hub struct {
@@ -114,7 +120,6 @@ type sink struct {
 }
 
 type watcher struct {
-	token  string
 	cancel context.CancelFunc
 	failed atomic.Bool
 }
@@ -188,12 +193,13 @@ func (h *Hub) engage(ctx context.Context, cluster string, sk *sink) {
 	}()
 }
 
-// Ensure starts (or, after an authentication failure, restarts with token)
-// the watchers for gvrs in cluster. It is a no-op for a cluster no source is
-// engaged for, for a hub without a dialer, and for watchers already running.
-// Callers pass only the kinds token may list and watch.
-func (h *Hub) Ensure(cluster, token string, gvrs ...schema.GroupVersionResource) {
-	if h == nil || h.dial == nil || cluster == "" || token == "" {
+// Ensure starts (or, after an authorization failure, restarts) the watchers
+// for gvrs in cluster. It is a no-op for a cluster no source is engaged for,
+// for a hub without a dialer, and for watchers already running. The dialer
+// acts as the provider through its export virtual workspace, so what may be
+// listed and watched is decided by the claims the tenant accepted.
+func (h *Hub) Ensure(cluster string, gvrs ...schema.GroupVersionResource) {
+	if h == nil || h.dial == nil || cluster == "" {
 		return
 	}
 	h.mu.Lock()
@@ -208,30 +214,29 @@ func (h *Hub) Ensure(cluster, token string, gvrs ...schema.GroupVersionResource)
 			if !w.failed.Load() {
 				continue
 			}
-			if w.token == token {
-				// The failing token is being offered again; wait for another.
-				continue
-			}
+			// A refused watcher is retried on the next Ensure: the refusal was
+			// a claim not (yet) accepted, and the APIBinding update that
+			// records acceptance re-enqueues the reconcile that calls here.
 			w.cancel()
 			delete(state.watchers, gvr)
 		}
 		if dyn == nil {
 			var err error
-			if dyn, err = h.dial(cluster, token); err != nil {
+			if dyn, err = h.dial(cluster); err != nil {
 				log.Printf("app-studio tenant watch: dial cluster %s: %v", cluster, err)
 				return
 			}
 		}
-		state.watchers[gvr] = h.startWatcher(state, cluster, token, gvr, dyn)
+		state.watchers[gvr] = h.startWatcher(state, cluster, gvr, dyn)
 	}
 }
 
-func (h *Hub) startWatcher(state *clusterState, cluster, token string, gvr schema.GroupVersionResource, dyn dynamic.Interface) *watcher {
+func (h *Hub) startWatcher(state *clusterState, cluster string, gvr schema.GroupVersionResource, dyn dynamic.Interface) *watcher {
 	wctx, cancel := context.WithCancel(state.ctx)
-	w := &watcher{token: token, cancel: cancel}
+	w := &watcher{cancel: cancel}
 	noteAuth := func(err error) {
 		if err != nil && (apierrors.IsUnauthorized(err) || apierrors.IsForbidden(err)) && !w.failed.Swap(true) {
-			log.Printf("app-studio tenant watch: %s in cluster %s: identity no longer authorized; waiting for a fresh token: %v", gvr.Resource, cluster, err)
+			log.Printf("app-studio tenant watch: %s in cluster %s: not authorized through the export virtual workspace (claim not accepted?); retried on the next reconcile: %v", gvr.Resource, cluster, err)
 			cancel()
 		}
 	}

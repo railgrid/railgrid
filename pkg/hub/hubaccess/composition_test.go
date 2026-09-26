@@ -19,8 +19,8 @@ package hubaccess
 import (
 	"testing"
 
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
-	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 var instances = CompositionRequirement{Dependency: "infrastructure", Group: "infrastructure.railgrid.ai", Resource: "instances"}
@@ -43,15 +43,49 @@ func TestComposeCapabilityRoundTrips(t *testing.T) {
 	}
 }
 
-func TestDeclaredCompositionsFlattensDependencies(t *testing.T) {
-	declared := DeclaredCompositions([]providers.Dependency{
-		{Name: "infrastructure", Composes: []providers.Composition{{Group: "infrastructure.railgrid.ai", Resource: "instances"}}},
-		{Name: "code", Composes: []providers.Composition{
-			{Group: "code.railgrid.ai", Resource: "repositories"},
-			{Group: "code.railgrid.ai", Resource: "repositorycommits"},
-		}},
-		{Name: "quickstart"},
-	})
+// A requirement on another provider names either a kind or one verb on a kind,
+// and both are recorded as compositions. A coordinate that did not parse back
+// would be offered for consent, recorded in the Grant, and then missing from
+// every listing that reads the Grant.
+func TestComposeCapabilityRoundTripsAVerbCoordinate(t *testing.T) {
+	capability := ComposeCapability("code.railgrid.ai", "repositories/commit")
+	if capability != "compose:code.railgrid.ai/repositories/commit" {
+		t.Fatalf("capability = %q", capability)
+	}
+	group, resource, ok := ParseComposeCapability(capability)
+	if !ok || group != "code.railgrid.ai" || resource != "repositories/commit" {
+		t.Fatalf("parse = (%q, %q, %v), want the coordinate intact", group, resource, ok)
+	}
+	// Nothing in the contract names anything deeper than a coordinate.
+	if _, _, ok := ParseComposeCapability("compose:code.railgrid.ai/repositories/commit/extra"); ok {
+		t.Fatal("a three-segment capability parsed as a composition")
+	}
+}
+
+// A composition is a requirement that NAMES a provider. A requirement on a
+// platform builtin belongs to nobody, so there is no "this provider manages
+// that provider's kinds here" consent to offer for it and it must not appear.
+func TestDeclaredCompositionsFlattensRequirements(t *testing.T) {
+	get := []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbGet}
+	declared := DeclaredCompositions([]providersv1alpha1.ProviderRequirement{{
+		Provider: "infrastructure",
+		Group:    "infrastructure.railgrid.ai",
+		Resources: []providersv1alpha1.ProviderRequiredResource{
+			{Name: "instances", Verbs: get},
+		},
+	}, {
+		Provider: "code",
+		Group:    "code.railgrid.ai",
+		Resources: []providersv1alpha1.ProviderRequiredResource{
+			{Name: "repositories", Verbs: get},
+			{Name: "repositorycommits", Verbs: get},
+		},
+	}, {
+		Group: "authorization.k8s.io",
+		Resources: []providersv1alpha1.ProviderRequiredResource{
+			{Name: "subjectaccessreviews", Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbCreate}},
+		},
+	}})
 	if len(declared) != 3 || declared[0] != instances || declared[2].Dependency != "code" {
 		t.Fatalf("declared = %+v", declared)
 	}

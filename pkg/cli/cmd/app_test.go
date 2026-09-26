@@ -26,7 +26,32 @@ import (
 	"time"
 )
 
-const appStudioPrefix = "/services/providers/app-studio/api/projects"
+// appStudioAPIPrefix is App Studio's kube API on the fake hub for cluster
+// cl-b. Projects are listed as CRs under it; everything else is a data-plane
+// verb, a custom subresource "projects/{verb}" or "studios/{verb}".
+const appStudioAPIPrefix = "/clusters/cl-b/apis/ai.railgrid.ai/v1alpha1"
+
+const (
+	appStudioProjects = appStudioAPIPrefix + "/projects"
+	appStudioStudio   = appStudioAPIPrefix + "/studios/studio"
+)
+
+// projectCR builds a Project CR as the hub's kcp proxy would serve it.
+func projectCR(name, displayName, phase, template, repositoryRef string) map[string]any {
+	spec := map[string]any{"displayName": displayName}
+	if template != "" {
+		spec["template"] = map[string]any{"name": template}
+	}
+	if repositoryRef != "" {
+		spec["repository"] = map[string]any{"repositoryRef": repositoryRef}
+	}
+	return map[string]any{
+		"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project",
+		"metadata": map[string]any{"name": name, "creationTimestamp": "2026-09-01T00:00:00Z"},
+		"spec":     spec,
+		"status":   map[string]any{"phase": phase},
+	}
+}
 
 // runRoot executes the railgrid root command against the given kubeconfig.
 // The path must be captured before NewRootCommand: binding --kubeconfig resets
@@ -116,14 +141,19 @@ func TestAppCommands(t *testing.T) {
 	hub := newFakeHub(t)
 	path := hub.useKubeconfig("cl-b")
 
+	// The Studio singleton already exists, so create goes straight to its
+	// create-project verb.
+	hub.handle("GET "+appStudioStudio, func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(w, map[string]any{"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Studio", "metadata": map[string]any{"name": "studio"}})
+	})
 	var created appCreateRequest
-	hub.handle("POST "+appStudioPrefix, func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("POST "+appStudioStudio+"/create-project", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&created)
 		w.WriteHeader(http.StatusCreated)
 		writeTestJSON(w, map[string]any{"name": created.Name, "phase": "Pending", "template": created.TemplateName, "repository": map[string]any{"ref": created.Name}})
 	})
-	hub.handle("GET "+appStudioPrefix, func(w http.ResponseWriter, r *http.Request) {
-		writeTestJSON(w, map[string]any{"items": []map[string]any{{"name": "shop", "displayName": "Shop", "phase": "Ready", "template": "application", "repository": map[string]any{"ref": "shop"}}}})
+	hub.handle("GET "+appStudioProjects, func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(w, map[string]any{"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "ProjectList", "items": []any{projectCR("shop", "Shop", "Ready", "application", "shop")}})
 	})
 	var publishMethod, publishBody string
 	publish := func(w http.ResponseWriter, r *http.Request) {
@@ -137,10 +167,10 @@ func TestAppCommands(t *testing.T) {
 		}
 		writeTestJSON(w, map[string]any{"published": true, "publication": map[string]any{"mode": "public", "url": "https://shop.example.com", "ready": true}})
 	}
-	hub.handle("POST "+appStudioPrefix+"/shop/publishing", publish)
-	hub.handle("DELETE "+appStudioPrefix+"/shop/publishing", publish)
+	hub.handle("POST "+appStudioProjects+"/shop/publishing", publish)
+	hub.handle("DELETE "+appStudioProjects+"/shop/publishing", publish)
 	var promote appPromoteRequest
-	hub.handle("POST "+appStudioPrefix+"/shop/promote", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("POST "+appStudioProjects+"/shop/promote", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&promote)
 		writeTestJSON(w, map[string]any{"instance": "shop-prod", "commitSHA": "abc", "rolloutRevision": "r1", "components": []map[string]any{{"name": "api", "built": true}}})
 	})
@@ -157,8 +187,16 @@ func TestAppCommands(t *testing.T) {
 	}
 
 	out, err = runRoot(t, path, "app", "list")
-	if err != nil || !strings.Contains(out, "NAME") || !strings.Contains(out, "application") {
+	if err != nil || !strings.Contains(out, "NAME") || !strings.Contains(out, "application") || !strings.Contains(out, "Shop") || !strings.Contains(out, "Ready") {
 		t.Fatalf("list: %v\n%s", err, out)
+	}
+	out, err = runRoot(t, path, "app", "list", "-o", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed listResponse[appProjectView]
+	if err := json.Unmarshal([]byte(out), &listed); err != nil || len(listed.Items) != 1 || listed.Items[0].Repository == nil || listed.Items[0].Repository.Ref != "shop" {
+		t.Fatalf("list -o json: %v\n%s", err, out)
 	}
 
 	out, err = runRoot(t, path, "app", "publish", "shop", "--mode", "public")
@@ -188,11 +226,11 @@ func TestAppPublishSettles(t *testing.T) {
 
 	hub := newFakeHub(t)
 	path := hub.useKubeconfig("cl-b")
-	hub.handle("POST "+appStudioPrefix+"/shop/publishing", func(w http.ResponseWriter, _ *http.Request) {
+	hub.handle("POST "+appStudioProjects+"/shop/publishing", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"published": true, "publication": map[string]any{"mode": "public", "url": "https://shop.example.com", "ready": false, "phase": "Pending"}})
 	})
 	reads := 0
-	hub.handle("GET "+appStudioPrefix+"/shop/publishing", func(w http.ResponseWriter, _ *http.Request) {
+	hub.handle("GET "+appStudioProjects+"/shop/publishing", func(w http.ResponseWriter, _ *http.Request) {
 		reads++
 		writeTestJSON(w, map[string]any{"published": true, "publication": map[string]any{"mode": "public", "url": "https://shop.example.com", "ready": reads >= 2, "phase": "Ready"}})
 	})
@@ -211,13 +249,13 @@ func TestAppSyncCommand(t *testing.T) {
 	path := hub.useKubeconfig("cl-b")
 
 	var calls []string
-	hub.handle("POST "+appStudioPrefix+"/shop/hydrate-workspace", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("POST "+appStudioProjects+"/shop/hydrate-workspace", func(w http.ResponseWriter, r *http.Request) {
 		b := new(bytes.Buffer)
 		_, _ = b.ReadFrom(r.Body)
 		calls = append(calls, "hydrate "+b.String())
 		writeTestJSON(w, map[string]any{"repositoryRef": "shop", "ref": "main", "commitSHA": "1234567890ab", "written": []string{"api/index.js", "web/index.html"}})
 	})
-	hub.handle("POST "+appStudioPrefix+"/shop/sync-development", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("POST "+appStudioProjects+"/shop/sync-development", func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, "sync")
 		writeTestJSON(w, map[string]any{
 			"target": map[string]any{"ResourceName": "shop-dev"},
@@ -265,7 +303,18 @@ func TestAppCreateConflictShowsServerMessage(t *testing.T) {
 	hub := newFakeHub(t)
 	path := hub.useKubeconfig("cl-b")
 	const msg = `a code Repository named "shop" already exists (possibly left by a deleted project); adopt it with existingRepositoryRef or choose another name`
-	hub.handle("POST "+appStudioPrefix, func(w http.ResponseWriter, r *http.Request) {
+	// A workspace that has never created a project has no Studio yet: the
+	// CLI creates the singleton before calling its create-project verb.
+	hub.handle("GET "+appStudioStudio, func(w http.ResponseWriter, r *http.Request) {
+		writeTestStatus(w, http.StatusNotFound, "NotFound", `studios.ai.railgrid.ai "studio" not found`)
+	})
+	var studio map[string]any
+	hub.handle("POST "+appStudioAPIPrefix+"/studios", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&studio)
+		w.WriteHeader(http.StatusCreated)
+		writeTestJSON(w, studio)
+	})
+	hub.handle("POST "+appStudioStudio+"/create-project", func(w http.ResponseWriter, r *http.Request) {
 		writeTestStatus(w, http.StatusConflict, "Conflict", msg)
 	})
 	_, err := runRoot(t, path, "app", "create", "shop", "--template", "application")
@@ -274,6 +323,9 @@ func TestAppCreateConflictShowsServerMessage(t *testing.T) {
 	}
 	if want := `project "shop" not created (HTTP 409): ` + msg; err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
+	}
+	if studio["kind"] != "Studio" || studio["metadata"].(map[string]any)["name"] != "studio" {
+		t.Fatalf("Studio not created before the verb: %v", studio)
 	}
 }
 

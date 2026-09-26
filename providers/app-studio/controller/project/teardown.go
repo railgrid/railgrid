@@ -29,8 +29,10 @@ package project
 //     again from the top; nothing is stranded by a dropped connection.
 //   - It is ordered by dependency, not by handler convenience, and each step
 //     is idempotent, because a retry re-runs the ones that already succeeded.
-//   - It runs as the PROJECT's own identity inside the tenant workspace for
-//     everything cross-provider, so the tenant's RBAC still bounds it — the
+//   - The cross-provider objects it settles — the Code Repository and the
+//     infrastructure Instances — are kinds App Studio's APIExport claims, so
+//     they are reached over this provider's own virtual workspace and are
+//     bounded by what the workspace accepted when it bound the export. The
 //     caller's right to delete is checked once, by the API server, on the CR.
 //   - `kubectl delete project` and a deletion the portal starts are the same
 //     operation. They were not before.
@@ -104,8 +106,13 @@ var errProjectAssistantBusy = fmt.Errorf("an assistant turn is still finishing")
 // into another project; deletion happens only when the deletion explicitly
 // asked for it (ProjectDeleteRepositoryAnnotation) AND the repository is one
 // App Studio created for this exact project incarnation.
-func (r *Reconciler) settleRepository(ctx context.Context, tc client.Client, p *aiv1alpha1.Project) error {
-	if tc == nil || p.Spec.Repository == nil {
+//
+// c is the manager's client for the request's cluster: repositories are a kind
+// the APIExport claims, with the get, update and delete this needs. A
+// workspace that has not accepted the claim fails the Get with a RESTMapper
+// miss rather than a 404, so nothing here reads as "already settled".
+func (r *Reconciler) settleRepository(ctx context.Context, c client.Client, p *aiv1alpha1.Project) error {
+	if c == nil || p.Spec.Repository == nil {
 		return nil
 	}
 	ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef)
@@ -114,7 +121,7 @@ func (r *Reconciler) settleRepository(ctx context.Context, tc client.Client, p *
 	}
 	repo := &unstructured.Unstructured{}
 	repo.SetGroupVersionKind(repositoryGVK)
-	if err := tc.Get(ctx, types.NamespacedName{Name: ref}, repo); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Name: ref}, repo); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -129,7 +136,7 @@ func (r *Reconciler) settleRepository(ctx context.Context, tc client.Client, p *
 		return nil
 	}
 	if r.deleteRepositoryRequested(p) && !repositoryWasAdopted(repo) {
-		if err := tc.Delete(ctx, repo); err != nil && !apierrors.IsNotFound(err) {
+		if err := c.Delete(ctx, repo); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("delete Code repository %q: %w", ref, err)
 		}
 		log.Printf("app-studio project %s: deleted Code repository %s as the deletion asked", p.Name, ref)
@@ -143,7 +150,7 @@ func (r *Reconciler) settleRepository(ctx context.Context, tc client.Client, p *
 	delete(annotations, projectRepositoryUIDAnnotation)
 	delete(annotations, projectRepositoryAdoptedAnnotation)
 	repo.SetAnnotations(annotations)
-	if err := tc.Update(ctx, repo); err != nil {
+	if err := c.Update(ctx, repo); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}

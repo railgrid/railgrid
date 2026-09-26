@@ -67,6 +67,9 @@ the binary.`,
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", edgeName, err)
 			}
+			// A qualified reference ("server/minis") may have named the edge;
+			// everything downstream wants the plain name.
+			edgeName = edge.GetName()
 
 			edgeType := railgridclient.EdgeTypeForGVR(gvr)
 			agentVersion := getNestedString(*edge, "status", "agentVersion")
