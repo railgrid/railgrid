@@ -66,20 +66,34 @@ func catalogEntryPath() string {
 // path can never drift from the ones it declares.
 //
 // A verb is reached exactly one way — as a kcp custom subresource — so a
-// serve process with no manifest has no data plane at all, and serve.New
-// refuses a DataPlane handler with nothing to reach it through. Both absence
-// and an unreadable or invalid manifest are therefore startup errors: set
-// RAILGRID_CATALOGENTRY_FILE, or bake catalogentry.yaml under RAILGRID_KCP_DIR
-// beside the other kcp objects.
+// serve process with no declarations has no data plane at all, and serve.New
+// refuses a DataPlane handler with nothing to reach it through. An unreadable
+// or invalid manifest is therefore a startup error.
+//
+// A mounted file wins, because it is the deployment talking: the chart's
+// init-container path renders the CatalogEntry into a ConfigMap and points
+// RAILGRID_CATALOGENTRY_FILE at it. Operator mode mounts nothing — the image
+// bakes deploy/chart/files, which does not include the templated CatalogEntry
+// — so it falls back to the manifest embedded in this binary, the same bytes
+// the operator applies to the provider workspace (EnsureCatalogEntry). The
+// declared coordinates are a property of this build, not of the install, so
+// the two cannot disagree about which verbs exist.
 func subresourceRoutes() (map[string]serve.SubresourceRoute, error) {
-	path := catalogEntryPath()
-	if path == "" {
+	if path := catalogEntryPath(); path != "" {
+		routes, err := serve.SubresourcesFromCatalogEntryFile(path)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("infrastructure: serving %d declared coordinate(s) on the kcp custom-subresource path (from %s)", len(routes), path)
+		return routes, nil
+	}
+	if len(catalogEntryManifest) == 0 {
 		return nil, fmt.Errorf("no CatalogEntry manifest found: set RAILGRID_CATALOGENTRY_FILE or bake %s under RAILGRID_KCP_DIR; a verb is reached only as a kcp custom subresource, so without the declaration this provider has no data plane", catalogEntryFileName)
 	}
-	routes, err := serve.SubresourcesFromCatalogEntryFile(path)
+	routes, err := serve.SubresourcesFromCatalogEntry(catalogEntryManifest)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("embedded CatalogEntry manifest: %w", err)
 	}
-	log.Printf("infrastructure: serving %d declared coordinate(s) on the kcp custom-subresource path (from %s)", len(routes), path)
+	log.Printf("infrastructure: serving %d declared coordinate(s) on the kcp custom-subresource path (from the embedded manifest)", len(routes))
 	return routes, nil
 }
