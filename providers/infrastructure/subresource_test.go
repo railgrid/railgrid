@@ -65,11 +65,16 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 }
 
 // TestSubresourceRoutesAbsentManifest: a verb is reached only as a kcp custom
-// subresource, so a serve process with no manifest has no data plane at all.
-// That is a startup error, not a quiet degradation.
+// subresource, so a serve process with no declarations at all — no mounted
+// file and no embedded manifest — has no data plane. That is a startup error,
+// not a quiet degradation. An absent file alone is not: it falls back to the
+// embedded manifest (TestSubresourceRoutesFallBackToTheEmbeddedManifest).
 func TestSubresourceRoutesAbsentManifest(t *testing.T) {
 	t.Setenv("RAILGRID_CATALOGENTRY_FILE", "")
 	t.Setenv("RAILGRID_KCP_DIR", t.TempDir())
+	embedded := catalogEntryManifest
+	catalogEntryManifest = nil
+	t.Cleanup(func() { catalogEntryManifest = embedded })
 
 	routes, err := subresourceRoutes()
 	if err == nil {
@@ -225,5 +230,46 @@ func TestShardForwardedPathReachesTheDataPlaneHandler(t *testing.T) {
 	handler.ServeHTTP(anonRec, anon)
 	if anonRec.Code != http.StatusUnauthorized {
 		t.Errorf("POST %s without X-Remote-User → %d, want 401", anonPath, anonRec.Code)
+	}
+}
+
+// Operator mode mounts no CatalogEntry: the image bakes deploy/chart/files,
+// which does not include the templated CatalogEntry, and the operator's serve
+// Deployment sets no RAILGRID_CATALOGENTRY_FILE. The serve process must then
+// fall back to the manifest embedded in this binary — the same bytes the
+// operator applies to the provider workspace — or it starts with no data plane
+// and crash-loops, which is what infrastructure v0.2.5/v0.2.6 did on a fresh
+// install.
+func TestSubresourceRoutesFallBackToTheEmbeddedManifest(t *testing.T) {
+	t.Setenv("RAILGRID_CATALOGENTRY_FILE", "")
+	// An empty directory stands in for the image's baked kcp objects, which
+	// carry the APIExport and schemas but no catalogentry.yaml.
+	t.Setenv("RAILGRID_KCP_DIR", t.TempDir())
+
+	routes, err := subresourceRoutes()
+	if err != nil {
+		t.Fatalf("subresourceRoutes without a mounted manifest: %v", err)
+	}
+	fromFile := func() map[string]serve.SubresourceRoute {
+		t.Helper()
+		t.Setenv("RAILGRID_CATALOGENTRY_FILE", "manifest.yaml")
+		want, err := subresourceRoutes()
+		if err != nil {
+			t.Fatalf("subresourceRoutes from manifest.yaml: %v", err)
+		}
+		return want
+	}()
+	if len(routes) != len(fromFile) {
+		t.Fatalf("embedded routes = %d, mounted routes = %d; they must declare the same coordinates", len(routes), len(fromFile))
+	}
+	for coordinate, want := range fromFile {
+		got, ok := routes[coordinate]
+		if !ok {
+			t.Errorf("embedded routes are missing %q", coordinate)
+			continue
+		}
+		if got != want {
+			t.Errorf("route %q = %+v, want %+v", coordinate, got, want)
+		}
 	}
 }
