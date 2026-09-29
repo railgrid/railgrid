@@ -28,6 +28,7 @@ import {
   fmtTokens,
   fmtUSD,
   prettyJSON,
+  runHarnessBacked,
   type RunDetail as Run,
   type RunPhase,
   type RunStep,
@@ -91,6 +92,24 @@ const phaseMeta: Record<RunPhase, { label: string; cls: string; tone: 'success' 
   Failed: { label: 'Failed', cls: 'failed', tone: 'danger' },
   Aborted: { label: 'Aborted', cls: 'aborted', tone: 'danger' },
 }
+
+/**
+ * ranOnHarness is what the run recorded, not what its agent is configured with
+ * now: an agent switched to a harness today did not retroactively run last
+ * week's turns there. A run with no recorded backend gets no treatment at all.
+ */
+const ranOnHarness = computed(() => runHarnessBacked(run.value))
+
+/**
+ * harnessCoordinates is present only once the harness has reported an id worth
+ * copying. A harness-backed run that has not reported yet says where it ran and
+ * stops there, rather than offering empty fields to look up.
+ */
+const harnessCoordinates = computed(() => {
+  const harness = run.value?.harness
+  if (!ranOnHarness.value || !(harness?.attemptID || harness?.sessionID)) return null
+  return harness
+})
 
 const fanOutGranted = computed(() => {
   void revision.value
@@ -567,12 +586,16 @@ onBeforeUnmount(() => {
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">agent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'agent', name: run.agent, tab: 'chat' })">{{ run.agent }}</button></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">trigger</span><span class="agents-runmeta-v"><span class="mono">{{ run.trigger }}</span> <span class="muted">({{ run.class }})</span></span></div>
                   <div v-if="run.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">session</span><span class="agents-runmeta-v mono">{{ run.sessionID }}</span></div>
+                  <div v-if="ranOnHarness" class="agents-runmeta-cell"><span class="agents-runmeta-k">ran on</span><span class="agents-runmeta-v mono">harness</span></div>
+                  <div v-if="harnessCoordinates?.attemptID" class="agents-runmeta-cell"><span class="agents-runmeta-k">runner attempt</span><span class="agents-runmeta-v mono">{{ harnessCoordinates.attemptID }}</span></div>
+                  <div v-if="harnessCoordinates?.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">harness session</span><span class="agents-runmeta-v mono">{{ harnessCoordinates.sessionID }}</span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">started</span><span class="agents-runmeta-v">{{ fmtTime(run.startedAt || run.createdAt) }}</span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">duration</span><span class="agents-runmeta-v"><template v-if="run.durationMS">{{ fmtDuration(run.durationMS) }}</template><span v-else-if="LIVE_PHASES.has(run.phase)" class="agents-elapsed"><LoaderCircle class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ elapsed(run) }}</span><template v-else>—</template></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">usage</span><span class="agents-runmeta-v">{{ fmtTokens(run.inputTokens) }} in · {{ fmtTokens(run.outputTokens) }} out · {{ fmtUSD(run.usdMicros) }}</span></div>
                   <div v-if="run.attempt && run.attempt > 1" class="agents-runmeta-cell"><span class="agents-runmeta-k">attempt</span><span class="agents-runmeta-v">{{ run.attempt }}</span></div>
                   <div v-if="run.parentRunID" class="agents-runmeta-cell"><span class="agents-runmeta-k">parent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: run.parentRunID! })">{{ run.parentRunID.slice(0, 8) }}</button></span></div>
                 </div>
+                <p v-if="harnessCoordinates" class="agents-hint">This turn ran on a coding harness on an edge machine — look the attempt up on the runner, and the session in the harness.</p>
                 <div v-if="run.input" class="agents-runinput"><span class="agents-runmeta-k">input</span><pre>{{ run.input }}</pre></div>
               </section>
 

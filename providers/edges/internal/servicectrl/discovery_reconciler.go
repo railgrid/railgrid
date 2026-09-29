@@ -34,6 +34,7 @@ import (
 
 	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
+	"github.com/railgrid/provider-edges/internal/svccatalog"
 )
 
 // discoveryResyncInterval is how often connected edges are re-scanned.
@@ -137,7 +138,14 @@ func (r *DiscoveryReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	seen := make(map[string]bool, len(services))
 	for _, svc := range services {
-		name := discoveredName(r.resource, req.Name, svc.Type)
+		name, ok := discoveredName(r.resource, req.Name, svc)
+		if !ok {
+			// A runner that names no harness cannot be given a name that
+			// distinguishes it from the machine's other runner, and publishing
+			// both under one name would make them overwrite each other.
+			logger.V(2).Info("skipping an advertisement with no usable Service name", "type", svc.Type)
+			continue
+		}
 		seen[name] = true
 		if err := r.upsert(ctx, c, req.Name, name, svc, byName[name]); err != nil {
 			logger.Error(err, "upserting service", "name", name)
@@ -155,6 +163,19 @@ func (r *DiscoveryReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 
 	return ctrl.Result{RequeueAfter: discoveryResyncInterval}, nil
+}
+
+// discoveredAuthMode is the auth a freshly discovered Service is created with.
+//
+// It comes from the catalog, which is the one place that knows whether a type
+// authenticates with a credential the tenant supplies. Only an explicit "no
+// credential" is stamped; everything else is left to the CRD default so this
+// never silently downgrades a type that does need one.
+func discoveredAuthMode(serviceType string) edgesv1alpha1.ServiceAuthMode {
+	if def, ok := svccatalog.Get(serviceType); ok && def.Auth == svccatalog.AuthNone {
+		return edgesv1alpha1.ServiceAuthNone
+	}
+	return ""
 }
 
 // upsert creates or refreshes the Service for a discovered service. On
@@ -175,6 +196,18 @@ func (r *DiscoveryReconciler) upsert(ctx context.Context, c client.Client, edgeN
 				Type:    edgesv1alpha1.ServiceType(svc.Type),
 				Scheme:  schemeOrDefault(svc.Scheme),
 				Port:    svc.Port,
+				// On CREATE only, and only when the catalog says this type takes
+				// no credential. spec.auth defaults to "secret", which is right
+				// for the seventeen service types a tenant supplies a token for
+				// and wrong for a runner: the AGENT injects the runner's own
+				// bearer on the host side, so there is no Secret to name. Left
+				// at the default, the object would ask a tenant for a
+				// credential that does not exist and carry a permanent
+				// CredentialsValid=Unknown.
+				//
+				// An update never touches it, so a tenant who deliberately puts
+				// a Service behind a credential keeps it.
+				Auth: discoveredAuthMode(svc.Type),
 			},
 		}
 		if err := c.Create(ctx, es); err != nil {
@@ -187,6 +220,7 @@ func (r *DiscoveryReconciler) upsert(ctx context.Context, c client.Client, edgeN
 			Version:     svc.Version,
 			InstallType: svc.InstallType,
 			LastSeen:    now,
+			Harness:     advertisedHarness(svc),
 		}
 		setCondition(&es.Status.Conditions, "Detected", metav1.ConditionTrue, "Discovered", "service discovered by the agent")
 		return c.Status().Update(ctx, es)
@@ -197,6 +231,14 @@ func (r *DiscoveryReconciler) upsert(ctx context.Context, c client.Client, edgeN
 	cur.Status.Version = svc.Version
 	cur.Status.InstallType = svc.InstallType
 	cur.Status.LastSeen = now
+	// Seed only. The validation reconciler owns status.harness from the runner's
+	// own capabilities document; two controllers writing one field on every pass
+	// would fight whenever they momentarily disagreed. Seeding it here means a
+	// reader has the harness NAME from the moment the Service exists, without
+	// waiting for the first probe.
+	if cur.Status.Harness == nil {
+		cur.Status.Harness = advertisedHarness(svc)
+	}
 	if cur.Status.Phase == "" || cur.Status.Phase == "Unreachable" {
 		cur.Status.Phase = "Detected"
 	}
@@ -218,11 +260,37 @@ func (r *DiscoveryReconciler) handleMissing(ctx context.Context, c client.Client
 // discoveredName keeps the historical LinuxServer name while qualifying MacOSServer
 // names. This prevents same-named Linux and Mac edges from competing for one Service
 // object in a tenant workspace.
-func discoveredName(resource, edge, svcType string) string {
+//
+// A runner is named after its HARNESS rather than after the type, because one
+// machine supervises one runner per enabled harness and "<edge>-runner" would
+// collapse them into a single object. It returns false for a runner that names
+// no harness: there is no name that would keep the two apart.
+func discoveredName(resource, edge string, svc discoveredService) (string, bool) {
 	if resource == edgesv1alpha1.MacOSServerResource {
 		edge = "macos-edge-" + edge
 	}
-	return edge + "-" + strings.ToLower(svcType)
+	suffix := svc.Type
+	if svc.Type == string(edgesv1alpha1.ServiceTypeRunner) {
+		if svc.Harness == "" {
+			return "", false
+		}
+		suffix = svc.Harness
+	}
+	return edge + "-" + strings.ToLower(suffix), true
+}
+
+// advertisedHarness projects a runner advertisement onto the Service's harness
+// status. Nil for every other type, so a non-runner Service never grows the
+// field.
+func advertisedHarness(svc discoveredService) *edgesv1alpha1.ServiceHarnessStatus {
+	if svc.Type != string(edgesv1alpha1.ServiceTypeRunner) || svc.Harness == "" {
+		return nil
+	}
+	return &edgesv1alpha1.ServiceHarnessStatus{
+		Name:    svc.Harness,
+		Ready:   svc.Ready,
+		Reasons: svc.Reasons,
+	}
 }
 
 func schemeOrDefault(s string) edgesv1alpha1.ServiceScheme {

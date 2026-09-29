@@ -198,13 +198,14 @@ func TestClosePersistsResumableNeedsInputAndResumeKeepsSessionAndWorktree(t *tes
 	}}
 	second := newTestRunnerAt(t, secondAdapter, stateDir, source, commit)
 	resumed, err := second.Resume(context.Background(), ResumeRequest{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "resume-shutdown",
-		TaskID:          checkpoint.TaskID,
-		AttemptID:       checkpoint.AttemptID,
-		AttemptEpoch:    checkpoint.AttemptEpoch,
-		SessionID:       checkpoint.SessionID,
-		Resolution:      "continue after the runner restarted",
+		HarnessCredential: testHarnessCredential(),
+		ProtocolVersion:   ProtocolVersion,
+		RequestID:         "resume-shutdown",
+		TaskID:            checkpoint.TaskID,
+		AttemptID:         checkpoint.AttemptID,
+		AttemptEpoch:      checkpoint.AttemptEpoch,
+		SessionID:         checkpoint.SessionID,
+		Resolution:        "continue after the runner restarted",
 	})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -302,15 +303,16 @@ func TestCloseRejectsNewAdmissionsAndConcurrentCloseWaitsForDrain(t *testing.T) 
 	case <-time.After(30 * time.Millisecond):
 	}
 	if _, err := runner.Start(context.Background(), StartRequest{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "start-after-close",
-		TaskID:          "task-after-close",
-		AttemptID:       "attempt-after-close",
-		AttemptEpoch:    1,
-		RepositoryID:    "repo",
-		BaseCommit:      commit,
-		Instructions:    "must be rejected",
-		ApprovedInput:   json.RawMessage(`{"provenance":{"source":"test"}}`),
+		ProtocolVersion:   ProtocolVersion,
+		RequestID:         "start-after-close",
+		TaskID:            "task-after-close",
+		AttemptID:         "attempt-after-close",
+		AttemptEpoch:      1,
+		RepositoryID:      "repo",
+		BaseCommit:        commit,
+		Instructions:      "must be rejected",
+		ApprovedInput:     json.RawMessage(`{"provenance":{"source":"test"}}`),
+		HarnessCredential: testHarnessCredential(),
 	}); err == nil {
 		t.Fatal("Start after Close was admitted")
 	} else {
@@ -530,13 +532,14 @@ func TestRestartResumeRetainsWorktreeAndSession(t *testing.T) {
 	}}
 	second := newTestRunnerAt(t, secondAdapter, stateDir, source, commit)
 	resumed, err := second.Resume(context.Background(), ResumeRequest{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "resume-after-restart",
-		TaskID:          checkpoint.TaskID,
-		AttemptID:       checkpoint.AttemptID,
-		AttemptEpoch:    checkpoint.AttemptEpoch,
-		SessionID:       checkpoint.SessionID,
-		Resolution:      "operator approved continuation",
+		HarnessCredential: testHarnessCredential(),
+		ProtocolVersion:   ProtocolVersion,
+		RequestID:         "resume-after-restart",
+		TaskID:            checkpoint.TaskID,
+		AttemptID:         checkpoint.AttemptID,
+		AttemptEpoch:      checkpoint.AttemptEpoch,
+		SessionID:         checkpoint.SessionID,
+		Resolution:        "operator approved continuation",
 	})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -565,15 +568,15 @@ func TestResumeRejectsScopeAndSessionChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect needs-input attempt: %v", err)
 	}
-	_, err = runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-1", SessionID: needsInput.SessionID, Instructions: "different", Resolution: "approved"})
+	_, err = runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-1", SessionID: needsInput.SessionID, Instructions: "different", Resolution: "approved", HarnessCredential: testHarnessCredential()})
 	assertProtocolCode(t, err, ErrorForbidden)
-	_, err = runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-2", SessionID: "foreign", Resolution: "approved"})
+	_, err = runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-2", SessionID: "foreign", Resolution: "approved", HarnessCredential: testHarnessCredential()})
 	assertProtocolCode(t, err, ErrorCheckpointUnavailable)
-	_, err = runner.Resume(context.Background(), ResumeRequest{TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-3", SessionID: needsInput.SessionID, Resolution: "approved"})
+	_, err = runner.Resume(context.Background(), ResumeRequest{TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-3", SessionID: needsInput.SessionID, Resolution: "approved", HarnessCredential: testHarnessCredential()})
 	assertProtocolCode(t, err, ErrorUnsupportedVersion)
-	_, err = runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-4", Resolution: "approved"})
+	_, err = runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-4", Resolution: "approved", HarnessCredential: testHarnessCredential()})
 	assertProtocolCode(t, err, ErrorCheckpointUnavailable)
-	_, err = runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-5", SessionID: needsInput.SessionID, ApprovedInput: json.RawMessage(`{"provenance":{"source":"changed"}}`), Resolution: "approved"})
+	_, err = runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-5", SessionID: needsInput.SessionID, ApprovedInput: json.RawMessage(`{"provenance":{"source":"changed"}}`), Resolution: "approved", HarnessCredential: testHarnessCredential()})
 	assertProtocolCode(t, err, ErrorForbidden)
 }
 
@@ -771,16 +774,24 @@ func newTestRunnerAt(t *testing.T, adapter *fakeAdapter, stateDir, source, commi
 
 func testStartRequest(commit string) StartRequest {
 	return StartRequest{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "start-1",
-		TaskID:          "task-1",
-		AttemptID:       "attempt-1",
-		AttemptEpoch:    1,
-		RepositoryID:    "repo",
-		BaseCommit:      commit,
-		Instructions:    "do the approved work",
-		ApprovedInput:   json.RawMessage(`{"provenance":{"source":"test"}}`),
+		ProtocolVersion:   ProtocolVersion,
+		RequestID:         "start-1",
+		TaskID:            "task-1",
+		AttemptID:         "attempt-1",
+		AttemptEpoch:      1,
+		RepositoryID:      "repo",
+		BaseCommit:        commit,
+		Instructions:      "do the approved work",
+		ApprovedInput:     json.RawMessage(`{"provenance":{"source":"test"}}`),
+		HarnessCredential: testHarnessCredential(),
 	}
+}
+
+// testHarnessCredential is the caller identity every start and resume must
+// carry. The fake adapter ignores its value; what is under test is that the
+// runner refuses to launch without one.
+func testHarnessCredential() *HarnessCredential {
+	return &HarnessCredential{Kind: string(harness.CredentialClaudeOAuth), Value: "test-oauth-token"}
 }
 
 func waitForPhase(t *testing.T, runner *Runner, attemptID string, want Phase) {

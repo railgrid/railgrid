@@ -55,15 +55,122 @@ export interface ToolGrant {
 
 export type Autonomy = 'suggest' | 'ask' | 'auto'
 
+// ---- backend ---------------------------------------------------------------
+//
+// spec.backend says WHERE an agent's turns execute, and it replaced the former
+// spec.models / spec.modelFallbacks, which could only describe the first of the
+// two possibilities. Mirrors apis/v1alpha1/types_agent.go; the two blocks are
+// mutually exclusive by CEL, so a writer that names one must clear the other.
+
+export type AgentBackendType = 'model' | 'harness'
+
+/** AGENT_BACKEND_MODEL is also the default: no spec.backend means model. */
+export const AGENT_BACKEND_MODEL = 'model'
+export const AGENT_BACKEND_HARNESS = 'harness'
+
+/** PURPOSE_CHAT is the run purpose every other purpose falls back to. */
+export const PURPOSE_CHAT = 'chat'
+
+/**
+ * HarnessEdgeKind is the edge kinds a harness can run on. A runner is a process
+ * on a machine, so a KubernetesCluster edge can never host one — the CRD enum
+ * says so and this type is the portal's half of that.
+ */
+export type HarnessEdgeKind = 'LinuxServer' | 'MacOSServer'
+export const HARNESS_EDGE_KINDS: readonly HarnessEdgeKind[] = ['LinuxServer', 'MacOSServer']
+
+export type HarnessWorkspace = 'persistent' | 'ephemeral'
+
+/**
+ * WORKSPACE_MODES is the working-directory choice, with the wording both the
+ * create wizard and the config editor show. One list because it is one decision:
+ * two views describing the same field differently is how a person ends up
+ * thinking they are two fields.
+ */
+export const WORKSPACE_MODES: { id: HarnessWorkspace; label: string }[] = [
+  { id: 'persistent', label: 'Persistent — one working directory across turns' },
+  { id: 'ephemeral', label: 'Ephemeral — a fresh working directory per turn' },
+]
+
+/**
+ * edgeKey is the one value a machine picker carries: "Kind/name".
+ *
+ * The kind travels WITH the name so the two cannot disagree — a separate kind
+ * control could be left pointing at a LinuxServer while the name names a Mac,
+ * and the API would refuse a pairing the person never intended to make.
+ */
+export function edgeKey(kind: string, name: string): string {
+  return kind && name ? `${kind}/${name}` : ''
+}
+
+/** splitEdgeKey is edgeKey's inverse. An unparseable value yields empties. */
+export function splitEdgeKey(value: string): { kind: HarnessEdgeKind | ''; name: string } {
+  const slash = value.indexOf('/')
+  if (slash < 0) return { kind: '', name: '' }
+  return { kind: value.slice(0, slash) as HarnessEdgeKind, name: value.slice(slash + 1) }
+}
+
+export interface AgentModelBackend {
+  /** purpose → ModelCredential name; "chat" is what every purpose falls back to. */
+  credentials?: Record<string, string>
+  fallbacks?: string[]
+}
+
+export interface AgentHarnessEdgeRef {
+  kind: HarnessEdgeKind
+  name: string
+}
+
+/**
+ * AgentHarnessBackend points an agent at a coding harness on an edge. There is
+ * deliberately no harness field: which harness answers is DERIVED from
+ * credentialRef's provider (claude-code → Claude Code, codex → Codex).
+ */
+export interface AgentHarnessBackend {
+  edgeRef: AgentHarnessEdgeRef
+  credentialRef: string
+  model?: string
+  workspace?: HarnessWorkspace
+}
+
+export interface AgentBackend {
+  type?: AgentBackendType
+  model?: AgentModelBackend
+  harness?: AgentHarnessBackend
+}
+
+/** KubeCondition is one metav1.Condition as kcp serves it. */
+export interface KubeCondition {
+  type: string
+  status: string
+  reason?: string
+  message?: string
+  lastTransitionTime?: string
+}
+
+/** Condition types on an Agent. Mirrors apis/v1alpha1/conditions.go. */
+export const CONDITION_BACKEND_READY = 'BackendReady'
+export const CONDITION_VALIDATED = 'Validated'
+
+/**
+ * AgentBackendStatus is the resolved backend — what a run will execute on, as
+ * the reconciler resolved it, so a reader need not resolve the chain itself.
+ */
+export interface AgentBackendStatus {
+  type?: string
+  /** The edges Service the harness is published as (<edge>-<harness>). */
+  service?: string
+  harness?: { name?: string; version?: string }
+}
+
 export interface Agent {
-  metadata: { name: string }
+  metadata: { name: string; generation?: number }
   spec: {
     displayName?: string
     description?: string
     systemPrompt?: string
     autonomy?: string
-    models?: Record<string, string>
-    modelFallbacks?: string[]
+    backend?: AgentBackend
     channels?: AgentChannel[]
     delegates?: string[]
     budget?: { window?: string; usdLimit?: string; tokenLimit?: number }
@@ -71,7 +178,146 @@ export interface Agent {
     limits?: { maxToolTurns?: number; timeoutSeconds?: number }
     tools?: { interactive?: ToolGrant; background?: ToolGrant }
   }
-  status?: { phase?: string; suspendedReason?: string }
+  status?: {
+    phase?: string
+    suspendedReason?: string
+    backend?: AgentBackendStatus
+    conditions?: KubeCondition[]
+  }
+}
+
+// Backend accessors, mirroring the Go helpers on AgentSpec. They are functions
+// rather than field reads for one reason: an object written before spec.backend
+// existed has no type and IS a model-backed agent, so "absent means model" has
+// to live in one place instead of at every call site.
+
+/** agentBackendType defaults an absent spec.backend to the model backend. */
+export function agentBackendType(agent: Agent | null | undefined): AgentBackendType {
+  const type = (agent?.spec?.backend?.type || '').trim()
+  return type === AGENT_BACKEND_HARNESS ? AGENT_BACKEND_HARNESS : AGENT_BACKEND_MODEL
+}
+
+/** agentHarnessBacked reports whether this agent's turns run on an edge harness. */
+export function agentHarnessBacked(agent: Agent | null | undefined): boolean {
+  return agentBackendType(agent) === AGENT_BACKEND_HARNESS
+}
+
+/**
+ * agentHarness is the harness configuration, or undefined when the agent is not
+ * harness-backed — including the shape where the type says harness and the
+ * block is missing, which the CEL rule refuses on write.
+ */
+export function agentHarness(agent: Agent | null | undefined): AgentHarnessBackend | undefined {
+  return agentHarnessBacked(agent) ? agent?.spec?.backend?.harness : undefined
+}
+
+/** agentModelCredentials is the purpose→ModelCredential map, or an empty one. */
+export function agentModelCredentials(agent: Agent | null | undefined): Record<string, string> {
+  return agent?.spec?.backend?.model?.credentials || {}
+}
+
+/**
+ * agentModelCredential resolves one run purpose to a ModelCredential name,
+ * falling back to the chat entry the way every reader of the old spec.models
+ * did.
+ */
+export function agentModelCredential(agent: Agent | null | undefined, purpose: string = PURPOSE_CHAT): string {
+  const credentials = agentModelCredentials(agent)
+  return (credentials[purpose] || '').trim() || (credentials[PURPOSE_CHAT] || '').trim()
+}
+
+/** agentModelFallbacks is the ordered fallback credential list. */
+export function agentModelFallbacks(agent: Agent | null | undefined): string[] {
+  return agent?.spec?.backend?.model?.fallbacks || []
+}
+
+/** agentCondition finds one status condition by type. */
+export function agentCondition(agent: Agent | null | undefined, type: string): KubeCondition | undefined {
+  return (agent?.status?.conditions || []).find(condition => condition.type === type)
+}
+
+// ---- model credential providers --------------------------------------------
+//
+// Two families, and they are not variants of each other (see
+// apis/v1alpha1/types_modelcredential.go): CHAT ENDPOINTS, which llm.BuildModel
+// turns into a chat model, and HARNESS IDENTITIES, which are the login a coding
+// harness on an edge runs as. A model-backed agent can only use the first; a
+// harness-backed one can only use the second, and the credential's provider is
+// what picks WHICH harness.
+
+export const MODEL_PROVIDER_OPENAI = 'openai'
+export const MODEL_PROVIDER_OPENAI_COMPATIBLE = 'openai-compatible'
+export const MODEL_PROVIDER_CLAUDE_CODE = 'claude-code'
+export const MODEL_PROVIDER_CODEX = 'codex'
+
+/** isHarnessProvider mirrors v1alpha1.IsHarnessProvider. */
+export function isHarnessProvider(provider: string | undefined): boolean {
+  return provider === MODEL_PROVIDER_CLAUDE_CODE || provider === MODEL_PROVIDER_CODEX
+}
+
+/**
+ * isChatProvider is the complement. An absent provider counts as a chat
+ * endpoint because the CRD defaults it to openai-compatible, so a credential
+ * saved before the field existed is one.
+ */
+export function isChatProvider(provider: string | undefined): boolean {
+  return !isHarnessProvider(provider)
+}
+
+/** harnessLabel names the harness a credential's provider selects. */
+export function harnessLabel(provider: string | undefined): string {
+  if (provider === MODEL_PROVIDER_CLAUDE_CODE) return 'Claude Code'
+  if (provider === MODEL_PROVIDER_CODEX) return 'Codex'
+  return ''
+}
+
+// ---- harness identity secret keys -------------------------------------------
+//
+// Mirrors v1alpha1's HarnessSecretKey* constants. For a harness identity the
+// Secret KEY IS THE KIND DECLARATION, not spec.secretKey: an oauthToken and an
+// apiKey are injected into Claude Code differently (CLAUDE_CODE_OAUTH_TOKEN vs
+// ANTHROPIC_API_KEY), so the provider branches on which key is present — and
+// refuses a Secret carrying both rather than picking one, because the two are
+// different identities with different billing.
+
+/** A `claude setup-token` value. */
+export const HARNESS_SECRET_KEY_OAUTH_TOKEN = 'oauthToken'
+/** An Anthropic API key. Same key name a chat credential uses, different meaning. */
+export const HARNESS_SECRET_KEY_API_KEY = 'apiKey'
+/** A Codex login session file, verbatim. */
+export const HARNESS_SECRET_KEY_CODEX_AUTH = 'auth.json'
+
+export type HarnessSecretKey =
+  | typeof HARNESS_SECRET_KEY_OAUTH_TOKEN
+  | typeof HARNESS_SECRET_KEY_API_KEY
+  | typeof HARNESS_SECRET_KEY_CODEX_AUTH
+
+/**
+ * harnessSecretKeys are the Secret keys a harness provider accepts, in the
+ * order a form should offer them. claude-code takes exactly ONE of two; codex
+ * takes the one it takes, which is why it is a list either way rather than a
+ * flag.
+ */
+export function harnessSecretKeys(provider: string | undefined): HarnessSecretKey[] {
+  if (provider === MODEL_PROVIDER_CLAUDE_CODE) return [HARNESS_SECRET_KEY_OAUTH_TOKEN, HARNESS_SECRET_KEY_API_KEY]
+  if (provider === MODEL_PROVIDER_CODEX) return [HARNESS_SECRET_KEY_CODEX_AUTH]
+  return []
+}
+
+/**
+ * isJSONObject reports whether text parses as a JSON OBJECT — the check
+ * llm.ReadHarnessSecret makes on auth.json, tightened by one notch. The
+ * provider accepts any valid JSON; a bare string or an array is still a
+ * half-pasted login file, and catching it here is several minutes and one
+ * machine closer to whoever pasted it.
+ */
+export function isJSONObject(text: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -149,6 +395,23 @@ export interface Capabilities {
   providers: string[]
   unavailable?: boolean
   message?: string
+}
+
+/**
+ * Edge is one host edge a harness-backed agent can run on, projected from the
+ * edges provider's LinuxServer / MacOSServer objects. Those are a FOREIGN group
+ * (edges.railgrid.ai) this provider claims read access to; the portal reads them
+ * with the same kube client it reads its own CRs with — see resources.listEdges.
+ *
+ * KubernetesCluster is deliberately absent: a runner is a process on a machine,
+ * so a cluster edge can never host one and must never be offerable.
+ */
+export interface Edge {
+  kind: HarnessEdgeKind
+  name: string
+  /** status.connected — informational only; readiness is the agent's condition. */
+  connected?: boolean
+  phase?: string
 }
 
 export interface Toolset {
@@ -233,6 +496,22 @@ export interface RunSummary {
   /** Measured model/tool time; unlike durationMS, this excludes idle pauses. */
   workedDurationMS?: number
   durationMS?: number
+  /**
+   * Where this run's turn executed. Absent on a row written before an agent
+   * could have a backend: such a row recorded nothing, so it must not be
+   * labelled "model" — read it with runHarnessBacked rather than comparing.
+   */
+  backend?: AgentBackendType
+}
+
+/**
+ * runHarnessBacked reports that this run's turn ran on an edge harness, which
+ * only a row that said so can be. Unlike agentBackendType, an absent value is
+ * deliberately NOT defaulted here: the agent spec has a default, a historical
+ * run has only what it recorded.
+ */
+export function runHarnessBacked(run: RunSummary | null | undefined): boolean {
+  return run?.backend === AGENT_BACKEND_HARNESS
 }
 
 export type StepOutcome = 'ok' | 'error' | 'pending_approval' | string
@@ -248,6 +527,18 @@ export interface RunStep {
   at: string
 }
 
+/**
+ * RunHarnessInfo is the edge-side identity of one harness-backed run: the
+ * coordinates to look the turn up with on the machine that ran it. Either id
+ * can be missing while the harness has not reported yet.
+ */
+export interface RunHarnessInfo {
+  /** The runner/v1 attempt this run is, looked up on the runner. */
+  attemptID?: string
+  /** The harness session the turn ran in; consecutive turns share it. */
+  sessionID?: string
+}
+
 export interface RunDetail extends RunSummary {
   input?: string
   // The run's answer, kept on the run record so a reader doesn't have to go to
@@ -257,6 +548,8 @@ export interface RunDetail extends RunSummary {
   pending?: { inboxID: string; tool: string; args: string }
   steps: RunStep[]
   children?: RunSummary[]
+  /** Present only for a harness-backed run that has reported coordinates. */
+  harness?: RunHarnessInfo
 }
 
 // ---- chat ------------------------------------------------------------------
@@ -302,14 +595,36 @@ export interface TurnUsage {
   usdMicros: number
 }
 
+/**
+ * PendingApproval is why a run is waiting on a person, and there are two
+ * reasons that are not variants of each other.
+ *
+ * A GATE is a tool call the provider wrapped: it names a tool and arguments,
+ * and a verdict resolves it. A QUESTION is the turn asking something — what a
+ * coding harness does when it cannot proceed — and it names no tool at all; an
+ * answer resolves it. Rendering the second as the first produced an approval
+ * card reading "tool unavailable" above an Approve button that could not mean
+ * anything.
+ */
 export interface PendingApproval {
   runID: string
   inboxID: string
+  /** "approval" or "question". Absent on rows written before the distinction. */
+  kind?: 'approval' | 'question'
   tool: string
   args: string
-  // resolved is set once the user approves/denies so the card stops offering
-  // buttons without needing a full reload.
-  resolved?: 'approve' | 'deny'
+  /** The text to put to the person, for a question. */
+  question?: string
+  // resolved is set once the user approves/denies/answers so the card stops
+  // offering controls without needing a full reload.
+  resolved?: 'approve' | 'deny' | 'answer'
+}
+
+/** pendingIsQuestion: absent kind with no tool is a question too. */
+export function pendingIsQuestion(pending: PendingApproval | null | undefined): boolean {
+  if (!pending) return false
+  if (pending.kind) return pending.kind === 'question'
+  return !String(pending.tool || '').trim()
 }
 
 export interface ChatMessage {
@@ -421,6 +736,10 @@ export interface AgentCreate {
   description?: string
   systemPrompt?: string
   autonomy?: string
+  /** Absent means the model backend, exactly as an absent spec.backend does. */
+  backendType?: AgentBackendType
+  /** Required when backendType is "harness", rejected otherwise. */
+  harness?: AgentHarnessBackend
   modelCredential?: string
   modelFallbacks?: string[]
   budgetTokens?: number
@@ -436,6 +755,14 @@ export interface AgentCreate {
 // optional and only the present ones are written, so a section save never
 // clobbers a field another section owns.
 export interface AgentPatch {
+  /**
+   * backendType switches which backend the agent uses. Because the two blocks
+   * are mutually exclusive, naming this is what authorizes the writer to clear
+   * the other one — a model-credential-only patch leaves the type alone.
+   */
+  backendType?: AgentBackendType
+  /** The harness block, written together with backendType: "harness". */
+  harness?: AgentHarnessBackend
   modelCredential?: string
   modelFallbacks?: string[]
   systemPrompt?: string
@@ -522,6 +849,14 @@ export interface CredentialWrite {
   model?: string
   /** Write-only. Omitted on an edit that does not retype the key. */
   apiKey?: string
+  /**
+   * A harness identity's login. Write-only, and omitted on an edit that does
+   * not retype it — a blank input keeps the stored Secret.
+   *
+   * The KEY travels with the value instead of going on spec.secretKey because
+   * for this family the key IS the kind declaration (see harnessSecretKeys).
+   */
+  harnessSecret?: { key: HarnessSecretKey; value: string }
 }
 
 // ---- formatting ------------------------------------------------------------

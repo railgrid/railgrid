@@ -24,7 +24,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -167,9 +166,10 @@ func (s *Server) webhookChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Slack redelivers after 3s without a 2xx; wait for a queue slot at most
-	// this long, then tell the platform to try again rather than losing the
-	// message. The same budget is fine for Telegram.
+	// Slack redelivers after 3s without a 2xx, so the submission — a write of a
+	// Pending Run — gets less than that to complete before we ask the platform
+	// to try again rather than losing the message. The same budget is fine for
+	// Telegram.
 	sctx, cancel := context.WithTimeout(r.Context(), channelSubmitWait)
 	defer cancel()
 	if err := s.bg.Submit(sctx, executor.Job{
@@ -184,14 +184,10 @@ func (s *Server) webhookChannel(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		s.bg.seen.release(key) // let the platform's retry through
 		// The caller is Slack or Telegram, not an operator. The submit error
-		// names queue depth and capacity, the job kind and source, and the
-		// context error — useful in the log, none of the platform's business,
-		// and nothing it needs in order to redeliver. Log it; answer with a
-		// fixed body.
+		// names the store, the job kind and source, and the context error —
+		// useful in the log, none of the platform's business, and nothing it
+		// needs in order to redeliver. Log it; answer with a fixed body.
 		log.Printf("channel inbound %s/%s: submit failed: %v", cluster, name, err)
-		if errors.Is(err, executor.ErrQueueFull) {
-			w.Header().Set("Retry-After", "5")
-		}
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", inboundSubmitUnavailableMessage)
 		return
 	}
@@ -203,9 +199,9 @@ func (s *Server) webhookChannel(w http.ResponseWriter, r *http.Request) {
 const channelSubmitWait = 2500 * time.Millisecond
 
 // inboundSubmitUnavailableMessage is the whole of what an external platform
-// learns when a verified delivery could not be queued. It is deliberately
-// fixed: the underlying error is logged for the operator, and the platform
-// only needs the 503 (plus Retry-After when the queue was full) to redeliver.
+// learns when a verified delivery could not be recorded. It is deliberately
+// fixed: the underlying error is logged for the operator, and the platform only
+// needs the 503 to redeliver.
 const inboundSubmitUnavailableMessage = "temporarily unable to accept the delivery; retry later"
 
 // verifyInbound applies the platform's per-delivery proof for a connection
@@ -264,7 +260,7 @@ func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.
 		_ = s.store.DeleteSession(ctx, scope, session)
 		return "🆕 Started a fresh session.", true
 	case "/status":
-		cred := agent.Spec.Models["chat"]
+		cred := agent.Spec.ModelCredentialFor(llm.PurposeChat)
 		return fmt.Sprintf("🤖 %s — model credential: %s, pending approvals/questions: %d", agent.Name, orDash(cred), len(pending())), true
 	case "/inbox":
 		items := pending()
@@ -304,8 +300,8 @@ func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.
 		if item.Kind == store.InboxKindApproval && resolved.RunID != "" {
 			// Resume the paused run through the virtual workspace — the reply
 			// (or the denial's fallout) arrives on this channel when it finishes.
-			rd := resumeDeps{Creds: vwSecrets{dyn}, CR: vwCR{dyn}}
-			go s.resumeApprovedRun(wsScope, resolved, rd, state == store.InboxStateApproved, "via channel")
+			access := runAccess{Creds: vwSecrets{dyn}, CR: vwCR{dyn}}
+			go s.resumeApprovedRun(wsScope, resolved, access, state == store.InboxStateApproved, "via channel")
 			extra = " Resuming the run…"
 		}
 		return verb + ": " + item.Prompt + extra, true

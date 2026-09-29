@@ -22,7 +22,7 @@
 //     behind the hub backend proxy at /services/providers/edges/mcp
 //   - /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail}]
 //     (a) consumer data plane: k8s | ssh | mcp | proxy | agent-token |
-//     ssh-credentials | addon-credentials — every verb is a kcp custom
+//     ssh-credentials — every verb is a kcp custom
 //     subresource on this provider's APIExport, addressed on the hub's kcp
 //     front door and reverse-proxied here by the serving shard with the
 //     caller's identity stamped; there is no hub-proxied spelling

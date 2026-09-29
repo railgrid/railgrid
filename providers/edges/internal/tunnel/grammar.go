@@ -77,28 +77,25 @@ const (
 	// replaces the agent holding core-group Secrets and Namespaces access,
 	// which the hub's identity policy refuses to mint for anyone.
 	VerbSSHCredentials = "ssh-credentials"
-	// VerbAddonCredentials exchanges credentials for a runner bound to this edge.
-	VerbAddonCredentials = "addon-credentials"
 )
 
 // dataPlaneVerbs is the closed {resource} × {verb} matrix. A pair that is not
 // in it is a 404 before any gate runs, so an un-served verb can never reach a
 // handler and can never be probed for the existence of an object.
-// MacOSServer carries agent-token and addon-credentials: it is a Service-only host
-// edge with no Kubernetes API and no SSH data plane, so it serves no CONSUMER
-// verb — but its agent still has a credential to rotate, and an edge whose
-// agent cannot refresh would lock itself out at TTL. Its host-local services
-// are reached as "services", like every other edge's.
+// MacOSServer carries agent-token alone: it is a Service-only host edge with
+// no Kubernetes API and no SSH data plane, so it serves no CONSUMER verb — but
+// its agent still has a credential to rotate, and an edge whose agent cannot
+// refresh would lock itself out at TTL. Its host-local services are reached as
+// "services", like every other edge's.
 //
 // ssh-credentials is on linuxservers alone for the same reason in reverse:
 // MacOSServer has no SSH data plane to hold credentials for, and a
 // KubernetesCluster agent reaches its host through the Kubernetes API.
 //
-// addon-credentials is on the two HOST kinds, and only those: an Addon may
-// only name a LinuxServer or a MacOSServer (the API's own CEL rule refuses
-// KubernetesCluster, and internal/addonctrl refuses it again), so declaring it
-// on kubernetesclusters would mint a capability for a coordinate no Addon can
-// ever address.
+// No verb hands a harness credential to an edge. A coding harness runner is
+// machine configuration (spec.harness) supervised by the agent and discovered
+// as a Service; the caller sends its own credential with every runner/v1 start,
+// so there is nothing for the provider to materialise on the host.
 //
 // There is no "ticket" verb. A browser cannot set Authorization on a WebSocket
 // upgrade, so it presents the bearer as the Kubernetes subprotocol
@@ -106,8 +103,8 @@ const (
 // upgrade like any other request; nothing here mints or redeems anything.
 var dataPlaneVerbs = map[string]map[string]bool{
 	kubernetesClusterResource: {VerbK8s: true, VerbSSH: true, VerbMCP: true, VerbAgentToken: true},
-	linuxServerResource:       {VerbK8s: true, VerbSSH: true, VerbAgentToken: true, VerbSSHCredentials: true, VerbAddonCredentials: true},
-	macOSServerResource:       {VerbAgentToken: true, VerbAddonCredentials: true},
+	linuxServerResource:       {VerbK8s: true, VerbSSH: true, VerbAgentToken: true, VerbSSHCredentials: true},
+	macOSServerResource:       {VerbAgentToken: true},
 	serviceResource:           {VerbProxy: true, VerbMCP: true},
 }
 

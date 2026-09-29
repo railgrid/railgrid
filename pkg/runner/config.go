@@ -38,6 +38,11 @@ const (
 	gitResultCapability     = "git-result-v1"
 	gitFetchCapability      = "git-fetch-v1"
 	clarificationCapability = "clarification-v1"
+	// permissionPromptCapability advertises that this runner can park an
+	// attempt on a harness PERMISSION prompt and resume it with a verdict. A
+	// coordinator that does not know the capability sends no permission fields
+	// and is unaffected, which is why this is additive within runner/v1.
+	permissionPromptCapability = "permission-prompt-v1"
 )
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)

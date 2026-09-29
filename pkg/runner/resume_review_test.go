@@ -48,14 +48,15 @@ func TestResumeReplayReturnsNewerTerminalReceipt(t *testing.T) {
 		t.Fatalf("needs-input checkpoint = %+v, error = %v", checkpoint, err)
 	}
 	resume := ResumeRequest{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "resume-review",
-		TaskID:          checkpoint.TaskID,
-		AttemptID:       checkpoint.AttemptID,
-		AttemptEpoch:    checkpoint.AttemptEpoch,
-		SessionID:       checkpoint.SessionID,
-		ClarificationID: checkpoint.Clarification.ID,
-		Resolution:      "the approved bounded answer",
+		HarnessCredential: testHarnessCredential(),
+		ProtocolVersion:   ProtocolVersion,
+		RequestID:         "resume-review",
+		TaskID:            checkpoint.TaskID,
+		AttemptID:         checkpoint.AttemptID,
+		AttemptEpoch:      checkpoint.AttemptEpoch,
+		SessionID:         checkpoint.SessionID,
+		ClarificationID:   checkpoint.Clarification.ID,
+		Resolution:        "the approved bounded answer",
 	}
 	accepted, err := runner.Resume(context.Background(), resume)
 	if err != nil {

@@ -16,6 +16,12 @@ COPY providers/agents/go.mod providers/agents/go.sum ./
 # WORKDIR /src that resolves to /provider-sdk). Build context is the
 # REPO ROOT: docker build -f providers/agents/Dockerfile .
 COPY provider-sdk/ /provider-sdk/
+# In-tree railgrid (go.mod replace => ../.., which from WORKDIR /src is /).
+# Only the runner protocol and its typed client are imported — a harness-backed
+# agent dispatches turns with pkg/runner/client — so the root module's own
+# go.mod/go.sum and pkg/ are what the build needs, not the whole monorepo.
+COPY go.mod go.sum /
+COPY pkg/ /pkg/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 # The whole module: controllers, scheme and internal packages ship with
 # the binary, so an explicit directory list here rots the moment one is added.

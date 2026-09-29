@@ -12,13 +12,13 @@ cannot be pointed at a non-loopback address; and the command refuses to run as
 root because the harness boundaries isolate configuration, not privileges.
 
 One runner process serves one coding harness, chosen with --harness: "codex"
-(the default) or "claude" for headless Claude Code. Claude Code additionally
-needs --claude-credential-file and --claude-credential-kind; the credential is
-read from that file and injected into the harness child alone.
+(the default) or "claude" for headless Claude Code. Neither takes a credential
+here: the coordinator sends its own identity with each attempt, so this host
+holds no model credential and authenticates to no provider on its own.
 
-Normally an edge Addon of type "runner" supervises this command for you — see
-docs/edge-addons.md. Run it by hand for a local fixture or an unmanaged host,
-as described in docs/local-runner.md.
+Normally the edge agent supervises this command for you on a machine whose
+spec.harness asks for it — see docs/edge-harness.md. Run it by hand for a local
+fixture or an unmanaged host, as described in docs/local-runner.md.
 
 ```
 railgrid runner run [flags]
@@ -29,8 +29,6 @@ railgrid runner run [flags]
 ```
       --claude-allowed-tool strings     Claude Code tool pattern granted for every turn, e.g. 'Bash(git *)' (repeatable)
       --claude-binary string            Claude Code executable (default "claude")
-      --claude-credential-file string   Absolute owner-only file holding the Claude Code credential (required with --harness=claude)
-      --claude-credential-kind string   How to inject the Claude Code credential: oauth-token or api-key
       --claude-home string              Runner-owned CLAUDE_CONFIG_DIR directory (default <state-dir>/claude-home)
       --claude-model string             Model for Claude Code turns (empty uses the account default)
       --claude-permission-mode string   What Claude Code may do without asking: acceptEdits (default; file edits in the worktree) or bypassPermissions (every tool, for sandboxed hosts)

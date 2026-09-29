@@ -33,7 +33,7 @@ func TestRunCallbacksPersistStructuredToolHistoryWithoutTruncation(t *testing.T)
 	s := &Server{store: messageStore}
 	agent := &agentsv1alpha1.Agent{}
 	agent.Name = "agent"
-	cb := s.runCallbacks(ctx, taskRun{Scope: scope, Agent: agent, RunID: "run-1"}, "chat", time.Now().UTC(), newTurnProgressTracker(0))
+	sink := s.turnSink(ctx, taskRun{Scope: scope, Agent: agent, RunID: "run-1"}, "chat", time.Now().UTC(), agentsv1alpha1.AgentBackendModel, newTurnProgressTracker(0))
 
 	longPrefix := strings.Repeat("x", 1800)
 	args := fmt.Sprintf(`{"description":%q,"qty":9007199254740993,"sold_at":"2033-04-05T06:07:08Z","token":"secret-value"}`, longPrefix)
@@ -41,11 +41,11 @@ func TestRunCallbacksPersistStructuredToolHistoryWithoutTruncation(t *testing.T)
 		ID: "call-1", Type: "function",
 		Function: schema.FunctionCall{Name: "save_order", Arguments: args},
 	}
-	cb.OnAssistantMessage(engine.AssistantMessage{
+	sink.Assistant(engine.AssistantMessage{
 		HasToolCalls: true, ToolCalls: []schema.ToolCall{call}, Complete: true,
 	})
 	result := strings.Repeat("result-", 1500)
-	cb.OnTool(engine.ToolEvent{ID: "call-1", Name: "save_order", Args: args, Result: result})
+	sink.ToolEnd(engine.ToolEvent{ID: "call-1", Name: "save_order", Args: args, Result: result})
 
 	rows, err := messageStore.LoadRecentMessages(ctx, scope, "chat", 10)
 	if err != nil {
@@ -133,7 +133,7 @@ func TestToolResultPersistenceFailureStopsRunBeforeNextToolAndModel(t *testing.T
 	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "agent"}
 	agent := &agentsv1alpha1.Agent{}
 	agent.Name = "agent"
-	agent.Spec.Models = map[string]string{"chat": "main"}
+	agent.Spec.Backend.Model = &agentsv1alpha1.AgentModelBackend{Credentials: map[string]string{"chat": "main"}}
 	agent.Spec.Autonomy = agentsv1alpha1.AutonomyAuto
 	agent.Spec.Tools.Interactive = agentsv1alpha1.ToolGrant{Families: []string{"core"}}
 	cr := &countingScheduleCR{}

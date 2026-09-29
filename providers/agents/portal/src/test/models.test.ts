@@ -154,6 +154,36 @@ describe('models view on an empty workspace', () => {
     expect(el.querySelector('#agents-model-provider-label')?.textContent).toBe('Provider')
   })
 
+  it('tells the two credential families apart in the list', async () => {
+    // A harness identity has no endpoint and no model, so on a card built to
+    // show both it read as a broken chat credential: a blank model, an
+    // "Endpoint: Provider default" it does not have, a pricing line for tokens
+    // it does not bill through us, and a Test button with nothing to call.
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name: 'chatty', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o' },
+      { name: 'my-claude', provider: 'claude-code', model: '' },
+    ]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const { element: el } = await mountVue(Models, { store, api })
+
+    const cards = [...el.querySelectorAll('.k-model-connection')]
+    const harness = cards.find(card => card.getAttribute('aria-label') === 'Model my-claude')!
+    const chat = cards.find(card => card.getAttribute('aria-label') === 'Model chatty')!
+    expect(harness.textContent).toContain('Harness identity')
+    expect(harness.textContent).toContain('Claude Code identity')
+    expect(harness.textContent).toContain('none — runs on an edge harness')
+    expect(harness.textContent).not.toContain('Provider default')
+    expect(harness.textContent).not.toContain('pricing unknown')
+    expect([...harness.querySelectorAll('button')].map(b => b.textContent?.trim())).not.toContain('Test connection')
+    // The chat card is untouched: endpoint, model, catalog verdict, Test.
+    expect(chat.textContent).toContain('https://api.openai.com/v1')
+    expect(chat.textContent).toContain('gpt-4o')
+    expect([...chat.querySelectorAll('button')].map(b => b.textContent?.trim())).toContain('Test connection')
+    expect(el.querySelector('[aria-label="Delete my-claude"]')).toBeTruthy()
+  })
+
   it('locks credential actions before confirmation and during deletion', async () => {
     const request = deferred<void>()
     const deleteCredential = vi.fn(() => request.promise)

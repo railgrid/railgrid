@@ -96,7 +96,7 @@ describe('public shell authority rotation', () => {
       yield { event: 'start', data: { runID: 'run-1', sessionID: 'session-1' } }
       await gate
     }) as ApiClient['chatStream']
-    oldStore.agents.data = [{ metadata: { name: 'scout' }, spec: { models: { chat: 'main' } } }]
+    oldStore.agents.data = [{ metadata: { name: 'scout' }, spec: { backend: { type: 'model', model: { credentials: { chat: 'main' } } } } }]
     oldStore.agents.loaded = oldStore.agents.hasSnapshot = true
     oldStore.dispatchEvent(new Event('change'))
     await settleVue(6)

@@ -90,6 +90,19 @@ func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id
 	return s.store.ResolveInboxItem(ctx, scope, id, state, response, now)
 }
 
+// resolutionResumesRun reports whether resolving an item this way continues the
+// run it is bound to: a verdict on an approval, or an answer to a question.
+func resolutionResumesRun(kind store.InboxItemKind, state store.InboxItemState) bool {
+	switch kind {
+	case store.InboxKindApproval:
+		return state == store.InboxStateApproved || state == store.InboxStateDenied
+	case store.InboxKindQuestion:
+		return state == store.InboxStateAnswered
+	default:
+		return false
+	}
+}
+
 // resolveInboxItem records the user's decision on an approval or question. It
 // is the `inbox-resolve` verb on the agent, with the item id in the tail:
 // POST …/agents/{name}/inbox-resolve/{itemID}.
@@ -145,12 +158,15 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// Resume the paused run as this provider (the gate's client). No edges:
 	// a verb carries no caller credential, and the edges family dials the
 	// hub's aggregate MCP endpoint as the calling user.
-	if item.Kind == store.InboxKindApproval && item.RunID != "" && state != store.InboxStateAnswered {
-		rd := resumeDeps{
-			Creds: c, CR: clientCR{c},
-			ClusterID: id.clusterID,
-		}
-		go s.resumeApprovedRun(wsScope, item, rd, state == store.InboxStateApproved, req.Response)
+	// An APPROVAL resumes on a verdict, and a QUESTION bound to a run resumes on
+	// an answer. The second is what a harness's own request-user-input parks on
+	// (see postHarnessQuestion): the run is waiting in place, and the answer is
+	// the only thing that can continue it. A free-standing question — the `ask`
+	// tool, which deliberately does not block a run — carries no run id and
+	// resumes nothing.
+	if item.RunID != "" && resolutionResumesRun(item.Kind, state) {
+		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID}
+		go s.resumeApprovedRun(wsScope, item, access, state != store.InboxStateDenied, req.Response)
 	}
 	writeJSON(w, http.StatusOK, item)
 }

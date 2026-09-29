@@ -20,12 +20,11 @@ railgrid agent run [flags]
 ### Options
 
 ```
-      --addon-user string              Existing non-root local account that add-on child processes run as. Required with --allow-addon when the agent runs as root. Env: RAILGRID_AGENT_ADDON_USER
-      --allow-addon strings            Addon type this machine will run (currently only "runner"). Repeatable. Empty (the default) means this edge materializes no add-on at all. Env: RAILGRID_AGENT_ALLOW_ADDON
       --cluster string                 kcp logical cluster name (e.g. '1tww43gelbj45g0k'); required when using static token auth without a cluster-scoped hub kubeconfig
       --context string                 Kubeconfig context to use
       --debug-addr string              Bind address for the debug HTTP server exposing /healthz and /debug/pprof/* (e.g. "127.0.0.1:6060"). Empty disables the server.
       --edge-name string               Name of this edge
+      --harness string                 Coding harnesses this machine offers until the hub says otherwise: "auto" (the default: every harness installed on the machine), "none", or a comma-separated list of claude,codex. SEEDS spec.harness only — the edge object wins, always. Env: RAILGRID_AGENT_HARNESS (default "auto")
   -h, --help                           help for run
       --hub-context string             Kubeconfig context for hub cluster
       --hub-insecure-skip-tls-verify   Skip TLS certificate verification for the hub connection (insecure, for development only)
@@ -33,6 +32,7 @@ railgrid agent run [flags]
       --hub-url string                 Hub server URL
       --kubeconfig string              Path to target cluster kubeconfig
       --labels stringToString          Labels for this edge (default [])
+      --runner-user string             Non-root local account harness runners run as. Optional: a root agent creates the dedicated railgrid-runner system account when this is empty, and a non-root agent (the macOS LaunchDaemon worker) runs them as itself. Env: RAILGRID_AGENT_RUNNER_USER
       --ssh-password string            SSH password for password-based authentication (prefer --ssh-private-key for security)
       --ssh-private-key string         Path to SSH private key file for key-based authentication
       --ssh-proxy-port int             Local port of the SSH daemon to proxy connections to (default 22; set to a different port in test environments) (default 22)

@@ -88,10 +88,6 @@ func TestAgentCredentialRoutesAreKubePaths(t *testing.T) {
 		base+"/ssh-credentials"; got != want {
 		t.Fatalf("ssh-credentials path = %q, want %q", got, want)
 	}
-	if got, want := s.publicVerbPath("2hx82dl9ncmepp5l", linuxServerResource, "edge-1", VerbAddonCredentials),
-		base+"/addon-credentials"; got != want {
-		t.Fatalf("addon-credentials path = %q, want %q", got, want)
-	}
 
 	// A coordinate that would not parse back — a workspace path for the
 	// cluster — yields no route rather than one the agent would 400 on.
@@ -100,7 +96,7 @@ func TestAgentCredentialRoutesAreKubePaths(t *testing.T) {
 	}
 }
 
-// Both credential verbs must be served on every kind whose agents exist, and
+// agent-token must be served on every kind whose agents exist, and
 // ssh-credentials only where there is an SSH data plane to hold credentials
 // for.
 func TestCredentialVerbsAreServed(t *testing.T) {

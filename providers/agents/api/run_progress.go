@@ -18,7 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
-	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -79,11 +79,11 @@ func (t *turnProgressTracker) delta(value string) {
 	}
 }
 
-func (t *turnProgressTracker) assistant(message engine.AssistantMessage) {
+func (t *turnProgressTracker) assistant(message backend.AssistantMessage) {
 	if t != nil {
-		// The engine emits one callback for every response attempt, including a
-		// zero-duration attempt. Seeing that callback is authoritative evidence
-		// that measured work was observed, even when it measured zero.
+		// A backend reports one attempt for every model response, including a
+		// zero-duration one. Seeing that report is authoritative evidence that
+		// measured work was observed, even when it measured zero.
 		t.workedKnown = true
 	}
 	if message.Duration > 0 {
@@ -107,7 +107,7 @@ func (t *turnProgressTracker) assistant(message engine.AssistantMessage) {
 	t.partial.Reset()
 }
 
-func (t *turnProgressTracker) tool(event engine.ToolEvent) {
+func (t *turnProgressTracker) tool(event backend.ToolEvent) {
 	if t != nil {
 		t.workedKnown = true
 	}

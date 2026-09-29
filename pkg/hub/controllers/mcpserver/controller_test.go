@@ -686,39 +686,53 @@ func TestListBoundResources(t *testing.T) {
 	}
 }
 
-// TestBuildRules_AddonsAreNeverGranted: the generated role widens itself as a
+// TestBuildRules_EdgeHostsAreReadOnly: the generated role widens itself as a
 // provider's APIExport grows, which is right for ordinary provider objects and
-// wrong for edges.railgrid.ai/addons. Creating an Addon asks a specific machine
-// to become a host for arbitrary code execution; an MCPServer token must not
-// hold that, in any verb, even when the tenant has bound the resource. Nor may
-// it arrive through a data-plane "proxy" grant or a catalog action.
-func TestBuildRules_AddonsAreNeverGranted(t *testing.T) {
+// wrong for the edge host kinds. `spec.harness` lives on them, so UPDATING one
+// can ask a specific machine to start running a coding harness — arbitrary code
+// execution on somebody's laptop or build box. An MCPServer token must not hold
+// that write, even when the tenant has bound the resource, and it must not
+// arrive through a catalog action either. Reads stay granted: listing edges and
+// their status is most of what the edge tools do.
+func TestBuildRules_EdgeHostsAreReadOnly(t *testing.T) {
 	rules := buildRules([]apisv1alpha2.BoundAPIResource{
-		bound("edges.railgrid.ai", "addons"),
 		bound("edges.railgrid.ai", "linuxservers"),
+		bound("edges.railgrid.ai", "macosservers"),
+		bound("edges.railgrid.ai", "kubernetesclusters"),
+		bound("edges.railgrid.ai", "services"),
 	}, []ActionGrant{
-		{Group: "edges.railgrid.ai", Resource: "addons", Name: "install"},
+		{Group: "edges.railgrid.ai", Resource: "linuxservers", Name: "enable_harness"},
 	}, false)
 	assertNoWildcards(t, rules)
 
+	// Only the OBJECT's verbs are under test. A data-plane subresource grant
+	// (kubernetesclusters/k8s and friends) uses "create" because kcp maps the
+	// HTTP method onto the verb, and it proxies to the machine rather than
+	// patching the edge — so it cannot set spec.harness and is not what this
+	// denial is about.
 	for _, r := range rules {
 		for _, resource := range r.Resources {
-			if resource == "addons" || strings.HasPrefix(resource, "addons/") {
-				t.Fatalf("a generated MCPServer role granted %q: %+v", resource, r)
+			if strings.Contains(resource, "/") || !privilegedWriteResources["edges.railgrid.ai"][resource] {
+				continue
+			}
+			for _, verb := range r.Verbs {
+				if slices.Contains(writeVerbs, verb) {
+					t.Fatalf("a generated MCPServer role granted %q on %q: %+v", verb, resource, r)
+				}
 			}
 		}
 	}
-	// The rest of the group is unaffected.
-	if r := findRule(t, rules, "edges.railgrid.ai", "linuxservers"); r == nil {
-		t.Fatal("dropping addons also dropped the other bound edges resources")
-	}
 
-	// A workspace that bound ONLY addons gets no rule for the group at all —
-	// not an empty-resource rule, which the API server rejects.
-	only := buildRules([]apisv1alpha2.BoundAPIResource{bound("edges.railgrid.ai", "addons")}, nil, false)
-	for _, r := range only {
-		if slices.Contains(r.APIGroups, "edges.railgrid.ai") {
-			t.Fatalf("expected no edges rule at all, got %+v", r)
-		}
+	if r := findRule(t, rules, "edges.railgrid.ai", "linuxservers"); r == nil {
+		t.Fatal("denying the harness write also denied reading edges")
+	} else if !slices.Contains(r.Verbs, "get") || !slices.Contains(r.Verbs, "list") {
+		t.Fatalf("edge reads were dropped: %+v", r)
+	}
+	writable := findRule(t, rules, "edges.railgrid.ai", "services")
+	if writable == nil {
+		t.Fatal("services lost its rule")
+	}
+	if !slices.Contains(writable.Verbs, "create") {
+		t.Fatalf("an unrelated bound resource lost its writes: %+v", writable)
 	}
 }

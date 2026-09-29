@@ -39,8 +39,8 @@ data:
       # (pkg/hub/identity/policy.go clause C) can mint a capability only for a
       # coordinate it can verify exists.
       #
-      # Workload, Placement and Addon carry no verb and no action, so they need
-      # no entry here. Must match manifest.yaml.
+      # Workload and Placement carry no verb and no action, so they need no
+      # entry here. Must match manifest.yaml.
       export:
         name: "edges.providers.railgrid.ai"
         resources:
@@ -70,8 +70,6 @@ data:
               - name: ssh
                 description: "Open an SSH session to the edge through its tunnel."
                 stream: true
-              - name: addon-credentials
-                description: Read runner auth and publish its token for an add-on assigned to this edge
               - name: agent-token
                 description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
                 readOnly: true
@@ -84,8 +82,6 @@ data:
             apiVersion: edges.railgrid.ai/v1alpha1
             kind: MacOSServer
             verbs:
-              - name: addon-credentials
-                description: Read runner auth and publish its token for an add-on assigned to this edge
               - name: agent-token
                 description: "Re-mint the calling agent's own TTL'd credential. MacOSServer serves no consumer verb, but its agent still has a credential to rotate."
                 readOnly: true
@@ -125,9 +121,9 @@ data:
         - resources:
             - name: namespaces
               verbs: [get, list, watch, create]
-            # Secrets, and ONLY the ones labelled railgrid.ai/owner: edges. Five
-            # shapes, each written by a party this provider controls, each of
-            # which stamps the label:
+            # Secrets, and ONLY the ones labelled railgrid.ai/owner: edges.
+            # Three shapes, each written by a party this provider controls, each
+            # of which stamps the label:
             #
             #   railgrid-system/<edge>-ssh-credentials   the host's SSH
             #     credential, written by this provider when a host agent calls
@@ -137,10 +133,6 @@ data:
             #   railgrid-system/railgrid-edges-svc-<name>  a published Service's
             #     credential, written by this provider's portal as the caller
             #     (portal/src/api.ts) and read by the validation reconciler.
-            #   default/<addon>-runner-token             published by this
-            #     provider through addon-credentials for the add-on reconciler.
-            #   add-on harness auth references, explicitly labelled by the
-            #     tenant.
             #   whatever spec.sshCredentialsRef names, normally the first.
             #
             # Without the selector this claim is read-write on EVERY Secret in

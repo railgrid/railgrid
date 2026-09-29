@@ -24,7 +24,7 @@ import (
 // ServiceType selects the detector that discovers a service and the MCP
 // tool bundle exposed for it. "home-assistant" and the catalog apps get
 // bespoke tools; "generic" is proxy-only (no tools).
-// +kubebuilder:validation:Enum=home-assistant;qbittorrent;prowlarr;sonarr;radarr;grafana;grafana-loki;prometheus;jellyfin;plex;portainer;adguard;proxmox;pihole;unifi-network;unifi-protect;generic
+// +kubebuilder:validation:Enum=home-assistant;qbittorrent;prowlarr;sonarr;radarr;grafana;grafana-loki;prometheus;jellyfin;plex;portainer;adguard;proxmox;pihole;unifi-network;unifi-protect;runner;generic
 type ServiceType string
 
 const (
@@ -48,6 +48,10 @@ const (
 	ServiceTypeUniFiNetwork ServiceType = "unifi-network"
 	ServiceTypeUniFiProtect ServiceType = "unifi-protect"
 	ServiceTypeGeneric      ServiceType = "generic"
+	// ServiceTypeRunner is a coding harness the edge agent supervises on the
+	// machine, speaking the runner/v1 protocol on loopback. It is discovered
+	// like any other local service; nothing declares it.
+	ServiceTypeRunner ServiceType = "runner"
 )
 
 // ServiceScheme is the URL scheme the provider uses when proxying to the
@@ -116,6 +120,7 @@ type KubeServiceRef struct {
 // +kubebuilder:resource:scope=Cluster,shortName=edgesvc
 // +kubebuilder:printcolumn:name="Type",type="string",JSONPath=".spec.type"
 // +kubebuilder:printcolumn:name="Edge",type="string",JSONPath=".spec.edgeRef.name"
+// +kubebuilder:printcolumn:name="Harness",type="string",JSONPath=".status.harness.name"
 // +kubebuilder:printcolumn:name="Port",type="integer",JSONPath=".spec.port"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -276,9 +281,49 @@ type ServiceStatus struct {
 	// +optional
 	Tools []ServiceTool `json:"tools,omitempty"`
 
+	// Harness is the coding harness a "runner" Service drives, parsed from the
+	// runner/v1 capabilities document the validation reconciler already fetches
+	// for the probe. Nil for every other type.
+	//
+	// It exists so a hub-side consumer can PICK a ready runner from the
+	// published objects alone. Asking the runner itself would need the bearer
+	// the agent keeps to itself, so without this the choice could only be made
+	// by trying.
+	// +optional
+	Harness *ServiceHarnessStatus `json:"harness,omitempty"`
+
 	// Conditions: Detected, CredentialsValid, Ready.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ServiceHarnessStatus is the harness half of a runner's capabilities response.
+//
+// Ready is the HARNESS's readiness, not the Service's: a runner answers
+// runner/v1 and refuses every attempt when its harness is missing or version-
+// pinned wrong, so a Ready Service with a not-ready harness is a real and
+// useful distinction.
+type ServiceHarnessStatus struct {
+	// Name is the harness the runner advertises: "claude" or "codex".
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	Name string `json:"name,omitempty"`
+
+	// Version is the harness executable's version, as probed on the host.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	Version string `json:"version,omitempty"`
+
+	// Ready is the harness's own readiness.
+	// +optional
+	Ready bool `json:"ready,omitempty"`
+
+	// Reasons say why Ready is false — a version-pin mismatch, or a missing
+	// harness executable. Never a credential: the caller brings its own with
+	// every attempt, so the runner has none to be missing.
+	// +optional
+	// +kubebuilder:validation:MaxItems=16
+	Reasons []string `json:"reasons,omitempty"`
 }
 
 // ServiceTool is one MCP operation a published Service exposes.

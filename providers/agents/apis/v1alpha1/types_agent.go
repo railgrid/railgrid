@@ -80,21 +80,12 @@ type AgentSpec struct {
 	// +kubebuilder:validation:MaxLength=32768
 	SystemPrompt string `json:"systemPrompt,omitempty"`
 
-	// Models maps run purposes to named profiles in the tenant's model
-	// credentials Secret (railgrid-agents-llm). Recognized purposes: "chat"
-	// (interactive, strong), "background" (schedules/heartbeats, cheap),
-	// "compaction" (summarization). An empty map falls back to the "chat"
-	// profile for every purpose.
+	// Backend says WHERE this agent's turns execute: in this process against a
+	// chat model, or on a coding harness running on an edge. It replaced the
+	// former spec.models / spec.modelFallbacks, which could only describe the
+	// first of those two.
 	// +optional
-	Models map[string]string `json:"models,omitempty"`
-
-	// ModelFallbacks is an ordered list of additional model-credential names
-	// tried, in order, when the primary chat model (models["chat"]) fails to
-	// respond — a provider outage, rate limit, timeout, or connection error.
-	// The first credential that responds is used. Streaming only falls back
-	// before the first token is emitted. Empty means no fallback.
-	// +optional
-	ModelFallbacks []string `json:"modelFallbacks,omitempty"`
+	Backend AgentBackendSpec `json:"backend,omitempty"`
 
 	// Autonomy is the agent's default posture toward taking action: "suggest"
 	// drafts but never acts, "ask" acts after approval, "auto" acts freely
@@ -138,6 +129,224 @@ type AgentSpec struct {
 	// +optional
 	Channels []AgentChannel `json:"channels,omitempty"`
 }
+
+// AgentBackendSpec selects where an agent's turns execute, and configures the
+// one that was selected.
+//
+// The two blocks are mutually exclusive by CEL rather than by convention,
+// because the failure they would otherwise produce is the worst kind: an agent
+// carrying both a credential map and an edgeRef reads as configured for either,
+// and which one it actually used would be decided by whichever reader looked
+// first.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'harness' || (has(self.harness) && !has(self.model))",message="spec.backend.type \"harness\" requires spec.backend.harness and rejects spec.backend.model"
+// +kubebuilder:validation:XValidation:rule="(has(self.type) && self.type == 'harness') || !has(self.harness)",message="spec.backend.harness is only allowed when spec.backend.type is \"harness\""
+type AgentBackendSpec struct {
+	// Type selects the backend: "model" (the default — an OpenAI-compatible
+	// chat model called from this process, with the provider's own tool loop)
+	// or "harness" (a Claude Code or Codex session on an edge, which brings its
+	// own tools).
+	// +optional
+	// +kubebuilder:validation:Enum=model;harness
+	// +kubebuilder:default=model
+	Type string `json:"type,omitempty"`
+
+	// Model configures the in-process backend. Rejected when type is
+	// "harness".
+	// +optional
+	Model *AgentModelBackend `json:"model,omitempty"`
+
+	// Harness configures the edge-harness backend. Required when type is
+	// "harness", rejected otherwise.
+	// +optional
+	Harness *AgentHarnessBackend `json:"harness,omitempty"`
+}
+
+// AgentModelBackend is the in-process backend's configuration: which
+// ModelCredential answers each run purpose, and what to try when the primary
+// one does not answer at all.
+type AgentModelBackend struct {
+	// Credentials maps run purposes to ModelCredential names. Recognized
+	// purposes: "chat" (interactive, strong), "background"
+	// (schedules/heartbeats, cheap), "compaction" (summarization). An empty map
+	// falls back to the "chat" entry for every purpose.
+	// +optional
+	Credentials map[string]string `json:"credentials,omitempty"`
+
+	// Fallbacks is an ordered list of additional ModelCredential names tried,
+	// in order, when the primary chat credential fails to respond — a provider
+	// outage, rate limit, timeout, or connection error. The first credential
+	// that responds is used. Streaming only falls back before the first token
+	// is emitted. Empty means no fallback.
+	// +optional
+	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// AgentHarnessBackend points an agent at a coding harness on an edge.
+//
+// There is deliberately no harness field. Which harness answers is DERIVED from
+// credentialRef's provider (claude-code → Claude Code, codex → Codex), because
+// a second field could disagree with the credential and the credential is the
+// thing that actually has to work: a Codex auth.json cannot drive Claude Code
+// whatever the agent claims.
+type AgentHarnessBackend struct {
+	// EdgeRef names the machine whose runner executes this agent's turns.
+	// +kubebuilder:validation:Required
+	EdgeRef AgentHarnessEdgeRef `json:"edgeRef"`
+
+	// CredentialRef names a ModelCredential in this workspace whose provider is
+	// "claude-code" or "codex". Its provider picks the harness, and its Secret
+	// is the identity every turn is dispatched with.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	CredentialRef string `json:"credentialRef"`
+
+	// Model is passed through to the harness as the model it should run on
+	// (e.g. "sonnet"). Empty leaves the harness's own default alone.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	Model string `json:"model,omitempty"`
+
+	// Workspace decides whether consecutive turns share the runner's working
+	// directory. "persistent" (the default) keeps one directory per agent
+	// across turns, which is what makes a conversation about a checkout
+	// coherent; "ephemeral" asks for a fresh one per turn.
+	// +optional
+	// +kubebuilder:validation:Enum=persistent;ephemeral
+	// +kubebuilder:default=persistent
+	Workspace string `json:"workspace,omitempty"`
+}
+
+// AgentHarnessEdgeRef names the host edge a harness runs on. Only host edges
+// can: a runner is a process on a machine, so a KubernetesCluster edge is not a
+// candidate and the enum says so rather than failing at dispatch.
+type AgentHarnessEdgeRef struct {
+	// Kind is the edge kind, "LinuxServer" or "MacOSServer".
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=LinuxServer;MacOSServer
+	Kind string `json:"kind"`
+
+	// Name is the edge object's name in this workspace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+}
+
+// Backend types an Agent's turns may execute on.
+const (
+	// AgentBackendModel runs a turn in this process against a chat model.
+	AgentBackendModel = "model"
+	// AgentBackendHarness runs a turn on a coding harness on an edge.
+	AgentBackendHarness = "harness"
+)
+
+// Workspace dispositions for a harness-backed agent.
+const (
+	// HarnessWorkspacePersistent keeps one runner directory across turns.
+	HarnessWorkspacePersistent = "persistent"
+	// HarnessWorkspaceEphemeral asks for a fresh directory per turn.
+	HarnessWorkspaceEphemeral = "ephemeral"
+)
+
+// BackendType is the agent's backend, defaulted. An object written before
+// spec.backend existed has no type and is a model-backed agent, which is what
+// it always was.
+func (s *AgentSpec) BackendType() string {
+	if t := strings.TrimSpace(s.Backend.Type); t != "" {
+		return t
+	}
+	return AgentBackendModel
+}
+
+// HarnessBacked reports whether this agent's turns execute on an edge harness.
+func (s *AgentSpec) HarnessBacked() bool { return s.BackendType() == AgentBackendHarness }
+
+// Harness returns the harness backend's configuration, or nil when this agent
+// is not harness-backed (including the shape where the type says harness and
+// the block is missing, which the CEL rule refuses on write).
+func (s *AgentSpec) Harness() *AgentHarnessBackend {
+	if !s.HarnessBacked() {
+		return nil
+	}
+	return s.Backend.Harness
+}
+
+// ModelCredentials is the purpose→ModelCredential map, or nil when the agent
+// names none. It is a method rather than a field read because the block is
+// optional and a nil map read is the common case.
+func (s *AgentSpec) ModelCredentials() map[string]string {
+	if s.Backend.Model == nil {
+		return nil
+	}
+	return s.Backend.Model.Credentials
+}
+
+// ModelCredentialFor resolves one run purpose to a ModelCredential name,
+// falling back to the chat entry the way every reader of the old spec.models
+// did.
+func (s *AgentSpec) ModelCredentialFor(purpose string) string {
+	creds := s.ModelCredentials()
+	if name := strings.TrimSpace(creds[purpose]); name != "" {
+		return name
+	}
+	return strings.TrimSpace(creds[PurposeChat])
+}
+
+// ModelFallbacks is the ordered fallback credential list, or nil.
+func (s *AgentSpec) ModelFallbacks() []string {
+	if s.Backend.Model == nil {
+		return nil
+	}
+	return s.Backend.Model.Fallbacks
+}
+
+// SetModelCredential points one run purpose at a ModelCredential, creating the
+// model block if it is the first thing written to it. An empty name removes the
+// mapping — the writers that call this (the provider's REST/MCP create and
+// update) treat "" as "unset this", and a blank credential name would otherwise
+// be stored as a reference to nothing.
+func (s *AgentSpec) SetModelCredential(purpose, name string) {
+	purpose, name = strings.TrimSpace(purpose), strings.TrimSpace(name)
+	if purpose == "" {
+		return
+	}
+	if name == "" {
+		if s.Backend.Model != nil {
+			delete(s.Backend.Model.Credentials, purpose)
+		}
+		return
+	}
+	s.modelBackend().Credentials[purpose] = name
+}
+
+// SetModelFallbacks replaces the fallback list.
+func (s *AgentSpec) SetModelFallbacks(names []string) {
+	if len(names) == 0 {
+		if s.Backend.Model != nil {
+			s.Backend.Model.Fallbacks = nil
+		}
+		return
+	}
+	s.modelBackend().Fallbacks = names
+}
+
+// modelBackend returns the model block, creating it (and its map) on demand.
+func (s *AgentSpec) modelBackend() *AgentModelBackend {
+	if s.Backend.Model == nil {
+		s.Backend.Model = &AgentModelBackend{}
+	}
+	if s.Backend.Model.Credentials == nil {
+		s.Backend.Model.Credentials = map[string]string{}
+	}
+	return s.Backend.Model
+}
+
+// PurposeChat is the run purpose every other purpose falls back to. It is
+// duplicated from the llm package (which cannot be imported here without a
+// cycle) so the API types can resolve a purpose on their own.
+const PurposeChat = "chat"
 
 // AgentChannel binds one logical channel role to a messaging Connection.
 type AgentChannel struct {
@@ -335,6 +544,14 @@ type AgentStatus struct {
 	// +optional
 	SuspendedReason string `json:"suspendedReason,omitempty"`
 
+	// Backend is what the agent's turns will actually run on, as the reconciler
+	// resolved it. For a harness-backed agent it carries the harness the edge
+	// advertises, so a portal can show what a run will get before one is
+	// started — the alternative is offering the machine and finding out at
+	// dispatch.
+	// +optional
+	Backend *AgentBackendStatus `json:"backend,omitempty"`
+
 	// Conditions follows the standard Kubernetes conditions pattern. The
 	// Validated condition reports whether the spec is usable as written —
 	// see conditions.go.
@@ -342,6 +559,40 @@ type AgentStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// AgentBackendStatus is the resolved backend, for a reader that wants to know
+// what a run will execute on without resolving the chain itself.
+type AgentBackendStatus struct {
+	// Type mirrors spec.backend.type, defaulted.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	Type string `json:"type,omitempty"`
+
+	// Service is the edges Service the harness is published as
+	// (<edge>-<harness selector>), for a harness backend.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	Service string `json:"service,omitempty"`
+
+	// Harness is what the runner advertises for that Service, copied from its
+	// status.harness.
+	// +optional
+	Harness *AgentHarnessStatus `json:"harness,omitempty"`
+}
+
+// AgentHarnessStatus is the harness a harness-backed agent will run on, as the
+// edges Service reported it.
+type AgentHarnessStatus struct {
+	// Name is the harness the runner advertises ("claude-code", "codex").
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	Name string `json:"name,omitempty"`
+
+	// Version is the harness executable's version on the host.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	Version string `json:"version,omitempty"`
 }
 
 // AgentUsageStatus is the observed rolling-window spend.

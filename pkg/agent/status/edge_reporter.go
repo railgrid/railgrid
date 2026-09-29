@@ -33,6 +33,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/railgrid/railgrid/pkg/agent/harnessplane"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	pkgversion "github.com/railgrid/railgrid/pkg/version"
 )
@@ -111,11 +112,14 @@ type EdgeReporter struct {
 	// connectable status. Keep this separate from metadata labels, which are
 	// operator-owned scheduling inputs.
 	labels map[string]string
-	// allowedAddons are the add-on types the machine owner opted this edge into
-	// with --allow-addon. Reported on every heartbeat, including as an empty
-	// list, so revoking the opt-in clears the edge's advertisement instead of
-	// leaving a stale one for a portal to offer.
-	allowedAddons []string
+	// harnesses reports the machine's coding harnesses on every heartbeat. It is
+	// a function rather than a value because the answer changes while the agent
+	// runs: a harness installed later becomes detected, a spec.harness change
+	// enables or disables one, and readiness is a live probe. Nil means this
+	// agent supervises no harness, and the field is then reported as an empty
+	// list so a stale advertisement is cleared rather than left for a portal to
+	// offer.
+	harnesses func() []harnessplane.HarnessStatus
 }
 
 // NewEdgeReporter creates a new EdgeReporter.
@@ -147,12 +151,11 @@ func (r *EdgeReporter) SetHostFacts(labels map[string]string) {
 	}
 }
 
-// SetAllowedAddons records the add-on types this edge will materialize. The
-// value is copied, and an empty list is meaningful: it tells the hub (and any
-// portal reading the edge) that this machine accepts no add-on, so a tenant is
-// never offered one that would sit Blocked forever.
-func (r *EdgeReporter) SetAllowedAddons(types []string) {
-	r.allowedAddons = append([]string(nil), types...)
+// SetHarnessSource wires the harness plane's live view onto the heartbeat, so
+// "which of my edges can run Claude Code" is one field on the edge object rather
+// than something a caller has to discover by reading Services.
+func (r *EdgeReporter) SetHarnessSource(source func() []harnessplane.HarnessStatus) {
+	r.harnesses = source
 }
 
 // DarwinHostFacts returns the runtime facts that identify a macOS worker. It
@@ -201,7 +204,7 @@ func (r *EdgeReporter) Run(ctx context.Context) error {
 
 func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 	// Only the facts the agent alone knows are patched here: version, labels
-	// and the add-on advertisement. Connectivity (connected / phase /
+	// and the harness advertisement. Connectivity (connected / phase /
 	// lastHeartbeatTime) is owned by the edges provider's lifecycle
 	// reconciler, derived from the tunnel-registry Lease; writing it from
 	// here as well made two writers race on the same status fields. The Edge
@@ -214,12 +217,12 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 		statusPatch["labels"] = r.labels
 	}
 	// Always sent, even empty: a merge patch that omits the key would leave a
-	// stale advertisement behind after the machine owner dropped --allow-addon.
-	allowed := r.allowedAddons
-	if allowed == nil {
-		allowed = []string{}
+	// stale advertisement behind after the last harness was switched off.
+	harnesses := []harnessplane.HarnessStatus{}
+	if r.harnesses != nil {
+		harnesses = append(harnesses, r.harnesses()...)
 	}
-	statusPatch["allowedAddons"] = allowed
+	statusPatch["harnesses"] = harnesses
 
 	// The sshd host public key is NOT patched here. It is reported once, on
 	// tunnel connect (X-Railgrid-SSH-HostKey, see agent.go), and the provider

@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	"github.com/railgrid/railgrid/pkg/agent/harnessplane"
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
@@ -82,6 +83,7 @@ func edgeTypeOf(u *unstructured.Unstructured) string {
 func newEdgeCreateCommand() *cobra.Command {
 	var labels map[string]string
 	var edgeType string
+	var harness string
 
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -108,6 +110,19 @@ func newEdgeCreateCommand() *cobra.Command {
 			}
 			kind, gvr := railgridclient.EdgeKindForType(edgeType), railgridclient.EdgeGVRForType(edgeType)
 
+			// spec.harness is the ONE place a machine's harness offering is
+			// decided, so this is the install-time opt-out that sticks: an agent
+			// flag only seeds its local cache, and the first time the agent sees
+			// this field it overwrites that cache.
+			setting, err := harnessplane.ParseSetting(harness)
+			if err != nil {
+				return fmt.Errorf("--harness: %w", err)
+			}
+			harnessSpec, err := harnessSpecFor(edgeType, harness)
+			if err != nil {
+				return err
+			}
+
 			edge := &unstructured.Unstructured{
 				Object: map[string]interface{}{
 					"apiVersion": gvr.Group + "/" + gvr.Version,
@@ -117,6 +132,10 @@ func newEdgeCreateCommand() *cobra.Command {
 					},
 					"spec": map[string]interface{}{},
 				},
+			}
+
+			if harnessSpec != nil {
+				edge.Object["spec"].(map[string]interface{})["harness"] = harnessSpec
 			}
 
 			if len(labels) > 0 {
@@ -133,6 +152,11 @@ func newEdgeCreateCommand() *cobra.Command {
 			}
 
 			_, _ = fmt.Fprintf(out, "✓ Edge %q created\n", name)
+			// Say the harness posture out loud. With mode auto the default is
+			// "this machine is a harness host for this workspace as soon as it
+			// has Claude Code or Codex installed", and an operator should never
+			// discover that by finding a Service they did not expect.
+			printHarnessPosture(out, edgeType, harnessSpec, setting)
 
 			// Poll for the join token (set by the hub controller on creation).
 			joinToken, err := pollJoinTokenDynamic(ctx, name, 30*time.Second)
@@ -152,11 +176,62 @@ func newEdgeCreateCommand() *cobra.Command {
 
 	cmd.Flags().StringToStringVar(&labels, "labels", nil, "Labels for this edge (key=value pairs)")
 	cmd.Flags().StringVar(&edgeType, "type", edgeTypeKubernetes, "Edge type: kubernetes (Kubernetes), server (Linux host: SSH, host services, runner) or macos (MacOS host: host services, runner)")
+	cmd.Flags().StringVar(&harness, "harness", string(harnessplane.ModeAuto),
+		"Coding harnesses this machine offers, written to spec.harness on the edge: \"auto\" (default: every harness installed on the machine), \"none\", or a comma-separated list of "+
+			strings.Join(harnessplane.Names, ",")+". Unlike the agent's --harness this STICKS: the agent applies it live and no agent flag can override it. Change it any time from the edge UI or with kubectl.")
 	_ = cmd.RegisterFlagCompletionFunc("type", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{edgeTypeKubernetes, edgeTypeServer, edgeTypeMacOS}, cobra.ShellCompDirectiveNoFileComp
 	})
 
 	return cmd
+}
+
+// harnessSpecFor renders spec.harness for `edge create --harness`, or nil when
+// there is nothing to write: mode auto is the CRD default, so writing it would
+// only add a field that says what the API already says. A Kubernetes edge has no
+// host to supervise a harness on, so naming one there is refused rather than
+// written and silently ignored.
+func harnessSpecFor(edgeType, harness string) (map[string]interface{}, error) {
+	setting, err := harnessplane.ParseSetting(harness)
+	if err != nil {
+		return nil, fmt.Errorf("--harness: %w", err)
+	}
+	if edgeType == edgeTypeKubernetes {
+		if setting.Mode != harnessplane.ModeAuto {
+			return nil, fmt.Errorf("--harness is only meaningful on a host edge; use --type server or --type macos")
+		}
+		return nil, nil
+	}
+	switch setting.Mode {
+	case harnessplane.ModeAuto:
+		return nil, nil
+	case harnessplane.ModeExplicit:
+		enabled := make([]interface{}, 0, len(setting.Enabled))
+		for _, name := range setting.Enabled {
+			enabled = append(enabled, name)
+		}
+		return map[string]interface{}{"mode": string(setting.Mode), "enabled": enabled}, nil
+	default:
+		return map[string]interface{}{"mode": string(setting.Mode)}, nil
+	}
+}
+
+// printHarnessPosture prints one line about what this edge will offer. It is
+// worth the line: with mode auto the answer is "whatever is installed", which is
+// the intended posture but not one to leave implicit.
+func printHarnessPosture(w io.Writer, edgeType string, harnessSpec map[string]interface{}, setting harnessplane.Setting) {
+	if edgeType == edgeTypeKubernetes {
+		return
+	}
+	switch {
+	case setting.Mode == harnessplane.ModeNone:
+		_, _ = fmt.Fprintf(w, "  Harness: none — this machine will run no coding harness. Change spec.harness from the edge UI or with kubectl to turn one on.\n")
+	case harnessSpec == nil:
+		_, _ = fmt.Fprintf(w, "  Harness: auto — this machine offers every coding harness (%s) it has installed, and picks up one installed later. "+
+			"Switch it off any time in the edge UI, or with 'railgrid edge create --harness none' next time.\n", strings.Join(harnessplane.Names, ", "))
+	default:
+		_, _ = fmt.Fprintf(w, "  Harness: %s — only these are offered, installed or not. Change spec.harness from the edge UI or with kubectl.\n", setting.String())
+	}
 }
 
 // pollJoinTokenDynamic polls the Edge resource until Status.JoinToken is set or timeout expires.

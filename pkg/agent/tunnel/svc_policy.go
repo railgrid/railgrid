@@ -96,6 +96,10 @@ type SvcProxyOptions struct {
 	AllowedCIDRs []netip.Prefix
 	// Policy decides what happens when a target is outside that set.
 	Policy SvcPolicy
+	// Runners is the agent's harness plane, or nil. It is consulted for two
+	// things: the runner entries on /api/v1/services, and the bearer the proxy
+	// injects when a target is one of this agent's own runner ports.
+	Runners *RunnerRegistry
 }
 
 // policy returns Policy, defaulting an unset value.

@@ -611,6 +611,19 @@
     "instructions": "The snapshot tool captures a live frame on demand, so it depends on the camera's current state. Battery- or power-managed cameras (notably G4/G5 doorbells) drop to standby and their snapshot may return a 500 \"UNKNOWN_ERROR\" until they wake — this is UniFi Protect's response, not a credential or connectivity fault. On a snapshot 500, retry the same camera a couple of times (waking it usually succeeds), or take a snapshot from another camera covering the same area. Snapshots are returned as images you can view directly. Omit highQuality unless you specifically need full resolution — it makes the doorbell 500 more likely. The events tool returns recent motion/ring/smart-detect events captured from Protect's live WebSocket feed (the provider subscribes in the background and buffers them). It is a rolling recent-history buffer, not a full archive: it only holds events seen since the subscription connected, most recent first. To see who/what triggered a camera, query events and then snapshot that camera."
   },
   {
+    "type": "runner",
+    "displayName": "Coding runner",
+    "description": "A coding harness (Claude Code, Codex) the edge agent supervises on loopback, speaking runner/v1.",
+    "category": "Other",
+    "defaultPort": 8787,
+    "defaultScheme": "http",
+    "auth": "none",
+    "credential": {
+      "optional": true,
+      "hint": "None: the edge agent injects the runner's own bearer on the host side."
+    }
+  },
+  {
     "type": "generic",
     "displayName": "Generic HTTP service",
     "description": "Any HTTP service — proxied through the tunnel, no MCP tools.",

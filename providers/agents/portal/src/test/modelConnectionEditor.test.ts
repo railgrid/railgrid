@@ -13,6 +13,22 @@ import { mountVue, settleVue } from './vue-helper'
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 function button(el: Element, name: string) { return [...el.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === name)! }
 async function input(el: Element, name: string, value: string) { const field = el.querySelector<HTMLInputElement>(`input[name="${name}"]`)!; field.value = value; field.dispatchEvent(new Event('input', { bubbles: true })); await settleVue() }
+function labels(el: Element) { return [...el.querySelectorAll<HTMLButtonElement>('button')].map(b => b.textContent?.trim()) }
+// field covers the harness forms too: a Codex auth.json is a document, so its
+// control is a textarea rather than an input.
+async function field(el: Element, name: string, value: string) {
+ const control = el.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${name}"]`)!
+ control.value = value; control.dispatchEvent(new Event('input', { bubbles: true })); await settleVue()
+}
+// The provider select is the family choice: picking a harness identity swaps in
+// a different form, not a different set of enabled controls.
+async function selectProvider(el: Element, id: string) {
+ const select = el.querySelector<HTMLSelectElement>('#model-provider')!
+ select.value = id; select.dispatchEvent(new Event('change', { bubbles: true })); await settleVue()
+}
+async function submitForm(el: Element, passes = 4) {
+ el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })); await settleVue(passes)
+}
 async function selectModel(el: Element, id: string) {
  el.querySelector<HTMLButtonElement>('#model-id')!.click(); await settleVue()
  const search = document.querySelector<HTMLInputElement>('.k-table__filter-search input')!; search.value = id; search.dispatchEvent(new Event('input', { bubbles: true })); await settleVue()
@@ -228,6 +244,136 @@ describe('focused model connection editor', () => {
   const search = document.querySelector<HTMLInputElement>('.k-table__filter-search input')!
   search.value = 'vendor/typed-by-hand'; search.dispatchEvent(new Event('input', { bubbles: true })); await settleVue()
   expect(document.querySelector('.k-table__filter-panel')!.textContent).toContain('Use \u201cvendor/typed-by-hand\u201d')
+ })
+
+ it('writes a chat endpoint exactly as before, provider included', async () => {
+  // The provider select is a real choice now, so the preset's own provider is
+  // what lands on the object — and everything else about this form is what it
+  // always was: endpoint, key, and a model proved before it is written.
+  const save = vi.fn()
+  const { element: el } = await mountVue(Editor, { api: stubApi(), busy: false, onSave: save })
+  await input(el, 'name', 'everyday')
+  await input(el, 'apiKey', 'sk-chat')
+  await submitForm(el)
+  expect(save).toHaveBeenCalledWith({
+   name: 'everyday', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: '', apiKey: 'sk-chat',
+  }, undefined)
+  expect(save.mock.calls[0]?.[0]).not.toHaveProperty('harnessSecret')
+ })
+
+ it('writes a claude-code setup token under oauthToken, with no apiKey and no baseURL', async () => {
+  // The Secret KEY is the kind declaration for this family, so the choice of
+  // key IS what gets written. spec.secretKey is not, and must not be: it would
+  // be a second answer the Secret could contradict.
+  const save = vi.fn()
+  const { element: el } = await mountVue(Editor, { api: stubApi(), busy: false, onSave: save })
+  await selectProvider(el, 'claude-code')
+  await input(el, 'name', 'my-claude')
+  await field(el, 'oauthToken', 'sk-ant-oat01-token')
+  await submitForm(el)
+  expect(save).toHaveBeenCalledWith({
+   name: 'my-claude', provider: 'claude-code', harnessSecret: { key: 'oauthToken', value: 'sk-ant-oat01-token' },
+  })
+  const body = save.mock.calls[0]?.[0] as Record<string, unknown>
+  expect(body).not.toHaveProperty('apiKey')
+  expect(body).not.toHaveProperty('baseURL')
+  expect(body).not.toHaveProperty('model')
+ })
+
+ it('writes a claude-code API key under apiKey, and switching type never sends both', async () => {
+  // Both keys present is a refusal on the other side, not a precedence
+  // decision — the two are injected into the harness differently and bill
+  // differently — so switching type has to REPLACE the value, which means the
+  // box empties with it.
+  const save = vi.fn()
+  const { element: el } = await mountVue(Editor, { api: stubApi(), busy: false, onSave: save })
+  await selectProvider(el, 'claude-code')
+  await input(el, 'name', 'my-claude')
+  await field(el, 'oauthToken', 'sk-ant-oat01-token')
+  el.querySelector<HTMLInputElement>('input[name="harness-secret-key"][value="apiKey"]')!.click(); await settleVue()
+  expect(el.querySelector('input[name="oauthToken"]'), 'the setup-token box is gone with its value').toBeNull()
+  expect(el.querySelector<HTMLInputElement>('input[name="apiKey"]')!.value, 'the value typed for the other kind is not carried over').toBe('')
+  await field(el, 'apiKey', 'sk-ant-api03-key')
+  await submitForm(el)
+  expect(save).toHaveBeenCalledWith({
+   name: 'my-claude', provider: 'claude-code', harnessSecret: { key: 'apiKey', value: 'sk-ant-api03-key' },
+  })
+  expect(JSON.stringify(save.mock.calls[0])).not.toContain('oauthToken')
+ })
+
+ it('offers a harness identity no base URL, no discovery and no endpoint test', async () => {
+  // Not disabled — absent. There is no endpoint, so a control for one and a
+  // probe against one could only mislead; what DOES check this credential is
+  // named instead.
+  const discoverCredential = vi.fn(); const testCredential = vi.fn()
+  const { element: el } = await mountVue(Editor, { api: stubApi({ discoverCredential, testCredential }), busy: false })
+  await selectProvider(el, 'claude-code')
+  expect(el.querySelector('#model-base-url')).toBeNull()
+  expect(el.querySelector('[name="baseURL"]')).toBeNull()
+  expect(el.querySelector('#model-id')).toBeNull()
+  expect(labels(el)).not.toContain('Find models')
+  expect(labels(el)).not.toContain('Test connection')
+  expect(el.textContent).toContain('Nothing to test')
+  expect(el.textContent).toContain('conditions')
+  expect(el.textContent).not.toContain('may incur a charge')
+  expect(discoverCredential).not.toHaveBeenCalled()
+  expect(testCredential).not.toHaveBeenCalled()
+ })
+
+ it('says where a harness value comes from, one line per provider', async () => {
+  const { element: el } = await mountVue(Editor, { api: stubApi(), busy: false })
+  await selectProvider(el, 'claude-code')
+  expect(el.textContent).toContain('claude setup-token')
+  await selectProvider(el, 'codex')
+  expect(el.textContent).toContain('codex login')
+ })
+
+ it('refuses a Codex auth.json that is not a JSON object, before anything is written', async () => {
+  // A truncated login file otherwise fails on the host, minutes and one
+  // machine away from whoever pasted it.
+  const saveCredential = vi.fn().mockResolvedValue({ name: 'my-codex', provider: 'codex' })
+  const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage), saveCredential })
+  const { element: el } = await mountVue(Models, { api, store: makeStore(api) })
+  button(el, 'Connect model').click(); await settleVue()
+  await selectProvider(el, 'codex')
+  await input(el, 'name', 'my-codex')
+  await field(el, 'auth.json', 'sk-ant-oat01-pasted-in-the-wrong-box')
+  await submitForm(el)
+  expect(saveCredential).not.toHaveBeenCalled()
+  expect(el.textContent).toContain('auth.json that `codex login` wrote')
+
+  await field(el, 'auth.json', '{"tokens":{"access_token":"a"}}')
+  await submitForm(el, 8)
+  expect(saveCredential).toHaveBeenCalledWith({
+   name: 'my-codex', provider: 'codex', harnessSecret: { key: 'auth.json', value: '{"tokens":{"access_token":"a"}}' },
+  })
+ })
+
+ it('keeps the stored harness credential when an edit leaves the box blank', async () => {
+  // The Secret is never read back, so the form cannot show what is in there —
+  // which makes "blank means keep" the only honest convention, the same one
+  // the chat key has always used.
+  const save = vi.fn()
+  const stored = { name: 'my-claude', provider: 'claude-code', model: '', ready: true, secretResolved: true }
+  const { element: el } = await mountVue(Editor, { api: stubApi(), credential: stored, busy: false, onSave: save })
+  expect(el.querySelector<HTMLInputElement>('input[name="name"]')!.disabled).toBe(true)
+  expect(el.textContent).toContain('Leave blank to keep the stored credential')
+  expect(button(el, 'Save changes').disabled).toBe(false)
+  await submitForm(el)
+  expect(save).toHaveBeenCalledWith({ name: 'my-claude', provider: 'claude-code' })
+  expect(save.mock.calls[0]?.[0]).not.toHaveProperty('harnessSecret')
+ })
+
+ it('will not let an edit convert a credential between the two families', async () => {
+  // Converting would mean rewriting the Secret into a different shape and
+  // unsaying spec.secretKey. The honest form of that is a new credential, so
+  // the select offers only the family this credential already is.
+  const chat = await mountVue(Editor, { api: stubApi(), credential, busy: false })
+  const chatOptions = [...chat.element.querySelectorAll<HTMLOptionElement>('#model-provider option')].map(o => o.value)
+  expect(chatOptions).toEqual(['openai', 'anthropic', 'openrouter', 'custom'])
+  const harness = await mountVue(Editor, { api: stubApi(), credential: { name: 'h', provider: 'codex' }, busy: false })
+  const harnessOptions = [...harness.element.querySelectorAll<HTMLOptionElement>('#model-provider option')].map(o => o.value)
+  expect(harnessOptions).toEqual(['claude-code', 'codex'])
  })
 
  it('discards old-tenant drafts and ignores delayed test completion after authority changes', async () => {

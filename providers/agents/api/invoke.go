@@ -18,8 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 
@@ -156,7 +154,12 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 	// own credentials are the only identity available.
 	var runID string
 	if dyn, derr := s.backgroundScoped(r.Context(), id.clusterID); derr == nil {
-		runID = s.startDetachedVWRun(r, dyn, id.clusterID, scope, agent, tr)
+		// The agent's own ServiceAccount, as for any unattended run — the
+		// caller's token authorized the request, it does not become the identity
+		// the agent acts with. Edges stays absent: nobody is watching (see
+		// buildToolset).
+		runID = s.startRun(context.WithoutCancel(r.Context()), scope, agent, tr,
+			s.bg.agentAccess(r.Context(), dyn, id.clusterID, agent.Name))
 		log.Printf("agents: %s started run %s on agent %s in %s", tr.SourceName, runID, name, id.clusterID)
 	} else {
 		runID = s.startDetachedRun(r, c, id, agent, tr)
@@ -269,37 +272,4 @@ func (s *Server) backgroundScoped(ctx context.Context, clusterID string) (dynami
 		return nil, fmt.Errorf("no provider kubeconfig: the virtual workspace is unavailable")
 	}
 	return s.bg.scoped(ctx, clusterID)
-}
-
-// startDetachedVWRun starts a run through the APIExport virtual workspace, as
-// the agent's own identity. The sibling of startDetachedRun for work that has
-// no user behind it: same detachment and same pre-written record, different
-// credentials.
-func (s *Server) startDetachedVWRun(r *http.Request, dyn dynamic.Interface, clusterID string, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun) string {
-	runID := uuid.NewString()
-	now := time.Now().UTC()
-	tr.RunID = runID
-	tr.Creds = vwSecrets{dyn}
-	tr.CR = vwCR{dyn}
-	tr.Scope = scope
-	tr.Agent = agent
-	tr.ClusterID = clusterID
-	// The agent's own ServiceAccount, as for any unattended run — the caller's
-	// token authorized the request, it does not become the identity the agent
-	// acts with. Edges stays absent: nobody is watching (see buildToolset).
-	tr.HubToken = s.bg.agentToken(r.Context(), dyn, clusterID, agent.Name)
-
-	ctx := context.WithoutCancel(r.Context())
-	_ = s.saveRun(ctx, scope, store.Run{
-		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
-		IdempotencyKey: tr.IdempotencyKey,
-		Phase:          store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
-	})
-	go func() {
-		if _, err := s.executeTask(ctx, tr); err != nil {
-			log.Printf("agents: run %s on agent %s failed: %v", runID, agent.Name, err)
-		}
-		s.deliverRunCallback(ctx, scope, runID, tr.Callback)
-	}()
-	return runID
 }

@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -27,7 +26,7 @@ import (
 //
 // Two halves fix it:
 //
-//   - Periodic checkpoints (checkpointRecorder, wired into every run) persist a
+//   - Periodic checkpoints (checkpointRecorder, wired into every turn) persist a
 //     resumable snapshot every few tool-call rounds while the phase stays
 //     Running. The mechanism is the one approval gates already used; this just
 //     takes it on a timer instead of only when a human is asked.
@@ -68,25 +67,32 @@ func turnContextBudget(modelName string) int {
 // pressure check applies to fresh requests and later tool rounds.
 const turnContextBudgetPct = 80
 
-// checkpointRecorder returns the engine callback that persists a mid-run
-// checkpoint. The run stays Running — this is a recovery point, not a pause.
+// checkpointRecorder persists a mid-run checkpoint. The turn's sink calls it
+// with whatever resume state the backend offered; the run stays Running — this
+// is a recovery point, not a pause.
 //
 // Best-effort: a failed write logs and the run continues. Losing a checkpoint
 // costs recoverability, which is strictly better than failing a working run over
 // a transient database error.
-func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID string, worked ...func() int64) func(engine.Checkpoint) {
+func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID, backendType string, worked ...func() int64) func(json.RawMessage) {
 	scope, agentName := run.Scope, run.Agent.Name
 	runID := run.RunID
 	sourceName, notifyChannel := run.SourceName, run.NotifyChannel
-	return func(ck engine.Checkpoint) {
+	return func(state json.RawMessage) {
 		workedMS := int64(0)
 		if len(worked) > 0 && worked[0] != nil {
 			workedMS = worked[0]()
 		}
-		payload, err := json.Marshal(runCheckpoint{
-			Engine: ck, SourceName: sourceName, NotifyChannel: notifyChannel,
+		ck := runCheckpoint{
+			SourceName: sourceName, NotifyChannel: notifyChannel,
 			WorkedDurationMS: workedMS,
-		})
+		}
+		if err := ck.setBackendState(backendType, state); err != nil {
+			// A checkpoint that cannot be stored costs recoverability, which is
+			// strictly better than failing a working run over it.
+			return
+		}
+		payload, err := json.Marshal(ck)
 		if err != nil {
 			return
 		}
@@ -132,10 +138,10 @@ type cancelRequestedError struct{}
 func (cancelRequestedError) Error() string        { return "cancelled by user" }
 func (cancelRequestedError) Is(target error) bool { return target == context.Canceled }
 
-// cancelCheck returns the engine.Callbacks.CheckAbort hook for one run: it
+// cancelCheck answers the turn sink's Aborted question for one run: it
 // reads the run row's CancelRequested flag (throttled) and, when set, cancels
-// the run's own context — so the terminal bookkeeping in executeTask/resumeRun
-// records Aborted exactly as a local cancel does — and ends the turn.
+// the run's own context — so the terminal bookkeeping in runTurn records
+// Aborted exactly as a local cancel does — and ends the turn.
 //
 // Best-effort on the read: a store hiccup must not fail a working run, so an
 // unreadable row means "not cancelled" until the next check.

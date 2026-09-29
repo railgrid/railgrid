@@ -83,11 +83,9 @@ type Options struct {
 	CodexHome   string
 	CodexBinary string
 
-	ClaudeHome           string
-	ClaudeBinary         string
-	ClaudeCredentialFile string
-	ClaudeCredentialKind string
-	ClaudeModel          string
+	ClaudeHome   string
+	ClaudeBinary string
+	ClaudeModel  string
 	// ClaudePermissionMode is acceptEdits (default) or bypassPermissions.
 	ClaudePermissionMode string
 	// ClaudeAllowedTools are tool patterns granted up front, e.g. "Bash(git *)".
@@ -138,21 +136,8 @@ func (o *Options) Validate() error {
 		if o.ClaudeBinary == "" {
 			o.ClaudeBinary = DefaultClaudeBinary
 		}
-		// Claude Code authenticates through an environment variable that this
-		// runner injects from a file. Without both the file and its kind there
-		// is nothing to inject, and the runner would come up permanently
-		// unready — so refuse at launch, where the operator can see it.
-		if strings.TrimSpace(o.ClaudeCredentialFile) == "" {
-			return errors.New("--claude-credential-file is required with --harness=claude")
-		}
-		if !filepath.IsAbs(o.ClaudeCredentialFile) {
-			return fmt.Errorf("--claude-credential-file must be absolute: %q", o.ClaudeCredentialFile)
-		}
-		kind := claude.CredentialKind(strings.TrimSpace(o.ClaudeCredentialKind))
-		if !kind.Valid() {
-			return fmt.Errorf("--claude-credential-kind must be one of %s", strings.Join(claude.CredentialKinds, ", "))
-		}
-		o.ClaudeCredentialKind = string(kind)
+		// No credential flag: the coordinator sends the identity with each
+		// attempt, so there is nothing about authentication to configure here.
 		switch mode := claude.PermissionMode(strings.TrimSpace(o.ClaudePermissionMode)); mode {
 		case "", claude.PermissionAcceptEdits, claude.PermissionBypass:
 			o.ClaudePermissionMode = string(mode)
@@ -232,8 +217,6 @@ func (o Options) adapter(stateRoot string) (harness.Adapter, error) {
 			WorktreeRoot:    worktreeRoot,
 			Model:           o.ClaudeModel,
 			ExpectedVersion: o.VersionPin,
-			CredentialFile:  o.ClaudeCredentialFile,
-			CredentialKind:  claude.CredentialKind(o.ClaudeCredentialKind),
 			PermissionMode:  claude.PermissionMode(o.ClaudePermissionMode),
 			AllowedTools:    o.ClaudeAllowedTools,
 		}), nil

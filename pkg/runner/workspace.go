@@ -42,7 +42,59 @@ var commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 //     the remote the coordinator names with the attempt.
 //
 // Either way the task worktree is a fresh clone at the approved commit.
+// workspacesDir is the reserved namespace inside the managed worktree root
+// that holds persistent workspaces.
+//
+// It sits under `worktrees/` rather than beside it so a workspace is a managed
+// checkout as far as the harness adapters are concerned — both refuse a
+// workdir outside that root — and its leading dot keeps it from ever colliding
+// with a task directory, because a task ID must start with an alphanumeric.
+const workspacesDir = ".workspaces"
+
+// prepareWorkspace produces the directory an attempt runs in.
+//
+// A WORKSPACE attempt gets a directory the runner owns and keeps across
+// attempts: a conversation's working files outlive any single turn, and there
+// is no commit to check out or verify. A REPOSITORY attempt gets a fresh task
+// clone at the approved commit, which is prepareRepositoryWorkspace below.
 func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest, dispatched *RepositorySource) (string, error) {
+	if id := strings.TrimSpace(request.WorkspaceID); id != "" {
+		return prepareNamedWorkspace(cfg, id)
+	}
+	return prepareRepositoryWorkspace(ctx, cfg, request, dispatched)
+}
+
+// prepareNamedWorkspace creates or reuses the persistent directory for id. It
+// runs no Git: what is in the workspace is whatever previous turns left there.
+func prepareNamedWorkspace(cfg Config, id string) (string, error) {
+	root := filepath.Join(cfg.StateDir, "worktrees", workspacesDir)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", fmt.Errorf("create workspace root: %w", err)
+	}
+	workdir := filepath.Join(root, id)
+	if info, err := os.Lstat(workdir); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("workspace path must not be a symlink")
+		}
+		if !info.IsDir() {
+			return "", errors.New("workspace path exists and is not a directory")
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		if err := os.Mkdir(workdir, 0o700); err != nil {
+			return "", fmt.Errorf("create workspace: %w", err)
+		}
+	} else {
+		return "", fmt.Errorf("inspect workspace: %w", err)
+	}
+	// The same escape check a task worktree gets, for the same reason: the
+	// resolved parent must still be inside the state directory after symlinks.
+	if err := verifyTaskPath(cfg.StateDir, workdir); err != nil {
+		return "", err
+	}
+	return workdir, nil
+}
+
+func prepareRepositoryWorkspace(ctx context.Context, cfg Config, request StartRequest, dispatched *RepositorySource) (string, error) {
 	repo := cfg.Repositories[request.RepositoryID]
 	baseCommit := strings.TrimSpace(request.BaseCommit)
 	if !commitPattern.MatchString(baseCommit) {
@@ -286,6 +338,12 @@ func verifyWorkspace(ctx context.Context, cfg Config, request StartRequest, work
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return errors.New("task worktree is not a private directory")
 	}
+	// A persistent workspace has no approved commit and is expected to have
+	// been changed by earlier turns. The directory still being a private
+	// directory inside the state root, checked above, is the whole claim.
+	if strings.TrimSpace(request.WorkspaceID) != "" {
+		return nil
+	}
 	baseCommit := strings.ToLower(strings.TrimSpace(request.BaseCommit))
 	if !commitPattern.MatchString(baseCommit) {
 		return errors.New("approved base commit is not a full commit")
@@ -356,6 +414,16 @@ func operatorGitEnvironment() []string {
 func verifyTaskPath(stateDir, workdir string) error {
 	stateRoot, err := filepath.Abs(stateDir)
 	if err != nil {
+		return fmt.Errorf("resolve runner state directory: %w", err)
+	}
+	// BOTH sides are resolved through symlinks, or the comparison is between
+	// two different spellings of the same directory and refuses everything.
+	// The state directory is commonly under a symlinked path — /var on macOS,
+	// any operator who points it at a mounted data volume — and resolving only
+	// the child made every attempt on such a host fail to start.
+	if resolved, err := filepath.EvalSymlinks(stateRoot); err == nil {
+		stateRoot = resolved
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("resolve runner state directory: %w", err)
 	}
 	parent, err := filepath.EvalSymlinks(filepath.Dir(workdir))
@@ -437,7 +505,15 @@ func artifactSource(workdir, relative string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve artifact path: %w", err)
 	}
-	if !pathWithin(workdir, resolved) {
+	// The containment check compares two resolved paths. Resolving only the
+	// candidate made every artifact on a host whose state directory sits under
+	// a symlink look like an escape, which is the same mistake verifyTaskPath
+	// was making.
+	root := workdir
+	if resolvedRoot, err := filepath.EvalSymlinks(workdir); err == nil {
+		root = resolvedRoot
+	}
+	if !pathWithin(root, resolved) {
 		return "", errors.New("artifact path escapes the task worktree")
 	}
 	return resolved, nil
