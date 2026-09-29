@@ -13,6 +13,12 @@ package api
 // approves or denies — from the portal inbox, the Activity view, or a channel
 // /approve. The approved call executes with the EXACT arguments the model
 // requested; a denial is fed back as an observation so the model can react.
+//
+// Resuming is not a second lifecycle. This file does only what is particular to
+// picking a run back up — find it, claim it so one resolver resumes it, rebuild
+// the run around its checkpoint, and deliver the continuation where the original
+// answer was headed — and hands the turn itself to runTurn, which is the same
+// lifecycle a fresh run goes through.
 
 import (
 	"context"
@@ -30,27 +36,14 @@ import (
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
-	"github.com/railgrid/provider-agents/tools"
 )
-
-// resumeDeps carries the tenant access a resume runs with: the gate's
-// provider client on the inbox-resolve verb, the virtual-workspace client on
-// the channel path. Both act as the provider; neither carries edges.
-type resumeDeps struct {
-	Creds         llm.CredentialResolver
-	CR            tools.CRAccess
-	EdgesEndpoint string
-	HubToken      string
-	EdgesInsecure bool
-	ClusterID     string
-}
 
 // resumeApprovedRun continues a checkpointed run after the user's decision.
 // Detached from the resolving request: runs on its own context with the run's
 // own timeout. Errors are recorded on the run, not returned to the resolver.
-func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, rd resumeDeps, approve bool, note string) {
+func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, access runAccess, approve bool, note string) {
 	agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: item.AgentName}
-	s.resumeRun(context.Background(), agentScope, item.RunID, rd, resumeIntent{
+	s.resumeRun(context.Background(), agentScope, item.RunID, access, resumeIntent{
 		Approval: true, Approve: approve, Note: note,
 		FromPhase: store.RunPhasePendingApproval,
 	})
@@ -70,11 +63,12 @@ type resumeIntent struct {
 	FromPhase store.RunPhase
 }
 
-// resumeRun rehydrates a checkpointed run and continues its loop. Shared by the
-// approval path and the recovery sweep.
-func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID string, rd resumeDeps, intent resumeIntent) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), time.Hour)
-	defer cancel()
+// resumeRun rehydrates a checkpointed run and continues it through the shared
+// lifecycle. Used by the approval path and by recovery.
+func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID string, access runAccess, intent resumeIntent) {
+	// Detached from whoever asked: the resume outlives the resolving request, and
+	// runTurn applies the agent's own timeout to the turn.
+	ctx := context.WithoutCancel(parent)
 
 	run, err := s.store.GetRun(ctx, agentScope, runID)
 	if err != nil {
@@ -85,18 +79,17 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		log.Printf("resume: run %s is %s (not resumable)", run.ID, run.Phase)
 		return
 	}
+	var ck runCheckpoint
+	if err := json.Unmarshal(run.Checkpoint, &ck); err != nil {
+		log.Printf("resume: run %s checkpoint corrupt: %v", run.ID, err)
+		return
+	}
 	startedAt := run.CreatedAt
 	if run.StartedAt != nil {
 		startedAt = *run.StartedAt
 	}
 	if startedAt.IsZero() {
 		startedAt = time.Now().UTC()
-	}
-	approve, note := intent.Approve, intent.Note
-	var ck runCheckpoint
-	if err := json.Unmarshal(run.Checkpoint, &ck); err != nil {
-		log.Printf("resume: run %s checkpoint corrupt: %v", run.ID, err)
-		return
 	}
 	// Claim so only one resolver resumes (double /approve, portal + channel).
 	if _, err := s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC()); err != nil {
@@ -106,120 +99,52 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	s.upgradeLegacyImageCheckpoint(ctx, agentScope, run, &ck.Engine)
 	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseRunning})
 
-	agent, err := rd.CR.GetAgent(ctx, run.AgentName)
+	agent, err := access.CR.GetAgent(ctx, run.AgentName)
 	if err != nil {
-		s.failResume(ctx, agentScope, run, fmt.Errorf("loading agent: %w", err))
-		return
-	}
-	model, err := s.buildChatModelCtx(ctx, rd.Creds, agent)
-	if err != nil {
-		s.failResume(ctx, agentScope, run, err)
+		// The run has been announced Running, so it cannot just be abandoned.
+		log.Printf("resume: run %s: loading agent %s: %v", run.ID, run.AgentName, err)
+		s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, fmt.Sprintf("loading agent: %v", err))
 		return
 	}
 
 	used := false
 	tr := taskRun{
-		Creds: rd.Creds, CR: rd.CR, Scope: agentScope, Agent: agent,
+		Scope: agentScope, Agent: agent,
 		RunID: run.ID, SessionID: run.SessionID, Trigger: run.Trigger,
-		SourceName: ck.SourceName, NotifyChannel: ck.NotifyChannel,
-		EdgesEndpoint: rd.EdgesEndpoint, HubToken: rd.HubToken, EdgesInsecure: rd.EdgesInsecure,
-		ClusterID: rd.ClusterID,
+		ParentRunID: run.ParentRunID,
+		SourceName:  ck.SourceName, NotifyChannel: ck.NotifyChannel,
+		// A spawned worker's constraints come back off its checkpoint, so a
+		// resumed sub-task is rebuilt as the worker it was — same narrowed
+		// toolset, same approval class, same tool-turn budget, same model
+		// purpose — rather than as a top-level run of its agent.
+		Worker: ck.Worker,
 	}
+	access.applyTo(&tr)
 	// Only an approval resume pre-authorizes a call. A recovery checkpoint has no
 	// pending call at all, so there is nothing to grant.
-	if intent.Approval && approve {
+	if intent.Approval && intent.Approve {
 		tr.ApproveTool, tr.ApproveArgs, tr.approveUsed = ck.Tool, ck.Args, &used
 	}
-	s.liveRuns.register(run.ID, cancel)
-	defer s.liveRuns.unregister(run.ID)
 
-	toolset, _, closeTools := s.buildToolset(ctx, tools.Deps{
-		Store: s.store, Scope: agentScope, Agent: agent, CR: rd.CR,
-		Secrets: rd.Creds, ConnSecretName: connectionSecretName, RunID: run.ID,
-		DataPlane: s.dataPlaneFor(tr),
-	}, tr)
-	defer closeTools()
-
-	maxIters := 16
-	if v := int(agent.Spec.Limits.MaxToolTurns); v > 0 {
-		maxIters = min(v, 32)
-	}
-	modelName := s.primaryModelName(ctx, rd.Creds, agent)
-	workedMS, workedKnown := checkpointWorkedDuration(run.Checkpoint, ck)
-	if !workedKnown && run.WorkedDurationMS != nil {
-		workedMS, workedKnown = *run.WorkedDurationMS, true
-	}
-	tracker := newTurnProgressTrackerState(workedMS, workedKnown)
-	tr.transcriptWrites = &transcriptWriteState{}
-	cb := s.runCallbacks(ctx, tr, run.SessionID, startedAt, tracker)
-	// A resumed run keeps checkpointing, so a replica that dies again picks up
-	// from where the resume got to rather than from the original snapshot.
-	cb.OnCheckpoint = s.checkpointRecorder(ctx, tr, run.SessionID, func() int64 { return tracker.durationMS() })
-	cancelCheck := s.cancelCheck(agentScope, run.ID)
-	callbackCheck := cb.CheckAbort
-	cb.CheckAbort = func(checkCtx context.Context) error {
-		if err := cancelCheck(checkCtx); err != nil {
-			return err
+	res, err := s.runTurn(ctx, tr, &continuation{
+		Checkpoint: ck, StartedAt: startedAt, Tracker: trackerForStored(run),
+		Decided: intent.Approval, Approved: intent.Approve, Note: intent.Note,
+	})
+	if err != nil {
+		log.Printf("resume: run %s failed: %v", run.ID, err)
+		if res.Phase == "" {
+			// The turn never started — no budget left, no model to resolve — so
+			// nothing was recorded. Close the run, which is already Running as far
+			// as everyone watching is concerned.
+			s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, err.Error())
 		}
-		return callbackCheck(checkCtx)
-	}
-	res, err := s.engine.ResumeTurnWithTools(ctx, model, ck.Engine, toolset, engine.TurnConfig{
-		MaxIters:            maxIters,
-		ContextBudgetTokens: turnContextBudget(modelName),
-		ContextCompactor:    s.contextCompactor(tr, run.SessionID, modelName),
-		CheckpointEvery:     checkpointEveryIterations,
-	}, approve, note, cb)
-	end := time.Now().UTC()
-	// Same as a fresh run: a refusal about the model id names the credential
-	// to fix rather than reading like the resume broke.
-	if err = llm.ExplainChatCompletionsRefusal(err, credentialNameForPurpose(agent, llm.PurposeChat)); err != nil {
-		s.failResume(ctx, agentScope, run, err, tracker)
 		return
 	}
-	// res.Usage is the run's cumulative total (the engine resumes from the
-	// checkpoint's accumulator) so the run record stays truthful, but the
-	// pre-pause portion was already billed to the rolling window when the run
-	// paused — only the delta is added here.
-	deltaIn := max(res.Usage.InputTokens-ck.Engine.Usage.InputTokens, 0)
-	deltaOut := max(res.Usage.OutputTokens-ck.Engine.Usage.OutputTokens, 0)
-	costMicros := llm.CostMicros(modelName, res.Usage.InputTokens, res.Usage.OutputTokens)
-	window, _ := s.store.AddUsage(ctx, agentScope, agent.Name, deltaIn, deltaOut,
-		llm.CostMicros(modelName, deltaIn, deltaOut), end, 30*24*time.Hour)
-
-	// The resumed loop may hit ANOTHER gated call — checkpoint again.
-	if res.Interrupt != nil {
-		next := runCheckpoint{
-			Engine: res.Interrupt.Checkpoint, Tool: res.Interrupt.Tool, Args: res.Interrupt.Args,
-			InboxID: res.Interrupt.RequestID, SourceName: ck.SourceName, NotifyChannel: ck.NotifyChannel,
-			WorkedDurationMS: tracker.durationMS(),
-		}
-		ckJSON, _ := json.Marshal(next)
-		if stored, gerr := s.store.GetRun(ctx, agentScope, run.ID); gerr == nil {
-			stored.Phase = store.RunPhasePendingApproval
-			stored.Checkpoint = ckJSON
-			stored.WorkedDurationMS = tracker.workedDurationMS()
-			stored.UpdatedAt = end
-			_ = s.saveRun(ctx, agentScope, stored)
-		}
-		s.appendTurnTerminal(ctx, agentScope, tr, run.SessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePendingApproval), "", "")
-		s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePendingApproval})
+	// The resumed turn may hit ANOTHER gated call; it is checkpointed again and
+	// delivery waits for the next resume.
+	if res.Pending != nil {
 		return
 	}
-
-	finalContent := tracker.finalText(res.FinalContent)
-	if err := s.appendTurnFinal(ctx, agentScope, tr, run.SessionID, startedAt, end, tracker, finalContent); err != nil {
-		s.failResume(ctx, agentScope, run, fmt.Errorf("persist final assistant message: %w", err), tracker)
-		return
-	}
-	body, sources := splitSources(res.Content)
-	persistCtx, cancelPersist := boundedPersistContext(ctx)
-	s.finishRun(persistCtx, agentScope, run.ID, runOutcome{
-		Phase: store.RunPhaseSucceeded, Usage: res.Usage, CostMicros: costMicros,
-		Output: body, Sources: sources, WorkedDurationMS: tracker.workedDurationMS(),
-	}, end)
-	s.recordAgentRun(persistCtx, rd.CR, agent, end, &window)
-	cancelPersist()
-	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
 
 	// Deliver the continuation where the run's output was headed: channel runs
 	// reply on their source connection, background runs notify their channel
@@ -228,11 +153,11 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	if out := strings.TrimSpace(res.Content); out != "" {
 		switch run.Trigger {
 		case agentsv1alpha1.RunTriggerChannel:
-			s.sendToConnection(ctx, rd, ck.SourceName, out)
+			s.sendToConnection(ctx, access, ck.SourceName, out)
 		case agentsv1alpha1.RunTriggerSchedule, agentsv1alpha1.RunTriggerHeartbeat,
 			agentsv1alpha1.RunTriggerWakeup, agentsv1alpha1.RunTriggerEvent:
 			if connName, ok := agent.Spec.ResolveChannelConnection(ck.NotifyChannel); ok {
-				s.sendToConnection(ctx, rd, connName, fmt.Sprintf("[%s] %s", ck.SourceName, out))
+				s.sendToConnection(ctx, access, connName, fmt.Sprintf("[%s] %s", ck.SourceName, out))
 			}
 		}
 	}
@@ -416,45 +341,19 @@ func authenticatedCheckpointToolGroup(messages []engine.CheckpointMessage, befor
 	return start, true
 }
 
-func (s *Server) failResume(ctx context.Context, scope store.Scope, run store.Run, err error, trackers ...*turnProgressTracker) {
-	log.Printf("resume: run %s failed: %v", run.ID, err)
-	end := time.Now().UTC()
-	phase := store.RunPhaseFailed
-	if ctx.Err() != nil {
-		phase = store.RunPhaseAborted
-	}
-	startedAt := run.CreatedAt
-	if run.StartedAt != nil {
-		startedAt = *run.StartedAt
-	}
-	if startedAt.IsZero() {
-		startedAt = end
-	}
-	tracker := trackerForStored(run)
-	if len(trackers) > 0 && trackers[0] != nil {
-		tracker = trackers[0]
-	}
-	tr := taskRunForStored(run)
-	persistCtx, cancelPersist := boundedPersistContext(ctx)
-	defer cancelPersist()
-	s.appendTurnTerminal(persistCtx, scope, tr, run.SessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), err.Error())
-	s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: err.Error(), WorkedDurationMS: tracker.workedDurationMS()}, end)
-	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
-}
-
-// sendToConnection delivers text through a named messaging connection using
-// the resume path's CR access.
-func (s *Server) sendToConnection(ctx context.Context, rd resumeDeps, connName, text string) {
+// sendToConnection delivers text through a named messaging connection using the
+// run's own tenant access.
+func (s *Server) sendToConnection(ctx context.Context, access runAccess, connName, text string) {
 	if strings.TrimSpace(connName) == "" || strings.TrimSpace(text) == "" {
 		return
 	}
-	conn, err := rd.CR.GetConnection(ctx, connName)
+	conn, err := access.CR.GetConnection(ctx, connName)
 	if err != nil {
 		log.Printf("resume: channel connection %q: %v", connName, err)
 		return
 	}
 	token := ""
-	if sec, serr := rd.Creds.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(connName)); serr == nil {
+	if sec, serr := access.Creds.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(connName)); serr == nil {
 		if v, ok := sec.Data["token"]; ok {
 			token = string(v)
 		}

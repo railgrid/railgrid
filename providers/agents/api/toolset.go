@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/channels"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
@@ -60,7 +61,7 @@ func defaultFamilies(_ bool) []string {
 // buildToolset returns the granted tools, the aggregated MCP server instructions
 // (each connected server's `initialize` guidance, e.g. an edges Service's
 // spec.instructions) for folding into the system context, and a closer.
-func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun) ([]engine.Tool, string, func()) {
+func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun) ([]backend.Tool, string, func()) {
 	trigger := run.Trigger
 	interactive := isInteractive(trigger)
 	// A worker inherits its parent's approval class rather than its own trigger's:
@@ -89,8 +90,7 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 			if err != nil {
 				return "", fmt.Errorf("loading agent %q: %w", target, err)
 			}
-			res, err := s.executeTask(dctx, taskRun{
-				Creds: parentDeps.Secrets, CR: parentDeps.CR,
+			childRun := taskRun{
 				Scope:       store.Scope{OrgUUID: parentDeps.Scope.OrgUUID, WorkspaceUUID: parentDeps.Scope.WorkspaceUUID, AgentName: target},
 				Agent:       child,
 				SessionID:   "delegate:" + parentDeps.Agent.Name + ":" + target,
@@ -98,13 +98,16 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 				Trigger:     agentsv1alpha1.RunTriggerDelegation,
 				SourceName:  parentDeps.Agent.Name,
 				ParentRunID: parentDeps.RunID,
-				// The child runs in the same workspace, so it inherits the data
-				// plane (reached as this provider, like the parent's). Edges is
-				// deliberately NOT inherited (no endpoint, no token), so this
-				// widens nothing: it only lets a delegated sub-agent use the
-				// same instance-backed tools its parent could.
+			}
+			// The child runs in the same workspace, so it inherits the data plane
+			// (reached as this provider, like the parent's). It gets no hub token
+			// and so no edges, which widens nothing: it only lets a delegated
+			// sub-agent use the same instance-backed tools its parent could.
+			runAccess{
+				Creds: parentDeps.Secrets, CR: parentDeps.CR,
 				ClusterID: parentDeps.DataPlane.ClusterID,
-			})
+			}.applyTo(&childRun)
+			res, err := s.executeTask(dctx, childRun)
 			if err != nil {
 				return "", err
 			}
@@ -166,7 +169,7 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 		deps.Spawn, deps.Join, deps.SpawnPolicy = spawner.spawn, spawner.join, policy
 	}
 
-	var out []engine.Tool
+	var out []backend.Tool
 	if slices.Contains(families, "core") {
 		out = append(out, tools.Core(deps)...)
 	}
@@ -229,7 +232,7 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	// (see workerExcludedTools). Done here rather than in the tools package so
 	// the whole worker policy reads in one place.
 	if run.Worker != nil {
-		out = slices.DeleteFunc(out, func(t engine.Tool) bool { return workerExcludedTools[t.Name] })
+		out = slices.DeleteFunc(out, func(t backend.Tool) bool { return workerExcludedTools[t.Name] })
 	}
 
 	// Approval gating + audit wrap every tool.
@@ -309,7 +312,7 @@ var approvalExempt = map[string]bool{
 // approval gate over it. A gated call posts an approval request and pauses the
 // run via an engine interrupt; the resume path pre-authorizes exactly one call
 // (run.ApproveTool/ApproveArgs) which executes without re-gating.
-func (s *Server) wrapTool(t engine.Tool, deps tools.Deps, run taskRun, trigger string, requireApproval []string) engine.Tool {
+func (s *Server) wrapTool(t backend.Tool, deps tools.Deps, run taskRun, trigger string, requireApproval []string) backend.Tool {
 	needsApproval := toolNeedsApproval(t.Name, requireApproval) && !approvalExempt[t.Name]
 	richInner, textInner := t.ExecRich, t.Exec
 	inner := func(ctx context.Context, argsJSON string) (engine.Observation, error) {
@@ -317,7 +320,7 @@ func (s *Server) wrapTool(t engine.Tool, deps tools.Deps, run taskRun, trigger s
 			return richInner(ctx, argsJSON)
 		}
 		out, err := textInner(ctx, argsJSON)
-		return engine.Observation{Text: out}, err
+		return backend.Observation{Text: out}, err
 	}
 	approved := run.approvalFor(t.Name)
 	t.Exec = nil
@@ -329,7 +332,7 @@ func (s *Server) wrapTool(t engine.Tool, deps tools.Deps, run taskRun, trigger s
 				Tool: t.Name, Args: redactArgs(argsJSON), Outcome: "pending_approval",
 				CreatedAt: time.Now().UTC(),
 			})
-			return engine.Observation{}, &engine.InterruptError{Tool: t.Name, Args: argsJSON, RequestID: reqID}
+			return backend.Observation{}, &backend.GateError{Tool: t.Name, Args: argsJSON, RequestID: reqID}
 		}
 		started := time.Now()
 		obs, err := inner(ctx, argsJSON)

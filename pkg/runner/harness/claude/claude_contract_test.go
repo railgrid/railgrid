@@ -163,22 +163,16 @@ func TestFakeClaudeProcess(t *testing.T) {
 		time.Sleep(5 * time.Minute)
 	case "sleep":
 		time.Sleep(5 * time.Minute)
+	case "permission-ask":
+		// Stand in for the real Claude Code's permission prompt: read the
+		// --mcp-config the adapter wrote, speak the exact wire shape the 2.1.281
+		// binary was observed to send, and put the decision it got back into
+		// the stream so the test can see it.
+		emit(`{"type":"system","subtype":"init","session_id":%q}`, session)
+		decision := askPermissionAsClaudeCodeWould(os.Getenv(fakeArgvEnv))
+		emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":%q}`, session, decision)
 	}
 	os.Exit(0)
-}
-
-// credentialFile writes an owner-only credential and returns its path.
-func credentialFile(t *testing.T, value string) string {
-	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, "credential")
-	if err := os.WriteFile(path, []byte(value+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	return path
 }
 
 func testAdapter(t *testing.T, binary string, mutate ...func(*Config)) *Adapter {
@@ -188,10 +182,8 @@ func testAdapter(t *testing.T, binary string, mutate ...func(*Config)) *Adapter 
 		t.Fatal(err)
 	}
 	cfg := Config{
-		Binary:         binary,
-		Home:           filepath.Join(home, "claude-home"),
-		CredentialFile: credentialFile(t, "sk-test-credential-value"),
-		CredentialKind: CredentialOAuthToken,
+		Binary: binary,
+		Home:   filepath.Join(home, "claude-home"),
 	}
 	for _, m := range mutate {
 		m(&cfg)
@@ -203,11 +195,16 @@ func testAdapter(t *testing.T, binary string, mutate ...func(*Config)) *Adapter 
 	return adapter
 }
 
+// testCredentialValue is the credential a launch carries unless a test
+// overrides it. The adapter reads it from the launch, never from the host.
+const testCredentialValue = "sk-test-credential-value"
+
 func launch(mutate ...func(*harness.Launch)) harness.Launch {
 	l := harness.Launch{
 		AttemptID:    "attempt-1",
 		Workdir:      "",
 		Instructions: "make the tests pass",
+		Credential:   harness.Credential{Kind: harness.CredentialClaudeOAuth, Value: testCredentialValue},
 	}
 	for _, m := range mutate {
 		m(&l)
@@ -260,41 +257,24 @@ func TestProbeVersionPinIsAReasonNotAnError(t *testing.T) {
 	}
 }
 
-// TestProbeWithoutACredentialIsNotReady: the credential is what makes the
-// harness usable, so its absence is a readiness reason — and the reason must
-// not quote the file's contents.
-func TestProbeWithoutACredentialIsNotReady(t *testing.T) {
-	binary, _ := fakeClaude(t, "success")
-	adapter := testAdapter(t, binary, func(c *Config) {
-		c.CredentialFile = filepath.Join(filepath.Dir(c.CredentialFile), "absent")
-	})
-
-	info, err := adapter.Probe(context.Background())
-	if err != nil {
-		t.Fatalf("Probe: %v", err)
-	}
-	if info.Ready {
-		t.Fatal("probe reported ready with no credential")
-	}
-	if len(info.Reasons) == 0 || !strings.Contains(strings.ToLower(info.Reasons[0]), "authentication") {
-		t.Errorf("reasons = %v", info.Reasons)
-	}
-}
-
-// TestProbeRejectsAWorldReadableCredential: a credential another local account
-// can read is not a credential.
-func TestProbeRejectsAWorldReadableCredential(t *testing.T) {
+// TestProbeIsReadyWithoutACredential: the credential arrives with each launch,
+// so a runner that reported itself unready until one showed up would never
+// accept the attempt that carries it.
+func TestProbeIsReadyWithoutACredential(t *testing.T) {
 	binary, _ := fakeClaude(t, "success")
 	adapter := testAdapter(t, binary)
-	if err := os.Chmod(adapter.cfg.CredentialFile, 0644); err != nil {
-		t.Fatal(err)
-	}
+
 	info, err := adapter.Probe(context.Background())
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
-	if info.Ready {
-		t.Fatal("probe accepted a world-readable credential")
+	if !info.Ready {
+		t.Fatalf("probe reported not ready: %v", info.Reasons)
+	}
+	for _, reason := range info.Reasons {
+		if strings.Contains(strings.ToLower(reason), "authentication") {
+			t.Errorf("probe still has an authentication verdict: %q", reason)
+		}
 	}
 }
 
@@ -499,12 +479,13 @@ func TestRunRedactsTheCredential(t *testing.T) {
 	const secret = "sk-ant-oat01-super-secret-value"
 	binary, _ := fakeClaude(t, "leak-secret")
 	t.Setenv(fakeSecretEnv, secret)
-	adapter := testAdapter(t, binary, func(c *Config) {
-		c.CredentialFile = credentialFile(t, secret)
-	})
+	adapter := testAdapter(t, binary)
 
 	var events []harness.Event
-	result, err := adapter.Run(context.Background(), launch(func(l *harness.Launch) { l.Workdir = t.TempDir() }), collect(&events))
+	result, err := adapter.Run(context.Background(), launch(func(l *harness.Launch) {
+		l.Workdir = t.TempDir()
+		l.Credential = harness.Credential{Kind: harness.CredentialClaudeOAuth, Value: secret}
+	}), collect(&events))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -547,9 +528,12 @@ func TestChildEnvironmentIsolation(t *testing.T) {
 
 	const secret = "sk-ant-oat01-the-only-credential"
 	binary, dir := fakeClaude(t, "env-dump")
-	adapter := testAdapter(t, binary, func(c *Config) { c.CredentialFile = credentialFile(t, secret) })
+	adapter := testAdapter(t, binary)
 
-	if _, err := adapter.Run(context.Background(), launch(func(l *harness.Launch) { l.Workdir = t.TempDir() }), nil); err != nil {
+	if _, err := adapter.Run(context.Background(), launch(func(l *harness.Launch) {
+		l.Workdir = t.TempDir()
+		l.Credential = harness.Credential{Kind: harness.CredentialClaudeOAuth, Value: secret}
+	}), nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -649,11 +633,12 @@ func TestRunCancelKillsTheProcessGroup(t *testing.T) {
 // attempt.
 func TestRunWithoutACredentialStartsNothing(t *testing.T) {
 	binary, dir := fakeClaude(t, "success")
-	adapter := testAdapter(t, binary, func(c *Config) {
-		c.CredentialFile = filepath.Join(filepath.Dir(c.CredentialFile), "absent")
-	})
+	adapter := testAdapter(t, binary)
 
-	result, err := adapter.Run(context.Background(), launch(func(l *harness.Launch) { l.Workdir = t.TempDir() }), nil)
+	result, err := adapter.Run(context.Background(), launch(func(l *harness.Launch) {
+		l.Workdir = t.TempDir()
+		l.Credential = harness.Credential{}
+	}), nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -695,7 +680,7 @@ func indexOf(values []string, want string) int {
 // reach the command line unchanged; an unknown mode is refused before launch.
 func TestPermissionModeAndAllowedToolsReachArgv(t *testing.T) {
 	a := &Adapter{cfg: Config{PermissionMode: PermissionBypass, AllowedTools: []string{"Bash(git *)", " Bash(npm test) ", ""}}}
-	argv := a.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"})
+	argv := a.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"}, nil)
 	if !contains(argv, "bypassPermissions") || contains(argv, "acceptEdits") {
 		t.Fatalf("argv = %v, want the configured bypassPermissions mode", argv)
 	}
@@ -709,7 +694,7 @@ func TestPermissionModeAndAllowedToolsReachArgv(t *testing.T) {
 	if _, err := bad.permissionMode(); err == nil {
 		t.Fatal("unsupported permission mode accepted")
 	}
-	if args := bad.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"}); contains(args, "plan") {
+	if args := bad.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"}, nil); contains(args, "plan") {
 		t.Fatalf("argv = %v, an unsupported mode must not reach the command line", args)
 	}
 }

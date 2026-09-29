@@ -122,16 +122,30 @@ var dataPlaneGrants = map[string][]dataPlaneGrant{
 // provider's APIExport grows, which is right for ordinary provider objects and
 // wrong for the few whose creation IS the privilege escalation.
 //
-// edges.railgrid.ai/addons is the first such resource: creating an Addon asks a
-// specific machine to become a host for arbitrary code execution. That decision
+// It is currently empty. The entry it used to hold, edges.railgrid.ai/addons,
+// went away with the Addon kind; the same privilege now lives on the edge kinds
+// themselves and is denied by privilegedWriteResources below, because an edge
+// still has to be READABLE for the edge tools to work at all.
+var privilegedResources = map[string]map[string]bool{}
+
+// privilegedWriteResources are bound resources a generated MCPServer role may
+// READ but never WRITE, whatever the server's own read-only setting.
+//
+// The edge host kinds are here because `spec.harness` is on them: updating an
+// edge can ask a specific machine to start running a coding harness, which is
+// arbitrary code execution on somebody's laptop or build box. That decision
 // belongs to a human with workspace admin rights (whose wildcard still covers
-// it) and to the machine's owner, who must independently have started the agent
-// with --allow-addon. Handing it to every MCPServer token in the workspace —
-// which is what "the tenant bound this resource" would otherwise mean — would
-// let an AI client turn a developer's laptop into a code-execution host as a
-// side effect of a tool call. See docs/edge-addons.md.
-var privilegedResources = map[string]map[string]bool{
-	"edges.railgrid.ai": {"addons": true},
+// it) and to the machine's owner, who controls whether a harness is installed
+// and which account it runs as. Handing it to every MCPServer token in the
+// workspace — which is what "the tenant bound this resource" would otherwise
+// mean — would let an AI client turn a machine into a code-execution host as a
+// side effect of a tool call.
+//
+// Reads stay granted: listing edges and their status is most of what the edge
+// tools do, and dropping the resource outright (what the Addon entry did) would
+// break them. See docs/edge-harness.md.
+var privilegedWriteResources = map[string]map[string]bool{
+	"edges.railgrid.ai": {"linuxservers": true, "macosservers": true, "kubernetesclusters": true},
 }
 
 // dropPrivilegedResources removes the never-granted resources of one group.
@@ -147,6 +161,23 @@ func dropPrivilegedResources(group string, resources []string) []string {
 		}
 	}
 	return out
+}
+
+// splitPrivilegedWrites divides resources into those a role may write and those
+// it may only read.
+func splitPrivilegedWrites(group string, resources []string) (writable, readOnly []string) {
+	denied := privilegedWriteResources[group]
+	if len(denied) == 0 {
+		return resources, nil
+	}
+	for _, r := range resources {
+		if denied[r] {
+			readOnly = append(readOnly, r)
+		} else {
+			writable = append(writable, r)
+		}
+	}
+	return writable, readOnly
 }
 
 // ActionGrant is one provider action from the platform catalog, expressed as
@@ -193,8 +224,13 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 			continue
 		}
 		// A catalog action must not become a back door into a resource the
-		// generated role refuses outright.
+		// generated role refuses outright, nor a write into one it may only
+		// read: an action is an invocation, which is a write in every sense
+		// that matters here.
 		if privilegedResources[a.Group][a.Resource] {
+			continue
+		}
+		if privilegedWriteResources[a.Group][a.Resource] && !a.ReadOnly {
 			continue
 		}
 		if readOnly && !a.ReadOnly {
@@ -225,7 +261,16 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 		if len(resources) == 0 {
 			continue
 		}
-		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: resources, Verbs: verbs})
+		// A resource whose write IS the privilege escalation gets reads only,
+		// in its own rule, so the grant cannot be widened by the server's
+		// read-only setting being off.
+		granted, readOnlyResources := splitPrivilegedWrites(g, resources)
+		if len(granted) > 0 {
+			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: granted, Verbs: verbs})
+		}
+		if len(readOnlyResources) > 0 {
+			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: readOnlyResources, Verbs: append([]string{}, readVerbs...)})
+		}
 
 		for _, dp := range dataPlaneGrants[g] {
 			// Scope the grant to the resources the data plane actually serves,

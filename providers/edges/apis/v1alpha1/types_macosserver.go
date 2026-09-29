@@ -42,6 +42,7 @@ import (
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Connected",type="boolean",JSONPath=".status.connected"
 // +kubebuilder:printcolumn:name="Last Heartbeat",type="date",JSONPath=".status.lastHeartbeatTime"
+// +kubebuilder:printcolumn:name="Harness",type="string",JSONPath=".spec.harness.mode"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:printcolumn:name="Agent Version",type="string",JSONPath=".status.agentVersion",priority=1
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -69,11 +70,18 @@ type MacOSServerList struct {
 	Items           []MacOSServer `json:"items"`
 }
 
-// MacOSServerSpec contains macOS-specific desired settings. The initial
-// contract is intentionally empty: registration, tunnel access, and host-local
-// Service connectivity use the shared edge lifecycle, while installation and
-// process supervision stay with the macOS agent.
-type MacOSServerSpec struct{}
+// MacOSServerSpec contains macOS-specific desired settings. Registration,
+// tunnel access, and host-local Service connectivity use the shared edge
+// lifecycle, while installation and process supervision stay with the macOS
+// agent.
+type MacOSServerSpec struct {
+	// Harness decides which coding harnesses this machine offers as local
+	// runner services. Unset means the default, which is "auto": every harness
+	// installed on the machine. Set mode "none" to turn the machine into a
+	// plain edge again; the agent applies the change without a restart.
+	// +optional
+	Harness *EdgeHarnessSpec `json:"harness,omitempty"`
+}
 
 // MacOSServerStatus contains the shared tunnel and registration state.
 type MacOSServerStatus struct {

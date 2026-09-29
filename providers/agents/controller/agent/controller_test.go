@@ -615,8 +615,7 @@ func TestAgentModelCredentialsReady(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := validAgent("scout")
-			a.Spec.Models = tc.models
-			a.Spec.ModelFallbacks = tc.fallbacks
+			a.Spec.Backend.Model = &agentsv1alpha1.AgentModelBackend{Credentials: tc.models, Fallbacks: tc.fallbacks}
 			got := reconcileAgents(t, a, tc.objects...)
 			cond := modelCredentialsCondition(t, got)
 			if tc.wantReason == "" {
@@ -645,8 +644,10 @@ func TestAgentModelCredentialsReady(t *testing.T) {
 // and write status on every pass.
 func TestReferencedCredentialsIsStableAndDeduped(t *testing.T) {
 	a := validAgent("scout")
-	a.Spec.Models = map[string]string{"chat": "main", "background": "cheap", "compaction": "main"}
-	a.Spec.ModelFallbacks = []string{"cheap", " backup ", ""}
+	a.Spec.Backend.Model = &agentsv1alpha1.AgentModelBackend{
+		Credentials: map[string]string{"chat": "main", "background": "cheap", "compaction": "main"},
+		Fallbacks:   []string{"cheap", " backup ", ""},
+	}
 	want := []string{"cheap", "main", "backup"} // background, chat, compaction, then fallbacks
 	for range 5 {
 		if got := referencedCredentials(a); !slices.Equal(got, want) {

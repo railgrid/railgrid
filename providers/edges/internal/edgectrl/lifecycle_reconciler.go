@@ -299,7 +299,7 @@ func (r *LifecycleReconciler) reconcileEdge(ctx context.Context, c client.Client
 // connectivityPatch builds a JSON merge patch carrying ONLY the connectivity
 // fields this reconciler owns that differ between current and desired, or nil
 // when nothing changed. Merge-patching just these fields is what lets the
-// agent-side edge_reporter (agentVersion, labels, allowedAddons, ...) and the
+// agent-side edge_reporter (agentVersion, labels, harnesses, ...) and the
 // tunnel handler (hostname, sshCredentials, URL, ...) keep patching theirs
 // without a resourceVersion fight.
 func connectivityPatch(current, desired *edgeapi.ConnectionStatus) []byte {

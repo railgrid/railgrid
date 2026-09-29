@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -53,11 +54,19 @@ type servicesResponse struct {
 	Services []discovery.DiscoveredService `json:"services"`
 }
 
-// newServicesHandler runs the host service detectors and returns the result.
-// It is provider-pulled over the tunnel by the discovery reconciler.
-func newServicesHandler() http.HandlerFunc {
+// newServicesHandler runs the host service detectors and returns the result,
+// plus one entry per RUNNING harness runner. It is provider-pulled over the
+// tunnel by the discovery reconciler, which materializes each entry as an
+// ordinary Service — which is the whole point of advertising the runner here
+// rather than through machinery of its own.
+//
+// The harness plane is a SOURCE, not a Detector: it is not probing the host for
+// something it might find, it knows exactly which runners it started and on
+// which port.
+func newServicesHandler(runners *RunnerRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		svcs := discovery.Run(r.Context(), discovery.DefaultDetectors())
+		svcs = append(svcs, runners.Services()...)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(servicesResponse{Services: svcs})
 	}
@@ -129,6 +138,12 @@ func newSvcProxyHandler(cfg svcProxyConfig) http.HandlerFunc {
 			}
 		}
 
+		// A supervised runner listens on loopback with a bearer that must never
+		// leave this host, which is why its published Service carries no
+		// credential at all. The agent is the only party that holds the token,
+		// so the agent is the party that injects it.
+		injectRunnerBearer(r, cfg.Runners, target, vetted, logger)
+
 		// The remaining path after /svc is the service-local path.
 		svcPath := strings.TrimPrefix(r.URL.Path, "/svc")
 		if svcPath == "" {
@@ -174,6 +189,40 @@ func newSvcProxyHandler(cfg svcProxyConfig) http.HandlerFunc {
 		}
 		proxy.ServeHTTP(w, r)
 	}
+}
+
+// injectRunnerBearer sets Authorization to a supervised runner's bearer when the
+// resolved target is one of THIS agent's runner ports, and leaves every other
+// request's headers alone.
+//
+// Two properties are load-bearing:
+//
+//   - A caller cannot smuggle its own Authorization past this. The header is
+//     REPLACED, not defaulted, for a runner target, so a value that arrived over
+//     the tunnel never reaches the runner. (A guessed token would be refused
+//     anyway; not forwarding it at all means the runner never even sees the
+//     attempt, and an unauthenticated caller cannot use the agent to probe it.)
+//   - A non-runner target never receives a runner token, because the only source
+//     of one is a port lookup that answers for supervised runner ports alone.
+//     A Service pointed at another loopback port gets nothing added and keeps
+//     whatever credential the provider injected for it.
+func injectRunnerBearer(r *http.Request, runners *RunnerRegistry, target *url.URL, vetted svcVettedTarget, logger klog.Logger) {
+	// Only the host's own loopback can be a runner. Checking this before the
+	// port means a remote service that happens to listen on 8787 can never be
+	// mistaken for one.
+	if !vetted.loopback {
+		return
+	}
+	port, err := strconv.Atoi(target.Port())
+	if err != nil || port <= 0 {
+		return
+	}
+	token, ok := runners.Token(port)
+	if !ok {
+		return
+	}
+	r.Header.Set("Authorization", "Bearer "+token)
+	logger.V(4).Info("injected the supervised runner's bearer", "port", port)
 }
 
 // stampSvcPolicy makes X-Railgrid-Svc-Policy on a proxied response say exactly

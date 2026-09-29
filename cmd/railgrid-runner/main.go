@@ -30,7 +30,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/railgrid/railgrid/pkg/runner/harness/claude"
 	"github.com/railgrid/railgrid/pkg/runner/runnercli"
 )
 
@@ -59,10 +58,6 @@ func run() error {
 	flags.StringVar(&opts.CodexBinary, "codex-binary", runnercli.DefaultCodexBinary, "Codex executable")
 	flags.StringVar(&opts.ClaudeHome, "claude-home", "", "runner-owned CLAUDE_CONFIG_DIR directory")
 	flags.StringVar(&opts.ClaudeBinary, "claude-binary", runnercli.DefaultClaudeBinary, "Claude Code executable")
-	flags.StringVar(&opts.ClaudeCredentialFile, "claude-credential-file", "",
-		"absolute owner-only file holding the Claude Code credential (required with -harness=claude)")
-	flags.StringVar(&opts.ClaudeCredentialKind, "claude-credential-kind", "",
-		"how to inject the Claude Code credential: "+strings.Join(claude.CredentialKinds, " or "))
 	flags.StringVar(&opts.ClaudeModel, "claude-model", "", "model for Claude Code turns (empty uses the account default)")
 	flags.StringVar(&opts.ClaudePermissionMode, "claude-permission-mode", "", "acceptEdits (default) or bypassPermissions")
 	flags.Func("claude-allowed-tool", "Claude Code tool pattern granted for every turn (repeatable)", func(v string) error { opts.ClaudeAllowedTools = append(opts.ClaudeAllowedTools, v); return nil })

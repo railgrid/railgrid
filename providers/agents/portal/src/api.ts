@@ -55,6 +55,7 @@ import type {
   Credential,
   CredentialTestResult,
   CredentialWrite,
+  Edge,
   InboxItem,
   RailgridContext,
   ModelInfo,
@@ -361,6 +362,11 @@ export class ApiClient {
   createAgent = (body: AgentCreate): Promise<Agent> => this.resources.createAgent(body)
   patchAgent = (name: string, body: AgentPatch): Promise<Agent> => this.resources.patchAgent(name, body)
   deleteAgent = (name: string): Promise<void> => this.resources.deleteAgent(name)
+
+  // Host edges live in the edges provider's group, bound in the same tenant
+  // workspace. They are read as objects like everything else above — see
+  // resources.listEdges; there is no route for them.
+  listEdges = (): Promise<Edge[]> => this.resources.listEdges()
 
   listSessions = (agent: string): Promise<SessionMeta[]> =>
     this.listVerb<SessionMeta>(this.verb(AGENTS, agent, 'sessions'))

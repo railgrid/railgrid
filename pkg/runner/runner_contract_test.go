@@ -446,13 +446,14 @@ func TestInterruptedRestartResumeKeepsExactSessionAndWorkspace(t *testing.T) {
 		t.Fatalf("recovered checkpoint = %+v, want needs-input exact session/workspace", recovered)
 	}
 	resumed, err := second.Resume(context.Background(), ResumeRequest{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "resume-interrupted-restart",
-		TaskID:          recovered.TaskID,
-		AttemptID:       recovered.AttemptID,
-		AttemptEpoch:    recovered.AttemptEpoch,
-		SessionID:       recovered.SessionID,
-		Resolution:      "continue the approved work",
+		HarnessCredential: testHarnessCredential(),
+		ProtocolVersion:   ProtocolVersion,
+		RequestID:         "resume-interrupted-restart",
+		TaskID:            recovered.TaskID,
+		AttemptID:         recovered.AttemptID,
+		AttemptEpoch:      recovered.AttemptEpoch,
+		SessionID:         recovered.SessionID,
+		Resolution:        "continue the approved work",
 	})
 	if err != nil {
 		t.Fatalf("Resume recovered attempt: %v", err)

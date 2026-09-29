@@ -90,6 +90,10 @@ const (
 	// user with an Agent they cannot get rid of; past this the finalizer is
 	// released and the orphaned rows are logged for an operator to collect.
 	purgeGiveUp = 10 * time.Minute
+
+	// harnessResync is how often a harness-backed agent's backend is re-checked.
+	// See the comment at the end of Reconcile for why it is a poll.
+	harnessResync = 2 * time.Minute
 )
 
 // Reconciler stamps phase Ready on agents that have no phase, reports spec
@@ -227,17 +231,44 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if setModelCredentialsReady(&agent, credReason, credMessage) {
 		changed = true
 	}
+
+	// BackendReady is the third condition, and the one that tracks the world
+	// rather than the spec: a machine that went to sleep, a harness somebody
+	// uninstalled. See controller/agent/backend.go.
+	backendReason, backendMessage, backendStatus, err := r.validateBackend(ctx, c, &agent,
+		credentialVerdict{reason: credReason, message: credMessage})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if setBackendReady(&agent, backendReason, backendMessage) {
+		changed = true
+	}
+	if !equalBackendStatus(agent.Status.Backend, backendStatus) {
+		agent.Status.Backend = backendStatus
+		changed = true
+	}
+	// A harness-backed agent is re-checked on a slow clock. Its readiness lives
+	// on another provider's object (an edges Service's status.harness), and this
+	// controller deliberately does not WATCH that kind: the edges API may not be
+	// bound in a workspace at all, and a watch on a kind the workspace cannot
+	// serve would fail this controller's startup for every tenant. So this is the
+	// sanctioned poll, not a stand-in for a watch that was skipped for
+	// convenience.
+	result := ctrl.Result{}
+	if agent.Spec.HarnessBacked() {
+		result.RequeueAfter = harnessResync
+	}
 	if !changed {
-		return ctrl.Result{}, nil
+		return result, nil
 	}
 	if err := c.Status().Update(ctx, &agent); err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{}, nil // the watch re-delivers the newer object
 		}
-		return ctrl.Result{}, err
+		return result, err
 	}
 	klog.FromContext(ctx).V(2).Info("agent status written", "agent", req.Name, "cluster", req.ClusterName, "validated", reason == "")
-	return ctrl.Result{}, nil
+	return result, nil
 }
 
 // setValidated records the verdict. reason=="" is valid; anything else is a
@@ -267,6 +298,14 @@ func setModelCredentialsReady(agent *agentsv1alpha1.Agent, reason, message strin
 		Message:            "every model credential this agent references is ready",
 		ObservedGeneration: agent.Generation,
 	}
+	// A harness-backed agent references none, so the success message above would
+	// be a true sentence about an empty set and a confusing one to read. It says
+	// what is actually the case instead, and stays True: a condition that
+	// disappears reads as "not evaluated yet" to anything watching.
+	if agent.Spec.HarnessBacked() {
+		cond.Reason = agentsv1alpha1.ReasonModelCredentialsNotApplicable
+		cond.Message = "a harness-backed agent runs on the identity in spec.backend.harness.credentialRef, not a chat credential; see BackendReady"
+	}
 	if reason != "" {
 		cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, reason, message
 	}
@@ -274,16 +313,24 @@ func setModelCredentialsReady(agent *agentsv1alpha1.Agent, reason, message strin
 }
 
 // validateModelCredentials checks that every ModelCredential the agent names —
-// in spec.models and spec.modelFallbacks — exists and is Ready.
+// in spec.backend.model.credentials and .fallbacks — exists and is Ready.
 //
 // It reports the offending NAMES, because that is what the person edits. An
 // agent naming nothing at all is reported too: it is a configuration gap that
 // reads as a run failing at its first turn otherwise.
 func (r *Reconciler) validateModelCredentials(ctx context.Context, c client.Client, agent *agentsv1alpha1.Agent) (reason, message string, err error) {
+	// A harness-backed agent names no chat credential, and saying it "cannot
+	// run" for that would be wrong twice over: it can, and the field the message
+	// would tell somebody to fix is one its editor deliberately does not offer.
+	// Its identity is spec.backend.harness.credentialRef, which BackendReady
+	// checks.
+	if agent.Spec.HarnessBacked() {
+		return "", "", nil
+	}
 	names := referencedCredentials(agent)
 	if len(names) == 0 {
 		return agentsv1alpha1.ReasonNoModelCredential,
-			"spec.models names no model credential, so this agent cannot run; point spec.models.chat at a ModelCredential", nil
+			"spec.backend.model.credentials names no model credential, so this agent cannot run; point spec.backend.model.credentials.chat at a ModelCredential", nil
 	}
 	var missing, notReady []string
 	for _, name := range names {
@@ -315,8 +362,9 @@ func (r *Reconciler) validateModelCredentials(ctx context.Context, c client.Clie
 // sorted so the message never reorders itself between reconciles), then the
 // fallback list in the order it is written.
 func referencedCredentials(agent *agentsv1alpha1.Agent) []string {
-	purposes := make([]string, 0, len(agent.Spec.Models))
-	for purpose := range agent.Spec.Models {
+	creds := agent.Spec.ModelCredentials()
+	purposes := make([]string, 0, len(creds))
+	for purpose := range creds {
 		purposes = append(purposes, purpose)
 	}
 	sort.Strings(purposes)
@@ -332,9 +380,9 @@ func referencedCredentials(agent *agentsv1alpha1.Agent) []string {
 		out = append(out, name)
 	}
 	for _, purpose := range purposes {
-		add(agent.Spec.Models[purpose])
+		add(creds[purpose])
 	}
-	for _, name := range agent.Spec.ModelFallbacks {
+	for _, name := range agent.Spec.ModelFallbacks() {
 		add(name)
 	}
 	return out
@@ -362,6 +410,13 @@ func (r *Reconciler) validate(ctx context.Context, c client.Client, agent *agent
 	}
 	if agent.Spec.Limits.TimeoutSeconds < 0 {
 		return agentsv1alpha1.ReasonInvalidSpec, "spec.limits.timeoutSeconds must be zero or greater", nil
+	}
+	// What cannot mean anything for a harness-backed agent, said out loud rather
+	// than ignored. See harnessMeaninglessFields.
+	if agent.Spec.HarnessBacked() {
+		if reason, message := harnessMeaninglessFields(agent); reason != "" {
+			return reason, message, nil
+		}
 	}
 	for _, d := range agent.Spec.Delegates {
 		if strings.TrimSpace(d) == agent.Name {
@@ -527,6 +582,25 @@ func (r *Reconciler) validateChannelRefs(ctx context.Context, c client.Client, a
 		}
 	}
 	return "", "", nil
+}
+
+// equalBackendStatus reports whether a status.backend write would change
+// anything, so a reconcile that resolved the same backend writes nothing.
+func equalBackendStatus(a, b *agentsv1alpha1.AgentBackendStatus) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	case a.Type != b.Type || a.Service != b.Service:
+		return false
+	case a.Harness == nil && b.Harness == nil:
+		return true
+	case a.Harness == nil || b.Harness == nil:
+		return false
+	default:
+		return a.Harness.Name == b.Harness.Name && a.Harness.Version == b.Harness.Version
+	}
 }
 
 // olderThan orders two agents deterministically: by creation time, then by

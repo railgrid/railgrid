@@ -214,7 +214,7 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
 	./hack/apigen.sh --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
-	@for r in kubernetesclusters linuxservers macosservers workloads placements services addons; do \
+	@for r in kubernetesclusters linuxservers macosservers workloads placements services; do \
 		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.railgrid.ai.yaml \
 		   providers/edges/deploy/chart/files/schemas/$$r.edges.railgrid.ai.yaml; \
 	done
@@ -789,10 +789,12 @@ DEV_EDGE_NAME ?= $(if $(filter server,$(TYPE)),dev-edge-server-1,dev-edge-kube-1
 dev-edge-create: build-railgrid ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
 	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-edge-setup.sh $(DEV_EDGE_NAME) $(TYPE) "env=dev,provider=local"
 
-# Add-on types the dev server edge agent may materialize (docs/edge-addons.md).
-# The dev agent runs as the developer, not root, so the add-on child runs as
-# the same user and no --addon-user is needed. Empty disables add-ons.
-DEV_EDGE_ALLOW_ADDONS ?= runner
+# Which coding harnesses the dev server edge offers (docs/edge-harness.md).
+# "auto" (the default) supervises every harness installed on the developer's
+# machine; "none" switches them off. The dev agent runs as the developer, not
+# root, so the runner child runs as the same user and --runner-user is not
+# needed. It only SEEDS the setting: spec.harness on the edge wins.
+DEV_EDGE_HARNESS ?= auto
 
 dev-run-edge: build-railgrid ## Run the edge agent: TYPE=kubernetes (default) or TYPE=server
 	@test -f .env.edge.$(TYPE) || (echo "Run 'make dev-edge-create TYPE=$(TYPE)' first (expected .env.edge.$(TYPE))"; exit 1)
@@ -808,7 +810,7 @@ ifeq ($(TYPE),server)
 		--ssh-proxy-port=2222 \
 		--ssh-user=railgrid \
 		--ssh-password=password \
-		$(if $(DEV_EDGE_ALLOW_ADDONS),--allow-addon=$(DEV_EDGE_ALLOW_ADDONS))
+		$(if $(DEV_EDGE_HARNESS),--harness=$(DEV_EDGE_HARNESS))
 else
 	hack/scripts/ensure-kind-cluster.sh
 	$(BINDIR)/railgrid agent run \

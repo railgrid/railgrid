@@ -30,6 +30,7 @@ import (
 	"log"
 	"time"
 
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -97,6 +98,16 @@ type Server struct {
 	// with its own credential. Nil without a provider kubeconfig; instance-
 	// backed tools then report that. See tools.DataPlane.
 	verbCallers tools.VerbCaller
+	// providerBase is the provider's own kubeconfig, kept so a harness-backed
+	// run can build a client for a TENANT front door with this provider's
+	// credential. The caller factory takes the same config but exposes no way to
+	// re-aim it at a front-door path, and the runner client requires exactly that
+	// spelling (see dialRunner).
+	providerBase *rest.Config
+	// runners dials one enrolled edge runner. Nil without a provider kubeconfig,
+	// and harness-backed agents then report that precisely rather than composing
+	// a call that fails two hops away.
+	runners runnerDialer
 	// mcpEndpoints caches each workspace's aggregate MCP URL, read off the
 	// MCPServer object rather than composed from a hardcoded path.
 	mcpEndpoints *mcpEndpointCache
@@ -145,6 +156,12 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	var providerBase *rest.Config
+	if cfg.ProviderKubeconfig != "" {
+		if providerBase, err = clientcmd.BuildConfigFromFlags("", cfg.ProviderKubeconfig); err != nil {
+			return nil, fmt.Errorf("loading provider kubeconfig for edge-runner dispatch: %w", err)
+		}
+	}
 
 	s := &Server{
 		cfg:           cfg,
@@ -156,7 +173,11 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		mcpEndpoints:  newMCPEndpointCache(),
 		scopeClusters: newScopeClusterCache(),
 		workspaces:    workspaces,
+		providerBase:  providerBase,
 		started:       time.Now().UTC(),
+	}
+	if providerBase != nil {
+		s.runners = s.dialRunner
 	}
 	// A nil *Callers must not become a non-nil interface holding nil: Gate
 	// reports "no caller factory" for a nil interface, which is the honest

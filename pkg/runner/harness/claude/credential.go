@@ -19,10 +19,11 @@ package claude
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // credential is the single secret the child is given. It is deliberately a
@@ -33,60 +34,40 @@ type credential struct {
 	value string
 }
 
-// readCredential loads the credential from the runner-owned file. It is read
-// on every Probe and Run rather than cached, so rotating the file is picked up
-// by the next turn without restarting the runner.
+// credentialFor resolves the credential the caller sent with this launch.
 //
-// The file's mode is checked, not just its contents: a credential another local
-// account can read is not a credential.
-func (a *Adapter) readCredential() (credential, error) {
-	kind := a.cfg.CredentialKind
-	if !kind.Valid() {
-		return credential{}, fmt.Errorf("credential kind must be one of %s", strings.Join(CredentialKinds, ", "))
+// It is per-launch by design: the credential is the CALLER's identity, not the
+// machine's, so nothing on the host holds one and a turn with no credential
+// runs as nobody rather than as whoever configured the runner. The adapter
+// refuses a credential meant for another harness instead of trying it.
+func credentialFor(launch harness.Launch) (credential, error) {
+	cred := launch.Credential
+	if cred.Empty() {
+		return credential{}, errors.New("the launch carries no Claude Code credential")
 	}
-	path := strings.TrimSpace(a.cfg.CredentialFile)
-	if path == "" {
-		return credential{}, errors.New("credential file is required")
+	var env string
+	switch cred.Kind {
+	case harness.CredentialClaudeOAuth:
+		env = "CLAUDE_CODE_OAUTH_TOKEN"
+	case harness.CredentialClaudeAPIKey:
+		env = "ANTHROPIC_API_KEY"
+	default:
+		return credential{}, fmt.Errorf("credential kind %q is not a Claude Code credential", cred.Kind)
 	}
-	if !filepath.IsAbs(path) {
-		return credential{}, fmt.Errorf("credential file must be absolute: %q", path)
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return credential{}, fmt.Errorf("credential file %s does not exist", path)
-		}
-		return credential{}, fmt.Errorf("inspecting credential file: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return credential{}, fmt.Errorf("credential file %s must be a regular file", path)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return credential{}, fmt.Errorf("credential file %s must not be readable by other accounts", path)
-	}
-	f, err := os.Open(path) //nolint:gosec // an operator-configured enrollment path
-	if err != nil {
-		return credential{}, fmt.Errorf("opening credential file: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(f, maxCredentialBytes+1))
-	if err != nil {
-		return credential{}, fmt.Errorf("reading credential file: %w", err)
-	}
-	if len(raw) > maxCredentialBytes {
-		return credential{}, errors.New("credential file is oversized")
-	}
-	value := strings.TrimSpace(string(raw))
+	value := strings.TrimSpace(cred.Value)
 	if value == "" {
-		return credential{}, errors.New("credential file is empty")
+		return credential{}, errors.New("the Claude Code credential is empty")
+	}
+	if len(value) > maxCredentialBytes {
+		return credential{}, errors.New("the Claude Code credential is oversized")
 	}
 	// A credential with a newline or a NUL in it cannot be an environment
 	// value, and trying anyway would truncate it into something that silently
 	// authenticates as nobody.
 	if strings.ContainsAny(value, "\r\n\x00") {
-		return credential{}, errors.New("credential value contains invalid whitespace")
+		return credential{}, errors.New("the Claude Code credential contains invalid whitespace")
 	}
-	return credential{env: kind.EnvVar(), value: value}, nil
+	return credential{env: env, value: value}, nil
 }
 
 // redact removes the credential value from any text that is about to leave the
@@ -114,10 +95,10 @@ func (c credential) redactError(err error) error {
 // It is derived from the runner's own environment with an explicit deny list
 // (blockedEnvKey) and then has every isolation variable set from scratch, which
 // is the same shape as the Codex adapter's safeEnv. The credential is the ONE
-// ANTHROPIC_*/CLAUDE_* variable that survives, and it comes from the credential
-// file — never from the parent, which is exactly why the deny list strips the
-// whole prefix first. An empty credential (the version probe before one is
-// configured) simply injects nothing.
+// ANTHROPIC_*/CLAUDE_* variable that survives, and it comes from the launch,
+// never from the parent, which is exactly why the deny list strips the whole
+// prefix first. An empty credential (the version probe, which makes no model
+// call) simply injects nothing.
 func (a *Adapter) childEnv(cred credential) []string {
 	home := strings.TrimSpace(a.cfg.Home)
 	env := make([]string, 0, len(os.Environ())+16)

@@ -50,6 +50,14 @@ type discoveredService struct {
 	Port        int32  `json:"port"`
 	Version     string `json:"version,omitempty"`
 	InstallType string `json:"installType,omitempty"`
+	// Harness names the coding harness when Type is "runner". It is what makes
+	// the Service name "<edge>-<harness>" rather than "<edge>-runner", so a
+	// machine offering both harnesses publishes two distinguishable Services.
+	Harness string `json:"harness,omitempty"`
+	// Ready and Reasons carry a supervised service's own readiness, which the
+	// agent already knows from probing it. Only the runner detector sets them.
+	Ready   bool     `json:"ready,omitempty"`
+	Reasons []string `json:"reasons,omitempty"`
 }
 
 // fetchServices pulls the agent's discovered services by GETting /api/v1/services

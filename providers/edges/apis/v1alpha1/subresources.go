@@ -39,25 +39,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// AddonCredentialsRequest is the payload of the "addon-credentials" custom subresource on linuxservers, macosservers.
-//
-// +kubebuilder:object:root=true
-// +kubebuilder:storageversion
-// +kubebuilder:resource:path=addon-credentials,scope=Cluster
-type AddonCredentialsRequest struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	// Input is the request body's "input" member.
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Input runtime.RawExtension `json:"input,omitempty"`
-	// Result is the response's "result" member.
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Result runtime.RawExtension `json:"result,omitempty"`
-}
-
 // AgentTokenRequest is the payload of the "agent-token" custom subresource on kubernetesclusters, linuxservers, macosservers.
 //
 // +kubebuilder:object:root=true
@@ -175,7 +156,6 @@ type SshCredentialsRequest struct {
 func init() {
 	SchemeBuilder.Register(func(scheme *runtime.Scheme) error {
 		scheme.AddKnownTypes(SchemeGroupVersion,
-			&AddonCredentialsRequest{},
 			&AgentTokenRequest{},
 			&K8sRequest{},
 			&McpRequest{},

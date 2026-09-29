@@ -236,7 +236,7 @@ func writeSSE(w http.ResponseWriter, r sseReply) {
 func researchAgent(withSpawn bool) *agentsv1alpha1.Agent {
 	a := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "researcher"}}
 	a.Spec.SystemPrompt = "You are a research agent."
-	a.Spec.Models = map[string]string{"chat": "strong", "background": "cheap"}
+	a.Spec.Backend.Model = &agentsv1alpha1.AgentModelBackend{Credentials: map[string]string{"chat": "strong", "background": "cheap"}}
 	a.Spec.Autonomy = agentsv1alpha1.AutonomyAuto
 	fams := []string{"core", "web"}
 	if withSpawn {

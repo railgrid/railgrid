@@ -263,11 +263,106 @@ railgrid-provider-edges .edge-section-card__count strong {
 }
 railgrid-provider-edges .edge-connectivity-content,
 railgrid-provider-edges .edge-services-content,
+railgrid-provider-edges .edge-harness,
 railgrid-provider-edges .edge-technical {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 12px;
+}
+
+/* ── Harness card (host edges: which coding agents this machine offers) ──
+ * The switch is the common case, the per-harness fieldset is the disclosure.
+ * Geometry only — colour and control shapes come from the shared recipes. */
+railgrid-provider-edges .edge-harness__switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+railgrid-provider-edges .edge-harness__switch > input { margin-top: 2px; }
+railgrid-provider-edges .edge-harness__switch-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+railgrid-provider-edges .edge-harness__switch-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #e9e9f2);
+}
+railgrid-provider-edges .edge-harness__off { align-items: flex-start; }
+railgrid-provider-edges .edge-harness__off > svg { flex: 0 0 auto; margin-top: 2px; color: var(--color-text-primary, #e9e9f2); }
+railgrid-provider-edges .edge-harness__off > span { color: var(--color-text-primary, #e9e9f2); }
+railgrid-provider-edges .edge-harness__note { margin: 0; max-width: 72ch; }
+railgrid-provider-edges .edge-harness__choice {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+railgrid-provider-edges .edge-harness__choice > legend { padding: 0; }
+railgrid-provider-edges .edge-harness__choice-hint { margin: 0; max-width: 72ch; }
+railgrid-provider-edges .edge-harness__choice-actions { display: flex; justify-content: flex-start; }
+railgrid-provider-edges .edge-harness__modes { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+railgrid-provider-edges .edge-harness__mode { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+railgrid-provider-edges .edge-harness__mode-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+railgrid-provider-edges .edge-harness__mode-title { font-weight: 600; }
+railgrid-provider-edges .edge-harness__advanced { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+railgrid-provider-edges .edge-harness__tools { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); resize: vertical; }
+railgrid-provider-edges .edge-harness__rows {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+railgrid-provider-edges .edge-harness__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 4px;
+  background: var(--color-surface-overlay, #171927);
+}
+railgrid-provider-edges .edge-harness__row-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #e9e9f2);
+  overflow-wrap: anywhere;
+}
+railgrid-provider-edges .edge-harness__row-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 11px;
+}
+railgrid-provider-edges .edge-harness__row-detail {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+@media (max-width: 520px) {
+  railgrid-provider-edges .edge-harness__row { grid-template-columns: minmax(0, 1fr); }
+  railgrid-provider-edges .edge-harness__row-state { justify-content: flex-start; }
 }
 railgrid-provider-edges .edge-services-content__actions {
   display: flex;

@@ -187,7 +187,10 @@ func (m *DiscordGateway) makeHandler(cluster, connName string) func(*discordgo.S
 		}
 		_ = sess.ChannelTyping(mc.ChannelID) // "thinking…" while the run executes
 
-		if err := m.bg.exec.Submit(ctx, executor.Job{
+		// Same door as an inbound webhook: a Pending Run is written and the Run
+		// reconciler claims it. A gateway message is not special work, and it must
+		// survive a restart between arriving and running.
+		if err := m.bg.Submit(ctx, executor.Job{
 			ID:          fmt.Sprintf("discord/%s/%s/%s", cluster, connName, orNano(mc.ID)),
 			Kind:        executor.KindChannel,
 			ClusterID:   cluster,

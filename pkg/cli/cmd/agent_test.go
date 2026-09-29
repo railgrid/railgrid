@@ -106,73 +106,69 @@ func TestJoinServerUnitRejectsBadPolicyAndCIDR(t *testing.T) {
 	}
 }
 
-// TestJoinServerUnitCarriesAddonFlags: --allow-addon / --addon-user are the
-// machine owner's half of the add-on trust model. If the installer dropped
-// them, the installed agent would run with an empty allow list and every Addon
-// for this edge would sit Blocked while the operator believed they opted in.
-func TestJoinServerUnitCarriesAddonFlags(t *testing.T) {
+// TestJoinServerUnitCarriesTheHarnessSelection: --harness is what SEEDS the
+// machine's harness offering. If the installer dropped it, an operator who
+// installed with --harness none would get a unit that seeds auto instead — the
+// exact opposite of what they asked for.
+func TestJoinServerUnitCarriesTheHarnessSelection(t *testing.T) {
 	opts := &agent.Options{
-		EdgeName:      "edge-1",
-		Type:          agent.AgentTypeServer,
-		HubURL:        "https://hub.example",
-		Token:         "join-token",
-		AllowedAddons: []string{"runner"},
-		AddonUser:     "railgrid-runner",
+		EdgeName: "edge-1",
+		Type:     agent.AgentTypeServer,
+		HubURL:   "https://hub.example",
+		Token:    "join-token",
+		Harness:  "none",
 	}
 	data, err := joinServerUnitData(opts, "/usr/local/bin/railgrid", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	unit := renderUnit(t, data)
-	for _, want := range []string{"--allow-addon runner", "--addon-user railgrid-runner"} {
-		if !strings.Contains(unit, want) {
-			t.Errorf("rendered unit lacks %q:\n%s", want, unit)
-		}
+	if unit := renderUnit(t, data); !strings.Contains(unit, "--harness none") {
+		t.Errorf("rendered unit lacks --harness none:\n%s", unit)
+	}
+
+	opts.Harness = "claude,codex"
+	data, err = joinServerUnitData(opts, "/usr/local/bin/railgrid", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unit := renderUnit(t, data); !strings.Contains(unit, "--harness claude,codex") {
+		t.Errorf("rendered unit lacks the explicit harness list:\n%s", unit)
 	}
 }
 
-// TestJoinServerUnitOmitsAddonFlagsWhenUnset: an install that never mentioned
-// add-ons must produce a unit that runs none. A stray --addon-user alone is not
-// an opt-in and must not appear either.
-func TestJoinServerUnitOmitsAddonFlagsWhenUnset(t *testing.T) {
-	for name, opts := range map[string]*agent.Options{
-		"nothing set": {
+// TestJoinServerUnitOmitsTheDefaultHarness: an install that said nothing about
+// harnesses should pick up a later change to the default without a reinstall, so
+// "auto" is not written into the unit.
+func TestJoinServerUnitOmitsTheDefaultHarness(t *testing.T) {
+	for name, harness := range map[string]string{"unset": "", "explicitly auto": "auto"} {
+		opts := &agent.Options{
 			EdgeName: "edge-1", Type: agent.AgentTypeServer, HubURL: "https://hub.example", Token: "t",
-		},
-		"user without an allow list": {
-			EdgeName: "edge-1", Type: agent.AgentTypeServer, HubURL: "https://hub.example", Token: "t",
-			AddonUser: "railgrid-runner",
-		},
-	} {
+			Harness: harness,
+		}
 		data, err := joinServerUnitData(opts, "/usr/local/bin/railgrid", "")
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		unit := renderUnit(t, data)
-		if strings.Contains(unit, "--allow-addon") || strings.Contains(unit, "--addon-user") {
-			t.Errorf("%s: unit carries add-on flags:\n%s", name, unit)
+		if unit := renderUnit(t, data); strings.Contains(unit, "--harness") {
+			t.Errorf("%s: unit pins the default harness selection:\n%s", name, unit)
 		}
 	}
 }
 
-// TestAddonInstallRequiresAnAccount: the systemd unit runs the agent as ROOT
-// (there is no User=), so allowing an add-on without naming a non-root account
-// would install a unit that refuses to start. Fail at install time, where the
-// operator is still watching, with a message that names the missing flag.
-func TestAddonInstallRequiresAnAccount(t *testing.T) {
+// TestHarnessInstallRefusesATypo: an install is the last moment an operator is
+// watching, so a harness name that would silently offer nothing fails here.
+func TestHarnessInstallRefusesATypo(t *testing.T) {
 	opts := &agent.Options{
 		EdgeName: "edge-1", Type: agent.AgentTypeServer, HubURL: "https://hub.example", Token: "t",
-		AllowedAddons: []string{"runner"},
+		Harness: "cluade",
 	}
-	_, err := joinServerUnitData(opts, "/usr/local/bin/railgrid", "")
-	if err == nil {
-		t.Fatal("--allow-addon without --addon-user was accepted for a root systemd install")
+	if _, err := joinServerUnitData(opts, "/usr/local/bin/railgrid", ""); err == nil {
+		t.Fatal("a misspelled --harness was accepted")
 	}
-	if !strings.Contains(err.Error(), "--addon-user") {
-		t.Errorf("error does not name the missing flag: %v", err)
+	if _, err := validateHarnessInstall("cluade"); err == nil {
+		t.Error("validateHarnessInstall accepted an unknown harness")
 	}
-
-	if _, err := validateAddonInstall([]string{"not-a-real-addon"}, "railgrid-runner"); err == nil {
-		t.Error("an unknown add-on type was accepted")
+	if got, err := validateHarnessInstall("auto"); err != nil || got != "" {
+		t.Errorf("validateHarnessInstall(auto) = %q, %v; want the default to render nothing", got, err)
 	}
 }

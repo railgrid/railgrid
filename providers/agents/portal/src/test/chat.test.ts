@@ -563,6 +563,59 @@ describe('chat streaming', () => {
     expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
   })
 
+  // A harness that cannot proceed asks a question. It names no tool, so the
+  // approval card rendered "Approval required … tool unavailable" over an
+  // Approve button that could not mean anything — reported from a live run.
+  it('asks a question rather than offering an approval with no tool', async () => {
+    const resolveInbox = vi.fn().mockResolvedValue({ id: 'i1', state: 'answered' })
+    const { el } = await mountChat(
+      scripted([
+        { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+        {
+          event: 'approval_required',
+          data: {
+            runID: 'r1', inboxID: 'i1', kind: 'question', tool: '', args: '',
+            question: 'Which repository should I open the pull request against?',
+          },
+        },
+      ]),
+      { resolveInbox },
+    )
+    await send(el, 'open a PR')
+
+    const card = el.querySelector('.agents-approval')!
+    expect(text(card)).toContain('Which repository should I open the pull request against?')
+    expect(text(card)).not.toContain('tool unavailable')
+    expect(text(card)).not.toContain('Approval required')
+    // No verdict buttons: a question is answered, not approved.
+    expect(text(card)).not.toContain('Deny')
+
+    const input = card.querySelector<HTMLInputElement>('.agents-approval-answer')!
+    input.value = 'the acme/app one'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await settle(2)
+    card.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    await settle(6)
+    expect(resolveInbox).toHaveBeenCalledWith('i1', 'answer', 'the acme/app one')
+    expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
+  })
+
+  // An older server sends no kind. A park with no tool is still a question, so
+  // the absent field must not fall back to the approval card.
+  it('treats a park with no tool as a question even without a kind', async () => {
+    const { el } = await mountChat(
+      scripted([
+        { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+        { event: 'approval_required', data: { runID: 'r1', inboxID: 'i1', tool: '', args: '', question: 'Which one?' } },
+      ]),
+      {},
+    )
+    await send(el, 'go')
+    const card = el.querySelector('.agents-approval')!
+    expect(text(card)).toContain('Which one?')
+    expect(text(card)).not.toContain('tool unavailable')
+  })
+
   it('keeps both approval decisions single-flight while one is pending', async () => {
     const resolution = deferred<{ id: string; state: string }>()
     const resolveInbox = vi.fn(() => resolution.promise)

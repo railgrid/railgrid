@@ -36,7 +36,7 @@ func TestCreateAgentHonoursLimits(t *testing.T) {
 	if a.Spec.Limits.MaxToolTurns != 8 || a.Spec.Limits.TimeoutSeconds != 600 {
 		t.Fatalf("limits not applied on create: %+v", a.Spec.Limits)
 	}
-	if a.Spec.Models["chat"] != "openai-dev" || a.Spec.Budget == nil || a.Spec.Budget.USDLimit != "2" {
+	if a.Spec.ModelCredentialFor("chat") != "openai-dev" || a.Spec.Budget == nil || a.Spec.Budget.USDLimit != "2" {
 		t.Fatalf("other create fields regressed: %+v", a.Spec)
 	}
 

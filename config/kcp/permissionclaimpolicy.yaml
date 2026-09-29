@@ -12,14 +12,17 @@
 # manifests. Regenerate with:
 #   make permission-claim-policy [EXTERNAL_PROVIDERS_DIR=../providers]
 # `make verify-provider-contract` re-runs it with --check, so a new
-# spec.dependencies[].composes[] entry that nobody whitelisted fails there.
+# spec.requires[] entry that nobody whitelisted fails there.
 #
 # spec.claims[].groups  comes from each provider's manifest.yaml
-#                       spec.dependencies[].composes[].group.
+#                       spec.requires[].group, for the entries that name a
+#                       provider. A requirement with no provider is a platform
+#                       builtin (authorization.k8s.io, the core group): no
+#                       provider exports it, so no rule here admits it.
 # spec.claims[].claimer comes from spec.resources[].group on that provider's
 #                       generated APIExport (config/kcp/apiexport-*.yaml) — the
-#                       manifest names the export, not the group it serves, and
-#                       the two differ for most providers.
+#                       manifest names the export (spec.export.name), not every
+#                       group it serves, and the two differ for most providers.
 # spec.providers        is the identity the hub mints for every provider:
 #                       ServiceAccount default/provider in the provider's own
 #                       workspace root:railgrid:providers/<name> (see
@@ -40,7 +43,7 @@
 #                       admission check already scopes the match to the
 #                       exporting workspace.
 #
-# Generated from 10 provider manifest(s), 11 composes entries:
+# Generated from 10 provider manifest(s), 8 cross-provider requirement(s):
 #   providers/agents
 #   providers/app-studio
 #   providers/code
@@ -59,6 +62,7 @@ spec:
   claims:
   - claimer: agents.railgrid.ai
     groups:
+    - edges.railgrid.ai
     - infrastructure.railgrid.ai
   - claimer: ai.railgrid.ai
     groups:

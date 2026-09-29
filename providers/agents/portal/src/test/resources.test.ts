@@ -140,13 +140,104 @@ describe('agents', () => {
         // An empty display name falls back to the object name, as the REST
         // handler did — a nameless row in the grid is not a useful save.
         displayName: 'scout',
-        models: { chat: 'primary' },
-        modelFallbacks: ['a', 'b'],
+        // spec.backend replaced spec.models / spec.modelFallbacks: the old
+        // fields do not exist on the CRD, so writing them meant the apiserver
+        // pruned the credential and the agent could not run.
+        backend: { type: 'model', model: { credentials: { chat: 'primary' }, fallbacks: ['a', 'b'] } },
         budget: { window: 'month', tokenLimit: 1000 },
         // Unknown families are dropped and core is always granted.
         tools: { interactive: { families: ['core', 'web'] } },
       },
     })
+  })
+
+  it('writes no backend block at all when a create names no credential', async () => {
+    // An absent spec.backend IS a model-backed agent with no credential yet, so
+    // there is nothing to write. An empty block would be a claim about a choice
+    // nobody made.
+    kcp.reply('GET /agents', { items: [] })
+    await resources.createAgent({ name: 'scout' })
+    const spec = (kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec
+    expect(spec.backend).toBeUndefined()
+  })
+
+  it('writes spec.backend.model and never the pruned spec.models / spec.modelFallbacks', async () => {
+    // The old fields do not exist on the CRD. Writing them meant the apiserver
+    // pruned them silently: the agent saved, lost its credential, and could not
+    // run — so this is the assertion that the break stays fixed.
+    await resources.createAgent({ name: 'scout', modelCredential: 'primary', modelFallbacks: ['backup'] })
+    const spec = (kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec
+    expect(spec.backend).toEqual({ type: 'model', model: { credentials: { chat: 'primary' }, fallbacks: ['backup'] } })
+    expect(spec).not.toHaveProperty('models')
+    expect(spec).not.toHaveProperty('modelFallbacks')
+  })
+
+  it('creates a harness-backed agent with the harness block and NO model block', async () => {
+    // spec.backend's CEL rules refuse a harness type carrying a model block, so
+    // a writer that emitted both would have the create rejected outright.
+    kcp.reply('GET /agents', { items: [] })
+    await resources.createAgent({
+      name: 'builder',
+      backendType: 'harness',
+      // A credential the model backend would have used is ignored: the caller
+      // asked for a harness, and a leftover chat credential is not part of one.
+      modelCredential: 'primary',
+      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude', model: 'sonnet', workspace: 'ephemeral' },
+    })
+    const spec = (kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec
+    expect(spec.backend).toEqual({
+      type: 'harness',
+      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude', model: 'sonnet', workspace: 'ephemeral' },
+    })
+    expect(spec.backend).not.toHaveProperty('model')
+  })
+
+  it('refuses a harness backend whose edge kind cannot host a runner', async () => {
+    // A runner is a process on a machine, so a KubernetesCluster edge is not a
+    // candidate — the CRD enum says so and this refuses before the network.
+    await expect(resources.createAgent({
+      name: 'builder',
+      backendType: 'harness',
+      harness: { edgeRef: { kind: 'KubernetesCluster' as 'LinuxServer', name: 'prod' }, credentialRef: 'my-claude' },
+    })).rejects.toMatchObject({ status: 400 })
+    await expect(resources.createAgent({
+      name: 'builder',
+      backendType: 'harness',
+      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: '' },
+    })).rejects.toMatchObject({ status: 400 })
+    expect(kcp.calls.filter((c) => c.method === 'POST')).toHaveLength(0)
+  })
+
+  it('patches the chat credential under spec.backend.model without touching the type', async () => {
+    // The model section owns its own fields and nothing else: naming the type
+    // here would let it clobber a choice the backend section owns.
+    await resources.patchAgent('scout', { modelCredential: 'primary', modelFallbacks: ['a', 'a', ' b '] })
+    expect(kcp.lastOf('PATCH').body).toEqual({
+      spec: { backend: { model: { credentials: { chat: 'primary' }, fallbacks: ['a', 'b'] } } },
+    })
+  })
+
+  it('clears the other block when a patch switches backends', async () => {
+    // The two are mutually exclusive by CEL, and merge patch deletes a key by
+    // setting it to null. A patch that left the old block behind would describe
+    // an agent configured for either, and which one it used would be decided by
+    // whichever reader looked first.
+    await resources.patchAgent('scout', {
+      backendType: 'harness',
+      harness: { edgeRef: { kind: 'MacOSServer', name: 'mini-02' }, credentialRef: 'my-codex' },
+    })
+    expect(kcp.lastOf('PATCH').body).toEqual({
+      spec: {
+        backend: {
+          type: 'harness',
+          harness: { edgeRef: { kind: 'MacOSServer', name: 'mini-02' }, credentialRef: 'my-codex' },
+          model: null,
+        },
+      },
+    })
+
+    await resources.patchAgent('scout', { backendType: 'model' })
+    expect(kcp.lastOf('PATCH').body).toEqual({ spec: { backend: { type: 'model', harness: null } } })
   })
 
   it('rejects a budget the CRD would happily store', async () => {
@@ -197,7 +288,7 @@ describe('agents', () => {
 
   it('clears the chat model with an explicit null, which is how merge patch deletes a key', async () => {
     await resources.patchAgent('scout', { modelCredential: '' })
-    expect(kcp.last('/agents/scout').body).toEqual({ spec: { models: { chat: null } } })
+    expect(kcp.last('/agents/scout').body).toEqual({ spec: { backend: { model: { credentials: { chat: null } } } } })
   })
 
   it('merges a partial budget onto the stored one', async () => {
@@ -482,6 +573,117 @@ describe('model credentials', () => {
     expect((kcp.lastOf('PATCH').body as { spec: { model: unknown } }).spec.model).toBeNull()
   })
 
+  it('still writes a chat endpoint as a stringData apiKey pointed at by spec.secretKey', async () => {
+    // The family that has always worked, asserted whole, because the harness
+    // branch below must not have moved it: stringData, one key, spec.secretKey
+    // naming it, baseURL and model on the object.
+    kcp.fail('GET /modelcredentials/chat', 404, 'NotFound')
+    await resources.saveCredential({
+      name: 'chat', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: 'sk-x',
+    })
+    const secret = kcp.last('/secrets')
+    expect((secret.body as { stringData: Record<string, string> }).stringData).toEqual({ apiKey: 'sk-x' })
+    expect(secret.body).not.toHaveProperty('data')
+    expect((kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec).toEqual({
+      provider: 'openai',
+      baseURL: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      secretRef: { name: 'railgrid-agents-model-chat' },
+      secretKey: 'apiKey',
+    })
+  })
+
+  it('writes a claude-code setup token as the Secret KEY that declares it, and never spec.secretKey', async () => {
+    // For a harness identity the KEY is the kind: oauthToken is injected as
+    // CLAUDE_CODE_OAUTH_TOKEN and apiKey as ANTHROPIC_API_KEY, so the
+    // dispatcher branches on which one is present. spec.secretKey naming one
+    // of them would be a second answer the Secret could contradict — and there
+    // is no baseURL, because nothing here is ever called.
+    kcp.fail('GET /modelcredentials/my-claude', 404, 'NotFound')
+    await resources.saveCredential({
+      name: 'my-claude', provider: 'claude-code', harnessSecret: { key: 'oauthToken', value: 'sk-ant-oat01-x' },
+    })
+    const secret = kcp.last('/secrets')
+    expect(secret.contentType).toBe('application/apply-patch+yaml')
+    expect((secret.body as { data: Record<string, string> }).data).toEqual({ oauthToken: btoa('sk-ant-oat01-x') })
+    expect(secret.body).not.toHaveProperty('stringData')
+    expect((secret.body as { metadata: { labels: Record<string, string> } }).metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
+    const created = kcp.lastOf('POST').body as { spec: Record<string, unknown> }
+    expect(created.spec).toEqual({ provider: 'claude-code', secretRef: { name: 'railgrid-agents-model-my-claude' } })
+    // The Secret goes in before the object that references it, same as a chat
+    // credential: the reconciler reacts to the object.
+    const order = kcp.calls.filter((c) => c.method === 'PATCH' || c.method === 'POST').map((c) => c.url)
+    expect(order[0]).toContain('/secrets')
+    expect(order[1]).toContain('/modelcredentials')
+  })
+
+  it('replaces a claude-code key instead of accumulating one, which is why it writes data and not stringData', async () => {
+    // Server-side apply removes a field this manager declared last time and
+    // does not declare now, so one key in `data` REPLACES the other. stringData
+    // cannot say that — the apiserver folds it into `data` and the old key
+    // survives, which llm.ReadHarnessSecret then refuses as two identities in
+    // one Secret.
+    kcp.reply('GET /modelcredentials/my-claude', {
+      metadata: { name: 'my-claude' },
+      spec: { provider: 'claude-code', secretRef: { name: 'railgrid-agents-model-my-claude' }, secretKey: 'apiKey' },
+    })
+    await resources.saveCredential({
+      name: 'my-claude', provider: 'claude-code', harnessSecret: { key: 'apiKey', value: 'sk-ant-api03-x' },
+    })
+    const secret = kcp.last('/secrets')
+    expect(Object.keys((secret.body as { data: Record<string, string> }).data)).toEqual(['apiKey'])
+    expect(secret.url).toContain('force=true')
+    // spec.secretKey is left exactly as the apiserver defaulted it and is never
+    // declared by this writer, so it cannot become a rival declaration.
+    const patched = kcp.last('/modelcredentials/my-claude').body as { spec: Record<string, unknown> }
+    expect(patched.spec).toEqual({ provider: 'claude-code', secretRef: { name: 'railgrid-agents-model-my-claude' } })
+  })
+
+  it('writes a codex login under auth.json', async () => {
+    kcp.fail('GET /modelcredentials/my-codex', 404, 'NotFound')
+    await resources.saveCredential({
+      name: 'my-codex', provider: 'codex', harnessSecret: { key: 'auth.json', value: '{"tokens":{"access_token":"a"}}' },
+    })
+    expect((kcp.last('/secrets').body as { data: Record<string, string> }).data).toEqual({
+      'auth.json': btoa('{"tokens":{"access_token":"a"}}'),
+    })
+    expect((kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec).toEqual({
+      provider: 'codex', secretRef: { name: 'railgrid-agents-model-my-codex' },
+    })
+  })
+
+  it('leaves the stored harness Secret alone when an edit does not retype it', async () => {
+    kcp.reply('GET /modelcredentials/my-claude', {
+      metadata: { name: 'my-claude' },
+      spec: { provider: 'claude-code', secretRef: { name: 'railgrid-agents-model-my-claude' } },
+    })
+    await resources.saveCredential({ name: 'my-claude', provider: 'claude-code' })
+    expect(kcp.calls.filter((c) => c.url.includes('/secrets'))).toHaveLength(0)
+  })
+
+  it('refuses a malformed harness secret before a single request is sent', async () => {
+    // A half-pasted auth.json and a key belonging to the other harness are both
+    // checked here, before the read that would tell us whether the credential
+    // exists: neither costs a round-trip to reject.
+    await expect(resources.saveCredential({
+      name: 'my-codex', provider: 'codex', harnessSecret: { key: 'auth.json', value: 'sk-ant-oat01-wrong-box' },
+    })).rejects.toMatchObject({ status: 400 })
+    await expect(resources.saveCredential({
+      name: 'my-codex', provider: 'codex', harnessSecret: { key: 'oauthToken', value: 'sk-ant-oat01-x' },
+    })).rejects.toMatchObject({ status: 400 })
+    await expect(resources.saveCredential({
+      name: 'my-claude', provider: 'claude-code', harnessSecret: { key: 'auth.json', value: '{}' },
+    })).rejects.toMatchObject({ status: 400 })
+    expect(kcp.calls).toHaveLength(0)
+  })
+
+  it('refuses to create a harness identity with no credential at all', async () => {
+    kcp.fail('GET /modelcredentials/my-claude', 404, 'NotFound')
+    await expect(
+      resources.saveCredential({ name: 'my-claude', provider: 'claude-code' }),
+    ).rejects.toMatchObject({ status: 400 })
+  })
+
   it('refuses to create a credential with no key at all', async () => {
     kcp.fail('GET /modelcredentials/new', 404, 'NotFound')
     await expect(
@@ -508,5 +710,33 @@ describe('model credentials', () => {
   it('tolerates a credential whose Secret was already removed', async () => {
     kcp.fail('DELETE /secrets', 404, 'NotFound')
     await expect(resources.deleteCredential('primary')).resolves.toBeUndefined()
+  })
+})
+
+describe('edges', () => {
+  it('reads host edges from the edges group with the same client, and never asks for clusters', async () => {
+    // A foreign group's objects, bound in the tenant's own workspace — the same
+    // path capabilities() takes for the hub's MCPServer. No provider route, and
+    // no new HTTP path.
+    kcp.reply('GET /linuxservers', { items: [{ metadata: { name: 'build-01' }, status: { connected: true, phase: 'Ready' } }] })
+    kcp.reply('GET /macosservers', { items: [{ metadata: { name: 'mini-02' }, status: { connected: false } }] })
+    const edges = await resources.listEdges()
+
+    expect(edges).toEqual([
+      { kind: 'LinuxServer', name: 'build-01', connected: true, phase: 'Ready' },
+      { kind: 'MacOSServer', name: 'mini-02', connected: false, phase: undefined },
+    ])
+    expect(kcp.last('/linuxservers').url).toContain(`/clusters/${CLUSTER}/apis/edges.railgrid.ai/v1alpha1/linuxservers`)
+    // A KubernetesCluster edge can never host a harness, so the list it would
+    // come from is not read at all. That is what makes it unofferable, rather
+    // than a filter a later reader can forget.
+    expect(kcp.calls.some((c) => c.url.includes('kubernetescluster'))).toBe(false)
+  })
+
+  it('reports a missing edges binding as itself, not as the agents provider being absent', async () => {
+    // "the edges provider is not enabled here" and "no machines yet" are
+    // different things, and only the first one is something the user can act on.
+    kcp.fail('GET /linuxservers', 404, 'NotFound', 'the server could not find the requested resource')
+    await expect(resources.listEdges()).rejects.toMatchObject({ reason: 'EdgesBindingMissing' })
   })
 })

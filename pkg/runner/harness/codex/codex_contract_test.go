@@ -45,26 +45,6 @@ func TestNewUsesContractDefaultVersionPin(t *testing.T) {
 	}
 }
 
-func TestProbeAuthenticationNeedsInputWithoutStartingModelWork(t *testing.T) {
-	binary := fakeCodexBinary(t, "auth")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
-
-	info, err := adapter.Probe(context.Background())
-	if err != nil {
-		t.Fatalf("Probe: %v", err)
-	}
-	if info.Ready {
-		t.Fatalf("auth-required probe reported ready: %+v", info)
-	}
-	if len(info.Reasons) == 0 || !strings.Contains(strings.ToLower(strings.Join(info.Reasons, " ")), "authentication") {
-		t.Fatalf("auth-required probe reasons = %v", info.Reasons)
-	}
-	methods := readMethods(t, filepath.Join(filepath.Dir(binary), "methods"))
-	if strings.Contains(strings.Join(methods, ","), "thread/start") || strings.Contains(strings.Join(methods, ","), "turn/start") {
-		t.Fatalf("auth probe started model work: %v", methods)
-	}
-}
-
 func TestRunResumeUsesExactExistingSession(t *testing.T) {
 	binary := fakeCodexBinary(t, "success")
 	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
@@ -73,6 +53,7 @@ func TestRunResumeUsesExactExistingSession(t *testing.T) {
 		Workdir:      t.TempDir(),
 		SessionID:    "thread-existing",
 		Instructions: "continue the existing session",
+		Credential:   testCredential(),
 	}, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -107,6 +88,7 @@ func TestRunRejectsForeignResumeResponseAndCompletion(t *testing.T) {
 			Workdir:      t.TempDir(),
 			SessionID:    "thread-existing",
 			Instructions: "continue the approved session",
+			Credential:   testCredential(),
 		}, nil)
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -127,6 +109,7 @@ func TestRunRejectsForeignResumeResponseAndCompletion(t *testing.T) {
 			AttemptID:    "attempt-foreign-completion",
 			Workdir:      t.TempDir(),
 			Instructions: "run the approved turn",
+			Credential:   testCredential(),
 		}, nil)
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -239,7 +222,7 @@ func TestRunCancellationKillsProcessGroupDescendants(t *testing.T) {
 	resultCh := make(chan harness.Result, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		result, err := adapter.Run(ctx, harness.Launch{AttemptID: "attempt-cleanup", Workdir: t.TempDir(), Instructions: "wait"}, func(event harness.Event) error {
+		result, err := adapter.Run(ctx, harness.Launch{AttemptID: "attempt-cleanup", Workdir: t.TempDir(), Instructions: "wait", Credential: testCredential()}, func(event harness.Event) error {
 			if event.Type == "turn_started" {
 				close(started)
 			}
@@ -395,7 +378,7 @@ func TestPluginCacheDoesNotEnableExtensions(t *testing.T) {
 		}
 	}
 	for _, session := range []string{"", "original-session"} {
-		result, err := adapter.Run(context.Background(), harness.Launch{Workdir: t.TempDir(), Instructions: "approved", SessionID: session}, nil)
+		result, err := adapter.Run(context.Background(), harness.Launch{Workdir: t.TempDir(), Instructions: "approved", SessionID: session, Credential: testCredential()}, nil)
 		if err != nil || result.Phase != "completed" {
 			t.Fatalf("run=%+v err=%v", result, err)
 		}

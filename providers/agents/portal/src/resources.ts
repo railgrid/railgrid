@@ -33,16 +33,31 @@ import {
   type KubeResourceRef,
 } from './portalkit/kube'
 import { providerFetch } from './portalkit/tenant'
+import {
+  AGENT_BACKEND_HARNESS,
+  AGENT_BACKEND_MODEL,
+  HARNESS_EDGE_KINDS,
+  HARNESS_SECRET_KEY_CODEX_AUTH,
+  MODEL_PROVIDER_OPENAI_COMPATIBLE,
+  PURPOSE_CHAT,
+  harnessSecretKeys,
+  isHarnessProvider,
+  isJSONObject,
+} from './types'
 import type {
   Agent,
   AgentCreate,
   AgentChannel,
+  AgentHarnessBackend,
   AgentPatch,
   Capabilities,
   Connection,
   ConnectionWrite,
   Credential,
   CredentialWrite,
+  Edge,
+  HarnessEdgeKind,
+  HarnessSecretKey,
   RailgridContext,
   Schedule,
   ScheduleCreate,
@@ -84,6 +99,21 @@ export const RUNS: KubeResourceRef = { group: GROUP, version: VERSION, resource:
 // and the endpoint stuffed into its keys, which nothing could validate and
 // nothing could address a probe at.
 export const MODELCREDENTIALS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'modelcredentials' }
+/**
+ * Host edges, in the edges provider's OWN group — the machines a harness-backed
+ * agent's turns run on. Read exactly the way MCPSERVERS above is: a bound API in
+ * the tenant's workspace, addressed with the same kube client, as the caller. The
+ * agents provider claims get/list/watch on both kinds (manifest.yaml requires →
+ * provider: edges) so an unattended run can resolve an edgeRef, but this read
+ * needs no claim at all: it is the user's own RBAC in their own workspace.
+ *
+ * There is no KubernetesCluster entry, here or in the claim. A runner is a
+ * process on a machine, so a cluster edge can never host a harness — offering
+ * one would produce an agent the CRD's own enum refuses.
+ */
+const EDGES_GROUP = 'edges.railgrid.ai'
+const LINUXSERVERS: KubeResourceRef = { group: EDGES_GROUP, version: VERSION, resource: 'linuxservers' }
+const MACOSSERVERS: KubeResourceRef = { group: EDGES_GROUP, version: VERSION, resource: 'macosservers' }
 // LABEL_AGENT mirrors api/runprojection.go. It is what makes "this agent's
 // runs" a server-side list rather than a filter over every run in the
 // workspace.
@@ -274,6 +304,89 @@ function normalizeBudget(
   return budget
 }
 
+/**
+ * normalizeHarness validates the harness block before it is written.
+ *
+ * The CRD requires edgeRef.kind, edgeRef.name and credentialRef, and the kind is
+ * an enum of the two HOST edge kinds — a KubernetesCluster edge cannot run a
+ * process, so it can never host a harness. Checking here turns an apiserver 422
+ * into a refused save that names the missing field.
+ */
+function normalizeHarness(harness: AgentHarnessBackend | undefined): AgentHarnessBackend {
+  const kind = (harness?.edgeRef?.kind ?? '').trim() as HarnessEdgeKind
+  const edge = (harness?.edgeRef?.name ?? '').trim()
+  const credentialRef = (harness?.credentialRef ?? '').trim()
+  if (!HARNESS_EDGE_KINDS.includes(kind)) {
+    throw validationError(`a harness backend needs an edge of kind ${HARNESS_EDGE_KINDS.join(' or ')}`)
+  }
+  if (!edge) throw validationError('a harness backend needs an edge — pick the machine its turns run on')
+  if (!credentialRef) throw validationError('a harness backend needs a credentialRef — its provider is what picks the harness')
+  return defined({
+    edgeRef: { kind, name: edge },
+    credentialRef,
+    model: (harness?.model ?? '').trim() || undefined,
+    workspace: harness?.workspace,
+  })
+}
+
+/**
+ * createBackend builds spec.backend for a new Agent, or returns null when the
+ * caller named nothing at all (a model-backed agent with no credential yet,
+ * which is what an absent block means).
+ *
+ * Only one of the two blocks is ever emitted: spec.backend's CEL rules refuse a
+ * harness type carrying a model block and a harness block under any other type,
+ * so a writer that emitted both would have the create rejected outright.
+ */
+function createBackend(body: AgentCreate): Record<string, unknown> | null {
+  if (body.backendType === AGENT_BACKEND_HARNESS) {
+    return { type: AGENT_BACKEND_HARNESS, harness: normalizeHarness(body.harness) }
+  }
+  const credential = (body.modelCredential ?? '').trim()
+  const fallbacks = trimmedList(body.modelFallbacks)
+  if (!credential && !fallbacks.length) return null
+  return {
+    type: AGENT_BACKEND_MODEL,
+    model: defined({
+      credentials: credential ? { [PURPOSE_CHAT]: credential } : undefined,
+      fallbacks: fallbacks.length ? fallbacks : undefined,
+    }),
+  }
+}
+
+/**
+ * patchBackend builds the spec.backend half of a merge patch, or null when the
+ * body names nothing about the backend.
+ *
+ * Two different writes, and the difference is ownership. A patch naming only
+ * modelCredential / modelFallbacks is the model section saving its own fields:
+ * it touches spec.backend.model and NOTHING else, so it cannot clobber a type
+ * another section owns. A patch naming backendType is the backend section
+ * switching backends, and that one MUST clear the block it is switching away
+ * from — the two are mutually exclusive by CEL, and merge patch deletes a key by
+ * setting it to null.
+ */
+function patchBackend(body: AgentPatch): Record<string, unknown> | null {
+  if (body.backendType === AGENT_BACKEND_HARNESS) {
+    return { type: AGENT_BACKEND_HARNESS, harness: normalizeHarness(body.harness), model: null }
+  }
+  const model: Record<string, unknown> = {}
+  if (body.modelCredential !== undefined) {
+    // JSON merge patch deletes a map key by setting it to null, which is
+    // exactly "this agent no longer has a chat model".
+    model.credentials = { [PURPOSE_CHAT]: body.modelCredential.trim() || null }
+  }
+  if (body.modelFallbacks !== undefined) model.fallbacks = trimmedList(body.modelFallbacks)
+  if (body.backendType === AGENT_BACKEND_MODEL) {
+    return defined({
+      type: AGENT_BACKEND_MODEL,
+      model: Object.keys(model).length ? model : undefined,
+      harness: null,
+    })
+  }
+  return Object.keys(model).length ? { model } : null
+}
+
 /** stripUndefined drops undefined values so a merge patch carries only what it means. */
 function defined<T extends object>(obj: T): T {
   for (const key of Object.keys(obj) as (keyof T)[]) {
@@ -402,10 +515,8 @@ export class Resources {
         systemPrompt: body.systemPrompt,
         autonomy: body.autonomy,
       })
-      const cred = (body.modelCredential ?? '').trim()
-      if (cred) spec.models = { chat: cred }
-      const fallbacks = trimmedList(body.modelFallbacks)
-      if (fallbacks.length) spec.modelFallbacks = fallbacks
+      const backend = createBackend(body)
+      if (backend) spec.backend = backend
       const budget = normalizeBudget(undefined, body.budgetTokens, body.budgetUSD)
       if (budget) spec.budget = budget
       if (body.interactiveFamilies?.length || body.backgroundFamilies?.length) {
@@ -437,13 +548,8 @@ export class Resources {
       const needsCurrent = body.budgetTokens !== undefined || body.budgetUSD !== undefined
       const current = needsCurrent ? await client.get<Agent & KubeObject>(AGENTS, name) : null
 
-      if (body.modelCredential !== undefined) {
-        const cred = body.modelCredential.trim()
-        // JSON merge patch deletes a map key by setting it to null, which is
-        // exactly "this agent no longer has a chat model".
-        spec.models = { chat: cred || null }
-      }
-      if (body.modelFallbacks !== undefined) spec.modelFallbacks = trimmedList(body.modelFallbacks)
+      const backend = patchBackend(body)
+      if (backend) spec.backend = backend
       if (body.systemPrompt !== undefined) spec.systemPrompt = body.systemPrompt
       if (body.description !== undefined) spec.description = body.description.trim()
       if (body.autonomy !== undefined) spec.autonomy = body.autonomy
@@ -509,6 +615,53 @@ export class Resources {
       }
     }
   }
+
+  // ---- edges ---------------------------------------------------------------
+
+  /**
+   * listEdges reads the workspace's HOST edges — the machines a harness-backed
+   * agent's turns can run on.
+   *
+   * These live in the edges provider's group, not this one's, so this is the
+   * same path `capabilities` takes for the hub's MCPServer: a bound API in the
+   * tenant's workspace, read with the same kube client, as the caller. No
+   * provider route and no new HTTP path is involved.
+   *
+   * KubernetesCluster is not read, because a runner is a process on a machine
+   * and a cluster edge can never host one. Leaving it out of the list is what
+   * makes it unofferable, rather than a filter someone can forget.
+   *
+   * A type-level 404 means the edges provider is not enabled here, which is a
+   * different thing from "no machines yet" and the only one the user can act on,
+   * so it is reported as itself rather than as this provider being missing.
+   */
+  listEdges = (): Promise<Edge[]> =>
+    this.run(async (client) => {
+      const read = async (ref: KubeResourceRef, kind: HarnessEdgeKind): Promise<Edge[]> => {
+        try {
+          const items = await client.listAll<KubeObject & { status?: { connected?: boolean; phase?: string } }>(ref)
+          return items.map((item) => ({
+            kind,
+            name: item.metadata?.name ?? '',
+            connected: item.status?.connected,
+            phase: item.status?.phase,
+          }))
+        } catch (error) {
+          if (isKubeError(error) && error.status === 404 && !error.body?.details?.name) {
+            throw new ResourceError(
+              404,
+              'EdgesBindingMissing',
+              'the edges provider is not enabled in this workspace, so there is no machine a harness can run on',
+            )
+          }
+          throw error
+        }
+      }
+      const [linux, macos] = await Promise.all([read(LINUXSERVERS, 'LinuxServer'), read(MACOSSERVERS, 'MacOSServer')])
+      const out = [...linux, ...macos].filter((edge) => !!edge.name)
+      out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0))
+      return out
+    })
 
   // ---- schedules -----------------------------------------------------------
 
@@ -861,15 +1014,27 @@ export class Resources {
    * credential probeable at all — "which models does this endpoint serve?"
    * needs a saved object to ask of — so the editor saves, discovers, and saves
    * again with the chosen id.
+   *
+   * A HARNESS IDENTITY (claude-code, codex) takes a different branch, because
+   * it is a different shape and not a variant: no baseURL, no model, and its
+   * Secret carries the kind declaration in the KEY rather than being pointed at
+   * by spec.secretKey. See the harness branch below.
    */
   saveCredential = (body: CredentialWrite): Promise<Credential> =>
     this.run(async (client) => {
       const name = (body.name ?? '').trim()
-      const provider = (body.provider ?? '').trim() || 'openai-compatible'
+      const provider = (body.provider ?? '').trim() || MODEL_PROVIDER_OPENAI_COMPATIBLE
+      const harness = isHarnessProvider(provider)
       const baseURL = (body.baseURL ?? '').trim()
       const apiKey = (body.apiKey ?? '').trim()
       if (!name) throw validationError('name is required')
-      if (!baseURL) throw validationError('baseURL is required')
+      // A harness identity has no endpoint: the CRD's own CEL rule asks for a
+      // baseURL only from a chat provider, and llm.BuildModel refuses this
+      // family outright, so there is nothing for a URL here to mean.
+      if (!harness && !baseURL) throw validationError('baseURL is required')
+      // The shape of a harness login is checked before the first request, so a
+      // half-pasted auth.json costs nothing and reaches nothing.
+      const harnessSecret = harness ? validHarnessSecret(provider, body.harnessSecret) : undefined
 
       // The stored object decides which Secret to write into: an edit must not
       // silently move a credential onto this writer's default name when it was
@@ -882,6 +1047,51 @@ export class Resources {
       }
       const secretName = (existing?.spec?.secretRef?.name ?? '').trim() || credentialSecretName(name)
       const secretKey = (existing?.spec?.secretKey ?? '').trim() || DEFAULT_CREDENTIAL_KEY
+
+      if (harness) {
+        if (harnessSecret) {
+          // `data`, base64, one key — NOT stringData, and that is the whole
+          // mechanism for "switching credential type replaces rather than
+          // accumulates". Server-side apply removes a field this manager
+          // declared last time and does not declare now, so re-applying with
+          // only `data.apiKey` drops the `data.oauthToken` it wrote before.
+          // stringData cannot express that: the apiserver folds it into `data`
+          // and the old key survives, which the reconciler then refuses as two
+          // identities in one Secret (llm.ReadHarnessSecret).
+          await client.apply(
+            SECRETS,
+            {
+              apiVersion: 'v1',
+              kind: 'Secret',
+              metadata: { name: secretName, namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
+              type: 'Opaque',
+              data: { [harnessSecret.key]: base64UTF8(harnessSecret.value) },
+            } as KubeObject,
+            { namespace: SECRET_NAMESPACE, force: true },
+          )
+        } else if (!existing) {
+          throw validationError('a harness identity needs its credential')
+        }
+        // spec.secretKey is deliberately NOT written. For this family the
+        // Secret KEY is the kind declaration, and a spec field naming one of
+        // them would be a second answer to which identity this is — one the
+        // Secret could contradict. No baseURL and no model either: neither
+        // exists for a credential nothing calls.
+        const spec = { provider, secretRef: { name: secretName } }
+        if (existing) {
+          const patched = await client.patch<KubeModelCredential & KubeObject>(
+            MODELCREDENTIALS, name, { spec }, { type: 'merge' },
+          )
+          return credentialView(patched)
+        }
+        const created = await client.create<KubeModelCredential & KubeObject>(MODELCREDENTIALS, {
+          apiVersion: API_VERSION,
+          kind: 'ModelCredential',
+          metadata: { name },
+          spec,
+        } as unknown as KubeModelCredential & KubeObject)
+        return credentialView(created)
+      }
 
       if (apiKey) {
         // force: a Secret left behind by an earlier credential of this name
@@ -999,6 +1209,50 @@ function rfc3339(value: string): string {
     throw validationError(`runAt must be RFC3339 (e.g. 2026-07-13T09:00:00Z): cannot parse ${v}`)
   }
   return new Date(parsed).toISOString()
+}
+
+/**
+ * validHarnessSecret checks a harness login before anything is sent, and
+ * returns it trimmed — or undefined when the caller typed nothing, which is how
+ * an edit says "keep the stored Secret".
+ *
+ * The key must be one THIS provider accepts: claude-code's oauthToken and
+ * apiKey are different identities with different billing, and codex's auth.json
+ * is a different thing again, so a key belonging to the other provider is a
+ * refusal rather than a value written under a name nothing reads.
+ */
+function validHarnessSecret(
+  provider: string,
+  secret: CredentialWrite['harnessSecret'],
+): { key: HarnessSecretKey; value: string } | undefined {
+  if (!secret) return undefined
+  const keys = harnessSecretKeys(provider)
+  if (!keys.includes(secret.key)) {
+    throw validationError(`${secret.key} is not a ${provider} credential key (expected ${keys.join(' or ')})`)
+  }
+  const value = (secret.value ?? '').trim()
+  if (!value) throw validationError(`${secret.key} is required`)
+  // The same check llm.ReadHarnessSecret makes on the other side. A truncated
+  // login file otherwise fails on the host, minutes and one machine away from
+  // whoever pasted it.
+  if (secret.key === HARNESS_SECRET_KEY_CODEX_AUTH && !isJSONObject(value)) {
+    throw validationError('auth.json must be the JSON document `codex login` wrote')
+  }
+  return { key: secret.key, value }
+}
+
+/**
+ * base64UTF8 encodes a Secret value for `data`.
+ *
+ * btoa alone is a latin-1 encoder and throws on anything outside it, and an
+ * auth.json is a document rather than a token — so the bytes are UTF-8 encoded
+ * first, which is what the apiserver decodes back.
+ */
+function base64UTF8(value: string): string {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
 }
 
 /** newSigningSecret returns 32 random bytes as hex — connsecret.NewSigningSecret. */

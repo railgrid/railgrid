@@ -12,6 +12,12 @@
 #                        | INSTALL_DIR=/usr/local/bin sudo -E sh
 #   RAILGRID_BASE_URL   Override the binary download base (default:
 #                    https://downloads.railgrid.ai/cli/railgrid).
+#   RAILGRID_HARNESS    Which coding harnesses a machine you register offers:
+#                    auto (default — every harness installed on it), none, or a
+#                    comma-separated list of claude,codex. It is passed through
+#                    to the "edge create" and "agent join" commands printed
+#                    below; "edge create --harness" writes spec.harness on the
+#                    edge, which is the opt-out that sticks.
 
 set -eu
 
@@ -19,6 +25,7 @@ REPO="railgrid/railgrid"
 INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
 VERSION="${RAILGRID_VERSION:-}"
 BASE_URL="${RAILGRID_BASE_URL:-https://downloads.railgrid.ai/cli/railgrid}"
+HARNESS="${RAILGRID_HARNESS:-auto}"
 
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || err "missing required tool: $1"; }
@@ -106,7 +113,15 @@ cat <<EOF
 Next:
     railgrid login --hub-url https://<your-hub>   # sign in (browser OIDC, or --token <token>)
     railgrid use                                  # pick an organization and workspace
-    railgrid edge create <name>                   # register your first edge and print its join command
+    railgrid edge create <name> --harness ${HARNESS}
+                                                  # register your first edge and print its join command
     railgrid --help                               # everything else
+
+A server or macOS edge registered with --harness auto (the default) offers every
+coding harness it has installed — Claude Code, Codex — to its workspace, and
+picks up one installed later. Register with --harness none, or flip spec.harness
+in the edge UI at any time, to switch that off. The agent is seeded the same way:
+
+    sudo railgrid agent join --harness ${HARNESS} ...
 
 EOF

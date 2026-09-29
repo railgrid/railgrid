@@ -91,14 +91,15 @@ func TestClarificationResumeFenceAndReplayKeepsSecondQuestion(t *testing.T) {
 	}
 
 	stale := ResumeRequest{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "resume-stale",
-		TaskID:          checkpoint.TaskID,
-		AttemptID:       checkpoint.AttemptID,
-		AttemptEpoch:    checkpoint.AttemptEpoch,
-		SessionID:       checkpoint.SessionID,
-		ClarificationID: "clarification-old",
-		Resolution:      "answer from an old question",
+		HarnessCredential: testHarnessCredential(),
+		ProtocolVersion:   ProtocolVersion,
+		RequestID:         "resume-stale",
+		TaskID:            checkpoint.TaskID,
+		AttemptID:         checkpoint.AttemptID,
+		AttemptEpoch:      checkpoint.AttemptEpoch,
+		SessionID:         checkpoint.SessionID,
+		ClarificationID:   "clarification-old",
+		Resolution:        "answer from an old question",
 	}
 	_, err = runner.Resume(context.Background(), stale)
 	assertProtocolCode(t, err, ErrorCheckpointUnavailable)

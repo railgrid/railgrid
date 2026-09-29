@@ -25,15 +25,32 @@ import (
 	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
-func TestCredentialKindEnvVars(t *testing.T) {
-	if got := CredentialOAuthToken.EnvVar(); got != "CLAUDE_CODE_OAUTH_TOKEN" {
-		t.Errorf("oauth-token env = %q", got)
+// TestCredentialForMapsKindsAndRefusesForeignOnes: which environment variable
+// carries the credential is decided by the kind the CALLER sent, and a
+// credential meant for another harness is refused rather than tried.
+func TestCredentialForMapsKindsAndRefusesForeignOnes(t *testing.T) {
+	for kind, want := range map[harness.CredentialKind]string{
+		harness.CredentialClaudeOAuth:  "CLAUDE_CODE_OAUTH_TOKEN",
+		harness.CredentialClaudeAPIKey: "ANTHROPIC_API_KEY",
+	} {
+		got, err := credentialFor(harness.Launch{Credential: harness.Credential{Kind: kind, Value: "v"}})
+		if err != nil {
+			t.Fatalf("credentialFor(%s): %v", kind, err)
+		}
+		if got.env != want {
+			t.Errorf("credentialFor(%s) env = %q, want %q", kind, got.env, want)
+		}
 	}
-	if got := CredentialAPIKey.EnvVar(); got != "ANTHROPIC_API_KEY" {
-		t.Errorf("api-key env = %q", got)
-	}
-	if CredentialKind("password").Valid() {
-		t.Error("an unknown credential kind was accepted")
+	for _, credential := range []harness.Credential{
+		{Kind: harness.CredentialCodexAuth, Value: "{}"},
+		{Kind: "password", Value: "v"},
+		{Kind: harness.CredentialClaudeOAuth, Value: "  "},
+		{Kind: harness.CredentialClaudeOAuth, Value: "a\nb"},
+		{},
+	} {
+		if _, err := credentialFor(harness.Launch{Credential: credential}); err == nil {
+			t.Errorf("credentialFor accepted %+v", credential)
+		}
 	}
 }
 

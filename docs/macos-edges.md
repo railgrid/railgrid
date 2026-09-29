@@ -123,12 +123,14 @@ The one-time token is used to exchange for the durable agent credential. Do
 not put the token in a plist or a checked-in script. The agent's saved
 credential remains under the worker user's `~/.railgrid` directory.
 
-To let this Mac host an [edge add-on](edge-addons.md) — today only the coding
-runner — add `--allow-addon runner` to either command. The daemon already runs
-as the non-root worker account, so an add-on child runs as that same account and
-`--addon-user` is neither required nor accepted here (it is a Linux/systemd
-concern, where the agent runs as root). Without `--allow-addon`, an `Addon`
-declared for this edge is reported `Allowed=False` and nothing is started.
+This Mac hosts a [coding harness](edge-harness.md) by default: `spec.harness` on
+the MacOSServer defaults to `auto`, so every harness installed for the worker
+account is supervised and published as a Service. Nothing has to be added to
+either command. The daemon already runs as the non-root worker account, so the
+harness child runs as that same account and `--runner-user` is neither required
+nor accepted here (it is a Linux/systemd concern, where the agent runs as root).
+Set `spec.harness.mode: none`, or pass `--harness none` to `railgrid edge create`,
+to keep this Mac from running one.
 
 For a short-lived foreground validation instead of launchd, run the agent in
 another terminal with the same scoped values:

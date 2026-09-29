@@ -241,6 +241,27 @@ describe('Activity.vue', () => {
     expect(view.element.querySelector('.agents-phase')?.classList.contains('k-badge--success')).toBe(false)
   })
 
+  it('marks only the feed rows that recorded a harness backend', async () => {
+    const listRuns = vi.fn().mockResolvedValue({ items: [
+      run({ id: 'r-harness', backend: 'harness' }),
+      run({ id: 'r-model', backend: 'model' }),
+      run({ id: 'r-legacy' }),
+    ], nextCursor: '' })
+    const api = stubApi({ listRuns })
+    const view = await mount(Activity, { store: makeStore(api), api })
+    const rows = [...view.element.querySelectorAll<HTMLElement>('.k-table__row')]
+    const triggerCell = (index: number): HTMLElement => rows[index].querySelectorAll<HTMLElement>('td')[2]
+
+    expect(text(triggerCell(0).querySelector('.agents-badge'))).toBe('harness')
+    // An in-process run is the common case and gets no second badge, and a row
+    // that recorded no backend recorded nothing — neither may read as "model".
+    expect(triggerCell(1).querySelector('.agents-badge')).toBeNull()
+    expect(triggerCell(2).querySelector('.agents-badge')).toBeNull()
+    expect(text(rows[1])).not.toContain('model')
+    expect(text(rows[2])).not.toContain('model')
+    expect(text(rows[2])).not.toContain('harness')
+  })
+
   it('keeps the last successful feed visible when a server-event refresh fails', async () => {
     const listRuns = vi.fn()
       .mockResolvedValueOnce({ items: [run()], nextCursor: '' })
@@ -479,6 +500,53 @@ describe('RunDetail.vue', () => {
     buttonWithText(facts, 'parent-r').click()
     expect(view.navigations).toEqual([{ kind: 'run', id: 'parent-run-id' }])
     expect(text(view.element.querySelector('.agents-runmeta'))).toContain('1.2k in')
+  })
+
+  it('surfaces where a harness-backed run ran and the ids it is correlated by', async () => {
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      backend: 'harness',
+      harness: { attemptID: 'attempt-9f2c4b', sessionID: 'harness-session-41' },
+    })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const facts = view.element.querySelector('.agents-run-inspector-section')!
+    const cells = [...facts.querySelectorAll('.agents-runmeta-cell')].map(cell => [...cell.children].map(child => text(child)))
+
+    expect(cells).toContainEqual(['ran on', 'harness'])
+    expect(cells).toContainEqual(['runner attempt', 'attempt-9f2c4b'])
+    expect(cells).toContainEqual(['harness session', 'harness-session-41'])
+    // Both are ids somebody copies, so they stay selectable monospaced text.
+    const mono = [...facts.querySelectorAll('.agents-runmeta-v.mono')].map(value => text(value))
+    expect(mono).toContain('attempt-9f2c4b')
+    expect(mono).toContain('harness-session-41')
+    expect(text(facts)).toContain('look the attempt up on the runner')
+  })
+
+  it('says where a harness-backed run ran without inventing coordinates it has not reported', async () => {
+    for (const harness of [undefined, { attemptID: '', sessionID: '' }]) {
+      const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ backend: 'harness', harness })) })
+      const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+      const facts = view.element.querySelector('.agents-run-inspector-section')!
+      const keys = [...facts.querySelectorAll('.agents-runmeta-k')].map(key => text(key))
+
+      expect(keys).toContain('ran on')
+      expect(keys).not.toContain('runner attempt')
+      expect(keys).not.toContain('harness session')
+      expect(text(facts)).not.toContain('look the attempt up on the runner')
+    }
+  })
+
+  it('leaves an in-process run and one with no recorded backend without harness treatment', async () => {
+    for (const backend of ['model', undefined] as const) {
+      const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ backend })) })
+      const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+      const facts = view.element.querySelector('.agents-run-inspector-section')!
+      const keys = [...facts.querySelectorAll('.agents-runmeta-k')].map(key => text(key))
+
+      expect(keys).not.toContain('ran on')
+      expect(text(facts)).not.toContain('harness')
+      // An absent backend recorded nothing, so it is not labelled "model" either.
+      expect(text(facts)).not.toContain('model')
+    }
   })
 
   it('uses measured work for Worked for while retaining elapsed duration separately', async () => {

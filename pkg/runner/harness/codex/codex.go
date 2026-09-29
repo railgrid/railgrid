@@ -15,6 +15,14 @@ limitations under the License.
 */
 
 // Package codex adapts the Codex app-server protocol to the runner harness.
+//
+// # Credentials
+//
+// The Codex login session is supplied by the caller with every launch
+// (harness.Launch.Credential) and materialized as the worker home's auth.json
+// for the duration of that one launch. Nothing on the host stays signed in, so
+// authentication is an outcome of an attempt rather than a property of the
+// runner: Probe never reports on it.
 package codex
 
 import (
@@ -38,6 +46,11 @@ import (
 )
 
 const (
+	// HarnessName is what the runner advertises in its capabilities response.
+	// It happens to equal the selector a person writes, unlike Claude Code's;
+	// see pkg/runner/harness/names.go for why both names exist.
+	HarnessName = "codex"
+
 	defaultBinary          = "codex"
 	defaultExpectedVersion = "0.147.0"
 	maxEventData           = 64 << 10
@@ -45,6 +58,10 @@ const (
 	processStopGrace       = 750 * time.Millisecond
 	processStopTimeout     = 2 * time.Second
 	interruptTimeout       = 1500 * time.Millisecond
+
+	// codexAuthFileName is the login session Codex reads from its home.
+	codexAuthFileName = "auth.json"
+	maxCodexAuthBytes = 64 << 10
 )
 
 // Codex creates skills and plugin cache directories in its own home. Plugin
@@ -101,10 +118,12 @@ func New(cfg Config) harness.Adapter {
 	return &Adapter{cfg: cfg}
 }
 
-// Probe checks the binary version and app-server authentication state without
-// starting a model thread or turn.
+// Probe checks the binary version and that the app-server answers the
+// handshake. It deliberately reports nothing about authentication: the harness
+// credential arrives with each launch, so a host with no Codex login is still a
+// ready runner and a signed-out state is a per-attempt outcome.
 func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
-	info := harness.Info{Name: "codex"}
+	info := harness.Info{Name: HarnessName}
 	if err := a.ensureHome(); err != nil {
 		return info, err
 	}
@@ -131,8 +150,9 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 		return nil
 	}
 	if _, err := conn.call(ctx, "initialize", initializeParams(), handler); err != nil {
+		// An app-server that answers the handshake with an authentication demand
+		// is alive and responsive, which is all readiness claims.
 		if needsInput(err) || isAuthRPCError(err) {
-			info.Reasons = append(info.Reasons, "Codex authentication requires user input")
 			return infoWithReady(info), nil
 		}
 		return info, err
@@ -140,72 +160,7 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 	if err := conn.notify("initialized", map[string]any{}); err != nil {
 		return info, err
 	}
-	account, err := conn.call(ctx, "account/read", map[string]any{"refreshToken": false}, handler)
-	if err != nil {
-		if needsInput(err) || isAuthRPCError(err) {
-			info.Reasons = append(info.Reasons, "Codex authentication requires user input")
-			return infoWithReady(info), nil
-		}
-		return info, err
-	}
-	var accountResult struct {
-		Account            json.RawMessage `json:"account"`
-		RequiresOpenAIAuth json.RawMessage `json:"requiresOpenaiAuth"`
-	}
-	if err := json.Unmarshal(account.Result, &accountResult); err != nil {
-		return info, fmt.Errorf("decoding Codex account/read response: %w", err)
-	}
-	requiresOpenAIAuth, validAuthRequirement := parseAuthRequirement(accountResult.RequiresOpenAIAuth)
-	accountType, validAccount := parseAccountType(accountResult.Account)
-	if !validAuthRequirement || !validAccount {
-		info.Reasons = append(info.Reasons, "Codex authentication state is unavailable")
-	} else if requiresOpenAIAuth && !isAuthenticatedAccountType(accountType) {
-		info.Reasons = append(info.Reasons, "Codex authentication is not configured")
-	}
 	return infoWithReady(info), nil
-}
-
-func parseAuthRequirement(raw json.RawMessage) (bool, bool) {
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
-		return false, false
-	}
-
-	var required bool
-	if err := json.Unmarshal(raw, &required); err != nil {
-		return false, false
-	}
-	return required, true
-}
-
-func parseAccountType(raw json.RawMessage) (string, bool) {
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
-		return "", true
-	}
-
-	var account map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &account); err != nil || account == nil {
-		return "", false
-	}
-	typeRaw, ok := account["type"]
-	if !ok {
-		return "", false
-	}
-	var accountType string
-	if err := json.Unmarshal(typeRaw, &accountType); err != nil || accountType == "" {
-		return "", false
-	}
-	return accountType, true
-}
-
-func isAuthenticatedAccountType(accountType string) bool {
-	switch accountType {
-	case "apiKey", "chatgpt":
-		return true
-	default:
-		return false
-	}
 }
 
 func infoWithReady(info harness.Info) harness.Info {
@@ -227,9 +182,11 @@ func (a *Adapter) probeVersion(ctx context.Context) (string, error) {
 	return string(match[1]), nil
 }
 
-// Run starts one dedicated app-server process, creates or resumes exactly one
-// thread, starts one turn, forwards events, and stops the process before it
-// returns. A resumed session is never silently replaced with a new thread.
+// Run materializes the launch credential as the home's auth.json, starts one
+// dedicated app-server process, creates or resumes exactly one thread, starts
+// one turn, forwards events, then stops the process and removes the credential
+// before it returns. A resumed session is never silently replaced with a new
+// thread, and a launch without a usable Codex credential starts no process.
 func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.Emit) (result harness.Result, err error) {
 	if err := a.ensureHome(); err != nil {
 		return result, err
@@ -240,6 +197,28 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 	if err := a.validateLaunchConfiguration(launch.Workdir); err != nil {
 		return result, err
 	}
+	if blocker := credentialBlocker(launch.Credential); blocker != "" {
+		return credentialRefusal(launch.SessionID, blocker, emit), nil
+	}
+	authPath, authErr := a.writeAuthSession(launch.Credential.Value)
+	if authErr != nil {
+		return result, authErr
+	}
+	// Registered before the process defer so the child is gone before the
+	// session file is.
+	defer func() {
+		removeErr := os.Remove(authPath)
+		if removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+			return
+		}
+		// A session left on disk is worth reporting, but never in place of the
+		// failure the caller came for.
+		if err == nil {
+			err = fmt.Errorf("removing codex auth session: %w", removeErr)
+		} else {
+			err = errors.Join(err, removeErr)
+		}
+	}()
 	proc, err := a.startServer(ctx, launch.Workdir)
 	if err != nil {
 		return result, err
@@ -1011,6 +990,74 @@ func authResult(state *runState, err error, emit harness.Emit) harness.Result {
 		})
 	}
 	return harness.Result{Phase: "needs_input", SessionID: state.sessionID, Blocker: "Codex authentication requires user input"}
+}
+
+// credentialBlocker reports why launch.Credential cannot run a Codex turn, or
+// "" when it can. Every message it returns is derived from the shape of the
+// credential, never from its bytes.
+func credentialBlocker(cred harness.Credential) string {
+	if cred.Empty() {
+		return "Codex authentication was not supplied with this attempt"
+	}
+	if cred.Kind != harness.CredentialCodexAuth {
+		return fmt.Sprintf("Codex authentication requires a %s credential", harness.CredentialCodexAuth)
+	}
+	if len(cred.Value) > maxCodexAuthBytes {
+		return "Codex authentication payload exceeds the supported size"
+	}
+	if !isCodexAuthSession(cred.Value) {
+		return "Codex authentication payload is not a Codex auth.json object"
+	}
+	return ""
+}
+
+// isCodexAuthSession reports whether value is exactly one JSON object, which is
+// what Codex expects to find in auth.json.
+func isCodexAuthSession(value string) bool {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	var payload map[string]json.RawMessage
+	if err := decoder.Decode(&payload); err != nil || payload == nil {
+		return false
+	}
+	var extra any
+	return errors.Is(decoder.Decode(&extra), io.EOF)
+}
+
+// credentialRefusal reports a launch the adapter refused before starting any
+// process. It mirrors authResult so a rejected credential and a missing one
+// reach the caller the same way, and neither carries credential bytes.
+func credentialRefusal(sessionID, blocker string, emit harness.Emit) harness.Result {
+	if emit != nil {
+		_ = emit(harness.Event{
+			Type:      "auth_failure",
+			SessionID: sessionID,
+			Message:   blocker,
+		})
+	}
+	return harness.Result{Phase: "needs_input", SessionID: sessionID, Blocker: blocker}
+}
+
+// writeAuthSession materializes the caller's login session as the home's
+// auth.json and returns its path. Runner capacity is pinned to one launch at a
+// time, so a single shared home cannot be raced by a second attempt.
+func (a *Adapter) writeAuthSession(value string) (string, error) {
+	path := filepath.Join(a.cfg.Home, codexAuthFileName)
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("codex runner home entry %q must be a regular file", codexAuthFileName)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspecting codex auth session: %w", err)
+	}
+	// The errors below name the path only: session bytes never reach a message.
+	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+		return "", fmt.Errorf("writing codex auth session: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("protecting codex auth session: %w", err)
+	}
+	return path, nil
 }
 
 func missingSessionResult(state *runState, err error, emit harness.Emit) harness.Result {

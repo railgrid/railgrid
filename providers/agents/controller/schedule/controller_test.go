@@ -360,15 +360,18 @@ func TestClaimErrorIsReturned(t *testing.T) {
 	}
 }
 
-// A refused submit (queue full) does not fail the reconcile: the fire is
-// already claimed on the CR, and retrying would double-run once the queue
-// drains. The next occurrence is still scheduled.
+// A refused submit does not fail the reconcile: the fire is already claimed on
+// the CR, and retrying would double-run once submission works again. The next
+// occurrence is still scheduled.
 func TestRefusedSubmitIsNotRetried(t *testing.T) {
 	s := cronSchedule("busy", "0 * * * *")
 	s.Status.ObservedGeneration = 1
 	s.Status.NextRun = &metav1.Time{Time: now}
 	h := newHarness(t, s)
-	h.exec.err = executor.ErrQueueFull
+	// Any refusal will do. It used to be executor.ErrQueueFull, which went away
+	// with the in-process queue: submission is now a durable write, so what a
+	// producer sees is a store or apiserver failure, not a full channel.
+	h.exec.err = errors.New("recording the run: virtual workspace is unavailable")
 	res := h.reconcile(t)
 	if res.RequeueAfter != time.Hour {
 		t.Fatalf("RequeueAfter = %s, want the next occurrence", res.RequeueAfter)

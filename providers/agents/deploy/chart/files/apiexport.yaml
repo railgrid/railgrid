@@ -38,6 +38,28 @@ spec:
     resource: instances/proxy
     verbs:
     - '*'
+  - group: edges.railgrid.ai
+    resource: linuxservers
+    verbs:
+    - get
+    - list
+    - watch
+  - group: edges.railgrid.ai
+    resource: macosservers
+    verbs:
+    - get
+    - list
+    - watch
+  - group: edges.railgrid.ai
+    resource: services
+    verbs:
+    - get
+    - list
+    - watch
+  - group: edges.railgrid.ai
+    resource: services/proxy
+    verbs:
+    - '*'
   - group: authorization.k8s.io
     resource: subjectaccessreviews
     verbs:
@@ -56,7 +78,7 @@ spec:
   resources:
   - group: agents.railgrid.ai
     name: agents
-    schema: v260919-b1e9b5e6.agents.agents.railgrid.ai
+    schema: v260926-76b9080b.agents.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai
@@ -66,7 +88,7 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: modelcredentials
-    schema: v260920-3db34be6.modelcredentials.agents.railgrid.ai
+    schema: v260927-76b9080b.modelcredentials.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai

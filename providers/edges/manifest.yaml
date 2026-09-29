@@ -1,8 +1,8 @@
 # edges provider — CatalogEntry (providers.railgrid.ai).
 #
-# Single, optional, self-contained provider for all seven edges.railgrid.ai kinds
-# (KubernetesCluster, LinuxServer, MacOSServer, Service, Workload, Placement,
-# Addon). It terminates the agent reverse tunnel (revdial) in-process, owns the
+# Single, optional, self-contained provider for all six edges.railgrid.ai kinds
+# (KubernetesCluster, LinuxServer, MacOSServer, Service, Workload, Placement).
+# It terminates the agent reverse tunnel (revdial) in-process, owns the
 # API + its APIExport, runs the token/RBAC/lifecycle controllers, and serves
 # kubectl/SSH/MCP/Services as kcp custom subresources on that export.
 #
@@ -45,8 +45,8 @@ spec:
   # permission claim of this provider: a claim names another group's resources,
   # never one's own verbs.
   #
-  # Workload, Placement and Addon carry no verb and no action, so they need no
-  # entry here at all — they are ordinary CR kinds tenants read and write
+  # Workload and Placement carry no verb and no action, so they need no entry
+  # here at all — they are ordinary CR kinds tenants read and write
   # through kcp, and they reach the APIExport's spec.resources from apigen's
   # schemas either way.
   export:
@@ -78,8 +78,6 @@ spec:
           - name: ssh
             description: "Open an SSH session to the edge through its tunnel."
             stream: true
-          - name: addon-credentials
-            description: Read runner auth and publish its token for an add-on assigned to this edge
           - name: agent-token
             description: "Re-mint the calling agent's own TTL'd credential. The hub identity service authenticates providers, not agents, so this provider stands in for it behind the same two gates."
             readOnly: true
@@ -93,8 +91,6 @@ spec:
         apiVersion: edges.railgrid.ai/v1alpha1
         kind: MacOSServer
         verbs:
-          - name: addon-credentials
-            description: Read runner auth and publish its token for an add-on assigned to this edge
           - name: agent-token
             description: "Re-mint the calling agent's own TTL'd credential. MacOSServer serves no consumer verb, but its agent still has a credential to rotate."
             readOnly: true
@@ -112,8 +108,8 @@ spec:
   # API group; each of its resources becomes one permission claim on the
   # generated APIExport, and each is tenant-scoped by definition.
   #
-  # KubernetesCluster, LinuxServer, MacOSServer, Service, Workload, Placement
-  # and Addon are NOT here: the provider owns them and they come with its own
+  # KubernetesCluster, LinuxServer, MacOSServer, Service, Workload and
+  # Placement are NOT here: the provider owns them and they come with its own
   # export. What remains is the tenant-workspace access the data plane needs,
   # and nothing else. edges depends on no other provider, so no entry names one.
   #
@@ -134,7 +130,7 @@ spec:
     - resources:
         - name: namespaces
           verbs: [get, list, watch, create]
-        # Secrets, and ONLY the ones labelled railgrid.ai/owner: edges. Five
+        # Secrets, and ONLY the ones labelled railgrid.ai/owner: edges. Three
         # shapes, each written by a party this provider controls, each of which
         # stamps the label:
         #
@@ -147,9 +143,6 @@ spec:
         #     (portal/src/api.ts) and read by the validation reconciler. The
         #     service-proxy read path already runs as the caller and needs no
         #     claim.
-        #   default/<addon>-runner-token             published by this provider
-        #     through addon-credentials for the add-on reconciler.
-        #   add-on harness auth references, explicitly labelled by the tenant.
         #   whatever spec.sshCredentialsRef names, which is normally the first.
         #
         # Without the selector this claim is read-write on EVERY Secret in EVERY

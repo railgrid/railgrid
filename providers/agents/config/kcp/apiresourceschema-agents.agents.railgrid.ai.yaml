@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-b1e9b5e6.agents.agents.railgrid.ai
+  name: v260926-76b9080b.agents.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -62,6 +62,111 @@ spec:
               - ask
               - auto
               type: string
+            backend:
+              description: |-
+                Backend says WHERE this agent's turns execute: in this process against a
+                chat model, or on a coding harness running on an edge. It replaced the
+                former spec.models / spec.modelFallbacks, which could only describe the
+                first of those two.
+              properties:
+                harness:
+                  description: |-
+                    Harness configures the edge-harness backend. Required when type is
+                    "harness", rejected otherwise.
+                  properties:
+                    credentialRef:
+                      description: |-
+                        CredentialRef names a ModelCredential in this workspace whose provider is
+                        "claude-code" or "codex". Its provider picks the harness, and its Secret
+                        is the identity every turn is dispatched with.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    edgeRef:
+                      description: EdgeRef names the machine whose runner executes
+                        this agent's turns.
+                      properties:
+                        kind:
+                          description: Kind is the edge kind, "LinuxServer" or "MacOSServer".
+                          enum:
+                          - LinuxServer
+                          - MacOSServer
+                          type: string
+                        name:
+                          description: Name is the edge object's name in this workspace.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - kind
+                      - name
+                      type: object
+                    model:
+                      description: |-
+                        Model is passed through to the harness as the model it should run on
+                        (e.g. "sonnet"). Empty leaves the harness's own default alone.
+                      maxLength: 253
+                      type: string
+                    workspace:
+                      default: persistent
+                      description: |-
+                        Workspace decides whether consecutive turns share the runner's working
+                        directory. "persistent" (the default) keeps one directory per agent
+                        across turns, which is what makes a conversation about a checkout
+                        coherent; "ephemeral" asks for a fresh one per turn.
+                      enum:
+                      - persistent
+                      - ephemeral
+                      type: string
+                  required:
+                  - credentialRef
+                  - edgeRef
+                  type: object
+                model:
+                  description: |-
+                    Model configures the in-process backend. Rejected when type is
+                    "harness".
+                  properties:
+                    credentials:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Credentials maps run purposes to ModelCredential names. Recognized
+                        purposes: "chat" (interactive, strong), "background"
+                        (schedules/heartbeats, cheap), "compaction" (summarization). An empty map
+                        falls back to the "chat" entry for every purpose.
+                      type: object
+                    fallbacks:
+                      description: |-
+                        Fallbacks is an ordered list of additional ModelCredential names tried,
+                        in order, when the primary chat credential fails to respond — a provider
+                        outage, rate limit, timeout, or connection error. The first credential
+                        that responds is used. Streaming only falls back before the first token
+                        is emitted. Empty means no fallback.
+                      items:
+                        type: string
+                      type: array
+                  type: object
+                type:
+                  default: model
+                  description: |-
+                    Type selects the backend: "model" (the default — an OpenAI-compatible
+                    chat model called from this process, with the provider's own tool loop)
+                    or "harness" (a Claude Code or Codex session on an edge, which brings its
+                    own tools).
+                  enum:
+                  - model
+                  - harness
+                  type: string
+              type: object
+              x-kubernetes-validations:
+              - message: spec.backend.type "harness" requires spec.backend.harness
+                  and rejects spec.backend.model
+                rule: '!has(self.type) || self.type != ''harness'' || (has(self.harness)
+                  && !has(self.model))'
+              - message: spec.backend.harness is only allowed when spec.backend.type
+                  is "harness"
+                rule: (has(self.type) && self.type == 'harness') || !has(self.harness)
             budget:
               description: |-
                 Budget caps spend over a rolling window. On breach the provider suspends
@@ -191,26 +296,6 @@ spec:
                   minimum: 0
                   type: integer
               type: object
-            modelFallbacks:
-              description: |-
-                ModelFallbacks is an ordered list of additional model-credential names
-                tried, in order, when the primary chat model (models["chat"]) fails to
-                respond — a provider outage, rate limit, timeout, or connection error.
-                The first credential that responds is used. Streaming only falls back
-                before the first token is emitted. Empty means no fallback.
-              items:
-                type: string
-              type: array
-            models:
-              additionalProperties:
-                type: string
-              description: |-
-                Models maps run purposes to named profiles in the tenant's model
-                credentials Secret (railgrid-agents-llm). Recognized purposes: "chat"
-                (interactive, strong), "background" (schedules/heartbeats, cheap),
-                "compaction" (summarization). An empty map falls back to the "chat"
-                profile for every purpose.
-              type: object
             systemPrompt:
               description: |-
                 SystemPrompt is the agent's persona and standing instructions, injected
@@ -301,6 +386,41 @@ spec:
         status:
           description: AgentStatus is the observed agent state.
           properties:
+            backend:
+              description: |-
+                Backend is what the agent's turns will actually run on, as the reconciler
+                resolved it. For a harness-backed agent it carries the harness the edge
+                advertises, so a portal can show what a run will get before one is
+                started — the alternative is offering the machine and finding out at
+                dispatch.
+              properties:
+                harness:
+                  description: |-
+                    Harness is what the runner advertises for that Service, copied from its
+                    status.harness.
+                  properties:
+                    name:
+                      description: Name is the harness the runner advertises ("claude-code",
+                        "codex").
+                      maxLength: 64
+                      type: string
+                    version:
+                      description: Version is the harness executable's version on
+                        the host.
+                      maxLength: 64
+                      type: string
+                  type: object
+                service:
+                  description: |-
+                    Service is the edges Service the harness is published as
+                    (<edge>-<harness selector>), for a harness backend.
+                  maxLength: 253
+                  type: string
+                type:
+                  description: Type mirrors spec.backend.type, defaulted.
+                  maxLength: 32
+                  type: string
+              type: object
             conditions:
               description: |-
                 Conditions follows the standard Kubernetes conditions pattern. The

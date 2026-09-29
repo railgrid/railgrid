@@ -50,6 +50,107 @@ export interface Edge {
   lastHeartbeatTime?: string
 }
 
+// ─── Harness ──────────────────────────────────────────────────────────
+// A harness is a coding agent (headless Claude Code, the Codex app-server) the
+// edge agent supervises on the machine and publishes as a local runner/v1
+// Service. spec.harness decides which ones the machine offers; status.harnesses
+// is what the machine reports back. Only the two host kinds carry either —
+// a KubernetesCluster edge has no supervised child. See docs/edge-harness.md.
+
+export type HarnessMode = 'auto' | 'none' | 'explicit'
+
+// EdgeHarnessSpec mirrors spec.harness. An ABSENT spec.harness means the CRD
+// default, which is auto, so every edge — including ones created before the
+// field existed — reads as auto rather than as an empty state.
+export interface EdgeHarnessSpec {
+  mode?: HarnessMode
+  // enabled is required with mode "explicit" and rejected otherwise.
+  enabled?: string[]
+  // permissionMode and allowedTools are the MACHINE's ceiling on what a turn
+  // may do without asking. They are the machine owner's to set — the blast
+  // radius is this machine's — and a caller cannot raise them.
+  permissionMode?: HarnessPermissionMode
+  allowedTools?: string[]
+}
+
+/** HarnessPermissionMode mirrors the CRD enum. Absent means acceptEdits. */
+export type HarnessPermissionMode = 'acceptEdits' | 'bypassPermissions'
+
+export const HARNESS_PERMISSION_MODES: { id: HarnessPermissionMode; label: string; blurb: string }[] = [
+  {
+    id: 'acceptEdits',
+    label: 'Ask before anything else',
+    blurb: 'File edits inside the turn’s own working directory go ahead. Anything else stops and asks you.',
+  },
+  {
+    id: 'bypassPermissions',
+    label: 'Run everything without asking',
+    blurb: 'Every tool call goes ahead. The runner account and the working directory are the only limits left.',
+  },
+]
+
+/** harnessPermissionMode defaults an absent value the way the CRD does. */
+export function harnessPermissionMode(spec: EdgeHarnessSpec | null | undefined): HarnessPermissionMode {
+  return spec?.permissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'acceptEdits'
+}
+
+/**
+ * parseAllowedTools turns what a person typed into the list the API takes.
+ *
+ * A pattern may contain spaces — "Bash(git *)" — so they are separated by
+ * newlines or commas and never by whitespace alone.
+ */
+export function parseAllowedTools(text: string): string[] {
+  return text
+    .split(/[\n,]/)
+    .map(entry => entry.trim())
+    .filter(Boolean)
+}
+
+/** formatAllowedTools is parseAllowedTools' inverse, one per line. */
+export function formatAllowedTools(tools: string[] | null | undefined): string {
+  return (tools ?? []).join('\n')
+}
+
+// HarnessStatus mirrors one entry of status.harnesses. detected, enabled and
+// ready are three separate facts and the UI must not collapse them: "installed
+// but switched off" and "asked for but not installed" are different situations.
+export interface HarnessStatus {
+  name: string
+  // detected: the executable is installed on the machine.
+  detected: boolean
+  // enabled: spec.harness asks for this harness.
+  enabled: boolean
+  // ready: the supervised runner answers runner/v1 with this harness ready.
+  ready: boolean
+  version?: string
+  port?: number
+  // reasons say why ready is false.
+  reasons?: string[]
+}
+
+// HARNESS_NAMES are every harness a railgrid agent knows how to supervise, in
+// the order the UI lists them (mirrors v1alpha1.HarnessNames).
+export const HARNESS_NAMES = ['claude', 'codex']
+
+// HARNESS_LABELS are the product names of each harness. An unknown name from a
+// newer agent renders as itself rather than being dropped.
+export const HARNESS_LABELS: Record<string, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+}
+
+export function harnessLabel(name: string): string {
+  return HARNESS_LABELS[name] ?? name
+}
+
+// EDGE_HARNESS_KINDS are the edge types that can run a harness. A Kubernetes
+// cluster edge needs a Deployment rather than a supervised child, and that is
+// deliberately not built.
+export function edgeSupportsHarness(type: EdgeType): boolean {
+  return type === 'server' || type === 'macos'
+}
+
 export interface Condition {
   type: string
   status: string
@@ -70,6 +171,10 @@ export interface EdgeDetail extends Edge {
   annotations?: Record<string, string>
   observedGeneration?: number
   spec: EdgeSpec
+  // harnesses is status.harnesses: what the machine reports about each coding
+  // harness. Undefined on a Kubernetes cluster edge and on a host that has not
+  // reported yet.
+  harnesses?: HarnessStatus[]
   statusURL?: string
   joinToken?: string
   workspacePath?: string
@@ -79,6 +184,8 @@ export interface EdgeDetail extends Edge {
 
 export interface EdgeSpec {
   labels?: Record<string, string>
+  // harness is only set on LinuxServer and MacOSServer. Absent means auto.
+  harness?: EdgeHarnessSpec
   sshPort?: number
   sshUserMapping?: string
   sshKeySecretRef?: { name?: string; namespace?: string }

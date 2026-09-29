@@ -34,7 +34,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +52,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/railgrid/railgrid/pkg/agent/harnessplane"
 	agentReconciler "github.com/railgrid/railgrid/pkg/agent/reconciler"
 	agentStatus "github.com/railgrid/railgrid/pkg/agent/status"
 	"github.com/railgrid/railgrid/pkg/agent/tunnel"
@@ -397,27 +397,33 @@ type Options struct {
 	// logged at startup). Defaults to "warn" in this release; the next release
 	// flips the default to "enforce". Flag: --svc-policy; env: RAILGRID_AGENT_SVC_POLICY.
 	SvcPolicy string
-	// AllowedAddons are the edges.railgrid.ai Addon TYPES this machine's owner
-	// opted into. It is half of the add-on trust model: a tenant declaring an
-	// Addon is not enough, the machine owner must also have started the agent
-	// with the type listed here. Default empty — the agent materializes no
-	// add-on at all. Flag: --allow-addon (repeatable); env:
-	// RAILGRID_AGENT_ALLOW_ADDON (comma-separated). See docs/edge-addons.md.
-	AllowedAddons []string
-	// AddonUser is the existing non-root local account an add-on's child
-	// process runs as. REQUIRED when an add-on is allowed and the agent itself
-	// runs as root (the systemd unit does): an add-on is a code-execution host
-	// and must not inherit the agent's privileges. Ignored for a non-root
-	// agent, which runs add-on children as itself. Flag: --addon-user; env:
-	// RAILGRID_AGENT_ADDON_USER.
-	AddonUser string
+	// Harness SEEDS which coding harnesses this machine offers: "auto" (the
+	// default — every harness installed on the machine), "none", or a
+	// comma-separated list of claude,codex. It only seeds: the setting lives on
+	// the edge object's spec.harness, the agent caches the last value it
+	// observed, and the cache is written before this flag is ever consulted. An
+	// install-time opt-out that STICKS is `railgrid edge create --harness none`.
+	// Flag: --harness; env: RAILGRID_AGENT_HARNESS.
+	Harness string
+	// RunnerUser is the non-root local account a harness runner runs as. A root
+	// agent (the systemd unit) needs one, and when it is empty a dedicated
+	// railgrid-runner system account is created rather than refusing — the
+	// default path must never run a harness as root and must never fail for
+	// lack of a flag. Ignored for a non-root agent (the macOS LaunchDaemon
+	// worker), which runs runners as itself. Flag: --runner-user; env:
+	// RAILGRID_AGENT_RUNNER_USER.
+	RunnerUser string
 }
 
 // NewOptions returns default agent options.
 func NewOptions() *Options {
 	return &Options{
-		Labels:       make(map[string]string),
-		Type:         AgentTypeKubernetes,
+		Labels: make(map[string]string),
+		Type:   AgentTypeKubernetes,
+		// Auto is the default everywhere, including for a caller that builds
+		// Options directly: a machine with a harness installed is a harness host
+		// unless its edge says otherwise.
+		Harness:      string(harnessplane.ModeAuto),
 		SSHProxyPort: 22,
 	}
 }
@@ -432,6 +438,10 @@ type Agent struct {
 	// svcProxy is the parsed /svc host policy (Options.SvcAllowedCIDRs +
 	// Options.SvcPolicy) handed to every tunnel connection.
 	svcProxy tunnel.SvcProxyOptions
+	// runners is the late-bound handle the tunnel's handlers hold on the harness
+	// plane. The tunnel starts before the plane (which needs a hub credential),
+	// so the registry is created here and filled in when the plane comes up.
+	runners *tunnel.RunnerRegistry
 
 	// credentials holds this agent's scoped identity and re-mints it on the
 	// reconnect path. It supplies the bearer for every (re)connect: the
@@ -479,26 +489,20 @@ func New(opts *Options) (*Agent, error) {
 			"the default becomes enforce in the next release (allowed CIDRs: %v)", svcCIDRs)
 	}
 
-	allowedAddons, err := NormalizeAllowedAddons(opts.AllowedAddons)
+	// --harness is validated here rather than when the plane starts, so a typo
+	// fails at startup instead of leaving an operator wondering why no runner
+	// ever appeared.
+	harnessSetting, err := ParseHarnessSetting(opts.Harness)
 	if err != nil {
-		return nil, fmt.Errorf("--allow-addon: %w", err)
+		return nil, fmt.Errorf("--harness: %w", err)
 	}
-	opts.AllowedAddons = allowedAddons
-	if len(allowedAddons) > 0 {
-		if agentType == AgentTypeKubernetes {
-			return nil, fmt.Errorf("--allow-addon is only supported on host edges; use --type server or --type macos")
-		}
-		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-			return nil, fmt.Errorf("--allow-addon is only supported on Linux and macOS hosts, not %s", runtime.GOOS)
-		}
-		// A root agent must be told which non-root account to drop to. Failing
-		// here — rather than at the first Addon — means an operator who typed
-		// --allow-addon without --addon-user finds out at startup instead of
-		// wondering why an Addon never becomes Running.
-		if os.Geteuid() == 0 && strings.TrimSpace(opts.AddonUser) == "" {
-			return nil, fmt.Errorf("--addon-user is required when --allow-addon is set and the agent runs as root: " +
-				"name an existing non-root local account for the add-on's child process")
-		}
+	if agentType == AgentTypeKubernetes && harnessSetting.Mode == harnessplane.ModeExplicit {
+		// A Kubernetes edge has no host to supervise a process on, so naming
+		// harnesses for one can only produce something that never runs.
+		return nil, fmt.Errorf("--harness is only supported on host edges; use --type server or --type macos, or --harness none")
+	}
+	if strings.TrimSpace(opts.RunnerUser) != "" && agentType == AgentTypeKubernetes {
+		return nil, fmt.Errorf("--runner-user is only supported on host edges; use --type server or --type macos")
 	}
 
 	// Auto-discover or auto-generate an SSH private key for Linux server edges
@@ -580,12 +584,16 @@ func New(opts *Options) (*Agent, error) {
 		return nil, fmt.Errorf("failed to build hub TLS config: %w", err)
 	}
 
+	// The registry is wired into the tunnel now and filled in by the harness
+	// plane later: the tunnel has to be up before the plane can watch anything.
+	runners := &tunnel.RunnerRegistry{}
 	a := &Agent{
 		opts:         opts,
 		agentType:    agentType,
 		hubConfig:    hubConfig,
 		hubTLSConfig: hubTLSConfig,
-		svcProxy:     tunnel.SvcProxyOptions{AllowedCIDRs: svcCIDRs, Policy: svcPolicy},
+		svcProxy:     tunnel.SvcProxyOptions{AllowedCIDRs: svcCIDRs, Policy: svcPolicy, Runners: runners},
+		runners:      runners,
 	}
 	a.credentials = a.newCredentialStore()
 	// MacOSServer is intentionally service-only. Keep the shared server-mode
@@ -1021,18 +1029,22 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 			}
 		}()
 	} else {
-		// Add-on plane: the tenant declares Addon objects, this agent
-		// materializes the ones whose type the machine owner allowed with
-		// --allow-addon, and reports what happened on each object's status.
-		// Started before the reporter so the first heartbeat already carries
-		// status.allowedAddons. See docs/edge-addons.md.
-		allowedAddons := a.startAddonManager(ctx, logger)
+		// Harness plane: spec.harness on this edge decides which coding
+		// harnesses the machine offers, the agent supervises one runner per
+		// enabled harness and applies a change live. Started before the
+		// reporter so the first heartbeat already carries status.harnesses, and
+		// handed to the tunnel's registry so /api/v1/services advertises the
+		// runners and the /svc proxy can inject their bearers.
+		harnesses := a.startHarnessPlane(ctx, logger)
 
 		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, railgridclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
 		if a.agentType == AgentTypeMacOS {
 			reporter.SetHostFacts(agentStatus.DarwinHostFacts())
 		}
-		reporter.SetAllowedAddons(allowedAddons)
+		if harnesses != nil {
+			a.runners.Set(harnesses)
+			reporter.SetHarnessSource(harnesses.Statuses)
+		}
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")

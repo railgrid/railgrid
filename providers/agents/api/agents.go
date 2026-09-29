@@ -27,8 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	agentsclient "github.com/railgrid/provider-agents/client"
-	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -245,12 +245,8 @@ func agentFromCreateRequest(req *createAgentRequest) (*agentsv1alpha1.Agent, err
 			},
 		},
 	}
-	if cred := strings.TrimSpace(req.ModelCredential); cred != "" {
-		a.Spec.Models = map[string]string{"chat": cred}
-	}
-	if fb := trimmedList(req.ModelFallbacks); len(fb) > 0 {
-		a.Spec.ModelFallbacks = fb
-	}
+	a.Spec.SetModelCredential(llm.PurposeChat, req.ModelCredential)
+	a.Spec.SetModelFallbacks(trimmedList(req.ModelFallbacks))
 	a.Spec.Budget = budget
 	if len(req.InteractiveFamilies) > 0 {
 		a.Spec.Tools.Interactive.Families = normalizeFamilies(req.InteractiveFamilies)
@@ -408,18 +404,10 @@ func (s *Server) applyAgentUpdate(ctx context.Context, c *agentsclient.Client, n
 		}
 	}
 	if req.ModelCredential != nil {
-		cred := strings.TrimSpace(*req.ModelCredential)
-		if agent.Spec.Models == nil {
-			agent.Spec.Models = map[string]string{}
-		}
-		if cred == "" {
-			delete(agent.Spec.Models, "chat")
-		} else {
-			agent.Spec.Models["chat"] = cred
-		}
+		agent.Spec.SetModelCredential(llm.PurposeChat, *req.ModelCredential)
 	}
 	if req.ModelFallbacks != nil {
-		agent.Spec.ModelFallbacks = trimmedList(*req.ModelFallbacks)
+		agent.Spec.SetModelFallbacks(trimmedList(*req.ModelFallbacks))
 	}
 	if req.SystemPrompt != nil {
 		agent.Spec.SystemPrompt = *req.SystemPrompt
@@ -613,7 +601,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 				"startedAt": startedAt,
 			})
 		},
-		OnAssistantMessage: func(message engine.AssistantMessage, createdAt time.Time) {
+		OnAssistantMessage: func(message backend.AssistantMessage, createdAt time.Time) {
 			// Failed model attempts still reach the API callback so active timing is
 			// accounted for, but their partial deltas are not a classified transcript
 			// phase. The terminal error frame carries that partial output instead.
@@ -635,7 +623,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		OnToolStart: func(callID, toolName, args string) {
 			sse("tool_start", map[string]any{"id": callID, "name": toolName, "args": redactArgs(args)})
 		},
-		OnTool: func(ev engine.ToolEvent) {
+		OnTool: func(ev backend.ToolEvent) {
 			sse("tool_end", map[string]any{
 				"id": ev.ID, "name": ev.Name, "args": redactArgs(ev.Args), "result": safeTruncate(ev.Result, 8*1024),
 				"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
@@ -660,13 +648,17 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	// Paused on an approval gate: the portal renders an approval card; the run
-	// resumes via the inbox resolution (watch /api/events for the outcome).
+	// Paused, for one of two reasons the portal renders differently: a gated
+	// tool call it can approve or deny, or a question the turn asked, which
+	// wants an answer and has no tool to show. The kind says which; sending
+	// both as "approval_required" produced an approval card naming no tool.
 	if res.Pending != nil {
 		sse("approval_required", map[string]any{
 			"runID": runID, "inboxID": res.Pending.InboxID,
+			"kind": res.Pending.Kind,
 			"tool": res.Pending.Tool, "args": redactArgs(res.Pending.Args),
-			"content": res.Content, "status": "waiting", "startedAt": res.StartedAt,
+			"question": res.Pending.Question,
+			"content":  res.Content, "status": "waiting", "startedAt": res.StartedAt,
 			"durationMS": res.DurationMS,
 		})
 		return
@@ -710,22 +702,19 @@ func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.CredentialReso
 
 // buildModelForPurpose resolves the agent's named model credential for a run
 // purpose and builds the Eino model from it. Agents reference a credential by
-// name in spec.models[purpose]; the name is a ModelCredential in this
+// name in spec.backend.model.credentials[purpose]; the name is a ModelCredential in this
 // workspace, whose spec.secretRef points at the Secret holding the key. A
 // purpose the agent did not map falls back to "chat", so mapping only "chat"
 // keeps working everywhere.
 func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
-	primary := strings.TrimSpace(agent.Spec.Models[purpose])
-	if primary == "" {
-		primary = strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
-	}
+	primary := agent.Spec.ModelCredentialFor(purpose)
 	if primary == "" {
 		return nil, errNoCredential
 	}
 	// Primary first, then the ordered fallbacks. Skip blanks and duplicates.
 	names := []string{primary}
 	seen := map[string]bool{primary: true}
-	for _, f := range agent.Spec.ModelFallbacks {
+	for _, f := range agent.Spec.ModelFallbacks() {
 		f = strings.TrimSpace(f)
 		if f == "" || seen[f] {
 			continue
@@ -772,10 +761,7 @@ func (s *Server) primaryModelName(ctx context.Context, creds llm.CredentialResol
 // reads nothing: the answer is on the agent's spec, which is what makes it
 // usable on an error path where a kube read would be one failure too late.
 func credentialNameForPurpose(agent *agentsv1alpha1.Agent, purpose string) string {
-	if name := strings.TrimSpace(agent.Spec.Models[purpose]); name != "" {
-		return name
-	}
-	return strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
+	return agent.Spec.ModelCredentialFor(purpose)
 }
 
 // modelNameForPurpose resolves the model id behind a run purpose, following the

@@ -6,7 +6,8 @@
 # a browser instance) reach tenant workloads through the infrastructure
 # provider's instances/proxy verb, which this provider REQUIRES under
 # spec.requires below and calls through its own APIExport virtual workspace as
-# itself.
+# itself. A harness-backed agent reaches the coding harness on a machine the
+# same way, through the edges provider's services/proxy verb.
 #
 # Apply this against the kcp workspace where the railgrid.ai APIExport is
 # bound (typically root:railgrid:providers when running embedded kcp for dev):
@@ -178,6 +179,34 @@ spec:
         # and the generated claim spells every verb, because kcp authorizes the
         # HTTP method as the RBAC verb on a custom subresource.
         - name: instances/proxy
+    # Naming edges makes this a dependency edge too: a harness-backed agent runs
+    # its turns on a machine the edges provider publishes, so the hub refuses to
+    # enable agents in a workspace where edges is not enabled yet.
+    - provider: edges
+      group: edges.railgrid.ai
+      resources:
+        # See the host edge a harness-backed agent's
+        # spec.backend.harness.edgeRef names. Host edges only: a runner is a
+        # process on a machine, so a KubernetesCluster edge can never host one
+        # and is deliberately not claimed.
+        - name: linuxservers
+          verbs: ["get", "list", "watch"]
+        - name: macosservers
+          verbs: ["get", "list", "watch"]
+        # The runner is published as a Service named <edge>-<harness>. The
+        # object is read twice: by the Agent reconciler, to say whether the
+        # harness is ready (the BackendReady condition), and by the runner
+        # client before every dispatch, to check that edges really published it
+        # at the coordinate the dispatch is about to use and that it still points
+        # at the enrolled machine.
+        - name: services
+          verbs: ["get", "list", "watch"]
+        # The verb: the Service's HTTP data plane, which for a runner Service is
+        # the runner/v1 protocol. Same shape as instances/proxy above — a claim
+        # on the resource does not carry its verbs, each coordinate is its own
+        # entry, and a coordinate carries NO verbs of its own because the verb IS
+        # the capability.
+        - name: services/proxy
     # Every provider that serves a custom subresource needs this one claim: on
     # the shard-forwarded path there is no caller bearer, so the provider runs a
     # SubjectAccessReview for the stamped caller through its own APIExport

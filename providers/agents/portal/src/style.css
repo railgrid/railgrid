@@ -143,6 +143,9 @@ railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle svg { wid
 railgrid-provider-agents .agents-workbench-header { min-width: 0; }
 railgrid-provider-agents .agents-workbench-tabstrip { min-width: 0; max-width: 100%; }
 railgrid-provider-agents .agents-config-sec { scroll-margin-top: 12px; }
+/* The one line of copy explaining what the backend choice means. Wraps at phone
+   width like every other paragraph in a section card. */
+railgrid-provider-agents .agents-backend-copy { margin: 0 0 4px; font-size: 13px; line-height: 1.5; }
 
 railgrid-provider-agents input[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
 /* Glow-means-alive: only the solid accent (primary) button emits light. Every
@@ -398,6 +401,8 @@ railgrid-provider-agents .agents-approval-head svg { width: 14px; height: 14px; 
 railgrid-provider-agents .agents-approval-tool { color: var(--color-text-secondary, #8a8ca6); font-size: 12px; }
 railgrid-provider-agents .agents-approval-args { max-width: 100%; overflow: auto; white-space: pre-wrap; }
 railgrid-provider-agents .agents-approval-done { font-size: 12.5px; color: var(--color-text-secondary, #8a8ca6); }
+railgrid-provider-agents .agents-approval-question { margin: 0; max-width: 72ch; }
+railgrid-provider-agents .agents-approval-answer { min-width: 0; flex: 1 1 16rem; }
 
 /* composer */
 railgrid-provider-agents .agents-composer { flex: none; padding: 12px; border-top: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); }

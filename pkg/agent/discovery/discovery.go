@@ -27,6 +27,12 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// ServiceTypeRunner is the type of a supervised harness runner. It is not
+// probed for like the other types: the agent supervises the process itself, so
+// the harness plane hands its entries to the services endpoint directly rather
+// than implementing a Detector.
+const ServiceTypeRunner = "runner"
+
 // DiscoveredService is one service the agent found on the host. JSON tags match
 // the wire format the provider's discovery reconciler decodes.
 type DiscoveredService struct {
@@ -42,6 +48,15 @@ type DiscoveredService struct {
 	Version string `json:"version,omitempty"`
 	// InstallType is how the service is installed: container|core|haos|supervised.
 	InstallType string `json:"installType,omitempty"`
+	// Harness names the coding harness when Type is "runner". It is what makes
+	// the Service name `<edge>-<harness>` rather than `<edge>-runner`, so a
+	// machine offering both harnesses publishes two distinguishable Services.
+	Harness string `json:"harness,omitempty"`
+	// Ready and Reasons carry a supervised service's own readiness, which the
+	// agent already knows from probing it and the provider would otherwise
+	// have to rediscover. Only the runner detector sets them.
+	Ready   bool     `json:"ready,omitempty"`
+	Reasons []string `json:"reasons,omitempty"`
 }
 
 // Detector probes for one kind of service.

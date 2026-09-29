@@ -292,17 +292,15 @@ func TestTelegramCallReportsDecodeFailure(t *testing.T) {
 
 // ---- handler tests -----------------------------------------------------------
 
-// captureExec stands in for the worker pool.
+// captureExec counts the runs an inbound delivery path accepted.
 //
-// It no longer observes submission: the Run OBJECT is the queue, so an inbound
-// delivery that was accepted is a Pending run in the store, not a job on a
-// channel. count() therefore reads the store — which is also what makes these
-// tests keep testing the thing they were written for ("did a run start?")
-// rather than an implementation detail that moved.
+// It no longer observes submission at all: the Run OBJECT is the queue, so an
+// accepted delivery is a Pending run in the store, not a job handed to a worker
+// pool — and there is no pool left to stand in for. count() reads the store,
+// which is what makes these tests keep testing the thing they were written for
+// ("did a run start?") rather than an implementation detail that moved.
 type captureExec struct {
-	mu   sync.Mutex
-	jobs []executor.Job
-	err  error
+	mu sync.Mutex
 
 	// store and cluster locate the runs a submission records. Set by
 	// inboundServerFake.
@@ -310,24 +308,12 @@ type captureExec struct {
 	cluster string
 }
 
-func (c *captureExec) Start(context.Context) error { return nil }
-func (c *captureExec) Stop()                       {}
-func (c *captureExec) Submit(_ context.Context, job executor.Job) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.err != nil {
-		return c.err
-	}
-	c.jobs = append(c.jobs, job)
-	return nil
-}
-
 // count is how many runs this delivery path has accepted.
 func (c *captureExec) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.store == nil {
-		return len(c.jobs)
+		return 0
 	}
 	// scopeFor's fallback: these fixtures never map the tenant, so runs land
 	// under {unmapped, cluster} exactly as a real unmapped workspace's would.
@@ -398,7 +384,7 @@ func inboundAgent() *unstructured.Unstructured {
 
 // inboundServer wires a Server whose background executor is "ready" and whose
 // tenant workspace is the given fake dynamic client.
-func inboundServer(t *testing.T, ex executor.Executor, objs ...runtime.Object) (*Server, string) {
+func inboundServer(t *testing.T, ex *captureExec, objs ...runtime.Object) (*Server, string) {
 	t.Helper()
 	s, token, _ := inboundServerFake(t, ex, objs...)
 	return s, token
@@ -406,19 +392,16 @@ func inboundServer(t *testing.T, ex executor.Executor, objs ...runtime.Object) (
 
 // inboundServerFake is inboundServer, also handing back the fake dynamic client
 // so a test can make the workspace fail a read.
-func inboundServerFake(t *testing.T, ex executor.Executor, objs ...runtime.Object) (*Server, string, *dynamicfake.FakeDynamicClient) {
+func inboundServerFake(t *testing.T, ex *captureExec, objs ...runtime.Object) (*Server, string, *dynamicfake.FakeDynamicClient) {
 	t.Helper()
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(inboundScheme(), map[schema.GroupVersionResource]string{
 		agentsclient.ConnectionGVR: "ConnectionList",
 		agentsclient.AgentGVR:      "AgentList",
 	}, objs...)
 	s := &Server{cfg: Config{WebhookKey: "unit-test-webhook-key"}, store: store.NewMemoryStore()}
-	if capture, ok := ex.(*captureExec); ok {
-		capture.store, capture.cluster = s.store, testCluster
-	}
+	ex.store, ex.cluster = s.store, testCluster
 	s.bg = &background{
 		server: s,
-		exec:   ex,
 		shards: []*vwShard{{url: "https://fake/vw"}},
 		seen:   newInboundDedup(time.Hour, 100),
 		scopedFn: func(context.Context, string) (dynamic.Interface, error) {
@@ -599,14 +582,14 @@ func TestSlackInboundRetryOfHandledEventIsAcknowledged(t *testing.T) {
 // insides to Slack or Telegram.
 //
 // The queue-full case this used to cover is gone with the queue. Submission is
-// a write of a Pending Run, so a saturated worker pool no longer refuses an
-// inbound message — it only means the run starts a moment later, which is what
+// a write of a Pending Run, so nothing about how busy this process is can refuse
+// an inbound message — it only means the run starts a moment later, which is what
 // the sender wanted anyway.
 func TestInboundStoreFailureAsksForRetryWithoutExplainingItself(t *testing.T) {
 	ex := &captureExec{}
 	s, token := inboundServer(t, ex, slackObjects(map[string]string{signingSecretKey: testSlackSecret})...)
 	s.store = failingRunStore{Store: s.store}
-	ex.store = nil // the store is broken; fall back to counting jobs (there are none)
+	ex.store = nil // the store is broken; there is nothing to count runs in
 
 	body := slackMessage("Ev-store", "busy")
 	w := postChannel(s, token, body, slackHeaders(testSlackSecret, body, time.Now()))

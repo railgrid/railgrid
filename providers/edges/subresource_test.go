@@ -55,7 +55,6 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 		"kubernetesclusters/mcp",
 		"kubernetesclusters/agent-token",
 		"linuxservers/ssh",
-		"linuxservers/addon-credentials",
 		"linuxservers/ssh-credentials",
 		"macosservers/agent-token",
 		"services/proxy",

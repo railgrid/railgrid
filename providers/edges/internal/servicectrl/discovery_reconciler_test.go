@@ -23,8 +23,9 @@ import (
 )
 
 func TestDiscoveredServiceNamesSeparateSameNamedLinuxAndMacEdges(t *testing.T) {
-	linux := discoveredName(edgesv1alpha1.LinuxServerResource, "build", "HomeAssistant")
-	mac := discoveredName(edgesv1alpha1.MacOSServerResource, "build", "HomeAssistant")
+	ha := discoveredService{Type: "HomeAssistant"}
+	linux, _ := discoveredName(edgesv1alpha1.LinuxServerResource, "build", ha)
+	mac, _ := discoveredName(edgesv1alpha1.MacOSServerResource, "build", ha)
 
 	if linux != "build-homeassistant" {
 		t.Fatalf("LinuxServer discovered name = %q, want %q", linux, "build-homeassistant")
@@ -34,6 +35,52 @@ func TestDiscoveredServiceNamesSeparateSameNamedLinuxAndMacEdges(t *testing.T) {
 	}
 	if linux == mac {
 		t.Fatalf("same-named LinuxServer and MacOSServer discovered Services collide: %q", linux)
+	}
+}
+
+// One machine supervises one runner per enabled harness, so the two must land on
+// two Service objects. Naming them both "<edge>-runner" would make the second
+// upsert overwrite the first and the pair would flap between harnesses forever.
+func TestRunnerServicesAreNamedAfterTheirHarness(t *testing.T) {
+	runner := string(edgesv1alpha1.ServiceTypeRunner)
+
+	claude, ok := discoveredName(edgesv1alpha1.LinuxServerResource, "build", discoveredService{Type: runner, Harness: edgesv1alpha1.HarnessClaude})
+	if !ok || claude != "build-claude" {
+		t.Fatalf("claude runner name = %q (ok=%v), want %q", claude, ok, "build-claude")
+	}
+	codex, ok := discoveredName(edgesv1alpha1.LinuxServerResource, "build", discoveredService{Type: runner, Harness: edgesv1alpha1.HarnessCodex})
+	if !ok || codex != "build-codex" {
+		t.Fatalf("codex runner name = %q (ok=%v), want %q", codex, ok, "build-codex")
+	}
+	if claude == codex {
+		t.Fatal("both harnesses on one machine resolved to a single Service name")
+	}
+	if mac, ok := discoveredName(edgesv1alpha1.MacOSServerResource, "build", discoveredService{Type: runner, Harness: edgesv1alpha1.HarnessClaude}); !ok || mac != "macos-edge-build-claude" {
+		t.Fatalf("MacOSServer runner name = %q (ok=%v), want %q", mac, ok, "macos-edge-build-claude")
+	}
+
+	// A runner advertisement with no harness is not publishable: any name we
+	// invented for it could collide with the machine's real runners.
+	if name, ok := discoveredName(edgesv1alpha1.LinuxServerResource, "build", discoveredService{Type: runner}); ok {
+		t.Fatalf("a harness-less runner was named %q; it must be skipped", name)
+	}
+}
+
+// The harness status seeded at discovery is what a reader sees before the first
+// probe; it must exist for a runner and must NOT appear on anything else.
+func TestAdvertisedHarnessIsRunnerOnly(t *testing.T) {
+	harness := advertisedHarness(discoveredService{
+		Type: string(edgesv1alpha1.ServiceTypeRunner), Harness: edgesv1alpha1.HarnessCodex,
+		Ready: false, Reasons: []string{"harness not installed"},
+	})
+	if harness == nil || harness.Name != edgesv1alpha1.HarnessCodex || harness.Ready {
+		t.Fatalf("runner harness status = %+v, want codex and not ready", harness)
+	}
+	if len(harness.Reasons) != 1 {
+		t.Fatalf("the agent's reasons were dropped: %+v", harness.Reasons)
+	}
+	if got := advertisedHarness(discoveredService{Type: "home-assistant"}); got != nil {
+		t.Fatalf("a non-runner Service grew a harness status: %+v", got)
 	}
 }
 

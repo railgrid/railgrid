@@ -245,7 +245,7 @@ func (s *recordingStore) AppendMessage(ctx context.Context, scope store.Scope, m
 	return s.Store.AppendMessage(ctx, scope, message)
 }
 
-func TestRunCallbacksPersistCanceledToolWithDetachedBoundedContext(t *testing.T) {
+func TestTurnSinkPersistsCanceledToolWithDetachedBoundedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -255,11 +255,11 @@ func TestRunCallbacksPersistCanceledToolWithDetachedBoundedContext(t *testing.T)
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "scout"}
 	agent := &agentsv1alpha1.Agent{}
 	agent.Name = "scout"
-	callbacks := s.runCallbacks(ctx, taskRun{
+	sink := s.turnSink(ctx, taskRun{
 		RunID: "run-1", Scope: scope, Agent: agent,
-	}, "chat", time.Now().UTC(), newTurnProgressTracker(0))
+	}, "chat", time.Now().UTC(), agentsv1alpha1.AgentBackendModel, newTurnProgressTracker(0))
 
-	callbacks.OnTool(engine.ToolEvent{
+	sink.ToolEnd(engine.ToolEvent{
 		ID: "tool-1", Name: "repo_search", Args: `{}`, Result: "partial result", Duration: 25 * time.Millisecond,
 	})
 	if len(recorded.appendErrs) != 1 {

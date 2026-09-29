@@ -25,14 +25,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/railgrid/railgrid/pkg/runner/harness/claude"
 	"github.com/railgrid/railgrid/pkg/runner/runnercli"
 )
 
 // newRunnerCommand returns the "railgrid runner" group. It exists so the one
-// railgrid binary an edge already has can also BE the coding runner: the edge
-// add-on manager supervises `<this executable> runner run ...` rather than
-// asking an operator to distribute a second artifact (see docs/edge-addons.md).
+// railgrid binary an edge already has can also BE the coding runner: the agent's
+// harness plane supervises `<this executable> runner run ...` rather than
+// asking an operator to distribute a second artifact (see docs/edge-harness.md).
 // The standalone cmd/railgrid-runner binary remains, and both share
 // pkg/runner/runnercli.
 func newRunnerCommand() *cobra.Command {
@@ -62,13 +61,13 @@ cannot be pointed at a non-loopback address; and the command refuses to run as
 root because the harness boundaries isolate configuration, not privileges.
 
 One runner process serves one coding harness, chosen with --harness: "codex"
-(the default) or "claude" for headless Claude Code. Claude Code additionally
-needs --claude-credential-file and --claude-credential-kind; the credential is
-read from that file and injected into the harness child alone.
+(the default) or "claude" for headless Claude Code. Neither takes a credential
+here: the coordinator sends its own identity with each attempt, so this host
+holds no model credential and authenticates to no provider on its own.
 
-Normally an edge Addon of type "runner" supervises this command for you — see
-docs/edge-addons.md. Run it by hand for a local fixture or an unmanaged host,
-as described in docs/local-runner.md.`,
+Normally the edge agent supervises this command for you on a machine whose
+spec.harness asks for it — see docs/edge-harness.md. Run it by hand for a local
+fixture or an unmanaged host, as described in docs/local-runner.md.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if showVersion {
 				return runnercli.WriteVersion(cmd.OutOrStdout())
@@ -92,10 +91,6 @@ as described in docs/local-runner.md.`,
 	cmd.Flags().StringVar(&opts.CodexBinary, "codex-binary", runnercli.DefaultCodexBinary, "Codex executable")
 	cmd.Flags().StringVar(&opts.ClaudeHome, "claude-home", "", "Runner-owned CLAUDE_CONFIG_DIR directory (default <state-dir>/claude-home)")
 	cmd.Flags().StringVar(&opts.ClaudeBinary, "claude-binary", runnercli.DefaultClaudeBinary, "Claude Code executable")
-	cmd.Flags().StringVar(&opts.ClaudeCredentialFile, "claude-credential-file", "",
-		"Absolute owner-only file holding the Claude Code credential (required with --harness=claude)")
-	cmd.Flags().StringVar(&opts.ClaudeCredentialKind, "claude-credential-kind", "",
-		"How to inject the Claude Code credential: "+strings.Join(claude.CredentialKinds, " or "))
 	cmd.Flags().StringVar(&opts.ClaudeModel, "claude-model", "", "Model for Claude Code turns (empty uses the account default)")
 	cmd.Flags().StringVar(&opts.ClaudePermissionMode, "claude-permission-mode", "", "What Claude Code may do without asking: acceptEdits (default; file edits in the worktree) or bypassPermissions (every tool, for sandboxed hosts)")
 	cmd.Flags().StringSliceVar(&opts.ClaudeAllowedTools, "claude-allowed-tool", nil, "Claude Code tool pattern granted for every turn, e.g. 'Bash(git *)' (repeatable)")

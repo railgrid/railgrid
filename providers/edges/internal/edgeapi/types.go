@@ -82,14 +82,13 @@ type ConnectionStatus struct {
 	// AgentVersion is the version of the railgrid binary on the agent.
 	// +optional
 	AgentVersion string `json:"agentVersion,omitempty"`
-	// AllowedAddons are the Addon types the machine owner opted this edge into
-	// with the agent's --allow-addon flag, reported on every heartbeat. It is
-	// what a portal shows BEFORE anyone creates an Addon: an edge missing the
-	// type here will report Allowed=False on any Addon that names it, and
-	// nothing will be materialized. Empty (the default) means the edge hosts no
-	// add-ons.
+	// Harnesses are the coding harnesses this machine knows about, reported on
+	// every heartbeat. It answers "which of my edges can run Claude Code" from
+	// the edge itself, before anyone reads a Service, and it distinguishes a
+	// harness that is installed but switched off from one that is not there.
+	// Empty means the agent found none and none were asked for.
 	// +optional
-	AllowedAddons []string `json:"allowedAddons,omitempty"`
+	Harnesses []HarnessStatus `json:"harnesses,omitempty"`
 	// LastHeartbeatTime is when the agent's tunnel was last known alive: the
 	// hub's lifecycle reconciler copies the tunnel registry Lease's renewTime
 	// here while the edge is connected (the agent's own heartbeat also stamps
@@ -99,6 +98,35 @@ type ConnectionStatus struct {
 	// Conditions represent the latest observations of state.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// HarnessStatus is one coding harness as the agent on the machine sees it.
+//
+// Detected and Enabled are separate facts on purpose. Detected says the
+// executable is installed; Enabled says spec.harness asks for it. A harness
+// that is detected but not enabled is the opt-out working; one that is enabled
+// but not detected is a machine that needs the binary installed, and saying so
+// is more useful than dropping it from the list.
+type HarnessStatus struct {
+	// Name is the harness: "claude" or "codex".
+	Name string `json:"name"`
+	// Detected reports whether the executable was found on the machine.
+	Detected bool `json:"detected"`
+	// Enabled reports whether spec.harness asks for this harness.
+	Enabled bool `json:"enabled"`
+	// Ready reports whether the supervised runner answers runner/v1 with this
+	// harness ready. False while it is starting, and false for a harness that
+	// is not enabled.
+	Ready bool `json:"ready"`
+	// Version is the harness executable's version, when known.
+	// +optional
+	Version string `json:"version,omitempty"`
+	// Port is the loopback port the runner for this harness listens on.
+	// +optional
+	Port int32 `json:"port,omitempty"`
+	// Reasons say why Ready is false.
+	// +optional
+	Reasons []string `json:"reasons,omitempty"`
 }
 
 // Connectable is implemented by every connectable kind. It exposes the shared

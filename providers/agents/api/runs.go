@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -46,6 +47,14 @@ type runSummary struct {
 	// WorkedDurationMS is measured model/tool time. It is kept separate from
 	// DurationMS, which is the wall-clock elapsed run duration.
 	WorkedDurationMS *int64 `json:"workedDurationMS,omitempty"`
+	// Backend is WHERE this run's turn executed: "model" for an in-process
+	// turn, "harness" for one on a coding harness on an edge. Absent on rows
+	// written before an agent could have a backend, which read as "model".
+	//
+	// A list carries it because the two fail in different places and are
+	// otherwise indistinguishable: a harness-backed run that never produced
+	// output is a question about a machine, not about a model endpoint.
+	Backend string `json:"backend,omitempty"`
 }
 
 // runStep is one tool call in a run's trace.
@@ -73,6 +82,23 @@ type runDetail struct {
 	Pending  *pendingInfo `json:"pending,omitempty"`
 	Steps    []runStep    `json:"steps"`
 	Children []runSummary `json:"children"`
+	// Harness is present only for a harness-backed run, and carries the
+	// coordinates somebody debugging it needs: the runner attempt this run IS,
+	// and the harness session its turn ran in. Without them a failed run can be
+	// seen but not correlated with anything on the machine that ran it.
+	Harness *runHarnessInfo `json:"harness,omitempty"`
+}
+
+// runHarnessInfo is the edge-side identity of one harness-backed run.
+type runHarnessInfo struct {
+	// AttemptID is the runner attempt, which is the run's own id by
+	// construction. It is reported rather than implied because the runner is
+	// the other system a reader has to look in.
+	AttemptID string `json:"attemptID,omitempty"`
+	// SessionID is the harness session the turn ran in. Consecutive turns of
+	// one conversation share it, and the harness may fork it, so this is what
+	// the harness actually reported rather than what was requested.
+	SessionID string `json:"sessionID,omitempty"`
 }
 
 func summarize(run store.Run) runSummary {
@@ -88,6 +114,7 @@ func summarize(run store.Run) runSummary {
 		HasOutput:    run.Output != "",
 		InputTokens:  run.InputTokens, OutputTokens: run.OutputTokens, USDMicros: run.USDMicros,
 		CreatedAt: run.CreatedAt, StartedAt: run.StartedAt, FinishedAt: run.FinishedAt,
+		Backend: run.Backend,
 	}
 	if run.WorkedDurationMS != nil && *run.WorkedDurationMS >= 0 {
 		rs.WorkedDurationMS = run.WorkedDurationMS
@@ -138,10 +165,25 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 		Output: run.Output, Sources: run.Sources,
 		Steps: []runStep{}, Children: []runSummary{},
 	}
+	// Only for a harness-backed run: on an in-process one these coordinates
+	// name nothing, and an empty block would invite a reader to look for a
+	// machine that was never involved.
+	if run.Backend == agentsv1alpha1.AgentBackendHarness && (run.AttemptID != "" || run.HarnessSessionID != "") {
+		detail.Harness = &runHarnessInfo{AttemptID: run.AttemptID, SessionID: run.HarnessSessionID}
+	}
 	if run.Phase == store.RunPhasePendingApproval && len(run.Checkpoint) > 0 {
 		var ck runCheckpoint
 		if json.Unmarshal(run.Checkpoint, &ck) == nil {
-			detail.Pending = &pendingInfo{InboxID: ck.InboxID, Tool: ck.Tool, Args: redactArgs(ck.Args)}
+			// Same two reasons as the live event: a gated call, or a question
+			// the turn asked. A checkpoint with no tool is the second.
+			if strings.TrimSpace(ck.Tool) == "" {
+				detail.Pending = &pendingInfo{InboxID: ck.InboxID, Kind: string(store.InboxKindQuestion)}
+			} else {
+				detail.Pending = &pendingInfo{
+					InboxID: ck.InboxID, Kind: string(store.InboxKindApproval),
+					Tool: ck.Tool, Args: redactArgs(ck.Args),
+				}
+			}
 		}
 	}
 	if calls, err := s.store.ListToolCalls(ctx, scope, runID); err == nil {

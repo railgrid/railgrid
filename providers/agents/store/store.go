@@ -114,16 +114,32 @@ type Run struct {
 	// goroutine that knew is exactly what a crash destroys: without it, a run that
 	// dies mid-flight can never tell the person waiting in a channel that it is
 	// not coming, and they wait forever.
-	Delivery     *RunDelivery    `json:"delivery,omitempty"`
-	Message      string          `json:"message,omitempty"`
-	Checkpoint   json.RawMessage `json:"checkpoint,omitempty"`
-	InputTokens  int64           `json:"inputTokens,omitempty"`
-	OutputTokens int64           `json:"outputTokens,omitempty"`
-	USDMicros    int64           `json:"usdMicros,omitempty"` // cost in millionths of a USD
-	CreatedAt    time.Time       `json:"createdAt"`
-	UpdatedAt    time.Time       `json:"updatedAt"`
-	StartedAt    *time.Time      `json:"startedAt,omitempty"`
-	FinishedAt   *time.Time      `json:"finishedAt,omitempty"`
+	Delivery *RunDelivery `json:"delivery,omitempty"`
+	// Backend is where this run's turns executed: "model" (in-process) or
+	// "harness" (a coding harness on an edge). Recorded because a run outlives
+	// the agent's spec: an agent re-pointed from one backend to the other must
+	// not make its history unreadable, and the two carry different resume
+	// coordinates.
+	Backend string `json:"backend,omitempty"`
+	// AttemptID is the runner attempt one harness-backed run IS. It is the run's
+	// own id today, but it is stored rather than assumed: the coordinate a
+	// cancel, an inspect and a resume all address must survive a change of that
+	// convention.
+	AttemptID string `json:"attemptID,omitempty"`
+	// HarnessSessionID is the harness session this run's turn ran in, as the
+	// RECEIPT reported it — which is not necessarily the one that was sent,
+	// because a harness may fork a session on resume. It is what the next turn
+	// of the conversation chains onto.
+	HarnessSessionID string          `json:"harnessSessionID,omitempty"`
+	Message          string          `json:"message,omitempty"`
+	Checkpoint       json.RawMessage `json:"checkpoint,omitempty"`
+	InputTokens      int64           `json:"inputTokens,omitempty"`
+	OutputTokens     int64           `json:"outputTokens,omitempty"`
+	USDMicros        int64           `json:"usdMicros,omitempty"` // cost in millionths of a USD
+	CreatedAt        time.Time       `json:"createdAt"`
+	UpdatedAt        time.Time       `json:"updatedAt"`
+	StartedAt        *time.Time      `json:"startedAt,omitempty"`
+	FinishedAt       *time.Time      `json:"finishedAt,omitempty"`
 	// WorkedDurationMS is measured model-response and tool-callback time. It is
 	// nil when the run has no authoritative timing measurement; a non-nil zero
 	// is a measured zero and remains distinct from unknown.
@@ -231,6 +247,26 @@ func validateSessionCheckpoint(checkpoint *SessionCheckpoint) error {
 		}
 	}
 	return nil
+}
+
+// HarnessSession is the harness-side identity of one conversational session:
+// which harness session its turns run in, and how many turns have been
+// dispatched.
+//
+// Both halves are durable because both are protocol requirements rather than
+// bookkeeping. The session id is what makes consecutive turns ONE conversation
+// (a start that carries it continues the harness session an earlier attempt
+// created). The turn count is the attempt EPOCH, and the runner refuses a start
+// whose epoch does not advance past the task's highest — which is exactly the
+// protection wanted, and only works if the count survives a restart.
+type HarnessSession struct {
+	SessionID string `json:"sessionID"`
+	// HarnessSessionID is empty until the first turn's receipt reported one.
+	HarnessSessionID string `json:"harnessSessionID,omitempty"`
+	// Turns is how many turns have been dispatched for this session, and
+	// therefore what the next epoch must exceed.
+	Turns     int64     `json:"turns"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Memory is a long-term note the agent writes and later recalls. Body is
@@ -395,6 +431,15 @@ type Store interface {
 	// session has never been compacted.
 	PutSessionSummary(ctx context.Context, scope Scope, s SessionSummary) error
 	GetSessionSummary(ctx context.Context, scope Scope, sessionID string) (SessionSummary, bool, error)
+
+	// Harness sessions. NextHarnessTurn claims the next turn number for a
+	// session and returns the row as it then stands, so two replicas answering
+	// the same message cannot dispatch the same epoch; PutHarnessSession records
+	// the harness session id a receipt reported. GetHarnessSession reports
+	// ok=false for a session no harness turn has run in.
+	NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time) (HarnessSession, error)
+	PutHarnessSession(ctx context.Context, scope Scope, s HarnessSession) error
+	GetHarnessSession(ctx context.Context, scope Scope, sessionID string) (HarnessSession, bool, error)
 
 	// Runs (durable, resumable).
 	SaveRun(ctx context.Context, scope Scope, run Run) error

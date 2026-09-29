@@ -292,12 +292,18 @@ func TestCheckpointRecorderPersistsWhileRunning(t *testing.T) {
 
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "scout"}}
 	run := taskRun{Scope: f.scope, Agent: agent, RunID: "r1", SourceName: "daily", NotifyChannel: "ops"}
-	record := f.s.checkpointRecorder(ctx, run, "chat")
+	record := f.s.checkpointRecorder(ctx, run, "chat", agentsv1alpha1.AgentBackendModel)
 
-	record(engine.Checkpoint{
+	// The recorder takes the backend's state verbatim now; the envelope decides
+	// which field it lands in.
+	state, err := json.Marshal(engine.Checkpoint{
 		Messages: []engine.CheckpointMessage{{Role: "user", Content: "hello"}},
 		Iter:     4,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record(state)
 
 	got := f.phaseOf(t, "r1")
 	if len(got.Checkpoint) == 0 {
@@ -331,7 +337,11 @@ func TestCheckpointRecorderPersistsWhileRunning(t *testing.T) {
 		if err := f.s.store.SaveRun(ctx, f.scope, stored); err != nil {
 			t.Fatal(err)
 		}
-		record(engine.Checkpoint{Messages: []engine.CheckpointMessage{{Role: "user", Content: "later"}}, Iter: 8})
+		later, merr := json.Marshal(engine.Checkpoint{Messages: []engine.CheckpointMessage{{Role: "user", Content: "later"}}, Iter: 8})
+		if merr != nil {
+			t.Fatal(merr)
+		}
+		record(later)
 		after := f.phaseOf(t, "r1")
 		if !strings.Contains(string(after.Checkpoint), "github__merge") {
 			t.Fatal("a recovery checkpoint must not clobber an approval checkpoint")

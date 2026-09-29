@@ -20,19 +20,62 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Model providers a ModelCredential may name. Both speak the OpenAI Chat
-// Completions + GET /models shape; "openai" is the hosted endpoint and
-// "openai-compatible" is anything else that implements it (Anthropic's compat
-// endpoint, OpenRouter, a local gateway).
+// Model providers a ModelCredential may name.
+//
+// There are two families here and they are not variants of each other:
+//
+//   - CHAT ENDPOINTS — "openai" (the hosted endpoint) and "openai-compatible"
+//     (anything else implementing OpenAI Chat Completions + GET /models:
+//     Anthropic's compat endpoint, OpenRouter, a local gateway). A credential
+//     of this family is a base URL and a key, it is probed by calling
+//     /models, and llm.BuildModel turns it into a chat model.
+//
+//   - HARNESS IDENTITIES — "claude-code" and "codex". These are the login a
+//     coding harness on an edge runs as. There is no endpoint to probe and no
+//     chat model to build: the value is handed to the harness for one turn and
+//     never used from this process. BuildModel refuses them outright, because a
+//     configuration mistake here should read as a configuration mistake rather
+//     than as a wire failure three hops away.
 const (
 	ModelProviderOpenAICompatible = "openai-compatible"
 	ModelProviderOpenAI           = "openai"
+	// ModelProviderClaudeCode is a Claude Code identity: exactly one of the
+	// Secret keys oauthToken (a `claude setup-token` value) or apiKey (an
+	// Anthropic API key).
+	ModelProviderClaudeCode = "claude-code"
+	// ModelProviderCodex is a Codex identity: the Secret key auth.json, a Codex
+	// login session file.
+	ModelProviderCodex = "codex"
 )
 
 // DefaultModelSecretKey is the Secret key a ModelCredential reads its API key
 // from when spec.secretKey is empty. It is the key the portal has always
 // written (portal/src/resources.ts saveCredential).
 const DefaultModelSecretKey = "apiKey"
+
+// Secret keys a harness identity is carried in. They are keys rather than
+// spec.secretKey values because which key is present IS the kind of identity:
+// an oauthToken and an apiKey are injected into Claude Code differently, so the
+// key name is what the dispatcher branches on.
+const (
+	// HarnessSecretKeyOAuthToken holds a `claude setup-token` value.
+	HarnessSecretKeyOAuthToken = "oauthToken"
+	// HarnessSecretKeyAPIKey holds an Anthropic API key.
+	HarnessSecretKeyAPIKey = DefaultModelSecretKey
+	// HarnessSecretKeyCodexAuth holds a Codex login session file.
+	HarnessSecretKeyCodexAuth = "auth.json"
+)
+
+// IsHarnessProvider reports whether provider names a coding-harness identity
+// rather than a chat endpoint.
+func IsHarnessProvider(provider string) bool {
+	switch provider {
+	case ModelProviderClaudeCode, ModelProviderCodex:
+		return true
+	default:
+		return false
+	}
+}
 
 // +genclient
 // +genclient:nonNamespaced
@@ -48,7 +91,8 @@ const DefaultModelSecretKey = "apiKey"
 // ModelCredential is a named endpoint an agent reaches its model through: the
 // provider flavour, the base URL, an optional default model id, and a
 // reference to the tenant Secret holding the API key. Agents name one of these
-// in spec.models[purpose] and spec.modelFallbacks.
+// in spec.backend.model.credentials[purpose] and spec.backend.model.fallbacks —
+// or, for a harness identity, in spec.backend.harness.credentialRef.
 //
 // The key itself is never on this object. It lives in the Secret named by
 // spec.secretRef, written by the tenant (the portal, kubectl) and read by this
@@ -64,22 +108,34 @@ type ModelCredential struct {
 }
 
 // ModelCredentialSpec is the user-authored endpoint configuration.
+//
+// The rule uses size() rather than comparing against an empty string literal.
+// Two adjacent apostrophes in a DOC comment are rewritten by gofmt's doc-comment
+// printer into a typographic close-quote, which would turn this into a CEL
+// syntax error and make the apiserver reject the whole CRD — silently, on
+// whoever next runs the formatter.
+//
+// +kubebuilder:validation:XValidation:rule="self.provider in ['claude-code','codex'] || (has(self.baseURL) && size(self.baseURL) > 0)",message="spec.baseURL is required for a chat endpoint provider"
 type ModelCredentialSpec struct {
-	// Provider selects the wire protocol: "openai-compatible" (the default:
-	// any endpoint implementing OpenAI Chat Completions and GET /models) or
-	// "openai" (the hosted OpenAI API).
+	// Provider selects what kind of credential this is: a chat endpoint
+	// ("openai-compatible", the default, or "openai") or a coding-harness
+	// identity ("claude-code", "codex"). See the provider constants.
 	// +optional
-	// +kubebuilder:validation:Enum=openai-compatible;openai
+	// +kubebuilder:validation:Enum=openai-compatible;openai;claude-code;codex
 	// +kubebuilder:default=openai-compatible
 	Provider string `json:"provider,omitempty"`
 
 	// BaseURL is the API root the provider calls, e.g.
 	// https://api.openai.com/v1. It must be an http or https URL.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
+	//
+	// Required for a chat endpoint (the CEL rule on this type says so) and
+	// meaningless for a harness identity, which has no endpoint this process
+	// ever calls — so the field is optional at the schema level and the rule
+	// carries the requirement.
+	// +optional
 	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:Pattern=`^https?://[^\s]+$`
-	BaseURL string `json:"baseURL"`
+	// +kubebuilder:validation:Pattern=`^(https?://[^\s]+)?$`
+	BaseURL string `json:"baseURL,omitempty"`
 
 	// Model is the default model id runs use, e.g. gpt-4o. Optional so a
 	// credential can be saved before its endpoint has been asked what it

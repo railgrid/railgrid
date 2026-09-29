@@ -9,6 +9,7 @@ import {
   Plus,
   Puzzle,
   Send,
+  Server,
   Star,
   Trash2,
   Wrench,
@@ -25,7 +26,29 @@ import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import { toast } from '../portalkit/toast'
 import type { Route } from '../router'
 import type { AppStore } from '../store'
-import type { Agent, AgentChannel, AgentPatch, Autonomy } from '../types'
+import {
+  AGENT_BACKEND_HARNESS,
+  AGENT_BACKEND_MODEL,
+  CONDITION_BACKEND_READY,
+  HARNESS_EDGE_KINDS,
+  WORKSPACE_MODES,
+  edgeKey,
+  splitEdgeKey,
+  agentBackendType,
+  agentCondition,
+  agentHarness,
+  agentHarnessBacked,
+  agentModelCredential,
+  agentModelFallbacks,
+  harnessLabel,
+  type Agent,
+  type AgentBackendType,
+  type AgentChannel,
+  type AgentHarnessBackend,
+  type AgentPatch,
+  type Autonomy,
+  type HarnessWorkspace,
+} from '../types'
 import { queueAgentConfigSave } from '../vue/config-save-queue'
 import { useAuthorityGuard, useStoreRevision, type AuthoritySnapshot } from '../vue/runtime'
 import Automation from './Automation.vue'
@@ -36,9 +59,18 @@ const AUTONOMY_MODES: { id: Autonomy; label: string; blurb: string }[] = [
   { id: 'auto', label: 'Auto', blurb: 'Tools run without asking. Use only with tools you trust unattended.' },
 ]
 
+// An agent has exactly ONE backend. The two are not variants of each other: a
+// model-backed agent's turns run in the provider against a chat endpoint and use
+// the tools granted below; a harness-backed agent's turns run on a machine and
+// use the harness's own tools, so no grant here applies to it.
+const BACKEND_MODES: { id: AgentBackendType; label: string; blurb: string }[] = [
+  { id: AGENT_BACKEND_MODEL, label: 'Model', blurb: 'Turns run here, against a chat credential, with the tools granted below.' },
+  { id: AGENT_BACKEND_HARNESS, label: 'Coding harness', blurb: 'Turns run on one of your machines, with that harness’s own tools. Tool grants do not apply.' },
+]
+
 interface ChannelRow extends AgentChannel { key: number }
 
-type SaveRegion = 'persona' | 'model' | 'policy' | 'tools' | 'channels' | 'delegates'
+type SaveRegion = 'persona' | 'backend' | 'model' | 'policy' | 'tools' | 'channels' | 'delegates'
 type ManualSaveRegion = Exclude<SaveRegion, 'tools' | 'delegates'>
 
 interface PersonaSnapshot {
@@ -50,6 +82,19 @@ interface PersonaSnapshot {
 interface ModelSnapshot {
   modelCredential: string
   modelFallbacks: string[]
+}
+
+/**
+ * BackendSnapshot is what the backend card owns. `edge` is "Kind/name" in one
+ * value on purpose: the kind is an enum of the two HOST edge kinds, so picking
+ * the machine and picking its kind is one decision and cannot disagree.
+ */
+interface BackendSnapshot {
+  type: AgentBackendType
+  edge: string
+  credentialRef: string
+  model: string
+  workspace: HarnessWorkspace
 }
 
 interface PolicySnapshot {
@@ -84,6 +129,13 @@ const description = ref('')
 const systemPrompt = ref('')
 const modelCredential = ref('')
 const fallbacks = ref<string[]>([])
+const backendType = ref<AgentBackendType>(AGENT_BACKEND_MODEL)
+// "Kind/name" — see BackendSnapshot.
+const harnessEdge = ref('')
+const harnessCredential = ref('')
+const harnessModel = ref('')
+const harnessWorkspace = ref<HarnessWorkspace>('persistent')
+const harnessError = ref('')
 const autonomy = ref<Autonomy>('ask')
 const budgetUSD = ref('')
 const budgetTokens = ref('')
@@ -104,16 +156,18 @@ let authorityGeneration = 0
 
 const baselines = reactive<{
   persona: PersonaSnapshot | null
+  backend: BackendSnapshot | null
   model: ModelSnapshot | null
   policy: PolicySnapshot | null
   channels: AgentChannel[] | null
-}>({ persona: null, model: null, policy: null, channels: null })
+}>({ persona: null, backend: null, model: null, policy: null, channels: null })
 
 // The queue applies optimistic specs immediately, so dirty state compares the
 // draft with the last acknowledged section baseline rather than the live
 // agent object. This keeps edits made during an in-flight write visible.
 const saveState = reactive<Record<SaveRegion, SaveRegionState>>({
   persona: { status: 'idle', error: '', sequence: 0, submitted: null },
+  backend: { status: 'idle', error: '', sequence: 0, submitted: null },
   model: { status: 'idle', error: '', sequence: 0, submitted: null },
   policy: { status: 'idle', error: '', sequence: 0, submitted: null },
   tools: { status: 'idle', error: '', sequence: 0, submitted: null },
@@ -137,7 +191,21 @@ const connectionSlice = computed(() => {
   revision.value
   return { ...props.store.connections }
 })
-const credentials = computed(() => credentialSlice.value.data)
+const edgeSlice = computed(() => {
+  revision.value
+  return { ...props.store.edges }
+})
+// Two credential families, and the API rejects one where the other belongs: a
+// chat endpoint cannot drive a coding harness, and a `claude setup-token` value
+// is not a bearer any chat API would accept. So each picker offers only its own.
+const credentials = computed(() => {
+  revision.value
+  return props.store.chatCredentials()
+})
+const harnessCredentials = computed(() => {
+  revision.value
+  return props.store.harnessCredentials()
+})
 const toolsets = computed(() => toolsetSlice.value.data)
 const toolConnections = computed(() => {
   revision.value
@@ -161,6 +229,37 @@ const credentialOptions = computed<FormSelectOption[]>(() => [
     label: `${credential.name}${credential.model ? ` (${credential.model})` : ''}`,
   })),
 ])
+/**
+ * hostEdges is what the machine picker may offer: LinuxServer and MacOSServer,
+ * and nothing else.
+ *
+ * The filter is here as well as in the read (resources.listEdges reads only the
+ * two host kinds) because this is the last point before a value reaches the
+ * form. A runner is a process on a machine, so a KubernetesCluster edge can
+ * never host a harness and the CRD's own enum refuses it — offering one would
+ * produce a save the apiserver rejects, which is a worse answer than never
+ * having offered it.
+ */
+const hostEdges = computed(() => edgeSlice.value.data.filter(edge => HARNESS_EDGE_KINDS.includes(edge.kind)))
+const edgeOptions = computed<FormSelectOption[]>(() => [
+  { value: '', label: '— pick a machine —' },
+  ...hostEdges.value.map(edge => ({
+    value: edgeKey(edge.kind, edge.name),
+    label: `${edge.name} (${edge.kind === 'MacOSServer' ? 'macOS' : 'Linux'}${edge.connected === false ? ', offline' : ''})`,
+  })),
+])
+const harnessCredentialOptions = computed<FormSelectOption[]>(() => [
+  { value: '', label: '— pick a harness credential —' },
+  ...harnessCredentials.value.map(credential => ({
+    value: credential.name,
+    label: `${credential.name} (${harnessLabel(credential.provider)})`,
+  })),
+])
+const workspaceOptions = computed<FormSelectOption[]>(() => WORKSPACE_MODES.map(mode => ({ value: mode.id, label: mode.label })))
+// The harness is NOT chosen here: it is derived from the credential's provider.
+const selectedHarness = computed(() => harnessLabel(
+  harnessCredentials.value.find(credential => credential.name === harnessCredential.value)?.provider,
+))
 const fallbackOptions = computed<FormSelectOption[]>(() => [
   { value: '', label: '+ add fallback…' },
   ...availableFallbacks.value.map(credential => ({ value: credential.name, label: credential.name })),
@@ -197,8 +296,24 @@ function personaSnapshot(source: Agent): PersonaSnapshot {
 
 function modelSnapshot(source: Agent): ModelSnapshot {
   return {
-    modelCredential: source.spec?.models?.chat || '',
-    modelFallbacks: [...(source.spec?.modelFallbacks || [])],
+    modelCredential: agentModelCredential(source),
+    modelFallbacks: [...agentModelFallbacks(source)],
+  }
+}
+
+/**
+ * backendSnapshot reads the stored backend. An agent with no spec.backend at all
+ * is a MODEL-backed agent — that is what it always was, and rendering it as an
+ * empty state would invite someone to re-pick a backend it already has.
+ */
+function backendSnapshot(source: Agent): BackendSnapshot {
+  const harness = agentHarness(source)
+  return {
+    type: agentBackendType(source),
+    edge: edgeKey(harness?.edgeRef?.kind || '', harness?.edgeRef?.name || ''),
+    credentialRef: harness?.credentialRef || '',
+    model: harness?.model || '',
+    workspace: harness?.workspace || 'persistent',
   }
 }
 
@@ -227,6 +342,13 @@ const modelDraft = computed<ModelSnapshot>(() => ({
   modelCredential: modelCredential.value,
   modelFallbacks: [...fallbacks.value],
 }))
+const backendDraft = computed<BackendSnapshot>(() => ({
+  type: backendType.value,
+  edge: backendType.value === AGENT_BACKEND_HARNESS ? harnessEdge.value : '',
+  credentialRef: backendType.value === AGENT_BACKEND_HARNESS ? harnessCredential.value : '',
+  model: backendType.value === AGENT_BACKEND_HARNESS ? harnessModel.value.trim() : '',
+  workspace: backendType.value === AGENT_BACKEND_HARNESS ? harnessWorkspace.value : 'persistent',
+}))
 const policyDraft = computed<PolicySnapshot>(() => {
   const budget = validateBudgetInputs(budgetUSD.value, budgetTokens.value)
   return {
@@ -240,6 +362,23 @@ const policyDraft = computed<PolicySnapshot>(() => {
 const channelsDraft = computed(() => channelSnapshot(channels.value))
 const personaDirty = computed(() => !same(personaDraft.value, baselines.persona))
 const modelDirty = computed(() => !same(modelDraft.value, baselines.model))
+const backendDirty = computed(() => !same(backendDraft.value, baselines.backend))
+// The model fields belong to the model backend, so the draft choice — not the
+// stored one — decides whether they are shown. Picking "harness" has to hide
+// them at once: the API rejects the block that does not match the type, and a
+// visible credential field on a harness-backed agent would promise otherwise.
+const modelBacked = computed(() => backendType.value === AGENT_BACKEND_MODEL)
+// Tool grants are the stored agent's, so what disables the tools card is what
+// the object says today — not an unsaved draft.
+const harnessStored = computed(() => agentHarnessBacked(agent.value))
+/** backendCondition is the reconciler's verdict on whether a turn can run. */
+const backendCondition = computed(() => agentCondition(agent.value, CONDITION_BACKEND_READY))
+const resolvedHarness = computed(() => {
+  const backend = agent.value?.status?.backend
+  if (!backend?.harness?.name) return ''
+  const version = backend.harness.version
+  return version ? `${backend.harness.name} ${version}` : backend.harness.name
+})
 const policyDirty = computed(() => !same(policyDraft.value, baselines.policy))
 const channelsDirty = computed(() => !same(channelsDraft.value, baselines.channels))
 
@@ -261,15 +400,17 @@ function beginSave(region: SaveRegion, submitted: unknown = null): number {
   return state.sequence
 }
 
-function updateBaseline(region: ManualSaveRegion, snapshot: PersonaSnapshot | ModelSnapshot | PolicySnapshot | AgentChannel[]): void {
+function updateBaseline(region: ManualSaveRegion, snapshot: PersonaSnapshot | BackendSnapshot | ModelSnapshot | PolicySnapshot | AgentChannel[]): void {
   if (region === 'persona') baselines.persona = clone(snapshot as PersonaSnapshot)
+  if (region === 'backend') baselines.backend = clone(snapshot as BackendSnapshot)
   if (region === 'model') baselines.model = clone(snapshot as ModelSnapshot)
   if (region === 'policy') baselines.policy = clone(snapshot as PolicySnapshot)
   if (region === 'channels') baselines.channels = clone(snapshot as AgentChannel[])
 }
 
-function draftFor(region: ManualSaveRegion): PersonaSnapshot | ModelSnapshot | PolicySnapshot | AgentChannel[] {
+function draftFor(region: ManualSaveRegion): PersonaSnapshot | BackendSnapshot | ModelSnapshot | PolicySnapshot | AgentChannel[] {
   if (region === 'persona') return personaDraft.value
+  if (region === 'backend') return backendDraft.value
   if (region === 'model') return modelDraft.value
   if (region === 'policy') return policyDraft.value
   return channelsDraft.value
@@ -300,8 +441,15 @@ function hydrate(source: Agent): void {
   displayName.value = source.spec?.displayName || source.metadata.name
   description.value = source.spec?.description || ''
   systemPrompt.value = source.spec?.systemPrompt || ''
-  modelCredential.value = source.spec?.models?.chat || ''
-  fallbacks.value = [...(source.spec?.modelFallbacks || [])]
+  modelCredential.value = agentModelCredential(source)
+  fallbacks.value = [...agentModelFallbacks(source)]
+  const backend = backendSnapshot(source)
+  backendType.value = backend.type
+  harnessEdge.value = backend.edge
+  harnessCredential.value = backend.credentialRef
+  harnessModel.value = backend.model
+  harnessWorkspace.value = backend.workspace
+  harnessError.value = ''
   autonomy.value = (source.spec?.autonomy as Autonomy) || 'ask'
   budgetUSD.value = source.spec?.budget?.usdLimit || ''
   budgetTokens.value = source.spec?.budget?.tokenLimit ? String(source.spec.budget.tokenLimit) : ''
@@ -313,6 +461,7 @@ function hydrate(source: Agent): void {
   channelError.value = ''
   channelErrorTarget.value = null
   baselines.persona = personaSnapshot(source)
+  baselines.backend = backend
   baselines.model = modelSnapshot(source)
   baselines.policy = policySnapshot(source)
   baselines.channels = channelSnapshot(source.spec?.channels || [])
@@ -347,7 +496,7 @@ function save(
   })
 }
 
-function saveRegion<T extends PersonaSnapshot | ModelSnapshot | PolicySnapshot | AgentChannel[]>(
+function saveRegion<T extends PersonaSnapshot | BackendSnapshot | ModelSnapshot | PolicySnapshot | AgentChannel[]>(
   region: ManualSaveRegion,
   snapshot: T,
   patch: AgentPatch,
@@ -418,11 +567,65 @@ function saveModel(): void {
     { modelCredential: credential, modelFallbacks: nextFallbacks },
     { modelCredential: credential, modelFallbacks: nextFallbacks },
     spec => {
-      spec.models = { ...(spec.models || {}), chat: credential }
-      spec.modelFallbacks = nextFallbacks
+      // Only the model block: the backend TYPE belongs to the backend card, and
+      // a section save must not write a field another section owns.
+      const backend = spec.backend || (spec.backend = {})
+      backend.model = { ...(backend.model || {}), credentials: { ...(backend.model?.credentials || {}), chat: credential }, fallbacks: nextFallbacks }
     },
     'Model saved.',
     'model',
+  )
+}
+
+/**
+ * saveBackend writes spec.backend: the type, and the block that matches it.
+ *
+ * It clears the other block, because the two are mutually exclusive by CEL and
+ * an agent carrying both reads as configured for either. That is also why this
+ * is one card and one save rather than two independent ones — you cannot own
+ * half of a choice that has to be exactly one thing.
+ */
+function saveBackend(): void {
+  if (saveState.backend.status === 'pending') return
+  harnessError.value = ''
+  const snapshot = backendDraft.value
+  if (snapshot.type === AGENT_BACKEND_HARNESS) {
+    const { kind, name } = splitEdgeKey(snapshot.edge)
+    if (!kind || !name) {
+      harnessError.value = 'Pick the machine this agent’s turns run on.'
+      return
+    }
+    if (!snapshot.credentialRef) {
+      harnessError.value = 'Pick a harness credential — its provider is what decides whether this runs Claude Code or Codex.'
+      return
+    }
+    const harness: AgentHarnessBackend = {
+      edgeRef: { kind, name },
+      credentialRef: snapshot.credentialRef,
+      workspace: snapshot.workspace,
+      ...(snapshot.model ? { model: snapshot.model } : {}),
+    }
+    void saveRegion(
+      'backend',
+      snapshot,
+      { backendType: AGENT_BACKEND_HARNESS, harness },
+      spec => {
+        spec.backend = { type: AGENT_BACKEND_HARNESS, harness }
+      },
+      'Backend saved.',
+      'the backend',
+    )
+    return
+  }
+  void saveRegion(
+    'backend',
+    snapshot,
+    { backendType: AGENT_BACKEND_MODEL },
+    spec => {
+      spec.backend = { ...(spec.backend || {}), type: AGENT_BACKEND_MODEL, harness: undefined }
+    },
+    'Backend saved.',
+    'the backend',
   )
 }
 
@@ -660,6 +863,9 @@ async function enableInbound(name: string): Promise<void> {
   }
 }
 
+// Switching the choice clears a complaint about the branch you just left.
+watch(backendType, () => { harnessError.value = '' })
+
 watch(() => props.authorityEpoch, (epoch, previous) => {
   if (epoch === previous) return
   authorityGeneration += 1
@@ -718,7 +924,76 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard class="agents-config-sec" heading-id="agent-model-heading" title="Model" description="Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.">
+    <ResourceSectionCard class="agents-config-sec" heading-id="agent-backend-heading" title="Backend" description="Where this agent’s turns execute. An agent has exactly one backend.">
+      <template #actions><Server :stroke-width="1.75" aria-hidden="true" /></template>
+      <p class="muted agents-backend-copy">A <strong>model</strong>-backed agent runs its turns here in the provider and uses the hub’s tools; a <strong>harness</strong>-backed agent runs them on that machine and uses the harness’s own tools, so the tool grants below do not apply to it.</p>
+      <div class="agents-radiocards">
+        <label v-for="mode in BACKEND_MODES" :key="mode.id" class="agents-radiocard" :class="{ sel: mode.id === backendType }">
+          <input v-model="backendType" type="radio" name="backend-type" :value="mode.id" />
+          <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ mode.blurb }}</span>
+        </label>
+      </div>
+
+      <template v-if="backendType === 'harness'">
+        <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
+          <span>Could not load machines. {{ edgeSlice.error }}</span>
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+        </div>
+        <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading machines…</div>
+        <template v-else>
+          <div v-if="edgeSlice.error" class="agents-stale" role="status">
+            Showing the last loaded machines. {{ edgeSlice.error }}
+            <button class="k-btn k-btn--ghost secondary" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+          </div>
+          <div class="agents-grid2">
+            <label>
+              <span id="agent-harness-edge-label">Machine</span>
+              <FormSelect v-model="harnessEdge" :options="edgeOptions" labelledby="agent-harness-edge-label" :invalid="Boolean(harnessError) && !harnessEdge" :describedby="harnessError ? 'agent-backend-error' : undefined" />
+              <span class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
+              <span v-if="hostEdges.length === 0" class="agents-hint">No Linux or macOS machine in this workspace yet — join one under Edges first.</span>
+            </label>
+            <label>
+              <span id="agent-harness-credential-label">Harness credential</span>
+              <FormSelect v-model="harnessCredential" :options="harnessCredentialOptions" labelledby="agent-harness-credential-label" :invalid="Boolean(harnessError) && Boolean(harnessEdge) && !harnessCredential" :describedby="harnessError ? 'agent-backend-error' : undefined" />
+              <span class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
+              <span v-if="harnessCredentials.length === 0" class="agents-hint">No harness credentials yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
+            </label>
+          </div>
+          <div class="agents-grid2">
+            <label>
+              Model <span class="agents-hint">optional — blank leaves the harness’s own default</span>
+              <input v-model="harnessModel" class="k-input" placeholder="sonnet" />
+            </label>
+            <label>
+              <span id="agent-harness-workspace-label">Working directory</span>
+              <FormSelect v-model="harnessWorkspace" :options="workspaceOptions" labelledby="agent-harness-workspace-label" />
+            </label>
+          </div>
+        </template>
+      </template>
+
+      <div v-if="harnessError" id="agent-backend-error" class="agents-fielderr" role="alert">{{ harnessError }}</div>
+
+      <div class="agents-fieldset">
+        <span class="agents-fieldset-legend">Readiness</span>
+        <div v-if="!backendCondition" class="agents-hint" role="status">Not reported yet — nothing has observed this backend, which is not the same as it being fine.</div>
+        <template v-else-if="backendCondition.status === 'True'">
+          <span class="k-badge agents-badge agents-cat-channel">Backend ready</span>
+          <span v-if="resolvedHarness" class="agents-hint">Turns will run on {{ resolvedHarness }}.</span>
+        </template>
+        <template v-else>
+          <p class="agents-hint agents-warn-inline" role="status"><Circle :stroke-width="1.75" aria-hidden="true" /> Not ready — <strong>{{ backendCondition.reason || 'unknown' }}</strong>. This agent cannot run a turn yet.</p>
+          <p v-if="backendCondition.message" class="agents-hint">{{ backendCondition.message }}</p>
+        </template>
+      </div>
+
+      <div class="agents-form-actions">
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.backend.status === 'pending'" :aria-busy="saveState.backend.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessError ? 'agent-backend-error' : '', feedbackDescription('backend', backendDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveBackend"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.backend.status === 'pending' ? 'Saving backend…' : 'Save backend' }}</button>
+        <ConfigSaveFeedback id="agent-backend-save-feedback" action="the backend" :status="feedbackStatus('backend', backendDirty)" :newer-edits="newerEdits('backend')" :error="feedbackError('backend')" />
+      </div>
+    </ResourceSectionCard>
+
+    <ResourceSectionCard v-if="modelBacked" class="agents-config-sec" heading-id="agent-model-heading" title="Model" description="Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.">
       <div v-if="credentialSlice.error && !credentialSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load model credentials. {{ credentialSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
@@ -780,6 +1055,14 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     <Teleport to="#agents-workbench-panel-tools" defer :disabled="!workbenchSections">
     <ResourceSectionCard class="agents-config-sec" heading-id="agent-tools-heading" title="Tools &amp; toolsets" description="What this agent can call. Chat always gets a granted tool; background grants also allow it on schedules, triggers, and heartbeats, which run with nobody watching.">
       <template #actions><Wrench :stroke-width="1.75" aria-hidden="true" /></template>
+      <!-- A harness brings its own tools, and the API REJECTS spec.tools on a
+           harness-backed agent. Showing the grants disabled rather than hiding
+           the card is the honest version: an ignored grant reads as a granted
+           one, and a card that vanished reads as a feature that went missing. -->
+      <p v-if="harnessStored" class="agents-hint agents-warn-inline" data-tools-disabled role="status">
+        <Circle :stroke-width="1.75" aria-hidden="true" /> This agent runs on a coding harness, which brings its own tools. Tool grants do not apply to it and the API refuses them — switch the backend to <strong>Model</strong> above to grant tools here.
+      </p>
+      <template v-else>
       <ConfigSaveFeedback id="agent-tools-save-feedback" action="tool access" :status="feedbackStatus('tools')" :error="feedbackError('tools')" />
       <fieldset class="agents-wire-fs">
         <legend><Puzzle :stroke-width="1.75" aria-hidden="true" /> Toolsets</legend>
@@ -838,6 +1121,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <p v-if="toolConnections.length === 0" class="agents-hint">No tools yet — add a GitHub / MCP / web-search connection under <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>
         </template>
       </fieldset>
+      </template>
     </ResourceSectionCard>
     </Teleport>
 

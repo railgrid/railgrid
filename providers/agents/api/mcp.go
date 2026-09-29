@@ -31,6 +31,7 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/llm"
 )
 
 // MCPHandler returns the streamable-HTTP MCP handler mounted at /mcp. A fresh
@@ -115,20 +116,23 @@ type listAgentsOutput struct {
 
 // agentSettings is the full editable view get_agent and update_agent return.
 type agentSettings struct {
-	Name            string                         `json:"name"`
-	DisplayName     string                         `json:"displayName,omitempty"`
-	Description     string                         `json:"description,omitempty"`
-	SystemPrompt    string                         `json:"systemPrompt,omitempty"`
-	Autonomy        string                         `json:"autonomy,omitempty"`
-	Models          map[string]string              `json:"models,omitempty"`
-	ModelFallbacks  []string                       `json:"modelFallbacks,omitempty"`
-	Delegates       []string                       `json:"delegates,omitempty"`
-	Channels        []channelInput                 `json:"channels,omitempty"`
-	Tools           agentsv1alpha1.AgentToolPolicy `json:"tools,omitzero"`
-	Limits          agentsv1alpha1.AgentLimits     `json:"limits,omitzero"`
-	Budget          *agentsv1alpha1.AgentBudget    `json:"budget,omitempty"`
-	Phase           string                         `json:"phase,omitempty"`
-	SuspendedReason string                         `json:"suspendedReason,omitempty"`
+	Name         string `json:"name"`
+	DisplayName  string `json:"displayName,omitempty"`
+	Description  string `json:"description,omitempty"`
+	SystemPrompt string `json:"systemPrompt,omitempty"`
+	Autonomy     string `json:"autonomy,omitempty"`
+	// Backend is where the agent's turns execute, verbatim from the spec: the
+	// model block for an in-process agent, the harness block for one whose
+	// turns run on an edge. It replaced the flat models/modelFallbacks pair,
+	// which could not describe the second.
+	Backend         agentsv1alpha1.AgentBackendSpec `json:"backend,omitzero"`
+	Delegates       []string                        `json:"delegates,omitempty"`
+	Channels        []channelInput                  `json:"channels,omitempty"`
+	Tools           agentsv1alpha1.AgentToolPolicy  `json:"tools,omitzero"`
+	Limits          agentsv1alpha1.AgentLimits      `json:"limits,omitzero"`
+	Budget          *agentsv1alpha1.AgentBudget     `json:"budget,omitempty"`
+	Phase           string                          `json:"phase,omitempty"`
+	SuspendedReason string                          `json:"suspendedReason,omitempty"`
 }
 
 func settingsView(a *agentsv1alpha1.Agent) agentSettings {
@@ -142,8 +146,7 @@ func settingsView(a *agentsv1alpha1.Agent) agentSettings {
 		Description:     a.Spec.Description,
 		SystemPrompt:    a.Spec.SystemPrompt,
 		Autonomy:        a.Spec.Autonomy,
-		Models:          a.Spec.Models,
-		ModelFallbacks:  a.Spec.ModelFallbacks,
+		Backend:         a.Spec.Backend,
 		Delegates:       a.Spec.Delegates,
 		Channels:        chans,
 		Tools:           a.Spec.Tools,
@@ -313,7 +316,7 @@ func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 				DisplayName:     a.Spec.DisplayName,
 				Description:     a.Spec.Description,
 				Autonomy:        a.Spec.Autonomy,
-				ChatModel:       a.Spec.Models["chat"],
+				ChatModel:       a.Spec.ModelCredentialFor(llm.PurposeChat),
 				Phase:           a.Status.Phase,
 				SuspendedReason: a.Status.SuspendedReason,
 			})

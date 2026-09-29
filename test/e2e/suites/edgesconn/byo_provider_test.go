@@ -206,6 +206,76 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 				"which turns log tailing into a hang", spread)
 		}
 	})
+
+	t.Run("server-sent events survive the hop frame by frame", func(t *testing.T) {
+		// The previous subtest proves the hop does not buffer a plain chunked
+		// body. This one proves the SHAPE a runner uses survives it: the
+		// content type reaches the caller intact, a comment keep-alive on a
+		// live-but-quiet stream is delivered rather than held, and each
+		// id/data frame arrives when it was written.
+		//
+		// A hub-side agent backend tails /runner/v1/attempts/{id}/events
+		// through exactly this coordinate. If any of these three fail, a run
+		// executes on the edge and the hub never learns that it did.
+		const events = 3
+		url := fmt.Sprintf("%s%s?events=%d", base, probeEventsPath, events)
+		req, err := http.NewRequestWithContext(ctxWithTimeout(t, 60*time.Second), http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("build events request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+staticToken)
+		req.Header.Set(dataplane.HeaderUpstreamAuthorization, upstreamAuthorization)
+		req.Header.Set("Accept", "text/event-stream")
+		resp, err := insecureClient(90 * time.Second).Do(req)
+		if err != nil {
+			t.Fatalf("events request: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("events status = %d", resp.StatusCode)
+		}
+		// A proxy that rewrites this to application/octet-stream or strips it
+		// breaks every SSE client, including the runner client's own parser.
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+			t.Errorf("Content-Type = %q, want text/event-stream — an SSE client cannot consume this", ct)
+		}
+
+		start := time.Now()
+		var keepAlive time.Duration
+		var frames []time.Duration
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			switch {
+			case strings.HasPrefix(line, ":"):
+				if keepAlive == 0 {
+					keepAlive = time.Since(start)
+				}
+			case strings.HasPrefix(line, "data:"):
+				frames = append(frames, time.Since(start))
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			t.Fatalf("reading events: %v", err)
+		}
+		t.Logf("keep-alive at %v, data frames at %v", keepAlive, frames)
+
+		// The backend writes the keep-alive immediately and the first frame
+		// only after probeChunkInterval. A hop that held the comment until it
+		// had real data would make a quiet stream look dead to its client.
+		if keepAlive == 0 {
+			t.Error("the keep-alive comment never arrived; a live-but-quiet stream is indistinguishable from a hung one")
+		} else if len(frames) > 0 && keepAlive >= frames[0] {
+			t.Errorf("keep-alive arrived at %v, not before the first data frame at %v — the hop batched them", keepAlive, frames[0])
+		}
+		if len(frames) < events {
+			t.Fatalf("got %d data frames, want %d", len(frames), events)
+		}
+		if spread := frames[len(frames)-1] - frames[0]; spread < 200*time.Millisecond {
+			t.Errorf("all %d frames arrived within %v — the event stream was buffered, "+
+				"so a hub-side caller would learn a run's whole history only after it ended", len(frames), spread)
+		}
+	})
 }
 
 // getThroughTunnel issues one authenticated GET through the hub and returns the

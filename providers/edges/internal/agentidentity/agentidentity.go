@@ -74,23 +74,24 @@ const TokenTTL = 24 * 60 * 60 // seconds; converted where the request is built
 //   - proxy            the agent presents it on every reconnect (class (f))
 //   - agent-token      the agent refreshes its own credential with it
 //   - ssh-credentials  a LinuxServer agent hands its SSH credentials over
-//   - runner-auth      a host agent asks for one of its add-ons' harness
-//     credentials; the provider reads the Secret the Addon references
-//   - runner-token     the same in reverse: the agent hands over the bearer it
-//     generated for an add-on and the provider writes the token Secret
 //   - k8s, ssh, mcp    the verbs carried OVER the tunnel; a grant that
 //     authorizes the tunnel but not its traffic fails on the first request
 //
-// The three credential verbs exist for one reason: identity policy X-4 mints
-// no core `secrets` rule for anyone, so every tenant-workspace Secret an agent
-// used to read or write is now a gated verb the PROVIDER performs after the
-// agent has proved which edge it is.
+// ssh-credentials exists for one reason: identity policy X-4 mints no core
+// `secrets` rule for anyone, so the one tenant-workspace Secret an agent used
+// to write is now a gated verb the PROVIDER performs after the agent has
+// proved which edge it is. No verb carries a HARNESS credential in either
+// direction: a runner's credential arrives per attempt with the runner/v1
+// start that uses it, so there is no Secret on either side to move.
 //
 // The list is per-agent, not per-kind: a grant for a verb this edge's kind
 // does not serve is harmless (the coordinate 404s before any gate), while a
-// missing one is a hard failure on the first call.
+// missing one is a hard failure on the first call. It must nonetheless be a
+// SUBSET of what internal/tunnel/grammar.go serves, or the hub's policy
+// (clause C) refuses to mint the capability and the whole identity request
+// fails — TestGrantedVerbsAreServed pins the two together.
 var DataPlaneVerbs = []string{
-	"agent-token", "k8s", "mcp", "proxy", "runner-auth", "runner-token", "ssh", "ssh-credentials",
+	"agent-token", "k8s", "mcp", "proxy", "ssh", "ssh-credentials",
 }
 
 // Rules is the complete rule set an edge agent's identity
@@ -110,10 +111,7 @@ var DataPlaneVerbs = []string{
 //   - No wildcard and no unnamed write. The per-edge verbs are name-scoped to
 //     this edge alone, so one edge's agent cannot act on another's.
 func Rules(gvr schema.GroupVersionResource, edgeName string) []rbacv1.PolicyRule {
-	subresources := make([]string, 0, len(DataPlaneVerbs)+1)
-	if gvr.Resource == "linuxservers" || gvr.Resource == "macosservers" {
-		subresources = append(subresources, gvr.Resource+"/addon-credentials")
-	}
+	subresources := make([]string, 0, len(DataPlaneVerbs))
 	for _, verb := range DataPlaneVerbs {
 		subresources = append(subresources, gvr.Resource+"/"+verb)
 	}
@@ -165,20 +163,6 @@ func Rules(gvr schema.GroupVersionResource, edgeName string) []rbacv1.PolicyRule
 			APIGroups: []string{gvr.Group},
 			Resources: []string{"workloads", "workloads/status"},
 			Verbs:     []string{"get", "list", "watch"},
-		},
-		// Add-on plane (host edges): READ ONLY on the objects themselves — an
-		// agent must never be able to create or delete an Addon, because
-		// creating one is the privileged act that turns a machine into a
-		// code-execution host. See docs/edge-addons.md.
-		{
-			APIGroups: []string{gvr.Group},
-			Resources: []string{"addons"},
-			Verbs:     []string{"get", "list", "watch"},
-		},
-		{
-			APIGroups: []string{gvr.Group},
-			Resources: []string{"addons/status"},
-			Verbs:     []string{"get", "update", "patch"},
 		},
 	}
 }

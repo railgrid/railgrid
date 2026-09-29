@@ -11,7 +11,8 @@
 // 'server' (a raw run/inbox push, for views that track their own run lists).
 
 import type { ApiClient } from './api'
-import type { Agent, Capabilities, Connection, Credential, InboxItem, Schedule, Toolset, Trigger } from './types'
+import { isChatProvider, isHarnessProvider } from './types'
+import type { Agent, Capabilities, Connection, Credential, Edge, InboxItem, Schedule, Toolset, Trigger } from './types'
 import { CONN_CATEGORY, familiesForConns } from './conn-defs'
 
 export interface Slice<T> {
@@ -30,7 +31,7 @@ function slice<T>(initial: T): Slice<T> {
   return { data: initial, loading: false, error: null, loaded: false, hasSnapshot: false }
 }
 
-export type SliceKey = 'agents' | 'connections' | 'toolsets' | 'schedules' | 'triggers' | 'credentials' | 'inbox'
+export type SliceKey = 'agents' | 'connections' | 'toolsets' | 'schedules' | 'triggers' | 'credentials' | 'inbox' | 'edges'
 
 // These are the collections whose create response is returned to the shell
 // before the next list response necessarily includes it. The other slices do
@@ -86,6 +87,10 @@ export class AppStore extends EventTarget {
   triggers = slice<Trigger[]>([])
   credentials = slice<Credential[]>([])
   inbox = slice<InboxItem[]>([])
+  // Host edges a harness-backed agent can run on. A foreign group's objects
+  // (edges.railgrid.ai), loaded like any other slice so "the edges provider is
+  // not enabled here" renders as an error rather than as an empty picker.
+  edges = slice<Edge[]>([])
   // capabilities is not in SliceKey/LOADERS because it is an object, not a
   // collection — it gets its own loader below but the same {data, loading,
   // error, loaded} contract so views can treat it like any other slice.
@@ -150,6 +155,15 @@ export class AppStore extends EventTarget {
   channelConnections(): Connection[] {
     return this.connections.data.filter((c) => CONN_CATEGORY[c.spec.type] === 'channel')
   }
+  // Chat endpoints an in-process model backend can call, and harness identities
+  // an edge harness runs as. They are not variants of each other: the API
+  // rejects one where the other belongs, so each picker offers only its own.
+  chatCredentials(): Credential[] {
+    return this.credentials.data.filter((c) => isChatProvider(c.provider))
+  }
+  harnessCredentials(): Credential[] {
+    return this.credentials.data.filter((c) => isHarnessProvider(c.provider))
+  }
   pendingInbox(): InboxItem[] {
     return this.inbox.data.filter((i) => i.state === 'pending')
   }
@@ -196,6 +210,7 @@ export class AppStore extends EventTarget {
     void this.load('schedules')
     void this.load('triggers')
     void this.load('inbox')
+    void this.load('edges')
     void this.loadOAuthApps()
     void this.loadCapabilities()
   }
@@ -446,4 +461,5 @@ const LOADERS: Record<SliceKey, (api: ApiClient) => Promise<unknown[]>> = {
   triggers: (a) => a.listTriggers(),
   credentials: (a) => a.listCredentials(),
   inbox: (a) => a.listInbox(),
+  edges: (a) => a.listEdges(),
 }

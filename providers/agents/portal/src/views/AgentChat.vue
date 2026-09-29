@@ -12,7 +12,7 @@ import AITranscript from '../agentkit/AITranscript.vue'
 import { toast } from '../portalkit/toast'
 import type { Route } from '../router'
 import type { AppStore, ServerEvent } from '../store'
-import { sessionLabel, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
+import { agentHarnessBacked, agentModelCredential, sessionLabel, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
@@ -27,7 +27,7 @@ interface RunStartedData { runID: string; sessionID?: string; status?: string; s
 interface DeltaData { text: string }
 interface ToolStartData { id: string; name: string; args?: string }
 interface ToolEndData extends ToolStartData { result?: string; error?: string; durationMS?: number }
-interface ApprovalData { runID: string; inboxID: string; tool: string; args: string; content?: string; status?: string; startedAt?: string; durationMS?: number }
+interface ApprovalData { runID: string; inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string; content?: string; status?: string; startedAt?: string; durationMS?: number }
 interface AssistantMessageData { runID: string; phase: 'commentary' | 'final'; content: string; createdAt?: string; segmentDurationMS?: number }
 interface DoneData {
   runID: string
@@ -73,7 +73,7 @@ const orphanHasSnapshot = ref(false)
 const orphanLoading = ref(false)
 const stopRequested = ref(false)
 const cancelingRunID = ref('')
-const approvalBusy = ref<Record<string, 'approve' | 'deny'>>({})
+const approvalBusy = ref<Record<string, 'approve' | 'deny' | 'answer'>>({})
 const orphanCancelBusyID = ref('')
 const deletingSessionID = ref('')
 const mobileRailOpen = ref(false)
@@ -111,7 +111,10 @@ const agent = computed(() => {
   revision.value
   return props.store.agent(props.name)
 })
-const hasModel = computed(() => Boolean(agent.value?.spec?.models?.chat))
+// A harness-backed agent has no chat credential and needs none: its turns run
+// on the machine's harness, which brings its own model. "Can this agent answer?"
+// is therefore the backend question, not the credential one.
+const hasModel = computed(() => agentHarnessBacked(agent.value) || Boolean(agentModelCredential(agent.value)))
 const sessionOptions = computed(() => {
   const list = sessions.value.slice()
   if (sessionID.value && !list.some(session => session.id === sessionID.value)) {
@@ -865,7 +868,7 @@ async function send(): Promise<void> {
           flushNow(serial)
           const current = currentMessage()
           patchMessage(assistantID, {
-            approval: { runID: data.runID, inboxID: data.inboxID, tool: data.tool, args: data.args },
+            approval: { runID: data.runID, inboxID: data.inboxID, kind: data.kind, tool: data.tool, args: data.args, question: data.question },
           })
           const hasClassifiedCommentary = Boolean(current?.progress?.trace.some(block => block.kind === 'commentary'))
           if (!hasClassifiedCommentary && data.content && !current?.content) {
@@ -965,7 +968,7 @@ async function stop(): Promise<void> {
   await cancelLiveRun(runID, session, name, api, controller)
 }
 
-async function resolveApproval(inboxID: string, decision: 'approve' | 'deny'): Promise<void> {
+async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | 'answer', response?: string): Promise<void> {
   if (approvalBusy.value[inboxID]) return
   approvalBusy.value = { ...approvalBusy.value, [inboxID]: decision }
   const name = props.name
@@ -981,13 +984,20 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny'): P
     messages.value.some(message => message.id === target?.id && message.approval?.inboxID === inboxID)
   )
   try {
-    await api.resolveInbox(inboxID, decision)
+    // Only an answer carries a body. Passing an explicit undefined third
+    // argument for approve/deny would change the call every existing caller and
+    // test sees, for a value the API does not read.
+    await (response === undefined
+      ? api.resolveInbox(inboxID, decision)
+      : api.resolveInbox(inboxID, decision, response))
     if (!requestIsCurrent()) return
     if (target?.approval) {
       patchMessage(target.id, { approval: { ...target.approval, resolved: decision } })
       void refreshRunApproval(target.approval.runID)
     }
-    toast('ok', decision === 'approve' ? 'Approved — resuming the run.' : 'Denied.')
+    toast('ok', decision === 'answer'
+      ? 'Answered — resuming the run.'
+      : decision === 'approve' ? 'Approved — resuming the run.' : 'Denied.')
     void store.load('inbox')
   } catch (error) {
     if (requestIsCurrent()) toast('error', `Could not ${decision}: ${(error as Error).message}`)
@@ -1396,7 +1406,7 @@ defineExpose({
               :announce="message.role === 'assistant' && message.streaming"
               :show-run-link="runLinkMessageIDs.has(message.id)"
               :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
-              @approval="resolveApproval($event.inboxID, $event.decision)"
+              @approval="resolveApproval($event.inboxID, $event.decision, $event.response)"
               @view-run="emit('navigate', { kind: 'run', id: $event })"
             />
             <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>

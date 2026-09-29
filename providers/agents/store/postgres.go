@@ -113,6 +113,12 @@ var agentsSchema = []string{
 	// stale in-memory copy cannot un-cancel a run.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMPTZ`,
+	// Where the run executed and, for a harness-backed one, the runner attempt
+	// and harness session it IS. Migrated in place (idempotent): every existing
+	// row is a model-backed run, which an empty backend column reads as.
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS backend TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS harness_session_id TEXT NOT NULL DEFAULT ''`,
 	// Partial unique index: at most one run per (tenant, agent, key), while the
 	// overwhelming majority of runs carry no key at all and are unconstrained.
 	`CREATE UNIQUE INDEX IF NOT EXISTS agents_runs_idempotency_idx
@@ -208,6 +214,20 @@ var agentsSchema = []string{
 		PRIMARY KEY (org_uuid, workspace_uuid, agent_name, session_id)
 	)`,
 	`ALTER TABLE agents_session_summaries ADD COLUMN IF NOT EXISTS checkpoint JSONB`,
+	// One row per conversational session that has ever run a harness turn: the
+	// harness session its turns chain onto, and the turn count that IS the next
+	// attempt epoch. Both are protocol requirements (see store.HarnessSession),
+	// which is why they are a durable row rather than in-process state.
+	`CREATE TABLE IF NOT EXISTS agents_harness_sessions (
+		org_uuid TEXT NOT NULL,
+		workspace_uuid TEXT NOT NULL,
+		agent_name TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		harness_session_id TEXT NOT NULL DEFAULT '',
+		turns BIGINT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (org_uuid, workspace_uuid, agent_name, session_id)
+	)`,
 	// The sweep scans by phase + staleness across all tenants, so this index is
 	// the one that keeps it from being a full table scan as run history grows.
 	`CREATE INDEX IF NOT EXISTS agents_runs_phase_updated_idx
@@ -401,8 +421,17 @@ func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionI
 	}
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
-	_, err := p.db.ExecContext(ctx, `
+	if _, err := p.db.ExecContext(ctx, `
 		DELETE FROM agents_session_summaries
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
+		return err
+	}
+	// Same reasoning one layer out: the harness session holds the transcript the
+	// user just asked to be rid of, so the next turn must start a new one rather
+	// than chain onto it.
+	_, err := p.db.ExecContext(ctx, `
+		DELETE FROM agents_harness_sessions
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID)
 	return err
@@ -486,6 +515,82 @@ func (p *PostgresStore) GetSessionSummary(ctx context.Context, scope Scope, sess
 	return out, true, nil
 }
 
+// ---- harness sessions ---------------------------------------------------------
+
+// NextHarnessTurn claims the next turn number for a session.
+//
+// It is an UPSERT that increments, in one statement, because the number it
+// returns is the attempt epoch: two replicas answering the same channel message
+// must not be handed the same one, and the runner's stale_attempt refusal is only
+// a backstop for the case where they were.
+func (p *PostgresStore) NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time) (HarnessSession, error) {
+	if err := scope.withAgent(); err != nil {
+		return HarnessSession{}, err
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return HarnessSession{}, fmt.Errorf("session ID is required")
+	}
+	out := HarnessSession{SessionID: sessionID}
+	row := p.db.QueryRowContext(ctx, `
+		INSERT INTO agents_harness_sessions
+			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, turns, updated_at)
+		VALUES ($1,$2,$3,$4,'',1,$5)
+		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
+			turns=agents_harness_sessions.turns+1, updated_at=EXCLUDED.updated_at
+		RETURNING harness_session_id, turns, updated_at`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID, now.UTC())
+	if err := row.Scan(&out.HarnessSessionID, &out.Turns, &out.UpdatedAt); err != nil {
+		return HarnessSession{}, err
+	}
+	out.UpdatedAt = out.UpdatedAt.UTC()
+	return out, nil
+}
+
+// PutHarnessSession records the harness session id a receipt reported. The turn
+// count only moves forward: a writer recording a session id must not roll the
+// epoch back to whatever it read before the turn.
+func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s HarnessSession) error {
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.SessionID) == "" {
+		return fmt.Errorf("session ID is required")
+	}
+	_, err := p.db.ExecContext(ctx, `
+		INSERT INTO agents_harness_sessions
+			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, turns, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
+			harness_session_id=CASE WHEN EXCLUDED.harness_session_id <> '' THEN EXCLUDED.harness_session_id
+				ELSE agents_harness_sessions.harness_session_id END,
+			turns=GREATEST(agents_harness_sessions.turns, EXCLUDED.turns),
+			updated_at=EXCLUDED.updated_at`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, s.SessionID,
+		s.HarnessSessionID, s.Turns, s.UpdatedAt.UTC())
+	return err
+}
+
+func (p *PostgresStore) GetHarnessSession(ctx context.Context, scope Scope, sessionID string) (HarnessSession, bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return HarnessSession{}, false, err
+	}
+	out := HarnessSession{SessionID: sessionID}
+	row := p.db.QueryRowContext(ctx, `
+		SELECT harness_session_id, turns, updated_at
+		FROM agents_harness_sessions
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID)
+	err := row.Scan(&out.HarnessSessionID, &out.Turns, &out.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return HarnessSession{}, false, nil
+	}
+	if err != nil {
+		return HarnessSession{}, false, err
+	}
+	out.UpdatedAt = out.UpdatedAt.UTC()
+	return out, true, nil
+}
+
 // ---- runs ---------------------------------------------------------------------
 
 func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error {
@@ -508,19 +613,23 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 	_, err = p.db.ExecContext(ctx, `
 		INSERT INTO agents_runs
 			(id, org_uuid, workspace_uuid, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt,
-			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
+			 backend, attempt_id, harness_session_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 		ON CONFLICT (id) DO UPDATE SET
 			phase=EXCLUDED.phase, attempt=EXCLUDED.attempt, message=EXCLUDED.message,
 			output=EXCLUDED.output, sources=EXCLUDED.sources, delivery=EXCLUDED.delivery,
 			checkpoint=EXCLUDED.checkpoint, input_tokens=EXCLUDED.input_tokens,
 			output_tokens=EXCLUDED.output_tokens, usd_micros=EXCLUDED.usd_micros,
 			updated_at=EXCLUDED.updated_at, started_at=EXCLUDED.started_at, finished_at=EXCLUDED.finished_at,
-			worked_duration_ms=EXCLUDED.worked_duration_ms`,
+			worked_duration_ms=EXCLUDED.worked_duration_ms,
+			backend=EXCLUDED.backend, attempt_id=EXCLUDED.attempt_id,
+			harness_session_id=EXCLUDED.harness_session_id`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message, nullBytes(run.Checkpoint),
 		run.InputTokens, run.OutputTokens, run.USDMicros,
-		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS))
+		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
+		run.Backend, run.AttemptID, run.HarnessSessionID)
 	return err
 }
 
@@ -528,7 +637,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 // change cannot drift one query out of step with scanRun.
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
 		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-		       cancel_requested, cancel_requested_at`
+		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	if err := scope.validate(); err != nil {
@@ -699,7 +808,8 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	}
 	dest = append(dest, &run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
-		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt)
+		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt,
+		&run.Backend, &run.AttemptID, &run.HarnessSessionID)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}
@@ -1067,7 +1177,7 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
 		if _, err := p.db.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {

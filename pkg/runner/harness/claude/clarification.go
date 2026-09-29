@@ -54,8 +54,10 @@ import (
 // a block in the MIDDLE of a message is ignored, because the turn continued
 // past it and therefore did not stop to ask.
 const (
-	clarificationOpen  = "<<<RAILGRID_CLARIFICATION>>>"
-	clarificationClose = "<<<END_RAILGRID_CLARIFICATION>>>"
+	// The convention's two strings live in the harness package: a consumer
+	// rendering this text needs them too, and two copies would drift.
+	clarificationOpen  = harness.ClarificationOpen
+	clarificationClose = harness.ClarificationClose
 
 	maxClarificationText = 8 << 10
 )

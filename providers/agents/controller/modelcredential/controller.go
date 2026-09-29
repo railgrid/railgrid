@@ -30,6 +30,16 @@
 // exists. The key is never logged and never written to status; a failed probe
 // is recorded as bounded recovery text.
 //
+// A HARNESS identity (provider claude-code / codex) goes through the same three
+// conditions and a different check. There is no endpoint: the value is a login
+// this provider only ever hands to a coding harness on an edge, so GET /models
+// is not skipped as an optimization — it does not exist. What is checked instead
+// is the SHAPE of the Secret, because that is where every reachable mistake
+// lives: exactly one of oauthToken/apiKey for Claude Code (both is a refusal,
+// not a precedence decision), and an auth.json that parses for Codex. status.
+// models carries the harness's own model aliases when the catalog knows them, so
+// a picker has something to offer for a credential nothing can probe.
+//
 // Cadence: a Ready credential is re-probed on a slow clock (an API key can be
 // revoked without anything in kcp changing, and nothing here can watch the
 // provider's account), a failing one backs off from the moment it started
@@ -182,8 +192,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	status := cred.Status.DeepCopy()
 	status.ObservedGeneration = cred.Generation
 	setCondition(status, agentsv1alpha1.ConditionSecretResolved, secretReason,
-		secretMessage, "the credential's Secret holds an API key this provider can read", cred.Generation, now)
+		secretMessage, secretResolvedMessage(cred.Spec.Provider), cred.Generation, now)
 
+	harness := agentsv1alpha1.IsHarnessProvider(cred.Spec.Provider)
 	switch {
 	case secretReason != "":
 		// No key, no probe. Reachable is not "false because the endpoint
@@ -192,6 +203,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		// asked".
 		setCondition(status, agentsv1alpha1.ConditionReachable, agentsv1alpha1.ReasonSecretUnresolved,
 			"the endpoint was not called: "+secretMessage, "", cred.Generation, now)
+	case harness:
+		// A harness identity has no endpoint. GET /models against one would be
+		// a call to nowhere with a credential no chat API would accept, so the
+		// SHAPE of the Secret (resolveSecret already checked it) is the whole
+		// verdict and Reachable says as much rather than reporting a probe that
+		// never happened as a failure.
+		status.LastProbeError = ""
+		status.Models = boundModels(llm.HarnessModelAliases(cred.Spec.Provider))
+		setCondition(status, agentsv1alpha1.ConditionReachable, "", "",
+			"this credential is a "+cred.Spec.Provider+" harness identity; there is no endpoint to call, and its Secret holds a usable one",
+			cred.Generation, now)
 	default:
 		models, latency, probeErr := r.probe(ctx, cred.Spec.BaseURL, apiKey)
 		status.LastProbeTime = &metav1.Time{Time: now}
@@ -220,7 +242,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		readyMessage = notReadyMessage(status)
 	}
 	setCondition(status, agentsv1alpha1.ConditionReady, readyReason, readyMessage,
-		"this credential resolved and its endpoint answered", cred.Generation, now)
+		readyMessageFor(cred.Spec.Provider), cred.Generation, now)
 
 	result := ctrl.Result{RequeueAfter: readyResync}
 	if !ready {
@@ -265,12 +287,48 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 			"secret %q needs the label %s=%s; without it this provider cannot read the key on an unattended run",
 			name, claimscope.OwnerLabel, agentsclient.ProviderName), nil
 	}
+	// A harness identity is a different shape and a different check: which key
+	// is present decides how the harness is handed the credential, so "exactly
+	// one of oauthToken/apiKey" and "auth.json parses" are the verdict here
+	// instead of "spec.secretKey is present".
+	if agentsv1alpha1.IsHarnessProvider(cred.Spec.Provider) {
+		identity, problem := llm.ReadHarnessSecret(cred.Spec.Provider, &sec)
+		if problem != "" {
+			return "", agentsv1alpha1.ReasonSecretIncomplete, string(problem), nil
+		}
+		// The value is deliberately NOT returned: nothing in this reconciler
+		// may hold a harness login, and the probe it would feed does not exist.
+		// Its kind is enough to say the Secret is usable.
+		_ = identity
+		return "", "", "", nil
+	}
 	key := llm.APIKeyFromSecret(&sec, cred.Spec)
 	if key == "" {
 		return "", agentsv1alpha1.ReasonSecretIncomplete, fmt.Sprintf(
 			"secret %q has no %q key; spec.secretKey names the key holding the API key", name, llm.SecretKey(cred.Spec)), nil
 	}
 	return key, "", "", nil
+}
+
+// readyMessageFor is the True message for Ready. A harness identity never had
+// an endpoint to answer, so saying one did would be the only untrue sentence on
+// the object.
+func readyMessageFor(provider string) string {
+	if agentsv1alpha1.IsHarnessProvider(provider) {
+		return "this credential resolved and is a usable " + provider + " identity"
+	}
+	return "this credential resolved and its endpoint answered"
+}
+
+// secretResolvedMessage is the True message for SecretResolved, which differs
+// by family because what was checked differs: a chat credential's key is a
+// bearer this provider will use, a harness credential's is a login it will only
+// ever pass on.
+func secretResolvedMessage(provider string) string {
+	if agentsv1alpha1.IsHarnessProvider(provider) {
+		return "the credential's Secret holds a " + provider + " identity in the expected shape"
+	}
+	return "the credential's Secret holds an API key this provider can read"
 }
 
 // notReadyMessage names the first unmet condition, so Ready says what to fix

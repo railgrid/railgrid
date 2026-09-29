@@ -3,14 +3,140 @@
 // fields, each labelled with where to get the value.
 
 import type { IconName } from './portalkit/icons'
-import type { Connection, ConnectionWrite } from './types'
+import {
+  MODEL_PROVIDER_CLAUDE_CODE,
+  MODEL_PROVIDER_CODEX,
+  MODEL_PROVIDER_OPENAI,
+  MODEL_PROVIDER_OPENAI_COMPATIBLE,
+  isHarnessProvider,
+  type Connection,
+  type ConnectionWrite,
+} from './types'
 
-export const PROVIDER_PRESETS: { id: string; label: string; baseURL: string; modelHint: string }[] = [
-  { id: 'openai', label: 'OpenAI', baseURL: 'https://api.openai.com/v1', modelHint: 'gpt-4o' },
-  { id: 'anthropic', label: 'Anthropic (Claude, OpenAI-compat)', baseURL: 'https://api.anthropic.com/v1', modelHint: 'claude-sonnet-4-20250514' },
-  { id: 'openrouter', label: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', modelHint: 'anthropic/claude-sonnet-4' },
-  { id: 'custom', label: 'Custom OpenAI-compatible', baseURL: '', modelHint: 'model-name' },
+/**
+ * A model credential belongs to one of two FAMILIES, and they are not variants
+ * of each other (apis/v1alpha1/types_modelcredential.go):
+ *
+ *   - "chat": a base URL plus a key, probed with GET /models, turned into a
+ *     chat model by llm.BuildModel.
+ *   - "harness": the login a coding harness on an edge runs as. No endpoint,
+ *     nothing to probe, no chat model — the value is handed to the harness for
+ *     one turn.
+ *
+ * The family is what decides which FIELDS a credential has, which is why the
+ * preset carries it: the editor branches on this, not on a list of provider
+ * names spelled out a second time.
+ */
+export type ProviderFamily = 'chat' | 'harness'
+
+export interface ProviderPreset {
+  id: string
+  label: string
+  /** The spec.provider value this preset writes. */
+  provider: string
+  family: ProviderFamily
+  /** Chat endpoints only. A harness identity has no endpoint at all. */
+  baseURL: string
+  modelHint: string
+  /** The one line under the Provider select. */
+  guidance: string
+  /**
+   * Harness identities only: where the value comes from. One line, because the
+   * model itself is documented in docs/edge-harness.md and a form is not the
+   * place to repeat it.
+   */
+  origin?: string
+}
+
+// The preset list is the provider CHOICE. It used to be a base-URL shortcut
+// with spec.provider pinned to openai-compatible, which is why two of the
+// four providers the CRD accepts could not be created here at all.
+export const PROVIDER_PRESETS: ProviderPreset[] = [
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    provider: MODEL_PROVIDER_OPENAI,
+    family: 'chat',
+    baseURL: 'https://api.openai.com/v1',
+    modelHint: 'gpt-4o',
+    guidance: 'Uses OpenAI’s standard API endpoint.',
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic (Claude, OpenAI-compat)',
+    provider: MODEL_PROVIDER_OPENAI_COMPATIBLE,
+    family: 'chat',
+    baseURL: 'https://api.anthropic.com/v1',
+    modelHint: 'claude-sonnet-4-20250514',
+    guidance: 'Use a provider or gateway that implements OpenAI Chat Completions and GET /models.',
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    provider: MODEL_PROVIDER_OPENAI_COMPATIBLE,
+    family: 'chat',
+    baseURL: 'https://openrouter.ai/api/v1',
+    modelHint: 'anthropic/claude-sonnet-4',
+    guidance: 'Use a provider or gateway that implements OpenAI Chat Completions and GET /models.',
+  },
+  {
+    id: 'custom',
+    label: 'Custom OpenAI-compatible',
+    provider: MODEL_PROVIDER_OPENAI_COMPATIBLE,
+    family: 'chat',
+    baseURL: '',
+    modelHint: 'model-name',
+    guidance: 'Use a provider or gateway that implements OpenAI Chat Completions and GET /models.',
+  },
+  {
+    id: 'claude-code',
+    label: 'Claude Code (harness identity)',
+    provider: MODEL_PROVIDER_CLAUDE_CODE,
+    family: 'harness',
+    baseURL: '',
+    modelHint: '',
+    guidance: 'The login a Claude Code harness on an edge runs as. There is no endpoint: the value is handed to the harness for one turn.',
+    origin: '`claude setup-token` prints a long-lived token tied to a Claude subscription; an Anthropic API key bills that account instead.',
+  },
+  {
+    id: 'codex',
+    label: 'Codex (harness identity)',
+    provider: MODEL_PROVIDER_CODEX,
+    family: 'harness',
+    baseURL: '',
+    modelHint: '',
+    guidance: 'The login a Codex harness on an edge runs as. There is no endpoint: the value is handed to the harness for one turn.',
+    origin: '`codex login` on a machine you control writes an auth.json; paste its contents.',
+  },
 ]
+
+/** The preset a new credential opens in. */
+export const DEFAULT_PROVIDER_PRESET = PROVIDER_PRESETS[0]
+
+/** providerPreset resolves a preset id, falling back to the default. */
+export function providerPreset(id: string): ProviderPreset {
+  return PROVIDER_PRESETS.find(item => item.id === id) || DEFAULT_PROVIDER_PRESET
+}
+
+/**
+ * presetFor is the preset a STORED credential opens in.
+ *
+ * A harness identity is recognized by its provider, because it has no endpoint
+ * to recognize it by. A chat endpoint is still recognized by its base URL,
+ * which is how this form has always restored a preset — two chat presets share
+ * one provider value, so the URL is the only thing that tells them apart.
+ */
+export function presetFor(credential: { provider?: string; baseURL?: string } | undefined): ProviderPreset {
+  if (!credential) return DEFAULT_PROVIDER_PRESET
+  if (isHarnessProvider(credential.provider)) {
+    return PROVIDER_PRESETS.find(item => item.provider === credential.provider) || DEFAULT_PROVIDER_PRESET
+  }
+  const url = (credential.baseURL || '').trim()
+  // No URL on a chat credential means nothing was stored, so the form opens on
+  // the default endpoint rather than on "custom" with an empty box.
+  if (!url) return DEFAULT_PROVIDER_PRESET
+  return PROVIDER_PRESETS.find(item => item.family === 'chat' && item.baseURL === url) || providerPreset('custom')
+}
 
 export interface ConnField {
   key: string

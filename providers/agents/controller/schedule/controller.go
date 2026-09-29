@@ -249,9 +249,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		SessionID:     "schedule:" + sched.Name,
 		NotifyChannel: sched.Spec.ChannelRef,
 	}); err != nil {
-		// The fire is claimed on the CR; a refused submit (queue full, executor
-		// stopping) is a lost fire, not a retry — re-firing would double-run
-		// once the queue drains. Say so and move on to the next occurrence.
+		// The fire is claimed on the CR; a submission that could not be recorded
+		// is a lost fire, not a retry — re-firing would double-run once writes
+		// work again. Say so and move on to the next occurrence.
 		logger.Error(err, "schedule fire not queued")
 	} else {
 		logger.Info("schedule fired", "trigger", trigger, "next", next)

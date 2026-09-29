@@ -57,6 +57,12 @@ const (
 
 	probeIdentityPath = "/probe/identity"
 	probeStreamPath   = "/probe/stream"
+	// probeEventsPath serves a Server-Sent Events stream. It is shaped like the
+	// runner protocol's /runner/v1/attempts/{id}/events, because that is the
+	// long-lived response a hub-side agent backend tails through this very hop
+	// — and an SSE stream that a proxy buffers or whose content type it rewrites
+	// is a run whose progress never arrives.
+	probeEventsPath = "/probe/events"
 
 	// Chunk spacing on probeStreamPath. The streaming assertion compares
 	// arrival times against it, so the two have to agree.
@@ -153,6 +159,39 @@ func startProbeBackend(t *testing.T) int64 {
 				return
 			case <-time.After(probeChunkInterval):
 			}
+		}
+	})
+
+	// An SSE stream, framed the way the runner protocol frames its events: a
+	// comment keep-alive first (what proves a live-but-quiet stream survives
+	// the hop), then id/data frames spaced apart. Anything that buffers,
+	// re-chunks into one write, or rewrites the content type shows up here
+	// rather than as a mysteriously silent agent run.
+	mux.HandleFunc(probeEventsPath, func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		events := 3
+		if n := r.URL.Query().Get("events"); n != "" {
+			if parsed, err := strconv.Atoi(n); err == nil && parsed > 0 && parsed <= 100 {
+				events = parsed
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, ": keep-alive\n\n")
+		flusher.Flush()
+		for i := 1; i <= events; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(probeChunkInterval):
+			}
+			_, _ = fmt.Fprintf(w, "id: %d\ndata: {\"cursor\":%d,\"type\":\"progress\"}\n\n", i, i)
+			flusher.Flush()
 		}
 	})
 

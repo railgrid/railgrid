@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"text/template"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/pkg/agent"
+	"github.com/railgrid/railgrid/pkg/agent/harnessplane"
 	"github.com/railgrid/railgrid/pkg/agent/tunnel"
 	pkgversion "github.com/railgrid/railgrid/pkg/version"
 )
@@ -80,57 +82,76 @@ func agentRunFlags(cmd *cobra.Command, opts *agent.Options) {
 		"CIDR the Service proxy may dial besides loopback (and cluster DNS in kubernetes mode), e.g. 192.168.1.0/24. Repeatable. Link-local, unspecified and multicast addresses are never allowed. Env: "+svcAllowCIDREnv)
 	cmd.Flags().StringVar(&opts.SvcPolicy, "svc-policy", svcPolicyDefault(),
 		"What the Service proxy does with a target outside loopback/--svc-allow-cidr: enforce (403, never dialed), warn (dialed but logged; response carries X-Railgrid-Svc-Policy: warn) or allow-any (allow list disabled; logged at startup). The default flips to enforce in the next release. Env: "+svcPolicyEnv)
-	addonFlags(cmd, opts)
+	harnessFlags(cmd, opts)
 }
 
-// addonFlags attaches the machine owner's half of the edge add-on trust model.
-// Both flags are local-only: nothing the hub says can set them, and without
-// --allow-addon an Addon declared for this edge is reported Allowed=False and
-// never materialized. See docs/edge-addons.md.
-func addonFlags(cmd *cobra.Command, opts *agent.Options) {
-	cmd.Flags().StringSliceVar(&opts.AllowedAddons, "allow-addon", allowAddonDefault(),
-		"Addon type this machine will run (currently only \"runner\"). Repeatable. Empty (the default) means this edge materializes no add-on at all. Env: "+allowAddonEnv)
-	cmd.Flags().StringVar(&opts.AddonUser, "addon-user", addonUserDefault(),
-		"Existing non-root local account that add-on child processes run as. Required with --allow-addon when the agent runs as root. Env: "+addonUserEnv)
+// harnessFlags attaches the harness selection an install SEEDS. Neither flag can
+// override the hub: spec.harness on the edge object is the setting, the agent
+// caches the last value it observed, and --harness only fills that cache in
+// before the agent has ever seen the object. For an install-time opt-out that
+// sticks, use `railgrid edge create --harness none`.
+func harnessFlags(cmd *cobra.Command, opts *agent.Options) {
+	cmd.Flags().StringVar(&opts.Harness, "harness", harnessDefault(),
+		"Coding harnesses this machine offers until the hub says otherwise: \"auto\" (the default: every harness installed on the machine), \"none\", or a comma-separated list of "+
+			strings.Join(harnessplane.Names, ",")+". SEEDS spec.harness only — the edge object wins, always. Env: "+harnessEnv)
+	cmd.Flags().StringVar(&opts.RunnerUser, "runner-user", runnerUserDefault(),
+		"Non-root local account harness runners run as. Optional: a root agent creates the dedicated "+agent.DefaultRunnerUser+
+			" system account when this is empty, and a non-root agent (the macOS LaunchDaemon worker) runs them as itself. Env: "+runnerUserEnv)
 }
 
-// Environment fallbacks for the add-on flags, so a systemd unit or an
+// Environment fallbacks for the harness flags, so a systemd unit or an
 // in-cluster Deployment can set them without editing args.
 const (
-	allowAddonEnv = "RAILGRID_AGENT_ALLOW_ADDON"
-	addonUserEnv  = "RAILGRID_AGENT_ADDON_USER"
+	harnessEnv    = "RAILGRID_AGENT_HARNESS"
+	runnerUserEnv = "RAILGRID_AGENT_RUNNER_USER"
 )
 
-// allowAddonDefault reads RAILGRID_AGENT_ALLOW_ADDON (comma-separated).
-func allowAddonDefault() []string {
-	var out []string
-	for _, s := range strings.Split(os.Getenv(allowAddonEnv), ",") {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, s)
-		}
+// harnessDefault reads RAILGRID_AGENT_HARNESS, else auto.
+func harnessDefault() string {
+	if v := strings.TrimSpace(os.Getenv(harnessEnv)); v != "" {
+		return v
 	}
-	return out
+	return string(harnessplane.ModeAuto)
 }
 
-// addonUserDefault reads RAILGRID_AGENT_ADDON_USER.
-func addonUserDefault() string {
-	return strings.TrimSpace(os.Getenv(addonUserEnv))
+// runnerUserDefault reads RAILGRID_AGENT_RUNNER_USER.
+func runnerUserDefault() string {
+	return strings.TrimSpace(os.Getenv(runnerUserEnv))
 }
 
-// validateAddonInstall is the install-time half of the --addon-user rule. The
-// systemd unit runs the agent as root (there is no User=), so an install that
-// allows an add-on without naming an account would produce a unit that refuses
-// to start — better to refuse here, where the operator is still watching.
-func validateAddonInstall(allowAddons []string, addonUser string) ([]string, error) {
-	normalized, err := agent.NormalizeAllowedAddons(allowAddons)
+// validateHarnessInstall checks the harness selection before anything is
+// written, so a typo fails while the operator is still watching rather than in a
+// unit that starts and supervises nothing. It returns the value to render into
+// the unit, empty when it is the default (auto) — an install that says nothing
+// about harnesses should pick up a later default change without a reinstall.
+func validateHarnessInstall(harness string) (string, error) {
+	setting, err := agent.ParseHarnessSetting(harness)
 	if err != nil {
-		return nil, fmt.Errorf("--allow-addon: %w", err)
+		return "", fmt.Errorf("--harness: %w", err)
 	}
-	if len(normalized) > 0 && strings.TrimSpace(addonUser) == "" {
-		return nil, fmt.Errorf("--addon-user is required with --allow-addon: the systemd unit runs the agent as root, "+
-			"and an add-on child must run as a separate non-root account (allowed types: %s)", strings.Join(normalized, ", "))
+	if setting.Mode == harnessplane.ModeAuto {
+		return "", nil
 	}
-	return normalized, nil
+	return setting.String(), nil
+}
+
+// ensureLinuxRunnerAccount resolves the account a systemd-installed agent's
+// runner children run as, creating the dedicated railgrid-runner system account
+// when the operator named none. The unit runs the agent as root (there is no
+// User=), so SOMETHING has to own the harness child — and refusing for lack of a
+// flag would make the default path fail on a machine that has Claude Code
+// installed and is otherwise ready to use it.
+func ensureLinuxRunnerAccount(runnerUser string) (string, error) {
+	if runtime.GOOS != "linux" {
+		// A cross-platform dry run (or a macOS install rendering a Linux unit)
+		// must not try to create accounts; the agent resolves one at startup.
+		return strings.TrimSpace(runnerUser), nil
+	}
+	account, err := agent.EnsureRunnerAccount(runnerUser)
+	if err != nil {
+		return "", err
+	}
+	return account.Username, nil
 }
 
 // Environment fallbacks for the Service proxy policy flags, so systemd units
@@ -377,6 +398,13 @@ func agentJoinServer(opts *agent.Options) error {
 	if err != nil {
 		return err
 	}
+	// The unit runs the agent as root, so the account harness runners drop to is
+	// resolved — and created, when the operator named none — here, while the
+	// operator is still watching, rather than on a machine nobody is looking at.
+	data.RunnerUser, err = ensureLinuxRunnerAccount(data.RunnerUser)
+	if err != nil {
+		return err
+	}
 
 	tmpl, err := template.New("unit").Parse(systemdUnitTemplate)
 	if err != nil {
@@ -444,14 +472,16 @@ func joinServerUnitData(opts *agent.Options, binaryPath, absKubeconfig string) (
 	if _, err := tunnel.ParseSvcAllowedCIDRs(opts.SvcAllowedCIDRs); err != nil {
 		return systemdUnitData{}, err
 	}
-	allowAddons, err := validateAddonInstall(opts.AllowedAddons, opts.AddonUser)
+	harness, err := validateHarnessInstall(opts.Harness)
 	if err != nil {
 		return systemdUnitData{}, err
 	}
-	data.AllowAddons = allowAddons
-	if len(allowAddons) > 0 {
-		data.AddonUser = strings.TrimSpace(opts.AddonUser)
-	}
+	data.Harness = harness
+	// RunnerUser is carried through as the operator wrote it. Resolving it — and
+	// creating the dedicated account when it is empty — is the CALLER's job:
+	// building the unit data must stay free of side effects so it can be
+	// rendered, inspected and tested without touching the account database.
+	data.RunnerUser = strings.TrimSpace(opts.RunnerUser)
 	return data, nil
 }
 
@@ -844,9 +874,9 @@ ExecStart={{.BinaryPath}} agent run \
   --cluster {{.Cluster}}{{end}}{{if .InsecureSkipTLS}} \
   --hub-insecure-skip-tls-verify{{end}}{{range .SvcAllowCIDRs}} \
   --svc-allow-cidr {{.}}{{end}}{{if .SvcPolicy}} \
-  --svc-policy {{.SvcPolicy}}{{end}}{{range .AllowAddons}} \
-  --allow-addon {{.}}{{end}}{{if .AddonUser}} \
-  --addon-user {{.AddonUser}}{{end}}
+  --svc-policy {{.SvcPolicy}}{{end}}{{if .Harness}} \
+  --harness {{.Harness}}{{end}}{{if .RunnerUser}} \
+  --runner-user {{.RunnerUser}}{{end}}
 Restart=always
 RestartSec=10
 Environment=HOME=/root
@@ -871,34 +901,35 @@ type systemdUnitData struct {
 	// is left empty when it equals the built-in default (see svcPolicyArgs).
 	SvcAllowCIDRs []string
 	SvcPolicy     string
-	// AllowAddons / AddonUser render --allow-addon / --addon-user. Both are
-	// only present when the operator asked for an add-on: an install that did
-	// not mention add-ons must produce a unit that runs none. The unit runs as
-	// root, so AllowAddons without AddonUser is rejected before rendering.
-	AllowAddons []string
-	AddonUser   string
+	// Harness renders --harness, and is empty when the selection is the default
+	// (auto): an install that said nothing about harnesses should pick up a
+	// later default change without a reinstall. RunnerUser renders
+	// --runner-user, resolved (and created when needed) at install time because
+	// the unit runs the agent as root.
+	Harness    string
+	RunnerUser string
 }
 
 func newAgentInstallCommand() *cobra.Command {
 	var (
-		hubKubeconfig   string
-		hubURL          string
-		token           string
-		edgeName        string
-		edgeType        string
-		sshProxyPort    int
-		sshUser         string
-		sshPrivateKey   string
-		cluster         string
-		insecureSkipTLS bool
-		unitName        string
-		workerUser      string
-		plistPath       string
-		dryRun          bool
-		svcAllowCIDRs   []string
-		svcPolicy       string
-		allowAddons     []string
-		addonUser       string
+		hubKubeconfig    string
+		hubURL           string
+		token            string
+		edgeName         string
+		edgeType         string
+		sshProxyPort     int
+		sshUser          string
+		sshPrivateKey    string
+		cluster          string
+		insecureSkipTLS  bool
+		unitName         string
+		workerUser       string
+		plistPath        string
+		dryRun           bool
+		svcAllowCIDRs    []string
+		svcPolicy        string
+		harnessSelection string
+		runnerUser       string
 	)
 
 	cmd := &cobra.Command{
@@ -937,11 +968,11 @@ Example:
 			}
 			if edgeType == "macos" {
 				// The LaunchDaemon already runs as a non-root worker account, so
-				// --addon-user is not required there: add-on children run as that
-				// same worker. Only the type allow list is carried over.
-				normalizedAddons, err := agent.NormalizeAllowedAddons(allowAddons)
+				// harness runners run as that same worker and --runner-user has
+				// nothing to name there.
+				harness, err := validateHarnessInstall(harnessSelection)
 				if err != nil {
-					return fmt.Errorf("--allow-addon: %w", err)
+					return err
 				}
 				return installLaunchdAgent(launchdInstallOptions{
 					BinaryPath:      binaryPath,
@@ -954,7 +985,7 @@ Example:
 					InsecureSkipTLS: insecureSkipTLS,
 					SvcAllowCIDRs:   svcAllowCIDRs,
 					SvcPolicy:       svcPolicy,
-					AllowAddons:     normalizedAddons,
+					Harness:         harness,
 					WorkerUser:      workerUser,
 					PlistPath:       plistPath,
 					DryRun:          dryRun,
@@ -992,13 +1023,14 @@ Example:
 			if _, err := tunnel.ParseSvcAllowedCIDRs(svcAllowCIDRs); err != nil {
 				return err
 			}
-			normalizedAddons, err := validateAddonInstall(allowAddons, addonUser)
+			harness, err := validateHarnessInstall(harnessSelection)
 			if err != nil {
 				return err
 			}
-			data.AllowAddons = normalizedAddons
-			if len(normalizedAddons) > 0 {
-				data.AddonUser = strings.TrimSpace(addonUser)
+			data.Harness = harness
+			data.RunnerUser, err = ensureLinuxRunnerAccount(runnerUser)
+			if err != nil {
+				return err
 			}
 
 			// Render systemd unit.
@@ -1055,8 +1087,8 @@ Example:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the macOS LaunchDaemon and skip installation (works on Linux)")
 	cmd.Flags().StringSliceVar(&svcAllowCIDRs, "svc-allow-cidr", svcAllowCIDRDefault(), "CIDR the Service proxy may dial besides loopback, e.g. 192.168.1.0/24 (repeatable; rendered into the unit)")
 	cmd.Flags().StringVar(&svcPolicy, "svc-policy", svcPolicyDefault(), "Service proxy policy for targets outside the allowed set: enforce, warn or allow-any (rendered into the unit only when not the default)")
-	cmd.Flags().StringSliceVar(&allowAddons, "allow-addon", allowAddonDefault(), "Addon type this machine will run, currently only \"runner\" (repeatable; rendered into the unit). Empty means no add-on is ever materialized. Env: "+allowAddonEnv)
-	cmd.Flags().StringVar(&addonUser, "addon-user", addonUserDefault(), "Existing non-root local account add-on child processes run as. Required with --allow-addon for a systemd install. Env: "+addonUserEnv)
+	cmd.Flags().StringVar(&harnessSelection, "harness", harnessDefault(), "Coding harnesses this machine offers until the hub says otherwise: \"auto\" (default), \"none\", or a comma-separated list of "+strings.Join(harnessplane.Names, ",")+". SEEDS spec.harness only; `railgrid edge create --harness` is the opt-out that sticks. Env: "+harnessEnv)
+	cmd.Flags().StringVar(&runnerUser, "runner-user", runnerUserDefault(), "Non-root local account harness runners run as. Empty creates the dedicated "+agent.DefaultRunnerUser+" system account (Linux); on macOS the LaunchDaemon worker is used. Env: "+runnerUserEnv)
 
 	return cmd
 }

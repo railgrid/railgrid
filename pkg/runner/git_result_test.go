@@ -592,13 +592,14 @@ func TestGitResultExportRestartPublishesOneArtifactSet(t *testing.T) {
 	}}
 	second := newTestRunnerAt(t, secondAdapter, stateDir, source, commit)
 	resumed, err := second.Resume(context.Background(), ResumeRequest{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "resume-git-result-restart",
-		TaskID:          checkpoint.TaskID,
-		AttemptID:       checkpoint.AttemptID,
-		AttemptEpoch:    checkpoint.AttemptEpoch,
-		SessionID:       checkpoint.SessionID,
-		Resolution:      "continue",
+		HarnessCredential: testHarnessCredential(),
+		ProtocolVersion:   ProtocolVersion,
+		RequestID:         "resume-git-result-restart",
+		TaskID:            checkpoint.TaskID,
+		AttemptID:         checkpoint.AttemptID,
+		AttemptEpoch:      checkpoint.AttemptEpoch,
+		SessionID:         checkpoint.SessionID,
+		Resolution:        "continue",
 	})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
